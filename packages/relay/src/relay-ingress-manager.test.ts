@@ -47,7 +47,10 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   reportBotRevoked: vi.fn(() => true),
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
-  lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
+  reportThreadParticipant: vi.fn(() => true),
+  lookupThread: vi.fn(
+    async () => ({ botId: BOT_ID, sessionKey: '', target: null, participants: [] }) as RcThreadLookupOk
+  ),
   isAgentBotApp: vi.fn(() => false),
   admitsAgentCall: vi.fn(() => true),
   clock: new FakeClock(),
@@ -451,10 +454,13 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     } satisfies RcThreadAssign)
   })
 
-  it('does NOT report for an `auto`-owned channel (every message re-resolves locally)', async () => {
+  it('persists an `auto` target as a participant without creating owner affinity', async () => {
     const reportThreadAssign = vi.fn(() => true)
+    const reportThreadParticipant = vi.fn(() => true)
     const { daemon, sendMsg } = online()
-    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: () => daemon, reportThreadAssign, reportThreadParticipant })
+    )
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelAutoOwned())
 
@@ -462,7 +468,52 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     await internals.forward(BOT_ID, followUp())
 
     expect(sendMsg).toHaveBeenCalledTimes(2) // both delivered via the auto rung
-    expect(reportThreadAssign).not.toHaveBeenCalled() // ...but no write amplification
+    expect(reportThreadAssign).not.toHaveBeenCalled()
+    expect(reportThreadParticipant).toHaveBeenCalledTimes(1) // join once, not per message
+    expect(reportThreadParticipant).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      sessionKey: 'C123/1720000000.000100',
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID
+    })
+  })
+
+  it('derives explicit join and implicit participant causes per relay target', async () => {
+    const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(
+      deps({
+        getDaemon: (id) =>
+          id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined
+      })
+    )
+    const internals = manager as unknown as ManagerInternals
+    // The named primary is selected by an AUTO owner, not a mention rule. A human
+    // still addressed this bot explicitly, so that target must get mention semantics.
+    const shared = channelAutoOwned()
+    shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+    shared.agents.push({
+      agentId: OTHER_AGENT_ID,
+      name: 'Other',
+      daemonId: OTHER_DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID
+    })
+    shared.routes.push({
+      agentId: OTHER_AGENT_ID,
+      daemonId: OTHER_DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID,
+      scope: { channel: 'C123' },
+      match: { kind: 'auto' }
+    })
+    internals.router.upsert(shared)
+
+    await internals.forward(
+      BOT_ID,
+      followUp({ msgId: 'slack:C123:per-target', text: '<@UBOT> join', mentionedBots: ['UBOT'] })
+    )
+    expect(first.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedRouteVia: 'mention' })
+    expect(second.mock.calls[0]![0]).toMatchObject({ agentId: OTHER_AGENT_ID, trustedRouteVia: 'implicit' })
   })
 
   it('keeps an UNVERIFIED agent bot off routing but forwards an explicitly mentioning third-party bot', async () => {
@@ -477,7 +528,17 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     })
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign, isAgentBotApp }))
     const internals = manager as unknown as ManagerInternals
-    internals.router.upsert(channelAutoOwned())
+    const shared = channelAutoOwned()
+    shared.members[0]!.agentIds.push(OTHER_AGENT_ID)
+    shared.agents.push({ agentId: OTHER_AGENT_ID, name: 'Other' })
+    shared.routes.push({
+      agentId: OTHER_AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID,
+      scope: { channel: 'C123' },
+      match: { kind: 'auto' }
+    })
+    internals.router.upsert(shared)
 
     await internals.forward(
       BOT_ID,
@@ -498,6 +559,8 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       })
     )
 
+    // The third-party bot remains strict mention-only: it reaches the one arbitration
+    // primary, not every auto/participant route on this AgentConnect-managed bot.
     expect(sendMsg).toHaveBeenCalledTimes(1)
     expect(sendMsg.mock.calls[0]![0]).toMatchObject({ msgId: 'slack:C123:external', agentId: AGENT_ID })
     expect(reportThreadAssign).not.toHaveBeenCalled()
@@ -594,7 +657,9 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       // Judging emptiness after the author filter would make these two indistinguishable.
       const explicit = managerWith()
       await explicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
-      expect(explicit.sendMsg).not.toHaveBeenCalled()
+      for (const call of explicit.sendMsg.mock.calls) {
+        expect((call[0] as { agentId: string }).agentId).not.toBe(AUTHOR_ID)
+      }
 
       // With the author as the channel's ONLY route, the implicit rung has nobody left to
       // pick — and must resolve to nothing rather than back to the author.
@@ -639,54 +704,6 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
-    it('does not fall back to the implicit rung when a named recipient is refused', async () => {
-      // The named target is also the channel's `auto` route, so a fallthrough would
-      // "recover" by re-selecting the very agent whose policy just refused the edge. More
-      // generally: an author that named someone gets that someone or nobody, never a
-      // substitute it never asked for.
-      const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID] }))
-      expect(sendMsg).not.toHaveBeenCalled()
-    })
-
-    it('does not continue when the response addressed a human', async () => {
-      // Parity with the direct ladder, which stops at any unmatched mention in a channel
-      // (`routeRules`) — for human senders too. `mentionedBots` holds every `<@U…>` token,
-      // so an `@human` reply resolves to no agent yet is still deliberate addressing.
-      // Without this the same event wakes an `auto` peer over the relay and nobody over a
-      // direct connection.
-      const { internals, sendMsg } = managerWith()
-      await internals.forward(
-        BOT_ID,
-        followUp({
-          msgId: 'slack:C123:agenttohuman',
-          sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
-          text: '<@UHUMAN> can you confirm?',
-          mentionedBots: ['UHUMAN'],
-          agentAuthorship: {
-            authorAgentId: AUTHOR_ID,
-            responseId: 'r-1',
-            deliveryState: 'final',
-            hopCount: 3,
-            mentionedAgentIds: []
-          }
-        })
-      )
-      expect(sendMsg).not.toHaveBeenCalled()
-    })
-
-    it('does not continue when the mention landed in an EARLIER split section', async () => {
-      // Same gap as the direct ladder: `mentionedBots` comes from the FINAL section only,
-      // so an address in section one leaves both mention sets empty here. The author's
-      // complete-response claim is what still carries it.
-      const { internals, sendMsg } = managerWith()
-      await internals.forward(
-        BOT_ID,
-        agentFinal({ mentionedAgentIds: [], addressedAnyone: true }, { text: '…the last part', mentionedBots: [] })
-      )
-      expect(sendMsg).not.toHaveBeenCalled()
-    })
-
     it('refuses to forward an implicit continuation to a daemon that predates the field', async () => {
       // §8.4 fail-closed. An older daemon ignores `trustedRouteVia` and reads every
       // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute — so
@@ -699,18 +716,40 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       )
       expect(older.sendMsg).not.toHaveBeenCalled()
 
-      // An EXPLICIT mention is unaffected: it means the same thing to both builds.
+      // A body that names a peer is no different — delivery is arbitration-selected either
+      // way, so an older daemon must not receive that either.
       const explicit = managerWith({}, undefined, () => false)
       await explicit.internals.forward(BOT_ID, agentFinal())
-      expect(explicit.sendMsg).toHaveBeenCalledTimes(1)
+      expect(explicit.sendMsg).not.toHaveBeenCalled()
     })
 
-    it('tells the target which rung selected it', async () => {
-      // The frame is pre-addressed to one agent either way, so the target cannot re-derive
-      // this — and it decides whether the delivery clears or obeys a `!stop` mute.
+    it('routes a PAIRED delivery to the exact agent `sendMessage` named', async () => {
+      // The one target that is structured rather than parsed. Arbitration could pick the
+      // channel default or thread owner instead, which would record the visible
+      // observation against an agent the internal wake never names — the rendezvous would
+      // then never reconcile and the delivery would expire transcript-only.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [AGENT_ID], agentCallDeliveryId: 'd-7' },
+          { text: 'take a look', mentionedBots: [] }
+        )
+      )
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({
+        agentId: AGENT_ID,
+        trustedAgentCallDeliveryId: 'd-7',
+        trustedRouteVia: 'mention'
+      })
+    })
+
+    it('always reports the delivery as implicitly selected', async () => {
+      // Every agent-authored forward is arbitration-selected now, mention in the body or
+      // not — the target needs that fact to apply its `!stop` gate correctly.
       const mention = managerWith()
       await mention.internals.forward(BOT_ID, agentFinal())
-      expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'mention' })
+      expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
 
       const implicit = managerWith()
       await implicit.internals.forward(
@@ -718,6 +757,202 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
         agentFinal({ mentionedAgentIds: [] }, { text: 'that matches what I saw', mentionedBots: [] })
       )
       expect(implicit.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
+    })
+
+    it('fans a shared-bot conversation across daemons after the primary becomes ambiguous', async () => {
+      const firstDaemonSend = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const secondDaemonSend = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const currentDaemon = (sendMsg: typeof firstDaemonSend) =>
+        ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+      const manager = new RelayIngressManager(
+        deps({
+          getDaemon: (daemonId) =>
+            daemonId === DAEMON_ID
+              ? currentDaemon(firstDaemonSend)
+              : daemonId === OTHER_DAEMON_ID
+                ? currentDaemon(secondDaemonSend as typeof firstDaemonSend)
+                : undefined,
+          isAgentBotApp: vi.fn(() => true)
+        })
+      )
+      const internals = manager as unknown as ManagerInternals
+      const shared = assignment()
+      shared.botUserId = 'UBOT'
+      shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+      shared.agents = [
+        { agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        {
+          agentId: OTHER_AGENT_ID,
+          name: 'Other',
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID
+        }
+      ]
+      shared.routes = [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          scope: { channel: 'C123' },
+          match: { kind: 'mention' }
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          scope: { channel: 'C123' },
+          match: { kind: 'mention' }
+        }
+      ]
+      internals.router.upsert(shared)
+
+      // One human mention joins BOTH matching routes, with an independent explicit cause.
+      await internals.forward(
+        BOT_ID,
+        followUp({ msgId: 'slack:C123:join', text: '<@UBOT> both of you', mentionedBots: ['UBOT'] })
+      )
+      expect(firstDaemonSend).toHaveBeenCalledTimes(1)
+      expect(secondDaemonSend).toHaveBeenCalledTimes(1)
+      expect(firstDaemonSend.mock.calls[0]![0]).toMatchObject({
+        agentId: AGENT_ID,
+        trustedRouteVia: 'mention'
+      })
+      expect(secondDaemonSend.mock.calls[0]![0]).toMatchObject({
+        agentId: OTHER_AGENT_ID,
+        trustedRouteVia: 'mention'
+      })
+
+      firstDaemonSend.mockClear()
+      secondDaemonSend.mockClear()
+      // The remembered single affinity points at the author and is therefore unusable;
+      // both mention-only routes also match no rung. Participant state is the only path
+      // that can carry this unmentioned reply to the peer on the other daemon.
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { authorAgentId: AGENT_ID, mentionedAgentIds: [], hopCount: 4 },
+          { text: 'continuing without a mention', mentionedBots: [] }
+        )
+      )
+      expect(firstDaemonSend).not.toHaveBeenCalled()
+      expect(secondDaemonSend).toHaveBeenCalledTimes(1)
+      expect(secondDaemonSend.mock.calls[0]![0]).toMatchObject({
+        agentId: OTHER_AGENT_ID,
+        trustedFromAgentId: AGENT_ID,
+        trustedRouteVia: 'implicit',
+        trustedDeliveryHopCount: 5
+      })
+    })
+
+    it('joins a resolved peer on the production scoped-owner plus unscoped-slug route shape', async () => {
+      const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+      const manager = new RelayIngressManager(
+        deps({
+          getDaemon: (id) =>
+            id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined,
+          isAgentBotApp: vi.fn(() => true)
+        })
+      )
+      const internals = manager as unknown as ManagerInternals
+      const shared = assignment()
+      shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+      shared.agents.push({
+        agentId: OTHER_AGENT_ID,
+        name: 'Other',
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID
+      })
+      shared.routes = [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          scope: { channel: 'C123' },
+          match: { kind: 'auto' }
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'other' }
+        }
+      ]
+      internals.router.upsert(shared)
+
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [OTHER_AGENT_ID] },
+          { text: '<@opaque-other> please join', mentionedBots: ['UBOT'] }
+        )
+      )
+
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).toHaveBeenCalledTimes(1)
+      expect(second.mock.calls[0]![0]).toMatchObject({
+        agentId: OTHER_AGENT_ID,
+        trustedRouteVia: 'implicit',
+        trustedFromAgentId: AUTHOR_ID
+      })
+    })
+
+    it('does not remember or persist a policy-denied join for a later human follow-up', async () => {
+      const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+      const reportThreadParticipant = vi.fn(() => true)
+      const manager = new RelayIngressManager(
+        deps({
+          getDaemon: (id) =>
+            id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined,
+          isAgentBotApp: vi.fn(() => true),
+          admitsAgentCall: vi.fn((_author, target) => target !== OTHER_AGENT_ID),
+          reportThreadParticipant
+        })
+      )
+      const internals = manager as unknown as ManagerInternals
+      const shared = assignment()
+      shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+      shared.agents.push({
+        agentId: OTHER_AGENT_ID,
+        name: 'Other',
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID
+      })
+      shared.routes = [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          scope: { channel: 'C123' },
+          match: { kind: 'auto' }
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'other' }
+        }
+      ]
+      internals.router.upsert(shared)
+
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [OTHER_AGENT_ID] },
+          { text: '<@opaque-other> please join', mentionedBots: ['UBOT'] }
+        )
+      )
+
+      expect(second).not.toHaveBeenCalled()
+      expect(reportThreadParticipant).not.toHaveBeenCalledWith(expect.objectContaining({ agentId: OTHER_AGENT_ID }))
+
+      first.mockClear()
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:human-after-denied-join' }))
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).not.toHaveBeenCalled()
     })
 
     it('admits source depth 7 as delivery depth 8 and rejects 8 because the next hop is 9', async () => {
@@ -738,26 +973,6 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
         await internals.forward(BOT_ID, agentFinal({ hopCount }))
         expect(sendMsg).not.toHaveBeenCalled()
       }
-    })
-
-    it('gives each recipient of one post its own delivery', async () => {
-      // §3.2: one visible post can address several agents; a shared msgId would make the
-      // targets' dedup collapse them and silently drop every recipient but the first.
-      const { internals, sendMsg } = managerWith()
-      const assignmentWithBoth = channelAutoOwned()
-      assignmentWithBoth.members = [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID, OTHER_AGENT_ID] }]
-      assignmentWithBoth.routes.push({
-        agentId: OTHER_AGENT_ID,
-        daemonId: DAEMON_ID,
-        integrationId: INTEGRATION_ID,
-        match: { kind: 'keyword', value: 'other' }
-      })
-      internals.router.upsert(assignmentWithBoth)
-
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID, OTHER_AGENT_ID] }))
-      expect(sendMsg).toHaveBeenCalledTimes(2)
-      const msgIds = sendMsg.mock.calls.map((c) => (c[0] as { msgId: string }).msgId)
-      expect(new Set(msgIds).size).toBe(2)
     })
   })
 
@@ -979,7 +1194,8 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
       botId: BOT_ID,
       sessionKey: 'C123/1720000000.000100',
-      target: { agentId: AGENT_ID, daemonId: DAEMON_ID }
+      target: { agentId: AGENT_ID, daemonId: DAEMON_ID },
+      participants: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }]
     }))
     const reportThreadAssign = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread, reportThreadAssign }))
@@ -1007,11 +1223,66 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled()
   })
 
+  it('restores every durable participant from CP lookup after a relay restart', async () => {
+    const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+    const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+      botId: BOT_ID,
+      sessionKey: 'C123/1720000000.000100',
+      target: null,
+      participants: [
+        { agentId: AGENT_ID, daemonId: DAEMON_ID },
+        { agentId: OTHER_AGENT_ID, daemonId: OTHER_DAEMON_ID }
+      ]
+    }))
+    const manager = new RelayIngressManager(
+      deps({
+        lookupThread,
+        getDaemon: (id) =>
+          id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined
+      })
+    )
+    const internals = manager as unknown as ManagerInternals
+    const shared = assignment()
+    shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+    shared.agents.push({
+      agentId: OTHER_AGENT_ID,
+      name: 'Other',
+      daemonId: OTHER_DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID
+    })
+    shared.routes = [
+      {
+        agentId: AGENT_ID,
+        daemonId: DAEMON_ID,
+        integrationId: INTEGRATION_ID,
+        match: { kind: 'mention' }
+      },
+      {
+        agentId: OTHER_AGENT_ID,
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'mention' }
+      }
+    ]
+    internals.router.upsert(shared)
+
+    await internals.forward(BOT_ID, followUp())
+
+    expect(lookupThread).toHaveBeenCalledTimes(1)
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).toHaveBeenCalledTimes(1)
+    expect(first.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedRouteVia: 'implicit' })
+    expect(second.mock.calls[0]![0]).toMatchObject({ agentId: OTHER_AGENT_ID, trustedRouteVia: 'implicit' })
+  })
+
   it('remembers a CP miss and does not re-hit the CP for the same un-owned thread', async () => {
     const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
       botId: BOT_ID,
       sessionKey: 'C123/1720000000.000100',
-      target: null
+      target: null,
+      participants: []
     }))
     const { daemon, sendMsg } = online()
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))

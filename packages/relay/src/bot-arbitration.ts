@@ -87,6 +87,13 @@ export interface RouteTarget {
   integrationId: string
 }
 
+export interface ConversationTarget {
+  target: RouteTarget
+  /** Explicit only for a human mention. Agent-authored traffic can join a peer by
+   * mention, but remains implicit so it cannot clear a human's `!stop` latch. */
+  via: 'mention' | 'implicit'
+}
+
 /** `channel/thread` — the per-conversation affinity + rc/assign key. */
 export function sessionKeyOf(msg: Pick<WireNormalizedMessage, 'channel' | 'thread'>): string {
   return `${msg.channel}/${msg.thread ?? msg.channel}`
@@ -158,7 +165,14 @@ export function arbitrate(
   // 1. Channel ownership (§10.1, the primary path): a channel-scoped rule that
   //    matches the message kind wins outright (mention rule needs the @bot; auto
   //    rule fires on any message — the operator's trigger choice).
-  const ownedMention = scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
+  // A HUMAN mention can still nominate the compatibility primary. `conversationTargets`
+  // independently joins every matching route and fans to the remembered room, including
+  // peers on other daemons. Verified agent traffic skips this selector: its mention can
+  // add a participant but never narrows the room or clears a human's stop latch.
+  const ownedMention =
+    verifiedAgentAuthor === undefined
+      ? scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
+      : undefined
   if (ownedMention) return target(ownedMention)
   // Conversation-scoped keyword (§14.3): slug disambiguation inside a multi-agent DM
   // enabled for several gated agents — outranks the scoped auto so "<slug> …"
@@ -192,7 +206,7 @@ export function arbitrate(
   // 3. Keyword disambiguation (§10.2): "@bot <slug> …" → that agent. Only when the
   //    bot was actually addressed (a mention or a DM), so a stray slug substring in
   //    a normal channel message doesn't trigger it.
-  const addressed = explicitlyMentioned || msg.isDm
+  const addressed = msg.isDm || (verifiedAgentAuthor === undefined && explicitlyMentioned)
   if (addressed) {
     const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && kindMatches(r, msg, a.botUserId))
     if (kw) return target(kw)
@@ -210,11 +224,15 @@ export function arbitrate(
 
 /** Cap on a bot's negative-affinity set before it is flushed (bounds CP lookups). */
 const MAX_NEGATIVE_AFFINITY = 10_000
+const MAX_PARTICIPANT_CONVERSATIONS = 10_000
 
 export class BotArbitrationRouter {
   private readonly bots = new Map<string, BotAssignment>()
   /** Per-bot thread affinity: botId → (sessionKey → target). */
   private readonly affinity = new Map<string, Map<string, RouteTarget>>()
+  /** Every agent that has joined a conversation on this HTTP bot. Unlike `affinity`,
+   * this is a set: a shared-bot thread can span several daemons and has no single owner. */
+  private readonly participants = new Map<string, Map<string, Map<string, RouteTarget>>>()
   /** Per-bot NEGATIVE affinity: sessionKeys the CP confirmed hold no owner. Prevents
    *  an un-owned thread's every follow-up from re-hitting the CP (`rc/thread-lookup`). */
   private readonly noAffinity = new Map<string, Set<string>>()
@@ -225,6 +243,7 @@ export class BotArbitrationRouter {
     if (prev?.botUserId && a.botUserId === undefined) a.botUserId = prev.botUserId
     this.bots.set(a.botId, a)
     if (!this.affinity.has(a.botId)) this.affinity.set(a.botId, new Map())
+    if (!this.participants.has(a.botId)) this.participants.set(a.botId, new Map())
   }
 
   /** Replace routes/members/agents/default WITHOUT touching secrets or botUserId (rc/routes). */
@@ -262,6 +281,7 @@ export class BotArbitrationRouter {
     const a = this.bots.get(botId)
     this.bots.delete(botId)
     this.affinity.delete(botId)
+    this.participants.delete(botId)
     this.noAffinity.delete(botId)
     return a
   }
@@ -409,8 +429,20 @@ export class BotArbitrationRouter {
   /** Durable thread affinity from `rc/assign` (survives relay restart / re-assign). */
   setAffinity(botId: string, sessionKey: string, tgt: RouteTarget): void {
     ;(this.affinity.get(botId) ?? this.affinity.set(botId, new Map()).get(botId)!).set(sessionKey, tgt)
+    this.setParticipant(botId, sessionKey, tgt)
     // A now-owned thread must leave the negative cache (a Switch-agent / late assign).
     this.noAffinity.get(botId)?.delete(sessionKey)
+  }
+
+  /** Durable conversation member from an `rc/participant-assign` projection. */
+  setParticipant(botId: string, sessionKey: string, tgt: RouteTarget): void {
+    const byConversation = this.participants.get(botId) ?? this.participants.set(botId, new Map()).get(botId)!
+    const members = byConversation.get(sessionKey) ?? new Map<string, RouteTarget>()
+    if (!byConversation.has(sessionKey)) {
+      if (byConversation.size >= MAX_PARTICIPANT_CONVERSATIONS) byConversation.clear()
+      byConversation.set(sessionKey, members)
+    }
+    members.set(tgt.agentId, tgt)
   }
 
   /** Read the current affinity for a thread WITHOUT resolving (the report leg's
@@ -537,6 +569,86 @@ export class BotArbitrationRouter {
     if (!a) return null
     const aff = this.affinity.get(botId) ?? new Map<string, RouteTarget>()
     return arbitrate(a, msg, aff, authorAgentId)
+  }
+
+  /** Resolve every recipient of one conversation event and remember the joined set.
+   *
+   * The ordinary ladder may still produce a primary for compatibility/reporting, but it
+   * does not bound delivery. Existing participants, every newly mentioned route, and
+   * every scoped `auto` route are independent targets. This state lives beside affinity
+   * because affinity intentionally models one legacy owner and collapses in the exact
+   * multi-agent shape this method serves. */
+  conversationTargets(
+    botId: string,
+    msg: WireNormalizedMessage,
+    primary?: RouteTarget | null,
+    verifiedAgentAuthor?: string,
+    joinedAgentIds: readonly string[] = [],
+    onJoin?: (target: RouteTarget) => void,
+    admitsNewJoin?: (target: RouteTarget) => boolean
+  ): ConversationTarget[] {
+    const a = this.bots.get(botId)
+    if (!a || a.mutedChannels?.includes(msg.channel)) return []
+    const key = sessionKeyOf(msg)
+    const byConversation = this.participants.get(botId) ?? new Map<string, Map<string, RouteTarget>>()
+    const remembered = byConversation.get(key) ?? new Map<string, RouteTarget>()
+
+    const explicitIds = new Set<string>()
+    const namesBot = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
+    if (namesBot) {
+      for (const route of a.routes) {
+        if (route.match.kind !== 'mention' || !scopeMatches(route, msg)) continue
+        if (route.agentId !== verifiedAgentAuthor) explicitIds.add(route.agentId)
+      }
+      // A human explicitly addressed this bot. Even when channel ownership is an
+      // `auto` rule, the compatibility primary is the named target and must receive
+      // target-specific mention semantics so it can clear its own `!stop` latch.
+      if (verifiedAgentAuthor === undefined && primary) explicitIds.add(primary.agentId)
+    }
+
+    const selected = new Map<string, ConversationTarget>()
+    const add = (candidate: RouteTarget, via: 'mention' | 'implicit'): void => {
+      if (candidate.agentId === verifiedAgentAuthor) return
+      const current = this.agentTarget(botId, candidate.agentId, msg.channel)
+      if (!current) return
+      const previousParticipant = remembered.get(current.agentId)
+      // Policy is part of admission, not merely this event's delivery. A denied
+      // agent-authored edge must not leave behind local or durable membership that
+      // a later human follow-up could activate. Existing legitimate membership is
+      // retained; the caller still re-checks policy before each agent-authored copy.
+      if (!previousParticipant && admitsNewJoin && !admitsNewJoin(current)) return
+      const effectiveVia = verifiedAgentAuthor === undefined && via === 'mention' ? 'mention' : 'implicit'
+      const previous = selected.get(current.agentId)
+      if (!previous || effectiveVia === 'mention') selected.set(current.agentId, { target: current, via: effectiveVia })
+      if (!byConversation.has(key)) {
+        if (byConversation.size >= MAX_PARTICIPANT_CONVERSATIONS) byConversation.clear()
+        byConversation.set(key, remembered)
+        this.participants.set(botId, byConversation)
+      }
+      remembered.set(current.agentId, current)
+      if (
+        !previousParticipant ||
+        previousParticipant.daemonId !== current.daemonId ||
+        previousParticipant.integrationId !== current.integrationId
+      ) {
+        onJoin?.(current)
+      }
+    }
+
+    if (primary) add(primary, explicitIds.has(primary.agentId) ? 'mention' : 'implicit')
+    for (const route of a.routes) {
+      if (explicitIds.has(route.agentId)) add(target(route), 'mention')
+      if (route.match.kind === 'auto' && scopeMatches(route, msg)) add(target(route), 'implicit')
+    }
+    // The verified final carries exact resolved agent ids across provider
+    // splitting/echo. They JOIN the room but never replace its existing members,
+    // and agent-authored joins remain implicit so they cannot lift a human stop.
+    for (const agentId of joinedAgentIds) {
+      const joined = this.agentTarget(botId, agentId, msg.channel)
+      if (joined) add(joined, 'implicit')
+    }
+    for (const participant of remembered.values()) add(participant, 'implicit')
+    return [...selected.values()]
   }
 
   /** Every currently-assigned bot (ingest lifecycle reconciliation). */

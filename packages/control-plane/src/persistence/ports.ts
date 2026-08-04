@@ -2751,6 +2751,9 @@ export interface ThreadAffinityStore {
   upsert(botId: BotId, sessionKey: string, agentId: AgentId, daemonId: DaemonId): Promise<void>
   get(botId: BotId, sessionKey: string): Promise<{ agentId: AgentId; daemonId: DaemonId } | null>
   listForBot(botId: BotId): Promise<{ sessionKey: string; agentId: AgentId; daemonId: DaemonId }[]>
+  upsertParticipant(botId: BotId, sessionKey: string, agentId: AgentId, daemonId: DaemonId): Promise<void>
+  participants(botId: BotId, sessionKey: string): Promise<Array<{ agentId: AgentId; daemonId: DaemonId }>>
+  participantsForBot(botId: BotId): Promise<Array<{ sessionKey: string; agentId: AgentId; daemonId: DaemonId }>>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -28,10 +28,10 @@ Two implementation notes, recorded where they will be looked for:
 ## 1. Goals
 
 1. Let a finalized platform message authored by an AgentConnect agent participate
-   in normal recipient routing.
-2. Make the ordinary reply the way an agent talks in its current thread — an
-   explicit `@mention` to address someone in particular, and plain text to
-   continue the conversation with whoever the ordinary routing ladder selects.
+   in normal routing, so the agents in a thread see what each other said.
+2. Make the ordinary reply the way an agent talks in its current thread. Its text
+   — `@mention` or not — is what the conversation shows; delivery is the ordinary
+   routing ladder's decision, and whether to answer is the reader's.
 3. Keep `sendMessage` for postless agent calls, direct messages, channel-root
    posts, and parent-session replies.
 4. Make a parent-session reply session-only by default: its injected input and
@@ -123,32 +123,37 @@ Consequences:
 A verified AgentConnect-authored platform message takes the SAME arbitration
 ladder a human message takes, with the author removed from the candidate set:
 
-- An explicit mention of agent B activates B.
-- An unmentioned agent message continues the conversation through the ordinary
-  implicit rungs — thread affinity, DM, keyword, channel `auto`, default agent.
-  This is what lets agents converse without naming each other in every line.
-- **Addressing anyone is binding.** A message that names someone gets an explicit
-  outcome or none; it never falls through to the implicit rungs. This covers three
-  cases that look different and are not:
-  - a mention of a human (or another app, or a bare shared bot) resolves to no
-    agent and therefore activates nobody — the same thing a person's `@human` reply
-    does, since the direct ladder stops at any unmatched mention in a channel;
-  - a response whose only name is its own author, which is the one self-address
-    every response can produce;
-  - a named agent that is refused by policy, by the conversation fence, or by not
-    being resident here — substituting a different recipient is not a continuation.
-
-  Only a response that names NOBODY is unaddressed, and only that one continues.
-  A DM is already addressed to its recipient, so it is exempt on both ladders.
-
-  Because only the LAST physical section is marked `final` (§5.5) and every
-  non-agent mention is otherwise visible only in that section's own text, the
-  final event also carries `addressedAnyone` for the COMPLETE response. Without
-  it, an answer that mentions a human in section one and ends without a mention
-  would arrive with both mention sets empty, and whether the address bound would
-  depend on where the splitter happened to cut. Absent on an older author's
-  message ⇒ false, so its finals stay routable exactly as before.
-
+- **A thread is a conversation, so everyone in it hears what is said.** Delivery goes
+  to every agent already PARTICIPATING in the thread, minus the author — not to one
+  agent chosen per message. That holds whoever spoke: a human's follow-up and an
+  agent's reply reach the same room.
+- **An `@mention` JOINS an agent to the thread**, at the root or midway through. That
+  is the whole of what a mention does for routing. After joining, the agent keeps
+  receiving what is said next whether or not the next message names it — which is why
+  agents do not have to name each other to keep a conversation going.
+- **A channel-`auto` agent participates in the whole channel**, so every message there
+  reaches it without any mention at all.
+- A mention names EVERY agent it matches, never whichever routing rule happened to be
+  found first. On a bot serving several agents that distinction is the difference
+  between deterministic delivery and delivery that depends on rule order.
+- **Whether to answer is the reader's decision, not routing's.** An agent's own bot
+  user id is standing context (`- Slack identity: bot user <@U…> is YOU`), sourced from
+  the daemon's own live connection, so it can tell whether a message concerns it and
+  decline with `NO_RESPONSE`.
+- Selecting recipients by PARSING the body was tried and removed. It made delivery
+  depend on mapping an opaque `<@U…>` back to an agent through the collaboration
+  directory, and that lookup is not dependable — observed in a live workspace with
+  `botUserId` absent for most agents and `botShared` derived from "the app is
+  shareable" rather than from a bot user genuinely backing several agents. A correct,
+  well-formed peer mention then resolved to nobody and the conversation stopped: the
+  more precisely a model addressed its peer, the more reliably it silenced the thread.
+- ONE structured exception: the visible half of a paired `toAgent + channel` send
+  (§3.2). Its target came from the tool call as an agent id, and the activation
+  rendezvous only converges when the visible observation and the internal wake name the
+  SAME agent. Both ladders special-case it on `agentCallDeliveryId`.
+- Each peer is an INDEPENDENT delivery: its own session, `!stop` mute, Off fence, and
+  inbox row. A muted participant stays muted — `!stop` is per (thread, agent), and
+  hearing the room is exactly what it was told to stop doing.
 - **The author can never be the target.** This is the one absolute. An agent's own
   reply always matches its own rule, so self-activation is not a loop the hop cap
   slows down — it is unconditional. The author is excluded once, before any rung.
@@ -157,13 +162,14 @@ ladder a human message takes, with the author removed from the candidate set:
   bot-ness — we know exactly which agent wrote a verified message and have already
   checked its policy, so it is a participant rather than anonymous bot traffic.
 
-Every implicitly-selected edge is still an agent call: it spends from the shared
-hop budget (§4.1), passes directional call policy, and passes the conversation
-Off/gated fence. It is also still _implicit_, so it obeys the `!stop` thread mute
-exactly like a human's implicitly-routed message — an explicit agent mention
-clears that mute, an implicit continuation stays silenced by it. Without this
-`!stop` would silence a conversation's humans while its agents kept waking each
-other, and `!stop` is the direct control a human has over a running exchange.
+Every selected edge is still an agent call: it spends from the shared hop budget
+(§4.1), passes directional call policy, and passes the conversation Off/gated
+fence. It is also _implicit_, so it obeys the `!stop` thread mute exactly like a
+human's implicitly-routed message. Agent traffic can no longer LIFT that mute
+either — lifting it was the explicit-mention path, and clearing a stop is properly
+a human act (an `@mention` on the ordinary ladder, or `!resume`). `!stop` is the
+direct control a human has over a running exchange, so agents talking among
+themselves must not be able to reopen it.
 
 **Consequence, stated plainly.** A multi-agent conversation now terminates because
 it hits a limit, not because someone stops addressing anyone. The hop cap and the
@@ -350,18 +356,19 @@ For AgentConnect-authored messages:
    `delivery_state: 'streaming'` and do not enter recipient routing.
 5. Turn finalization marks exactly one response event as
    `delivery_state: 'final'`.
-6. Ingress routes only the final event. It selects targets from the verified
-   logical-response recipient set, not by reparsing only the last physical
-   message, and deduplicates by `response_id` plus target agent.
+6. Ingress routes only the final event, and deduplicates by `response_id` plus
+   target agent. The ordinary ladder may supply a primary, but delivery also goes
+   independently to every existing participant and every agent the body newly
+   mentions. The recipient set selects an exact target only for a paired
+   `toAgent + channel` delivery, whose target the tool named.
 7. If a long response spans several platform messages, only the final response
-   message closes the response. Once the carried recipient set selects a target,
-   the target reconstructs preceding text through the normal thread-history
-   catch-up path.
+   message closes the response. The woken target reconstructs preceding text
+   through the normal thread-history catch-up path.
 
 The recipient set is still a provider metadata claim at ingress. It becomes
 trusted only together with the exact AgentConnect author and app identity, and
-every listed author-to-target edge must independently pass current policy and
-conversation gates.
+every author-to-target edge — however the target was selected — must
+independently pass current policy and conversation gates.
 
 At finalization the platform driver tokenizes mention-address spans before
 choosing physical-message boundaries. A preferred line or paragraph boundary
@@ -388,26 +395,25 @@ final platform event
 |
 |- structural/chrome event -> drop
 |- verified AgentConnect author?
-|    |- target == author -> excluded from every rung
+|    |- target == author -> excluded everywhere
 |    |- source hop invalid or source hop + 1 exceeds cap -> transcript only (hop_limit)
-|    |- names NOBODY (no mention of any kind, or a DM)
-|    |    `- ordinary implicit ladder (thread affinity / dm / keyword / auto /
-|    |       default), author excluded -> claim activation key -> dispatch once
-|    |- names someone -> explicit outcome or none; never the implicit ladder
-|    |    |- unmatched mention (a human, another app, a bare shared bot) -> transcript only
-|    |       (from this section's text, or the claim's complete-response `addressedAnyone`)
-|    |    |- only the author -> transcript only
-|    |    |- author -> target policy denied / conversation Off / not local -> transcript only
-|    |    `- target in verified recipient set -> claim activation key -> dispatch once
+|    |- paired `toAgent + channel` (agentCallDeliveryId) -> the agent the tool named
+|    `- any other reply -> the thread's PARTICIPANTS, author excluded
+|         (agents already in the thread + any the body newly names)
+|         -> claim activation key -> dispatch once per peer
 |- third-party supported bot?
 |    `- exact target mention only -> existing bot-mention behavior
-`- human sender -> existing mention/thread/DM/keyword/auto ladder
+`- human sender -> existing ladder may nominate a primary
+     `- explicit joins + existing participants + channel-auto agents
+          -> dispatch once per peer with a target-specific mention/implicit cause
 ```
 
-For a verified agent author, shared-bot slug resolution runs before channel owner
-or default-agent fallback. A bare shared-bot mention from an agent does not select
-the default agent — it is an unmatched mention, so it takes the "names someone"
-branch and stops, rather than continuing through the implicit ladder.
+Mention resolution still exists to RENDER an address (`listAgents`' `mention` field, a
+channel-root `toAgent` post), to name the paired target, and to JOIN every agent an
+ordinary platform mention matches. A mention never narrows an ordinary reply to one
+recipient: existing participants still receive their independent implicit copies. A
+shared bot's address therefore still needs its agent slug when an agent wants to write
+one; a bare `<@U_SHARED>` joins only the routes that token can actually resolve.
 
 Agent-authored text cannot issue in-conversation control commands such as
 `!stop`, `!resume`, or configuration actions.
@@ -544,18 +550,24 @@ The main implementation surfaces are:
   echoes while retaining structural/chrome filtering.
 - `packages/relay/src/relay-ingress-manager.ts`: replace blanket managed-agent
   suppression with author verification, source-hop transition/cap enforcement,
-  policy checks, and the verified-author routing ladder (named recipients, or the
-  implicit rungs when the response named nobody).
-- `packages/relay/src/bot-arbitration.ts`: add the verified-agent routing branch
-  and shared-bot slug precedence.
+  per-edge policy checks, and cross-daemon participant fan-out — with the paired
+  `toAgent + channel` delivery kept on its exact, tool-named target.
+- `packages/relay/src/bot-arbitration.ts`: track the participant set beside legacy
+  single-owner affinity, exclude the author from every rung, and resolve explicit
+  joins and implicit participant copies independently.
+- `packages/control-plane/src/persistence/repositories/thread-affinity.repo.ts`:
+  persist the participant set separately from the compatibility owner, broadcast
+  joins to every relay, and return the full set on a relay affinity miss.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
   suppression with verified routing, trusted hop propagation, durable activation
   rendezvous records, and headless `replyToSession` dispatch.
 - `packages/daemon/src/state-store.ts`: persist activation rendezvous state and
   make admission/retry transitions atomic with the durable inbox fence.
 - `packages/daemon/src/router/routing-table.ts`: admit verified agent traffic to
-  the implicit rungs with the author excluded, while unverified bot traffic still
-  stops at the explicit-mention rung.
+  the implicit rungs with the author excluded (unverified bot traffic still stops
+  at the explicit-mention rung), and expose `mentionedAgents` / `participantAgents` /
+  `automaticAgents` — the whole named set, the thread's existing members, and the
+  channel-wide participants — for conversation-wide delivery.
 - `packages/protocol`: carry authorship, logical recipient, paired-delivery,
   source/delivery hop, delivery-state, headless, capability, and mention-address
   metadata.
@@ -578,18 +590,18 @@ At minimum, cover:
    preserves parent lineage and reply behavior.
 5. `toUser` without `channel` is a single-user DM; an array is rejected.
 6. `toUser + channel` posts at root and mentions all listed humans.
-7. A normal current-thread agent reply mentioning another agent activates only
-   that agent.
-8. Agent-authored unmentioned auto-channel, DM, and thread-affinity traffic
-   continues the conversation through the implicit rungs, never selecting the
-   author; agent-authored command traffic still activates nobody.
-9. Self mentions and policy-denied mentions do not activate, and neither falls
-   through to the implicit rungs — having named someone, they get an explicit
-   outcome or none. An implicitly selected continuation obeys a `!stop` mute on
-   both the direct and relay paths; an explicit agent mention clears it, as a
-   human's does.
-10. Shared-bot slug addressing selects the named agent and never falls back to
-    the default for an agent author.
+7. A normal current-thread agent reply reaches every OTHER participant of the
+   thread, whether or not it mentions anyone; a mention adds whoever it names, and
+   names all of them rather than the first matching rule.
+8. Agent-authored auto-channel, DM, and thread-affinity traffic continues the
+   conversation through the implicit rungs, never selecting the author;
+   agent-authored command traffic still activates nobody.
+9. The author is never the target on any connection, and a body naming the author,
+   a human, or an unresolvable peer does not change delivery. An agent-authored
+   delivery obeys a `!stop` mute on both the direct and relay paths and can never
+   lift one — clearing a stop stays a human act.
+10. A paired `toAgent + channel` delivery reaches the exact agent the tool named,
+    on both ladders, so its rendezvous halves converge.
 11. Streaming agent messages do not activate; when a mention is in physical
     section one and finalization is in section two or later, the final response
     still selects that target once with complete thread context.

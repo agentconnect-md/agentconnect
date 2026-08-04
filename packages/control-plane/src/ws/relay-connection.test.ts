@@ -91,6 +91,8 @@ function build(
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
+    onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
+    onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
   } = {}
 ) {
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: 'unit-test-pepper-0123456789abcdefghij' })
@@ -113,6 +115,8 @@ function build(
   const onRunReport = vi.fn(async () => {})
   const onBotChannels = vi.fn(async () => {})
   const onBotRevoked = vi.fn(async () => {})
+  const onThreadAssign = over.onThreadAssign ?? vi.fn(async () => {})
+  const onThreadParticipant = over.onThreadParticipant ?? vi.fn(async () => {})
   const relayReg = new RelayRegistry()
 
   const transport = new FakeServerTransport()
@@ -129,8 +133,9 @@ function build(
     onSetChannelAgent: vi.fn(async () => {}),
     onBotChannels,
     onBotRevoked,
-    onThreadAssign: vi.fn(async () => {}),
-    threadLookup: vi.fn(async (m) => ({ ...m, target: null })),
+    onThreadAssign,
+    onThreadParticipant,
+    threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
     onGithubInstallation: vi.fn(async () => {}),
     relayReg,
     verifyWebchatToken,
@@ -147,6 +152,8 @@ function build(
     onRunReport,
     onBotChannels,
     onBotRevoked,
+    onThreadAssign,
+    onThreadParticipant,
     authorizeGithubComment,
     authorizeGithubRerequest,
     relayReg
@@ -473,7 +480,8 @@ describe('RelayConnection FSM', () => {
       onSetChannelAgent: vi.fn(async () => {}),
       onBotChannels: vi.fn(async () => {}),
       onThreadAssign: vi.fn(async () => {}),
-      threadLookup: vi.fn(async (m) => ({ ...m, target: null })),
+      onThreadParticipant: vi.fn(async () => {}),
+      threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
       onGithubInstallation: vi.fn(async () => {}),
       relayReg,
       verifyWebchatToken,
@@ -524,6 +532,24 @@ describe('RelayConnection FSM', () => {
     await Promise.resolve()
 
     expect(onBotChannels).toHaveBeenCalledWith(snapshot)
+  })
+
+  it('keeps owner affinity and participant membership on separate handlers', async () => {
+    const { transport, onThreadAssign, onThreadParticipant } = build()
+    await toReady(transport)
+    const target = {
+      botId: '22222222-2222-4222-8222-222222222222',
+      sessionKey: 'C1/ts',
+      agentId: '33333333-3333-4333-8333-333333333333',
+      daemonId: '44444444-4444-4444-8444-444444444444'
+    }
+
+    transport.feed('rc/thread-assign', target)
+    transport.feed('rc/thread-participant', target)
+    await Promise.resolve()
+
+    expect(onThreadAssign).toHaveBeenCalledWith(target)
+    expect(onThreadParticipant).toHaveBeenCalledWith(target)
   })
 
   it('rc/bot-revoked in READY reaches the revocation handler', async () => {

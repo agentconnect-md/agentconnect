@@ -1380,6 +1380,14 @@ export function buildContainer(
         http.log.error({ err, botId: m.botId }, 'relay: thread-assign failed')
       }
     },
+    // Durable room membership is independent of compatibility owner affinity.
+    onThreadParticipant: async (m) => {
+      try {
+        await httpBot.recordThreadParticipant(m)
+      } catch (err) {
+        http.log.error({ err, botId: m.botId }, 'relay: thread-participant failed')
+      }
+    },
     // Pull-on-miss BACKSTOP leg — may throw → the handler answers a retryable error.
     threadLookup: (m) => httpBot.lookupThread(m),
     // Installation doorbell poke — fire-and-forget into the throttled re-pull

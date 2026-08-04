@@ -113,6 +113,20 @@ export const NormalizedPlatformMessageSchema = z.object({
   }),
   text: z.string(),
   mentionedBots: z.array(z.string()),
+  /** An EXTRA dedup dimension for two arrivals that describe the SAME platform message.
+   *
+   * A streamed agent reply is posted once and then closed by an edit, and both events
+   * carry the same Slack `ts` — but only the closing edit is routable, and it is the one
+   * that carries the recipient set. Ingress dedups on `msgId`, so without a second
+   * dimension the closing edit is dropped as a duplicate of the post.
+   *
+   * It lives here rather than being folded into `msgId` because `msgId` also CARRIES the
+   * platform ts: consumers recover it by splitting the id, and the transcript uses that ts
+   * as both its dedup key and its ordering key. Encoding an arrival distinction there
+   * corrupts both — which is exactly what a `:final` msgId suffix did.
+   *
+   * Absent ⇒ the ordinary single arrival. */
+  ingressEventTag: z.string().min(1).max(32).optional(),
   attachments: z.array(PlatformAttachmentSchema).optional(),
   isDm: z.boolean(),
   /** Slack `mpim`: classification only; a group DM remains mention-gated. */

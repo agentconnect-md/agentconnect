@@ -23,6 +23,7 @@ import type {
   RcBotRevoked,
   WireNormalizedMessage,
   RcThreadAssign,
+  RcThreadParticipant,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
@@ -104,6 +105,8 @@ export interface RelayIngressManagerDeps {
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link RelayIngressManager.flushPendingReports}). */
   reportThreadAssign: (m: RcThreadAssign) => boolean
+  /** Persist one joined participant without changing the compatibility owner. */
+  reportThreadParticipant: (m: RcThreadParticipant) => boolean
   /** Pull a thread's persisted owner from the CP on an affinity miss (→ `rc/thread-lookup`). */
   lookupThread: (m: RcThreadLookup) => Promise<import('@agentconnect.md/protocol').RcThreadLookupOk>
   /** This pod's CP-assigned relayId (stable pool identity; undefined before the
@@ -234,6 +237,7 @@ export class RelayIngressManager {
    *  {@link flushPendingReports}; without this a report lost during a CP blip would
    *  never persist and un-mentioned follow-ups on other pods would drop permanently. */
   private readonly pendingReports = new Map<string, RcThreadAssign>()
+  private readonly pendingParticipantReports = new Map<string, RcThreadParticipant>()
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
@@ -269,6 +273,41 @@ export class RelayIngressManager {
       if (this.pendingReports.size >= MAX_PENDING_REPORTS) this.pendingReports.clear()
       this.pendingReports.set(key, m)
     }
+  }
+
+  private reportParticipant(botId: string, sessionKey: string, target: RouteTarget): void {
+    const report: RcThreadParticipant = {
+      botId,
+      sessionKey,
+      agentId: target.agentId,
+      daemonId: target.daemonId
+    }
+    const key = `${botId}\u0000${sessionKey}\u0000${target.agentId}`
+    if (this.deps.reportThreadParticipant(report)) this.pendingParticipantReports.delete(key)
+    else {
+      if (this.pendingParticipantReports.size >= MAX_PENDING_REPORTS) this.pendingParticipantReports.clear()
+      this.pendingParticipantReports.set(key, report)
+    }
+  }
+
+  private reportHumanParticipant(
+    botId: string,
+    sessionKey: string,
+    channel: string,
+    primary: RouteTarget | null,
+    target: RouteTarget
+  ): void {
+    // A non-auto primary is persisted by the legacy owner report, whose CP handler
+    // also records it as a participant. Auto channels deliberately skip owner
+    // affinity, so their participant membership still needs its own durable report.
+    if (
+      primary?.agentId === target.agentId &&
+      primary.daemonId === target.daemonId &&
+      !this.router.channelAutoOwned(botId, channel)
+    ) {
+      return
+    }
+    this.reportParticipant(botId, sessionKey, target)
   }
 
   private reportChannels(m: RcBotChannels): void {
@@ -340,6 +379,10 @@ export class RelayIngressManager {
     for (const [key, m] of [...this.pendingReports]) {
       if (!this.deps.reportThreadAssign(m)) break
       this.pendingReports.delete(key)
+    }
+    for (const [key, m] of [...this.pendingParticipantReports]) {
+      if (!this.deps.reportThreadParticipant(m)) break
+      this.pendingParticipantReports.delete(key)
     }
     for (const [botId, snapshot] of [...this.pendingChannelReports]) {
       if (!this.deps.reportBotChannels(snapshot)) break
@@ -433,6 +476,11 @@ export class RelayIngressManager {
   /** `rc/assign` — durable thread affinity seed. */
   setAffinity(botId: string, sessionKey: string, tgt: RouteTarget): void {
     this.router.setAffinity(botId, sessionKey, tgt)
+  }
+
+  /** `rc/participant-assign` — durable conversation-member seed. */
+  setParticipant(botId: string, sessionKey: string, tgt: RouteTarget): void {
+    this.router.setParticipant(botId, sessionKey, tgt)
   }
 
   /**
@@ -563,16 +611,12 @@ export class RelayIngressManager {
    * The §6 ladder for an AgentConnect-authored platform message, on the relay side
    * (send-message-routing-rework.md §4, §4.1 step 4, §6, §8.2).
    *
-   * It is a separate ladder rather than a rung of `forward`'s because the checks differ,
-   * not because the rungs do: §2.3 gives a response that names nobody the SAME arbitration
-   * a human message gets, with the author excluded. What stays exclusive to the verified
-   * recipient set is a response that DID name someone — that one activates the named
-   * agents or nobody, never a substitute.
-   *
-   * "Named someone" is wider than the resolved agent set. A bare shared-bot mention, a
-   * human, or another app all resolve to no agent yet are still deliberate addressing, so
-   * they stop here rather than continuing — the same place the direct ladder stops
-   * (`routeRules`: an unmatched mention in a channel routes to nobody).
+   * It is separate from `forward` because every author→target edge carries additional
+   * security and loop-control state: verified authorship, directional policy, one hop,
+   * and a durable activation claim. Ordinary arbitration may nominate a primary, but it
+   * does not bound delivery: existing participants and newly joined mention matches are
+   * forwarded independently, including when they live on different daemons. The paired
+   * `toAgent + channel` observation remains the only exact-target exception.
    *
    * Anything not routable is dropped rather than forwarded. The relay holds no transcript
    * — "transcript only" is a daemon-side state — and §5.7 already has the target
@@ -606,46 +650,48 @@ export class RelayIngressManager {
     if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    // §2.3: an agent message that names nobody still continues the conversation — it goes
-    // through the SAME arbitration a human message does, with the author excluded so it
-    // cannot wake itself. `arbitrate` normally stops bot traffic at the explicit-mention
-    // rung; a VERIFIED author is a known participant with a checked policy, not anonymous
-    // bot traffic, so it is allowed past.
+    // The recipient set the author resolved is NOT consulted for delivery: a verified
+    // agent message goes to whoever this bot's ordinary arbitration selects, the author
+    // excluded. `arbitrate` normally stops bot traffic at the explicit-mention rung; a
+    // VERIFIED author is a known participant with a checked policy, not anonymous bot
+    // traffic, so it is allowed past.
     //
-    // "Names nobody" is judged BEFORE the author is filtered out. A response that did name
-    // an agent has explicitly addressed the conversation, so it gets an explicit outcome
-    // or none: retargeting it because the named agent is unreachable would substitute a
-    // recipient the author never asked for, and filtering first would make a self-mention
-    // — the one name every response can produce — indistinguishable from naming nobody.
-    const named = claim.mentionedAgentIds.length > 0
-    let targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
-    let routeVia: 'mention' | 'implicit' = 'mention'
-    if (!named) {
-      // Naming a HUMAN (or another app, or a bare shared bot) is still deliberate
-      // addressing even though it resolves to no agent — `mentionedBots` holds every
-      // `<@U…>` token, not only bots. The direct ladder stops there (`routeRules`:
-      // unmatched mention in a channel ⇒ no route), for human senders too, so stopping
-      // here is what keeps one message from waking a peer over the relay and nobody over
-      // a direct connection. A DM is already addressed to its recipient, so it is exempt
-      // on both sides.
-      // `mentionedBots` is reparsed from the FINAL section's text, so it misses a mention
-      // the splitter left in an earlier one; the author's claim covers the complete
-      // response and is the only place that fact survives. Either is enough — an address
-      // is an address wherever in the answer it appeared.
-      if (!msg.isDm && (msg.mentionedBots.length > 0 || claim.addressedAnyone === true)) {
-        return drop('addressed someone this relay cannot resolve')
-      }
-      const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
-      if (!implicit) return drop('no implicit rung matched')
-      targets = [implicit.agentId]
-      routeVia = 'implicit'
+    // Selecting by mention made delivery depend on resolving a `<@U…>` through the
+    // collaboration directory, so an unresolvable token silenced the conversation rather
+    // than merely costing precision. Peers are meant to see what was said and judge for
+    // themselves; every edge below is still checked against this relay's own snapshot.
+    //
+    // ONE exception, and it is not an address: the visible half of a paired
+    // `toAgent + channel` send. Its target came from the tool call as an agent id, never
+    // from parsing text, and the rendezvous only converges when this observation and the
+    // internal wake name the SAME target — arbitration could pick the channel's default
+    // or thread owner instead, recording the observation against an agent the wake never
+    // mentions and stranding both halves. The daemon path special-cases it identically.
+    const paired = claim.agentCallDeliveryId !== undefined
+    let deliveries: Array<{ targetAgentId: string; routeVia: 'mention' | 'implicit' }>
+    if (paired) {
+      const targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
+      if (targets.length === 0) return drop('paired agent call named no other agent')
+      deliveries = targets.map((targetAgentId) => ({ targetAgentId, routeVia: 'mention' }))
+    } else {
+      const primary = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
+      deliveries = this.router
+        .conversationTargets(
+          botId,
+          msg,
+          primary,
+          claim.authorAgentId,
+          claim.mentionedAgentIds,
+          (target) => this.reportParticipant(botId, sessionKeyOf(msg), target),
+          (target) => this.deps.admitsAgentCall(claim.authorAgentId, target.agentId)
+        )
+        .map(({ target, via }) => ({ targetAgentId: target.agentId, routeVia: via }))
+      if (deliveries.length === 0) return drop('no participant admitted for this bot')
     }
-    if (targets.length === 0) return drop('named only its own author')
 
-    for (const targetAgentId of targets) {
-      // Every listed author→target edge is checked independently and against the RELAY's
-      // own snapshot — the recipient set is a provider claim until each edge passes
-      // current policy and the conversation gate (§5, closing paragraph).
+    for (const { targetAgentId, routeVia } of deliveries) {
+      // Every author→target edge is checked independently and against the RELAY's own
+      // snapshot, regardless of whether arbitration, participation, or a join found it.
       const route = this.router.agentTarget(botId, targetAgentId, msg.channel)
       if (!route) {
         drop(`target ${targetAgentId} is not a member of this bot`)
@@ -736,6 +782,15 @@ export class RelayIngressManager {
     if (addressesBot && !msg.sender.isBot) await this.reportObservedConversation(botId, msg)
     const prior = this.router.peekAffinity(botId, sessionKey)
     let tgt = this.router.route(botId, msg)
+    // Third-party bots retain their strict explicit-mention-only behavior. Participant
+    // fan-out is for humans and verified AgentConnect authors; treating an arbitrary bot
+    // like a person in the room would let one mention wake unrelated joined agents.
+    let conversationTargets =
+      msg.sender.isBot && tgt
+        ? [{ target: tgt, via: 'mention' as const }]
+        : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
+            this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
+          )
     if (tgt) {
       // Report leg: first route of this thread, or the arbitrated owner changed —
       // EXCEPT for an `auto`-owned channel, where every message (incl. follow-ups)
@@ -745,7 +800,8 @@ export class RelayIngressManager {
       if (changed && !this.router.channelAutoOwned(botId, msg.channel)) {
         this.report({ botId, sessionKey, agentId: tgt.agentId, daemonId: tgt.daemonId })
       }
-    } else {
+    }
+    if (!tgt && conversationTargets.length === 0) {
       // Conversation gating (resource-visibility §14.3): an explicitly-addressed
       // message (DM, or @bot mention) that arbitration could not place, on a bot
       // that backs ≥1 gated agent, must not look silently dead — answer once per
@@ -780,47 +836,88 @@ export class RelayIngressManager {
       // Backstop leg: only a real un-mentioned threaded follow-up is worth a CP lookup.
       if (!tgt) {
         if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return
-        let target: { agentId: string; daemonId: string } | null
+        let lookup: Awaited<ReturnType<RelayIngressManagerDeps['lookupThread']>>
         try {
-          target = (await this.deps.lookupThread({ botId, sessionKey })).target
+          lookup = await this.deps.lookupThread({ botId, sessionKey })
         } catch {
           return // CP down — drop (bounded loss); a mention re-anchors the thread.
         }
-        if (!target) {
+        for (const participant of lookup.participants) {
+          const current = this.router.agentTarget(botId, participant.agentId, msg.channel)
+          if (current && current.daemonId === participant.daemonId) {
+            this.router.setParticipant(botId, sessionKey, current)
+          }
+        }
+        if (!lookup.target && lookup.participants.length === 0) {
           this.router.rememberNoAffinity(botId, sessionKey)
           return
         }
         // Seeded from the CP — do NOT report it back (it came from the CP).
-        if (!this.router.seedLookupTarget(botId, sessionKey, target)) return
-        tgt = this.router.route(botId, msg)
-        if (!tgt) return
+        if (lookup.target) {
+          if (!this.router.seedLookupTarget(botId, sessionKey, lookup.target)) return
+          tgt = this.router.route(botId, msg)
+        }
+        conversationTargets = msg.sender.isBot
+          ? tgt
+            ? [{ target: tgt, via: 'mention' }]
+            : []
+          : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
+              this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
+            )
+        if (!tgt && conversationTargets.length === 0) return
       }
     }
-    const daemon = this.deps.getDaemon(tgt.daemonId)
-    if (!daemon) {
-      const n = (this.dropped.get(botId) ?? 0) + 1
-      this.dropped.set(botId, n)
-      this.deps.log.warn(`relay-ingress(${botId}): daemon ${tgt.daemonId} offline — dropped (total ${n})`)
-      return
+    // A single-owner route is only the compatibility/reporting primary. Delivery is to
+    // every participant, including joined agents on other daemons. Each copy carries its
+    // own trusted cause so a human mention clears only the named target's `!stop`; peers
+    // hearing the same body remain implicit even though it contains that mention token.
+    if (conversationTargets.length === 0 && tgt) {
+      conversationTargets = msg.sender.isBot
+        ? [{ target: tgt, via: 'mention' }]
+        : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
+            this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
+          )
+      // Receive-only Feishu may intentionally hand an explicitly addressed Off event to
+      // its sole gated daemon even though that target has no servable route. The daemon
+      // records discovery and posts the notice; its terminal gate still prevents a turn.
+      if (conversationTargets.length === 0) conversationTargets = [{ target: tgt, via: 'mention' }]
     }
-    const rd: RdMsgIm = {
-      source: 'im',
-      agentId: tgt.agentId,
-      sessionKey: sessionKeyOf(msg),
-      msgId: msg.msgId,
-      botId,
-      integrationId: tgt.integrationId,
-      chatId: msg.channel,
-      payload: msg
-    }
-    try {
-      await daemon.sendMsg(rd)
-    } catch (err) {
-      const n = (this.dropped.get(botId) ?? 0) + 1
-      this.dropped.set(botId, n)
-      this.deps.log.warn(
-        `relay-ingress(${botId}): forward to ${tgt.daemonId} failed: ${(err as Error).message} (dropped ${n})`
-      )
+    for (const { target: participant, via } of conversationTargets) {
+      const daemon = this.deps.getDaemon(participant.daemonId)
+      if (!daemon) {
+        const n = (this.dropped.get(botId) ?? 0) + 1
+        this.dropped.set(botId, n)
+        this.deps.log.warn(`relay-ingress(${botId}): daemon ${participant.daemonId} offline — dropped (total ${n})`)
+        continue
+      }
+      if (
+        via === 'implicit' &&
+        (conversationTargets.length > 1 || namesThisBot) &&
+        !daemon.supports(RD_AGENT_IMPLICIT_ROUTING_V1)
+      ) {
+        this.deps.log.debug(`relay-ingress(${botId}): daemon ${participant.daemonId} predates per-target routing cause`)
+        continue
+      }
+      const rd: RdMsgIm = {
+        source: 'im',
+        agentId: participant.agentId,
+        sessionKey: sessionKeyOf(msg),
+        msgId: conversationTargets.length > 1 ? `${msg.msgId}#${participant.agentId}` : msg.msgId,
+        botId,
+        integrationId: participant.integrationId,
+        chatId: msg.channel,
+        payload: msg,
+        trustedRouteVia: via
+      }
+      try {
+        await daemon.sendMsg(rd)
+      } catch (err) {
+        const n = (this.dropped.get(botId) ?? 0) + 1
+        this.dropped.set(botId, n)
+        this.deps.log.warn(
+          `relay-ingress(${botId}): forward to ${participant.daemonId} failed: ${(err as Error).message} (dropped ${n})`
+        )
+      }
     }
   }
 

@@ -62,12 +62,12 @@ export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
 
 /**
  * `agent-implicit-routing-v1`: this daemon understands {@link RdMsgIm.trustedRouteVia}
- * and applies its `!stop` thread mute to an implicitly-selected agent continuation.
+ * and applies its `!stop` thread mute to an implicitly-selected per-target delivery.
  *
  * Without it the relay must NOT forward such a continuation at all: an older daemon
- * ignores the field and treats every agent-authored delivery as an explicit mention,
- * which would clear the mute — so during a mixed-version rollout the one control a human
- * has over a runaway agent exchange would silently stop working. Refusing to forward
+ * ignores the field and can treat an implicit peer copy as an explicit mention, which
+ * would clear the mute — so during a mixed-version rollout the one control a human has
+ * over a runaway agent exchange would silently stop working. Refusing to forward
  * degrades to the pre-change behavior (the agent conversation simply does not continue
  * through that daemon), which is the fail-closed direction.
  */
@@ -222,11 +222,10 @@ export const RdMsgIm = z.object({
   // authorship could not be proven exactly (a shared bot with no exact claim fails
   // closed and is never promoted to call-policy identity, §4).
   trustedFromAgentId: z.string().uuid().optional(),
-  // The verified logical response this physical message belongs to, and the recipient
-  // set resolved from that COMPLETE response. The target selects from this set rather
-  // than reparsing the last physical message, and deduplicates on
-  // (trustedResponseId, target agent) — so a mention in section one still activates
-  // exactly once when finalization lands in section two (§5).
+  // The verified logical response this physical message belongs to, and the target(s)
+  // the relay minted for this pre-addressed edge. The target never trusts provider
+  // metadata to substitute a different agent; ordinary participant selection already
+  // happened at the relay, while paired delivery keeps its exact tool-named target.
   trustedResponseId: z.string().min(1).optional(),
   trustedRecipientAgentIds: z.array(z.string().uuid()).max(64).optional(),
   // Correlates the visible half of a paired `toAgent + channel` send with the internal
@@ -239,11 +238,10 @@ export const RdMsgIm = z.object({
   // its range and installs it as trusted active-turn call metadata WITHOUT incrementing
   // it a second time — double-counting here would halve the effective hop budget.
   trustedDeliveryHopCount: z.number().int().nonnegative().optional(),
-  // WHICH rung selected this target, because the two are not interchangeable at the
-  // target's `!stop` gate: an explicit mention clears a mute ("stop reacting to this
-  // conversation implicitly" was never "ignore anyone who names me"), while an implicit
-  // continuation must stay silenced like any other implicit rung. Absent ⇒ 'mention':
-  // a relay old enough to omit it only ever routed explicit mentions.
+  // WHICH cause applies to THIS target, because one body can explicitly join one agent
+  // while existing peers receive implicit copies. The causes are not interchangeable at
+  // `!stop`: a human mention clears the named target's mute, while implicit participants
+  // stay silenced. Absent ⇒ 'mention' for compatibility with older relay frames.
   trustedRouteVia: z.enum(['mention', 'implicit']).optional()
 })
 export type RdMsgIm = z.infer<typeof RdMsgIm>

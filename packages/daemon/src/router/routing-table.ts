@@ -72,6 +72,52 @@ const pickRule = (r: RoutingRule, via: RouteVia) => ({ agentId: r.agentId, integ
  * wake itself. Set only after the caller has VERIFIED authorship — an unverified bot,
  * including a third-party one, still stops at the explicit-mention rung below.
  */
+/**
+ * Every agent this connection serves that the message's mentions actually NAME.
+ *
+ * `routeRules` returns one primary target because its callers need one; this returns the
+ * whole named set, because a mention is a JOIN and a body can name several agents. Using
+ * it removes the only place mention handling depended on which rule `find` saw first —
+ * the shape that made a shared bot resolve the same event differently.
+ */
+export function mentionedAgents(msg: NormalizedMessage, rules: RoutingRule[], exclude?: string): string[] {
+  if (msg.mentionedBots.length === 0) return []
+  const named = new Set<string>()
+  for (const r of rules) {
+    if (r.match.kind !== 'mention' || !scopeMatches(r, msg)) continue
+    if (r.botUserId === '' || !msg.mentionedBots.includes(r.botUserId)) continue
+    if (r.agentId !== exclude) named.add(r.agentId)
+  }
+  return [...named]
+}
+
+/** Agents this connection serves that are ALREADY in the thread, minus `exclude`. Scope
+ *  (including the Off fence) is applied here so a participant in a silenced channel is
+ *  not revived by conversation it can no longer take part in. */
+export function participantAgents(
+  msg: NormalizedMessage,
+  rules: RoutingRule[],
+  participants: readonly string[],
+  exclude?: string
+): string[] {
+  if (participants.length === 0) return []
+  const servable = new Set(rules.filter((r) => scopeMatches(r, msg)).map((r) => r.agentId))
+  return participants.filter((id) => id !== exclude && servable.has(id))
+}
+
+/** Agents whose `auto` rule makes them participants in every conversation covered by
+ * that rule. Unlike `routeRules`, this returns the whole set: channel-wide participation
+ * is not an arbitration tie that should collapse to whichever rule happens to be first. */
+export function automaticAgents(msg: NormalizedMessage, rules: RoutingRule[], exclude?: string): string[] {
+  return [
+    ...new Set(
+      rules
+        .filter((r) => r.match.kind === 'auto' && scopeMatches(r, msg) && r.agentId !== exclude)
+        .map((r) => r.agentId)
+    )
+  ]
+}
+
 export function routeRules(
   msg: NormalizedMessage,
   rules: RoutingRule[],
@@ -99,7 +145,15 @@ export function routeRules(
   // A third-party Slack bot may explicitly address an agent. Bot-authored traffic
   // never falls through to DM/thread/keyword/auto; AgentConnect-managed bot apps are
   // removed by the daemon before this pure routing boundary.
-  if (mention && (!msg.sender.isBot || msg.platform === 'slack')) return pickRule(mention, 'mention')
+  //
+  // A mention JOINS an agent to this thread — it does not pick between agents. The
+  // difference matters on a bot serving several agent routes: `mentionedAgents` below
+  // returns every rule the body actually named, so nothing depends on which one `find`
+  // happened to see first, and everyone already in the thread receives the message
+  // regardless (`threadParticipants`).
+  if (mention && verifiedAgentAuthor === undefined && (!msg.sender.isBot || msg.platform === 'slack')) {
+    return pickRule(mention, 'mention')
+  }
   // A VERIFIED AgentConnect author continues into the implicit rungs; every other bot
   // still stops here. That difference is the whole of §2.3: we know exactly which agent
   // wrote this and have already checked its policy, so it is treated as a participant
@@ -111,10 +165,13 @@ export function routeRules(
   // A one-to-one DM is already addressed to this bot, though, so mentioning the bot (or
   // another participant) must not suppress its dm rule. Group DMs are channel-like and
   // normalize with isDm=false, so they remain mention-gated here.
-  // …but an agent message that names SOMEONE (a human, another app) is deliberate
-  // addressing, and letting thread affinity claim it would route it to whoever happens
-  // to own the thread instead of to nobody. Verified agents follow the same rule.
-  if (!msg.isDm && msg.mentionedBots.length > 0) return null
+  //
+  // A VERIFIED agent author is exempt: its peers are meant to see what it said and judge
+  // for themselves whether to answer, so a `<@…>` aimed at anyone — a human, another app,
+  // a peer whose token this directory cannot resolve — must not silence the conversation.
+  // Unverified traffic keeps the old rule, because for it an unresolved mention really is
+  // "addressed to someone else".
+  if (!msg.isDm && msg.mentionedBots.length > 0 && verifiedAgentAuthor === undefined) return null
 
   // 2. thread affinity (§8.2 step 2 — highest after explicit @; bypasses kind filter).
   if (msg.thread) {

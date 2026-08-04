@@ -349,7 +349,7 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
             ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
             return
           }
-          ctx.reply('nothing to do')
+          // Silence ends the exchange: no post, no echo, nothing to route (§2.3).
         },
         agent2: (ctx) => {
           if (/please review/.test(ctx.text)) {
@@ -369,12 +369,15 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     expect(fixture.activations('agent2')).toBe(1)
     expect(fixture.turnInputs('agent2')[0]).toContain('please review the rollout')
     const admissions = await fixture.echoAdmissions()
-    const streaming = admissions.filter((record) => !record.messageId.endsWith(':final'))
-    const finalized = admissions.filter((record) => record.messageId.endsWith(':final'))
+    const streaming = admissions.filter((record) => record.ingressEventTag === undefined)
+    const finalized = admissions.filter((record) => record.ingressEventTag !== undefined)
     expect(streaming.every((record) => record.admission.admitted === false)).toBe(true)
     expect(finalized.some((record) => record.admission.admitted === true)).toBe(true)
-    // agent2's own unmentioning reply wakes nobody further.
-    expect(fixture.activations('agent1')).toBe(1)
+    // agent2's unmentioning reply names nobody, so it continues the conversation
+    // through the implicit ladder (§2.3, #549) — waking the thread peer exactly
+    // once. agent1's silent turn then ends the exchange.
+    expect(fixture.activations('agent1')).toBe(2)
+    expect(fixture.turnInputs('agent1')[1]).toContain('reviewing now')
   }, 120_000)
 
   it('negative invariants that hold in BOTH architectures: unmentioned agent posts and self-mentions activate no one', async () => {

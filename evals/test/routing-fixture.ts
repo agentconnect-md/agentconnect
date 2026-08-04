@@ -19,6 +19,7 @@
  * (evaluation events), delivered/attempted world outbound effects, and thread
  * coordinates — not mechanism internals.
  */
+import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '../../packages/message/src/index.js'
 import type {
   DeliveryAdmission,
   DeliveryHandle,
@@ -65,6 +66,8 @@ export class RoutingFixture {
   private readonly echoHandles: DeliveryHandle[] = []
   private readonly echoAdmissionRecords: {
     messageId: string
+    /** Set on the response-closing arrival; absent on the post it edits. */
+    ingressEventTag?: string
     integrationId: string
     admission: Promise<DeliveryAdmission>
   }[] = []
@@ -170,20 +173,21 @@ export class RoutingFixture {
     const botUserId = this.world.botUserIdFor(effect.integrationId)
     if (botUserId === undefined || effect.messageId === undefined) return
     const appId = this.world.botAppIdFor(effect.integrationId)
-    // Slack normalizes a top-level message with thread = its own ts; the
-    // finalized message_changed edit keeps the ORIGINAL post's coordinates but
-    // carries a distinct `<ts>:final` msgId so per-connection dedup admits it
-    // (packages/message SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX).
+    // Slack normalizes a top-level message with thread = its own ts; the finalized
+    // `message_changed` edit keeps the ORIGINAL post's coordinates — msgId included,
+    // because that id also carries the platform ts — and is told apart from the post it
+    // edits by `ingressEventTag`, which is the extra per-connection dedup dimension
+    // (packages/message SLACK_RESPONSE_FINAL_EVENT_TAG).
     let thread: string
-    let echoMessageId: string
+    let ingressEventTag: string | undefined
     if (effect.kind === 'reply') {
       thread = effect.thread ?? effect.messageId
       this.threadByMessageId.set(effect.messageId, thread)
-      echoMessageId = effect.messageId
     } else {
       thread = this.threadByMessageId.get(effect.messageId) ?? effect.thread ?? effect.messageId
-      echoMessageId = `${effect.messageId}:final`
+      ingressEventTag = SLACK_RESPONSE_FINAL_EVENT_TAG
     }
+    const echoMessageId = effect.messageId
     const mentions = [...effect.text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!)
     // The authorship CLAIM travels exactly as the platform normalizer would
     // surface it: streaming on ordinary posts (unroutable), final only on the
@@ -210,6 +214,7 @@ export class RoutingFixture {
           channel: this.room.channel,
           thread,
           messageId: echoMessageId,
+          ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
           text: effect.text,
           sender: { id: botUserId, isBot: true, ...(appId !== undefined ? { appId } : {}) },
           ...(mentions.length > 0 ? { mentions } : {}),
@@ -217,15 +222,23 @@ export class RoutingFixture {
         }
       })
       this.echoHandles.push(handle)
-      this.echoAdmissionRecords.push({ messageId: echoMessageId, integrationId, admission: handle.admission })
+      this.echoAdmissionRecords.push({
+        messageId: echoMessageId,
+        ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
+        integrationId,
+        admission: handle.admission
+      })
     }
   }
 
   /** Admission outcome of every platform echo injected so far, in order. */
-  async echoAdmissions(): Promise<{ messageId: string; integrationId: string; admission: DeliveryAdmission }[]> {
+  async echoAdmissions(): Promise<
+    { messageId: string; ingressEventTag?: string; integrationId: string; admission: DeliveryAdmission }[]
+  > {
     return Promise.all(
       this.echoAdmissionRecords.map(async (record) => ({
         messageId: record.messageId,
+        ...(record.ingressEventTag !== undefined ? { ingressEventTag: record.ingressEventTag } : {}),
         integrationId: record.integrationId,
         admission: await record.admission
       }))

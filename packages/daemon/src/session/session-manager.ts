@@ -1,6 +1,7 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
+import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
@@ -323,6 +324,21 @@ export class SessionManager {
   private readonly turnsSinceReminder = new Map<string, number>()
   private readonly lastContextUsed = new Map<string, number>()
 
+  /**
+   * Every agent that is ALREADY part of this thread — open sessions first, then ones
+   * TTL-closed after idle (a dormant participant is still a participant).
+   *
+   * A mention is what JOINS an agent to a thread; this is what keeps it there. Unlike
+   * {@link threadOwner} it does not collapse to null when several agents share the
+   * thread — that collapse exists to disambiguate a SINGLE target, and a conversation
+   * does not have one: everyone in it sees what is said.
+   */
+  threadParticipants(channel: string, thread: string, transportScope?: string | null): string[] {
+    const open = this.deps.store.openSessionAgents(channel, thread, transportScope)
+    const dormant = this.deps.store.closedSessionAgents(channel, thread, transportScope)
+    return [...new Set([...open, ...dormant])]
+  }
+
   threadOwner(channel: string, thread: string, transportScope?: string | null): string | null {
     const owners = this.deps.store.openSessionAgents(channel, thread, transportScope)
     // 2+ live owners actively share the thread → ambiguous, fall through to
@@ -467,6 +483,9 @@ export class SessionManager {
       // This message was delivered TO this agent (handle() runs for `agentId`), so tag the
       // recipient — the console session view scopes to what THIS agent received + produced.
       recipient: agentId,
+      // A response finalization is the same Slack message as the post that opened it, so
+      // it lands on that row and refreshes it to the completed text.
+      ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: transcriptText,
       ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})

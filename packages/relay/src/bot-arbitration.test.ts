@@ -111,6 +111,29 @@ describe('HTTP-bot arbitration (§10)', () => {
     expect(arbitrate(assignment(), msg({ sender: { id: BOTUSER, isBot: true } }), empty())).toBeNull()
   })
 
+  it('does not let a verified agent mention enable shared-bot default selection', () => {
+    const author = 'agent-author'
+    const mentioned = arbitrate(
+      assignment(),
+      msg({
+        channel: 'CX',
+        sender: { id: 'UAGENT', isBot: true },
+        text: '<@UBOT> hello',
+        mentionedBots: [BOTUSER]
+      }),
+      empty(),
+      author
+    )
+    const unmentioned = arbitrate(
+      assignment(),
+      msg({ channel: 'CX', sender: { id: 'UAGENT', isBot: true }, text: 'hello', mentionedBots: [] }),
+      empty(),
+      author
+    )
+    expect(mentioned).toEqual(unmentioned)
+    expect(mentioned).toBeNull()
+  })
+
   it('thread continuity carries an un-mentioned follow-up to the prior agent', () => {
     const aff = new Map<string, RouteTarget>([['CX/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
     const t = arbitrate(assignment(), msg({ channel: 'CX', thread: 'ts1', text: 'and then?' }), aff)

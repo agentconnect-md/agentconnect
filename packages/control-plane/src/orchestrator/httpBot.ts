@@ -20,6 +20,7 @@ import type {
   RcBotAssign,
   BindMatch,
   RcThreadAssign,
+  RcThreadParticipant,
   RcThreadLookup,
   RcThreadLookupOk
 } from '@agentconnect.md/protocol'
@@ -314,6 +315,14 @@ export class HttpBotOrchestrator {
         for (const t of await this.threads.listForBot(bot.id)) {
           ch.send('rc/assign', { botId: bot.id, sessionKey: t.sessionKey, agentId: t.agentId, daemonId: t.daemonId })
         }
+        for (const t of await this.threads.participantsForBot(bot.id)) {
+          ch.send('rc/participant-assign', {
+            botId: bot.id,
+            sessionKey: t.sessionKey,
+            agentId: t.agentId,
+            daemonId: t.daemonId
+          })
+        }
       } catch {
         // dead socket — its onClose removes it from the registry
       }
@@ -328,8 +337,22 @@ export class HttpBotOrchestrator {
    */
   async recordThreadAssign(m: RcThreadAssign): Promise<void> {
     await this.threads.upsert(BotId(m.botId), m.sessionKey, AgentId(m.agentId), DaemonId(m.daemonId))
+    await this.threads.upsertParticipant(BotId(m.botId), m.sessionKey, AgentId(m.agentId), DaemonId(m.daemonId))
     this.broadcast((ch) =>
       ch.send('rc/assign', { botId: m.botId, sessionKey: m.sessionKey, agentId: m.agentId, daemonId: m.daemonId })
+    )
+  }
+
+  /** Persist and broadcast one room member without changing single-owner affinity. */
+  async recordThreadParticipant(m: RcThreadParticipant): Promise<void> {
+    await this.threads.upsertParticipant(BotId(m.botId), m.sessionKey, AgentId(m.agentId), DaemonId(m.daemonId))
+    this.broadcast((ch) =>
+      ch.send('rc/participant-assign', {
+        botId: m.botId,
+        sessionKey: m.sessionKey,
+        agentId: m.agentId,
+        daemonId: m.daemonId
+      })
     )
   }
 
@@ -340,12 +363,24 @@ export class HttpBotOrchestrator {
    *  affinity forever. */
   async lookupThread(m: RcThreadLookup): Promise<RcThreadLookupOk> {
     const channel = m.sessionKey.slice(0, Math.max(m.sessionKey.indexOf('/'), 0)) || m.sessionKey
+    const participants = (
+      await Promise.all(
+        (await this.threads.participants(BotId(m.botId), m.sessionKey)).map(async (participant) =>
+          (await this.threadTargetAllowed(m.botId, channel, participant.agentId)) ? participant : null
+        )
+      )
+    ).filter((participant): participant is NonNullable<typeof participant> => participant !== null)
     const t = await this.threads.get(BotId(m.botId), m.sessionKey)
     if (t) {
       if (!(await this.threadTargetAllowed(m.botId, channel, t.agentId))) {
-        return { botId: m.botId, sessionKey: m.sessionKey, target: null }
+        return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants }
       }
-      return { botId: m.botId, sessionKey: m.sessionKey, target: { agentId: t.agentId, daemonId: t.daemonId } }
+      return {
+        botId: m.botId,
+        sessionKey: m.sessionKey,
+        target: { agentId: t.agentId, daemonId: t.daemonId },
+        participants
+      }
     }
     // Affinity miss: fall back to session metadata. A session an agent created directly on the
     // daemon (e.g. its own channel-root post, session-concept §7.2 case 2a) never went through
@@ -359,10 +394,17 @@ export class HttpBotOrchestrator {
       const thread = m.sessionKey.slice(slash + 1)
       const owner = await this.sessions.findThreadOwner(BotId(m.botId), channel, thread)
       if (owner && (await this.threadTargetAllowed(m.botId, channel, owner.agentId))) {
-        return { botId: m.botId, sessionKey: m.sessionKey, target: owner }
+        return {
+          botId: m.botId,
+          sessionKey: m.sessionKey,
+          target: owner,
+          participants: participants.some((participant) => participant.agentId === owner.agentId)
+            ? participants
+            : [...participants, owner]
+        }
       }
     }
-    return { botId: m.botId, sessionKey: m.sessionKey, target: null }
+    return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants }
   }
 
   /** §14 conversation-gating check for the thread-lookup backstop: a non-gated

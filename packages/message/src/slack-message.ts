@@ -183,16 +183,23 @@ export function normalizeSlackMessage(
 }
 
 /**
- * Suffix distinguishing a response-FINALIZATION event from the ordinary post it edits.
+ * `ingressEventTag` marking a response-FINALIZATION event apart from the ordinary post
+ * it edits.
  *
  * Both events describe the same Slack message and therefore the same `ts`, but they are
  * two distinct arrivals: the streaming post (transcript-only) and the closing edit (the
- * one routable event). Sharing a `msgId` would make per-connection dedup drop whichever
- * arrived second — and the second is exactly the one that carries the recipient set.
- * The PLATFORM message id stays the original `ts`, so transcript rows still collapse
- * onto one primary key and the activation key still names the visible message.
+ * one routable event). Sharing an ingress identity would make per-connection dedup drop
+ * whichever arrived second — and the second is exactly the one that carries the
+ * recipient set.
+ *
+ * This used to be a `:final` SUFFIX ON THE msgId, which was wrong: `msgId` also carries
+ * the platform ts, recovered downstream by splitting the id. The transcript uses that ts
+ * as BOTH its uniqueness key and (parsed) its ordering key, so every finalization
+ * collapsed onto the literal ts `'final'` — one row per thread survived, and it sorted to
+ * epoch 0 as the oldest message. Keeping the distinction in its own field leaves `msgId`
+ * meaning exactly one thing.
  */
-export const SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX = ':final'
+export const SLACK_RESPONSE_FINAL_EVENT_TAG = 'response-final'
 
 /**
  * Normalize the `message_changed` wrapper that CLOSES an AgentConnect logical response
@@ -234,10 +241,13 @@ export function normalizeSlackResponseFinalization(
     context
   )
   if (!normalized) return null
+  // `msgId` deliberately stays the ORIGINAL post's — it is the visible message's identity
+  // everywhere downstream (transcript key, transcript ordering, activation key). Only the
+  // arrival is different, and that is what the tag says.
   return {
     ...normalized,
-    msgId: `${normalized.msgId}${SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX}`,
-    ...(context.traceId === undefined ? { traceId: `${normalized.msgId}${SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX}` } : {})
+    ingressEventTag: SLACK_RESPONSE_FINAL_EVENT_TAG,
+    ...(context.traceId === undefined ? { traceId: `${normalized.msgId}#${SLACK_RESPONSE_FINAL_EVENT_TAG}` } : {})
   }
 }
 

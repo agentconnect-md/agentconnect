@@ -98,8 +98,8 @@ the configured secret-store seam.
    can land on any instance.
 3. **Routing happens at ingress.** CP compiles routes with explicit
    `{ agentId, daemonId, integrationId }` ownership. The relay arbitrates and
-   sends a pre-addressed `rd/msg`; the target daemon does not repeat the
-   routing ladder.
+   sends one pre-addressed `rd/msg` per selected conversation participant; a
+   target daemon does not repeat the routing ladder.
 4. **Daemons initiate data-plane connections.** A daemon remains an
    outbound-only edge node and dials every relay in its CP-provided roster.
 5. **Relays initiate control connections.** Each relay authenticates and
@@ -185,6 +185,17 @@ model SharedThreadAgent {
   @@id([botId, sessionKey])
   @@map("shared_thread_agent")
 }
+
+model SharedThreadParticipant {
+  botId      String   @db.Uuid
+  sessionKey String
+  agentId    String   @db.Uuid
+  daemonId   String   @db.Uuid
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@id([botId, sessionKey, agentId])
+  @@map("shared_thread_participant")
+}
 ```
 
 `Integration.botId` is not unique because a shareable bot can back multiple
@@ -201,6 +212,9 @@ active integration row carries that owner for each shared channel; sibling rows 
 null because channel membership is repeated per integration.
 `SharedThreadAgent` is the durable fallback for relay-local thread affinity. It
 contains routing metadata only, never message text.
+`SharedThreadParticipant` is the independently durable participant set. It lets
+any healthy relay replica reconstruct every joined target after a restart or a
+public-callback load-balancer hop without turning the legacy owner into a set.
 
 ## 7. Protocol
 
@@ -369,9 +383,11 @@ the trigger. An in-Slack move or automatic fallback to a restricted agent stays 
 This also preserves state and repairs ownership when an integration is removed;
 `No default` is not an operator state.
 
-Each target contains `agentId`, `daemonId`, and `integrationId`. The relay drops
-messages produced by another managed AgentConnect bot before arbitration so
-they cannot create affinity or agent-to-agent platform loops.
+Each target contains `agentId`, `daemonId`, and `integrationId`. A verified
+AgentConnect-authored final is admitted through the collaboration policy and
+hop/loop fences, then sent independently to every other participant. Unverified
+managed-bot echoes still fail closed, and third-party bots remain exact-mention
+only.
 
 Channel membership changes trigger a coalesced Slack membership refresh. The
 relay reports the complete channel snapshot through `rc/bot-channels`; CP
@@ -383,7 +399,7 @@ later channel-owner change. The app-level message shortcut starts only with the
 selected message's channel and thread: the relay resolves current conversation
 ownership, then the daemon resolves and authorizes the exact bot-scoped session.
 
-### 10.2 Durable thread affinity
+### 10.2 Durable thread affinity and participants
 
 Thread affinity uses three control legs:
 
@@ -393,6 +409,15 @@ Thread affinity uses three control legs:
    `rc/assign` to every connected relay.
 3. On a local miss for an unmentioned thread follow-up, the receiving relay
    asks CP through `rc/thread-lookup` and caches the result.
+
+Conversation membership uses the same control channel without overloading the
+single owner. A relay reports each newly joined target with
+`rc/thread-participant`; CP upserts `(botId, sessionKey, agentId) -> daemonId`,
+broadcasts `rc/participant-assign` to the pool, replays the set to a restarted
+relay, and returns the whole set with `rc/thread-lookup/ok`. Owner reports also
+seed their target as a participant. These rows are control-plane routing
+metadata only. The separate participant frames keep mixed-version peers from
+mistaking a member update for a compatibility-owner replacement.
 
 If CP is unavailable during a lookup, the follow-up is dropped rather than
 routed to a different agent. A later explicit mention can re-anchor the

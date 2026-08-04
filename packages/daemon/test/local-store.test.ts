@@ -10,6 +10,41 @@ function store(): LocalStore {
 }
 
 describe('LocalStore', () => {
+  it('keeps every agent reply in a thread, and lets a finalization refresh its own text', () => {
+    // The production failure this pins: a response finalization used to reach the
+    // transcript with the literal ts `'final'` (a `:final` msgId suffix that
+    // `transcriptCoords` read as the ts). The UNIQUE index is (channel, thread, ts) and
+    // does NOT include the recipient, so only the FIRST agent reply in a thread survived
+    // — every later one was silently dropped by INSERT OR IGNORE. In a multi-agent Slack
+    // thread that means an agent sees exactly one peer message, ever.
+    const s = store()
+    const row = (ts: string, text: string, extra: Record<string, unknown> = {}) => ({
+      channel: 'slack:C1',
+      thread: '100.1',
+      ts,
+      sender: 'bot-a',
+      recipient: 'bot-b',
+      kind: 'text' as const,
+      text,
+      ...extra
+    })
+    s.appendTranscript(row('100.2', '1'))
+    s.appendTranscript(row('100.3', '3'))
+    s.appendTranscript(row('100.4', '7'))
+
+    const texts = () => s.threadTranscript('slack:C1', '100.1').map((r) => r.text)
+    expect(texts()).toEqual(['1', '3', '7'])
+
+    // A finalization lands on its OWN post's coordinates and upgrades the text in place —
+    // the post can hold a streamed prefix, and a text row has no other update path.
+    s.appendTranscript(row('100.4', '7 (complete)', { authoritative: true }))
+    expect(texts()).toEqual(['1', '3', '7 (complete)'])
+
+    // Without that marker a re-observation must never rewrite an existing row.
+    s.appendTranscript(row('100.4', 'stale replay'))
+    expect(texts()).toEqual(['1', '3', '7 (complete)'])
+  })
+
   it('upserts and reads back a session record', () => {
     const s = store()
     const key = sessionKey('slack', 'C1', '100.1', 'bot-a')

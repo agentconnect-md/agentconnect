@@ -209,6 +209,14 @@ export interface TranscriptEntry {
   /** True only when the daemon verified that this Slack history row came from an
    *  AgentConnect-managed bot identity. Legacy rows and all other platforms omit it. */
   trustedAgentBot?: boolean
+  /** This arrival carries the message's FINAL text and may overwrite an earlier row on
+   *  the same coordinates.
+   *
+   *  A streamed reply is posted before it is finished, so the post that lands first can
+   *  hold a prefix; the closing edit is the same Slack message (same `ts`, so the same
+   *  row) and is the authoritative version. Without this the plain INSERT OR IGNORE would
+   *  keep the prefix forever, since a text row has no other update path. */
+  authoritative?: boolean
   kind: TranscriptKind
   text: string
   /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
@@ -2713,7 +2721,7 @@ export class LocalStore {
   }
 
   appendTranscript(e: TranscriptEntry): void {
-    const { attachments, trustedAgentBot, quoted, quoteJson, ...entry } = e
+    const { attachments, trustedAgentBot, quoted, quoteJson, authoritative, ...entry } = e
     const durableQuoteJson = quoted?.text ? JSON.stringify(quoted) : (quoteJson ?? null)
     const revision = this.transcriptRevision + 1
     const inserted = this.db
@@ -2734,6 +2742,22 @@ export class LocalStore {
         revision
       } as unknown as SqlParams)
     if (Number(inserted.changes) === 1) this.transcriptRevision = revision
+    // The closing edit of a streamed reply lands on the row its own post created, so the
+    // text is refreshed in place rather than lost to INSERT OR IGNORE. Scoped to text
+    // rows on identical coordinates, and only ever toward the authoritative version.
+    if (Number(inserted.changes) === 0 && authoritative && e.kind === 'text') {
+      const rev = this.transcriptRevision + 1
+      const refreshed = this.db
+        .prepare(
+          `UPDATE transcript SET text = ?, revision = ?
+           WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND text IS NOT ?`
+        )
+        .run(e.text, rev, e.channel, e.thread, e.ts, e.text)
+      if (Number(refreshed.changes) === 1) {
+        this.transcriptRevision = rev
+        this.notifyTranscriptMutation(e.channel, e.thread, e.recipient ? [e.recipient] : [], rev)
+      }
+    }
     // A row may predate this column and later be re-observed in an authoritative Slack
     // snapshot. Upgrade only toward trusted=true; an untrusted replay can never clear or
     // manufacture provenance, and the stable text-row coordinates keep this scoped.

@@ -519,11 +519,32 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     ).toBe(false)
   })
 
-  it('round-trips the thread-affinity frames (rc/thread-assign, rc/thread-lookup, ...ok)', () => {
-    // report leg
+  it('round-trips the thread-affinity and participant frames', () => {
+    // compatibility-owner report leg
     expect(
       decodeRelayCpFrame(
         envelope('rc/thread-assign', {
+          botId: DAEMON_ID,
+          sessionKey: 'C1/ts',
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID
+        })
+      ).ok
+    ).toBe(true)
+    // participant report and pool-broadcast legs stay distinct from owner affinity
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/thread-participant', {
+          botId: DAEMON_ID,
+          sessionKey: 'C1/ts',
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID
+        })
+      ).ok
+    ).toBe(true)
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/participant-assign', {
           botId: DAEMON_ID,
           sessionKey: 'C1/ts',
           agentId: AGENT_ID,
@@ -544,13 +565,15 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       envelope('rc/thread-lookup/ok', {
         botId: DAEMON_ID,
         sessionKey: 'C1/ts',
-        target: { agentId: AGENT_ID, daemonId: DAEMON_ID }
+        target: { agentId: AGENT_ID, daemonId: DAEMON_ID },
+        participants: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }]
       })
     )
     expect(hit.ok).toBe(true)
     if (!hit.ok) throw new Error('expected ok')
     if (hit.frame.type !== 'rc/thread-lookup/ok') throw new Error('narrow')
     expect(hit.frame.payload.target?.agentId).toBe(AGENT_ID)
+    expect(hit.frame.payload.participants).toEqual([{ agentId: AGENT_ID, daemonId: DAEMON_ID }])
     // reply leg — a miss (no binding)
     expect(
       decodeRelayCpFrame(envelope('rc/thread-lookup/ok', { botId: DAEMON_ID, sessionKey: 'C1/ts', target: null })).ok

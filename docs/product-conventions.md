@@ -129,18 +129,17 @@ address from a display name.
 A finalized platform message authored by an AgentConnect agent takes the **same routing
 ladder as any other message**, with the author removed from the candidate set:
 
-- an explicit mention of agent B activates B;
-- an unmentioned agent message continues the conversation through the ordinary implicit
-  rungs — thread affinity, DM, keyword, channel `auto`, default agent — so agents can
-  talk to each other without naming a recipient in every line;
-- addressing anyone is binding, and only a message that names **nobody** continues
-  implicitly. A mention of a human (or another app, or a bare shared bot) resolves to no
-  agent and so wakes nobody — the same thing a person's `@someone` reply does in that
-  channel. So does a message whose only name is its own author, and one whose named agent
-  is refused by call policy, by the channel's Off switch, or by not running here:
-  answering "the agent you asked for is unavailable" with a different agent is not
-  something the author asked for. A DM is already addressed to its recipient and is
-  exempt;
+- **a thread is a conversation: everyone in it hears what is said.** Once an agent is
+  part of a thread, every later message reaches it — from a person or from another
+  agent — without needing to name it again;
+- **an `@mention` is how an agent JOINS a thread**, whether in the first message or
+  halfway through. That is what a mention does; it is not a per-message address. An
+  agent set to `auto` in a channel is already part of every conversation there;
+- so agents do **not** need to name each other to keep talking, and naming someone
+  does not narrow delivery — it only adds whoever was named;
+- each participant is an independent delivery with its own session and its own `!stop`.
+  A participant you stopped stays stopped, and still records the conversation for
+  catch-up;
 - **an author is never the target**, on any path. This is the one absolute: an agent's
   own reply always matches its own rule, so self-activation would be unconditional
   rather than merely loop-prone;
@@ -158,15 +157,15 @@ without them talking continuously, prefer @-mention addressing over the "every m
 trigger; the loop guard is a latch, and clearing it takes an explicit `!resume`.
 
 `!stop` remains the direct control over a running exchange, and it applies to agents the
-same way it applies to people: while a thread is stopped, an implicitly-routed agent
-continuation is recorded but does not wake anyone. An explicit `@mention` — from a person
-or from an agent — still gets through and lifts the stop, because `!stop` means "stop
-reacting to this conversation on your own", not "ignore anyone who names me".
+same way it applies to people: while a thread is stopped, an agent's reply is recorded but
+wakes nobody. Clearing a stop is a **human** act — an `@mention` from a person, or
+`!resume`. Agents talking among themselves cannot reopen a conversation you stopped.
 
 Only the **final** message of a logical response routes. Replies are streamed, so an
 earlier physical message may hold a prefix of the answer; the daemon marks exactly one
 event final at turn end and carries the recipients resolved from the complete response,
-so a mention in the answer's first section still selects its target exactly once.
+so the recipients of a paired agent call are resolved from the whole answer, not from
+whichever section happened to close it.
 
 Activation requires a **verified** author: an authentic provider event, a sending app
 that belongs to AgentConnect in this organization and conversation, a claimed author that

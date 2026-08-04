@@ -121,6 +121,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
   let unplacedAgents: Set<string>
   // Drives ThreadAffinityStore.get (null = affinity miss → SessionMeta fallback).
   let threadBinding: { agentId: AgentId; daemonId: string } | null
+  let threadParticipants: Awaited<ReturnType<ThreadAffinityStore['participantsForBot']>>
   // revokeBot recordings: the Bot revocation stamp + integration/remove pushes.
   let botRevokedAt: Date | null
   let removals: { daemonId: string; integrationId: string }[]
@@ -163,7 +164,17 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         threadBinding
           ? ({ sessionKey: '', ...threadBinding } as Awaited<ReturnType<ThreadAffinityStore['get']>>)
           : null,
-      listForBot: async () => []
+      listForBot: async () => [],
+      upsertParticipant: async (_botId, sessionKey, agentId, daemonId) => {
+        const current = threadParticipants.find((p) => p.sessionKey === sessionKey && p.agentId === agentId)
+        if (current) current.daemonId = daemonId
+        else threadParticipants.push({ sessionKey, agentId, daemonId })
+      },
+      participants: async (_botId, sessionKey) =>
+        threadParticipants
+          .filter((participant) => participant.sessionKey === sessionKey)
+          .map(({ agentId, daemonId }) => ({ agentId, daemonId })),
+      participantsForBot: async () => threadParticipants
     }
     const intRepo: Pick<IntegrationRepo, 'listForBot' | 'markRevokedForBot'> = {
       listForBot: async () => integrations.filter((i) => i.status === 'active'),
@@ -301,6 +312,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     gatedAgents = new Set()
     unplacedAgents = new Set()
     threadBinding = null
+    threadParticipants = []
     blockNextChannelList = null
     bumpRevisionAfterFirstGet = false
     botRevokedAt = null
@@ -317,7 +329,12 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const orch = makeOrch()
       threadOwner = { agentId: ALICE, daemonId: D1 }
       const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
-      expect(res).toEqual({ botId: BOT, sessionKey: SK, target: { agentId: ALICE, daemonId: D1 } })
+      expect(res).toEqual({
+        botId: BOT,
+        sessionKey: SK,
+        target: { agentId: ALICE, daemonId: D1 },
+        participants: [{ agentId: ALICE, daemonId: D1 }]
+      })
       expect(threadOwnerLookup).toEqual({ botId: BOT, channel: 'C1', thread: '1784297789.871789' })
     })
 
@@ -326,6 +343,24 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       threadOwner = null
       const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
       expect(res.target).toBeNull()
+    })
+
+    it('persists and broadcasts participant joins independently of the compatibility owner', async () => {
+      const orch = makeOrch()
+      await orch.recordThreadParticipant({ botId: BOT, sessionKey: SK, agentId: BOB, daemonId: D2 })
+
+      expect(ch.sends.at(-1)).toEqual({
+        type: 'rc/participant-assign',
+        payload: { botId: BOT, sessionKey: SK, agentId: BOB, daemonId: D2 }
+      })
+      threadOwner = null
+      const res = await orch.lookupThread({ botId: BOT, sessionKey: SK })
+      expect(res).toEqual({
+        botId: BOT,
+        sessionKey: SK,
+        target: null,
+        participants: [{ agentId: BOB, daemonId: D2 }]
+      })
     })
   })
 

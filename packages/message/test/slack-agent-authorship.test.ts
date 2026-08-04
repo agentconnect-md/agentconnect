@@ -5,7 +5,7 @@ import {
   normalizeSlackResponseFinalization,
   readAgentAuthorshipClaim,
   slackTextAddressesAnyone,
-  SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX
+  SLACK_RESPONSE_FINAL_EVENT_TAG
 } from '../src/index.js'
 
 const AUTHOR = 'agent-author'
@@ -142,9 +142,13 @@ describe('normalizeSlackResponseFinalization (§5)', () => {
     expect(msg!.agentAuthorship?.mentionedAgentIds).toEqual([PEER])
   })
 
-  it('gives the finalization its own msgId so dedup cannot swallow it', () => {
+  it('separates the finalization from its post by TAG, keeping the msgId identical', () => {
     // The streaming post and its closing edit describe one Slack message and share a
-    // `ts`; only the SECOND carries the recipient set, so they must not collide.
+    // `ts`; only the SECOND carries the recipient set, so ingress dedup must not collapse
+    // them. The distinction belongs in `ingressEventTag`, NOT in `msgId`: `msgId` also
+    // carries the platform ts, and the transcript uses that ts as both its uniqueness key
+    // and its ordering key. A `:final` msgId suffix made every finalization in a thread
+    // collapse onto the literal ts `'final'` — one row survived and it sorted to epoch 0.
     const streaming = normalizeSlackMessage({
       type: 'message',
       channel: 'C1',
@@ -154,8 +158,11 @@ describe('normalizeSlackResponseFinalization (§5)', () => {
       ...claim({ delivery_state: 'streaming' })
     })
     const final = normalizeSlackResponseFinalization(wrapper(claim()))
-    expect(final!.msgId).toBe(`${streaming!.msgId}${SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX}`)
-    expect(final!.msgId).not.toBe(streaming!.msgId)
+    expect(final!.msgId).toBe(streaming!.msgId)
+    expect(final!.ingressEventTag).toBe(SLACK_RESPONSE_FINAL_EVENT_TAG)
+    expect(streaming!.ingressEventTag).toBeUndefined()
+    // The ts must stay recoverable by the ordinary split every consumer performs.
+    expect(final!.msgId.split(':')[2]).toBe('1720000000.000100')
   })
 
   it('drops the wrapper subtype so later stages see an ordinary post', () => {

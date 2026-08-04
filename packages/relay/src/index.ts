@@ -147,8 +147,12 @@ async function main(): Promise<void> {
         noticeAuthority: r.noticeAuthority,
         noticedDmConversations: r.noticedDmConversations
       }),
-    onAssign: (a) =>
-      held.relayIngress?.setAffinity(a.botId, a.sessionKey, {
+    onAssign: (a) => {
+      const target = { agentId: a.agentId, daemonId: a.daemonId, integrationId: '' }
+      held.relayIngress?.setAffinity(a.botId, a.sessionKey, target)
+    },
+    onParticipantAssign: (a) =>
+      held.relayIngress?.setParticipant(a.botId, a.sessionKey, {
         agentId: a.agentId,
         daemonId: a.daemonId,
         integrationId: ''
@@ -179,6 +183,7 @@ async function main(): Promise<void> {
     reportBotRevoked: (m) => client.reportBotRevoked(m),
     selfRelayId: () => client.relayId,
     reportThreadAssign: (m) => client.emitThreadAssign(m),
+    reportThreadParticipant: (m) => client.emitThreadParticipant(m),
     lookupThread: (m) => client.lookupThread(m),
     isAgentBotApp: (targetAgentId, platform, channelId, appId) =>
       collab.isAgentBotAppFor(targetAgentId, platform, channelId, appId),
