@@ -948,8 +948,7 @@ function MobileSessionFamilyLinks({
  */
 function SessionDetailFrame({ children, withRail = true }: { children: ReactNode; withRail?: boolean }) {
   return (
-    <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      {withRail ? <SessionRailSlot /> : null}
+    <div className="flex min-h-full items-stretch gap-[26px]">
       <div
         className={
           withRail
@@ -959,6 +958,7 @@ function SessionDetailFrame({ children, withRail = true }: { children: ReactNode
       >
         {children}
       </div>
+      {withRail ? <SessionRailSlot /> : null}
     </div>
   )
 }
@@ -1143,13 +1143,25 @@ export default function SessionDetailView() {
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
   const detailTooltipId = useId()
-  const [detailInteraction, setDetailInteraction] = useState({ hovered: false, focused: false, dismissed: false })
-  const detailOpen = (detailInteraction.hovered || detailInteraction.focused) && !detailInteraction.dismissed
+  // `tapped` is the touch path: a tap neither hovers nor reliably focuses a button
+  // (Safari does not focus one on tap), so the mobile header's Details trigger
+  // toggles this latch instead of relying on the desktop hover presence.
+  const [detailInteraction, setDetailInteraction] = useState({
+    hovered: false,
+    focused: false,
+    tapped: false,
+    dismissed: false
+  })
+  const detailOpen =
+    (detailInteraction.hovered || detailInteraction.focused || detailInteraction.tapped) && !detailInteraction.dismissed
   const updateDetailPresence = (key: 'hovered' | 'focused', value: boolean) =>
     setDetailInteraction((current) => {
       const next = { ...current, [key]: value }
-      return { ...next, dismissed: next.hovered || next.focused ? current.dismissed : false }
+      return { ...next, dismissed: next.hovered || next.focused || next.tapped ? current.dismissed : false }
     })
+  const closeDetailTap = () => setDetailInteraction((current) => ({ ...current, tapped: false, dismissed: false }))
+  const toggleDetailTap = () =>
+    setDetailInteraction((current) => ({ ...current, tapped: !current.tapped, dismissed: false }))
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   // Conversation mode: per-member fetched rows + live cursors; the rendered
   // transcript is always mergeConversation() over the CURRENT map, so every
@@ -1243,7 +1255,7 @@ export default function SessionDetailView() {
       if (event.key !== 'Escape') return
       event.preventDefault()
       event.stopPropagation()
-      setDetailInteraction((current) => ({ ...current, dismissed: true }))
+      setDetailInteraction((current) => ({ ...current, tapped: false, dismissed: true }))
     }
     document.addEventListener('keydown', dismissDetails, true)
     return () => document.removeEventListener('keydown', dismissDetails, true)
@@ -1912,7 +1924,7 @@ export default function SessionDetailView() {
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
     setCopied(false)
-    setDetailInteraction({ hovered: false, focused: false, dismissed: false })
+    setDetailInteraction({ hovered: false, focused: false, tapped: false, dismissed: false })
     setWorkOverride(new Map())
     setImagePreparing(false)
     setImageError(null)
@@ -2556,9 +2568,10 @@ export default function SessionDetailView() {
   const pgFastModeAvailable =
     (pgModel === session.model ? session.fastModeAvailable : undefined) ??
     fastModeAvailableFor(agentRuntime, selectedModelCapability)
-  // Run facts for the desktop header's "Details" popover — the stats that used to
-  // live in the header cards (duration, usage) plus the run's identity rows. Status
-  // is not here: it rides the top-bar crumb as a pill next to the session name.
+  // Run facts for the header's "Details" popover — the stats that used to live in
+  // the header cards (duration, usage) plus the run's identity rows. Status is not
+  // here: it rides the top-bar crumb as a pill next to the session name. Both form
+  // factors read this one list (see detailPanel below).
   const headerFacts: { icon: string; label: string; value: string }[] = [
     { icon: 'clock', label: 'Duration', value: displayDuration },
     { icon: 'coins', label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
@@ -2570,54 +2583,58 @@ export default function SessionDetailView() {
     headerFacts.push({ icon: 'cpu', label: 'Runtime', value: runtimeLabel(session.runtime, runtimeMeta?.name) })
   if (session.model) headerFacts.push({ icon: 'box', label: 'Model', value: modelLabel(session.model) })
 
-  // Mobile header-region derivations (≤768px meta strip + agent config row).
-  const metaCells: { label: string; value: string }[] = [
-    { label: 'Dur', value: displayDuration },
-    { label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
-    { label: 'Cost', value: conversationUsage?.cost ?? session.cost },
-    { label: 'Tools', value: displayToolCount }
-  ]
-  const cfgLine = [
-    daemonName,
-    session.runtime ? runtimeLabel(session.runtime, runtimeMeta?.name) : '',
-    modelLabel(session.model ?? '')
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  // The popover's contents — one definition behind both triggers (desktop hover,
+  // mobile tap), so a fact can never show up on one form factor and not the other.
+  const detailPanel = (
+    <>
+      {headerFacts.map((f) => (
+        <div key={f.label} className="flex items-center gap-[9px] px-3 py-[5px]">
+          <Icon name={f.icon} size={13} color="var(--text-tertiary)" className="flex-none" />
+          <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+            {f.label}
+          </span>
+          <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">{f.value}</span>
+        </div>
+      ))}
+      {usageEntries.length > 0 && (
+        <>
+          <div className="my-1 border-t border-(--border-subtle)" />
+          <div className="px-3 pt-1 pb-[2px] font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
+            Token usage
+          </div>
+          {usageEntries.map((e) => (
+            <div key={e.label} className="flex items-center gap-[9px] py-1 pr-3 pl-[34px]">
+              <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
+                {e.label}
+              </span>
+              <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">{e.value}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </>
+  )
 
   // ── one responsive tree ─────────────────────────────────────────────────────
   // ≤768px renders the native push-screen body (Shell owns the 56px app bar:
-  // back · title · status-dot/channel · link): meta strip → agent config row →
-  // transcript → live. ≥769px renders the classic page: header → stat/usage
-  // cards → transcript. Breakpoint differences are CSS-gated (desktop: /
+  // back · title · status-dot/channel · link): header row (agent · visibility ·
+  // Details) → transcript → live. ≥769px renders the classic page: header →
+  // meta row → transcript. Both form factors put the run's numbers behind the
+  // same Details popover. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
   return (
-    // `.wrap` (1180px) is the outer track so the sibling-session rail can sit beside
-    // the 880px body. The rail always occupies its column above the breakpoint, even
-    // with no rows to show, so this is the one position the body ever takes. Keep the
-    // row in step with SessionDetailFrame, which draws the same two columns for every
-    // state that precedes or replaces a session.
-    <div className="wrap flex min-h-full items-stretch gap-[26px]">
-      <SessionRail
-        sessions={railSessions}
-        // The open row has to name its conversation and its members, because that
-        // is how the rail collapses it against the grouped list and how a pin
-        // finds it — matching on the session id alone would double the row (or
-        // lose its pin) whenever the two disagree on which member is newest.
-        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
-        // single-participant thread is deduplicated on exactly the same terms, and
-        // the roster resolver is not agent-filtered, so its members are complete.
-        current={railCurrent ?? session}
-        total={railSessionTotal}
-        agentIds={railFilter.agentIds}
-        filterTouched={railFilter.touched}
-        onAgentIdsChange={setRailAgentIds}
-        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
-        conversation={conversationMode}
-        childOriginById={conversationLineage?.childOriginById}
-        onSelect={setRouteSession}
-      />
-      <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:pb-6">
+    // Three-column track ([nav · body · rail]): the full-width row lets the
+    // sibling-session rail sit flush against the page's right edge while the 880px
+    // body centres in what remains. The rail always occupies its column above the
+    // `wide` breakpoint, even with no rows to show, so this is the one position the
+    // body ever takes. Keep the row in step with SessionDetailFrame, which draws
+    // the same two columns for every state that precedes or replaces a session.
+    <div className="flex min-h-full items-stretch gap-[26px]">
+      {/* No bottom padding here on mobile: the sticky composer cancels exactly
+          `.content`'s bottom inset (see its negative `bottom`), so any padding
+          BELOW it becomes a strip the composer can never reach — it stops short
+          of the screen edge at the end of the scroll. */}
+      <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col">
         {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
           in the top-bar crumb; with the crumb gone the page has to name itself. The
           mobile title/status live in Shell's app bar, so this region is desktop-only. */}
@@ -2722,35 +2739,7 @@ export default function SessionDetailView() {
               }`}
             >
               <div className="max-h-[340px] min-w-[216px] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) px-0 py-[5px] shadow-(--shadow-lg)">
-                {headerFacts.map((f) => (
-                  <div key={f.label} className="flex items-center gap-[9px] px-3 py-[5px]">
-                    <Icon name={f.icon} size={13} color="var(--text-tertiary)" className="flex-none" />
-                    <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                      {f.label}
-                    </span>
-                    <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
-                      {f.value}
-                    </span>
-                  </div>
-                ))}
-                {usageEntries.length > 0 && (
-                  <>
-                    <div className="my-1 border-t border-(--border-subtle)" />
-                    <div className="px-3 pt-1 pb-[2px] font-mono text-[10px] font-semibold uppercase tracking-[.06em] text-(--text-tertiary)">
-                      Token usage
-                    </div>
-                    {usageEntries.map((e) => (
-                      <div key={e.label} className="flex items-center gap-[9px] py-1 pr-3 pl-[34px]">
-                        <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                          {e.label}
-                        </span>
-                        <span className="mono whitespace-nowrap text-[12px] font-semibold text-(--text-primary)">
-                          {e.value}
-                        </span>
-                      </div>
-                    ))}
-                  </>
-                )}
+                {detailPanel}
               </div>
             </div>
           </div>
@@ -2770,63 +2759,66 @@ export default function SessionDetailView() {
           </div>
         )}
 
-        {/* MOBILE META STRIP — single-row 4-up, abbreviated labels tuned for 390px. */}
-        <div className="grid grid-cols-[repeat(4,1fr)] border-b border-(--border-subtle) bg-(--surface-card) desktop:hidden">
-          {metaCells.map((c, i) => (
-            <div
-              key={c.label}
-              className={`min-w-0 overflow-hidden px-3 py-[10px] ${i < 3 ? 'border-r border-(--border-subtle)' : ''}`}
+        {/* MOBILE HEADER ROW — the desktop meta row's shape at 390px: the owning
+          agent (tap-through), visibility, and everything numeric collapsed behind
+          the SAME Details popover. It replaces the old 4-up stat strip and the
+          daemon/runtime/model config line, both of which now live in the popover;
+          three stacked bands of chrome above the transcript were the phone's whole
+          first screen. Tap toggles (`tapped`) — there is no hover to lean on. */}
+        <div className="relative flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[9px] desktop:hidden">
+          {agentHref ? (
+            <Link
+              href={orgPath(agentHref)}
+              className="flex min-w-0 flex-1 items-center gap-[7px] no-underline"
+              aria-label={`Open ${session.agentName}`}
             >
-              <div className="font-sans text-[10px] font-medium uppercase leading-normal tracking-[.06em] text-(--text-tertiary)">
-                {c.label}
-              </div>
-              <div className="mt-[2px] truncate font-mono text-[13px] font-semibold leading-normal">{c.value}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* MOBILE VISIBILITY ROW — the desktop header is `hidden desktop:flex`, so
-          the badge/toggle needs its own place in the mobile meta strip. */}
-        {visibilityControl && (
-          <div className="flex items-center gap-[10px] border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[10px] desktop:hidden">
-            {visibilityControl}
-          </div>
-        )}
-
-        {/* MOBILE AGENT CONFIG ROW — taps through to the owning agent. */}
-        {agentHref ? (
-          <Link
-            href={orgPath(agentHref)}
-            className="box-border flex w-full items-center gap-[10px] border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[10px] no-underline desktop:hidden"
+              <span className="av h-[22px] w-[22px] flex-none rounded-md">
+                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={22} />
+              </span>
+              <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                {session.agentName}
+              </span>
+              <Icon name="chevron-right" size={14} color="var(--text-tertiary)" className="flex-none" />
+            </Link>
+          ) : (
+            <span className="flex min-w-0 flex-1 items-center gap-[7px]">
+              <span className="av h-[22px] w-[22px] flex-none rounded-md">
+                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={22} />
+              </span>
+              <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
+                {session.agentName}
+              </span>
+            </span>
+          )}
+          {visibilityControl}
+          <button
+            type="button"
+            onClick={toggleDetailTap}
+            aria-expanded={detailOpen}
+            // Its own id: the desktop tooltip stays in the DOM (hidden by CSS, not
+            // unmounted), so sharing one would put a duplicate id on the page.
+            aria-controls={`${detailTooltipId}-mobile`}
+            className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
           >
-            <span className="av h-8 w-8 flex-none rounded-md">
-              <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={32} />
-            </span>
-            <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
-              <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {session.agentName}
-              </span>
-              <span className="truncate font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                {cfgLine}
-              </span>
-            </span>
-            <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="flex-none" />
-          </Link>
-        ) : (
-          <div className="flex items-center gap-[10px] border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[10px] desktop:hidden">
-            <span className="av h-8 w-8 flex-none rounded-md">
-              <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={32} />
-            </span>
-            <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
-              <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {session.agentName}
-              </span>
-              <span className="truncate font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                {cfgLine}
-              </span>
-            </span>
-          </div>
-        )}
+            <Icon name="info" size={14} />
+            Details
+          </button>
+          {detailOpen && (
+            <>
+              {/* Tap-away close: a popover a phone cannot dismiss without hitting the
+                  same 26px trigger again is a trap. */}
+              <div className="fixed inset-0 z-40" onClick={closeDetailTap} aria-hidden="true" />
+              <div
+                id={`${detailTooltipId}-mobile`}
+                role="dialog"
+                aria-label="Session details"
+                className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(280px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[5px] shadow-(--shadow-lg)"
+              >
+                {detailPanel}
+              </div>
+            </>
+          )}
+        </div>
 
         {conversationFamily ? (
           <MobileSessionFamilyLinks
@@ -2913,7 +2905,11 @@ export default function SessionDetailView() {
           turns + live tail. The column grows to fill the page (flex-1 inside the
           min-h-full wrap) so the flex-1 spacer below can pin the composer to the
           bottom even when the transcript is short. */}
-        <div className="flex flex-1 flex-col gap-4 p-4 desktop:gap-0 desktop:p-0">
+        {/* `max-desktop:pb-0` for the same reason as the wrap above: this column's
+          last child is the sticky composer, and a bottom gutter under it is a strip
+          the composer stops short of. (Longhand `pb-*` always sorts after shorthand
+          `p-*`, so the cancel wins — STYLE.md §8.) */}
+        <div className="flex flex-1 flex-col gap-4 p-4 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
           {turns.length > 0 && (
             <div className="flex flex-col gap-4 desktop:gap-[15px]">
               {turns.map((turn, ti) =>
@@ -3494,6 +3490,25 @@ export default function SessionDetailView() {
           )}
         </div>
       </div>
+      <SessionRail
+        sessions={railSessions}
+        // The open row has to name its conversation and its members, because that
+        // is how the rail collapses it against the grouped list and how a pin
+        // finds it — matching on the session id alone would double the row (or
+        // lose its pin) whenever the two disagree on which member is newest.
+        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
+        // single-participant thread is deduplicated on exactly the same terms, and
+        // the roster resolver is not agent-filtered, so its members are complete.
+        current={railCurrent ?? session}
+        total={railSessionTotal}
+        agentIds={railFilter.agentIds}
+        filterTouched={railFilter.touched}
+        onAgentIdsChange={setRailAgentIds}
+        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
+        conversation={conversationMode}
+        childOriginById={conversationLineage?.childOriginById}
+        onSelect={setRouteSession}
+      />
     </div>
   )
 }

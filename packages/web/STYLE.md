@@ -58,7 +58,10 @@ whiteSpace:nowrap` → `truncate`.
    `sm:`–`2xl:` variants are **disabled** in `@theme` — the app's mobile
    boundary is `max-width: 768px` (see `useIsMobile`), and stock `md:` would
    disagree at exactly 768px. Inside an `if (isMobile)` fork you normally need
-   no variant at all.
+   no variant at all. The one exception is `wide:` (≥1240px, `@theme` in
+   `globals.css`) — the session detail page's nav·body·rail three-column
+   threshold; below it the rail collapses to a floating button. It is scoped
+   to that one layout, not a second general breakpoint.
 
 8. **What stays as inline `style`**: values computed from data — status colors
    from a map, `orgColor(id)`, progress-bar `width: pct%`, grid templates held

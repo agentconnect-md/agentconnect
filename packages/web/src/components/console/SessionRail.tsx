@@ -1,12 +1,15 @@
-// The session detail page's left rail: the open session's direct family (parent,
-// siblings, and children), globally pinned shortcuts, then the other sessions of
-// the CURRENT agent. Family rows stay in their tree even when pinned and are
-// removed from the ordinary list below, so lineage never appears twice. Rows only
-// appear when there is another session to navigate to, and only on desktop —
-// ≤768px uses the relation card in SessionDetailView plus the Shell app bar's back
-// affordance.
+// The session detail page's RIGHT rail ([nav · body · rail], flush with the page
+// edge): the open session's direct family (parent, siblings, and children),
+// globally pinned shortcuts, then the other sessions of the CURRENT agent. Family
+// rows stay in their tree even when pinned and are removed from the ordinary list
+// below, so lineage never appears twice. Rows only appear when there is another
+// session to navigate to. ≥1240px (`wide:`) draws the inline column; 769–1239px
+// collapses it to a floating top-right button whose hover popover holds the same
+// list; ≤768px moves that trigger INTO the shell's app bar (MobileActionSlot) and
+// taps it open, since touch has no hover and a fixed overlay would cover the
+// session title. The relation card in SessionDetailView still carries lineage.
 //
-// The COLUMN, though, is unconditional above the breakpoint (SessionRailSlot). The
+// The COLUMN, though, is unconditional above `wide` (SessionRailSlot). The
 // detail body is centred in whatever horizontal space the rail leaves it, so any
 // state-dependent column is a layout shift waiting for its trigger: the rail's list
 // is a round-trip behind the session, so an emptiable column collapses on first
@@ -58,6 +61,7 @@ import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
 import { AgentIconView, PlatformMark } from '@/components/marks'
+import { useMobileActionSlot } from '@/components/console/Shell'
 import { groupSessionsByAge } from '@/lib/session-age'
 import {
   partitionPinned,
@@ -100,9 +104,14 @@ function pinIdsOf(session: Session): string[] {
  * The rail's footprint with nothing in it — the shape every session detail state
  * holds so the body beside it never moves. Used by the loading branch, which has
  * no rail to draw, and by a rail with no rows worth drawing.
+ *
+ * The column sits on the page's RIGHT edge ([nav · body · rail]): the negative
+ * right margin bleeds over `.content`'s 30px padding so the reserved track plus
+ * that padding equals the fixed 250px panel the real rail pins to the viewport
+ * edge. Keep these box classes identical to the real rail's container below.
  */
 export function SessionRailSlot() {
-  return <div aria-hidden="true" className="hidden w-[224px] flex-none desktop:block" />
+  return <div aria-hidden="true" className="-mr-[30px] hidden w-[250px] flex-none wide:block" />
 }
 
 export function SessionRail({
@@ -145,6 +154,11 @@ export function SessionRail({
   // `agents` backs the filter chips and their picker.
   const { agents, crons } = useConsoleData()
   const cronName = useCallback((cronId: string) => crons.find((c) => c.id === cronId)?.name, [crons])
+
+  const { register: registerMobileAction } = useMobileActionSlot()
+  // ≤768px only: whether the app-bar-triggered list panel is showing. Touch has no
+  // hover, so this one is a latch rather than the tablet button's CSS hover.
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   // Hydration: the server has no localStorage, so the first client paint must match
   // the SSR markup (every row unpinned) and the stored pins land in an effect.
@@ -264,7 +278,28 @@ export function SessionRail({
   // This test is also true while the rail's page is still in flight, since `rows` is
   // the open session alone until it lands. Same answer either way: hold the column,
   // fill it when there is something to fill it with.
-  if (Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched) return <SessionRailSlot />
+  const empty = Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched
+
+  // ≤768px has no column to hold, so the list hangs off a shell-owned app-bar
+  // button (see MobileActionSlot) whose panel is rendered below. Registration has
+  // to happen before the empty early-return, or the hook order would depend on
+  // whether the rail found rows.
+  const onMobileToggle = useCallback(() => setMobileOpen((v) => !v), [])
+  useEffect(() => {
+    if (empty) return
+    registerMobileAction({
+      icon: 'panel-right',
+      label: 'Sessions list',
+      active: mobileOpen,
+      onClick: onMobileToggle
+    })
+    return () => registerMobileAction(null)
+  }, [empty, mobileOpen, onMobileToggle, registerMobileAction])
+  // The detail view survives navigation, so a tapped row would otherwise leave the
+  // panel open over the session it just opened.
+  useEffect(() => setMobileOpen(false), [currentId])
+
+  if (empty) return <SessionRailSlot />
 
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
@@ -364,79 +399,136 @@ export function SessionRail({
     )
   }
 
-  return (
-    <div className="hidden w-[224px] flex-none desktop:block">
-      <div className="sticky top-[-9px] flex max-h-[calc(100vh-110px)] flex-col pb-1">
-        <RailAgentFilter agents={agents} selected={agentIds} onChange={onAgentIdsChange} />
-        <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
-          {hasFamily && (
-            <>
-              <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                Related
-              </div>
-              {conversation && parent && (
-                <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                  Parent conversation
-                </div>
-              )}
-              {parent && row(relationRow(parent), isPinned(parent.id))}
-              {row(sessionRow(current), rowPin(current).pinned, parent ? 1 : 0, true)}
-              {conversation && children.length > 0 && (
-                <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                  Delegations
-                </div>
-              )}
-              {children.map((child, index) => {
-                const origin = childOriginById?.get(child.id)
-                const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
-                const originAgent = origin ? agents.find((agent) => agent.id === origin) : undefined
-                return (
-                  <Fragment key={child.id}>
-                    {origin !== undefined && origin !== previousOrigin && (
-                      <div className="flex-none px-[9px] pt-[4px] pb-[1px] font-mono text-[9.5px] font-medium tracking-[0.06em] text-(--text-tertiary)">
-                        via {originAgent ? agentLabel(originAgent) : origin}
-                      </div>
-                    )}
-                    {row(relationRow(child), isPinned(child.id), parent ? 2 : 1)}
-                  </Fragment>
-                )
-              })}
-              {siblings.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
-              {siblings.map((sibling) => row(relationRow(sibling), isPinned(sibling.id), 1))}
-              {ordinaryRows.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
-            </>
-          )}
-          {pinned.map((s) => row(sessionRow(s), true, 0, canonicalSessionId(s) === currentId))}
-          {pinned.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
-          {groups.map((g, i) => (
-            <Fragment key={g.bucket}>
-              {/* The first heading starts flush; separators already provide spacing
-                  when Related or pinned rows precede it. */}
-              <div
-                className={`flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase ${
-                  i === 0 ? '' : 'pt-[11px]'
-                }`}
-              >
-                {g.label}
-              </div>
-              {g.rows.map((s) => row(sessionRow(s), false, 0, canonicalSessionId(s) === currentId))}
-            </Fragment>
-          ))}
-        </div>
-        {/* Carry the rail's filter into the full list so the link is the same
-            question, unabridged — but only when the list can actually ask it.
-            The sessions page filters by ONE agent, so a shared-conversation
-            filter is dropped rather than silently narrowed to whichever agent
-            happened to be first, which would answer something else entirely. */}
+  // One list, two containers: the ≥wide inline right column, and the 769–1239px
+  // floating button whose hover/focus popover shows the same list. Duplicating
+  // the rendered rows is cheap; duplicating the data plumbing would not be.
+  const body = (
+    <>
+      {/* Header: the list names itself, and "All sessions" rides the title row so
+          the escape to the full page is always visible, not below a long scroll.
+          The link carries the rail's filter when the list can ask the same
+          question — the sessions page filters by ONE agent, so a
+          shared-conversation filter is dropped rather than silently narrowed. */}
+      <div className="mb-[9px] flex flex-none items-center justify-between gap-2 px-[9px]">
+        <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Sessions</span>
         <Link
-          className="lnk mt-[10px] mr-[9px] ml-[9px] font-sans text-[12px] font-medium leading-normal"
+          className="lnk font-sans text-[12px] font-medium leading-normal"
           href={orgPath(agentIds.length === 1 ? `/sessions?agent=${encodeURIComponent(agentIds[0]!)}` : '/sessions')}
         >
           All sessions
           <Icon name="arrow-right" size={12} />
         </Link>
       </div>
-    </div>
+      <RailAgentFilter agents={agents} selected={agentIds} onChange={onAgentIdsChange} />
+      <div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto">
+        {hasFamily && (
+          <>
+            <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+              Related
+            </div>
+            {conversation && parent && (
+              <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Parent conversation
+              </div>
+            )}
+            {parent && row(relationRow(parent), isPinned(parent.id))}
+            {row(sessionRow(current), rowPin(current).pinned, parent ? 1 : 0, true)}
+            {conversation && children.length > 0 && (
+              <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Delegations
+              </div>
+            )}
+            {children.map((child, index) => {
+              const origin = childOriginById?.get(child.id)
+              const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
+              const originAgent = origin ? agents.find((agent) => agent.id === origin) : undefined
+              return (
+                <Fragment key={child.id}>
+                  {origin !== undefined && origin !== previousOrigin && (
+                    <div className="flex-none px-[9px] pt-[4px] pb-[1px] font-mono text-[9.5px] font-medium tracking-[0.06em] text-(--text-tertiary)">
+                      via {originAgent ? agentLabel(originAgent) : origin}
+                    </div>
+                  )}
+                  {row(relationRow(child), isPinned(child.id), parent ? 2 : 1)}
+                </Fragment>
+              )
+            })}
+            {siblings.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
+            {siblings.map((sibling) => row(relationRow(sibling), isPinned(sibling.id), 1))}
+            {ordinaryRows.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
+          </>
+        )}
+        {pinned.map((s) => row(sessionRow(s), true, 0, canonicalSessionId(s) === currentId))}
+        {pinned.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
+        {groups.map((g, i) => (
+          <Fragment key={g.bucket}>
+            {/* The first heading starts flush; separators already provide spacing
+                  when Related or pinned rows precede it. */}
+            <div
+              className={`flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase ${
+                i === 0 ? '' : 'pt-[11px]'
+              }`}
+            >
+              {g.label}
+            </div>
+            {g.rows.map((s) => row(sessionRow(s), false, 0, canonicalSessionId(s) === currentId))}
+          </Fragment>
+        ))}
+      </div>
+    </>
+  )
+
+  return (
+    <>
+      {/* ≥1240px: inline right column. The in-flow div only reserves the track (box
+          classes must match SessionRailSlot); the panel itself is FIXED to the
+          viewport's right edge — sticky inside the padded `.content` scroller gets
+          pushed down by its 34px top padding, so it could never sit flush. */}
+      <div className="-mr-[30px] hidden w-[250px] flex-none wide:block">
+        <div className="fixed top-0 right-0 bottom-0 flex w-[250px] flex-col border-l border-(--border-subtle) bg-(--surface-app) px-[13px] pt-[18px] pb-[10px]">
+          {body}
+        </div>
+      </div>
+      {/* 769–1239px: the rail collapses to a floating top-right button; hovering or
+          focusing it reveals the list in a popover. The pt-[6px] spacer keeps the
+          hover area contiguous between button and panel. */}
+      <div className="group fixed top-[10px] right-[14px] z-40 hidden desktop:max-wide:block">
+        <button
+          type="button"
+          aria-label="Sessions list"
+          aria-haspopup="true"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-(--border-default) bg-(--surface-card) text-(--text-secondary) shadow-(--shadow-sm) hover:text-(--text-primary) focus-visible:shadow-[0_0_0_3px_var(--brand-ring)] focus-visible:outline-none"
+        >
+          <Icon name="panel-right" size={16} />
+        </button>
+        <div className="absolute top-full right-0 hidden w-[264px] pt-[6px] group-focus-within:block group-hover:block">
+          <div className="flex max-h-[75vh] flex-col rounded-lg border border-(--border-default) bg-(--surface-card) p-[10px] shadow-(--shadow-lg)">
+            {body}
+          </div>
+        </div>
+      </div>
+      {/* ≤768px: the same list, dropped under the app bar by its shell-owned button.
+          The trigger lives in `.mtop` rather than floating over the page, so it
+          cannot cover the session title the way a fixed overlay would.
+
+          Both nodes are `fixed` and sit at the top level of this fragment ON PURPOSE:
+          the caller's row is a flex container with `gap-[26px]`, and an ordinary
+          wrapper div here — zero-width, but still a flex ITEM — would spend that gap
+          as 26px of dead space on the transcript's right edge. Positioned children
+          are out of flow, so they are not flex items and contribute no gap. */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 desktop:hidden" onClick={() => setMobileOpen(false)} aria-hidden="true" />
+      )}
+      {mobileOpen && (
+        <div
+          role="dialog"
+          aria-label="Sessions list"
+          className="fixed top-[52px] right-[8px] z-50 hidden max-h-[70vh] w-[min(300px,calc(100vw-16px))] flex-col rounded-lg border border-(--border-default) bg-(--surface-card) p-[10px] shadow-(--shadow-lg) max-desktop:flex"
+        >
+          {body}
+        </div>
+      )}
+    </>
   )
 }
 

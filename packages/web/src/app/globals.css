@@ -16,6 +16,10 @@
 @theme {
   --breakpoint-*: initial;
   --breakpoint-desktop: 769px;
+  /* `wide:` — the session detail page's three-column threshold (nav · body ·
+     session rail). Below it the rail collapses to a floating button; it is NOT
+     a general layout breakpoint — everything else keeps the single 769px one. */
+  --breakpoint-wide: 1240px;
   --leading-normal: normal;
   --default-transition-duration: var(--duration-fast);
   --default-transition-timing-function: var(--ease-standard);

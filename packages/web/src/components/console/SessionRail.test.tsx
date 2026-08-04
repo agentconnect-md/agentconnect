@@ -3,7 +3,7 @@
 // must never do is change its own width in response to data arriving. Its three
 // inputs — the agent-filtered session page, the session's family, and the reader's
 // filter — settle in any order and at any time, and every combination has to render
-// the same 224px column. These cases are the orderings that used to shift the page:
+// the same 250px column. These cases are the orderings that used to shift the page:
 // a rail that resolves to "no rows worth showing", and a one-row rail that learns
 // about lineage only after its own list has landed.
 
@@ -92,8 +92,8 @@ function railMarkup({
 // The column's width and its breakpoint gate, as they appear in the markup. A
 // change here is a change to the page's geometry, so it should fail loudly rather
 // than quietly move the transcript.
-const COLUMN = 'w-[224px]'
-const DESKTOP_ONLY = 'desktop:block'
+const COLUMN = 'w-[250px]'
+const WIDE_ONLY = 'wide:block'
 
 describe('SessionRail column', () => {
   it('holds its column with nothing to show, so the body does not re-centre', () => {
@@ -102,7 +102,7 @@ describe('SessionRail column', () => {
     const markup = railMarkup({ sessions: [], total: 0 })
 
     expect(markup).toContain(COLUMN)
-    expect(markup).toContain(DESKTOP_ONLY)
+    expect(markup).toContain(WIDE_ONLY)
     expect(markup).not.toContain('All sessions')
   })
 
@@ -140,7 +140,7 @@ describe('SessionRail column', () => {
     const slot = renderToStaticMarkup(<SessionRailSlot />)
 
     expect(slot).toContain(COLUMN)
-    expect(slot).toContain(DESKTOP_ONLY)
+    expect(slot).toContain(WIDE_ONLY)
     expect(railMarkup({ sessions: [session('a'), session('b')], total: 2 })).toContain(COLUMN)
   })
 })

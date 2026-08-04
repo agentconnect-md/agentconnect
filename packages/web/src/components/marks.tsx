@@ -209,8 +209,13 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
   // Marks render at 60% of their box to sit inside .av / .imark tiles; callers can override
   // fillPct — e.g. the Bots row fills a 14px box (fillPct=100) to match the design's full-bleed mark.
   const s = fillPct === 60 ? fill : ({ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' } as const)
+  // Slack / GitHub / Discord ship as full-bleed square glyphs with no internal
+  // padding of their own, so a caller asking for a full-bleed box (fillPct=100,
+  // e.g. the session rail rows) renders them visibly larger than every other mark
+  // beside them. Cap those three at 80% of the box.
+  const sq = fillPct > 80 ? ({ width: '80%', height: '80%', display: 'block' } as const) : s
   if (x.includes('github')) {
-    return <SiGithub style={s} color="currentColor" aria-hidden />
+    return <SiGithub style={sq} color="currentColor" aria-hidden />
   }
   if (x.includes('hook')) {
     return <IconifyIcon icon={webhooksLogoFillIcon} style={s} color="var(--brand)" aria-hidden />
@@ -249,13 +254,13 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
     return <SiTelegram style={s} color="#26A5E4" aria-hidden />
   }
   if (x.includes('disc')) {
-    return <SiDiscord style={s} color="#5865F2" aria-hidden />
+    return <SiDiscord style={sq} color="#5865F2" aria-hidden />
   }
   if (x.includes('feishu') || x.includes('lark')) {
     return <img src={LARK_MARK_SRC} alt="" style={s} className="object-contain" aria-hidden />
   }
   if (x.includes('slack')) {
-    return <IconifyIcon icon={slackIcon} style={s} aria-hidden />
+    return <IconifyIcon icon={slackIcon} style={sq} aria-hidden />
   }
   return (
     <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
