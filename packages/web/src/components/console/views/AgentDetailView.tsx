@@ -1627,6 +1627,7 @@ export default function AgentDetailView() {
             {da.workspace.mode === 'github' &&
               (da.workspace.worktree === true ||
                 selectedWorktreeSessionId !== null ||
+                workspaceSessionsNextCursor !== null ||
                 workspaceSessions.some((session) => session.workspaceIsolation === 'session')) && (
                 <WorkspaceScopePicker
                   sessions={workspaceSessions}
