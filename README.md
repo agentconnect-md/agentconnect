@@ -202,6 +202,7 @@ This repository is a pnpm workspace. Product packages live under `packages/`:
 - [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/oss-get-started)
 - [Architecture and detailed designs](docs/designs/)
 - [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
+- [Setup and integration diagnostics CLI](docs/designs/setup-cli.md)
 - [Daemon configuration](docs/designs/daemon-detailed-design.md)
 - [Config-file secrets](docs/config-file-secrets.md)
 - [Product conventions](docs/product-conventions.md)
