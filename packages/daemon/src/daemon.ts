@@ -4145,7 +4145,7 @@ export class Daemon {
         const merged = [...channels, ...ims]
         this.channelSnapshots.set(integrationId, { channels: merged, authoritative: true })
         this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
-        this.maybeIntroduceOnJoin(integrationId, channels)
+        this.maybeIntroduceOnJoin('slack', integrationId, channels)
       }
       this.log.debug(`slack: channel snapshot for bot ${conn.botUserId}: ${channels.length} channel(s)`)
     } catch (err) {
@@ -4165,10 +4165,9 @@ export class Daemon {
    * marked BEFORE dispatch, so a failed turn is simply skipped (never retried in a
    * loop). Not opted in ⇒ no seeding either, so enabling it later baselines cleanly.
    */
-  private maybeIntroduceOnJoin(integrationId: string, channels: { id: string }[]): void {
+  private maybeIntroduceOnJoin(platform: string, integrationId: string, channels: { id: string }[]): void {
     const agent = [...this.agents.values()].find((a) => a.integrations.some((i) => i.id === integrationId))
     if (!agent?.introduceOnJoin) return
-    const platform = 'slack'
     const plan = planChannelIntros(
       {
         seeded: this.store.isChannelIntroSeeded(integrationId),
@@ -9418,7 +9417,7 @@ export class Daemon {
     }
     const conn = this.replyConnFor(target.agentId, target.integrationId)
     // Where the command was sent — the reply lands here (Slack thread_ts; Telegram
-    // replies to the command message via tgReplyTo). Kept separate from the session the
+    // replies to the command message via its chrome surface's reply anchor). Kept separate from the session the
     // command ACTS on, resolved just below.
     const replyThread = msg.thread ?? msg.msgId
     // Resolve the session the command acts on. A command that isn't in a session's own

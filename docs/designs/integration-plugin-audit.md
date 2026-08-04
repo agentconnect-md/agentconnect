@@ -316,6 +316,88 @@ in §1.
 
 ---
 
+## 9. S2 exit reconciliation (2026-08-04)
+
+S2's exit criterion (design §13): _`daemon.ts` compiles with zero
+platform-conditional edits remaining for the four chat platforms — the audited
+branches are **gone or reclassified** — and evals implement the published
+interface with the Arena suite passing unchanged._ This section is the
+reconciliation.
+
+### 9.1 What landed
+
+Sixteen PRs (#525–#536, #538–#540, #542), in dependency order: Layer 1
+connection contract (`platforms/contract.ts`), the keyed connection registry
+(`platforms/registry.ts`), Layer 2 turn output in two shapes
+(`TurnOutputSurface` for the four streaming platforms, `TurnFinalSurface` for
+GitHub), the four platform turn-output modules, the §5 manifest facet
+(`membershipEnumeration`, `dmChannelPattern`), and eight class-(c) strategy
+batches: loop-guard scopes, member-id recognition, command chrome,
+ingress coordinate semantics (`thread-keys`, `malformed-turn`,
+`thread-promotion`), platform-action decoders + link source, binding-map read
+side + observed channels, transport identity + conversation audience, and the
+turn-chrome facet with surface teardown hooks.
+
+### 9.2 Remaining platform literals in `daemon.ts` — all reclassified
+
+Eleven comparison sites survive, none of them a core branch. Each is platform
+code reached only through a platform-specific entry point, i.e. a FILE-MOVE
+candidate (the mechanical relocation to `platforms/<id>/` that class (a)
+prescribes), not a dispatch fork:
+
+| sites                                                         | what                                                                                 | reached via                                                                                                           |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| 5 in `handleRelaySlackAction`                                 | shared-mode integration lookup, delivery-binding validation, foreign-session rejects | `platformActionDecoders['slack']` only                                                                                |
+| 1 in `handleRelayFeishuAction`                                | shared-mode integration lookup                                                       | `platformActionDecoders['feishu']` only                                                                               |
+| 2 in `isHttpSlackIntegration` / `isShareableSlackIntegration` | Slack shared-mode predicates over the frozen (#516) disk shape                       | Slack-only flows (relay-owned action ids, switch-agent gate)                                                          |
+| 2 in `setSlackTitleForBinding`                                | the Slack DM-title binding writer's own validation                                   | `dmSessionTitle` turn-chrome gate                                                                                     |
+| 1 in `isAgentBotMessage`                                      | managed-Slack-bot echo identity (`botSenderRouting`)                                 | ingress trust check, entangled with the CP collab snapshot's Slack app-id index — moves with the Slack ingress module |
+
+Non-branch platform code still in shared files, likewise pending file moves,
+not extraction: the per-platform connect/consolidate loops (`slackRetryTimers`
+and friends — audit rows 2774/3317/3441, class a) and the two
+`sessionLink(…, 'slack')` literals inside Slack-only status-bar/modal flows.
+
+### 9.3 Blind-spot checklist (§6) sweep results
+
+1. **instanceof as branch** — 14 sites remain, each now the _sanctioned_ gate
+   (duck-type boundary of platform code) rather than a hidden fork; four
+   redundant platform literals that shadowed a stronger instanceof/capability
+   gate were dropped with the gate named (#542).
+2. **Capability probes** — now the sanctioned Layer-1 read-port mechanism
+   (`getThreadReplies`, `getChannelInfo`, `workspaceId?.()`).
+3. **Map-membership forks** — read side unified (`integrationBindings`,
+   #539); the typed maps stay per §7.5.
+4. **Hardcoded literals** — `maybeIntroduceOnJoin`'s `const platform = 'slack'`
+   parameterized (caller passes its platform as data); the two `sessionLink`
+   hints are inside Slack-gated flows (§9.2).
+5. **Id-syntax** — `startsWith('D')` → manifest `dmChannelPattern`;
+   `slackTsMicros`/`compareSlackTs` no longer referenced in `daemon.ts`
+   (platform modules own them).
+6. **Named per-platform fields** — dual-shape readers in place (#518/#536);
+   the named fields retire with the S1b legacy-emission flip, not S2.
+7. **Per-platform state** — `staleReplyFooters`/`feishuStreamTimer`/`tgReplyTo`
+   now live in the opaque per-turn slots; `slackRetryTimers` belongs to the
+   reconcile loops (§9.2 file-move set).
+8. **SQL literals** — `platform <> 'dream'` (local-store) is origin-kind
+   filtering, class (d).
+   9–12, 16. Relay / CP / web items — S3 scope, unchanged by S2.
+9. **Constraint-level branching** — resolved in S1b (#512 generic identity
+   columns).
+10. **Identity-template arity** — realm composition now owned by the
+    transport-identity / session-audience strategies (#540).
+11. **Comment-only invariants** — re-derived in S1a (#504/#507).
+12. False positives excluded throughout (`workspace.mode === 'github'`,
+    `'dream'` memory-write source).
+
+### 9.4 Evals and Arena
+
+`VirtualSlackConnection` / `VirtualDiscordConnection` implement the published
+Layer-1 `PlatformConnection` (`evaluation/virtual-connections.ts`), eval
+integrations resolve through the same §7.5 registry with prune immunity, and
+the evaluation/game ingress suites (`test/evaluation-game-ingress.test.ts`,
+`test/platform-contract.test.ts`) pass unchanged in the 2 847-test daemon run.
+
 ## Appendix A — `packages/daemon/src` (shared/core files; per-platform dirs excluded)
 
 ### 1. Findings
