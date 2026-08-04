@@ -3,7 +3,7 @@
 import { act, useEffect, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TELEGRAM_PRIVACY_RECHECK_MS, useTelegramPrivacyAutoRefresh } from './telegram-privacy-auto-refresh'
+import { TELEGRAM_PRIVACY_RECHECK_MS, useTelegramPrivacyAutoRefresh } from './privacy-auto-refresh'
 
 let container: HTMLDivElement
 let root: Root
