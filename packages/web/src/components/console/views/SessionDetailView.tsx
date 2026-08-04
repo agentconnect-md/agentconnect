@@ -55,6 +55,7 @@ import {
   fetchToolBody,
   fmtCost,
   fmtCountCompact,
+  fmtDate,
   memberDisplayName,
   mergeSessionDetailUsage,
   sessionFromDetailDto,
@@ -2500,6 +2501,11 @@ export default function SessionDetailView() {
   // `turns`, so once you've sent one the empty card gives way to the transcript.
   const transcriptEmpty =
     wantTranscript && !visibleMsgLoading && !visibleMsgErr && (visibleMsgs?.length ?? 0) === 0 && turns.length === 0
+  // Retention GC (#485): the owning daemon deleted this session's local content,
+  // so its emptiness is FINAL, not pending. This replaces both the "no messages
+  // yet" card (nothing is coming) and the daemon-offline error (bringing the
+  // daemon back would not bring the transcript back).
+  const transcriptPurged = wantTranscript && !!session.contentPurgedAt && turns.length === 0
   const prompts = pgPrompts(session.agentId ?? '')
   const loadedTranscriptStats = wantTranscript && visibleMsgs !== null ? activityStatsFromTranscript(visibleMsgs) : null
   const liveActivityStats = isPg ? activityStatsFromSteps(session.steps) : activityStatsFromSteps(liveSteps)
@@ -2899,7 +2905,7 @@ export default function SessionDetailView() {
             </span>
           </div>
         )}
-        {wantTranscript && visibleMsgErr && (
+        {wantTranscript && visibleMsgErr && !transcriptPurged && (
           <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
             <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
             <span>
@@ -2908,7 +2914,17 @@ export default function SessionDetailView() {
             </span>
           </div>
         )}
-        {transcriptEmpty && (
+        {transcriptPurged && (
+          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+            <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+            <span>
+              This transcript was deleted on {fmtDate(session.contentPurgedAt ?? null)} by the daemon&apos;s session
+              retention policy, together with any workspace it had. The details on this page are all that remain of the
+              session.
+            </span>
+          </div>
+        )}
+        {transcriptEmpty && !transcriptPurged && (
           <div className="card m-4 flex flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:m-0">
             <Icon name="message-square-dashed" size={20} color="var(--text-tertiary)" />
             <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">

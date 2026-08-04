@@ -938,6 +938,14 @@ model SessionMeta {
   legacyUnresolved    Boolean             @default(false)
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.
+  // ── retention GC receipt (#485, `event/session-purged`) ──
+  // When the owning daemon deleted this session's local row (and any per-session
+  // worktree) after its retention window. The metadata row deliberately SURVIVES
+  // — it is all that remains — so the console can say the transcript was deleted
+  // instead of rendering the now-permanently-empty history as "no messages".
+  // First-wins: an at-least-once re-report keeps the original stamp.
+  contentPurgedAt     DateTime?           @db.Timestamptz(6)
+  contentPurgedReason String? // SessionPurgeReason ('retention'); null while not purged
   lastActivityAt      DateTime            @db.Timestamptz(3)
   startedAt           DateTime            @default(now()) @db.Timestamptz(3)
   endedAt             DateTime?           @db.Timestamptz(6)

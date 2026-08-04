@@ -266,3 +266,46 @@ describe('legacy Slack Agent attribution', () => {
     expect(authors.has('B0UNTRUSTED')).toBe(false)
   })
 })
+
+describe('retention-GC purge mark (#485)', () => {
+  it('carries contentPurgedAt from the list row and the detail response', () => {
+    const purged = sessionFromDto(sessionDto({ contentPurgedAt: '2026-08-04T09:00:00.000Z' }))
+    expect(purged.contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+
+    // A live row must not look purged: the views read presence, not a value.
+    expect(sessionFromDto(sessionDto({})).contentPurgedAt).toBeUndefined()
+    expect(sessionFromDto(sessionDto({ contentPurgedAt: null })).contentPurgedAt).toBeUndefined()
+  })
+
+  it('carries contentPurgedAt through the detail hydration path too', () => {
+    const detail = {
+      id: 'purged-session',
+      parentSession: null,
+      siblingSessions: [],
+      childSessions: [],
+      agentId: 'target-agent',
+      platform: 'slack',
+      channel: 'C123',
+      thread: null,
+      title: 'expired review',
+      status: 'completed',
+      lastActivityAt: '2026-07-01T00:00:00.000Z',
+      usage: null,
+      triggeredBy: null,
+      channelName: null,
+      triggeredByName: null,
+      threadUrl: null,
+      runtime: null,
+      model: null,
+      effort: null,
+      fastMode: null,
+      permissionMode: null,
+      outputMode: null,
+      daemonId: null,
+      contentPurgedAt: '2026-08-04T09:00:00.000Z',
+      contentPurgedReason: 'retention'
+    } satisfies SessionDetailDto
+
+    expect(sessionFromDetailDto(detail).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+  })
+})

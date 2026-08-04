@@ -25,6 +25,7 @@ import {
   transcriptQuoted,
   type InboxRow,
   type OrchestrationRow,
+  type SessionPurgeRow,
   type SessionRecord,
   type SubtaskRow,
   type TranscriptEntry,
@@ -279,7 +280,8 @@ import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   MAX_AGENT_CALL_HOPS,
-  originKindOf
+  originKindOf,
+  SessionPurgeReason
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
@@ -707,6 +709,15 @@ const PROBE_ROOT_SWEEP_INTERVAL_MS = 15 * 60_000
  *  window is measured in days, so an hourly pass is plenty — each pass walks the
  *  expired rows and may run several git commands per candidate. */
 const SESSION_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000
+
+/** Receipts per `event/session-purged` frame. Matches the protocol schema's cap,
+ *  which sits far under the frame budget (a batch of ACP ids is tiny). */
+const MAX_SESSION_PURGE_BATCH = 200
+
+/** How long an unacknowledged retention-GC receipt is retained. Bounds the outbox
+ *  for a daemon that never reaches a CP new enough to accept the report; well past
+ *  any realistic outage or upgrade lag, and the drop is logged, never silent. */
+const SESSION_PURGE_RECEIPT_TTL_MS = 30 * 24 * 3_600_000
 
 // Last-resort feedback-loop protection. The lower automatic threshold catches
 // agent/system/platform-echo chains; the higher all-turn threshold still stops a
@@ -2004,6 +2015,9 @@ export class Daemon {
   // Single-flight for the retention pass — a slow git cleanup must not overlap
   // the next sweep's pass (the sweep itself is synchronous, the GC is not).
   private sessionRetentionSweepInFlight = false
+  // Single-flight for the purge-receipt drain (#485): the sweep and a CP reconnect
+  // can both trigger it, and each batch awaits a correlated ACK.
+  private sessionPurgeDrainInFlight = false
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -16194,6 +16208,12 @@ export class Daemon {
     try {
       const expired = this.store.listExpiredSessions(this.clock.now() - windowMs)
       if (!expired.length) return
+      // ONE stamp for the whole pass, not one per session: it is the sweep that
+      // deleted them, and a shared value lets the drain report a pass as a single
+      // frame while still carrying each row's true purge time (a per-session
+      // millisecond would force either one frame per session or a batch stamp
+      // that backdates every row to the oldest in the backlog).
+      const purgedAt = this.clock.now()
       let removed = 0
       let retained = 0
       let active = 0
@@ -16233,7 +16253,10 @@ export class Daemon {
           active += 1
           continue
         }
-        if (this.store.deleteSession(rec.key)) {
+        // The purge receipt is written in deleteSession's transaction: the CP holds
+        // the only surviving record of this session, and it must be told that the
+        // content behind it is gone (drained below, durably, on ACK).
+        if (this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt })) {
           removed += 1
           if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
         }
@@ -16244,8 +16267,100 @@ export class Daemon {
           (active ? `, ${active} still active` : '') +
           (failed ? `, ${failed} failed` : '')
       )
+      if (removed) void this.drainSessionPurges()
     } finally {
       this.sessionRetentionSweepInFlight = false
+    }
+  }
+
+  /**
+   * Report retention-GC deletions to the CP (#485) so the metadata rows that
+   * OUTLIVE the purged sessions are marked content-purged — that mark is what
+   * lets the console explain the permanently empty transcript instead of showing
+   * it as a session that said nothing.
+   *
+   * Drains the durable receipt table grouped by (agent, reason, purge time) — the
+   * CP authorizes each report against that agent's placement, and every session in
+   * a frame must genuinely share the reason and timestamp the frame carries. A
+   * receipt is released only on the ACK; a CP that is offline, older than the
+   * feature, or failing keeps them all for the next sweep or reconnect. Never
+   * throws: this rides the idle sweep.
+   */
+  private async drainSessionPurges(): Promise<void> {
+    const cp = this.cpClient
+    // Skip quietly while the socket is down: the receipts are durable and the
+    // reconnect drains them, so attempting the request here would only log a
+    // failure every sweep for a daemon that is deliberately running local.
+    if (!cp || (cp.state !== 'READY' && cp.state !== 'DRAINING')) return
+    if (this.sessionPurgeDrainInFlight) return
+    this.sessionPurgeDrainInFlight = true
+    try {
+      const stale = this.store.pruneSessionPurges(this.clock.now() - SESSION_PURGE_RECEIPT_TTL_MS)
+      if (stale)
+        this.log.warn(
+          `retention: dropped ${stale} unreported session-purge receipt(s) older than ${
+            SESSION_PURGE_RECEIPT_TTL_MS / (24 * 3_600_000)
+          }d — those sessions stay unmarked in the control plane`
+        )
+      // Bounded per pass: whatever is left is picked up by the next sweep or
+      // reconnect, so a large backlog drains steadily instead of in one burst.
+      const owed = this.store.listSessionPurges(MAX_SESSION_PURGE_BATCH * 10)
+      if (!owed.length) return
+      // One group per (agent, reason, purge time): the frame states all three for
+      // every session it carries, so rows that disagree on any of them must not
+      // ride together. Sessions purged by one sweep share a stamp, so the normal
+      // case is still a single frame per agent per pass.
+      const groups = new Map<string, SessionPurgeRow[]>()
+      for (const row of owed) {
+        const key = `${row.agentId} ${row.reason} ${row.purgedAt}`
+        const bucket = groups.get(key)
+        if (bucket) bucket.push(row)
+        else groups.set(key, [row])
+      }
+      let reported = 0
+      let skippedReasons = 0
+      for (const rows of groups.values()) {
+        const { agentId, reason, purgedAt } = rows[0]!
+        // A reason this build cannot express on the wire would be silently
+        // mislabeled as something else, so report the gap and keep the receipts.
+        const parsed = SessionPurgeReason.safeParse(reason)
+        if (!parsed.success) {
+          skippedReasons += rows.length
+          continue
+        }
+        for (let i = 0; i < rows.length; i += MAX_SESSION_PURGE_BATCH) {
+          const batch = rows.slice(i, i + MAX_SESSION_PURGE_BATCH)
+          try {
+            const result = await cp.emitSessionPurged({
+              agentId,
+              sessionIds: batch.map((row) => row.sessionId),
+              reason: parsed.data,
+              ts: new Date(purgedAt).toISOString()
+            })
+            if (result === 'unsupported') {
+              this.log.debug('retention: control plane does not accept purge receipts yet — keeping them')
+              return
+            }
+            this.store.acknowledgeSessionPurges(
+              agentId,
+              batch.map((row) => row.sessionId)
+            )
+            reported += batch.length
+          } catch (err) {
+            // Keep the receipts. The report is idempotent on the CP, so re-sending
+            // an already-applied batch after a lost ACK is safe.
+            this.log.warn(`retention: purge receipt report failed for agent ${agentId} (${formatErr(err)})`)
+            return
+          }
+        }
+      }
+      if (skippedReasons)
+        this.log.warn(`retention: ${skippedReasons} purge receipt(s) carry a reason this build cannot report — kept`)
+      if (reported) this.log.info(`retention: reported ${reported} purged session(s) to the control plane`)
+    } catch (err) {
+      this.log.warn(`retention: purge receipt drain failed (${formatErr(err)})`)
+    } finally {
+      this.sessionPurgeDrainInFlight = false
     }
   }
 
@@ -18178,6 +18293,10 @@ export class Daemon {
         // Replay remote MCP revocations that could not reach the CP (revokes
         // queued while disconnected or left over from a previous process).
         void this.drainWebchatMcpRevocations()
+        // ...and the retention-GC receipts (#485). A sweep that ran while the CP
+        // was unreachable (or before it advertised the feature) left the deleted
+        // sessions' metadata rows unmarked; this is the only side that still knows.
+        void this.drainSessionPurges()
         // ...and each CP cron's stored last-run stamp — fires while the CP was
         // unreachable would otherwise never land (latest-wins upsert, so
         // re-asserting an already-known stamp is a no-op).

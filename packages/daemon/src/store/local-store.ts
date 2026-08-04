@@ -387,6 +387,16 @@ export interface LoopGuardVerdict {
   reason?: string
 }
 
+/** One retention-GC receipt (#485) owed to the CP: this daemon deleted the
+ *  session's local content and the CP has not yet acknowledged the report. */
+export interface SessionPurgeRow {
+  agentId: string
+  /** The ACP session id — the only session identity the CP knows. */
+  sessionId: string
+  reason: string
+  purgedAt: number
+}
+
 /**
  * One daemon-local external-memory capture. The conversation body never leaves
  * this table except through the selected plugin data plane; CP frames and logs
@@ -583,6 +593,22 @@ export class LocalStore {
         cpRev INTEGER NOT NULL DEFAULT 0,
         updatedAt INTEGER
       );
+      -- Retention-GC receipts (#485): sessions this daemon has already deleted
+      -- locally, still owed to the CP as an event/session-purged report. Durable
+      -- because the local row is GONE — unlike every other D→C report, an
+      -- unacknowledged receipt cannot be re-derived from daemon state later, so
+      -- losing it would leave the console rendering a permanently empty transcript
+      -- with no explanation. Rows are dropped only on the CP's ACK.
+      -- Keyed by (agentId, sessionId): ACP session ids are runtime-local, so two
+      -- agents can both have purged an acp-1.
+      CREATE TABLE IF NOT EXISTS session_purges (
+        agentId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        purgedAt INTEGER NOT NULL,
+        PRIMARY KEY (agentId, sessionId)
+      );
+      CREATE INDEX IF NOT EXISTS session_purges_fifo ON session_purges (purgedAt);
       -- Minted durable tenant scopes for platforms that expose none (§2).
       CREATE TABLE IF NOT EXISTS tenant_scopes (
         integrationId TEXT PRIMARY KEY,
@@ -2338,11 +2364,23 @@ export class LocalStore {
    *  only when no surviving session still references the ACP id: ACP session ids
    *  are runtime-local, so two agents can both hold an `acp-1`.
    *  Returns false when the row is already gone (idempotent). */
-  deleteSession(key: string): boolean {
+  deleteSession(key: string, purge?: { reason: string; at: number }): boolean {
     const rec = this.getSession(key)
     if (!rec) return false
     this.db.exec('BEGIN')
     try {
+      // The CP-owed receipt is written in the SAME transaction as the delete: the
+      // fact "this session's content is gone" must not be able to exist without
+      // the report that carries it, in either direction. Only a session that bound
+      // an ACP id was ever reported to the CP, so only that one has a row to mark.
+      // OR IGNORE keeps the FIRST stamp if a still-unacked receipt is somehow
+      // re-created for the same id — the console should show when the content
+      // actually went away, not when the daemon last retried.
+      if (purge && rec.acpSessionId) {
+        this.db
+          .prepare('INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt) VALUES (?, ?, ?, ?)')
+          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at)
+      }
       this.db.prepare('DELETE FROM sessions WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
@@ -2367,6 +2405,42 @@ export class LocalStore {
       throw err
     }
     return true
+  }
+
+  /** Retention-GC receipts still owed to the CP, oldest purge first, bounded.
+   *  Grouped per agent by the caller: one `event/session-purged` frame reports one
+   *  agent, because the CP authorizes the report against that agent's placement. */
+  listSessionPurges(limit: number): SessionPurgeRow[] {
+    return this.db
+      .prepare('SELECT agentId, sessionId, reason, purgedAt FROM session_purges ORDER BY purgedAt ASC LIMIT ?')
+      .all(limit) as unknown as SessionPurgeRow[]
+  }
+
+  /** Settle receipts the CP has ACKed. Scoped by agent: the same ACP id may still
+   *  be owed for a different agent (ids are runtime-local). */
+  acknowledgeSessionPurges(agentId: string, sessionIds: string[]): void {
+    if (sessionIds.length === 0) return
+    const stmt = this.db.prepare('DELETE FROM session_purges WHERE agentId = ? AND sessionId = ?')
+    this.db.exec('BEGIN')
+    try {
+      for (const sessionId of sessionIds) stmt.run(agentId, sessionId)
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
+  /** Abandon receipts older than `cutoff`, returning how many were dropped so the
+   *  caller can report it. Bounds the outbox for a daemon that never reaches a CP
+   *  new enough to accept the report: after this long the CP row (if it exists at
+   *  all) is stale metadata no one is waiting on, and an unbounded table would be
+   *  the worse outcome. */
+  pruneSessionPurges(cutoff: number): number {
+    const before = this.db.prepare('SELECT COUNT(*) AS n FROM session_purges').get() as { n: number } | undefined
+    this.db.prepare('DELETE FROM session_purges WHERE purgedAt < ?').run(cutoff)
+    const after = this.db.prepare('SELECT COUNT(*) AS n FROM session_purges').get() as { n: number } | undefined
+    return Math.max(0, (before?.n ?? 0) - (after?.n ?? 0))
   }
 
   // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──

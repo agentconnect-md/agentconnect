@@ -13,6 +13,7 @@ import type {
   UsageReport,
   EventSession,
   SessionActivity,
+  SessionPurged,
   IntegrationChannels,
   CronReport,
   HookReport,
@@ -91,6 +92,7 @@ import {
   encode,
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
+  SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
@@ -538,6 +540,27 @@ export class CpClient {
   emitEventSession(event: EventSession): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     this.transport?.send(encode(buildEnvelope('event/session', event)))
+  }
+
+  /**
+   * Report retention-GC deletions (D→C `event/session-purged` REQ → `ack`, #485)
+   * so the CP marks the surviving metadata rows content-purged.
+   *
+   * Correlated rather than fire-and-forget, unlike every other session report: the
+   * local rows are already deleted, so a dropped frame could never be re-derived
+   * — the daemon holds a durable receipt and releases it only on this ACK.
+   * Returns `'unsupported'` when the CP does not advertise
+   * {@link SESSION_PURGE_FEATURE}: an older CP rejects the unknown frame type
+   * outright, so the receipts are kept for a post-upgrade reconnect instead.
+   */
+  async emitSessionPurged(purged: SessionPurged): Promise<'acknowledged' | 'unsupported'> {
+    this.requireReady('event/session-purged')
+    if (!this.supportsServerFeature(SESSION_PURGE_FEATURE)) return 'unsupported'
+    const rep = await this.request('event/session-purged', purged)
+    if (rep.type !== 'ack' || rep.payload.ok !== true) {
+      throw new WireError('INTERNAL', `expected event/session-purged ack, got ${rep.type}`, false)
+    }
+    return 'acknowledged'
   }
 
   /** Signal a durable transcript mutation without putting message content on the control WS. */

@@ -1680,6 +1680,120 @@ describe('Daemon session retention GC (#485)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('reports each purged session to the CP and clears the receipt only on the ACK', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+    const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+    ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
+
+    seedSession(daemon, 'expired-a', 'closed', 0)
+    seedSession(daemon, 'expired-b', 'idle', 0)
+    clock.advance(8 * 24 * 3_600_000)
+    await (daemon as any).sweepSessionRetention()
+    await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce())
+
+    // One frame per agent, carrying the ACP session ids — the only session
+    // identity the CP knows.
+    expect(emitSessionPurged.mock.calls[0]![0]).toMatchObject({
+      agentId: 'bot-a',
+      reason: 'retention'
+    })
+    expect(emitSessionPurged.mock.calls[0]![0].sessionIds.sort()).toEqual(['acp-expired-a', 'acp-expired-b'])
+    // ACKed ⇒ the durable receipts are released.
+    expect((daemon as any).store.listSessionPurges(10)).toEqual([])
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('never reports a session under another purge time or agent', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+    const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+    ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
+    const store = (daemon as any).store
+
+    // Two sweeps' worth of receipts plus a second agent: every frame states one
+    // agent + reason + timestamp for all the sessions it carries, so a row may
+    // never ride in a frame that would mislabel when (or by whom) it was purged.
+    store.deleteSession('x', { reason: 'retention', at: 1_000 }) // absent row — no receipt
+    seedSession(daemon, 'sweep-1a', 'closed', 0)
+    seedSession(daemon, 'sweep-1b', 'closed', 0)
+    store.deleteSession('sweep-1a', { reason: 'retention', at: 1_000 })
+    store.deleteSession('sweep-1b', { reason: 'retention', at: 1_000 })
+    seedSession(daemon, 'sweep-2', 'closed', 0)
+    store.deleteSession('sweep-2', { reason: 'retention', at: 2_000 })
+
+    await (daemon as any).drainSessionPurges()
+
+    expect(emitSessionPurged).toHaveBeenCalledTimes(2)
+    const frames = emitSessionPurged.mock.calls
+      .map((call) => call[0])
+      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+    expect(frames[0]!.sessionIds.sort()).toEqual(['acp-sweep-1a', 'acp-sweep-1b'])
+    expect(frames[0]!.ts).toBe(new Date(1_000).toISOString())
+    expect(frames[1]!.sessionIds).toEqual(['acp-sweep-2'])
+    expect(frames[1]!.ts).toBe(new Date(2_000).toISOString())
+    expect(store.listSessionPurges(10)).toEqual([])
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('leaves the receipts alone while the CP socket is down', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+    const emitSessionPurged = vi.fn()
+    ;(daemon as any).cpClient = { emitSessionPurged, state: 'DEGRADED', stop: vi.fn(async () => {}) }
+
+    seedSession(daemon, 'expired-a', 'closed', 0)
+    clock.advance(8 * 24 * 3_600_000)
+    await (daemon as any).sweepSessionRetention()
+
+    // Not even attempted: the receipt is durable and the reconnect drains it, so a
+    // request here would only log a failure on every sweep of a local-only daemon.
+    expect(emitSessionPurged).not.toHaveBeenCalled()
+    expect((daemon as any).store.listSessionPurges(10)).toHaveLength(1)
+
+    await daemon.stop()
+  }, 15_000)
+
+  it('keeps the purge receipts when the CP cannot accept them yet', async () => {
+    const clock = new FakeClock()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })
+    await daemon.start()
+    // A CP that does not advertise the feature would reject the unknown frame, so
+    // the receipt must survive for a post-upgrade reconnect.
+    ;(daemon as any).cpClient = {
+      emitSessionPurged: vi.fn(async () => 'unsupported' as const),
+      state: 'READY',
+      stop: vi.fn()
+    }
+
+    seedSession(daemon, 'expired-a', 'closed', 0)
+    clock.advance(8 * 24 * 3_600_000)
+    await (daemon as any).sweepSessionRetention()
+    await (daemon as any).drainSessionPurges()
+
+    expect((daemon as any).store.listSessionPurges(10)).toMatchObject([
+      { agentId: 'bot-a', sessionId: 'acp-expired-a', reason: 'retention' }
+    ])
+
+    // ...and a reporting failure is equally non-destructive.
+    ;(daemon as any).cpClient = {
+      emitSessionPurged: vi.fn(async () => {
+        throw new Error('control plane unreachable')
+      }),
+      state: 'READY',
+      stop: vi.fn()
+    }
+    await (daemon as any).drainSessionPurges()
+    expect((daemon as any).store.listSessionPurges(10)).toHaveLength(1)
+
+    await daemon.stop()
+  }, 15_000)
+
   it('a session with pending durable inbox work is treated as active and kept', async () => {
     const clock = new FakeClock()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any, clock })

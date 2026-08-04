@@ -378,6 +378,10 @@ export interface SessionDto {
   permissionMode: string | null // effective session preset; Codex Auto is composite
   outputMode: string | null
   daemonId: string | null
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content. Non-null ⇒ the transcript is gone for good. Absent on a CP that
+   *  predates the field. */
+  contentPurgedAt?: string | null
 }
 
 export interface SessionFacetsDto {
@@ -514,6 +518,11 @@ export interface SessionDetailDto {
   /** Durable workspace/tenant scope (merged-conversation-view.md §5.1) — part of
    *  the conversation key. Absent on a CP that predates the feature. */
   tenantScope?: string | null
+  /** Retention GC (#485): when the owning daemon deleted this session's local
+   *  content (and any per-session worktree), with the reason it reported. Non-null
+   *  ⇒ `/messages` has nothing left to return, ever. Absent on older CPs. */
+  contentPurgedAt?: string | null
+  contentPurgedReason?: string | null
 }
 
 // The full ACP tool body (protocol `ToolBody`), transported as a JSON STRING in
@@ -1818,7 +1827,10 @@ export function sessionFromDto(d: SessionDto): Session {
     ...(d.fastMode !== null && d.fastMode !== undefined ? { fastMode: d.fastMode } : {}),
     ...(d.permissionMode !== null && d.permissionMode !== undefined ? { permissionMode: d.permissionMode } : {}),
     ...(d.outputMode !== null && d.outputMode !== undefined ? { outputMode: d.outputMode } : {}),
-    ...(d.daemonId !== null && d.daemonId !== undefined ? { daemon: d.daemonId } : {})
+    ...(d.daemonId !== null && d.daemonId !== undefined ? { daemon: d.daemonId } : {}),
+    // Retention GC (#485): only ever set, never cleared to a falsy marker — the
+    // views treat "absent" as "content is still there".
+    ...(d.contentPurgedAt ? { contentPurgedAt: d.contentPurgedAt } : {})
   }
 }
 
@@ -1858,7 +1870,8 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     fastMode: d.fastMode,
     permissionMode: d.permissionMode,
     outputMode: d.outputMode,
-    daemonId: d.daemonId
+    daemonId: d.daemonId,
+    contentPurgedAt: d.contentPurgedAt ?? null
   })
   return participants ? { ...base, participants } : base
 }

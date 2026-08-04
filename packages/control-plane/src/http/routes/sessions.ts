@@ -282,7 +282,8 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
     daemonId: s.daemonId ?? null,
     visibility: s.visibility,
     externalProvider: s.externalProvider,
-    externalResolution: s.externalResolution
+    externalResolution: s.externalResolution,
+    contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null
   }
 }
 
@@ -751,6 +752,8 @@ export function sessionRoutes(deps: HttpDeps) {
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
           canChangeVisibility: canChangeSessionVisibility(s, ctx, access.identitySet),
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
+          contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,
+          contentPurgedReason: s.contentPurgedReason ?? null,
           startedAt: s.startedAt.toISOString(),
           endedAt: s.endedAt ? s.endedAt.toISOString() : null
         }
@@ -780,6 +783,15 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const { session, agent } = owned
+        // Retention GC (#485): the daemon deleted this session's local content, so
+        // there is provably nothing to proxy. Answer the empty page directly rather
+        // than round-tripping to a daemon that would return the same thing — and
+        // rather than 503-ing when its daemon happens to be offline, which would
+        // read as "try again later" for a transcript that is never coming back. The
+        // console keys its explanation off `contentPurgedAt`, not off this page.
+        if (session.contentPurgedAt) {
+          return { sessionId: session.id, messages: [], nextCursor: null, liveCursor: null, liveMore: false }
+        }
         if (!agent.daemonId) {
           return reply
             .code(503)
