@@ -26,7 +26,7 @@ import {
   type HttpSlackSessionShortcut,
   type SlackInteractiveBody,
   type SlackMessageEvent
-} from '../../slack-http-ingest.js'
+} from './http-ingest.js'
 import { verifySlackSignature } from '../../hooks/signature.js'
 import { sessionKeyOf } from '../../bot-arbitration.js'
 import type { BotAssignment } from '../../bot-arbitration.js'

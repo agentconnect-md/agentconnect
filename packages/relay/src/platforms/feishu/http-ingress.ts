@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify'
-import type { Logger } from './log.js'
+import type { Logger } from '../../log.js'
 import {
   type FeishuCallbackHeaders,
   type FeishuHttpIngest,
   feishuCallbackAppId,
   type VerifiedFeishuCallback
-} from './feishu-http-ingest.js'
+} from './http-ingest.js'
 
 export const FEISHU_BODY_LIMIT = 1024 * 1024
 const FEISHU_CARD_ACTION_RESPONSE_TIMEOUT_MS = 2_500

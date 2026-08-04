@@ -38,7 +38,7 @@ import {
   type SharedSlackStatusTarget,
   type WireNormalizedMessage
 } from '@agentconnect.md/protocol'
-import type { Logger } from './log.js'
+import type { Logger } from '../../log.js'
 
 export { normalizeSlackMessage } from '@agentconnect.md/message'
 export type SlackMessageEvent = SlackMessageLike
