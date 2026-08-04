@@ -8813,7 +8813,8 @@ export class Daemon {
    * {@link MessageAgentResult}. The `claimedFromAgentId` is our trusted caller — the
    * relay re-validates it against our authenticated daemonId (a forged claim is
    * rejected there). `sourceHopCount` is the trusted source turn's depth; the relay
-   * increments it (+1, cap 8). The body never touches the CP — only the relay.
+   * increments it (+1, capped at MAX_AGENT_CALL_HOPS). The body never touches the CP —
+   * only the relay.
    */
   private async routeAgentMsgCrossDaemon(
     req: MessageAgentReq,

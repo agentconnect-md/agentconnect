@@ -22,7 +22,7 @@
  *     coordinate for the woken session, not as an authorization input;
  *  d) check the caller's outbound policy AND the target's inbound policy
  *     (cross-org / either denial → typed NAK);
- *  e) increment hopCount (inbound+1, cap 8, §2.4);
+ *  e) increment hopCount (inbound+1, capped at MAX_AGENT_CALL_HOPS, §2.4);
  *  f) forward `rd/agentmsg/fwd` with a TRUSTED caller claim (trustedFromAgentId + org/
  *     channel assertion) to the owning daemon and relay its admission verdict back.
  *
