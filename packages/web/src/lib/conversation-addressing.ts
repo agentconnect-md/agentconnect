@@ -91,3 +91,19 @@ export function typedMentionIds(
   const mentioned = new Set([...claims.values()].flatMap((c) => c.ids))
   return roster.filter((p) => mentioned.has(p.agentId)).map((p) => p.agentId)
 }
+
+/** Where a `/sessions/:id` deep link goes when its session turns out to belong
+ *  to a multi-participant conversation (merged-conversation-view.md §5.3).
+ *
+ *  The path is BARE. The landing carries no per-participant focus, so arriving
+ *  from a GitHub footer or a shared URL looks exactly like arriving from the
+ *  list — no scroll jump, no highlighted block. `view=flat` is the diagnostic
+ *  route and opts out of the redirect entirely. */
+export function selfConversationPath(input: {
+  flatView: boolean
+  conversationKey: string | null
+  memberCount: number
+}): string | null {
+  if (input.flatView || !input.conversationKey || input.memberCount <= 1) return null
+  return `/conversations/${encodeURIComponent(input.conversationKey)}`
+}

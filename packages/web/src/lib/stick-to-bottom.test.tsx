@@ -193,7 +193,7 @@ describe('useStickToBottom self-inflicted scroll', () => {
   // "the next event": anything that moves the viewport first arrives as that same
   // single event. Swallowing by position rather than by turn is what keeps these
   // from being mistaken for the echo.
-  it('does not swallow the ?focus scrollIntoView that lands before the echo', () => {
+  it('does not swallow a programmatic scrollIntoView that lands before the echo', () => {
     setMetrics(2000)
     scroller.scrollTop = bottom()
     act(() => root.render(<Probe resetKey="s1" />))
@@ -203,12 +203,12 @@ describe('useStickToBottom self-inflicted scroll', () => {
     act(() => fireResize?.())
     expect(scroller.scrollTop).toBe(bottom())
 
-    // The ?focus effect centres the linked participant's block, then the single
-    // coalesced event is delivered from that new position.
+    // Something centres a row in the viewport, then the single coalesced event
+    // is delivered from that new position.
     scroller.scrollTop = 300
     act(() => scroller.dispatchEvent(new Event('scroll')))
 
-    setMetrics(3600) // more output must NOT drag the focused reader down
+    setMetrics(3600) // more output must NOT drag the reader back down
     act(() => fireResize?.())
     expect(scroller.scrollTop).toBe(300)
   })
