@@ -77,7 +77,7 @@ describe('deployment checks', () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes('openid-configuration'))).toBe(false)
   })
 
-  it('verifies local Logto discovery, keys, and enforced sign-in', async () => {
+  it('verifies local Logto discovery, keys, enforced sign-in, and a trailing issuer slash', async () => {
     const issuer = 'http://login.agentconnect.localhost:3001/oidc'
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
@@ -90,7 +90,11 @@ describe('deployment checks', () => {
       if (url.endsWith('/oidc/jwks')) return response(200, { keys: [{ kid: 'one' }] })
       return response(200)
     })
-    const findings = await checkDeployment(createSetupConfig('local-auth'), { fetch: fetcher })
+    const config = SetupConfigSchema.parse({
+      ...createSetupConfig('local-auth'),
+      auth: { issuer: `${issuer}/` }
+    })
+    const findings = await checkDeployment(config, { fetch: fetcher })
     expect(findings.every((finding) => finding.status === 'pass')).toBe(true)
   })
 

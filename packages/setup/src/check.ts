@@ -119,7 +119,8 @@ async function checkAuthMode(
 }
 
 async function checkOidc(issuer: string, fetcher: typeof fetch, timeoutMs: number): Promise<DeploymentFinding[]> {
-  const discoveryUrl = joinUrl(issuer, '.well-known/openid-configuration')
+  const expectedIssuer = issuer.replace(/\/$/, '')
+  const discoveryUrl = joinUrl(expectedIssuer, '.well-known/openid-configuration')
   let discovery: Response
   try {
     discovery = await request(fetcher, discoveryUrl, timeoutMs)
@@ -143,7 +144,7 @@ async function checkOidc(issuer: string, fetcher: typeof fetch, timeoutMs: numbe
     return [{ id: 'oidc.discovery', status: 'fail', message: 'OIDC discovery did not return JSON' }]
   }
 
-  if (document.issuer !== issuer) {
+  if (document.issuer !== expectedIssuer) {
     return [
       {
         id: 'oidc.discovery',
@@ -156,7 +157,7 @@ async function checkOidc(issuer: string, fetcher: typeof fetch, timeoutMs: numbe
     return [{ id: 'oidc.discovery', status: 'fail', message: 'OIDC discovery is missing jwks_uri' }]
   }
   try {
-    const issuerUrl = new URL(issuer)
+    const issuerUrl = new URL(expectedIssuer)
     const jwksUrl = new URL(document.jwks_uri)
     if (jwksUrl.protocol !== 'http:' && jwksUrl.protocol !== 'https:') throw new Error()
     if (issuerUrl.protocol === 'https:' && jwksUrl.protocol !== 'https:') throw new Error()
