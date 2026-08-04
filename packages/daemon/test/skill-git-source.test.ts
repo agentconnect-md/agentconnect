@@ -419,6 +419,55 @@ describe('Git skill source policy boundary', () => {
     }
   })
 
+  it('skips a repo-level symlink outside every skill directory without materializing it (#371)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-repo-link-'))
+    // The mattpocock/skills shape: an AGENTS.md -> CLAUDE.md symlink at the
+    // repository root, unrelated to the nested skill being installed.
+    const archive = tarGzip([
+      { path: `skills-${SHA}/CLAUDE.md`, body: '# repo instructions\n' },
+      { path: `skills-${SHA}/AGENTS.md`, type: '2', linkpath: 'CLAUDE.md' },
+      { path: `skills-${SHA}/skills/productivity/grill-me/SKILL.md`, body: '---\nname: grill-me\n---\n# grill\n' }
+    ])
+    const offline = offlineGitHubFetch({ archive })
+    try {
+      const result = await acquireGitSkillSource(entry('acme/skills'), {
+        destination: join(root, 'acquired'),
+        agentId: 'agent-1',
+        useGitCredential: false,
+        fetch: offline.fetch
+      })
+      expect(await readFile(join(result.sourceDir, 'skills/productivity/grill-me/SKILL.md'), 'utf8')).toContain(
+        '# grill'
+      )
+      expect(await readFile(join(result.sourceDir, 'CLAUDE.md'), 'utf8')).toContain('repo instructions')
+      expect(existsSync(join(result.sourceDir, 'AGENTS.md'))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still rejects a link inside a skill directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-skill-link-'))
+    const archive = tarGzip([
+      { path: `skills-${SHA}/skills/grill-me/SKILL.md`, body: '---\nname: grill-me\n---\n# grill\n' },
+      { path: `skills-${SHA}/skills/grill-me/scripts/escape`, type: '2', linkpath: '/tmp/outside' }
+    ])
+    const offline = offlineGitHubFetch({ archive })
+    try {
+      await expect(
+        acquireGitSkillSource(entry('acme/skills'), {
+          destination: join(root, 'acquired'),
+          agentId: 'agent-1',
+          useGitCredential: false,
+          fetch: offline.fetch
+        })
+      ).rejects.toThrow(/link or special entry inside a skill directory/i)
+      expect(existsSync(join(root, 'acquired/repository/skills/grill-me/SKILL.md'))).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects symlink and parser-ignored special archive entries before writing them', async () => {
     for (const [name, special] of [
       ['symlink', { path: `skills-${SHA}/escape`, type: '2' as const, linkpath: '/tmp/outside' }],

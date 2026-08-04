@@ -474,6 +474,10 @@ interface ArchiveValidationState {
   seen: Map<string, SeenArchivePath>
   ancestors: Set<string>
   inventory: Map<string, SeenArchivePath['type']>
+  /** Symlink/hardlink entries admitted for SKIPPING only — never extracted.
+   * Whether each one is actually tolerable (outside every skill directory) is
+   * decided after the full inventory is known. */
+  skippedLinks: Set<string>
 }
 
 function archiveCollisionComponent(value: string): string {
@@ -502,7 +506,14 @@ function countArchiveEntry(state: ArchiveValidationState, limits: GitSkillArchiv
 
 function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, limits: GitSkillArchiveLimits): void {
   countArchiveEntry(state, limits)
-  if (entry.type !== 'File' && entry.type !== 'Directory') {
+  // Git can only record files, directories, and symlinks (hardlinks can appear
+  // in tar re-encodings of identical blobs). Repositories routinely carry
+  // repo-level links like AGENTS.md -> CLAUDE.md that are unrelated to any
+  // skill, so link entries are admitted here for skipping — never extraction —
+  // and rejected after the full inventory is known if one sits inside a skill
+  // directory (see rejectLinksInsideSkills). Anything else stays fatal.
+  const linkLike = entry.type === 'SymbolicLink' || entry.type === 'Link'
+  if (!linkLike && entry.type !== 'File' && entry.type !== 'Directory') {
     throw new Error('skill GitHub archive contains a link or special entry')
   }
 
@@ -532,15 +543,13 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
   state.root ??= parts[0]
   if (parts[0] !== state.root) throw new Error('skill GitHub archive contains multiple roots')
 
-  const type = entry.type === 'Directory' ? 'directory' : 'file'
-  if (state.inventory.has(path)) throw new Error('skill GitHub archive contains a duplicate path')
-  state.inventory.set(path, type)
-
   const relative = parts.slice(1)
   if (relative.length === 0) {
     if (entry.type !== 'Directory' || entry.size !== 0) {
       throw new Error('skill GitHub archive has an invalid root entry')
     }
+    if (state.inventory.has(path)) throw new Error('skill GitHub archive contains a duplicate path')
+    state.inventory.set(path, 'directory')
     return
   }
   if (relative.length > limits.maxDepth) throw new Error('skill GitHub archive exceeds the depth limit')
@@ -548,6 +557,14 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
   if (Buffer.byteLength(relativePath) > limits.maxPathBytes) {
     throw new Error('skill GitHub archive contains an oversized path')
   }
+
+  if (linkLike) {
+    state.skippedLinks.add(path)
+    return
+  }
+  const type = entry.type === 'Directory' ? 'directory' : 'file'
+  if (state.inventory.has(path)) throw new Error('skill GitHub archive contains a duplicate path')
+  state.inventory.set(path, type)
 
   const collisionKey = relative.map(archiveCollisionComponent).join('/')
   registerArchivePath(state, collisionKey, type)
@@ -566,6 +583,23 @@ function validateArchiveEntry(entry: ReadEntry, state: ArchiveValidationState, l
   }
 }
 
+/** A skipped link is tolerable only OUTSIDE every skill directory (any
+ * directory holding a SKILL.md, recursively): the installed bundles then
+ * cannot silently diverge from the upstream skill content. A link inside a
+ * skill stays fail-closed — such a skill is uninstallable through AgentConnect
+ * anyway (the snapshot and CLI-cell layers both refuse links). */
+function rejectLinksInsideSkills(state: ArchiveValidationState): void {
+  if (state.skippedLinks.size === 0) return
+  const skillDirs = [...state.inventory.keys()]
+    .filter((path) => path.endsWith('/SKILL.md'))
+    .map((path) => path.slice(0, -'/SKILL.md'.length))
+  for (const link of state.skippedLinks) {
+    if (skillDirs.some((dir) => link.startsWith(`${dir}/`))) {
+      throw new Error('skill GitHub archive contains a link or special entry inside a skill directory')
+    }
+  }
+}
+
 async function validateAndExtractArchive(
   tarBody: Buffer,
   destination: string,
@@ -578,7 +612,8 @@ async function validateAndExtractArchive(
     totalFileBytes: 0,
     seen: new Map(),
     ancestors: new Set(),
-    inventory: new Map()
+    inventory: new Map(),
+    skippedLinks: new Set()
   }
   let validationError: Error | undefined
   const parser = listTar({
@@ -615,6 +650,7 @@ async function validateAndExtractArchive(
     throw new Error('skill GitHub archive is not a valid tar stream')
   }
   if (!state.root || state.files === 0) throw new Error('skill GitHub archive contains no files')
+  rejectLinksInsideSkills(state)
 
   const remaining = new Map(state.inventory)
   let extractionError: Error | undefined
@@ -636,6 +672,10 @@ async function validateAndExtractArchive(
     fmode: 0o600,
     filter: (_path, entry) => {
       if (!('type' in entry) || (entry.type !== 'File' && entry.type !== 'Directory')) {
+        // Validated links are skipped without being materialized.
+        if ('type' in entry && (entry.type === 'SymbolicLink' || entry.type === 'Link')) {
+          if (state.skippedLinks.has(entry.path)) return false
+        }
         extractionError = new Error('skill GitHub archive extraction inventory changed')
         return false
       }
@@ -650,7 +690,8 @@ async function validateAndExtractArchive(
       return true
     }
   })
-  extractor.on('ignoredEntry', () => {
+  extractor.on('ignoredEntry', (entry) => {
+    if (state.skippedLinks.has(entry.path)) return
     extractionError ??= new Error('skill GitHub archive extraction inventory changed')
     extractor.abort(extractionError)
   })
