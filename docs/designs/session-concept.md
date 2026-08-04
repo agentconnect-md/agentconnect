@@ -2,6 +2,14 @@
 
 **Status:** Current design
 
+> **Routing update:** [`send-message-routing-rework.md`](send-message-routing-rework.md)
+> is implemented and authoritative for message ROUTING. It removed every visible
+> in-thread `sendMessage` form, kept `toAgent + channel` as a channel-root send,
+> made current-thread addressing use ordinary `@mention` replies, and made
+> parent-session reply turns session-only. Sections 3 and 6 below are updated to
+> match; read that document for the verification, hop-transition, and activation
+> rendezvous rules behind them.
+
 > This document does one thing: define **session** precisely--what it is, what
 > it contains, how messages record source and destination, how agent-to-agent
 > communication and cross-platform sends enter sessions, and how **replies**
@@ -179,9 +187,15 @@ sendMessage(target: AgentTarget | UserTarget | ChannelTarget | SessionTarget, me
 ```
 
 The arguments are a top-level union of **two addressing modes** — `toAgent` (wake
-a peer agent) and `toUser` (reach one or more humans) — each with **three delivery forms**
-selected by the coordinates (dm / channel root / in thread) — plus a bare
+a peer agent) and `toUser` (reach one or more humans) — each with **two delivery forms**
+selected by the presence of `channel` (direct / channel root) — plus a bare
 `channel`-only post (no recipient) and the separate `sessionId` reply branch.
+
+There is **no visible in-thread form**. To address an agent or a human in the thread the
+agent is already in, it writes an ordinary turn reply containing the platform-native
+`@mention`; that reply already carries the right coordinates, streaming lifecycle, and
+sender identity, so a second sending path into the same thread would compete with it.
+See [send-message-routing-rework.md](send-message-routing-rework.md) §2.
 
 ### 3.1 AgentTarget / UserTarget: who to reach, and in which form
 
@@ -189,36 +203,36 @@ selected by the coordinates (dm / channel root / in thread) — plus a bare
 // Mode 1 — wake one AgentConnect peer.
 type AgentTarget = {
   toAgent: string | { agentId: string; needsReply?: boolean } // object form: see section 5.4
-  channel?: string // absent ⇒ dm (postless wake); present without thread ⇒ channel root; with thread ⇒ in thread
-  thread?: string  // in-thread form only (requires `channel`)
+  channel?: string // absent ⇒ direct (postless wake); present ⇒ channel-root post + wake
 }
 
 // Mode 2 — reach human platform members.
 type UserTarget = {
-  toUser: string | string[]  // one member id; channel/thread forms also accept a non-empty unique-id array
-  platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // dm defaults to Slack; channel/thread forms default to current session
-  channel?: string           // absent ⇒ dm (Slack DM); present without thread ⇒ channel root; with thread ⇒ in thread
-  thread?: string            // in-thread form only (requires `channel`)
+  toUser: string | string[]  // one member id; the channel-root form also accepts a non-empty unique-id array
+  platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // dm defaults to Slack; channel form defaults to current session
+  channel?: string           // absent ⇒ dm (Slack DM); present ⇒ channel-root post
   integrationId?: string     // pick a specific bot when the agent has several on the platform
 }
 
 // Bare post — publish a visible message without waking an agent or addressing a human.
 type ChannelTarget = {
-  channel: string            // channel root (no thread) / in thread (with thread)
-  thread?: string
+  channel: string            // always the channel ROOT
   platform?: 'slack' | 'telegram' | 'discord' | 'feishu' | ... // defaults to current session
   integrationId?: string
 }
 ```
 
 Exactly one target key is required: `toAgent`, `toUser`, or `channel`. For the two
-recipient modes the form is decided by the coordinates:
+recipient modes the form is decided by the presence of `channel`:
 
-| Mode             | dm                                                              | channel root                                                                                     | in thread                                                                                                       |
-| ---------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post + wake, peer anchored to it    | `{"toAgent":"A","channel":"C","thread":"T","message":"…"}` — visible thread post + wake, peer in that thread    |
-| `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM to one person         | `{"toUser":["U1","U2"],"channel":"C","message":"…"}` — one root post mentioning all listed users | `{"toUser":["U1","U2"],"channel":"C","thread":"T","message":"…"}` — one thread post mentioning all listed users |
-| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient                                        | `{"channel":"C","thread":"T","message":"…"}` — thread post, no recipient                                        |
+| Mode             | direct                                                          | channel root                                                                                       |
+| ---------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `toAgent`        | `{"toAgent":"A","message":"…"}` — postless wake, nothing posted | `{"toAgent":"A","channel":"C","message":"…"}` — visible root post that @-mentions A, plus the wake |
+| `toUser`         | `{"toUser":"U","message":"…"}` — Slack DM to one person         | `{"toUser":["U1","U2"],"channel":"C","message":"…"}` — one root post mentioning all listed users   |
+| `channel` (bare) | —                                                               | `{"channel":"C","message":"…"}` — root post, no recipient                                          |
+
+No branch accepts `thread`; supplying one is rejected rather than silently posted at the
+root.
 
 - The target must identify an action: `toAgent`, `toUser`, or `channel`. The
   daemon rejects an empty action and rejects mixing `toAgent` with `toUser` in
@@ -254,18 +268,20 @@ recipient modes the form is decided by the coordinates:
   a different identity.
 - `toUser` is Slack-only for now: a `toUser` DM accepts one member id, opens or reuses
   the app's real DM conversation, and posts to the returned channel id. The
-  channel-root / in-thread forms accept one id or a non-empty unique-id array and
-  prepend every corresponding `<@user>` mention to the single visible post. An array
-  without `channel` is rejected rather than interpreted as a group DM. Any other
-  platform is rejected before dispatch.
-- `thread` determines the platform thread only when `channel` is present.
-  Passing an existing thread posts there. Omitting it or passing `""` posts a
-  new top-level channel message, **not the current session thread**. Normal
-  owner output already replies in the current thread, so an explicit
-  `sendMessage` defaults to a clean top-level post. A `toUser` root post creates
-  a new owner session, as in case 2a; specifying a thread continues the
-  corresponding session. This is platform placement, distinct from replying to a
-  parent by SessionTarget, which uses only `sessionId`.
+  channel-root form accepts one id or a non-empty unique-id array and prepends every
+  corresponding `<@user>` mention to the single visible post. An array without `channel`
+  is rejected rather than interpreted as a group DM. Any other platform is rejected
+  before dispatch.
+- Every visible send lands at the channel **root**, opening a new conversation there
+  (case 2a). That is deliberate: normal owner output already replies in the current
+  thread, so an explicit `sendMessage` is for somewhere else. Addressing the current
+  thread is the ordinary reply's job, not a coordinate on this tool. This is platform
+  placement, distinct from replying to a parent by SessionTarget, which uses only
+  `sessionId`.
+- A `toAgent + channel` post renders the target's exact platform-native mention into the
+  visible body, resolved from the daemon's conversation directory (never from model
+  text). A target with no address in that conversation still receives its internal wake;
+  the post is simply unaddressed.
 
 ### 3.2 SessionTarget: session addressing
 
@@ -624,9 +640,16 @@ This wakes a new session owned by B.
 ```
 
 - Agent A is a **system source**, not a human, for B.
-- The visible `@agentB` platform event must not trigger another B session.
+- The visible `@agentB` platform event and A's internal wake are **two observations of
+  one delivery**, not two deliveries: they meet at a durable activation rendezvous keyed
+  by the visible post, so B is admitted exactly once whichever arrives first. The
+  internal wake is the authority — it alone carries lineage, correlation, `needsReply`,
+  hop depth, and the privacy gate — so a platform observation whose wake never arrives is
+  recorded as a delivery failure rather than becoming a lineage-less B session. See
+  [send-message-routing-rework.md](send-message-routing-rework.md) §3.2 / §8.6.
 - B's SessionTarget reply inserts into the existing origin without creating a
-  session. The daemon inherits `correlationId`.
+  session, and the resumed origin turn is **session-only**: it produces no automatic IM
+  output (§7 of the routing rework). The daemon inherits `correlationId`.
 
 ### 7.3b Case 2c: wake another agent without posting any IM
 
@@ -634,13 +657,12 @@ Set only `toAgent`, with no `channel`. B wakes, but nothing is posted. This is
 appropriate for orchestration where delegation should not interrupt a channel.
 
 Postless behavior applies only when `channel` is absent. If both `toAgent` and
-`channel` are present, the daemon first creates a visible post and then anchors
-B's session to that post's thread. Without `thread`, the root post's own
-timestamp becomes the anchor; with `thread`, the existing thread is reused.
-The visible request and B's replies therefore share one thread. This path does
-not use case 2a's `spawnChannelRootSession`, whose root session belongs to the
-caller; the thread belongs to B. The `sendMessage` handler in `mcp/ops.ts`
-posts A's message before waking B.
+`channel` are present, the daemon first creates a visible ROOT post — carrying B's
+rendered mention — and then anchors B's session to that post's own timestamp. The
+visible request and B's replies therefore share one thread. This path does not use case
+2a's `spawnChannelRootSession`, whose root session belongs to the caller; the thread
+belongs to B. The `sendMessage` handler in `mcp/ops.ts` posts A's message before waking
+B, because the anchor is the post's timestamp and that exists only after the send.
 
 ```text
 --- session 1 ---                    (owner: agentA)

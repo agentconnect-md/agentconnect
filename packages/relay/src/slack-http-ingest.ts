@@ -17,7 +17,12 @@
  */
 import { WebClient, type FetchFunction, type WebClientOptions } from '@slack/web-api'
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici'
-import { isSlackSystemMessage, normalizeSlackMessage, type SlackMessageLike } from '@agentconnect.md/message'
+import {
+  isSlackSystemMessage,
+  normalizeSlackMessage,
+  normalizeSlackResponseFinalization,
+  type SlackMessageLike
+} from '@agentconnect.md/message'
 import {
   ELICIT_ACTION_PREFIX,
   ELICIT_DISMISS_ACTION,
@@ -456,8 +461,24 @@ export class SlackHttpIngest {
         return
       }
       if (event?.bot_id && (!this.botUserId || !this.slackBotId)) return
-      const ownMessage = event?.user === this.botUserId || event?.bot_id === this.slackBotId
-      if (!event || isSlackSystemMessage(event) || ownMessage || !isRoutableEvent(event)) return
+      if (!event || isSlackSystemMessage(event)) return
+      // send-message-routing-rework.md §5: the ONE edit wrapper that survives ingest is
+      // the one closing an agent's logical response. It deliberately runs BEFORE the
+      // own-echo and routability filters, both of which would otherwise discard it:
+      //  - `isRoutableEvent` drops every `message_changed`, yet a streamed answer can
+      //    only be declared complete by editing its last message; and
+      //  - on a SHARED bot every agent posts as the same bot user, so echo suppression
+      //    would silently make agent-to-agent mentions impossible exactly where the
+      //    shared-bot address form (§8.5) exists to make them work.
+      // Recognition is by daemon-written metadata, so mid-answer `streaming` edits and
+      // ordinary human edits still return null here and stay filtered.
+      const finalization = normalizeSlackResponseFinalization(event)
+      if (finalization) {
+        await this.deps.onMessage(finalization)
+        return
+      }
+      const ownMessage = event.user === this.botUserId || event.bot_id === this.slackBotId
+      if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
       const msg = normalizeSlackMessage(event)
       if (msg) await this.deps.onMessage(msg)

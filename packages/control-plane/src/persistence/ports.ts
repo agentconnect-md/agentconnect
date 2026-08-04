@@ -3112,6 +3112,14 @@ export interface ChannelPlacementRecord {
   /** Public platform app identity used to recognize messages from another
    *  AgentConnect-managed bot. Currently populated for Slack (`A…`). */
   botAppId?: string
+  /** Public member id this agent's bot posts as (Slack `U…`) — with {@link botShared}
+   *  and `name`, the mention-address input the daemon/relay need to render and resolve
+   *  an exact `@mention` for this agent in this channel
+   *  (send-message-routing-rework.md §8.5). */
+  botUserId?: string
+  /** True when the bot identity backs more than one agent, so its address needs the
+   *  agent slug (`<@U_SHARED> reviewer`) and a bare mention selects no agent. */
+  botShared?: boolean
   callPolicy: AgentCallPolicy
   allowedCallerAgentIds: string[]
   outboundPolicy: AgentCallPolicy

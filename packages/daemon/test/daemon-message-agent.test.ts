@@ -627,6 +627,23 @@ describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + repl
     await daemon.stop()
   })
 
+  it('runs the POSTLESS toAgent form’s child headless, and a channel-root call visibly', async () => {
+    // send-message-routing-rework.md §3.1 / §10 case 2. Without the headless stamp
+    // "postless" would describe only the wake: nothing announces the call, yet the child's
+    // own answer would still surface in the caller's channel — the exact interruption this
+    // form exists to avoid.
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    expect((await call({ ...baseReq(), postless: true })).delivered).toBe(true)
+    expect(calls[0]!.msg.headless).toBe(true)
+
+    // A channel-root call deliberately made itself visible, so its child is not headless.
+    calls.length = 0
+    expect((await call({ ...baseReq(), transcriptTs: '1720000000.000100' })).delivered).toBe(true)
+    expect(calls[0]!.msg.headless).toBeUndefined()
+    await daemon.stop()
+  })
+
   it('hop cap is enforced across an inherited chain', async () => {
     const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'third' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
@@ -934,6 +951,40 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     // The reply message carries the origin session's OWN coordinates, raw platform included.
     expect(calls[0]!.msg).toMatchObject({ platform: 'dream', channel: 'memory', thread: 'dream-1', source: 'agent' })
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', deliveryId: 'd-reply-1' })
+    await daemon.stop()
+  })
+
+  it('a lineage reply marked session-reply resumes the origin HEADLESS', async () => {
+    // send-message-routing-rework.md §7/§8.3/§8.4. `replyToSession`'s cross-daemon leg
+    // sends BOTH `lineageReplyTo` and `deliveryKind: 'session-reply'`, and the lineage
+    // branch builds its own message and returns before the wake path — so it needs its own
+    // headless stamp. Missing it is invisible in a textual merge and would republish the
+    // parent's entire ordinary response into its channel: precisely the downgrade the
+    // relay's capability gate exists to make impossible.
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('dream', 'memory', 'dream-1', 'bot-b'),
+      agentId: 'bot-b',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'dream-1',
+      acpSessionId: 'acp-dream-origin',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const ack = await (daemon as any).handleRelayAgentMsg(
+      fwd({
+        coords: { platform: 'dream', channel: 'memory', thread: 'dream-1' },
+        lineageReplyTo: 'acp-dream-origin',
+        deliveryKind: 'session-reply',
+        deliveryId: 'd-reply-headless'
+      })
+    )
+    expect(ack.delivered).toBe(true)
+    expect(calls[0]!.msg.headless).toBe(true)
     await daemon.stop()
   })
 
@@ -1440,6 +1491,11 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     // §5.3 step 3: replying into the origin inherits the origin turn's correlationId (so a
     // main-agent's N-of-N orchestration closes) and bumps the hop count.
     expect(callMeta).toMatchObject({ callFrom: 'bot-b', correlationId: 'orch-1', hopCount: 2 })
+    // send-message-routing-rework.md §7: the resumed parent turn is SESSION-ONLY. It
+    // processes the input and records its work, but emits no ordinary IM body, typing
+    // indicator, status message/bar, footer, permission card, or completion notification —
+    // relaying an answer upward must not republish it into the parent's channel.
+    expect(msg.headless).toBe(true)
     await daemon.stop()
   })
 
@@ -1612,6 +1668,36 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     expect(calls).toHaveLength(1)
     // No inbound depth on a human turn ⇒ the reply chain starts at hop 1; callFrom = the replier.
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-b', hopCount: 1 })
+    await daemon.stop()
+  })
+
+  it('marks a cross-daemon reply required-headless, and surfaces a refusal instead of leaking it', async () => {
+    // send-message-routing-rework.md §8.3/§8.4. A parent on another daemon must get the
+    // same session-only treatment as a local one, so the delivery carries its KIND; a
+    // relay that finds the target too old answers `unsupported`, which the caller sees as
+    // a failed reply rather than as an answer quietly republished into the parent channel.
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).activeTurnCallMeta.set(callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-1',
+      originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+    })
+    // No local row for `acp-parent-1` ⇒ the origin lives on another daemon.
+    const sendAgentMsg = vi.fn(async (payload: any) => ({
+      deliveryId: payload.deliveryId,
+      delivered: false,
+      reason: 'unsupported' as const
+    }))
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendAgentMsg }
+
+    const res = await (daemon as any).replyToSession(replyReq())
+    expect(sendAgentMsg).toHaveBeenCalledTimes(1)
+    expect(sendAgentMsg.mock.calls[0]![0]).toMatchObject({ deliveryKind: 'session-reply' })
+    expect(res).toMatchObject({ delivered: false, reason: 'unsupported' })
     await daemon.stop()
   })
 })

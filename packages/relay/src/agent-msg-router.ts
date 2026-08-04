@@ -33,14 +33,17 @@
  * per-hop dedup + the 5s correlator timeout (the forward's `rd/agentmsg/fwd` inherits
  * the connection's ACK_TIMEOUT_MS). Documented in the PR description.
  */
-import type { RdAgentMsg, RdAgentMsgAck, RdAgentMsgReason } from '@agentconnect.md/protocol'
+import {
+  MAX_AGENT_CALL_HOPS,
+  RD_HEADLESS_AGENT_DELIVERY_V1,
+  type RdAgentMsg,
+  type RdAgentMsgAck,
+  type RdAgentMsgReason
+} from '@agentconnect.md/protocol'
 import type { CollaborationRouter } from './collaboration-router.js'
 import { inboundAdmits, outboundAdmits } from './collaboration-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
 import type { Logger } from './log.js'
-
-/** Cap on agent→agent hop depth (agent-collaboration §2.4) — mirrors the daemon. */
-const MAX_AGENT_CALL_HOPS = 8
 
 export interface AgentMsgRouterDeps {
   router: CollaborationRouter
@@ -148,6 +151,20 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     const conn = deps.daemons()?.get(target.daemonId)
     if (!conn) return nak(msg.deliveryId, 'offline')
 
+    // (f0) send-message-routing-rework.md §8.4 — capability gate for a REQUIRED-HEADLESS
+    // delivery. A `session-reply` must resume the parent SILENTLY (§7); a daemon too old
+    // to do that would instead publish the parent's whole ordinary response into its
+    // channel. That is precisely the behavior the design removes, so the reply is REFUSED
+    // — `unsupported`, distinct from `offline` because the target is reachable and the
+    // caller can act on the difference — rather than silently degraded.
+    if (msg.deliveryKind === 'session-reply' && !conn.supports(RD_HEADLESS_AGENT_DELIVERY_V1)) {
+      deps.log.warn(
+        `relay: rd/agentmsg refused — daemon ${target.daemonId} does not support ${RD_HEADLESS_AGENT_DELIVERY_V1}; ` +
+          `a session reply must not be downgraded to visible IM output`
+      )
+      return nak(msg.deliveryId, 'unsupported')
+    }
+
     // Delivery detail, NOT authorization: the DEFINITE reply integration (§6.2). The same
     // agent can reach two channels via two different bots, so prefer its placement in the
     // coords channel and fall back to the directory entry when it has no row there (an
@@ -182,7 +199,11 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         ...(msg.needsReply !== undefined ? { needsReply: msg.needsReply } : {}),
         // session-visibility.md §5.1 privacy hint — again the caller's own fact
         // about its own lineage, forwarded verbatim. The relay stores nothing.
-        ...(msg.parentPrivate !== undefined ? { parentPrivate: msg.parentPrivate } : {})
+        ...(msg.parentPrivate !== undefined ? { parentPrivate: msg.parentPrivate } : {}),
+        // §8.3: forwarded so the TARGET applies the same required-headless contract the
+        // same-daemon path applies locally. The capability check above already ran, so a
+        // target receiving `session-reply` is known to be able to honor it.
+        ...(msg.deliveryKind !== undefined ? { deliveryKind: msg.deliveryKind } : {})
       })
     } catch (err) {
       // Forward timed out / socket dropped mid-flight → treat as offline (retransmit is

@@ -3,6 +3,15 @@
 **Status:** Implemented. See
 [`loop-breaker-design.md`](loop-breaker-design.md) for loop safety.
 
+> **Routing update:** [`send-message-routing-rework.md`](send-message-routing-rework.md)
+> is implemented. Finalized AgentConnect-authored platform mentions are now routable
+> (through their own ladder, never through implicit routing), the visible in-thread
+> `sendMessage` forms are gone while `toAgent + channel` remains as a channel-root
+> send, and parent-session replies are session-only. Agent-to-agent activation is no
+> longer exclusively the internal `messageAgent` path — a verified explicit mention is a
+> second, equally hop-bounded path. Read that document for the verification, hop
+> transition, and activation rendezvous rules.
+
 > **Current behavior:** the `sendMessage` peer-agent target and
 > `startOrchestration` use the daemon's internal `messageAgent` delivery
 > primitive. A peer wake is postless unless `sendMessage` explicitly includes a
@@ -144,9 +153,8 @@ the old name — keeps working.
 
 ```ts
 // Input: {
-//   toAgent: string,            // From listAgents. dm form: no channel.
-//   channel?: string,           // Channel-root form; + thread = in-thread form.
-//   thread?: string,
+//   toAgent: string,            // From listAgents. Direct form: no channel.
+//   channel?: string,           // Channel-ROOT form. There is no in-thread form.
 //   message: string
 // }
 // Output: { delivered: boolean, targetSession: sessionKey }
@@ -154,8 +162,10 @@ the old name — keeps working.
 
 With no `channel`, `sendMessage` performs a direct, postless peer wake through
 the daemon's internal `messageAgent` primitive. With a `channel`, it also
-publishes a visible platform message and anchors the peer to that thread. The
-target receives caller-attributed text in its own agent session:
+publishes a visible platform message at the channel ROOT — carrying the target's
+rendered `@mention` — and anchors the peer to that post. The two halves are
+reconciled through the activation rendezvous so the peer is admitted exactly once.
+The target receives caller-attributed text in its own agent session:
 
 - `toAgentId` selects the peer to wake.
 - A postless delivery remains anchored to the caller's trusted

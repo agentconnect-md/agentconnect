@@ -49,6 +49,7 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   reportThreadAssign: vi.fn(() => true),
   lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
   isAgentBotApp: vi.fn(() => false),
+  admitsAgentCall: vi.fn(() => true),
   clock: new FakeClock(),
   log: silentLog,
   ...over
@@ -429,7 +430,11 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled() // ...but no write amplification
   })
 
-  it('drops a managed agent bot before routing but forwards an explicitly mentioning third-party bot', async () => {
+  it('keeps an UNVERIFIED agent bot off routing but forwards an explicitly mentioning third-party bot', async () => {
+    // send-message-routing-rework.md §4 fails closed: an AgentConnect app whose message
+    // carries no provable authorship claim (here: no `agentAuthorship` metadata at all)
+    // is not routable, even though it explicitly mentions the bot. A third-party bot
+    // keeps its existing explicit-mention behavior.
     const { daemon, sendMsg } = online()
     const reportThreadAssign = vi.fn(() => true)
     const isAgentBotApp = vi.fn((_agentId: string, _platform: string, _channel: string, appId: string) => {
@@ -461,6 +466,153 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(sendMsg).toHaveBeenCalledTimes(1)
     expect(sendMsg.mock.calls[0]![0]).toMatchObject({ msgId: 'slack:C123:external', agentId: AGENT_ID })
     expect(reportThreadAssign).not.toHaveBeenCalled()
+  })
+
+  // ── send-message-routing-rework.md §4 / §4.1 / §6 — verified agent authors ──
+  describe('verified agent-authored routing', () => {
+    const AUTHOR_ID = '99999999-9999-4999-8999-999999999999'
+    const isOurApp = (appId: string) => appId === 'AMANAGED'
+
+    /** A finalized agent response addressing AGENT_ID, from an app we back. */
+    const agentFinal = (claim: Partial<NonNullable<WireNormalizedMessage['agentAuthorship']>> = {}) =>
+      followUp({
+        msgId: 'slack:C123:agentpost',
+        sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
+        text: '<@UBOT> please verify the rollout',
+        mentionedBots: ['UBOT'],
+        agentAuthorship: {
+          authorAgentId: AUTHOR_ID,
+          responseId: 'r-1',
+          deliveryState: 'final',
+          hopCount: 3,
+          mentionedAgentIds: [AGENT_ID],
+          ...claim
+        }
+      })
+
+    const managerWith = (
+      over: Partial<RelayIngressManagerDeps> = {},
+      sendMsg = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    ) => {
+      const daemon = { sendMsg } as unknown as RelayDaemonConnection
+      const manager = new RelayIngressManager(
+        deps({
+          getDaemon: () => daemon,
+          isAgentBotApp: vi.fn((_a: string, _p: string, _c: string, appId: string) => isOurApp(appId)),
+          ...over
+        })
+      )
+      const internals = manager as unknown as ManagerInternals
+      internals.router.upsert(channelAutoOwned())
+      return { internals, sendMsg }
+    }
+
+    it('routes a finalized mention to its recipient and mints the trusted claim', async () => {
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(BOT_ID, agentFinal())
+
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      const frame = sendMsg.mock.calls[0]![0] as Record<string, unknown>
+      expect(frame).toMatchObject({
+        agentId: AGENT_ID,
+        trustedFromAgentId: AUTHOR_ID,
+        trustedResponseId: 'r-1',
+        trustedRecipientAgentIds: [AGENT_ID],
+        // §4.1 step 4: the relay adds exactly one, ONCE. The target installs this value
+        // without incrementing again — doing so would halve the shared hop budget.
+        trustedDeliveryHopCount: 4
+      })
+    })
+
+    it('does not route a streaming post', async () => {
+      // §5.4: an intermediate post may hold a prefix of the answer.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(BOT_ID, agentFinal({ deliveryState: 'streaming' }))
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not route an agent message that addresses nobody', async () => {
+      // §2.3: an unmentioned agent message never activates through the `auto` channel
+      // rung this bot has — which is exactly the rung a human message would take here.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not let an author activate itself', async () => {
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('refuses a claimed author the sending app does not back', async () => {
+      // §4 condition 3. A shared app backs several agents, so "the app is ours" alone
+      // would let one tenant author messages as any of its co-tenants.
+      const { internals, sendMsg } = managerWith({
+        isAgentBotApp: vi.fn((agentId: string) => agentId === AGENT_ID)
+      })
+      await internals.forward(BOT_ID, agentFinal())
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('does not route into a channel the operator switched Off', async () => {
+      // product-conventions "Per-channel trigger": Off means the agent does not respond
+      // there at all — "not to an @-mention". The verified-agent path bypasses the
+      // arbitration ladder that normally enforces this, so it must apply the fence itself
+      // or an agent mention becomes the one way into a silenced channel.
+      const { internals, sendMsg } = managerWith()
+      const muted = channelAutoOwned()
+      muted.mutedChannels = ['C123']
+      internals.router.upsert(muted)
+      await internals.forward(BOT_ID, agentFinal())
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('re-checks call policy per edge', async () => {
+      const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
+      await internals.forward(BOT_ID, agentFinal())
+      expect(sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('admits source depth 7 as delivery depth 8 and rejects 8 because the next hop is 9', async () => {
+      // §10 case 15 — the boundary the whole hop transition exists to hold.
+      const admitted = managerWith()
+      await admitted.internals.forward(BOT_ID, agentFinal({ hopCount: 7 }))
+      expect(admitted.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedDeliveryHopCount: 8 })
+
+      const rejected = managerWith()
+      await rejected.internals.forward(BOT_ID, agentFinal({ hopCount: 8 }))
+      expect(rejected.sendMsg).not.toHaveBeenCalled()
+    })
+
+    it('rejects an unusable source depth instead of resetting it to zero', async () => {
+      // §4.1 rule 1. Coercing to 0 would hand a runaway chain a fresh budget every hop.
+      for (const hopCount of [-1, 1.5]) {
+        const { internals, sendMsg } = managerWith()
+        await internals.forward(BOT_ID, agentFinal({ hopCount }))
+        expect(sendMsg).not.toHaveBeenCalled()
+      }
+    })
+
+    it('gives each recipient of one post its own delivery', async () => {
+      // §3.2: one visible post can address several agents; a shared msgId would make the
+      // targets' dedup collapse them and silently drop every recipient but the first.
+      const { internals, sendMsg } = managerWith()
+      const assignmentWithBoth = channelAutoOwned()
+      assignmentWithBoth.members = [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID, OTHER_AGENT_ID] }]
+      assignmentWithBoth.routes.push({
+        agentId: OTHER_AGENT_ID,
+        daemonId: DAEMON_ID,
+        integrationId: INTEGRATION_ID,
+        match: { kind: 'keyword', value: 'other' }
+      })
+      internals.router.upsert(assignmentWithBoth)
+
+      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID, OTHER_AGENT_ID] }))
+      expect(sendMsg).toHaveBeenCalledTimes(2)
+      const msgIds = sendMsg.mock.calls.map((c) => (c[0] as { msgId: string }).msgId)
+      expect(new Set(msgIds).size).toBe(2)
+    })
   })
 
   it('retries a report dropped while the CP link was down, on reconnect', async () => {

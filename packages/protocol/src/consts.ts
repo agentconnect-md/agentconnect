@@ -8,6 +8,20 @@
  * respawn shell + generated service units) must agree on the restart exit code.
  */
 
+/**
+ * Cap on agent→agent hop depth (agent-collaboration §2.4/§4.5), shared by every
+ * component that can admit an agent-to-agent edge.
+ *
+ * It lives here because send-message-routing-rework.md §4.1 requires ONE budget across
+ * transports: "the same `MAX_AGENT_CALL_HOPS`, whether it is a same-daemon internal
+ * call, a relayed internal call, a direct-daemon platform mention, or a relayed platform
+ * mention". Three independent copies (daemon, relay agent-msg router, relay ingress)
+ * could drift, and a relay that allowed one more hop than the daemon would let a relayed
+ * chain outlive the budget an internal chain gets — a loop-safety hole that no single
+ * package's tests would catch.
+ */
+export const MAX_AGENT_CALL_HOPS = 8
+
 /** The daemon↔CP WebSocket subprotocol negotiated on `ClientTransport.dial`. */
 export const CP_SUBPROTOCOL = 'agentconnect.v1'
 

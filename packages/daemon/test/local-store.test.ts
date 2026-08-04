@@ -1328,3 +1328,185 @@ describe('LocalStore webchat MCP grant ledger', () => {
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
   })
 })
+
+describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {
+  const KEY = ['slack', 'scope-1', '1720000000.000100', 'agent-target'].join('\u0000')
+  const ENVELOPE = JSON.stringify({ callFrom: 'agent-author', hopCount: 3 })
+
+  it('admits an internal-wake-first pairing exactly once and replays the same child', () => {
+    const s = store()
+    const first = s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(first.dispatch).toBe(true)
+    expect(s.admitActivation(KEY, 'child-1')).toBe(true)
+
+    // A retry of the same delivery — a redelivered wake, or replay after restart — must
+    // read back the SAME child rather than opening a second session.
+    const retry = s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(retry.dispatch).toBe(false)
+    expect(retry.record.state).toBe('admitted')
+    expect(retry.record.childSessionId).toBe('child-1')
+    s.close()
+  })
+
+  it('holds a platform-first observation pending until the envelope arrives', () => {
+    const s = store()
+    const claimed = s.claimActivationObservation(
+      KEY,
+      { agentCallDeliveryId: 'd-1', platformMessageId: '1720000000.000100', transcriptCoordinates: 'C1 T1' },
+      1000
+    )
+    expect(claimed.state).toBe('pending')
+    expect(claimed.callEnvelope).toBeFalsy()
+    // The precondition the design states outright: a platform-first record cannot become
+    // `admitted` until `callEnvelope` is present — the visible post carries none of the
+    // lineage, so admitting on it would fabricate the call it is supposed to accompany.
+    expect(s.admitActivation(KEY, 'child-1')).toBe(false)
+
+    const attached = s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(attached.dispatch).toBe(true)
+    expect(s.admitActivation(KEY, 'child-1')).toBe(true)
+    expect(s.getActivation(KEY)?.state).toBe('admitted')
+    // The visible observation survives the transition, so the later half reconciles onto
+    // the same transcript row instead of duplicating the hand-off.
+    expect(s.getActivation(KEY)?.platformMessageId).toBe('1720000000.000100')
+    s.close()
+  })
+
+  it('is idempotent for a redelivered platform event', () => {
+    const s = store()
+    const obs = { agentCallDeliveryId: 'd-1', platformMessageId: 'ts-1', transcriptCoordinates: 'C1 T1' }
+    s.claimActivationObservation(KEY, obs, 1000)
+    s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    s.admitActivation(KEY, 'child-1')
+    // Slack redelivers; the observation must not reset an admitted record.
+    s.claimActivationObservation(KEY, obs, 1000)
+    expect(s.getActivation(KEY)?.state).toBe('admitted')
+    expect(s.getActivation(KEY)?.childSessionId).toBe('child-1')
+    s.close()
+  })
+
+  it('expires an envelope-less pairing to transcript-only, and never revives it', () => {
+    const s = store()
+    s.claimActivationObservation(
+      KEY,
+      { agentCallDeliveryId: 'd-1', platformMessageId: 'ts-1', transcriptCoordinates: 'C1 T1' },
+      1000
+    )
+    expect(s.expireActivations(999).transcriptOnly).toEqual([])
+    const expired = s.expireActivations(1000)
+    expect(expired.transcriptOnly.map((r) => r.agentCallDeliveryId)).toEqual(['d-1'])
+    expect(s.getActivation(KEY)?.state).toBe('transcript-only')
+
+    // A very late wake must not resurrect a delivery already reported failed — otherwise
+    // the operator sees a failure AND the target runs a turn for it anyway.
+    const late = s.attachActivationEnvelope(KEY, ENVELOPE, 5000)
+    expect(late.dispatch).toBe(false)
+    expect(s.getActivation(KEY)?.state).toBe('transcript-only')
+    s.close()
+  })
+
+  it('never expires a record that already has its envelope', () => {
+    const s = store()
+    s.attachActivationEnvelope(KEY, ENVELOPE, 1000)
+    expect(s.expireActivations(999).transcriptOnly).toEqual([])
+    expect(s.getActivation(KEY)?.state).toBe('pending')
+    s.close()
+  })
+
+  it('releases — not reports — a claim left pending WITH an envelope past its TTL', () => {
+    // The crash case. In-process, a dispatch that never admits is repaired by the
+    // admission callback; a hard crash in that window leaves the row with nobody to run
+    // it. Left alone the key is claimed forever and every retry after restart is
+    // deduplicated against a child that does not exist — exactly-once becoming never.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    const sweep = s.expireActivations(1000)
+    // Not a delivery FAILURE report: unlike the envelope-less case, nothing here says the
+    // delivery was observed and lost — only that this attempt did not finish.
+    expect(sweep.transcriptOnly).toEqual([])
+    expect(sweep.released).toBe(1)
+    expect(s.getActivation(KEY)).toBeUndefined()
+    // …and the key is claimable again, which is the whole point.
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 5000).dispatch).toBe(true)
+    s.close()
+  })
+
+  it('grants the dispatch claim once, even before admission settles', () => {
+    // Admission settles asynchronously, so "not yet admitted" is NOT "nobody is handling
+    // it". A second arrival inside that window must not also be told to dispatch, or one
+    // logical delivery wakes the target twice.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(false)
+    expect(s.getActivation(KEY)?.state).toBe('pending')
+    s.close()
+  })
+
+  it('releases a claim whose dispatch never admitted, so a retry is a first attempt', () => {
+    // The other half of exactly-once: a rejected turn, a persistence failure, or a crash
+    // between claim and admission would otherwise leave a claimed key with no child, and
+    // every retry would be deduplicated against it — exactly-once becoming never.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.releaseActivation(KEY)).toBe(true)
+    expect(s.getActivation(KEY)).toBeUndefined()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+
+    // …but releasing never reopens a settled decision: an admitted record has a real
+    // child, and a transcript-only one was already reported as a delivery failure.
+    s.admitActivation(KEY, 'child-1')
+    expect(s.releaseActivation(KEY)).toBe(false)
+    expect(s.getActivation(KEY)).toMatchObject({ state: 'admitted', childSessionId: 'child-1' })
+    s.close()
+  })
+
+  it('reconciles a crashed claim against the durable inbox instead of guessing', () => {
+    // A crash between claim and admission leaves two rows that look identical and need
+    // OPPOSITE answers. Releasing both would let a replayed turn be dispatched a second
+    // time; admitting both would strand a delivery that never persisted. The inbox row is
+    // the only evidence that distinguishes them.
+    const s = store()
+    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join(' ')
+    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join(' ')
+    expect(s.attachActivationEnvelope(durable, ENVELOPE, 1000, 'delivery-durable').dispatch).toBe(true)
+    expect(s.attachActivationEnvelope(lost, ENVELOPE, 1000, 'delivery-lost').dispatch).toBe(true)
+    // Only the first one's turn actually reached the durable queue before the crash.
+    s.appendInbox({ id: 'delivery-durable', sessionKey: 'k', agentId: 'bot-b', msg: '{}', enqueuedAt: '0000000001' })
+
+    const sweep = s.expireActivations(1000)
+    expect(sweep.transcriptOnly).toEqual([])
+    // Durably queued ⇒ startup replay will run it, so the claim COMPLETES. A later retry
+    // must be deduplicated against it, not allowed to deliver again.
+    expect(s.getActivation(durable)?.state).toBe('admitted')
+    expect(s.attachActivationEnvelope(durable, ENVELOPE, 5000).dispatch).toBe(false)
+    // Never persisted ⇒ nothing will replay, so the key must become claimable again.
+    expect(sweep.released).toBe(1)
+    expect(s.getActivation(lost)).toBeUndefined()
+    expect(s.attachActivationEnvelope(lost, ENVELOPE, 5000, 'delivery-lost-retry').dispatch).toBe(true)
+    s.close()
+  })
+
+  it('releases a legacy claim that carries no dispatch id', () => {
+    // Rows written before `dispatchId` existed cannot be reconciled. Releasing is the same
+    // answer as "never persisted" — the safe direction, since the alternative strands the
+    // key forever.
+    const s = store()
+    expect(s.attachActivationEnvelope(KEY, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.expireActivations(1000).released).toBe(1)
+    expect(s.getActivation(KEY)).toBeUndefined()
+    s.close()
+  })
+
+  it('keys separate targets of one visible post independently', () => {
+    // §3.2: one channel-root post can address several agents; each must be admitted once,
+    // and one target's admission must not consume another's.
+    const s = store()
+    const a = ['slack', 'scope-1', 'ts-1', 'agent-a'].join('\u0000')
+    const b = ['slack', 'scope-1', 'ts-1', 'agent-b'].join('\u0000')
+    expect(s.attachActivationEnvelope(a, ENVELOPE, 1000).dispatch).toBe(true)
+    expect(s.attachActivationEnvelope(b, ENVELOPE, 1000).dispatch).toBe(true)
+    s.admitActivation(a, 'child-a')
+    expect(s.getActivation(b)?.state).toBe('pending')
+    s.close()
+  })
+})

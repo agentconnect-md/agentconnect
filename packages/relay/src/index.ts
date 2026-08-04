@@ -183,6 +183,7 @@ async function main(): Promise<void> {
     lookupThread: (m) => client.lookupThread(m),
     isAgentBotApp: (targetAgentId, platform, channelId, appId) =>
       collab.isAgentBotAppFor(targetAgentId, platform, channelId, appId),
+    admitsAgentCall: (callerAgentId, targetAgentId) => collab.admits(callerAgentId, targetAgentId),
     clock: systemClock,
     log
   })

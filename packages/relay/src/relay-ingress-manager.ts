@@ -16,7 +16,7 @@
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
 import { createHash } from 'node:crypto'
-import { WireFeishuCardActionValue } from '@agentconnect.md/protocol'
+import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionResponse, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RdMsgSlackAction,
@@ -29,7 +29,6 @@ import type {
   RcThreadAssign,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
-import { WireFeishuCardActionResponse } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
@@ -113,9 +112,16 @@ export interface RelayIngressManagerDeps {
   /** This pod's CP-assigned relayId (stable pool identity; undefined before the
    *  first register) — compared against the assignment's §14.3 noticeAuthority. */
   selfRelayId: () => string | undefined
-  /** True when the sender app backs another AgentConnect agent beside the resolved
-   *  target in this channel. Used only to suppress platform activation. */
+  /** True when `targetAgentId`'s bot in this channel IS the app that sent the message.
+   *  Two uses: recognizing AgentConnect-authored traffic at all, and — with the author's
+   *  own id — proving that a claimed author is one of the agents that app represents
+   *  (send-message-routing-rework.md §4 condition 3). */
   isAgentBotApp: (targetAgentId: string, platform: string, channelId: string, appId: string) => boolean
+  /** The directional agent-call policy (caller outbound ∧ target inbound, one org), from
+   *  the relay's own collaboration snapshot. Every author→target edge of a verified
+   *  agent-authored message is checked independently through this (§5 closing paragraph);
+   *  the carried recipient set is a claim until each edge passes CURRENT policy. */
+  admitsAgentCall: (callerAgentId: string, targetAgentId: string) => boolean
   /** Clock for the inbound Slack HMAC replay window (`resolveVerified`). */
   clock: Clock
   log: Logger
@@ -604,14 +610,117 @@ export class RelayIngressManager {
     )
   }
 
+  /**
+   * The §6 ladder for an AgentConnect-authored platform message, on the relay side
+   * (send-message-routing-rework.md §4, §4.1 step 4, §6, §8.2).
+   *
+   * It is a separate ladder rather than a rung of `forward`'s because §2.3 requires that
+   * an agent message never activate implicitly: not through thread affinity, DM, keyword,
+   * channel `auto`, or the group's default agent. Selecting exclusively from the VERIFIED
+   * recipient set is what makes that structural — in particular a bare shared-bot mention
+   * resolves to nobody on the author's side, so it can never reach the `defaultAgentId`
+   * rung here (§6, "a bare shared-bot mention from an agent does not select the default").
+   *
+   * Anything not routable is dropped rather than forwarded. The relay holds no transcript
+   * — "transcript only" is a daemon-side state — and §5.7 already has the target
+   * reconstruct preceding text through the ordinary thread-history catch-up path.
+   */
+  private async forwardVerifiedAgentMessage(
+    botId: string,
+    msg: import('@agentconnect.md/protocol').WireNormalizedMessage
+  ): Promise<void> {
+    const claim = msg.agentAuthorship
+    const drop = (why: string): void => {
+      this.deps.log.debug(`relay-ingress(${botId}): agent-authored ${msg.msgId} not routed (${why})`)
+    }
+    // Only a FINAL event routes: a streaming post may hold a prefix of the answer (§5.4).
+    if (!claim || claim.deliveryState !== 'final') return drop('not a finalized response')
+    const appId = msg.sender.appId
+    if (!appId) return drop('no sending app identity')
+    // §4 condition 3 — the claimed author must be one of the agents THIS app represents
+    // in THIS conversation. A shared app backs several agents, so "the app is ours" alone
+    // would let one of its tenants author messages as any of the others.
+    if (!this.deps.isAgentBotApp(claim.authorAgentId, msg.platform, msg.channel, appId)) {
+      return drop(`author ${claim.authorAgentId} is not backed by app ${appId} here`)
+    }
+    // §4.1 rule 1 — an unverifiable source depth is never coerced to zero; that would
+    // hand a runaway mention chain a fresh loop-protection budget on every hop.
+    if (!Number.isInteger(claim.hopCount) || claim.hopCount < 0) return drop('unverifiable source hop depth')
+    // §4.1 step 4 — the relay performs the identical addition and cap check the daemon
+    // would, ONCE, and forwards the result. The target terminal-verifies its range and
+    // installs it WITHOUT incrementing again.
+    const trustedDeliveryHopCount = claim.hopCount + 1
+    if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
+      return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
+    }
+    const targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
+    if (targets.length === 0) return drop('no verified recipient')
+
+    for (const targetAgentId of targets) {
+      // Every listed author→target edge is checked independently and against the RELAY's
+      // own snapshot — the recipient set is a provider claim until each edge passes
+      // current policy and the conversation gate (§5, closing paragraph).
+      const route = this.router.agentTarget(botId, targetAgentId, msg.channel)
+      if (!route) {
+        drop(`target ${targetAgentId} is not a member of this bot`)
+        continue
+      }
+      if (!this.deps.admitsAgentCall(claim.authorAgentId, targetAgentId)) {
+        drop(`call policy excludes ${claim.authorAgentId} -> ${targetAgentId}`)
+        continue
+      }
+      const daemon = this.deps.getDaemon(route.daemonId)
+      if (!daemon) {
+        const n = (this.dropped.get(botId) ?? 0) + 1
+        this.dropped.set(botId, n)
+        this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — dropped (total ${n})`)
+        continue
+      }
+      const rd: RdMsgIm = {
+        source: 'im',
+        agentId: route.agentId,
+        sessionKey: sessionKeyOf(msg),
+        // Namespace by target: one visible post may address several agents, and each is
+        // its own delivery. A shared msgId would make the target daemons' dedup collapse
+        // them into one and silently drop every recipient but the first.
+        msgId: `${msg.msgId}#${route.agentId}`,
+        botId,
+        integrationId: route.integrationId,
+        chatId: msg.channel,
+        payload: msg,
+        // §8.2: the relay's MINTED assertions, outside `payload` so the target can always
+        // tell them apart from the provider fields it must not trust.
+        trustedFromAgentId: claim.authorAgentId,
+        trustedResponseId: claim.responseId,
+        trustedRecipientAgentIds: [route.agentId],
+        ...(claim.agentCallDeliveryId ? { trustedAgentCallDeliveryId: claim.agentCallDeliveryId } : {}),
+        trustedDeliveryHopCount
+      }
+      try {
+        await daemon.sendMsg(rd)
+        this.deps.log.info(
+          `relay-ingress(${botId}): agent-authored mention ${claim.authorAgentId} -> ${route.agentId} (hop ${trustedDeliveryHopCount})`
+        )
+      } catch (err) {
+        const n = (this.dropped.get(botId) ?? 0) + 1
+        this.dropped.set(botId, n)
+        this.deps.log.warn(
+          `relay-ingress(${botId}): forward to ${route.daemonId} failed: ${(err as Error).message} (dropped ${n})`
+        )
+      }
+    }
+  }
+
   /** Arbitrate + forward one message to its daemon (never throws — bounded loss).
    *  Reports a first-route/changed affinity to the CP, and on a genuine un-mentioned
    *  thread follow-up with no local affinity, pulls the persisted owner from the CP. */
   private async forward(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): Promise<void> {
-    // Filter before arbitration so a managed agent's platform copy cannot mutate
-    // thread affinity or produce a CP assignment report.
+    // send-message-routing-rework.md §2.3/§6: agent-authored traffic takes its OWN
+    // ladder and never continues into the human one. Handled BEFORE arbitration for the
+    // same reason the blanket filter used to be: an agent's platform copy must not mutate
+    // thread affinity or produce a CP assignment report on its way through.
     if (this.isAgentBotMessage(botId, msg)) {
-      this.deps.log.debug(`relay-ingress(${botId}): ignored AgentConnect bot message ${msg.msgId}`)
+      await this.forwardVerifiedAgentMessage(botId, msg)
       return
     }
     const sessionKey = sessionKeyOf(msg)

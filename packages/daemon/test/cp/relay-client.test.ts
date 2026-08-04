@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayDaemonFrame,
+  RD_HEADLESS_AGENT_DELIVERY_V1,
   RELAY_DAEMON_SUBPROTOCOL,
   type RelayDaemonFrame,
   type RdMsgWebchat,
@@ -96,7 +97,14 @@ describe('RelayClient (daemon → one relay)', () => {
   it('rd/hello → rd/hello/ok (matching relayId) → READY', async () => {
     const { client, transports } = make()
     const t = await toReady(client, transports)
-    expect(t.lastReq('rd/hello')!.payload).toEqual({ apiKey: 'daemon-key', daemonId: DAEMON_ID })
+    // Hello also advertises this build's optional `rd/*` behaviors, so the relay can
+    // REFUSE a delivery this daemon cannot honor rather than degrade it
+    // (send-message-routing-rework.md §8.4).
+    expect(t.lastReq('rd/hello')!.payload).toEqual({
+      apiKey: 'daemon-key',
+      daemonId: DAEMON_ID,
+      capabilities: [RD_HEADLESS_AGENT_DELIVERY_V1]
+    })
     expect(client.state).toBe('READY')
     expect(client.isReady()).toBe(true)
   })

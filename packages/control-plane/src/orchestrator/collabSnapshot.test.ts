@@ -76,6 +76,30 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     )
   })
 
+  it('carries the channel-scoped mention-address inputs, and omits them org-wide', () => {
+    // send-message-routing-rework.md §8.5: an agent's `@mention` is only meaningful
+    // inside a conversation — the bot user id resolves relative to that channel's
+    // membership, and a shared bot needs the agent slug to be addressable at all. So the
+    // inputs ride on the CHANNEL entries and are deliberately absent from the flat
+    // org-wide directory, which has no single conversation-specific address to offer.
+    const snap = buildCollabSnapshot(
+      DEFAULT_ORG_ID,
+      [
+        rec({ agentId: AGENT_1, botUserId: 'U01DEDICATED' }),
+        rec({ agentId: AGENT_2, botUserId: 'U09SHARED', botShared: true, name: 'reviewer' })
+      ],
+      1,
+      [orgAgent({ agentId: AGENT_1 })]
+    )
+    expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
+    const byAgent = new Map(snap.channels[0]!.agents.map((a) => [a.agentId, a]))
+    expect(byAgent.get(AGENT_1)).toMatchObject({ botUserId: 'U01DEDICATED' })
+    expect(byAgent.get(AGENT_1)!.botShared).toBeUndefined()
+    expect(byAgent.get(AGENT_2)).toMatchObject({ botUserId: 'U09SHARED', botShared: true, name: 'reviewer' })
+    expect(snap.agents[0]!.botUserId).toBeUndefined()
+    expect(snap.agents[0]!.botShared).toBeUndefined()
+  })
+
   it('drops unplaced agents (daemonId null) — they are not routable', () => {
     const snap = buildCollabSnapshot(DEFAULT_ORG_ID, [rec({ daemonId: null })], 1, [])
     expect(snap.channels).toHaveLength(0)

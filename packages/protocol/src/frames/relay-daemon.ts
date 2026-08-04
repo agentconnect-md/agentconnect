@@ -46,12 +46,30 @@ export const RELAY_DAEMON_WS_PATH = '/rd/ws'
 
 // ── hello (first frame; §9) ──────────────────────────────────────────────────
 
+/**
+ * Optional behaviors a daemon advertises at hello so the relay can refuse — rather
+ * than silently degrade — a delivery the target cannot honor
+ * (send-message-routing-rework.md §8.4). Unknown strings are ignored, so a newer
+ * daemon may advertise capabilities an older relay has never heard of.
+ *
+ * `headless-agent-delivery-v1`: this daemon supports session-only automatic output
+ * for a parent-session reply — it resumes the parent with `headless: true`, emitting
+ * no ordinary IM body, typing indicator, status message/bar, footer, permission card,
+ * or completion notification for that turn. Without it, a required-headless reply must
+ * FAIL (retryable/unsupported) instead of leaking the parent's ordinary response to IM.
+ */
+export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
+
 // D→R REQ → rd/hello/ok. The daemon presents its EXISTING daemon API key; the
 // relay holds no database, so it delegates to the CP via `rc/verify` and caches
 // the verdict until this connection closes. Secret material — NEVER log.
 export const RdHello = z.object({
   apiKey: z.string().min(1),
-  daemonId: z.string().uuid()
+  daemonId: z.string().uuid(),
+  // Bounded so a hostile/buggy daemon cannot grow the relay's per-connection state.
+  // Absent ⇒ an older daemon that advertises nothing; the relay must then assume the
+  // capability is UNSUPPORTED rather than optimistically forwarding.
+  capabilities: z.array(z.string().min(1)).max(32).optional()
 })
 export type RdHello = z.infer<typeof RdHello>
 
@@ -171,6 +189,11 @@ export type WireNormalizedMessage = NormalizedPlatformMessage
 // event id (Slack event_id / TG update_id) — the idempotency key that survives a
 // relay re-assign (§12). Dedup scope is (botId, sessionKey, msgId): separate bot
 // assignments may receive the same platform event and must wake independently.
+//
+// When the sender is a VERIFIED AgentConnect agent, the relay additionally mints the
+// `trusted*` block below. It lives OUTSIDE `payload` on purpose: `payload` carries the
+// provider's own (untrusted) `agentAuthorship` claim, and the target must always be
+// able to tell a relay assertion apart from a provider field (§8.2).
 export const RdMsgIm = z.object({
   source: z.literal('im'),
   agentId: z.string().uuid(),
@@ -179,7 +202,30 @@ export const RdMsgIm = z.object({
   botId: z.string().uuid(),
   integrationId: z.string().uuid(),
   chatId: z.string().optional(), // platform channel id (observability)
-  payload: WireNormalizedMessage
+  payload: WireNormalizedMessage,
+  // The author the relay VERIFIED after checking the provider event, the sending app's
+  // AgentConnect ownership in this org+conversation, and that the claimed author is one
+  // of the agents that identity represents. Absent ⇒ not an agent-authored message, or
+  // authorship could not be proven exactly (a shared bot with no exact claim fails
+  // closed and is never promoted to call-policy identity, §4).
+  trustedFromAgentId: z.string().uuid().optional(),
+  // The verified logical response this physical message belongs to, and the recipient
+  // set resolved from that COMPLETE response. The target selects from this set rather
+  // than reparsing the last physical message, and deduplicates on
+  // (trustedResponseId, target agent) — so a mention in section one still activates
+  // exactly once when finalization lands in section two (§5).
+  trustedResponseId: z.string().min(1).optional(),
+  trustedRecipientAgentIds: z.array(z.string().uuid()).max(64).optional(),
+  // Correlates the visible half of a paired `toAgent + channel` send with the internal
+  // wake that carries the authoritative call envelope (§3.2). The relay forwards the
+  // verified pairing id but NEVER synthesizes or stores the envelope itself; the target
+  // daemon owns the durable rendezvous, because both observations converge there.
+  trustedAgentCallDeliveryId: z.string().min(1).optional(),
+  // The DELIVERY depth for this edge, computed by the relay exactly once as verified
+  // source depth + 1 and already cap-checked (§4.1 step 4). The target TERMINAL-verifies
+  // its range and installs it as trusted active-turn call metadata WITHOUT incrementing
+  // it a second time — double-counting here would halve the effective hop budget.
+  trustedDeliveryHopCount: z.number().int().nonnegative().optional()
 })
 export type RdMsgIm = z.infer<typeof RdMsgIm>
 
@@ -383,6 +429,29 @@ export type RdAck = z.infer<typeof RdAck>
 // ── cross-daemon agent→agent (`rd/agentmsg`) ─────────────────────────────────
 
 /**
+ * What kind of delivery a cross-daemon agent message is
+ * (send-message-routing-rework.md §8.3). It selects the target's AUTOMATIC-OUTPUT
+ * behavior; it never changes authorization, which stays the caller/target policy pair.
+ *
+ *  - `wake` — the ordinary postless `toAgent` call. The woken child is headless in the
+ *    existing sense: nothing is posted to any channel on its behalf.
+ *  - `session-reply` — a `sendMessage({sessionId})` injection into the caller's
+ *    authorized parent session (§7). REQUIRED-HEADLESS: the target must resume the
+ *    parent with `headless: true`, so the resumed turn emits no ordinary IM body,
+ *    typing indicator, status message/bar, footer, permission card, or completion
+ *    notification. This is NOT a turn-wide egress prohibition — the resumed parent may
+ *    still make an explicit visible `sendMessage`, which is a new intentional outbound
+ *    action rather than an IM copy of the session reply.
+ *
+ * A relay MUST NOT forward `session-reply` to a daemon that has not advertised
+ * {@link RD_HEADLESS_AGENT_DELIVERY_V1}; it returns `unsupported` instead of silently
+ * degrading the parent's ordinary response into visible IM output (§8.4). Absent ⇒
+ * `wake`, which is what every older daemon means.
+ */
+export const RdAgentMsgDeliveryKind = z.enum(['wake', 'session-reply'])
+export type RdAgentMsgDeliveryKind = z.infer<typeof RdAgentMsgDeliveryKind>
+
+/**
  * D→R REQ → `rd/agentmsg/ack`. A cross-daemon `messageAgent` (agent-collaboration
  * §2.3 / §6.2): the SOURCE daemon found the target is not local and routes over the
  * relay data plane (the body NEVER touches the CP).
@@ -459,7 +528,10 @@ export const RdAgentMsg = z.object({
   // round-trip. TIGHTEN-ONLY: `true` excludes the child immediately; `false` or
   // absent must NEVER enable capture — an A2A child always starts excluded and
   // opens only on CP confirmation. Optional — old daemons omit it.
-  parentPrivate: z.boolean().optional()
+  parentPrivate: z.boolean().optional(),
+  // send-message-routing-rework.md §8.3. Absent ⇒ `wake` (what every older daemon
+  // means). `session-reply` is REQUIRED-HEADLESS — see {@link RdAgentMsgDeliveryKind}.
+  deliveryKind: RdAgentMsgDeliveryKind.optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
 
@@ -554,14 +626,32 @@ export const RdAgentMsgFwd = z.object({
   // privacy bit, a TIGHTEN-ONLY hint for the target's memory-capture gate. Opaque to the
   // relay — the caller's own statement about its own session, not a claim the relay mints
   // or validates; an `org`/absent value never opens capture on the target.
-  parentPrivate: z.boolean().optional()
+  parentPrivate: z.boolean().optional(),
+  // Forwarded verbatim from RdAgentMsg (§8.3). The relay does not merely pass this
+  // through: for `session-reply` it first checks the TARGET daemon advertised
+  // `headless-agent-delivery-v1` at hello, and refuses with `unsupported` when it did
+  // not — a required-headless reply must never be downgraded into a visible response.
+  deliveryKind: RdAgentMsgDeliveryKind.optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
 
 /** The typed admission verdict for an agent-call (§6.4). The ACK is returned after the
  *  TARGET daemon durably admits/enqueues the turn (P4-gate) — NOT after the model turn.
  *  `reason` is only set when `delivered:false`. */
-export const RdAgentMsgReason = z.enum(['busy', 'offline', 'queue_full', 'not_allowed', 'not_found', 'hop_limit'])
+// `unsupported` is the §8.4 refusal: the delivery required a capability the target
+// daemon has not advertised (today, required-headless session replies). It is
+// deliberately distinct from `offline` — the target IS reachable, it is simply too old
+// to honor this delivery kind, so the caller learns the reply was refused rather than
+// having it silently degraded into visible IM output.
+export const RdAgentMsgReason = z.enum([
+  'busy',
+  'offline',
+  'queue_full',
+  'not_allowed',
+  'not_found',
+  'hop_limit',
+  'unsupported'
+])
 export type RdAgentMsgReason = z.infer<typeof RdAgentMsgReason>
 
 export const RdAgentMsgAck = z.object({
