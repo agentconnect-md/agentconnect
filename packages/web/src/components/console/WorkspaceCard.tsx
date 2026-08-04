@@ -24,7 +24,7 @@
 // (the design's inline add-expander is skipped — established precedent: the
 // modal owns the picker/tier/preflight flow).
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { GithubMark, LoadingState } from '@/components/marks'
@@ -81,10 +81,14 @@ const SEG_OFF_LOCKED =
 export function WorkspaceCard({
   agent,
   header,
+  viewing,
   className
 }: {
   agent: Agent
   header?: WorkspaceHeaderInfo
+  /** Current checkout selector. It shares this context card with Source so the
+   *  first row answers what is being viewed and the second where it comes from. */
+  viewing?: ReactNode
   className?: string
 }) {
   const { activeOrg } = useOrgs()
@@ -158,7 +162,8 @@ export function WorkspaceCard({
     mode === ws.mode ? (canEdit ? SEG_ON : SEG_ON_LOCKED) : canEdit ? SEG_OFF : SEG_OFF_LOCKED
 
   return (
-    <div className={`card overflow-hidden max-desktop:rounded-lg ${className ?? ''}`}>
+    <div className={`card relative max-desktop:rounded-lg ${className ?? ''}`}>
+      {viewing}
       {/* Source row — conversion segment, then the workspace identity and its
           live git actions. Wraps on narrow viewports; nothing is truncated away. */}
       <div className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]">

@@ -787,6 +787,12 @@ and the stable worktree of any visible, unpurged session. Session details link b
 session-scoped Workspace view. A session worktree is browse-only in the console:
 file editing and pull remain actions on the primary workspace.
 
+The checkout selector and workspace source form one context card. Its `Viewing`
+row names the primary checkout or session worktree currently shown; the `Source`
+row directly beneath it names the repository or scratch workspace that provides
+those files. Worktree choices keep their Session link in the selector so changing
+the viewed files and opening the originating conversation remain distinct actions.
+
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes
 write workspace authority for a repository must be rejected while an enabled GitHub
