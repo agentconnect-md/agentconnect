@@ -409,7 +409,7 @@ export default function AgentDetailView() {
   // does (else a blank model reads "Default" here but its resolved default in the
   // editor). Falls back to the static labels when the daemon reports no catalog.
   const modelText = agentModelDisplay(owningDaemon, da.runtime, da.model)
-  const ds = status(effectiveAgentStatus(da.status, owningDaemon))
+  const ds = status(effectiveAgentStatus(da, owningDaemon))
   const ws = da.workspace
   // Demo agents have no daemon to read git state from, so the workspace card's
   // live half comes straight from their static mock workspace instead.

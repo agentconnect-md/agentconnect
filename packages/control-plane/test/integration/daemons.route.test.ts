@@ -477,6 +477,22 @@ describe('DELETE /daemons/:id — remove from fleet', () => {
     expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).daemonId).toBeNull()
   })
 
+  it('marks the daemon’s agents inactive (the FK SetNull alone leaves a stale “active”)', async () => {
+    // `daemonId` and `status` must agree: unplaced ⇒ inactive. The FK's SetNull only
+    // clears the placement, so the route unplaces through the repo first — otherwise a
+    // deleted daemon leaves `daemonId: null, status: 'active'` and every reader (console
+    // badge, the `status === 'active'` routing gates) treats the agent as runnable.
+    await seedDaemon()
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await prisma.agent.update({ where: { id: agentId }, data: { status: 'active' } })
+    running = buildHttpApp(prisma)
+
+    expect((await running.app.inject({ method: 'DELETE', url: `${ORG}/daemons/${DAEMON}` })).statusCode).toBe(204)
+    const agent = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
+    expect({ daemonId: agent.daemonId, status: agent.status }).toEqual({ daemonId: null, status: 'inactive' })
+  })
+
   it('re-broadcasts the collaboration snapshot (its agents just left the peer directory)', async () => {
     // `Agent.daemonId` is SetNull, so the daemon's agents become UNPLACED and
     // `buildCollabSnapshot` drops them — but only for holders that receive a new snapshot.
