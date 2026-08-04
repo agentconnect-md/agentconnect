@@ -333,5 +333,19 @@ export const slackSettingsFragments: WebBotSettingsFragments = {
     CardProvider: SlackBotCardProvider,
     RowActions: SlackRowActions,
     CardNotice: SlackCardNotice
+  },
+  // The two host-rendered row sentences, which USED to be these exact strings
+  // for every platform. Slack is the only module that declares either, and both
+  // are unchanged: it is the only platform whose bots can be revoked
+  // (`rc/bot-revoked` carries Slack's own `app_uninstalled`/`tokens_revoked`),
+  // and the only one where sharing is real and gated on transport — the
+  // socket↔http axis is immutable post-create, so "switch to HTTP" means
+  // recreating the app, which is exactly what the CP's 409 says.
+  copy: {
+    revokedHint: 'The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect',
+    shareHint: {
+      available: 'Allow several agents to share this bot across channels',
+      unavailable: 'HTTP transport required to share'
+    }
   }
 }

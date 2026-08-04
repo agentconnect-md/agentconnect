@@ -14,7 +14,7 @@ import { Avatar, Button, Icon } from '@/components/ui'
 import { useModal } from '@/components/console/ModalProvider'
 import ApiKeysCard from '@/components/console/ApiKeysCard'
 import SocialSignInCard from '@/components/console/SocialSignInCard'
-import SlackConfigCard from '@/components/console/SlackConfigCard'
+import { PlatformCredentialCards } from '@/components/console/platforms/profile'
 import { isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
 import { MOCK_MODE } from '@/lib/data'
@@ -159,8 +159,9 @@ export default function ProfileView() {
           {/* Personal API keys — the caller's own REST credentials */}
           <ApiKeysCard orgs={orgs} defaultOrgId={activeOrg?.id} mobile />
 
-          {/* Your own Slack App Configuration token — powers one-click installs */}
-          <SlackConfigCard />
+          {/* Per-platform tooling credentials of your own — today Slack's App
+              Configuration token, which powers one-click installs */}
+          <PlatformCredentialCards />
 
           {/* Sign out */}
           <button
@@ -226,7 +227,7 @@ export default function ProfileView() {
 
       <ApiKeysCard orgs={orgs} defaultOrgId={activeOrg?.id} />
 
-      <SlackConfigCard />
+      <PlatformCredentialCards />
 
       <div className="mt-[22px] flex items-center justify-between">
         <span className="mono buildinfo text-[11.5px]">{buildStamp}</span>

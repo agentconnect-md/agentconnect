@@ -84,11 +84,6 @@
   --blue-500: #2f6fed;
   --blue-50: #ebf1fe;
 
-  /* IM platform brand accents */
-  --slack: #4a154b;
-  --telegram: #229ed9;
-  --discord: #5865f2;
-
   /* Surfaces */
   --surface-app: var(--gray-25);
   --surface-card: var(--gray-0);
@@ -271,11 +266,6 @@
   /* Agent tones — lifted like the other hues so a 15% mix stays legible on dark. */
   --teal-500: #35c7ba;
   --indigo-500: #8b8df0;
-
-  /* IM platform soft accents re-tuned for dark chips */
-  --slack-soft: rgba(163, 92, 168, 0.22);
-  --telegram-soft: rgba(34, 158, 217, 0.2);
-  --discord-soft: rgba(96, 108, 245, 0.24);
 
   /* Shadows deepen on dark */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
@@ -2939,8 +2929,9 @@
   }
 }
 
-/* Slack manifest hover-preview: blink the highlighted "From a manifest" tile. */
-@keyframes slackHintBlink {
+/* Walkthrough previews: blink the highlighted step (the Slack manifest tile, the
+   Telegram setup row — one effect, no platform of its own). */
+@keyframes stepBlink {
   0%,
   100% {
     opacity: 1;
@@ -3072,9 +3063,6 @@
    CSS optimizer keeps them. Tailwind arbitrary `animate-[name_…]` utilities live in a
    separate output the optimizer can't see as a reference, so it would otherwise prune
    these @keyframes and the animations would silently not play. */
-.slack-hint-blink {
-  animation: slackHintBlink 1.1s ease-in-out infinite;
-}
 .cfg-scroll {
   animation: cfgScroll 4.6s ease-in-out infinite;
 }
@@ -3085,7 +3073,7 @@
   animation: cfgClickB 4.6s ease-in-out infinite;
 }
 .step-blink {
-  animation: slackHintBlink 1.1s ease-in-out infinite;
+  animation: stepBlink 1.1s ease-in-out infinite;
 }
 .step-pulse {
   animation: stepPulse 1.5s ease-in-out infinite;
@@ -3096,9 +3084,6 @@
    Copy-pulse rings are hidden, and the manifest tile keeps its (static) highlight. The
    bot-setup walkthroughs stop auto-advancing (see their interval) and keep a static highlight. */
 @media (prefers-reduced-motion: reduce) {
-  .slack-hint-blink {
-    animation: none;
-  }
   .step-blink {
     animation: none;
   }
