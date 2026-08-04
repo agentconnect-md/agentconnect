@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveRoster, typedMentionIds, wireMentions } from './conversation-addressing'
+import { resolveRoster, selfConversationPath, typedMentionIds, wireMentions } from './conversation-addressing'
 
 const roster = [{ agentId: 'a-primary', primary: true }, { agentId: 'b-peer' }]
 
@@ -105,5 +105,35 @@ describe('typedMentionIds', () => {
 
   it('never narrows a single-agent conversation', () => {
     expect(typedMentionIds([{ agentId: 'solo', name: 'solo' }], '@solo hi')).toEqual([])
+  })
+})
+
+describe('selfConversationPath', () => {
+  const multi = { flatView: false, conversationKey: 'c2xhY2s', memberCount: 3 }
+
+  it('redirects a multi-participant session to the merged page', () => {
+    expect(selfConversationPath(multi)).toBe('/conversations/c2xhY2s')
+  })
+
+  it('carries no query — the landing has no ?focus scroll/highlight', () => {
+    // The regression this guards: the redirect used to append
+    // `?focus=<agentId>`, which scrolled that participant's first block into
+    // view, flashed its background, and auto-paged older windows hunting for
+    // it. A deep link opens the conversation, nothing more.
+    expect(selfConversationPath(multi)).not.toContain('?')
+  })
+
+  it('escapes a key that is not URL-safe', () => {
+    expect(selfConversationPath({ ...multi, conversationKey: 'a/b+c' })).toBe('/conversations/a%2Fb%2Bc')
+  })
+
+  it('stays on the session page for a single-participant conversation', () => {
+    expect(selfConversationPath({ ...multi, memberCount: 1 })).toBeNull()
+    expect(selfConversationPath({ ...multi, memberCount: 0 })).toBeNull()
+  })
+
+  it('never redirects an unresolved key or the view=flat diagnostic route', () => {
+    expect(selfConversationPath({ ...multi, conversationKey: null })).toBeNull()
+    expect(selfConversationPath({ ...multi, flatView: true })).toBeNull()
   })
 })

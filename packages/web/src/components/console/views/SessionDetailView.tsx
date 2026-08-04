@@ -14,6 +14,7 @@ import {
 import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
+import { selfConversationPath } from '@/lib/conversation-addressing'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -1412,10 +1413,12 @@ export default function SessionDetailView() {
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
     { revalidateOnFocus: false }
   )
-  const selfConversationRedirect =
-    !flatView && selfKey && selfConversation && selfConversation.sessions.length > 1
-      ? orgPath(`/conversations/${encodeURIComponent(selfKey)}`)
-      : null
+  const selfConversationPathname = selfConversationPath({
+    flatView,
+    conversationKey: selfKey,
+    memberCount: selfConversation?.sessions.length ?? 0
+  })
+  const selfConversationRedirect = selfConversationPathname ? orgPath(selfConversationPathname) : null
   useEffect(() => {
     if (selfConversationRedirect) router.replace(selfConversationRedirect)
   }, [selfConversationRedirect, router])
