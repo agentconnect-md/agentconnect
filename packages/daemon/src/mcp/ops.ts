@@ -1,6 +1,13 @@
 import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
 import { threadKeyForPost } from '../platforms/thread-keys.js'
+import {
+  directMessagePlatformFor,
+  directMessagePlatformList,
+  isAttachmentReadTool,
+  offersDirectMessages,
+  platformLabel
+} from '../platforms/read-ports.js'
 import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, Platform } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
@@ -48,9 +55,11 @@ export interface SendIdentity {
 }
 
 export interface MessageGateway {
-  /** Resolve one platform user to the app's real direct-message conversation.
-   *  Slack needs this before posting with a customized agent identity: sending to
-   *  a raw U… id routes the message through Slack's system-notification DM. */
+  /** Layer-1 `openDirectMessage`: resolve one platform user to the app's real
+   *  direct-message conversation. Optional because it is a declared read port,
+   *  not a universal one — Slack needs it before posting with a customized agent
+   *  identity (sending to a raw U… id routes the message through Slack's
+   *  system-notification DM); a platform without the port has no `toUser` form. */
   openDirectMessage?(user: string): Promise<string>
   /** Post a message; returns the resulting message id (`ts` / message_id) so the
    *  daemon can record it. `identity` carries the agent's stable id and optional
@@ -910,9 +919,10 @@ export async function executeTool(
     // owning daemon); such a rare reject can still leave a post — an accepted residual.
     const wakeRejection = baseWakeReq !== undefined ? (deps.preflightWake?.(baseWakeReq) ?? null) : null
 
-    // (A) Post a visible IM at a platform channel's ROOT, or to a Slack user's DM. The
+    // (A) Post a visible IM at a platform channel's ROOT, or to a user's DM. The
     // destination is the `channel` for the channel-root form; the `toUser` DM form (no
-    // channel) first resolves the Slack member id to the app's real D… conversation.
+    // channel) first resolves the member id to the app's own 1:1 conversation through
+    // the platform's Layer-1 `openDirectMessage` read port.
     // Routing is by `platform` (+ optional `integrationId`) to ANY platform the agent is
     // connected to; identity is stamped from the trusted session.
     //
@@ -941,13 +951,23 @@ export async function executeTool(
     const requestedChannel = channel ?? toUsers?.[0]
     if (requestedChannel !== undefined && wakeRejection === null) {
       const directMessage = toUsers !== undefined && channel === undefined
-      const wantPlatform = optionalString(args, 'platform') ?? (directMessage ? 'slack' : ctx.platform)
+      // A DM has to land on a platform that can OPEN one, which is rarely the session's
+      // own: the caller may be answering in Telegram and DM-ing a colleague elsewhere.
+      // The default is therefore the DM-capable platform (Layer-1 `openDirectMessage`),
+      // preferring this session's when it qualifies — the generalization of the literal
+      // `'slack'` that used to sit here.
+      const wantPlatform =
+        optionalString(args, 'platform') ?? (directMessage ? directMessagePlatformFor(ctx.platform) : ctx.platform)
       const wantIntegrationId = optionalString(args, 'integrationId')
       const { gw, integrationId: targetId } = resolveGatewayForPlatform(ctx, deps, wantPlatform, wantIntegrationId)
       let body = message
       if (toUsers !== undefined) {
-        if (wantPlatform !== 'slack') {
-          throw new Error(`sendMessage: toUser is only supported on Slack (not ${wantPlatform}) yet`)
+        // Whole `toUser` mode — DM and the channel-root mention form alike — is gated on
+        // the DM read port: the mention syntax rendered below is the same platform's.
+        if (!offersDirectMessages(wantPlatform)) {
+          throw new Error(
+            `sendMessage: toUser is only supported on ${directMessagePlatformList()} (not ${wantPlatform}) yet`
+          )
         }
         // dm form: the one user id IS the destination and the body is unchanged; the
         // channel-root form @-mentions every named user inside the one visible post.
@@ -972,7 +992,7 @@ export async function executeTool(
         })
         if (address) body = `${address} ${message}`
       }
-      const postChannel = directMessage ? await openDirectMessage(gw, requestedChannel) : requestedChannel
+      const postChannel = directMessage ? await openDirectMessage(gw, requestedChannel, wantPlatform) : requestedChannel
       const identity: SendIdentity = {
         ...(ctx.agentName ? { username: ctx.agentName } : {}),
         ...(ctx.iconUrl ? { icon_url: ctx.iconUrl } : {}),
@@ -1279,40 +1299,44 @@ export async function executeTool(
   const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
   if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
 
+  // Any platform's CREDENTIALED attachment read (`readSlackFile`, `readTelegramFile`, …).
+  // ONE body for all of them: a platform contributes only the descriptor by declaring the
+  // read port, and the fetch itself is the Layer-1 `downloadFile` every connection has, on
+  // the gateway this session is already bound to.
+  if (isAttachmentReadTool(name)) {
+    const url = requireString(args, 'url')
+    const max = deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES
+    const bytes = await gw.downloadFile(url, max)
+    if (!bytes) {
+      throw new Error(
+        `could not download the file at ${url} — it may be inaccessible, larger than ${max} bytes, or the bot ` +
+          `may lack permission to read it (e.g. the Slack files:read scope)`
+      )
+    }
+    const mimeType = optionalString(args, 'mimeType') ?? guessMimeFromUrl(url) ?? 'application/octet-stream'
+    if (mimeType.startsWith('image/')) {
+      const result: McpContentResult = {
+        mcpContent: [{ type: 'image', data: bytes.toString('base64'), mimeType }]
+      }
+      return result
+    }
+    if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'text/csv') {
+      const result: McpContentResult = { mcpContent: [{ type: 'text', text: bytes.toString('utf8') }] }
+      return result
+    }
+    // Non-image binary: don't inline a base64 blob as text; report what we got.
+    const result: McpContentResult = {
+      mcpContent: [
+        { type: 'text', text: `Downloaded ${bytes.byteLength} bytes of ${mimeType} (binary — not shown inline).` }
+      ]
+    }
+    return result
+  }
+
   switch (name) {
     case 'getCurrentChannel': {
       const info = await gw.getChannelInfo(ctx.channel).catch(() => undefined)
       return { channel: ctx.channel, thread: ctx.thread, name: info?.name ?? null, isIm: info?.isIm ?? null }
-    }
-    case 'readSlackFile':
-    case 'readTelegramFile': {
-      const url = requireString(args, 'url')
-      const max = deps.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES
-      const bytes = await gw.downloadFile(url, max)
-      if (!bytes) {
-        throw new Error(
-          `could not download the file at ${url} — it may be inaccessible, larger than ${max} bytes, or the bot ` +
-            `may lack permission to read it (e.g. the Slack files:read scope)`
-        )
-      }
-      const mimeType = optionalString(args, 'mimeType') ?? guessMimeFromUrl(url) ?? 'application/octet-stream'
-      if (mimeType.startsWith('image/')) {
-        const result: McpContentResult = {
-          mcpContent: [{ type: 'image', data: bytes.toString('base64'), mimeType }]
-        }
-        return result
-      }
-      if (mimeType.startsWith('text/') || mimeType === 'application/json' || mimeType === 'text/csv') {
-        const result: McpContentResult = { mcpContent: [{ type: 'text', text: bytes.toString('utf8') }] }
-        return result
-      }
-      // Non-image binary: don't inline a base64 blob as text; report what we got.
-      const result: McpContentResult = {
-        mcpContent: [
-          { type: 'text', text: `Downloaded ${bytes.byteLength} bytes of ${mimeType} (binary — not shown inline).` }
-        ]
-      }
-      return result
     }
     default:
       throw new Error(`unknown tool: ${name}`)
@@ -1383,9 +1407,13 @@ function parseUserTargets(value: unknown): string[] | undefined {
   return ids
 }
 
-async function openDirectMessage(gateway: MessageGateway, user: string): Promise<string> {
+/** Resolve `user` to the app's own 1:1 conversation through the platform's Layer-1
+ *  `openDirectMessage` port. The platform already declared it (that gate ran before
+ *  the gateway was resolved); this is the LIVE probe on the connection actually
+ *  selected — a send-only or stubbed gateway can still lack the method. */
+async function openDirectMessage(gateway: MessageGateway, user: string, platform: string): Promise<string> {
   if (!gateway.openDirectMessage) {
-    throw new Error('sendMessage: the selected Slack integration cannot open direct messages')
+    throw new Error(`sendMessage: the selected ${platformLabel(platform)} integration cannot open direct messages`)
   }
   return gateway.openDirectMessage(user)
 }

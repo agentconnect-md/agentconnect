@@ -517,11 +517,78 @@ describe('executeTool: sendMessage (channel post)', () => {
   it('rejects toUser off Slack before posting', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
-    // toUser is Slack-only for now — on another platform it throws (nothing posted).
+    // `toUser` needs the Layer-1 openDirectMessage read port, which only Slack
+    // declares — on another platform it throws (nothing posted). The error still
+    // NAMES the capable platform, which is the whole reason the declaration
+    // carries a label instead of core carrying the literal.
     const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
     await expect(
       executeTool(dual, 'sendMessage', { toUser: '42', platform: 'telegram', message: 'x' }, d)
-    ).rejects.toThrow(/only supported on Slack/)
+    ).rejects.toThrow('sendMessage: toUser is only supported on Slack (not telegram) yet')
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects the toUser CHANNEL form off Slack too — the whole mode rides the port', async () => {
+    // Not just the DM form: the channel-root form renders `<@id>` mentions, which
+    // is the same platform's syntax. Both arms were behind one `!== 'slack'` gate
+    // and both stay behind the one port check.
+    const gw = fakeGateway()
+    const { deps: d } = deps(gw)
+    const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
+    await expect(
+      executeTool(dual, 'sendMessage', { toUser: '42', channel: '-100123', platform: 'telegram', message: 'x' }, d)
+    ).rejects.toThrow('sendMessage: toUser is only supported on Slack (not telegram) yet')
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('defaults a DM to the port-capable platform even from a session on another one', async () => {
+    // A Telegram-triggered session that also owns a Slack bot DMs through SLACK
+    // when the caller names no platform: the DM form defaults to the platform
+    // that can open one, not to the session's own.
+    const gw = fakeGateway()
+    const { deps: d } = deps(gw)
+    const fromTelegram = {
+      ...ctx,
+      platform: 'telegram',
+      integrationId: 'int-tg',
+      integrations: [
+        { id: 'int-tg', platform: 'telegram' },
+        { id: 'int-1', platform: 'slack' }
+      ]
+    }
+    const res = (await executeTool(fromTelegram, 'sendMessage', { toUser: 'U9', message: 'ping' }, d)) as {
+      post: Record<string, unknown>
+    }
+    expect(gw.openDirectMessage).toHaveBeenCalledWith('U9')
+    expect(res.post).toMatchObject({ platform: 'slack', integrationId: 'int-1', channel: 'D-U9' })
+  })
+
+  it('reports the missing integration first when the agent has no port-capable bot at all', async () => {
+    // Ordering is load-bearing and unchanged: the DM default resolves to Slack,
+    // gateway resolution runs BEFORE the port gate, so a Telegram-only agent gets
+    // "no slack integration" rather than "not supported on Slack".
+    const gw = fakeGateway()
+    const { deps: d } = deps(gw)
+    const telegramOnly = {
+      ...ctx,
+      platform: 'telegram',
+      integrationId: 'int-tg',
+      integrations: [{ id: 'int-tg', platform: 'telegram' }]
+    }
+    await expect(executeTool(telegramOnly, 'sendMessage', { toUser: '42', message: 'x' }, d)).rejects.toThrow(
+      'this agent has no slack integration'
+    )
+    expect(gw.postMessage).not.toHaveBeenCalled()
+  })
+
+  it('reports a selected integration whose live connection cannot open a DM', async () => {
+    // The platform declares the port; THIS gateway does not implement it (a
+    // send-only connection). The live probe is the second, narrower gate.
+    const gw = fakeGateway({ openDirectMessage: undefined })
+    const { deps: d } = deps(gw)
+    await expect(executeTool(ctx, 'sendMessage', { toUser: 'U9', message: 'ping' }, d)).rejects.toThrow(
+      'sendMessage: the selected Slack integration cannot open direct messages'
+    )
     expect(gw.postMessage).not.toHaveBeenCalled()
   })
 })
