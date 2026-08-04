@@ -528,6 +528,23 @@ export function buildContainer(
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
   const sender = new ControlSender(connReg, repos.launch)
 
+  // LATE-BOUND platform registry (§9). The providers are constructed FAR below —
+  // they close over `httpDeps`, whose own route plugins do not exist yet — but the
+  // orchestrators built here already need to reach them (spec assembly,
+  // `rc/bot-assign`). `platforms` is a stable façade every holder can capture now;
+  // it forwards to the composed registry, and every read runs at reconcile /
+  // sync / request time, long after `buildContainer` has assigned it.
+  let composedPlatforms: CpPlatformRegistry | undefined = undefined
+  const requirePlatforms = (): CpPlatformRegistry => {
+    if (!composedPlatforms) throw new Error('platform registry read before composition')
+    return composedPlatforms
+  }
+  const platforms: CpPlatformRegistry = {
+    get: (platformId) => requirePlatforms().get(platformId),
+    all: () => requirePlatforms().all(),
+    ids: () => requirePlatforms().ids()
+  }
+
   // Per-session memory-capture gate convergence (session-visibility.md §5.1):
   // the CP is the authority on effective visibility; daemons only enforce it.
   const visibilityPush = new SessionVisibilityPushService({
@@ -566,7 +583,8 @@ export function buildContainer(
       info: (o, m) => http.log.info(o, m),
       warn: (o, m) => http.log.warn(o, m),
       debug: (o, m) => http.log.debug(o, m)
-    }
+    },
+    platforms
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -575,6 +593,7 @@ export function buildContainer(
     integrationChannels: repos.integrationChannel,
     bots: repos.bot,
     botSecrets: repos.botSecret,
+    platforms,
     specs: agentSpecs,
     crons: repos.cron,
     control: sender,
@@ -598,6 +617,7 @@ export function buildContainer(
     agentSpecs,
     repos.integrationChannel,
     repos.bot,
+    platforms,
     {
       registry: connReg,
       sender,
@@ -782,19 +802,14 @@ export function buildContainer(
   const syncDiscordBotProfile = createDiscordBotProfileSyncer(iconStore)
   const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
-  // LATE-BOUND on purpose: the providers below are constructed WITH `httpDeps`
-  // (their funnel plugins are route factories pre-bound to this very bundle), so
-  // the registry cannot exist before this object does. Every reader runs at
-  // Fastify `ready()` time or later — route plugins are registered lazily — by
-  // which point `buildContainer` has assigned it.
-  let platformRegistry: CpPlatformRegistry | undefined = undefined
-
   const httpDeps: HttpDeps = {
     clock,
-    get platforms(): CpPlatformRegistry {
-      if (!platformRegistry) throw new Error('platform registry read before composition')
-      return platformRegistry
-    },
+    // The same late-bound façade the orchestrators above hold (see its
+    // definition): the providers below are constructed WITH `httpDeps` — their
+    // funnel plugins are route factories pre-bound to this very bundle — so the
+    // registry cannot exist before this object does. Every reader runs at
+    // Fastify `ready()` time or later, by which point it has been assigned.
+    platforms,
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
@@ -1046,14 +1061,15 @@ export function buildContainer(
   // path). The Slack/Feishu funnel plugins are handed in PRE-BOUND to
   // `httpDeps` — the very factories `server.ts` mounts — keeping provider
   // construction one-directional (a provider never reaches back for a route
-  // factory). That is also why the registry is published to `httpDeps` through
-  // the late-bound getter above rather than as a plain field.
+  // factory). That is also why every holder captures the late-bound `platforms`
+  // façade defined near the top rather than this value directly.
   //
   // ADOPTED SO FAR: the `POST /integrations` create body + its live
-  // `validateConfig` dispatch read the registry through `httpDeps.platforms`.
-  // Spec assembly, rc/bot-assign, route mounting, `loadConfig`'s schema fold,
-  // and `startBackground()` adopt it in follow-up PRs.
-  const platforms = buildCpPlatformRegistry([
+  // `validateConfig` dispatch; and (§9) ALL wire projection — `IntegrationSpec.
+  // config` on every spec-assembly path and both `rc/bot-assign` bags. Route
+  // mounting, `loadConfig`'s schema fold, and `startBackground()` adopt it in
+  // follow-up PRs.
+  composedPlatforms = buildCpPlatformRegistry([
     createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
     createDiscordCpProvider({
       verifyBot: verifyDiscordBot,
@@ -1086,7 +1102,6 @@ export function buildContainer(
       }
     })
   ])
-  platformRegistry = platforms
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {

@@ -56,6 +56,21 @@ import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { FakeClock } from './fake-clock.js'
 import { InMemoryDaemonStub } from './daemon-stub.js'
+import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
+import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
+import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
+
+// §9: reconcile projects every `IntegrationSpec.config` through the platform
+// registry, so the WS fake composes the same four providers prod registers.
+// Their verify seams are offline stubs — the projectors call none of them.
+const PLATFORMS = buildCpPlatformRegistry([
+  createSlackCpProvider({}),
+  createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+  createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+  createFeishuCpProvider({})
+])
 
 export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 
@@ -140,6 +155,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     new AgentSpecAssembler(repos.agentSecret),
     repos.integrationChannel,
     repos.bot,
+    PLATFORMS,
     {
       registry: connReg,
       sender,

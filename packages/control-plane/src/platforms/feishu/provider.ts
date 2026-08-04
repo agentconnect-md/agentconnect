@@ -26,9 +26,13 @@
  * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
  * registry — its {@link FeishuCreateCredentials} block + {@link
  * refineFeishuCreateBody} are folded into the create body, and {@link
- * CpPlatformProvider.validateConfig} IS the route's live credential check.
- * `placement.ts`, `httpBot.ts`, `server.ts` mounting, and `loadConfig`'s schema
- * fold remain live paths, sharing the implementations above.
+ * CpPlatformProvider.validateConfig} IS the route's live credential check. Spec
+ * assembly (`placement.ts`) and `rc/bot-assign` (`httpBot.ts`) now await
+ * {@link CpPlatformProvider.projectIntegrationConfig} / {@link
+ * CpPlatformProvider.projectBotAssign} — the helpers below stay exported as the
+ * ONE implementation both the projectors and the equivalence tests call.
+ * `server.ts` mounting and `loadConfig`'s schema fold remain live paths,
+ * sharing the implementations above.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'

@@ -106,16 +106,21 @@ export function integrationRoutes(deps: HttpDeps) {
     // daemon. Best-effort: if the daemon is offline the reconcile roster carries it
     // on the next connect. Token-bearing — never log the spec.
     const replicateUpsert = async (i: IntegrationRecord, daemonId: string): Promise<void> => {
-      const [secret, channels, owner] = await Promise.all([
+      // The bot row joins the reads: it is a required input of the §9 projector
+      // that now assembles the spec payload (`orchestrator/placement.ts`). Every
+      // caller here is already on the socket-transport arm, so the projector
+      // returns the same direct-mode payload this path emitted before.
+      const [secret, channels, owner, bot] = await Promise.all([
         deps.repos.botSecret.get(i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id),
-        deps.repos.agent.get(i.agentId)
+        deps.repos.agent.get(i.agentId),
+        deps.repos.bot.get(i.botId)
       ])
-      if (!secret) return
+      if (!secret || !bot) return
       try {
         await deps.control.integrationUpsert(
           daemonId,
-          integrationToSpec(i, secret, channels, owner ? isGatedAgent(owner) : false)
+          await integrationToSpec(deps.platforms, i, bot, secret, channels, owner ? isGatedAgent(owner) : false)
         )
       } catch (err) {
         if (!(err instanceof NoConnection)) throw err

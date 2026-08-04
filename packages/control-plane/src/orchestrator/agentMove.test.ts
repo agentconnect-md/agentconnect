@@ -17,6 +17,20 @@ import type { CollabRoutesService } from './collabRoutes.service.js'
 import { AgentMoveConflict, AgentMoveFailed, AgentMoveService } from './agentMove.js'
 import { AgentSpecAssembler } from './agentSpecAssembler.js'
 import { AgentMutationGate } from './agentMutationGate.js'
+import { buildCpPlatformRegistry } from '../platforms/registry.js'
+import { createSlackCpProvider } from '../platforms/slack/provider.js'
+import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../platforms/discord/provider.js'
+import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+
+// §9: the move bundle's `IntegrationSpec.config` comes from the platform
+// provider. Offline stubs — the projectors reach no provider API.
+const PLATFORMS = buildCpPlatformRegistry([
+  createSlackCpProvider({}),
+  createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+  createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+  createFeishuCpProvider({})
+])
 
 const AGENT = AgentId('11111111-1111-4111-8111-111111111111')
 const SOURCE = DaemonId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
@@ -234,6 +248,7 @@ function make(
     botSecrets: {
       get: async () => ({ botToken: 'xoxb-test', appToken: 'xapp-test' })
     } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['botSecrets'],
+    platforms: PLATFORMS,
     // The real assembler over a fake store — exercises project()/secretsOf() as prod does.
     specs: new AgentSpecAssembler({
       get: async () => ({}),

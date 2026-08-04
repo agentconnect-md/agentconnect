@@ -8,14 +8,30 @@
 import { describe, it, expect } from 'vitest'
 import { integrationToSpec } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
-import type { AgentRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
-import { AgentId, IntegrationId, OrgId } from '../domain/ids.js'
+import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
+import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
+import { buildCpPlatformRegistry } from '../platforms/registry.js'
+import { createSlackCpProvider } from '../platforms/slack/provider.js'
+import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../platforms/discord/provider.js'
+import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
 import {
   IntegrationSlackConfig,
   IntegrationTelegramConfig,
   IntegrationDiscordConfig,
   IntegrationFeishuConfig
 } from '@agentconnect.md/protocol'
+
+// The §9 projector seam: spec assembly now awaits the platform provider for the
+// opaque `config` payload, so every call needs the registry + the bot row. The
+// four providers are constructed with offline stubs — the projectors reach none
+// of them (they are pure functions of the row + the decrypted secret).
+const PLATFORMS = buildCpPlatformRegistry([
+  createSlackCpProvider({}),
+  createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+  createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+  createFeishuCpProvider({})
+])
 
 // §6.4 emission flip: the spec carries envelope (`core`) + opaque `config` only.
 // Tests validate the payload through the SAME wire schema the daemon reader uses.
@@ -35,6 +51,31 @@ const INTEGRATION: IntegrationRecord = {
 }
 const SECRET = { botToken: 'xoxb-abc', appToken: 'xapp-def' }
 
+/** A socket-transport bot row — the direct-mode fork the projector applies. Only
+ *  the fields the four projectors read are meaningful. */
+const bot = (over: Partial<BotRecord> = {}): BotRecord =>
+  ({
+    id: BotId('88888888-8888-4888-8888-888888888888'),
+    orgId: OrgId('org'),
+    platform: 'slack',
+    name: 'acme-bot',
+    transport: 'socket',
+    shareable: false,
+    slackAppId: null,
+    teamId: null,
+    botUserId: null,
+    ...over
+  }) as BotRecord
+
+/** `integrationToSpec` with the registry + the matching bot row pre-bound, so the
+ *  cases below keep reading as the trigger→bindRules fold they are testing. */
+const specOf = (
+  i: IntegrationRecord,
+  secret: Parameters<typeof integrationToSpec>[3],
+  channels: IntegrationChannelRecord[] = [],
+  gated = false
+) => integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, gated)
+
 const channel = (
   channelId: string,
   trigger: 'off' | 'mention' | 'any',
@@ -50,14 +91,14 @@ const channel = (
 })
 
 describe('integrationToSpec bindRules', () => {
-  it('defaults to mention + dm with no channels', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET)
+  it('defaults to mention + dm with no channels', async () => {
+    const spec = await specOf(INTEGRATION, SECRET)
     expect(slackCfg(spec).bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
     expect(slackCfg(spec).botToken).toBe(SECRET.botToken)
   })
 
-  it("adds one channel-scoped 'auto' rule per 'any message' channel; 'mention' channels add none", () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [
+  it("adds one channel-scoped 'auto' rule per 'any message' channel; 'mention' channels add none", async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
       channel('C1', 'mention'),
       channel('C2', 'any'),
       channel('C3', 'any')
@@ -70,8 +111,8 @@ describe('integrationToSpec bindRules', () => {
     ])
   })
 
-  it('uses the DM default for a 1:1 row and scopes a group DM set to "any"', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [
+  it('uses the DM default for a 1:1 row and scopes a group DM set to "any"', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
       channel('C1', 'any'),
       channel('D1', 'any', 'im'),
       channel('G1', 'any', 'mpim')
@@ -84,8 +125,8 @@ describe('integrationToSpec bindRules', () => {
     ])
   })
 
-  it('emits a telegram-shaped spec (single botToken, no appToken) for a telegram integration', () => {
-    const spec = integrationToSpec({ ...INTEGRATION, platform: 'telegram' }, { botToken: '123:abc', appToken: null }, [
+  it('emits a telegram-shaped spec (single botToken, no appToken) for a telegram integration', async () => {
+    const spec = await specOf({ ...INTEGRATION, platform: 'telegram' }, { botToken: '123:abc', appToken: null }, [
       channel('-100', 'any')
     ])
     if (spec.platform !== 'telegram') throw new Error('expected telegram spec')
@@ -100,8 +141,8 @@ describe('integrationToSpec bindRules', () => {
 })
 
 describe('integrationToSpec conversation gating (§14)', () => {
-  it('gated: emits ONLY conversation-scoped rules — no unscoped defaults', () => {
-    const spec = integrationToSpec(
+  it('gated: emits ONLY conversation-scoped rules — no unscoped defaults', async () => {
+    const spec = await specOf(
       INTEGRATION,
       SECRET,
       [channel('C1', 'mention'), channel('C2', 'any'), channel('C3', 'off'), channel('D1', 'any', 'im')],
@@ -116,15 +157,15 @@ describe('integrationToSpec conversation gating (§14)', () => {
     ])
   })
 
-  it('gated with no enabled conversations ships an EMPTY rule set (fail-closed)', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], true)
+  it('gated with no enabled conversations ships an EMPTY rule set (fail-closed)', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], true)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(slackCfg(spec).bindRules).toEqual([])
     expect(slackCfg(spec).gated).toBe(true)
   })
 
-  it("non-gated: an 'off' channel keeps the defaults but is muted; gated is false", () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'any', 'im')])
+  it("non-gated: an 'off' channel keeps the defaults but is muted; gated is false", async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'any', 'im')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(slackCfg(spec).gated).toBe(false)
     // The defaults are unscoped, so Off cannot be expressed by withholding a rule —
@@ -136,8 +177,8 @@ describe('integrationToSpec conversation gating (§14)', () => {
 })
 
 describe('integrationToSpec mutedChannels', () => {
-  it('mutes every Off channel and nothing else', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [
+  it('mutes every Off channel and nothing else', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [
       channel('C1', 'off'),
       channel('C2', 'mention'),
       channel('C3', 'any'),
@@ -147,37 +188,73 @@ describe('integrationToSpec mutedChannels', () => {
     expect(spec.core?.mutedChannels).toEqual(['C1', 'C4'])
   })
 
-  it('mutes direct rows on a non-gated integration', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('D1', 'off', 'im'), channel('G1', 'off', 'mpim')])
+  it('mutes direct rows on a non-gated integration', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('D1', 'off', 'im'), channel('G1', 'off', 'mpim')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(spec.core?.mutedChannels).toEqual(['D1', 'G1'])
   })
 
   // A gated integration says Off by having no rule for the conversation; stating it
   // twice would let the two representations drift apart.
-  it('stays empty for a gated integration, whose Off is the missing rule', () => {
-    const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'off'), channel('C2', 'mention')], true)
+  it('stays empty for a gated integration, whose Off is the missing rule', async () => {
+    const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('C2', 'mention')], true)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
     expect(spec.core?.mutedChannels).toEqual([])
     expect(spec.core?.bindRules).toEqual([{ channel: 'C2', match: { kind: 'mention' } }])
   })
 
-  it('rides every platform variant', () => {
-    const tg = integrationToSpec({ ...INTEGRATION, platform: 'telegram' }, { botToken: '1:a', appToken: null }, [
+  it('rides every platform variant', async () => {
+    const tg = await specOf({ ...INTEGRATION, platform: 'telegram' }, { botToken: '1:a', appToken: null }, [
       channel('-100', 'off')
     ])
     if (tg.platform !== 'telegram') throw new Error('expected telegram spec')
     expect(tg.core?.mutedChannels).toEqual(['-100'])
-    const dc = integrationToSpec({ ...INTEGRATION, platform: 'discord' }, { botToken: 'bot', appToken: null }, [
+    const dc = await specOf({ ...INTEGRATION, platform: 'discord' }, { botToken: 'bot', appToken: null }, [
       channel('999', 'off')
     ])
     if (dc.platform !== 'discord') throw new Error('expected discord spec')
     expect(dc.core?.mutedChannels).toEqual(['999'])
-    const fs = integrationToSpec({ ...INTEGRATION, platform: 'feishu' }, { botToken: 'sec', appToken: 'cli_x' }, [
+    const fs = await specOf({ ...INTEGRATION, platform: 'feishu' }, { botToken: 'sec', appToken: 'cli_x' }, [
       channel('oc_1', 'off')
     ])
     if (fs.platform !== 'feishu') throw new Error('expected feishu spec')
     expect(fs.core?.mutedChannels).toEqual(['oc_1'])
+  })
+})
+
+/**
+ * §9 projector seam: core owns the envelope and the two fail-closed fences; the
+ * opaque `config` is the provider's. Both fences are unreachable in production —
+ * every persistence write already passes `toDbPlatform`, and the create route
+ * admits only registered platform ids — but the previous code's unrecognized-
+ * platform arm silently FELL THROUGH to the slack branch, so pin that it does
+ * not any more.
+ */
+describe('integrationToSpec platform fences (§9)', () => {
+  const foreign = { ...INTEGRATION, platform: 'mastodon' }
+
+  it('refuses an id no provider is registered for instead of falling through to slack', async () => {
+    const withoutSlack = buildCpPlatformRegistry([
+      createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) })
+    ])
+    // A SERVED id (slack) whose provider is simply not composed — the case that
+    // reaches the provider fence rather than `toDbPlatform`'s served-set check.
+    await expect(integrationToSpec(withoutSlack, INTEGRATION, bot(), SECRET, [], false)).rejects.toThrow(
+      /no control-plane platform provider registered for slack/
+    )
+  })
+
+  it('refuses an id outside the served set (the persistence fence, reused on the wire)', async () => {
+    await expect(
+      integrationToSpec(PLATFORMS, foreign, bot({ platform: 'mastodon' }), SECRET, [], false)
+    ).rejects.toThrow(/unknown platform mastodon/)
+  })
+
+  it('refuses a session-identity id, which has no persisted integration at all', async () => {
+    const webchat = { ...INTEGRATION, platform: 'webchat' }
+    await expect(
+      integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [], false)
+    ).rejects.toThrow(/session-identity platform/)
   })
 })
 

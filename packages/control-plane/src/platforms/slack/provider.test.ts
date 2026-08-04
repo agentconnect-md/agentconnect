@@ -1,15 +1,16 @@
 /**
  * Slack CpPlatformProvider (§9, S3) — unit, no I/O.
  *
- * The load-bearing suites are the EQUIVALENCE blocks: while the live paths are
- * still `integrationToSpec` / `httpIntegrationToSpec`
- * (`orchestrator/placement.ts`) and `buildAssign` (`orchestrator/httpBot.ts`),
- * the provider's `projectIntegrationConfig` / `projectBotAssign` must produce
- * EXACTLY the payloads those paths emit for the same inputs — that equality is
- * what makes the eventual call-site flip a zero-behavior change. The
- * `projectBotAssign` block runs the REAL orchestrator (in-memory repos, a
- * recording relay channel) and compares the live `rc/bot-assign` frame's two
- * opaque bags against the provider's projection.
+ * The load-bearing suites are the EQUIVALENCE blocks. Now that the live paths
+ * (`integrationToSpec` / `httpIntegrationToSpec` in `orchestrator/placement.ts`
+ * and `buildAssign` in `orchestrator/httpBot.ts`) go THROUGH this provider,
+ * comparing their output to the provider's would prove nothing — so the pins are
+ * GOLDEN LITERALS of the payloads the pre-adoption per-platform arms emitted,
+ * plus, across the input permutations, equality with the extracted helper bodies
+ * those arms called (unchanged by the flip), which is what catches core
+ * threading the wrong envelope, secret, or bot row into the seam. The
+ * `projectBotAssign` block still runs the REAL orchestrator (in-memory repos, a
+ * recording relay channel) so the frame captured off the wire is the live one.
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { FastifyPluginAsync } from 'fastify'
@@ -130,6 +131,11 @@ const channel = (
   trigger,
   agentId: null
 })
+
+// §9 adoption: the live spec/assign paths reach this provider THROUGH the
+// registry, so the equivalence suites below drive the real registry rather than
+// calling the provider beside the live path.
+const PLATFORMS = buildCpPlatformRegistry([createSlackCpProvider({ verifyBot: verifierOk() })])
 
 describe('slack provider identity + declarative facets', () => {
   const provider = createSlackCpProvider({ verifyBot: verifierOk() })
@@ -396,7 +402,6 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
 })
 
 describe('slack projection equivalence with the live integrationToSpec path (direct/socket)', () => {
-  const provider = createSlackCpProvider({ verifyBot: verifierOk() })
   const SOCKET_BOT = bot()
 
   const cases: Array<{ label: string; channels: IntegrationChannelRecord[]; gated: boolean }> = [
@@ -413,25 +418,55 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
     }
   ]
 
+  // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` slack arm
+  // emitted for these inputs — frozen here so the flip to the provider projector
+  // is provably byte-identical rather than merely self-consistent.
+  it('emits the byte-identical direct payload the pre-adoption slack arm produced', async () => {
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      SOCKET_BOT,
+      SOCKET_SECRET,
+      [channel('C1', 'any'), channel('C2', 'mention'), channel('C3', 'off')],
+      false
+    )
+    const bindRules = [
+      { match: { kind: 'mention' } },
+      { match: { kind: 'dm' } },
+      { channel: 'C1', match: { kind: 'auto' } }
+    ]
+    expect(spec).toEqual({
+      integrationId: INTEGRATION.id,
+      agentId: INTEGRATION.agentId,
+      platform: 'slack',
+      core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false },
+      config: {
+        mode: 'direct',
+        shareable: false, // a socket bot is single-agent by construction
+        botToken: 'xoxb-test-token',
+        appToken: 'xapp-1-A0TESTAPP-123-abc', // Socket Mode carries the app-level token
+        bindRules,
+        mutedChannels: ['C3'],
+        gated: false
+      }
+    })
+  })
+
+  // Across the channel/gating permutations the pin is the EXTRACTED helper — the
+  // unchanged body the pre-adoption arm called — which catches core threading the
+  // wrong envelope, the wrong secret, or the wrong direct/shared arm into the seam.
   for (const { label, channels, gated } of cases) {
-    it(`emits exactly the live path's config — ${label}`, async () => {
-      const spec = integrationToSpec(INTEGRATION, SOCKET_SECRET, channels, gated)
-      const projected = await provider.projectIntegrationConfig(INTEGRATION, SOCKET_BOT, spec.core!, SOCKET_SECRET)
-      expect(projected).toEqual(spec.config)
-      // Both sides satisfy the daemon reader's wire schema (§6.4).
-      expect(IntegrationSlackConfig.parse(projected)).toEqual(IntegrationSlackConfig.parse(spec.config))
+    it(`routes the live path through the slack projector unchanged — ${label}`, async () => {
+      const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, channels, gated)
+      expect(spec.core!.mode).toBe('direct')
+      expect(spec.config).toEqual(slackIntegrationConfig(spec.core!, SOCKET_SECRET))
+      // The payload satisfies the daemon reader's wire schema (§6.4).
+      expect(() => IntegrationSlackConfig.parse(spec.config)).not.toThrow()
     })
   }
-
-  it('shares one implementation with placement.ts (the extracted helper)', () => {
-    const spec = integrationToSpec(INTEGRATION, SOCKET_SECRET, [channel('C1', 'any')], false)
-    expect(slackIntegrationConfig(spec.core!, SOCKET_SECRET)).toEqual(spec.config)
-  })
 })
 
 describe('slack projection equivalence with the live httpIntegrationToSpec path (shared/http)', () => {
-  const provider = createSlackCpProvider({ verifyBot: verifierOk() })
-
   const cases: Array<{
     label: string
     bot: BotRecord
@@ -458,29 +493,50 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
     }
   ]
 
+  // GOLDEN: the literal payload the PRE-ADOPTION `httpIntegrationToSpec` slack
+  // arm emitted. Send-only by credential domaining — xoxb but NEVER the appToken.
+  it('emits the byte-identical shared payload the pre-adoption slack arm produced', async () => {
+    const httpBot = bot({ transport: 'http', shareable: true, slackAppId: 'A0TESTAPP' })
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      httpBot,
+      HTTP_SECRET,
+      [channel('C1', 'any'), channel('C2', 'off')],
+      false
+    )
+    expect(spec).toEqual({
+      integrationId: INTEGRATION.id,
+      agentId: INTEGRATION.agentId,
+      platform: 'slack',
+      // Ungated shared installs ship NO bindRules — the relay arbitrates.
+      core: { mode: 'shared', bindRules: [], mutedChannels: ['C2'], gated: false },
+      config: {
+        mode: 'shared',
+        shareable: true,
+        botToken: 'xoxb-test-token',
+        appId: 'A0TESTAPP',
+        bindRules: [],
+        mutedChannels: ['C2'],
+        gated: false
+      }
+    })
+    expect(spec.config).not.toHaveProperty('appToken')
+  })
+
   for (const { label, bot: httpBot, channels, gated } of cases) {
-    it(`emits exactly the live path's config — ${label}`, async () => {
-      // The live call sites feed the bot row's fields positionally
-      // (`placement.ts` reconcile, `httpBot.ts` pushSpecs).
-      const spec = httpIntegrationToSpec(
-        INTEGRATION,
-        HTTP_SECRET,
-        httpBot.shareable,
-        channels,
-        gated,
-        httpBot.slackAppId ?? undefined,
-        httpBot.botUserId ?? undefined
+    it(`routes the live path through the slack projector unchanged — ${label}`, async () => {
+      // The bot row is passed WHOLE now: `shareable` / the provider app id /
+      // `botUserId` are read off it by the projector instead of being forwarded
+      // positionally by each call site.
+      const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
+      expect(spec.core!.mode).toBe('shared')
+      expect(spec.config).toEqual(
+        slackSharedIntegrationConfig(spec.core!, HTTP_SECRET, httpBot.shareable, httpBot.slackAppId ?? undefined)
       )
-      const projected = await provider.projectIntegrationConfig(INTEGRATION, httpBot, spec.core!, HTTP_SECRET)
-      expect(projected).toEqual(spec.config)
-      expect(IntegrationSlackConfig.parse(projected)).toEqual(IntegrationSlackConfig.parse(spec.config))
+      expect(() => IntegrationSlackConfig.parse(spec.config)).not.toThrow()
     })
   }
-
-  it('shares one implementation with placement.ts (the extracted helper)', () => {
-    const spec = httpIntegrationToSpec(INTEGRATION, HTTP_SECRET, true, [], false, 'A0TESTAPP')
-    expect(slackSharedIntegrationConfig(spec.core!, HTTP_SECRET, true, 'A0TESTAPP')).toEqual(spec.config)
-  })
 })
 
 // ── projectBotAssign equivalence against the LIVE rc/bot-assign frame ────────
@@ -516,7 +572,8 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     { integrationUpsert: async () => {} } as never,
     { upsert: async () => {}, get: async () => null, listForBot: async () => [] } as unknown as ThreadAffinityStore,
     { findThreadOwner: async () => null } as unknown as SessionRepo,
-    { info() {}, warn() {}, debug() {} }
+    { info() {}, warn() {}, debug() {} },
+    PLATFORMS
   )
   await orch.syncBot(botRow.id)
   const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign | undefined

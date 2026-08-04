@@ -105,15 +105,19 @@ export async function installNewFeishuBot(
     return integration
   }
 
-  const [secret, channels] = await Promise.all([
+  // The bot row joins the reads: it is a required input of the §9 projector that
+  // now assembles the spec payload (`orchestrator/placement.ts`). It was created
+  // or matched above, so this read always hits.
+  const [secret, channels, botRow] = await Promise.all([
     deps.repos.botSecret.get(botId),
-    deps.repos.integrationChannel.listForIntegration(id)
+    deps.repos.integrationChannel.listForIntegration(id),
+    deps.repos.bot.get(botId)
   ])
-  if (secret) {
+  if (secret && botRow) {
     try {
       await deps.control.integrationUpsert(
         agent.daemonId!,
-        integrationToSpec(integration, secret, channels, isGatedAgent(agent))
+        await integrationToSpec(deps.platforms, integration, botRow, secret, channels, isGatedAgent(agent))
       )
     } catch (err) {
       if (!(err instanceof NoConnection)) throw err
