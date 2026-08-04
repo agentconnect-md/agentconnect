@@ -88,10 +88,17 @@ import { HookService } from '../../src/hooks/hook.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import type { CpPlatformRegistry } from '../../src/platforms/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
+import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
+import {
+  slackPlatformInstallRoutes,
+  slackPlatformCallbackRoutes
+} from '../../src/http/routes/slack-platform-install.js'
+import { feishuRegistrationRoutes } from '../../src/http/routes/feishu-registration.js'
 import { createReadiness } from '../../src/http/readiness.js'
 import { McpRateLimiter } from '../../src/http/mcp/rate-limit.js'
 import { RemoteGrantAuthenticator } from '../../src/http/mcp/remote-grant-authenticator.js'
@@ -212,34 +219,28 @@ export function buildHttpApp(
     })
   const internalInvocationAuth = depsOverrides?.internalInvocationAuth ?? new InternalInvocationAuth()
 
-  // §9 platform-provider registry — the same four providers `buildContainer`
-  // registers, so the create route parses and validates exactly the deployed
-  // shapes, and spec assembly / `rc/bot-assign` project through the deployed
-  // projectors. Their verify seams READ THROUGH to `deps` on every call instead
-  // of capturing it: tests routinely swap `app.deps.verifySlackBot` (and
-  // friends) AFTER the app is built, and an absent dep is passed through as the
-  // provider-unreachable outcome — which every provider treats exactly as
-  // today's route treated "no verifier injected" (inconclusive: no 400, no
-  // derived identity). Only the seams the create route reaches through the
-  // provider are wired here; the icon/profile pushes remain live `deps` calls
-  // until §9 moves the create tails too. Hoisted above `deps` because the
-  // orchestrators inside the bundle take it as a constructor argument.
-  const platforms = buildCpPlatformRegistry([
-    createTelegramCpProvider({ verifyBot: (token) => deps.verifyTelegramBot(token) }),
-    createDiscordCpProvider({
-      verifyBot: async (token) => (deps.verifyDiscordBot ? deps.verifyDiscordBot(token) : { status: 'unreachable' }),
-      ensureMessageContentIntent: (token) => deps.ensureDiscordMessageContentIntent(token)
-    }),
-    createSlackCpProvider({
-      verifyBot: async (token) => (deps.verifySlackBot ? deps.verifySlackBot(token) : { status: 'unreachable' }),
-      verifyAppToken: async (token) =>
-        deps.verifySlackAppToken ? deps.verifySlackAppToken(token) : ('unreachable' as const)
-    }),
-    createFeishuCpProvider({
-      verifyBot: async (appId, appSecret, region) =>
-        deps.verifyFeishuBot ? deps.verifyFeishuBot(appId, appSecret, region) : { status: 'unreachable' }
-    })
-  ])
+  // LATE-BOUND exactly as `buildContainer` binds it (§9): the providers below are
+  // constructed WITH this dep bundle, because their funnel plugins are route
+  // factories pre-bound to it, so the registry cannot exist before the object
+  // does. `platforms` is the same stable façade the container hands to the
+  // orchestrators, which take the registry BY VALUE at construction — every read
+  // through it runs at request / reconcile time, long after assignment. The
+  // providers' verify seams READ THROUGH to `deps` on every call instead of
+  // capturing it: suites routinely swap `app.deps.verifySlackBot` (and friends)
+  // AFTER the app is built, and an absent dep is passed through as the
+  // provider-unreachable outcome — which every provider treats exactly as the
+  // old route treated "no verifier injected" (inconclusive: no 400, no derived
+  // identity).
+  let platformRegistry: CpPlatformRegistry | undefined = undefined
+  const requirePlatforms = (): CpPlatformRegistry => {
+    if (!platformRegistry) throw new Error('platform registry read before composition')
+    return platformRegistry
+  }
+  const platforms: CpPlatformRegistry = {
+    get: (platformId) => requirePlatforms().get(platformId),
+    all: () => requirePlatforms().all(),
+    ids: () => requirePlatforms().ids()
+  }
 
   const deps: HttpDeps = {
     clock,
@@ -349,6 +350,47 @@ export function buildHttpApp(
     remoteGrantAuth,
     internalInvocationAuth
   }
+
+  // The same four providers `buildContainer` registers, so the create route
+  // parses/validates exactly the deployed shapes and `server.ts` mounts exactly
+  // the deployed funnel routes. Two deliberate test-composition traits:
+  //
+  //  - the verify/sync seams READ THROUGH to `deps` on every call instead of
+  //    capturing it — tests routinely swap `app.deps.verifySlackBot` (and
+  //    friends) AFTER the app is built. An absent dep is passed through as the
+  //    provider-unreachable outcome, which every provider treats exactly as
+  //    today's route treated "no verifier injected" (inconclusive: no 400, no
+  //    derived identity);
+  //  - the funnel plugins are pre-bound to `deps`, mirroring prod. Each still
+  //    self-disables on absent config (no `slackConfigApi` / `PUBLIC_CP_URL` ⇒
+  //    those routes 404), so a suite that wants them injects the config.
+  platformRegistry = buildCpPlatformRegistry([
+    createTelegramCpProvider({
+      verifyBot: (token) => deps.verifyTelegramBot(token),
+      syncBotIcon: async (token, agent) => deps.syncTelegramBotIcon?.(token, agent)
+    }),
+    createDiscordCpProvider({
+      verifyBot: async (token) => (deps.verifyDiscordBot ? deps.verifyDiscordBot(token) : { status: 'unreachable' }),
+      ensureMessageContentIntent: (token) => deps.ensureDiscordMessageContentIntent(token),
+      syncBotProfile: async (token, agent) => deps.syncDiscordBotProfile?.(token, agent)
+    }),
+    createSlackCpProvider({
+      verifyBot: async (token) => (deps.verifySlackBot ? deps.verifySlackBot(token) : { status: 'unreachable' }),
+      verifyAppToken: async (token) =>
+        deps.verifySlackAppToken ? deps.verifySlackAppToken(token) : ('unreachable' as const),
+      funnelRoutes: {
+        org: [slackInstallRoutes(deps), slackPlatformInstallRoutes(deps), slackConfigRoutes(deps)],
+        publicCallback: [slackOauthCallbackRoutes(deps), slackPlatformCallbackRoutes(deps)]
+      },
+      userConfigs: deps
+    }),
+    createFeishuCpProvider({
+      verifyBot: async (appId, appSecret, region) =>
+        deps.verifyFeishuBot ? deps.verifyFeishuBot(appId, appSecret, region) : { status: 'unreachable' },
+      funnelRoutes: { org: [feishuRegistrationRoutes(deps)], publicCallback: [] },
+      syncAppIcon: async (appId, appSecret, region, agent) => deps.syncFeishuAppIcon?.(appId, appSecret, region, agent)
+    })
+  ])
 
   const app = buildHttpServer(deps)
 

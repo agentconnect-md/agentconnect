@@ -179,6 +179,45 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     })
   })
 
+  it('POST refuses an http install with 409 BEFORE the credential round-trip when no relay is connected', async () => {
+    // §9 create tail: relay availability is core's gate and now precedes the
+    // provider call on EVERY platform (Feishu already did; Slack checked after).
+    // The deployment-level blocker wins over the credential verdict, and no
+    // provider API call is spent on a request that cannot succeed.
+    const agentId = await placedAgent()
+    for (const payload of [
+      { platform: 'slack', slack: { botToken: SLACK.botToken, signingSecret: 'signing-secret' } },
+      { platform: 'feishu', feishu: { appId: 'cli_x', appSecret: 's', verificationToken: 'vt' } }
+    ]) {
+      const { app } = withSpy()
+      // No relay is registered on the fake app by default.
+      let verified = false
+      app.deps.verifySlackBot = async () => {
+        verified = true
+        return { status: 'invalid' }
+      }
+      app.deps.verifyFeishuBot = async () => {
+        verified = true
+        return { status: 'invalid' }
+      }
+
+      const res = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: { ...payload, agentId, transport: 'http' }
+      })
+
+      expect(res.statusCode).toBe(409)
+      expect((res.json() as { message: string }).message).toBe(
+        'HTTP callback delivery is unavailable on this deployment'
+      )
+      expect(verified).toBe(false)
+      expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
+      await app.close()
+      running = undefined
+    }
+  })
+
   it('POST telegram check reports Group Privacy Mode without storing the token', async () => {
     const { app } = withSpy()
     app.deps.verifyTelegramBot = async (botToken) => ({

@@ -1,0 +1,130 @@
+/**
+ * `installNewBot` — the ONE core skeleton that registers a new bot identity and
+ * pushes it live (integration-plugin-architecture.md §9, "the common create
+ * skeleton stays core").
+ *
+ * Before S3 this shape existed three times: `installNewSlackBot`,
+ * `installNewFeishuBot`, and two inline copies inside the `POST /integrations`
+ * telegram/discord tails. All four wrote the same rows in the same order and
+ * forked the same way on transport — they differed only in WHICH columns and
+ * secret slots the platform fills, which is exactly what
+ * {@link CpNewBotInstall} now declares. So the skeleton lands here once and the
+ * platform half arrives as data:
+ *
+ *   bot row → secret row → integration row → (http) relay assign | (socket)
+ *   best-effort `integration/upsert` to the owning daemon.
+ *
+ * The CALLER owns the policy that precedes this: the agent is visible, editable
+ * and (for socket) placed; the credentials are already validated; the D6 fence
+ * pre-check has run. Token-bearing — never log the spec.
+ */
+import { randomUUID } from 'node:crypto'
+import type { HttpDeps } from './deps.js'
+import type { AgentRecord, BotRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
+import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
+import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
+import { NoConnection } from '../orchestrator/outbound.js'
+import type { CpNewBotInstall } from '../platforms/provider.js'
+
+export interface InstallNewBotArgs extends CpNewBotInstall {
+  orgId: OrgId
+  /** The owning agent. For SOCKET transport it MUST already be placed
+   *  (`daemonId` non-null; the daemon owns the connection) — caller checks. An
+   *  http-transport install tolerates an unplaced agent: the relay assignment
+   *  defers until placement re-converges the HTTP bot (preset-agents.md §5.3). */
+  agent: AgentRecord
+  /** Registry platform id — the bot/integration rows' `platform` column. */
+  platform: string
+  name: string
+  /** Inbound transport. 'http' ⇒ relay-pool ingest (send-only daemon spec);
+   *  'socket' ⇒ the daemon's own long-lived connection. Default 'socket'. */
+  transport?: SlackTransport
+  /** Provisioned by AgentConnect (the platform app), not a console user. */
+  prebuilt?: boolean
+  createdByUserId?: string
+}
+
+/** Minimal log surface (Fastify logger in prod). */
+interface DebugLog {
+  debug(obj: unknown, msg?: string): void
+}
+
+export async function installNewBot(
+  deps: HttpDeps,
+  log: DebugLog,
+  args: InstallNewBotArgs
+): Promise<{ integration: IntegrationRecord; bot: BotRecord }> {
+  const { orgId, agent, platform, name, secrets, createdByUserId } = args
+  const transport: SlackTransport = args.transport ?? 'socket'
+  // Shareable (multi-agent) applies ONLY to the relay-ingress http transport.
+  // Coerce it off for socket at this single bot-create seam so a stray flag can
+  // never mint a shareable socket bot — which would break the ≤1-install cap
+  // (duplicate connections on one credential). The console already hides the
+  // toggle for socket; this is the load-bearing guarantee behind it.
+  const shareable = transport === 'http' && args.bot?.shareable === true
+
+  // Ids are minted HERE, not by the caller: the funnel that needs pre-reserved
+  // ids for restart-idempotency (Feishu's one-click registration) keeps its own
+  // tail, `install-feishu.ts`.
+  const botId = BotId(randomUUID())
+  const bot = await deps.repos.bot.create({
+    ...args.bot,
+    id: botId,
+    orgId,
+    platform,
+    name,
+    transport,
+    ...(args.prebuilt ? { prebuilt: true } : {}),
+    shareable,
+    ...(createdByUserId ? { createdByUserId } : {})
+  })
+  // Store credentials via the ONLY secret path. The configured SecretCipher is
+  // identity under `none` and encrypts with an encrypting provider. Slots the
+  // relay needs (Slack's signing secret, Feishu's verification token) stay
+  // CP-side; the daemon never receives them.
+  await deps.repos.botSecret.put(botId, secrets)
+
+  const id = IntegrationId(randomUUID())
+  const integration = await deps.repos.integration.create({
+    ...args.integration,
+    id,
+    orgId,
+    agentId: agent.id,
+    botId,
+    platform,
+    name,
+    ...(createdByUserId ? { createdByUserId } : {})
+  })
+
+  // HTTP transport: the relay pool owns the ingest — broadcast the bot assign and
+  // push the send-only spec to the daemon (HttpBotOrchestrator does both). No
+  // long-lived platform connection opens on the daemon.
+  if (transport === 'http') {
+    await deps.httpBot.syncBot(botId)
+    return { integration, bot }
+  }
+
+  // Classic: push the full spec (metadata + credentials) to the owning daemon so
+  // it opens its connection. Best-effort — an offline daemon picks it up from the
+  // register/ok reconcile roster. Never log the token-bearing spec.
+  const daemonId = agent.daemonId! // caller guarantees placement for socket transport
+  // The bot row joins the reads: it is a required input of the §9 projector that
+  // assembles the spec payload (`orchestrator/placement.ts`). `bot` was created
+  // above, so this is the same row, not a second fetch.
+  const [secret, channels] = await Promise.all([
+    deps.repos.botSecret.get(botId),
+    deps.repos.integrationChannel.listForIntegration(id)
+  ])
+  if (secret) {
+    try {
+      await deps.control.integrationUpsert(
+        daemonId,
+        await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
+      )
+    } catch (err) {
+      if (!(err instanceof NoConnection)) throw err
+      log.debug({ integrationId: id, daemonId }, 'integration/upsert skipped: daemon offline')
+    }
+  }
+  return { integration, bot }
+}

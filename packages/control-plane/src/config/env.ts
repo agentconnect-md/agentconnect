@@ -6,10 +6,12 @@
  * (`API_KEY_PEPPER`, `HEARTBEAT_SEC`).
  */
 import { z } from 'zod'
-import { SlackCpEnvSchema } from '../platforms/slack/provider.js'
-import { FeishuCpEnvSchema } from '../platforms/feishu/provider.js'
+import { composeCpPlatformEnv } from '../platforms/env.js'
 
-export const AppConfigSchema = z.object({
+/** The env keys CORE owns. Platform keys are folded in below — this object is
+ *  never exported: `AppConfigSchema` is the only schema, and it is the two
+ *  halves together. */
+const CoreConfigShape = {
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().default(8080),
   HOST: z.string().default('0.0.0.0'),
@@ -27,15 +29,6 @@ export const AppConfigSchema = z.object({
   // sweeps every CRON_RUN_REAP_INTERVAL_SEC.
   CRON_RUN_TTL_SEC: z.coerce.number().int().default(1800),
   CRON_RUN_REAP_INTERVAL_SEC: z.coerce.number().int().default(300),
-  // Slack + Feishu platform-provider env keys (§9 `envSchema`): the
-  // auto-install reaper knobs (SLACK_INSTALL_*), the platform-published Slack
-  // app (SLACK_PLATFORM_*), and the platform-owned Feishu/Lark apps
-  // (FEISHU/LARK_PLATFORM_*). Defined BY the providers and spread here —
-  // one implementation with each provider's declared `envSchema` — until
-  // `loadConfig` folds the registry's schemas (S3 adoption). Key docs live
-  // with the shapes (`platforms/slack/provider.ts`, `platforms/feishu/provider.ts`).
-  ...SlackCpEnvSchema,
-  ...FeishuCpEnvSchema,
   // HMAC pepper for `api_key.hash` (C4). Required, ≥32 chars. Effectively immutable —
   // rotating it invalidates every stored key hash. See daemon-api-key-auth.md.
   API_KEY_PEPPER: z.string().min(32),
@@ -186,6 +179,20 @@ export const AppConfigSchema = z.object({
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
     .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot')
+} as const
+
+/**
+ * Core keys + every platform provider's own (§9 `envSchema`, folded by
+ * `platforms/env.ts`): today the Slack auto-install reaper knobs
+ * (`SLACK_INSTALL_*`), the platform-published Slack app (`SLACK_PLATFORM_*`),
+ * and the platform-owned Feishu/Lark apps (`FEISHU/LARK_PLATFORM_*`). Each key's
+ * documentation lives with its provider's shape, and adding a platform with
+ * deployment configuration no longer edits this file. The fold throws on a key
+ * that shadows a core one, so the two halves cannot silently overlap.
+ */
+export const AppConfigSchema = z.object({
+  ...CoreConfigShape,
+  ...composeCpPlatformEnv(Object.keys(CoreConfigShape))
 })
 
 export type AppConfig = z.infer<typeof AppConfigSchema>
