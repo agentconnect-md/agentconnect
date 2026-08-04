@@ -328,4 +328,62 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(toBotAssignment({ ...base, secrets: { apiKey: 'k-1' } } as never)).toBeNull()
     expect(toBotAssignment({ ...base, secrets: { botToken: 'xoxb-only' } } as never)).toBeNull()
   })
+
+  // §6.7 demux identity is dual-shape: prefer the opaque ingress bag, fall back
+  // to the named top-level fields. Wrong apiAppId/teamId misroutes inbound
+  // webhook demux, so each arm is pinned.
+  const secrets = { botToken: 'xoxb-x', signingSecret: 'sig' }
+
+  it('reads demux identity from the ingress bag alone (post-flip CP)', () => {
+    const a = toBotAssignment({
+      ...base,
+      secrets,
+      ingress: { apiAppId: 'A9', teamId: 'T9', botUserId: 'U9' }
+    } as never)
+    expect(a).toMatchObject({ apiAppId: 'A9', teamId: 'T9', botUserId: 'U9' })
+  })
+
+  it('falls back to the named top-level fields when no bag rides (pre-flip CP)', () => {
+    const a = toBotAssignment({
+      ...base,
+      secrets,
+      apiAppId: 'A1',
+      teamId: 'T1',
+      botUserId: 'U1'
+    } as never)
+    expect(a).toMatchObject({ apiAppId: 'A1', teamId: 'T1', botUserId: 'U1' })
+  })
+
+  it('prefers the bag over the named fields when both ride (dual-emission window)', () => {
+    const a = toBotAssignment({
+      ...base,
+      secrets,
+      ingress: { apiAppId: 'A-bag', teamId: 'T-bag', botUserId: 'U-bag' },
+      apiAppId: 'A-named',
+      teamId: 'T-named',
+      botUserId: 'U-named'
+    } as never)
+    expect(a).toMatchObject({ apiAppId: 'A-bag', teamId: 'T-bag', botUserId: 'U-bag' })
+  })
+
+  it('ignores non-string bag values per key, falling back to the named field', () => {
+    // The bag is z.unknown() on the wire — a malformed value must not poison the
+    // identity when a valid named fallback rides beside it.
+    const a = toBotAssignment({
+      ...base,
+      secrets,
+      ingress: { apiAppId: 42, teamId: null, botUserId: 'U-bag' },
+      apiAppId: 'A-named',
+      teamId: 'T-named',
+      botUserId: 'U-named'
+    } as never)
+    expect(a).toMatchObject({ apiAppId: 'A-named', teamId: 'T-named', botUserId: 'U-bag' })
+  })
+
+  it('omits absent identity fields rather than inventing them', () => {
+    const a = toBotAssignment({ ...base, secrets } as never)
+    expect(a && 'apiAppId' in a).toBe(false)
+    expect(a && 'teamId' in a).toBe(false)
+    expect(a && 'botUserId' in a).toBe(false)
+  })
 })
