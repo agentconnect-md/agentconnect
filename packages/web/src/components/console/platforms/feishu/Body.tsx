@@ -6,7 +6,7 @@ import { Button, Icon } from '@/components/ui'
 import { ApiError } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 import type { WizardHost, WebWizardTransport } from '../contract'
-import { usePublishedFooter } from '../publish'
+import { usePublishedFooter, usePublishedRegionLock } from '../publish'
 import { BotSetupWalkthrough, DeliveryLine } from '../wizard-chrome'
 import { feishuApi, type FeishuRegion } from './api'
 import { feishuWalkthroughSteps } from './steps'
@@ -219,6 +219,10 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
     // CP finishes out of band, so the shared primary would be a dead control.
     hidden: isDeeplink
   })
+  // A started registration is bound to the cloud it was minted for. Switching
+  // region now would relabel that still-pending authorization (and its poll) as
+  // the other cloud, so the host's switcher is held until this flow ends.
+  usePublishedRegionLock(host, phase === 'authorizing')
 
   return (
     <>

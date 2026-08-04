@@ -348,6 +348,10 @@ export default function AddIntegrationModal({
       return next
     })
   }, [])
+  // The third publication channel: a fragment with a started, region-bound flow
+  // freezes the region switcher on the picker tile (Feishu's pending device
+  // registration — see `WizardHost.setRegionLocked`).
+  const [regionLocked, setRegionLocked] = useState(false)
   const setError = useCallback((message: string | null) => setErr(message), [])
 
   // A bot integration is runnable only when the owning daemon has reported its
@@ -391,6 +395,7 @@ export default function AddIntegrationModal({
     setErr(null)
     setFooter(null)
     setIdentityChrome(null)
+    setRegionLocked(false)
   }
 
   // Daemon data arrives asynchronously and can change after the modal opens. If
@@ -406,6 +411,7 @@ export default function AddIntegrationModal({
     setErr(null)
     setFooter(null)
     setIdentityChrome(null)
+    setRegionLocked(false)
   }, [
     createdHook,
     daemonsLoading,
@@ -482,6 +488,7 @@ export default function AddIntegrationModal({
     mockMode: MOCK_MODE,
     setFooter,
     setIdentityChrome,
+    setRegionLocked,
     setError,
     close: onClose,
     invalidate: refresh
@@ -888,7 +895,10 @@ export default function AddIntegrationModal({
                 {candidate.key === 'feishu' ? (
                   <LarkFeishuSwitcher
                     value={feishuRegion}
-                    disabled={!available || !!createdHook}
+                    // `regionLocked`: the active fragment has a started,
+                    // region-bound flow (a pending Feishu registration), which
+                    // a switch here would silently relabel as the other cloud.
+                    disabled={!available || !!createdHook || regionLocked}
                     onSwitch={(next) => {
                       if (platform !== 'feishu') pickPlatform('feishu')
                       setFeishuRegion(next)

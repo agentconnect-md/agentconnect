@@ -206,6 +206,15 @@ export interface WizardHost {
    *  switcher (:2222-2230) and callers preselect it (`initialFeishuRegion`,
    *  :982). Undefined on regionless platforms. */
   region?: string
+  /** Freeze the host's region switcher while this module holds a STARTED,
+   *  region-bound flow. A Feishu device registration is minted against ONE
+   *  cloud, so relabelling it mid-poll would present the pending
+   *  authorization URL as the other cloud's — the monolith disabled the tile's
+   *  switcher on `feishuPhase === 'authorizing'` for exactly that reason
+   *  (:2226). Published like the footer and identity channels; a module that
+   *  never calls it leaves the switcher free, and the host clears the lock
+   *  whenever the picked platform changes. */
+  setRegionLocked(locked: boolean): void
   /** The effective inbound transport (:1310-1311). Only meaningful when the
    *  module declares {@link WebWizardAffordances.transport}. */
   transport: WebWizardTransport

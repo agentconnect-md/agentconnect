@@ -3,8 +3,8 @@
 import { useLayoutEffect } from 'react'
 import type { WizardFooterState, WizardHost, WizardIdentityChromeState } from './contract'
 
-// The two publication channels a wizard Body drives on the host chassis. Both
-// run as layout effects with NO dependency array on purpose:
+// The publication channels a wizard Body drives on the host chassis. All run as
+// layout effects with NO dependency array on purpose:
 //
 //  - no array ⇒ the publication is re-stated on every commit, so the footer can
 //    never lag a keystroke behind the pane that owns it and no Body has to
@@ -19,7 +19,7 @@ import type { WizardFooterState, WizardHost, WizardIdentityChromeState } from '.
 //    closure each time — must NOT re-render the host, or the two would ping-pong
 //    forever.
 //
-// Bodies never clear on unmount: the chassis resets both channels when the
+// Bodies never clear on unmount: the chassis resets every channel when the
 // picked platform changes, which is the only moment a Body goes away.
 
 /** What the footer bar actually renders; the callbacks stay in the host's ref. */
@@ -56,5 +56,13 @@ export function usePublishedFooter(host: WizardHost, state: WizardFooterState | 
 export function usePublishedIdentityChrome(host: WizardHost, state: WizardIdentityChromeState | null): void {
   useLayoutEffect(() => {
     host.setIdentityChrome(state)
+  })
+}
+
+/** Hold the host's region switcher while a started, region-bound flow is in
+ *  flight — see {@link WizardHost.setRegionLocked}. */
+export function usePublishedRegionLock(host: WizardHost, locked: boolean): void {
+  useLayoutEffect(() => {
+    host.setRegionLocked(locked)
   })
 }
