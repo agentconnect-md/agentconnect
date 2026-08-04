@@ -25,6 +25,9 @@ export interface DiscordAttachmentLike {
 export interface DiscordMessageLike {
   id: string
   channelId: string
+  /** Canonical Discord client URL for this message (or conversation for a
+   *  slash-command interaction that has no message object yet). */
+  url?: string
   content: string
   authorId: string
   authorIsBot: boolean
@@ -85,6 +88,7 @@ export function normalizeDiscordMessage(
     source: 'user',
     platform: 'discord',
     channel: message.channelId,
+    ...(message.url ? { threadUrl: message.url } : {}),
     // Discord thread channels are conversations, so the channel itself is the
     // stable session/thread coordinate.
     thread: message.channelId,

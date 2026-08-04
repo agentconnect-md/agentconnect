@@ -153,6 +153,7 @@ import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
+import { sessionThreadUrlFor } from './platforms/session-links.js'
 import { offersReadPort } from './platforms/read-ports.js'
 import {
   observedChannelsFor,
@@ -13654,8 +13655,19 @@ export class Daemon {
     return (this.cfg.webAppUrl ?? this.cpWebAppUrl ?? DEFAULT_WEB_APP_URL).replace(/\/$/, '')
   }
 
+  /** Resolve the platform adapter that owns this persisted session, then let its
+   *  post-dispatch strategy derive any link not captured at ingress. */
+  private sessionThreadUrl(session: SessionRecord): string | undefined {
+    const integrationId = this.integrationIdForSessionTransport(
+      session.agentId,
+      session.platform,
+      session.transportScope
+    )
+    return sessionThreadUrlFor(session, integrationId ? this.connForIntegration(integrationId) : undefined)
+  }
+
   private sessionListProjection(sessionId: string, agentId: string): SessionListItem | undefined {
-    return createSessionReader(this.store, (id) => this.replyConnFor(id)?.workspaceUrl)
+    return createSessionReader(this.store, (session) => this.sessionThreadUrl(session))
       .list({ agentId })
       .sessions.find((s) => s.sessionId === sessionId)
   }
@@ -18761,7 +18773,7 @@ export class Daemon {
       activeSessions: () => this.pending.size,
       degradedScopes: () => this.cpDegradedScopes(),
       configApply: this.cpConfigApply(),
-      sessionRead: createSessionReader(this.store, (agentId) => this.replyConnFor(agentId)?.workspaceUrl),
+      sessionRead: createSessionReader(this.store, (session) => this.sessionThreadUrl(session)),
       // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
       // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
       childSessionStatusProbe: (probe) => this.childSessionStatusProbe(probe),

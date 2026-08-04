@@ -21,6 +21,7 @@
  *    repo-scoped tokens, permission mode), never content filtering.
  */
 import type { GithubHookMetadata, HookContext, RdMsgHook } from '@agentconnect.md/protocol'
+import { githubSourceThreadUrl } from '../platforms/github/source-link.js'
 import type { NormalizedMessage } from './normalized.js'
 
 /** Fencing delimiters for github event bodies — exact strings, asserted by tests. */
@@ -326,6 +327,7 @@ export function hookAnchorText(msg: RdMsgHook): string {
 export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMessage {
   const { channel, thread } = splitSessionKey(msg)
   const initialSessionTitle = githubSessionTitle(msg)
+  const threadUrl = githubSourceThreadUrl(msg.context, msg.github)
   const sessionTriggerId = `hook:${msg.hookId}`
   const senderId = githubEventActor(msg) ?? sessionTriggerId
   const senderAvatarUrl = msg.context?.source === 'github' ? msg.context.senderAvatarUrl : undefined
@@ -347,6 +349,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       platform: target.platform,
       channel: target.channel,
       thread: msg.msgId,
+      ...(threadUrl ? { threadUrl } : {}),
       sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
       sessionTriggerId,
       text: buildHookText(msg),
@@ -364,6 +367,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     platform: 'hook',
     channel,
     ...(thread ? { thread } : {}),
+    ...(threadUrl ? { threadUrl } : {}),
     // A pre-audience daemon used an unscoped local key. Pinning the immutable
     // repository id here creates a clean runtime after upgrade instead of
     // letting a mutable hook id claim legacy context from another repository.

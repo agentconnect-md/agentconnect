@@ -363,8 +363,8 @@ export interface SessionDto {
   // Daemon-resolved display names; null until the daemon has resolved them.
   channelName: string | null
   triggeredByName: string | null
-  // Platform-native deep link back to the source thread (e.g. a Slack archives
-  // permalink), built by the daemon; null when unavailable.
+  // Platform-native deep link back to the source message/thread, captured or
+  // derived by the daemon; null when unavailable.
   threadUrl: string | null
   // Execution-config snapshot the session actually ran with (daemon-reported;
   // daemonId is CP-stamped from the reporting WS connection). null ⇒ never

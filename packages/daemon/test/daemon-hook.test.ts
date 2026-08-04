@@ -2037,8 +2037,19 @@ describe('buildHookMessage', () => {
     it('attributes the message to the GitHub actor while retaining the hook trigger', () => {
       expect(buildHookMessage(ghFire(), 'trace-actor')).toMatchObject({
         sender: { id: 'mallory', avatarUrl: 'https://avatars.example.test/mallory.png' },
-        sessionTriggerId: `hook:${HOOK_ID}`
+        sessionTriggerId: `hook:${HOOK_ID}`,
+        threadUrl: 'https://github.com/acme/infra/issues/42'
       })
+    })
+
+    it('does not expose a source URL outside the accepted GitHub repository', () => {
+      expect(
+        buildHookMessage(ghFire({ htmlUrl: 'https://github.com/other/repo/issues/42' }), 'trace-other-repo').threadUrl
+      ).toBeUndefined()
+      expect(
+        buildHookMessage(ghFire({ htmlUrl: 'https://github.example/acme/infra/issues/42' }), 'trace-other-host')
+          .threadUrl
+      ).toBeUndefined()
     })
 
     it('adds a truncation notice pointing the agent at gh', () => {

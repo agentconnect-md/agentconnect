@@ -321,6 +321,7 @@ export class DiscordConnection implements PlatformConnection {
     return {
       id: interaction.id,
       channelId: interaction.channelId,
+      url: `https://discord.com/channels/${interaction.guildId ?? '@me'}/${interaction.channelId}`,
       content: text,
       authorId: interaction.user.id,
       authorIsBot: interaction.user.bot,
@@ -340,6 +341,7 @@ export class DiscordConnection implements PlatformConnection {
     return {
       id: message.id,
       channelId: message.channelId,
+      url: message.url,
       content: message.content,
       authorId: message.author.id,
       authorIsBot: message.author.bot,

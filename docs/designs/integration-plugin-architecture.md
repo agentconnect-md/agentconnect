@@ -350,6 +350,12 @@ reply-chain root vs a promote-to-thread flag). S1b introduces:
 - `adapterExt?: Record<string, unknown>` namespaced by platformId, opaque on
   the wire, round-tripped back to the adapter at render time.
 
+`threadUrl?` is the generic presentation coordinate: an ingress adapter
+attaches the exact provider message/thread URL when one exists, and core only
+persists and forwards it. A link that depends on live adapter identity (Slack's
+workspace URL) remains a post-dispatch adapter strategy per D2, not a manifest
+flag or a console platform branch.
+
 Named `telegram*` / `discord*` fields are deprecated behind the projection.
 
 ### 6.6 `platform_action`: a semi-opaque envelope

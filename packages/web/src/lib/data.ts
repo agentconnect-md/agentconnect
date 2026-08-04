@@ -895,8 +895,8 @@ export interface Session {
   /** Raw platform channel id ("C…"), set only when `channel` is a resolved name —
    *  rendered as the secondary gray id next to the name. */
   channelId?: string
-  /** Platform-native deep link back to the source thread (e.g. a Slack archives
-   *  permalink), built by the daemon. Absent when the daemon can't resolve it. */
+  /** Platform-native deep link back to the source message/thread, captured or
+   *  derived by the daemon. Absent when the platform exposes none. */
   threadUrl?: string
   user: string
   /** Raw platform sender id behind `user` — e.g. `cron:<id>` for a scheduled
