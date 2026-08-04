@@ -226,6 +226,10 @@ export function accountErrorMessage(
       : undefined
   if (!requestError) return 'Something went wrong. Try again.'
   if ((requestError.status === 409 || requestError.status === 422) && context?.operation) {
+    if (context.operation === 'reauthorize' && requestError.code === 'user.identity_not_exists_in_current_user') {
+      const providerName = context.providerName ?? 'social'
+      return `You authorized a different ${providerName} account. Reconnect with the account already linked to this profile. To switch accounts, make sure another sign-in method is linked, then unlink ${providerName}.`
+    }
     const reason = `${requestError.code ?? ''} ${requestError.message}`.toLowerCase()
     if (
       context.operation === 'link' &&

@@ -78,6 +78,23 @@ describe('Logto Account API', () => {
     ).toBe('That Google account is already linked to another AgentConnect account.')
   })
 
+  it('explains that reconnecting with another provider account cannot replace the linked identity', async () => {
+    const { LogtoAccountError, accountErrorMessage } = await import('./logto-account')
+
+    expect(
+      accountErrorMessage(
+        new LogtoAccountError(
+          'The social identity does not exist in the current user.',
+          422,
+          'user.identity_not_exists_in_current_user'
+        ),
+        { providerName: 'Lark', operation: 'reauthorize' }
+      )
+    ).toBe(
+      'You authorized a different Lark account. Reconnect with the account already linked to this profile. To switch accounts, make sure another sign-in method is linked, then unlink Lark.'
+    )
+  })
+
   // Measured against a live tenant: a session opened before the deployment
   // granted the identities scope keeps working everywhere else, so "expired"
   // sends people to retry the same broken thing. Only a fresh sign-in helps.
