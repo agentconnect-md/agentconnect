@@ -216,7 +216,9 @@ describe('stageSkillsCliCell', () => {
     await expect(
       stageSkillsCliCell({ ...base, sourceSnapshot: snapshot, selectedSkills: ['--agent', 'safe'] })
     ).rejects.toThrow(/invalid selected skill/)
-    for (const selectedSkill of ['Foo', 'foo.', 'foo-', '.hidden', '_tool']) {
+    // Selections are resolved frontmatter names (skill-cli-selection.ts), not
+    // canonical leaves — only option-shaped or argv-unsafe values are refused.
+    for (const selectedSkill of ['-s', '', 'a\nb', '烧烤', `x${'y'.repeat(256)}`]) {
       await expect(
         stageSkillsCliCell({ ...base, sourceSnapshot: snapshot, selectedSkills: [selectedSkill] })
       ).rejects.toThrow(/invalid selected skill/)

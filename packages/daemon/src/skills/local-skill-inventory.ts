@@ -92,8 +92,10 @@ async function readSkillManifest(cwdReal: string, skillDir: string): Promise<str
 }
 
 /** Pull `name`/`description` out of a SKILL.md's leading YAML frontmatter.
- *  Tolerant: a repo skill need not match the daemon's stricter install rules. */
-function parseManifest(text: string): { name?: string; description: string | null } {
+ *  Tolerant: a repo skill need not match the daemon's stricter install rules.
+ *  Also used by selection resolution (skill-cli-selection.ts), which needs the
+ *  same name the pinned skills CLI reads from a source's SKILL.md. */
+export function parseSkillManifest(text: string): { name?: string; description: string | null } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)
   if (!match) return { description: null }
   let value: unknown
@@ -163,7 +165,7 @@ export async function listLocalSkills(cwd: string, stateDir: string): Promise<Lo
         if (!dirent.isDirectory()) continue
         const text = await readSkillManifest(cwdReal, join(cwdReal, root, dirent.name))
         if (text === undefined) continue // no readable SKILL.md / unsafe ⇒ not a skill
-        const manifest = parseManifest(text)
+        const manifest = parseSkillManifest(text)
         const relPath = `${root}/${dirent.name}`
         const entry: LocalSkillEntry = {
           name: manifest.name ?? dirent.name,

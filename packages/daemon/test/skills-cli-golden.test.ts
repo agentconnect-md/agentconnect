@@ -56,6 +56,36 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
     }
   })
 
+  it('installs a canonical selection whose SKILL.md name is display-style (#371)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skills-cli-golden-'))
+    roots.push(root)
+    const source = join(root, 'grill-source')
+    await mkdir(join(source, 'skills/grill-me'), { recursive: true })
+    await writeFile(
+      join(source, 'skills/grill-me/SKILL.md'),
+      '---\nname: Grill Me\ndescription: Display-style frontmatter name golden fixture\n---\n# Grill me\n'
+    )
+    const cwd = join(root, 'workspace')
+    await mkdir(cwd)
+
+    const result = await installSkills(
+      {
+        id: 'agent-grill',
+        runtime: 'claude',
+        skills: [{ name: 'grill', source: 'acme/grill', githubRepoId: '42', skills: ['grill-me'] }]
+      },
+      cwd,
+      {
+        stateDir: join(root, 'trusted-state'),
+        acquireGit: async () => ({ sourceDir: source, resolvedCommit: 'c'.repeat(40) })
+      }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.installed).toContain('.claude/skills/grill-me')
+    expect(await readFile(join(cwd, '.claude/skills/grill-me/SKILL.md'), 'utf8')).toContain('# Grill me')
+  })
+
   it('uses that same local-source CLI path after Git acquisition and publishes only receipt-derived bundles', async () => {
     const { root, source } = await fixture()
     const cwd = join(root, 'workspace')
