@@ -85,6 +85,18 @@ describe('routeRules ladder', () => {
     expect(routeRules(msg({ platform: 'telegram', sender: bot, mentionedBots: ['B9'] }), rules, noOwner)).toBeNull()
   })
 
+  it('keeps verified-agent arbitration independent of provider mention tokens', () => {
+    const rules = [
+      rule({ agentId: 'mentioned', botUserId: 'B9', match: { kind: 'mention' } }),
+      rule({ agentId: 'ordinary', match: { kind: 'auto' } })
+    ]
+    const bot = { id: 'UAGENT', isBot: true }
+    const mentioned = routeRules(msg({ sender: bot, mentionedBots: ['B9'] }), rules, noOwner, undefined, 'author')
+    const unmentioned = routeRules(msg({ sender: bot, mentionedBots: [] }), rules, noOwner, undefined, 'author')
+    expect(mentioned).toEqual(unmentioned)
+    expect(mentioned).toMatchObject({ agentId: 'ordinary', via: 'auto' })
+  })
+
   it('explicit @bot wins across layers (over a CP auto on the same channel)', () => {
     const rules = [
       rule({ agentId: 'cpAgent', source: 'cp', scope: { channel: 'C1' }, match: { kind: 'auto' } }),

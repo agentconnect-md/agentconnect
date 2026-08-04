@@ -10,9 +10,9 @@ import { sessionKey } from '../src/store/local-store.js'
  * platform message authored by an AgentConnect agent.
  *
  * The behavior under test is a reversal: an agent-authored Slack message used to be
- * dropped outright, and now routes through the SAME ladder a human message takes — named
- * recipients first, then the implicit rungs — so agents converse without having to name
- * each other in every line.
+ * dropped outright, and now routes through the SAME conversation-participant machinery a
+ * human message takes: mentions join peers, while affinity and automatic rules keep joined
+ * participants receiving later replies without requiring a fresh mention on every line.
  *
  * What remains absolute, and is most of what these tests pin: the author is never the
  * target (self-activation is unconditional, not merely loop-prone), every edge still
@@ -25,7 +25,7 @@ const TEST_ORG = 'org_test0000000000000000000'
 const APP_ID = 'AAGENTCONNECT'
 
 function scaffold(
-  agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
+  agents: { id: string; trigger?: 'auto' | 'mention'; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
   // Give each agent its OWN Slack credential, i.e. genuinely separate apps. The transport
   // scope hashes the live credential, so the shared-token default collapses every agent
   // onto one scope — which hides any bug in which scope a lookup is keyed under.
@@ -62,7 +62,7 @@ function scaffold(
               // Socket-mode Slack keys its connection identity on the APP token, so this
               // is what actually separates two dedicated apps into two transport scopes.
               appToken: distinctTokens ? `xapp-${a.id}` : 'xapp',
-              bindRules: [{ match: { kind: 'auto' }, channel: 'C1' }]
+              bindRules: [{ match: { kind: a.trigger ?? 'auto' }, channel: 'C1' }]
             }
           }
         ],
@@ -87,7 +87,7 @@ const fakeHost = () => ({
 /** Boot with a dispatch spy and a collaboration snapshot placing every agent in C1
  *  behind ONE AgentConnect Slack app, each with its own bot user id. */
 async function boot(
-  agents: { id: string; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
+  agents: { id: string; trigger?: 'auto' | 'mention'; callPolicy?: string; allowedCallerAgentIds?: string[] }[],
   over: {
     botUserIds?: Record<string, string>
     botShared?: boolean
@@ -368,6 +368,68 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(calls.every((c) => c.callMeta?.callFrom === 'bot-a')).toBe(true)
       // Namespaced per peer, so the durable inbox keeps one replayable row each.
       expect(new Set(calls.map((c) => c.callMeta?.deliveryId)).size).toBe(2)
+      await daemon.stop()
+    })
+
+    it('delivers to joined mention-only participants even when no primary owner exists', async () => {
+      // Two open sessions deliberately make `threadOwner` return null. Neither rule is
+      // auto and this follow-up names nobody, so the legacy single-target ladder has no
+      // result at all; conversation delivery must still reach both joined peers.
+      const { daemon, calls } = await boot([
+        { id: 'bot-a', trigger: 'mention' },
+        { id: 'bot-b', trigger: 'mention' },
+        { id: 'bot-c', trigger: 'mention' }
+      ])
+      join(daemon, 'bot-b')
+      join(daemon, 'bot-c')
+
+      expect(
+        route(daemon, agentMessage({}, { mentionedAgentIds: [], hopCount: 2 }), ['int-bot-b', 'int-bot-c']).kind
+      ).toBe('dispatched')
+      expect(new Set(calls.map((call) => call.agentId))).toEqual(new Set(['bot-b', 'bot-c']))
+      expect(calls.every((call) => call.callMeta?.hopCount === 3 && call.callMeta?.activationKey)).toBe(true)
+      await daemon.stop()
+    })
+
+    it('derives explicit join and implicit mute handling per human target', async () => {
+      const { daemon, calls } = await boot(
+        [
+          { id: 'bot-b', trigger: 'mention' },
+          { id: 'bot-c', trigger: 'mention' }
+        ],
+        { botUserIds: { 'bot-b': 'UB', 'bot-c': 'UC' }, distinctTokens: true }
+      )
+      const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b', 'int-bot-c'])
+      ;(daemon as any).botUserIds['int-bot-b'] = 'UB'
+      ;(daemon as any).botUserIds['int-bot-c'] = 'UC'
+      for (const agentId of ['bot-b', 'bot-c']) {
+        ;(daemon as any).store.upsertSession({
+          key: sessionKey('slack', 'C1', '1720000000.000100', agentId, scope),
+          agentId,
+          platform: 'slack',
+          channel: 'C1',
+          thread: '1720000000.000100',
+          transportScope: scope,
+          acpSessionId: `acp-${agentId}`,
+          state: 'idle',
+          lastDeliveredTs: null,
+          updatedAt: Date.now()
+        })
+      }
+      const key = (agentId: string) => sessionKey('slack', 'C1', '1720000000.000100', agentId, scope)
+      ;(daemon as any).setSessionMuted(key('bot-b'), true)
+      ;(daemon as any).setSessionMuted(key('bot-c'), true)
+
+      const human = agentMessage({
+        msgId: 'slack:C1:1720000000.000250',
+        sender: { id: 'U-HUMAN', isBot: false },
+        text: '<@UB> join us',
+        mentionedBots: ['UB']
+      })
+      expect(route(daemon, human, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
+      expect(calls.map((call) => [call.agentId, call.msg.trigger])).toEqual([['bot-b', 'mention']])
+      expect((daemon as any).isSessionMuted(key('bot-b'))).toBe(false)
+      expect((daemon as any).isSessionMuted(key('bot-c'))).toBe(true)
       await daemon.stop()
     })
 

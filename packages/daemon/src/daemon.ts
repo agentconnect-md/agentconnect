@@ -103,7 +103,13 @@ import {
 } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { createLocalSkillsReader } from './cp/local-skills-reader.js'
-import { mentionedAgents, participantAgents, routeRules, type RouteVia } from './router/routing-table.js'
+import {
+  automaticAgents,
+  mentionedAgents,
+  participantAgents,
+  routeRules,
+  type RouteVia
+} from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import {
   rulesFromAgent,
@@ -5616,7 +5622,7 @@ export class Daemon {
    *      negative depth is transcript-only and must never coerce to zero).
    *
    * Per-edge policy is NOT decided here — it is per-target, and §6 evaluates it while
-   * walking the recipient set.
+   * walking the conversation's independently selected participants.
    *
    * Only `final` events verify. A `streaming` post may hold a prefix of the answer, and
    * routing it would prompt the target with half a message (§5.4).
@@ -5665,9 +5671,10 @@ export class Daemon {
    * A SEPARATE ladder from the human one because the checks differ, not the rungs: an
    * agent message carries a hop budget, a directional call policy, and an exactly-once
    * rendezvous that a human message has none of, and it can never issue control commands.
-   * Every ordinary reply ends up in the same rungs a human message would
-   * (`routeAgentMessageImplicitly`) — the mention in its body selects nobody. The single
-   * exception is the paired `toAgent + channel` half, whose target the tool named.
+   * Every ordinary reply ends up in the same participant selection a human message would
+   * (`routeAgentMessageImplicitly`): mentions can join peers, and affinity or automatic
+   * rules can select existing peers independently. The single exception is the paired
+   * `toAgent + channel` half, whose target the tool named.
    *
    * Every outcome that is not a dispatch records the message and returns — "transcript
    * only" in the design's terms. The conversation still SEES what the agent said; it
@@ -5704,27 +5711,26 @@ export class Daemon {
       }
       return firstPaired ?? transcriptOnly('paired agent call produced no observation')
     }
-    // The recipient set the author resolved is NOT consulted for delivery. A verified
-    // agent message goes to whoever the ordinary ladder selects in this conversation, the
-    // author excluded — the same thing that happens when it names nobody, which is the
-    // common case anyway. The mention in the body is for the humans reading the thread and
-    // for the target's own judgement; it is not an address this layer acts on.
+    // The recipient set the author resolved is NOT authoritative for delivery. A verified
+    // agent message goes to every independently admitted conversation participant, with
+    // the author excluded. Provider mentions are only one way to join a peer; affinity and
+    // automatic rules keep already-participating peers in later unmentioned turns.
     //
     // Deliberate, and it is the point of the rework: agents in one thread see each other's
     // replies and decide for themselves whether to answer (`NO_RESPONSE` is how they
-    // decline). Selecting recipients here made delivery depend on resolving a `<@U…>` token
-    // through the collaboration directory, so a directory that could not resolve it — a
-    // missing `botUserId`, a shared-bot flag, a slug the model did not repeat — silenced
-    // the conversation instead of merely losing precision. Every edge is still checked
+    // decline). Treating the author's recipients as the complete delivery set made
+    // continuation depend on repeating a `<@U…>` token and resolving it through the
+    // collaboration directory, so missing provider identity data could silence the
+    // conversation instead of merely losing precision. Every edge is still checked
     // below: author exclusion, call policy, the conversation fence, hop budget, and
     // exactly-once admission are properties of the EDGE, not of how it was addressed.
     return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
   }
 
   /**
-   * §2.3: an agent message that names nobody routes through the SAME ladder a human
-   * message takes — thread affinity, DM, keyword, channel `auto`, default agent — with
-   * the author excluded.
+   * §2.3: an ordinary agent message uses the same implicit rungs a human continuation
+   * does — thread affinity, DM, keyword, channel `auto`, default agent — with the author
+   * excluded. Its mentions may join peers, but do not turn agent traffic explicit.
    *
    * This is what makes agents conversational participants rather than things that only
    * respond when addressed by name. It also means a multi-agent conversation is bounded
@@ -5747,36 +5753,35 @@ export class Daemon {
       this.log.debug(`routing: agent-authored ${msg.msgId} is transcript-only (${why})`)
       return { kind: 'rejected', reason: 'unrouted' }
     }
+    const rules = this.mergedRulesForSource(srcIntegrationIds)
     const routed = routeRules(
       msg,
-      this.mergedRulesForSource(srcIntegrationIds),
+      rules,
       (c, t) => this.sessions.threadOwner(c, t, msg.transportScope),
       undefined,
       verified.authorAgentId
     )
-    if (!routed) return transcriptOnly('no implicit rung matched')
-    if (!this.agents.has(routed.agentId)) return transcriptOnly(`${routed.agentId} is not local`)
-    if (!this.cpCollab.admits(verified.authorAgentId, routed.agentId)) {
-      return transcriptOnly(`call policy excludes ${verified.authorAgentId} -> ${routed.agentId}`)
-    }
-    if (!this.agentConversationAdmits(routed.agentId, msg)) {
-      return transcriptOnly(`${routed.agentId} is off in this conversation`)
-    }
-    // Same conversation rule as the human path: everyone already in the thread hears it.
-    // Bounded by the SAME hop budget — each peer is one more edge of this agent call.
-    this.fanOutToThreadPeers(msg, this.mergedRulesForSource(srcIntegrationIds), routed.agentId, {
-      authorAgentId: verified.authorAgentId,
+    // A primary rung is useful for ordinary single-target arbitration, but it is not a
+    // precondition for conversation delivery. Two mention-only agents can both already
+    // be in the room while `threadOwner` deliberately returns null; dropping here would
+    // make the next unmentioned sentence disappear. Admit the primary (if any) and every
+    // other participant as independent edges through the same durable rendezvous.
+    const primary = routed
+      ? this.activateVerifiedAgentTarget(msg, verified, routed.agentId, deliveryHopCount, 'implicit')
+      : undefined
+    const peers = this.fanOutToThreadPeers(msg, rules, routed?.agentId, {
+      verified,
       hopCount: deliveryHopCount
     })
-    const outcome = this.activateVerifiedAgentTarget(msg, verified, routed.agentId, deliveryHopCount, 'implicit')
-    if (outcome) {
+    const dispatched = primary?.kind === 'dispatched' ? primary : peers.find((outcome) => outcome.kind === 'dispatched')
+    if (dispatched) {
       this.log.info(
         `routing: agent-authored ${msg.msgId} continued the conversation "${verified.authorAgentId}" → ` +
-          `"${routed.agentId}" via ${routed.via} (hop ${deliveryHopCount})`
+          `participants (hop ${deliveryHopCount})`
       )
-      return outcome
+      return dispatched
     }
-    return transcriptOnly(`${routed.agentId} produced no activation`)
+    return transcriptOnly(routed ? `${routed.agentId} and its peers produced no activation` : 'no participant admitted')
   }
 
   /**
@@ -5857,8 +5862,19 @@ export class Daemon {
     // ladder returns before `onInboundOutcome`'s own mute gate; without it `!stop` would
     // silence humans while agents kept waking each other, which is the one situation the
     // command exists for now that the loop protections are the ordinary terminator.
+    if (targetAgentId === verified.authorAgentId) return undefined
+    if (!this.agents.has(targetAgentId) || this.drainingAgents.has(targetAgentId)) return undefined
+    if (!this.cpCollab.admits(verified.authorAgentId, targetAgentId)) {
+      this.log.debug(`routing: agent edge ${verified.authorAgentId} → ${targetAgentId} denied by call policy`)
+      return undefined
+    }
+    if (!this.agentConversationAdmits(targetAgentId, msg)) {
+      this.log.debug(`routing: agent edge ${verified.authorAgentId} → ${targetAgentId} is off in this conversation`)
+      return undefined
+    }
     const platformMessageId = slackTsFromMsgId(msg.msgId)
     const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
+    if (!integrationId) return undefined
     // The key's transport component is the TARGET's own reply scope — NOT the scope of
     // the connection that happened to observe the post. Both halves of a paired delivery
     // must compute the same key, and the internal wake can only know the target's scope
@@ -6071,7 +6087,14 @@ export class Daemon {
     }
 
     const result = routeRules(msg, routingRules, (c, t) => this.sessions.threadOwner(c, t, msg.transportScope))
+    // Participant delivery is independent of whether the single-target ladder found an
+    // owner. In a real multi-agent thread `threadOwner` intentionally returns null; the
+    // joined agents (and every newly mentioned or channel-auto agent) still hear the
+    // message as separate deliveries with target-specific trigger/mute handling.
+    const peerOutcomes = msg.sender.isBot ? [] : this.fanOutToThreadPeers(msg, routingRules, result?.agentId)
+    const dispatchedPeer = peerOutcomes.find((outcome) => outcome.kind === 'dispatched')
     if (!result) {
+      if (dispatchedPeer) return dispatchedPeer
       // §8.5: a message that activates no agent (a human @human reply, or one
       // addressed to another bot) must still enter the transcript when a session
       // is live in this thread, so that agent "catches up" on it when next
@@ -6089,32 +6112,38 @@ export class Daemon {
       )
       return { kind: 'rejected', reason: 'unrouted' }
     }
+    const targetMsg = { ...msg }
+    if (result.via === 'mention') targetMsg.trigger = 'mention'
+    else delete targetMsg.trigger
     // Observation precedes activation gates and queue admission. A clarification
     // arriving while this logical thread is busy must be visible to the running
     // turn's final refresh even though its own SessionManager.handle() has not begun.
-    if (this.cfg.features.turnFinalContextRefresh) this.recordObservedInbound(msg, result.agentId)
-    // Preserve the router's trusted self-mention match for prompt assembly. The raw
-    // platform text contains only an opaque id (`<@U…>` on Slack); without this cause the
-    // model cannot know that id is the bot identity bound to the selected agent.
-    if (result.via === 'mention') msg.trigger = 'mention'
+    if (this.cfg.features.turnFinalContextRefresh) this.recordObservedInbound(targetMsg, result.agentId)
     // Agent-scoped drain (scope:agent): this agent is being reclaimed/rebalanced —
     // drop new turns for it while its in-flight turns finish.
     if (this.drainingAgents.has(result.agentId)) {
       this.log.debug(`routing: dropping ${msg.msgId} for agent "${result.agentId}" (draining)`)
+      if (dispatchedPeer) return dispatchedPeer
       return { kind: 'rejected', reason: 'gated' }
     }
     // `!stop` thread mute: while muted, implicit routing (thread affinity / keyword /
     // auto / dm) never dispatches — only an explicit @mention does, and it clears the
     // mute. Muted-thread traffic still enters the transcript (recordUnrouted) so the
     // agent catches up on it when re-activated (§8.5).
-    const muteKey = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, result.agentId, msg.transportScope)
+    const muteKey = sessionKey(
+      targetMsg.platform,
+      targetMsg.channel,
+      targetMsg.thread ?? targetMsg.msgId,
+      result.agentId,
+      targetMsg.transportScope
+    )
     if (this.isSessionMuted(muteKey)) {
       if (result.via !== 'mention') {
-        this.recordUnrouted(msg)
+        this.recordUnrouted(targetMsg)
         this.log.debug(
           `routing: dropping ${msg.msgId} for agent "${result.agentId}" (muted by !stop; awaiting @mention)`
         )
-        return { kind: 'rejected', reason: 'gated' }
+        return dispatchedPeer ?? { kind: 'rejected', reason: 'gated' }
       }
       this.setSessionMuted(muteKey, false)
       this.log.info(`routing: agent "${result.agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
@@ -6124,9 +6153,9 @@ export class Daemon {
     // openThreadForTopLevel — Discord): open a thread off it first, then dispatch
     // into that thread (Slack-parity). Async (a REST call), so it runs on its own
     // path; dispatch is fire-and-forget either way.
-    const promotion = threadPromotionFor(msg.platform)
-    if (promotion?.wants(msg)) {
-      const topLevel = this.dispatchPromotedTopLevel(promotion, result.agentId, msg, result.integrationId)
+    const promotion = threadPromotionFor(targetMsg.platform)
+    if (promotion?.wants(targetMsg)) {
+      const topLevel = this.dispatchPromotedTopLevel(promotion, result.agentId, targetMsg, result.integrationId)
       topLevel.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
       // The re-threaded dispatch owns its own admission; expose a coarse handle
       // (virtual ingress never produces promotion-seeking messages).
@@ -6137,11 +6166,11 @@ export class Daemon {
             admitted: true,
             agentId: result.agentId,
             sessionKey: sessionKey(
-              msg.platform,
-              msg.channel,
-              msg.thread ?? msg.msgId,
+              targetMsg.platform,
+              targetMsg.channel,
+              targetMsg.thread ?? targetMsg.msgId,
               result.agentId,
-              msg.transportScope
+              targetMsg.transportScope
             ),
             turnId: stableTurnId(result.agentId, msg)
           }),
@@ -6152,14 +6181,7 @@ export class Daemon {
         }
       }
     }
-    // A thread is a CONVERSATION, so everyone in it hears what is said — not just the one
-    // agent arbitration picked. Being @-mentioned is what JOINS an agent (at the root or
-    // mid-thread); after that it stays a participant and receives every later message,
-    // from a human or from another agent alike. Arbitration above still chooses the
-    // PRIMARY target (it owns the returned handle, thread promotion, and the mention
-    // trigger); this delivers the same message to the rest of the room.
-    this.fanOutToThreadPeers(msg, routingRules, result.agentId)
-    const { handle, turn } = this.evaluationDispatchHandle(result.agentId, msg, result.integrationId)
+    const { handle, turn } = this.evaluationDispatchHandle(result.agentId, targetMsg, result.integrationId)
     turn.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
     return { kind: 'dispatched', handle }
   }
@@ -6175,56 +6197,71 @@ export class Daemon {
   private fanOutToThreadPeers(
     msg: NormalizedMessage,
     rules: RoutingRule[],
-    primaryAgentId: string,
+    primaryAgentId?: string,
     /** Present when the message is agent-authored. Every peer is then one more EDGE of
-     *  that agent call and must be treated as one: checked against directional call
-     *  policy, and given the same trusted depth so `MAX_AGENT_CALL_HOPS` accumulates.
-     *  Absent ⇒ a human root turn, which has neither a caller nor a depth. */
-    agentCall?: { authorAgentId: string; hopCount: number }
-  ): void {
+     *  that agent call and must take the same durable policy/provenance/hop path as the
+     *  arbitration primary. Absent ⇒ a human root turn, with per-target mention state. */
+    agentCall?: {
+      verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>
+      hopCount: number
+    }
+  ): Array<{ kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }> {
     const thread = msg.thread
-    if (!thread) return
-    const participants = this.sessions.threadParticipants(msg.channel, thread, msg.transportScope)
+    const participants = thread ? this.sessions.threadParticipants(msg.channel, thread, msg.transportScope) : []
+    const explicitlyMentioned = new Set(mentionedAgents(msg, rules, primaryAgentId))
     const peers = new Set([
       ...participantAgents(msg, rules, participants, primaryAgentId),
-      ...mentionedAgents(msg, rules, primaryAgentId)
+      ...explicitlyMentioned,
+      ...automaticAgents(msg, rules, primaryAgentId)
     ])
+    const outcomes: Array<
+      { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle }
+    > = []
     for (const agentId of peers) {
       if (agentId === primaryAgentId) continue
+      if (agentCall?.verified.authorAgentId === agentId) continue
       if (!this.agents.has(agentId) || this.drainingAgents.has(agentId)) continue
       const rule = rules.find((r) => r.agentId === agentId)
       if (!rule) continue
-      // Being already in the room is not consent to be called. Every author→peer edge
-      // passes the SAME directional policy the primary target's edge does — a peer whose
-      // inbound policy excludes this author does not hear it merely by having a session.
-      if (agentCall && !this.cpCollab.admits(agentCall.authorAgentId, agentId)) {
-        this.log.debug(`routing: thread fan-out ${msg.msgId} → "${agentId}" denied by call policy`)
+
+      if (agentCall) {
+        // Agent-authored peers use the exact same edge as the arbitration primary: policy,
+        // Off, target-scoped mute, durable activation claim, trusted platform provenance,
+        // and hop metadata all live in `activateVerifiedAgentTarget`. A body mention may
+        // join a peer, but agent traffic remains implicit and therefore cannot clear a
+        // human's `!stop` latch.
+        const outcome = this.activateVerifiedAgentTarget(
+          msg,
+          agentCall.verified,
+          agentId,
+          agentCall.hopCount,
+          'implicit'
+        )
+        if (outcome) outcomes.push(outcome)
         continue
       }
-      // A muted peer stays muted: `!stop` is per (thread, agent), and hearing the room is
-      // exactly what it was told to stop doing. It still records for later catch-up.
-      const muteKey = sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
+
+      const via: 'mention' | 'implicit' = explicitlyMentioned.has(agentId) ? 'mention' : 'implicit'
+      const targetMsg = { ...msg }
+      if (via === 'mention') targetMsg.trigger = 'mention'
+      else delete targetMsg.trigger
+      if (this.cfg.features.turnFinalContextRefresh) this.recordObservedInbound(targetMsg, agentId)
+      const targetThread = targetMsg.thread ?? targetMsg.msgId
+      const muteKey = sessionKey(targetMsg.platform, targetMsg.channel, targetThread, agentId, targetMsg.transportScope)
       if (this.isSessionMuted(muteKey)) {
-        this.recordObservedInbound(msg, agentId, this.cfg.features.turnFinalContextRefresh)
-        continue
+        if (via === 'implicit') {
+          this.recordObservedInbound(targetMsg, agentId, this.cfg.features.turnFinalContextRefresh)
+          outcomes.push({ kind: 'rejected', reason: 'gated' })
+          continue
+        }
+        this.setSessionMuted(muteKey, false)
+        this.log.info(`routing: agent "${agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
       }
-      // The depth has to ride the turn, not just the log line: `currentHopCount` reads it
-      // back from the active-turn metadata when this peer stamps its OWN next reply.
-      // Without it a peer reached only by fan-out would report depth 0 forever and the
-      // hop cap — the ordinary terminating condition for these exchanges — would never
-      // accumulate. The delivery id is namespaced per peer so the durable inbox keeps one
-      // replayable row each instead of collapsing them into the first.
-      const callMeta: CallMeta | undefined = agentCall
-        ? {
-            callFrom: agentCall.authorAgentId,
-            platformOrigin: true,
-            hopCount: agentCall.hopCount,
-            deliveryId: `${msg.msgId}#${agentId}`
-          }
-        : undefined
-      const { turn } = this.evaluationDispatchHandle(agentId, msg, rule.integrationId, undefined, callMeta)
+      const { handle, turn } = this.evaluationDispatchHandle(agentId, targetMsg, rule.integrationId)
       turn.catch((err) => this.log.error(`thread fan-out failed for agent "${agentId}": ${formatErr(err)}`))
+      outcomes.push({ kind: 'dispatched', handle })
     }
+    return outcomes
   }
 
   /**
@@ -7066,7 +7103,9 @@ export class Daemon {
     // (an opaque <@U…> token is not otherwise recognizable as "you") and the
     // `!stop` un-mute rule below — without it a muted relay-channel agent could
     // never be woken again.
-    if (!normalized.trigger && conn?.botUserId && normalized.mentionedBots.includes(conn.botUserId)) {
+    if (msg.trustedRouteVia === 'mention') normalized.trigger = 'mention'
+    else if (msg.trustedRouteVia === 'implicit') delete normalized.trigger
+    else if (!normalized.trigger && conn?.botUserId && normalized.mentionedBots.includes(conn.botUserId)) {
       normalized.trigger = 'mention'
     }
     const feishuConn = this.fsConnByIntegration.get(msg.integrationId)

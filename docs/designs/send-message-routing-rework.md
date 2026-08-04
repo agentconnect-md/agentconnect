@@ -357,8 +357,9 @@ For AgentConnect-authored messages:
 5. Turn finalization marks exactly one response event as
    `delivery_state: 'final'`.
 6. Ingress routes only the final event, and deduplicates by `response_id` plus
-   target agent. Which agent that is comes from the ordinary ladder (§2.3), not
-   from the body — the recipient set is consulted only for a paired
+   target agent. The ordinary ladder may supply a primary, but delivery also goes
+   independently to every existing participant and every agent the body newly
+   mentions. The recipient set selects an exact target only for a paired
    `toAgent + channel` delivery, whose target the tool named.
 7. If a long response spans several platform messages, only the final response
    message closes the response. The woken target reconstructs preceding text
@@ -402,14 +403,17 @@ final platform event
 |         -> claim activation key -> dispatch once per peer
 |- third-party supported bot?
 |    `- exact target mention only -> existing bot-mention behavior
-`- human sender -> existing mention/thread/DM/keyword/auto ladder
+`- human sender -> existing ladder may nominate a primary
+     `- explicit joins + existing participants + channel-auto agents
+          -> dispatch once per peer with a target-specific mention/implicit cause
 ```
 
-Mention RESOLUTION still exists, but only to RENDER an address (`listAgents`'
-`mention` field, a channel-root `toAgent` post) and to name the paired target — never
-to choose who receives an ordinary reply. A shared bot's address therefore still needs
-its agent slug when an agent wants to WRITE one; a bare `<@U_SHARED>` appearing in a
-body simply carries no routing weight, as no mention does.
+Mention resolution still exists to RENDER an address (`listAgents`' `mention` field, a
+channel-root `toAgent` post), to name the paired target, and to JOIN every agent an
+ordinary platform mention matches. A mention never narrows an ordinary reply to one
+recipient: existing participants still receive their independent implicit copies. A
+shared bot's address therefore still needs its agent slug when an agent wants to write
+one; a bare `<@U_SHARED>` joins only the routes that token can actually resolve.
 
 Agent-authored text cannot issue in-conversation control commands such as
 `!stop`, `!resume`, or configuration actions.
@@ -546,10 +550,11 @@ The main implementation surfaces are:
   echoes while retaining structural/chrome filtering.
 - `packages/relay/src/relay-ingress-manager.ts`: replace blanket managed-agent
   suppression with author verification, source-hop transition/cap enforcement,
-  policy checks, and ordinary arbitration for every reply — with the paired
+  per-edge policy checks, and cross-daemon participant fan-out — with the paired
   `toAgent + channel` delivery kept on its exact, tool-named target.
-- `packages/relay/src/bot-arbitration.ts`: add the verified-agent routing branch,
-  which excludes the author from every rung.
+- `packages/relay/src/bot-arbitration.ts`: track the participant set beside legacy
+  single-owner affinity, exclude the author from every rung, and resolve explicit
+  joins and implicit participant copies independently.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
   suppression with verified routing, trusted hop propagation, durable activation
   rendezvous records, and headless `replyToSession` dispatch.
@@ -557,9 +562,9 @@ The main implementation surfaces are:
   make admission/retry transitions atomic with the durable inbox fence.
 - `packages/daemon/src/router/routing-table.ts`: admit verified agent traffic to
   the implicit rungs with the author excluded (unverified bot traffic still stops
-  at the explicit-mention rung), and expose `mentionedAgents` / `participantAgents`
-  — the whole named set and the thread's existing members — for conversation-wide
-  delivery.
+  at the explicit-mention rung), and expose `mentionedAgents` / `participantAgents` /
+  `automaticAgents` — the whole named set, the thread's existing members, and the
+  channel-wide participants — for conversation-wide delivery.
 - `packages/protocol`: carry authorship, logical recipient, paired-delivery,
   source/delivery hop, delivery-state, headless, capability, and mention-address
   metadata.

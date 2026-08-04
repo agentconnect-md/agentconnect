@@ -105,6 +105,19 @@ export function participantAgents(
   return participants.filter((id) => id !== exclude && servable.has(id))
 }
 
+/** Agents whose `auto` rule makes them participants in every conversation covered by
+ * that rule. Unlike `routeRules`, this returns the whole set: channel-wide participation
+ * is not an arbitration tie that should collapse to whichever rule happens to be first. */
+export function automaticAgents(msg: NormalizedMessage, rules: RoutingRule[], exclude?: string): string[] {
+  return [
+    ...new Set(
+      rules
+        .filter((r) => r.match.kind === 'auto' && scopeMatches(r, msg) && r.agentId !== exclude)
+        .map((r) => r.agentId)
+    )
+  ]
+}
+
 export function routeRules(
   msg: NormalizedMessage,
   rules: RoutingRule[],
@@ -138,7 +151,9 @@ export function routeRules(
   // returns every rule the body actually named, so nothing depends on which one `find`
   // happened to see first, and everyone already in the thread receives the message
   // regardless (`threadParticipants`).
-  if (mention && (!msg.sender.isBot || msg.platform === 'slack')) return pickRule(mention, 'mention')
+  if (mention && verifiedAgentAuthor === undefined && (!msg.sender.isBot || msg.platform === 'slack')) {
+    return pickRule(mention, 'mention')
+  }
   // A VERIFIED AgentConnect author continues into the implicit rungs; every other bot
   // still stops here. That difference is the whole of §2.3: we know exactly which agent
   // wrote this and have already checked its policy, so it is treated as a participant
