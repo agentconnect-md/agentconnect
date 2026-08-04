@@ -60,8 +60,8 @@ export interface RelayConnDeps {
   onSetChannelAgent: (m: RcSetChannelAgent) => Promise<void>
   /** Apply a complete Slack channel-membership snapshot reported by HTTP ingest. */
   onBotChannels: (m: RcBotChannels) => Promise<void>
-  /** Apply an INCREMENTAL DM-conversation report (resource-visibility §14.3): fan a
-   *  kind:'im' row (default Off) across the bot's gated installs. Fire-and-forget. */
+  /** Apply an incremental direct-conversation report (resource-visibility §14.3):
+   *  fan a visibility-defaulted row across the bot's installs. Fire-and-forget. */
   onBotConversation: (m: RcBotConversation) => Promise<void>
   /** Record a DELIVERED §14.3 DM gating notice and re-stamp the pool's latch.
    *  Fire-and-forget. */

@@ -3151,8 +3151,7 @@ export type ChannelTrigger = 'off' | 'mention' | 'any'
 export type ConversationKind = 'channel' | 'im' | 'mpim'
 
 /** A conversation the bot was never invited to and that is never enumerated — a DM or a
- *  Slack group DM. Its row exists only because observation created it, which is why a
- *  preserved one is inert for a non-gated owner: there is no console control over it. */
+ *  Slack group DM. Observation creates a visible, independently configurable row. */
 export function isDirectConversationKind(kind: ConversationKind | undefined): boolean {
   return kind === 'im' || kind === 'mpim'
 }
@@ -3195,9 +3194,9 @@ export interface IntegrationChannelRepo {
    * Authoritative membership snapshots delete kind='channel' rows the bot is no
    * longer a member of; non-authoritative observed-conversation reports retain
    * missing rows because platforms such as Telegram cannot enumerate all chats.
-   * DM (kind='im') rows are always retained. `defaultTrigger` seeds NEW rows only
-   * ('off' for a gated integration, 'mention' otherwise); existing rows keep
-   * their trigger.
+   * Direct rows are always retained. `defaultTrigger` seeds NEW rows only ('off'
+   * for a gated integration); otherwise a 1:1 DM starts On and a room starts on
+   * Mention. Existing rows keep their trigger.
    *
    * `removed` names conversations to DELETE outright, whatever the report's kind.
    * It is how a non-authoritative reporter retires a row at all — its omissions
@@ -3215,9 +3214,9 @@ export interface IntegrationChannelRepo {
    *  was actually removed. Metadata only — sessions and transcripts are untouched. */
   deleteChannel(integrationId: IntegrationId, channelId: string): Promise<boolean>
   listForIntegration(integrationId: IntegrationId): Promise<IntegrationChannelRecord[]>
-  /** Incremental conversation upsert (§14.3, DM rows): create the row (kind, name,
-   *  `agentId`, `defaultTrigger`) when absent; when it exists refresh only the name
-   *  — trigger and agentId are operator-owned once created. */
+  /** Incremental conversation upsert (§14.3, direct rows): create the row (kind,
+   *  name, `agentId`, `defaultTrigger`) when absent; when it exists refresh metadata
+   *  and a supplied agent attribution while preserving the operator-owned trigger. */
   upsertConversation(
     integrationId: IntegrationId,
     conversation: ReportedChannel,

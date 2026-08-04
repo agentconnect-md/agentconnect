@@ -13,6 +13,7 @@ import type {
   IntegrationChannelRepo,
   IntegrationRepo
 } from '../persistence/ports.js'
+import { isDirectConversationKind } from '../persistence/ports.js'
 import { NoConnection, type ControlSender } from './outbound.js'
 import { integrationToSpec, isGatedAgent } from './placement.js'
 import { AgentId } from '../domain/ids.js'
@@ -34,6 +35,33 @@ export async function convergeIntegrationGating(
   log?: { warn(obj: unknown, msg?: string): void }
 ): Promise<void> {
   const integrations = await deps.repos.integration.listForAgent(AgentId(agent.id))
+  const gated = isGatedAgent(agent)
+  const channelCache = new Map<string, Awaited<ReturnType<IntegrationChannelRepo['listForIntegration']>>>()
+  // Everyone direct rows may be On. Becoming Restricted is a new trust boundary, so
+  // close every known direct conversation before compiling or pushing the gated spec.
+  if (gated) {
+    for (const integration of integrations) {
+      try {
+        const channels = await deps.repos.integrationChannel.listForIntegration(integration.id)
+        for (const channel of channels) {
+          if (isDirectConversationKind(channel.kind) && channel.trigger !== 'off') {
+            await deps.repos.integrationChannel.setTrigger(integration.id, channel.channelId, 'off')
+          }
+        }
+        channelCache.set(
+          integration.id,
+          channels.map((channel) =>
+            isDirectConversationKind(channel.kind) ? { ...channel, trigger: 'off' as const } : channel
+          )
+        )
+      } catch (err) {
+        log?.warn(
+          { integrationId: integration.id, err: (err as Error).message },
+          'gating converge: failed to close direct conversations'
+        )
+      }
+    }
+  }
   const syncedBots = new Set<string>()
   for (const i of integrations) {
     try {
@@ -48,10 +76,10 @@ export async function convergeIntegrationGating(
       if (!agent.daemonId) continue
       const [secret, channels] = await Promise.all([
         deps.repos.botSecret.get(i.botId),
-        deps.repos.integrationChannel.listForIntegration(i.id)
+        channelCache.get(i.id) ?? deps.repos.integrationChannel.listForIntegration(i.id)
       ])
       if (!secret) continue
-      await deps.control.integrationUpsert(agent.daemonId, integrationToSpec(i, secret, channels, isGatedAgent(agent)))
+      await deps.control.integrationUpsert(agent.daemonId, integrationToSpec(i, secret, channels, gated))
     } catch (err) {
       if (err instanceof NoConnection) continue // offline daemon → reconcile roster carries it
       log?.warn({ integrationId: i.id, err: (err as Error).message }, 'gating converge: integration push failed')

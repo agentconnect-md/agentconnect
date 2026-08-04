@@ -177,7 +177,11 @@ export function arbitrate(
   // thread's remembered owner may BE the agent that just spoke.
   const remembered = affinity.get(sessionKeyOf(msg))
   const cont = remembered && remembered.agentId === verifiedAgentAuthor ? undefined : remembered
-  const contGateOk = !cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId)
+  const directControlOk =
+    !cont || (!msg.isDm && msg.isGroupDm !== true) || scoped.some((r) => r.agentId === cont.agentId)
+  const contGateOk =
+    directControlOk &&
+    (!cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId))
   if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
     if (cont.integrationId) return cont
     const route = a.routes.find((r) => r.agentId === cont.agentId)

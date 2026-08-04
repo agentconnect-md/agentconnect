@@ -47,7 +47,7 @@ export interface PlatformManifest {
   readonly membershipEnumeration: MembershipEnumeration
   /** Channel ids syntactically recognizable as DIRECT MESSAGES, for ingress whose
    *  wire event omits the conversation type (Slack `app_mention` may omit
-   *  `channel_type`, but its DM ids are D-prefixed). A PRE-DISPATCH read: gated-
+   *  `channel_type`, but its DM ids are D-prefixed). A PRE-DISPATCH read:
    *  conversation discovery consults it before routing resolves any target.
    *  Absent when the id syntax carries no DM signal — then `msg.isDm` is all
    *  there is. */

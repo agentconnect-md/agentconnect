@@ -1,6 +1,27 @@
-import { describe, expect, it } from 'vitest'
-import { channelOwners, groupBySpace, placePopover, rowLabel, rowMenuAction } from './IntegrationChannelList'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  channelOwners,
+  groupBySpace,
+  IntegrationChannelList,
+  placePopover,
+  rowLabel,
+  rowMenuAction
+} from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
+
+vi.mock('@/lib/data-context', () => ({
+  useConsoleData: () => ({
+    setChannelTrigger: vi.fn(),
+    setChannelAgent: vi.fn(),
+    forgetChannel: vi.fn(),
+    leaveConversation: vi.fn(),
+    bots: [],
+    agents: [],
+    integrations: []
+  })
+}))
 
 // A shared bot fans its membership snapshot out to one integration per member
 // agent, but persists the per-channel owner on a single canonical row. Every
@@ -213,5 +234,20 @@ describe('rowLabel', () => {
     expect(rowLabel({ kind: 'im', name: '@Alice' })).toBe('Alice')
     expect(rowLabel({ kind: 'mpim', name: '@Alice, Bob' })).toBe('Alice, Bob')
     expect(rowLabel({ kind: 'channel', name: 'deploys' })).toBe('deploys')
+  })
+})
+
+describe('IntegrationChannelList direct rows', () => {
+  it('renders an Everyone DM with its Off/On control', () => {
+    const html = renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        platform: 'discord',
+        gated: false,
+        channels: [{ channelId: 'D1', name: '@Alice', kind: 'im', trigger: 'any' }]
+      })
+    )
+    expect(html).toContain('Direct messages')
+    expect(html).toContain('>off</button>')
+    expect(html).toContain('>on</button>')
   })
 })

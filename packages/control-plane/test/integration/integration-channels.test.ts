@@ -277,11 +277,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
   })
 
-  it('stores a DM discovered while the agent is public as OFF, so a later gate stays closed (§14.3)', async () => {
-    // Observed-conversation discovery reports DMs whatever the agent's visibility, and
-    // visibility can flip later — at which point gatedBindRules enables every non-Off IM
-    // row. A DM stored with the ordinary 'mention' default would therefore keep being
-    // answered by a now-private agent that no operator ever enabled it for.
+  it('stores a public DM as On, then closes it when the agent becomes restricted (§14.3)', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
@@ -296,7 +292,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
     const byId = new Map(dto!.channels.map((c) => [c.channelId, c]))
-    expect(byId.get('D1')).toMatchObject({ kind: 'im', trigger: 'off' })
+    expect(byId.get('D1')).toMatchObject({ kind: 'im', trigger: 'any' })
     expect(byId.get('C1')).toMatchObject({ kind: 'channel', trigger: 'mention' })
 
     spy.upserts.length = 0
@@ -311,12 +307,17 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(u0.core!.gated).toBe(true)
     // No dm rule for D1: the private agent answers that DM only once enabled.
     expect(u0.core!.bindRules).toEqual([{ channel: 'C1', match: { kind: 'mention' } }])
+    expect(
+      (await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))).find(
+        (c) => c.channelId === 'D1'
+      )
+    ).toMatchObject({ trigger: 'off' })
   })
 
-  it('resets the trigger when a row misclassified as a channel converts to a DM (§14.3)', async () => {
+  it('applies the public On default when a row misclassified as a channel converts to a DM (§14.3)', async () => {
     // Session-history discovery cannot tell a DM from a group, so a DM could already be
     // stored as a channel carrying a channel's trigger. That is not an operator's DM
-    // choice, so the conversion must not inherit it into the gated DM rule set.
+    // choice, so the conversion receives the public DM default instead.
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
@@ -324,13 +325,13 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
 
     await report(DAEMON, id, [{ id: 'D1', name: '@alice' }], undefined, undefined, false)
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', 'any')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'D1', 'off')
     // The daemon now knows it is a DM and re-reports it as one.
     await report(DAEMON, id, [{ id: 'D1', name: '@alice', kind: 'im' }], undefined, undefined, false)
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
-    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'D1', kind: 'im', trigger: 'off' })])
+    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'D1', kind: 'im', trigger: 'any' })])
 
     spy.upserts.length = 0
     await running.app.inject({
@@ -343,11 +344,11 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(u0.core!.bindRules).toEqual([])
   })
 
-  it('stores a group DM OFF and keeps a channel→group-DM conversion fail-closed (§14.3)', async () => {
+  it('defaults a public group DM to Mention and preserves later choices (§14.3)', async () => {
     // Slack classifies a group DM late: an `app_mention` payload carries no
     // channel_type, so the conversation first lands as a channel with a channel's
     // trigger. That is not an operator's choice for this conversation, so resolving it
-    // must reset to Off — and an authoritative channel snapshot (which can never list a
+    // must receive the group-DM default — and an authoritative channel snapshot (which can never list a
     // group DM) must not delete the row.
     await seedDaemon(prisma, DAEMON)
     running = buildHttpApp(prisma)
@@ -362,12 +363,12 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       const [dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
       return new Map(dto!.channels.map((c) => [c.channelId, c]))
     }
-    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'off' })
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
 
     // An operator enables it; a later authoritative channel snapshot leaves it alone.
-    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'mention')
+    await new PgIntegrationChannelRepo(prisma).setTrigger(IntegrationId(id), 'G1', 'any')
     await report(DAEMON, id, [{ id: 'C1', name: 'general' }])
-    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'any' })
 
     // A daemon restart loses the classification cache, so the next app_mention is
     // re-reported as a provisional channel — and the daemon stamps a kind on every
@@ -375,10 +376,10 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     // the existing preservation rule covers. Accepting it would flip the row twice and
     // reset the operator's trigger to Off on every restart.
     await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'channel' }], undefined, undefined, false)
-    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'any' })
     // The daemon's own conversations.info correction lands afterwards and is a no-op.
     await report(DAEMON, id, [{ id: 'G1', name: 'mpim-alice--bob-1', kind: 'mpim' }], undefined, undefined, false)
-    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'mention' })
+    expect((await channelsOf()).get('G1')).toMatchObject({ kind: 'mpim', trigger: 'any' })
   })
 
   it('an enabled DM row survives a provisional channel re-report too (§14.3)', async () => {
@@ -397,7 +398,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'D1', kind: 'im', trigger: 'any' })])
   })
 
-  it('keeps the DM conversion fail-closed when a kind-less and an IM report OVERLAP (§14.3)', async () => {
+  it('keeps the public DM default deterministic when a kind-less and an IM report OVERLAP (§14.3)', async () => {
     // Channel reports are fire-and-forget and their handlers run concurrently: a daemon
     // start emits a kind-less observed snapshot, and the resolver's later verdict emits
     // the same conversation as a DM. Deciding the conversion from a read taken BEFORE the
@@ -429,7 +430,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await dmReport
 
     const [row] = await new PgIntegrationChannelRepo(prisma).listForIntegration(IntegrationId(id))
-    expect(row).toMatchObject({ channelId: 'D1', kind: 'im', trigger: 'off' })
+    expect(row).toMatchObject({ channelId: 'D1', kind: 'im', trigger: 'any' })
 
     spy.upserts.length = 0
     await running.app.inject({
@@ -1155,7 +1156,7 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     }
   })
 
-  // §14.3 gives each gated install its OWN DM row, so fanning a forget across the bot
+  // §14.3 gives each install its OWN DM row, so fanning a forget across the bot
   // would let an editor of one agent silently drop another agent's direct message.
   it('forgets a DM row on this install only, never across the bot', async () => {
     await seedDaemon(prisma, DAEMON)

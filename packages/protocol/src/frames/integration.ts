@@ -229,8 +229,8 @@ export type IntegrationRemove = z.infer<typeof IntegrationRemove>
  * One conversation the bot participates in (metadata only — no messages).
  * `kind` distinguishes member channels from direct conversations (resource-
  * visibility.md §14.3): absent = 'channel' for wire compatibility. DM rows
- * (`kind: 'im'`, Slack "D…" ids) are reported only for gated integrations, on
- * first inbound DM; their `name` is the counterpart's display name. Group DMs
+ * (`kind: 'im'`, Slack "D…" ids) are reported for every integration on first
+ * inbound DM; their `name` is the counterpart's display name. Group DMs
  * (`kind: 'mpim'`, Slack multi-person DMs) are reported on observation the same
  * way — never enumerated, because Slack does not list them as bot membership —
  * but they behave like a channel: several humans share the room, so the agent

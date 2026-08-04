@@ -1195,7 +1195,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     [mutateSkillSources]
   )
 
-  // Flip one conversation's trigger. Shared channels project bot-wide; gated DMs
+  // Flip one conversation's trigger. Shared channels project bot-wide; direct rows
   // remain integration-scoped. Avoid a full re-pull so the toggle does not flash.
   const setChannelTrigger = useCallback(
     async (integrationId: string, channelId: string, trigger: ChannelTrigger) => {

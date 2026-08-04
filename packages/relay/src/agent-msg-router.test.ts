@@ -584,9 +584,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     // direct conversation is an ORDINARY channel row wherever one exists. `IntegrationChannel
     // .kind` is `channel | im | mpim` and `IntegrationRepo.channelPlacements` selects the
     // channels with NO filter on `kind`, so a recorded DM arrives in this snapshot as a plain
-    // row with its owning agent in it — branch 1, not the fail-closed one. (Only a GATED
-    // integration's not-yet-enabled conversations get such a row; an ungated integration's DM
-    // has none and takes branch 2 — the same answer the membership check this replaced gave.)
+    // row with its owning agent in it — branch 1, not the fail-closed one. Every visibility
+    // reports the row after observation; a wake racing ahead of that still takes branch 2.
     const INT_DM = '00000000-0000-0000-0000-0000000000f3'
     const s = snap()
     s.channels.push(

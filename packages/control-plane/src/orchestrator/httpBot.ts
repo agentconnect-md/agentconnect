@@ -445,13 +445,11 @@ export class HttpBotOrchestrator {
   }
 
   /**
-   * §14.3: fan an INCREMENTAL direct-conversation report across the bot's GATED
-   * installs as `kind:'im'` / `kind:'mpim'` rows (default Off, owned by each install's
-   * agent) so console editors can enable it. The reported kind is preserved: a group DM
-   * stays mention-gated, and stamping it 'im' would compile an `auto` route that answers
-   * every message in a room full of people. Non-gated installs are untouched — their DMs
-   * already route via `defaultAgentId`. Idempotent, and no route recompile: an Off row
-   * compiles nothing; the recompile happens when an editor enables it.
+   * Fan an INCREMENTAL direct-conversation report across every install as an owned
+   * `kind:'im'` / `kind:'mpim'` row. Restricted installs default Off; Everyone installs
+   * default a 1:1 DM On and a group DM to Mention. The reported kind is preserved so a
+   * group DM never accidentally receives an auto rule. Idempotent; route state is
+   * recompiled because a newly observed public row is immediately active.
    */
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
@@ -462,17 +460,18 @@ export class HttpBotOrchestrator {
     const installs = await this.integrations.listForBot(bot.id)
     for (const install of installs) {
       const agent = await this.agents.get(install.agentId)
-      if (!agent || !isGatedAgent(agent)) continue
+      if (!agent) continue
+      const kind = conversation.kind === 'mpim' ? ('mpim' as const) : ('im' as const)
       await this.channels.upsertConversation(
         install.id,
-        { ...conversation, kind: conversation.kind === 'mpim' ? 'mpim' : 'im' },
-        { agentId: AgentId(install.agentId), defaultTrigger: 'off' }
+        { ...conversation, kind },
+        {
+          agentId: AgentId(install.agentId),
+          defaultTrigger: isGatedAgent(agent) ? 'off' : kind === 'im' ? 'any' : 'mention'
+        }
       )
     }
-    // No route recompile: an Off row compiles nothing, and the notice latch is
-    // deliberately NOT row-derived (rc/notice-posted owns it) — a conversation
-    // discovered while a public default still routed it must keep its claim to a
-    // notice if it later becomes unroutable.
+    await this.syncRoutes(botId)
   }
 
   /**
@@ -620,8 +619,8 @@ export class HttpBotOrchestrator {
   /**
    * Converge every channel to one canonical owner. This repairs owner deletion,
    * legacy ownerless rows, and older Web writes that stored an owner on the wrong
-   * integration. DM rows are intentionally excluded because gated DMs may enable
-   * several agents independently.
+   * integration. Direct rows are intentionally excluded because every install owns
+   * its own trigger.
    */
   private async ensureChannelOwners(botId: BotId, installs: IntegrationRecord[]): Promise<void> {
     if (installs.length === 0) return
@@ -687,18 +686,21 @@ export class HttpBotOrchestrator {
     //    routes to that agent, respecting the channel's trigger (any → auto rule,
     //    mention → mention rule). Emitted FIRST so a scoped rule wins arbitration.
     const chans = await this.channels.listForBot(bot.id)
+    const channelRows = chans.filter((c) => !isDirectConversationKind(c.kind))
     // The channel's owning agent — the one row of the fan-out that carries it (§10.1).
     const channelOwner = new Map<string, string>()
-    for (const c of chans) if (c.agentId && !channelOwner.has(c.channelId)) channelOwner.set(c.channelId, c.agentId)
-    // Off channels split into two facts the relay needs separately.
+    for (const c of channelRows) {
+      if (c.agentId && !channelOwner.has(c.channelId)) channelOwner.set(c.channelId, c.agentId)
+    }
+    // Off conversations split into two facts the relay needs separately.
     //
     // ROUTING (`mutedChannels`): every Off channel, whoever owns it. The trigger is
     // bot-scoped — replicated across every membership row — so Off means this bot does
     // not answer here, and a route being absent is not enough to say so: the keyword slug
     // and `defaultAgentId` rungs are unscoped, and on a mixed bot they would hand a bare
     // @bot to the public default in a channel the console shows as Off. Any row states
-    // the trigger, including one whose owner is not currently placed. Direct rows never
-    // mute (a DM is not a place with an owner to switch off).
+    // the trigger, including one whose owner is not currently placed. Direct rows are
+    // per-agent: the conversation is muted only when no placed install is enabled.
     //
     // NOTICE (`gatedOffChannels`): of those, the ones owned by a GATED agent. Their Off
     // is §14's fail-closed default for a conversation nobody has enabled yet, and it owns
@@ -706,57 +708,77 @@ export class HttpBotOrchestrator {
     // agent is private must not meet a dead bot. An OPERATOR's Off says nothing: they
     // already decided, and that advice would be the opposite of what happened. The two
     // states share a trigger value, so only ownership tells them apart.
-    const offChannels = chans.filter((c) => c.trigger === 'off' && !isDirectConversationKind(c.kind))
+    const offChannels = channelRows.filter((c) => c.trigger === 'off')
     const ownerGated = (channelId: string): boolean => {
       const owner = channelOwner.get(channelId)
       const agent = owner ? agentById.get(owner) : undefined
       return !!agent && isGatedAgent(agent)
     }
-    const mutedChannels = [...new Set(offChannels.map((c) => c.channelId))]
-    const gatedOffChannels = mutedChannels.filter(ownerGated)
-    // A group DM has no owner picker — it is not a place the bot was invited to, so the
-    // observation fan-out gives every gated install its own row. Two agents enabling the
-    // same one would compile two IDENTICAL scoped mention routes and relay order would
-    // silently decide, permanently hiding the loser. Slug disambiguation cannot rescue
-    // it either: unlike a DM's `auto` base, the mention rung outranks keyword. So a group
-    // DM converges on ONE agent exactly as an ownerless channel does (§10.1) — the bot's
-    // earliest active install among those that enabled it.
-    //
-    // Only a GATED install can be a candidate. A preserved row of a now-org-visible agent
-    // is inert (it is skipped below), so letting it claim ownership would elect an owner
-    // that compiles nothing AND lock out the restricted agent that actually has the
-    // conversation enabled — leaving the group DM served by nobody.
-    const groupDmOwner = new Map<string, string>()
-    for (const p of placed) {
-      if (!p.gated) continue
-      for (const c of chans) {
-        if (c.kind !== 'mpim' || c.trigger === 'off' || c.agentId !== p.integration.agentId) continue
-        if (!groupDmOwner.has(c.channelId)) groupDmOwner.set(c.channelId, p.integration.agentId)
+    const muted = new Set(offChannels.map((c) => c.channelId))
+    const gatedOff = new Set([...muted].filter(ownerGated))
+
+    // Direct rows are independent per install. Once a conversation is observed, emit
+    // scoped routes for every enabled 1:1 DM row so those controls outrank the public
+    // keyword/default fallbacks. A missing public row keeps the pre-observation default
+    // (On for a DM, Mention for a group DM); a missing restricted row stays Off.
+    const directByConversation = new Map<string, IntegrationChannelRecord[]>()
+    for (const c of chans) {
+      if (!isDirectConversationKind(c.kind)) continue
+      const rows = directByConversation.get(c.channelId)
+      if (rows) rows.push(c)
+      else directByConversation.set(c.channelId, [c])
+    }
+    for (const [channelId, rows] of directByConversation) {
+      // Prefer the safer room classification if rolling reporters briefly disagree.
+      const kind = rows.some((row) => row.kind === 'mpim') ? ('mpim' as const) : ('im' as const)
+      const enabled = placed.flatMap((p) => {
+        const row = rows.find((candidate) => candidate.integrationId === p.integration.id)
+        const trigger = row?.trigger ?? (p.gated ? 'off' : kind === 'im' ? 'any' : 'mention')
+        return trigger === 'off' ? [] : [{ p, trigger }]
+      })
+      if (enabled.length === 0) {
+        muted.add(channelId)
+        if (placed.some((p) => p.gated)) gatedOff.add(channelId)
+        continue
+      }
+      // A group DM carries one shared @bot identity. Multiple identical mention routes
+      // would make relay order choose silently, so its earliest enabled install owns it.
+      const targets = kind === 'mpim' ? enabled.slice(0, 1) : enabled
+      for (const { p, trigger } of targets) {
+        const match: BindMatch = kind === 'im' || trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
+        routes.push({
+          agentId: p.integration.agentId,
+          daemonId: p.daemonId,
+          integrationId: p.integration.id,
+          scope: { channel: channelId },
+          match
+        })
+        if (kind === 'im' && p.gated) {
+          const slug = p.agent.name
+          if (slug) {
+            routes.push({
+              agentId: p.integration.agentId,
+              daemonId: p.daemonId,
+              integrationId: p.integration.id,
+              scope: { channel: channelId },
+              match: { kind: 'keyword', value: slug }
+            })
+          }
+        }
       }
     }
-    for (const c of chans) {
+
+    // Member channels have one bot-scoped owner and trigger.
+    for (const c of channelRows) {
       if (!c.agentId) continue
       const p = byAgent.get(c.agentId)
       if (!p) continue // channel assigned to an agent not (yet) placed — skip
-      // Conversation gating (§14): an Off conversation compiles NO route for a
-      // GATED owner (fail-closed until an editor enables it). For a non-gated
-      // owner a preserved row is inert (§14.4): a channel keeps its
-      // mention-trigger ownership (matching integrationToSpec()), while a DIRECT
-      // row (a DM or a group DM) compiles nothing at all — §14 direct rows only
-      // steer gated members, and the console hides them for everyone else, so
-      // honouring one would be behaviour with no visible control. Non-gated DMs
-      // route via defaultAgentId as they always did, and a non-gated group DM via
-      // the unscoped mention default.
-      if (isDirectConversationKind(c.kind) && (!p.gated || c.trigger === 'off')) continue
       // Off compiles no route for ANY owner. That alone does not make the channel
       // unreachable — `mutedChannels` above is what closes the unscoped rungs, for a
       // gated owner just as much as an ungated one (a mixed bot's public default
       // would otherwise answer a bare @bot in a channel the console shows as Off).
       if (c.trigger === 'off') continue
-      if (c.kind === 'mpim' && groupDmOwner.get(c.channelId) !== c.agentId) continue
-      // A DM conversation row activates on any message once enabled (no mention
-      // inside a DM); channels follow their trigger.
-      const match: BindMatch = c.kind === 'im' || c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
+      const match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
       routes.push({
         agentId: p.integration.agentId,
         daemonId: p.daemonId,
@@ -764,24 +786,9 @@ export class HttpBotOrchestrator {
         scope: { channel: c.channelId },
         match
       })
-      if (c.kind === 'im' && p.gated) {
-        // Slug disambiguation inside a multi-agent DM enabled for SEVERAL gated agents
-        // (§14.3): a conversation-scoped keyword outranks the scoped auto in the
-        // relay's arbitration, so "<slug> …" names this agent while an unslugged
-        // DM falls to the first enabled auto route. (Unscoped keyword stays
-        // forbidden for gated agents.)
-        const slug = agentById.get(c.agentId)?.name
-        if (slug) {
-          routes.push({
-            agentId: p.integration.agentId,
-            daemonId: p.daemonId,
-            integrationId: p.integration.id,
-            scope: { channel: c.channelId },
-            match: { kind: 'keyword', value: slug }
-          })
-        }
-      }
     }
+    const mutedChannels = [...muted]
+    const gatedOffChannels = [...gatedOff]
 
     // 2. keyword disambiguation (§10.2): one keyword rule per agent = its slug, so
     //    "@bot <slug> …" routes to that agent. No unscoped mention rule — that would

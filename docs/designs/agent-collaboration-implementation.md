@@ -401,15 +401,14 @@ channel the caller may speak in?"; it can only ask what the snapshot records. Di
 conversations _are_ recordable — `IntegrationChannel.kind` is
 `channel | im | mpim`, and `IntegrationRepo.channelPlacements` selects the channel rows
 with **no** `kind` filter, so an `im`/`mpim` row that exists is a KNOWN coordinate with the
-owning integration's agent as a member. But such a row is only written where something
-observed it: Slack's authoritative membership snapshot enumerates
-`public_channel,private_channel` only, and the two paths that emit `im`/`mpim` —
-`Daemon.reportGatedConversation` and the CP's shared-bot `reportConversation` — both run
-solely for a **gated** integration's (or install's) not-yet-enabled conversations. So an ordinary org-wide integration's DM has no row, and an A2A wake whose
-coordinate is that DM is refused. That is deliberate, and it is not a regression: the
-membership check this replaced refused the same wake, and refusing is recoverable where
-admitting it is not (the aliased session has already been resumed and read back). The same
-applies to a row that has disappeared — bot removed, integration set inactive, or a
+owning integration's agent as a member. Such a row is written only after observation:
+Slack's authoritative membership snapshot enumerates `public_channel,private_channel`
+only, while `Daemon.reportObservedConversation` and the CP shared-bot
+`reportConversation` emit `im`/`mpim` for every visibility. An ordinary DM therefore
+becomes a known coordinate after its first inbound message; before that observation an
+A2A wake asserting it is refused. Refusing the brief unknown state is recoverable where
+admitting it is not (the aliased session has already been resumed and read back). The
+same applies to a row that has disappeared — bot removed, integration set inactive, or a
 snapshot that has not caught up.
 
 The data model stores:

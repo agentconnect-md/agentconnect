@@ -4256,12 +4256,13 @@ export class Daemon {
       }
       for (const [integrationId, c] of this.connByIntegration) {
         if (c !== conn) continue
-        // Preserve reported DM rows (§14.3): the membership listing carries channels
-        // only, but a gated integration's snapshot also holds DM conversations — a
-        // refresh must not wipe them (the CP protects them too; this keeps the
-        // in-memory snapshot honest for the reconnect re-assert).
-        const ims = (this.channelSnapshots.get(integrationId)?.channels ?? []).filter((x) => x.kind === 'im')
-        const merged = [...channels, ...ims]
+        // Preserve observed direct rows: the membership listing carries channels
+        // only, while 1:1 and group DMs arrive incrementally. A refresh must not wipe
+        // them from the reconnect snapshot.
+        const direct = (this.channelSnapshots.get(integrationId)?.channels ?? []).filter(
+          (x) => x.kind === 'im' || x.kind === 'mpim'
+        )
+        const merged = [...channels, ...direct]
         this.channelSnapshots.set(integrationId, { channels: merged, authoritative: true })
         this.cpClient?.emitIntegrationChannels({ integrationId, channels: merged })
         this.maybeIntroduceOnJoin('slack', integrationId, channels)
@@ -6070,12 +6071,11 @@ export class Daemon {
       return this.routeVerifiedAgentMessage(msg, verified, srcIntegrationIds)
     }
 
-    // §14.3: gated-conversation discovery must precede command interception AND
-    // routing. An Off DM whose first inbound is a command still needs its row; an
-    // explicitly-mentioned Off channel likewise needs a pending row even though no
-    // session will be created. Report-only: the notice remains conditional on the
-    // message actually resolving to no admitted target.
-    this.discoverGatedConversations(msg, srcIntegrationIds ?? [])
+    // Conversation discovery must precede command interception AND routing. A DM
+    // whose first inbound is a command still needs its configurable row; an
+    // explicitly-mentioned Off restricted channel likewise needs a pending row even
+    // though no session will be created. Report-only: the notice remains gated.
+    this.discoverConversations(msg, srcIntegrationIds ?? [])
     const routingRules = this.mergedRulesForSource(srcIntegrationIds)
 
     // In-conversation control commands (`!stop` / `!queue …`) act on the running
@@ -7043,7 +7043,7 @@ export class Daemon {
     // Off-conversation event so provider egress remains daemon-owned. Discover it
     // before the last-hop gate drops it; the notice below then uses the send-only
     // Feishu connection without ever exposing the app secret to the relay.
-    this.discoverGatedConversations(normalized, [msg.integrationId])
+    this.discoverConversations(normalized, [msg.integrationId])
     // Conversation gating (§14) last-hop backstop: the relay arbitrates HTTP-bot
     // routing, but a stale relay route snapshot must not activate a private agent in
     // an Off conversation. Admission = a bindRule scoped to this conversation (the
@@ -15481,30 +15481,26 @@ export class Daemon {
     return conversationAdmitted(integrationRouting(int), msg.channel, msg.parentChannel)
   }
 
-  /**
-   * §14: an explicitly-addressed message (a mention of a gated integration's bot, or
-   * a DM to it) that routed nowhere gets a ONE-TIME per-conversation notice — the
-   * bot must never look silently broken — and the Off conversation is reported to
-   * the CP so the console can offer enabling it. Bot senders are never noticed.
-   */
-  /** §14.3 pending-conversation discovery, report-only: fan an Off DM across every
-   *  gated source integration, and report an Off channel when the message explicitly
-   *  mentions that integration's bot. This runs before commands/routing so discovery
-   *  is independent of which sibling integration ultimately handles the message. */
-  private discoverGatedConversations(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
+  /** Observed-conversation discovery, report-only: surface every human direct
+   *  conversation and every explicitly addressed conversation for each source
+   *  integration. The latter lets Slack resolve an `app_mention` whose payload omits
+   *  whether its `G…` conversation is a group DM. This runs before commands/routing,
+   *  independent of which sibling ultimately handles it. */
+  private discoverConversations(msg: NormalizedMessage, srcIntegrationIds: string[]): void {
     if (msg.sender.isBot || msg.source !== 'user') return
     const isDm = msg.isDm || manifestFor(msg.platform).dmChannelPattern?.test(msg.channel) === true
+    const isDirect = isDm || msg.isGroupDm === true
     for (const integrationId of srcIntegrationIds) {
       const int = this.integrationConfigById(integrationId)
       if (!int || int.platform !== msg.platform) continue
       const routing = integrationRouting(int)
-      if (!routing.gated) continue
-      // Enabled — including a thread of an enabled channel (the rule is scoped to the
-      // enclosing channel, which is what the console offers).
-      if (routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel)) continue
+      if (isDirect) {
+        this.reportObservedConversation(integrationId, msg, isDm)
+        continue
+      }
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
-      if (!isDm && (botUserId === '' || !msg.mentionedBots.includes(botUserId))) continue
-      this.reportGatedConversation(integrationId, msg, isDm)
+      if (botUserId === '' || !msg.mentionedBots.includes(botUserId)) continue
+      this.reportObservedConversation(integrationId, msg, false)
     }
   }
 
@@ -15525,7 +15521,6 @@ export class Daemon {
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
-      if (isDm) this.reportGatedConversation(integrationId, msg, true)
       const latch = `${integrationId}:${msg.channel}`
       if (this.gatedNoticesSent.has(latch)) return
       this.gatedNoticesSent.add(latch)
@@ -15546,14 +15541,13 @@ export class Daemon {
     }
   }
 
-  /** §14.3: surface an explicitly-addressed Off conversation as a pending row so
-   *  the console can enable it. This is an observed/incremental report, not a full
-   *  membership snapshot: Telegram cannot enumerate all chats, and the conversation
+  /** Surface an observed conversation as a configurable row. This is an incremental
+   *  report, not a full membership snapshot: Telegram cannot enumerate all chats, and the conversation
    *  deliberately creates no session while Off.
    *
    *  Name resolution is best-effort. Telegram/Discord getChat results land through
    *  refreshObservedChannels; Slack DMs retain the existing profile fallback below. */
-  private reportGatedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
+  private reportObservedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
     const cached = this.channelSnapshots.get(integrationId)
     const existing = cached?.channels ?? []
     // A channel row is reported as the ENCLOSING channel when the message arrived in a
@@ -15642,7 +15636,7 @@ export class Daemon {
   }
 
   /** Re-assert cached reports after a CP reconnect without upgrading a partial
-   *  observation (including Slack gated-conversation discovery) to a full snapshot. */
+   *  observation (including Slack direct-conversation discovery) to a full snapshot. */
   private replayChannelSnapshots(): void {
     // Keyed by BOTH sources. The snapshots are in memory and the tombstones are on
     // disk, so a restart before the first reconnect leaves an integration with a

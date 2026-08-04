@@ -736,9 +736,10 @@ So authorization must live in AgentConnect's own routing layer.
 
 **Gating applies only to restricted agents.**
 
-- **Org-visible agents keep exactly today's behavior.** Unscoped mention
+- **Org-visible agents keep the same routing defaults.** Unscoped mention
   default everywhere, DMs open to the whole workspace, per-channel "All
-  messages" opt-in. Nothing changes for them — no new rows, no new UX.
+  messages" opt-in. Observed direct conversations now have rows so an editor
+  can explicitly turn those defaults Off.
 - **Restricted agents are gated: every conversation defaults to Off.** When
   the bot is invited to a channel, the channel appears on the integration card
   in a pending/Off state. An **editor must enable it in the Console**, choosing
@@ -747,12 +748,12 @@ So authorization must live in AgentConnect's own routing layer.
   exactly the private group — the two ACL worlds meet here without any
   Slack↔AgentConnect identity mapping.
 
-**DMs are conversations too (restricted agents only).** For a gated
-integration, each DM conversation is listed as its own row (platform DM
-conversation id, displayed with the counterpart's name), default **Off**,
-individually enabled by an editor. The integration card groups rows into
-**Channels** and **Direct messages**; DM rows are binary (Off / On — a DM needs
-no mention distinction). Public agents' DMs stay open and produce no rows.
+**DMs are conversations too.** Every observed DM is listed as its own row
+(platform DM conversation id, displayed with the counterpart's name). The
+integration card groups rows into **Channels** and **Direct messages**; 1:1 DM
+rows are binary (Off / On — a DM needs no mention distinction). Org-visible
+agents default new DMs On; restricted agents default them Off. Both expose the
+same control, and both enforce it.
 
 **Behavior of an Off conversation.**
 
@@ -835,12 +836,10 @@ Discord / Lark / Feishu DM id shape when extending.)
 
 **Spec flag: `gated`.** `IntegrationSpec` gains a boolean (working name
 `gated`) so the daemon knows this integration is fail-closed. The daemon needs
-it for the two behaviors a rule miss cannot express: (1) send the one-time
-notice when an explicitly addressed message matches no rule; (2) report a
-previously unseen DM conversation so its row appears in the Console's pending
-list. Without the flag (public agents) daemon behavior is byte-for-byte
-unchanged. This is the §9 derived-form exception: the flag carries no
-identities.
+it to send the one-time notice when an explicitly addressed message matches no
+rule and to discover unknown/Off restricted channels. Direct-conversation
+reporting is visibility-independent. This is the §9 derived-form exception:
+the flag carries no identities.
 
 **Conversation reporting.** The `integration/channels` D→C EVT and
 `IntegrationChannel` protocol shape gain `kind: 'channel' | 'im'` (absent =
@@ -851,16 +850,17 @@ without deleting absent ones — so such a reporter names what it has LEFT in
 `removed`, the only way it can retire a row at all (its omissions carry no
 meaning). A named removal deletes whatever the row's kind, including a DM row
 that no authoritative snapshot could ever drop. An explicitly addressed Off group is reported
-before routing, because it deliberately creates no session. DM rows are likewise
-reported on first inbound DM to a gated integration, carrying the counterpart's
-display name. An optional boot-time sweep (`conversations.list types=im`) can
-backfill DMs opened while the daemon was down.
+before routing, because it deliberately creates no session. Direct rows are
+reported on first inbound conversation for every integration, carrying the
+counterpart's display name where available. An optional boot-time sweep
+(`conversations.list types=im`) can backfill DMs opened while the daemon was down.
 
-_Shared bots:_ the relay's membership snapshot drops IMs, so DM rows take the
-incremental path there too — an unrouted DM to a bot backing ≥1 gated agent
-makes the relay emit `rc/bot-conversation` (conversation id + best-effort
-`users.info` counterpart name), which the CP fans across the bot's **gated
-installs** as pending Off rows; the relay also posts the one-time
+_Shared bots:_ the relay's membership snapshot drops IMs, so direct rows take
+the incremental path there too — every human DM (and addressed group DM) makes
+the relay emit `rc/bot-conversation` (conversation id + best-effort `users.info`
+counterpart name), which the CP fans across **every install**. Restricted rows
+start Off; org-visible 1:1 DMs start On and group DMs on Mention. The relay also
+posts the one-time
 per-conversation notice (chrome-marked; the unrouted @-mention case included)
 since no daemon is involved before arbitration. Because a channel mention
 arrives as two independent Events API POSTs that the pool LB may hand to
@@ -884,9 +884,9 @@ agents.
 **Control-plane and web.**
 
 - `IntegrationChannel` (table `integration_channel`): `ChannelTrigger` enum
-  gains `off`; new `kind` column (`channel` | `im`). Row creation from the
-  membership report derives the default trigger from gating: `off` when gated,
-  `mention` otherwise (today's default).
+  gains `off`; new `kind` column (`channel` | `im` | `mpim`). Row creation
+  derives the default from visibility and kind: restricted conversations Off,
+  org-visible 1:1 DMs On, and other org-visible rooms Mention.
 - The existing per-channel trigger PATCH route accepts `off` and reuses the
   existing recompute-bindRules-and-push flow. A direct integration requires edit
   rights on its parent agent. A shared bot's channel state is bot-scoped, so the
@@ -908,11 +908,12 @@ agents.
   applied ahead of every rung, which the two arbiters populate differently
   because their unscoped rungs differ:
   - **Daemon** (`IntegrationSpec.mutedChannels`, per integration): the Off
-    channels of an UNGATED integration. A gated one leaves it empty — it ships
+    conversations of an UNGATED integration, including direct rows. A gated one leaves it empty — it ships
     no unscoped defaults at all, so its Off already is the absence of a scoped
     rule, and stating the same fact twice would let the two drift apart.
-  - **Relay** (`rc/bot-assign` / `rc/routes`, per bot): EVERY Off channel,
-    gated owner or not. A gated owner's missing route is not enough here: an
+  - **Relay** (`rc/bot-assign` / `rc/routes`, per bot): every bot-scoped Off
+    channel, plus a direct conversation when no placed install has it enabled.
+    A gated owner's missing route is not enough here: an
     ungated sibling's unscoped rungs are still in the same table, so on a
     mixed-visibility bot a bare `@bot` would otherwise reach the public default
     in a channel the console shows as Off.
@@ -929,17 +930,13 @@ agents.
 
 - **org → restricted:** gating turns on. Existing known channel rows keep
   their current trigger (grandfathered enabled) so running setups are not cut
-  mid-conversation; a Console banner prompts the editor to review them. DM
-  conversations start Off — rows appear as counterparts next write, each
-  receiving the one-time notice.
+  mid-conversation; a Console banner prompts the editor to review them. Every
+  known direct row is reset Off before the gated route/spec push; newly observed
+  direct conversations also start Off.
 - **restricted → org:** gating turns off; unscoped defaults return. Rows and
   their trigger values persist so flipping back restores the previous
-  decisions — the same preservation principle as Decision 4. Only the DIRECT
-  rows go inert, because the Console hides them for an org-visible agent and
-  honouring one would be behaviour with no visible control. A CHANNEL row keeps
-  its trigger, Off included: Off is a control every agent has (see
-  "Per-channel trigger" in product-conventions.md), and the row stays on screen
-  for an editor to change.
+  decisions — the same preservation principle as Decision 4. Direct and channel
+  rows remain visible and effective, including Off.
 
 ### 14.5 Rollout / migration
 
@@ -950,6 +947,10 @@ users; the one-time notice tells them what happened and the pending row gives
 editors a one-click re-enable. (The strict alternative — everything Off on
 migration — was considered and rejected as needlessly disruptive to channels
 that editors demonstrably already configured.)
+
+Existing org-visible direct rows were previously hidden and forced Off, so the
+migration seeds them to the new visible defaults: 1:1 DMs On and group DMs on
+Mention.
 
 ### 14.6 Out of scope / future overlays
 
