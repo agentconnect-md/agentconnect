@@ -11,12 +11,10 @@
  * (`agent.daemonId` non-null), the caller may edit it, and the tokens are already
  * validated / obtained. Token-bearing — never log the spec.
  */
-import { randomUUID } from 'node:crypto'
 import type { HttpDeps } from './deps.js'
 import type { AgentRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
-import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
-import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
-import { NoConnection } from '../orchestrator/outbound.js'
+import type { OrgId } from '../domain/ids.js'
+import { installNewBot } from './install-bot.js'
 import { slackAppIdFromAppToken } from '../platforms/slack/provider.js'
 
 // Relocated to the Slack platform provider (§9, S3): its `validateConfig` runs
@@ -71,83 +69,36 @@ export async function installNewSlackBot(
 ): Promise<IntegrationRecord> {
   const { orgId, agent, name, botToken, appToken, signingSecret, createdByUserId } = args
   const transport: SlackTransport = args.transport ?? 'socket'
-  // Shareable (multi-agent) applies ONLY to the relay-ingress http transport. Coerce it
-  // off for socket at this single bot-create seam so a stray flag can never mint a
-  // shareable Socket Mode bot — which would break the ≤1-install cap (duplicate sockets
-  // on one appToken). The console already hides the toggle for socket; this is the
-  // load-bearing guarantee behind it (no 400 needed at the call sites).
-  const shareable = transport === 'http' && args.shareable === true
 
   // Socket mode can derive the id from xapp; HTTP mode receives it from the
   // config-token funnel or bot-token verification. Keep the derivation as the
   // authority when both are present (the caller already rejects a mismatch).
   const slackAppId = (appToken ? slackAppIdFromAppToken(appToken) : undefined) ?? args.slackAppId
-  const botId = BotId(randomUUID())
-  await deps.repos.bot.create({
-    id: botId,
+
+  // The row writes, the transport fork and the shareable coercion are core's ONE
+  // create skeleton (§9, `install-bot.ts`) — the same one `POST /integrations`
+  // drives from the provider's `buildNewBotInstall`. What stays here is the Slack
+  // funnels' argument shape: this function is the tail BOTH funnel paths call
+  // (config-token `finalize` and the platform app's OAuth callback).
+  const { integration } = await installNewBot(deps, log, {
     orgId,
+    agent,
     platform: 'slack',
     name,
     transport,
-    ...(slackAppId ? { slackAppId } : {}),
-    ...(args.teamId ? { teamId: args.teamId } : {}),
-    ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
-    ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
-    ...(args.botUserId ? { botUserId: args.botUserId } : {}),
     ...(args.prebuilt ? { prebuilt: true } : {}),
-    ...(shareable ? { shareable: true } : {}),
+    bot: {
+      ...(slackAppId ? { slackAppId } : {}),
+      ...(args.teamId ? { teamId: args.teamId } : {}),
+      ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+      ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
+      ...(args.botUserId ? { botUserId: args.botUserId } : {}),
+      ...(args.shareable ? { shareable: true } : {})
+    },
+    // The xapp (socket) / signing secret (http) stay CP-side for the relay — the
+    // daemon never receives them.
+    secrets: { botToken, appToken: appToken ?? null, signingSecret: signingSecret ?? null },
     ...(createdByUserId ? { createdByUserId } : {})
   })
-  // Store tokens via the ONLY secret path. The configured SecretCipher is identity
-  // under `none` and encrypts with an encrypting provider. The xapp (socket) /
-  // signing secret (http) stay here for the relay — the daemon never receives them.
-  await deps.repos.botSecret.put(botId, {
-    botToken,
-    appToken: appToken ?? null,
-    signingSecret: signingSecret ?? null
-  })
-
-  const id = IntegrationId(randomUUID())
-  const integration = await deps.repos.integration.create({
-    id,
-    orgId,
-    agentId: agent.id,
-    botId,
-    platform: 'slack',
-    name,
-    ...(createdByUserId ? { createdByUserId } : {})
-  })
-
-  // HTTP transport: the relay pool owns the ingest — broadcast the bot assign and push
-  // the send-only spec to the daemon (HttpBotOrchestrator does both). No Socket Mode
-  // socket opens on the daemon.
-  if (transport === 'http') {
-    await deps.httpBot.syncBot(botId)
-    return integration
-  }
-
-  // Classic: push the full spec (metadata + tokens) to the owning daemon so it opens
-  // the Socket Mode socket. Best-effort: an offline daemon picks it up from the
-  // register/ok reconcile roster on reconnect. Never log the token-bearing spec.
-  const daemonId = agent.daemonId! // caller guarantees placement for socket transport
-  // The bot row joins the reads: it is a required input of the §9 projector that
-  // now assembles the spec payload (`orchestrator/placement.ts`). It was created
-  // above, so this read always hits.
-  const [secret, channels, botRow] = await Promise.all([
-    deps.repos.botSecret.get(botId),
-    deps.repos.integrationChannel.listForIntegration(id),
-    deps.repos.bot.get(botId)
-  ])
-  if (secret && botRow) {
-    try {
-      await deps.control.integrationUpsert(
-        daemonId,
-        await integrationToSpec(deps.platforms, integration, botRow, secret, channels, isGatedAgent(agent))
-      )
-    } catch (err) {
-      if (!(err instanceof NoConnection)) throw err
-      log.debug({ integrationId: id, daemonId }, 'integration/upsert skipped: daemon offline')
-    }
-  }
   return integration
 }
