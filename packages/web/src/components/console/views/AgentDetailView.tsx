@@ -1663,7 +1663,25 @@ export default function AgentDetailView() {
 
             <FileBrowserShell
               title="Files"
-              headerEnd={<span className="mono text-[11px] text-(--text-tertiary)">{filesSummary}</span>}
+              headerEnd={
+                ws.mode === 'github' ? (
+                  <div className="flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]">
+                    <WorkspaceScopePicker
+                      primaryBranch={ws.branch}
+                      sessions={[]}
+                      selectedSessionId={null}
+                      loading={false}
+                      hasMore={false}
+                      loadingMore={false}
+                      onLoadMore={() => undefined}
+                      onChange={() => undefined}
+                      orgPath={orgPath}
+                    />
+                  </div>
+                ) : (
+                  <span className="mono text-[11px] text-(--text-tertiary)">{filesSummary}</span>
+                )
+              }
             >
               {ws.files.length > 0 ? (
                 <WorkspaceFilesMock files={ws.files} />
