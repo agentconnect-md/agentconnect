@@ -10,21 +10,22 @@
  * look without reusing its ResourceVisibility (`org` | `restricted`) types or
  * share-set machinery.
  *
- * - Read-only viewers see a lock badge on private sessions, a provider audience
- *   badge on external sessions, and nothing on org sessions.
+ * - Read-only viewers see the same bordered audience badge for private, org,
+ *   and provider-managed sessions.
  * - `canChange` (server-computed: the identity-matched session owner only)
- *   renders the two-option control instead. Tightening (org → private)
+ *   renders a two-option dropdown instead. Tightening (org → private)
  *   confirms through a dialog carrying the memory caveat; widening is immediate.
- * - `state === 'pending'` renders the spinner pill (DaemonLifecycleBadge
- *   pattern) until every affected daemon acks the change.
+ * - `state === 'pending'` replaces the chevron with a spinner until every
+ *   affected daemon acks the change.
  */
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 import { ConfirmationDialog } from '@/components/console/ConfirmationDialog'
 import { putSessionVisibility, type MutableSessionVisibility, type SessionVisibility } from '@/lib/api'
 
-export const SESSION_PRIVATE_TITLE = 'Private session — visible only to its owner'
+export const SESSION_PRIVATE_TITLE = 'Visible only to me'
+export const SESSION_EVERYONE_TITLE = 'Visible to everyone in the org'
 
 export function SessionVisibilityControl({
   sessionId,
@@ -56,7 +57,21 @@ export function SessionVisibilityControl({
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLSpanElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuId = useId()
+  const headingId = useId()
   const effective: SessionVisibility = visibility ?? 'org'
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [open])
 
   const apply = async (next: MutableSessionVisibility) => {
     setBusy(true)
@@ -73,7 +88,9 @@ export function SessionVisibilityControl({
   }
 
   const pick = (next: MutableSessionVisibility) => {
-    if (busy || next === effective) return
+    if (busy) return
+    setOpen(false)
+    if (next === effective) return
     setError(null)
     // Tightening surfaces the memory caveat first; widening never cascades and
     // applies immediately.
@@ -83,89 +100,160 @@ export function SessionVisibilityControl({
 
   if (effective === 'external') {
     const github = externalProvider === 'github'
-    const provider =
-      externalProvider === 'slack'
-        ? 'Slack'
-        : github
-          ? 'GitHub'
-          : externalProvider === 'feishu'
-            ? feishuRegion === 'lark'
-              ? 'Lark'
-              : feishuRegion === 'feishu'
-                ? 'Feishu'
-                : 'Feishu / Lark'
-            : 'External'
+    const slack = externalProvider === 'slack'
+    const provider = slack
+      ? 'Slack'
+      : github
+        ? 'GitHub'
+        : externalProvider === 'feishu'
+          ? feishuRegion === 'lark'
+            ? 'Lark'
+            : feishuRegion === 'feishu'
+              ? 'Feishu'
+              : 'Feishu / Lark'
+          : 'External'
     const title =
       externalResolution === 'settled'
         ? github
-          ? "Visible according to the source GitHub repository's current visibility and access"
-          : `Visible to current members of the source ${provider} conversation`
+          ? 'Visible to everyone who can access the repo'
+          : slack
+            ? 'Visible to everyone who can access the channel'
+            : 'Visible to everyone who can access the conversation'
         : `${provider} access could not be verified; this session remains hidden`
     return (
       <span
         title={title}
-        className="inline-flex items-center gap-[5px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+        className="inline-flex h-[26px] flex-none items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name="users" size={13} color="var(--text-tertiary)" />
-        {github ? 'GitHub access' : `${provider} members`}
+        {`${provider} members`}
         {state === 'pending' && <Spinner size={10} />}
       </span>
     )
   }
 
   if (!canChange) {
-    // Org sessions carry no badge — org is the unmarked default.
-    if (effective !== 'private') return null
+    const privateSession = effective === 'private'
     return (
       <span
-        title={SESSION_PRIVATE_TITLE}
-        className="inline-flex items-center gap-[5px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+        title={privateSession ? SESSION_PRIVATE_TITLE : SESSION_EVERYONE_TITLE}
+        className="inline-flex h-[26px] flex-none items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
-        <Icon name="lock" size={13} color="var(--text-tertiary)" />
-        Private
+        <Icon name={privateSession ? 'lock' : 'globe'} size={13} color="var(--text-tertiary)" />
+        {privateSession ? 'Private' : 'Everyone'}
+        {state === 'pending' && <Spinner size={10} />}
       </span>
     )
   }
 
-  const segment = (v: MutableSessionVisibility, icon: string, label: string, title: string) => {
-    const on = effective === v
-    return (
-      <button
-        type="button"
-        title={title}
-        disabled={busy}
-        onClick={() => pick(v)}
-        className={
-          on
-            ? 'inline-flex items-center gap-1 border-0 bg-(--brand-soft) px-[9px] py-[3px] font-sans text-[11.5px] font-semibold leading-normal text-(--brand)'
-            : 'inline-flex cursor-pointer items-center gap-1 border-0 bg-(--surface-card) px-[9px] py-[3px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) transition-[background-color,color] hover:bg-(--surface-hover) hover:text-(--text-primary)'
-        }
-      >
-        <Icon name={icon} size={11} color={on ? 'var(--brand)' : 'var(--text-tertiary)'} />
-        {label}
-      </button>
-    )
+  const choices: Array<{
+    value: MutableSessionVisibility
+    icon: string
+    label: string
+    description: string
+  }> = [
+    { value: 'org', icon: 'globe', label: 'Everyone', description: SESSION_EVERYONE_TITLE },
+    { value: 'private', icon: 'lock', label: 'Private', description: SESSION_PRIVATE_TITLE }
+  ]
+  const current = choices.find((choice) => choice.value === effective) ?? choices[0]!
+  const closeAndFocus = () => {
+    setOpen(false)
+    requestAnimationFrame(() => triggerRef.current?.focus())
+  }
+  const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeAndFocus()
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+    const index = Math.max(0, options.indexOf(document.activeElement as HTMLButtonElement))
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? options.length - 1
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
+    options[next]?.focus()
   }
 
   return (
     <span className="inline-flex items-center gap-[6px]">
-      <span className="inline-flex overflow-hidden rounded-full border border-(--border-default)">
-        {segment('org', 'globe', 'Everyone', 'Visible to everyone who can view the agent')}
-        {segment('private', 'lock', 'Private', SESSION_PRIVATE_TITLE)}
-      </span>
-      {state === 'pending' && (
-        <span
+      <span ref={wrapRef} className="relative inline-flex flex-none">
+        <button
+          ref={triggerRef}
+          type="button"
           title={
-            nativeMemory
-              ? 'Waiting for the owning daemon to confirm the change'
-              : 'Waiting for the owning daemon to confirm the change — capture stops at daemon acknowledgement'
+            state === 'pending'
+              ? nativeMemory
+                ? 'Waiting for the owning daemon to confirm the change'
+                : 'Waiting for the owning daemon to confirm the change — capture stops at daemon acknowledgement'
+              : current.description
           }
-          className="inline-flex flex-none items-center gap-1 rounded-full border border-(--brand) bg-(--surface-sunken) py-[1px] pr-[7px] pl-[5px] font-sans text-[10.5px] font-semibold leading-normal text-(--brand)"
+          disabled={busy}
+          aria-label={`Session visibility: ${current.label}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          className="inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-default disabled:opacity-60"
+          onClick={() => setOpen((value) => !value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+            event.preventDefault()
+            setOpen(true)
+          }}
         >
-          <Spinner size={10} />
-          Applying…
-        </span>
-      )}
+          <Icon name={current.icon} size={13} color="var(--text-tertiary)" />
+          {current.label}
+          {state === 'pending' ? (
+            <Spinner size={10} />
+          ) : (
+            <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
+          )}
+        </button>
+        {open && (
+          <div
+            id={menuId}
+            role="menu"
+            aria-labelledby={headingId}
+            className="absolute top-[calc(100%+7px)] right-0 z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+            onKeyDown={moveFocus}
+          >
+            <span id={headingId} className="sr-only">
+              Session visibility
+            </span>
+            {choices.map((choice) => {
+              const selected = choice.value === effective
+              return (
+                <button
+                  key={choice.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  autoFocus={selected}
+                  className={`flex w-full cursor-pointer items-start gap-[10px] rounded-md border-0 px-3 py-[9px] text-left ${
+                    selected
+                      ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                      : 'bg-transparent text-(--text-primary) hover:bg-(--surface-hover)'
+                  }`}
+                  onClick={() => pick(choice.value)}
+                >
+                  <Icon name={choice.icon} size={16} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-sans text-[13px] font-semibold leading-normal">{choice.label}</span>
+                    <span className="mt-[2px] block font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                      {choice.description}
+                    </span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </span>
       {error && !confirming && (
         <span role="alert" className="font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
           {error}
