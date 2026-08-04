@@ -70,6 +70,9 @@ export interface SessionRecord {
   /** Opaque physical-bot scope for transcript/session lookup isolation. */
   transportScope?: string | null
   acpSessionId: string | null
+  /** Last authoritative `event/session` payload, JSON-encoded. The daemon
+   * replays it after reconnect instead of reconstructing historical config. */
+  eventSessionSnapshot?: string | null
   // §7.3 session lifecycle. `prompting` ⇒ a turn is in flight; `cancelling` ⇒
   // a `!stop` was issued and we're awaiting the agent (with a force backstop);
   // `resuming` ⇒ re-attaching a persisted session after a restart/host eviction;
@@ -582,7 +585,7 @@ export class LocalStore {
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
         externalProvider TEXT, externalRealmKey TEXT, externalResourceKind TEXT,
         externalResourceKey TEXT, externalIntegrationId TEXT, externalOriginJson TEXT,
-        sourceBindingKind TEXT
+        sourceBindingKind TEXT, eventSessionSnapshot TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -1260,6 +1263,8 @@ export class LocalStore {
       this.db.exec('ALTER TABLE sessions ADD COLUMN externalOriginJson TEXT')
     if (!cols.some((c) => c.name === 'sourceBindingKind'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN sourceBindingKind TEXT')
+    if (!cols.some((c) => c.name === 'eventSessionSnapshot'))
+      this.db.exec('ALTER TABLE sessions ADD COLUMN eventSessionSnapshot TEXT')
   }
 
   /** Pre-visibility databases have no gate table; the CREATE above only runs on
@@ -1876,6 +1881,15 @@ export class LocalStore {
    *  No-op if the key is unknown (a turn that failed before the row existed). */
   setSessionTurnOutcome(key: string, outcome: 'done' | 'failed', updatedAt: number): void {
     this.db.prepare('UPDATE sessions SET lastTurnOutcome = ?, updatedAt = ? WHERE key = ?').run(outcome, updatedAt, key)
+  }
+
+  /** Keep the exact metadata milestone that was most recently produced for a
+   * session. This does not advance updatedAt: the snapshot records activity; it
+   * must not create activity of its own. */
+  setEventSessionSnapshot(agentId: string, acpSessionId: string, snapshot: string): void {
+    this.db
+      .prepare('UPDATE sessions SET eventSessionSnapshot = ? WHERE agentId = ? AND acpSessionId = ?')
+      .run(snapshot, agentId, acpSessionId)
   }
 
   /** Targeted state transition for an existing session (§7.3), stamping `updatedAt`
