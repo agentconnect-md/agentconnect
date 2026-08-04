@@ -332,6 +332,76 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
+  describe('thread fan-out: everyone in the room hears it', () => {
+    /** Put `agentId` in the thread, which is what a mention would have done. */
+    const join = (daemon: Daemon, agentId: string) => {
+      const scope = (daemon as any).transportScopeForIntegrationIds([`int-${agentId}`])
+      ;(daemon as any).store.upsertSession({
+        key: sessionKey('slack', 'C1', '1720000000.000100', agentId, scope),
+        agentId,
+        platform: 'slack',
+        channel: 'C1',
+        thread: '1720000000.000100',
+        transportScope: scope,
+        acpSessionId: `acp-${agentId}`,
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: Date.now()
+      })
+    }
+
+    it('delivers to every participant, and carries the hop depth to each', async () => {
+      // Participation outlives the message that created it. bot-c joined earlier and is
+      // not named here, so only the fan-out can reach it.
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
+      join(daemon, 'bot-b')
+      join(daemon, 'bot-c')
+
+      const reply = agentMessage({}, { mentionedAgentIds: [], hopCount: 3 })
+      expect(route(daemon, reply, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
+
+      expect(new Set(calls.map((c) => c.agentId))).toEqual(new Set(['bot-b', 'bot-c']))
+      // Every peer is an EDGE of the same agent call, so each carries the advanced depth.
+      // A peer reached only by fan-out would otherwise report depth 0 on its own next
+      // reply and the hop cap would never accumulate for it.
+      expect(calls.every((c) => c.callMeta?.hopCount === 4)).toBe(true)
+      expect(calls.every((c) => c.callMeta?.callFrom === 'bot-a')).toBe(true)
+      // Namespaced per peer, so the durable inbox keeps one replayable row each.
+      expect(new Set(calls.map((c) => c.callMeta?.deliveryId)).size).toBe(2)
+      await daemon.stop()
+    })
+
+    it('does not let being in the room bypass call policy', async () => {
+      // Already having a session is not consent to be called: bot-c's inbound policy
+      // excludes the author, so it hears nothing even though it is in the thread.
+      const { daemon, calls } = await boot([
+        { id: 'bot-a' },
+        { id: 'bot-b' },
+        { id: 'bot-c', callPolicy: 'selected', allowedCallerAgentIds: ['somebody-else'] }
+      ])
+      join(daemon, 'bot-b')
+      join(daemon, 'bot-c')
+
+      expect(route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c']).kind).toBe(
+        'dispatched'
+      )
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      await daemon.stop()
+    })
+
+    it('keeps a `!stop` participant silent while still recording for catch-up', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }, { id: 'bot-c' }])
+      join(daemon, 'bot-b')
+      join(daemon, 'bot-c')
+      const scope = (daemon as any).transportScopeForIntegrationIds(['int-bot-c'])
+      ;(daemon as any).setSessionMuted(sessionKey('slack', 'C1', '1720000000.000100', 'bot-c', scope), true)
+
+      route(daemon, agentMessage({}, { mentionedAgentIds: [] }), ['int-bot-b', 'int-bot-c'])
+      expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+      await daemon.stop()
+    })
+  })
+
   it('does not let an agent issue control commands', async () => {
     // §6: `!stop` from an agent must not act on a running turn. Command interception sits
     // BELOW the agent branch, so agent text can never reach it.

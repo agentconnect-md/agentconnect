@@ -5764,7 +5764,10 @@ export class Daemon {
     }
     // Same conversation rule as the human path: everyone already in the thread hears it.
     // Bounded by the SAME hop budget — each peer is one more edge of this agent call.
-    this.fanOutToThreadPeers(msg, this.mergedRulesForSource(srcIntegrationIds), routed.agentId, srcIntegrationIds)
+    this.fanOutToThreadPeers(msg, this.mergedRulesForSource(srcIntegrationIds), routed.agentId, {
+      authorAgentId: verified.authorAgentId,
+      hopCount: deliveryHopCount
+    })
     const outcome = this.activateVerifiedAgentTarget(msg, verified, routed.agentId, deliveryHopCount, 'implicit')
     if (outcome) {
       this.log.info(
@@ -6155,7 +6158,7 @@ export class Daemon {
     // from a human or from another agent alike. Arbitration above still chooses the
     // PRIMARY target (it owns the returned handle, thread promotion, and the mention
     // trigger); this delivers the same message to the rest of the room.
-    this.fanOutToThreadPeers(msg, routingRules, result.agentId, srcIntegrationIds)
+    this.fanOutToThreadPeers(msg, routingRules, result.agentId)
     const { handle, turn } = this.evaluationDispatchHandle(result.agentId, msg, result.integrationId)
     turn.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
     return { kind: 'dispatched', handle }
@@ -6173,7 +6176,11 @@ export class Daemon {
     msg: NormalizedMessage,
     rules: RoutingRule[],
     primaryAgentId: string,
-    srcIntegrationIds?: string[]
+    /** Present when the message is agent-authored. Every peer is then one more EDGE of
+     *  that agent call and must be treated as one: checked against directional call
+     *  policy, and given the same trusted depth so `MAX_AGENT_CALL_HOPS` accumulates.
+     *  Absent ⇒ a human root turn, which has neither a caller nor a depth. */
+    agentCall?: { authorAgentId: string; hopCount: number }
   ): void {
     const thread = msg.thread
     if (!thread) return
@@ -6187,6 +6194,13 @@ export class Daemon {
       if (!this.agents.has(agentId) || this.drainingAgents.has(agentId)) continue
       const rule = rules.find((r) => r.agentId === agentId)
       if (!rule) continue
+      // Being already in the room is not consent to be called. Every author→peer edge
+      // passes the SAME directional policy the primary target's edge does — a peer whose
+      // inbound policy excludes this author does not hear it merely by having a session.
+      if (agentCall && !this.cpCollab.admits(agentCall.authorAgentId, agentId)) {
+        this.log.debug(`routing: thread fan-out ${msg.msgId} → "${agentId}" denied by call policy`)
+        continue
+      }
       // A muted peer stays muted: `!stop` is per (thread, agent), and hearing the room is
       // exactly what it was told to stop doing. It still records for later catch-up.
       const muteKey = sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
@@ -6194,10 +6208,23 @@ export class Daemon {
         this.recordObservedInbound(msg, agentId, this.cfg.features.turnFinalContextRefresh)
         continue
       }
-      const { turn } = this.evaluationDispatchHandle(agentId, msg, rule.integrationId)
+      // The depth has to ride the turn, not just the log line: `currentHopCount` reads it
+      // back from the active-turn metadata when this peer stamps its OWN next reply.
+      // Without it a peer reached only by fan-out would report depth 0 forever and the
+      // hop cap — the ordinary terminating condition for these exchanges — would never
+      // accumulate. The delivery id is namespaced per peer so the durable inbox keeps one
+      // replayable row each instead of collapsing them into the first.
+      const callMeta: CallMeta | undefined = agentCall
+        ? {
+            callFrom: agentCall.authorAgentId,
+            platformOrigin: true,
+            hopCount: agentCall.hopCount,
+            deliveryId: `${msg.msgId}#${agentId}`
+          }
+        : undefined
+      const { turn } = this.evaluationDispatchHandle(agentId, msg, rule.integrationId, undefined, callMeta)
       turn.catch((err) => this.log.error(`thread fan-out failed for agent "${agentId}": ${formatErr(err)}`))
     }
-    void srcIntegrationIds
   }
 
   /**
