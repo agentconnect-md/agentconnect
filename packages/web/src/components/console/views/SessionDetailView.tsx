@@ -82,7 +82,14 @@ import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
-import { WORK_LANES, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from '@/components/console/session-work'
+import {
+  WORK_LANES,
+  sessionTurnInFlight,
+  toggleWorkPanel,
+  workCounts,
+  workPanelOpen,
+  workSummary
+} from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { useCrumbSlot } from '@/components/console/Shell'
@@ -1202,9 +1209,12 @@ export default function SessionDetailView() {
   const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
-  // by turn index). Every panel starts collapsed — see workPanelOpen().
+  // by turn index). A finished panel starts collapsed; the streaming turn's defaults
+  // open — see workPanelOpen(). The toggle records the opposite of the EFFECTIVE
+  // on-screen state, so closing an auto-opened streaming panel works.
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
-  const toggleWork = (ti: number) => setWorkOverride((prev) => toggleWorkPanel(prev, ti))
+  const toggleWork = (ti: number, currentOpen: boolean) =>
+    setWorkOverride((prev) => toggleWorkPanel(prev, ti, currentOpen))
   const [imagePreparing, setImagePreparing] = useState(false)
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
@@ -2954,7 +2964,13 @@ export default function SessionDetailView() {
                     // EDIT rows, since one EDIT row can touch several files).
                     const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                     const summary = workSummary(thinkCount, toolCount, editCount)
-                    const openWork = workPanelOpen(workOverride.get(ti))
+                    // The trailing turn of a running session is the one streaming: its
+                    // work panel defaults open so skill/command/tool calls are visible
+                    // AS THEY RUN, and collapses on its own once the turn completes.
+                    // statusLabel carries the RAW session state — the active-turn
+                    // predicate lives (and is tested) in session-work.ts.
+                    const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
+                    const openWork = workPanelOpen(workOverride.get(ti), streaming)
                     return (
                       <div
                         key={`${session.id}:${ti}`}
@@ -3003,7 +3019,7 @@ export default function SessionDetailView() {
                             <>
                               <button
                                 type="button"
-                                onClick={() => toggleWork(ti)}
+                                onClick={() => toggleWork(ti, openWork)}
                                 className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
                                 title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
                               >

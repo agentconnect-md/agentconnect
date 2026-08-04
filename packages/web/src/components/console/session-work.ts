@@ -28,17 +28,38 @@ export function workCounts(steps: { lane: string; files: { path: string }[] }[])
   return { thinkCount: steps.length - toolCount - editStepCount, toolCount, editCount: editPaths.size + bareEdits }
 }
 
-/** Is a turn's work panel open? Every turn starts collapsed — including a work-only
- *  one still waiting on its answer text — so the transcript never expands a panel the
- *  reader didn't ask for. `override` is the visibility the user last chose for it. */
-export function workPanelOpen(override: boolean | undefined): boolean {
-  return override ?? false
+/** Is a turn in flight for this session? `rawState` is the session's RAW daemon
+ *  state (`Session.statusLabel`: starting/idle/prompting/cancelling/resuming/closed),
+ *  NEVER the bucketed `Session.status` key — `toStatusKey()` maps a finished
+ *  idle/completed session to 'online' and an active prompting turn to 'paused',
+ *  which is exactly backwards as an active-turn signal. `busy` covers the live
+ *  playground/webchat path (a turn this browser is streaming). */
+export function sessionTurnInFlight(busy: boolean, rawState: string | undefined): boolean {
+  return busy || rawState === 'prompting' || rawState === 'cancelling'
 }
 
-/** Record the user's toggle of turn `ti`, as the state opposite to what they see now. */
-export function toggleWorkPanel(prev: ReadonlyMap<number, boolean>, ti: number): Map<number, boolean> {
+/** Is a turn's work panel open? A finished turn starts collapsed — so the transcript
+ *  never expands a panel the reader didn't ask for — but the turn STILL STREAMING
+ *  defaults open: its work (skill/command/tool calls) is exactly what the user is
+ *  waiting on, and a collapsed one-line counter reads as "nothing is happening".
+ *  It collapses on its own when the turn completes (`streaming` flips false).
+ *  `override` is the visibility the user last chose for it and wins either way. */
+export function workPanelOpen(override: boolean | undefined, streaming = false): boolean {
+  return override ?? streaming
+}
+
+/** Record the user's toggle of turn `ti`, as the state opposite to what they see now.
+ *  `currentOpen` is the EFFECTIVE state on screen — a streaming turn shows open by
+ *  default, so the first click must record "closed", not the inverse of the base.
+ *  Required (no default): a fallback computed here couldn't know the streaming
+ *  state and would silently invert the wrong value. */
+export function toggleWorkPanel(
+  prev: ReadonlyMap<number, boolean>,
+  ti: number,
+  currentOpen: boolean
+): Map<number, boolean> {
   const next = new Map(prev)
-  next.set(ti, !workPanelOpen(prev.get(ti)))
+  next.set(ti, !currentOpen)
   return next
 }
 

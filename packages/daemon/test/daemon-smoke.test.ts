@@ -344,12 +344,21 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
 
     await (daemon as any).dispatch('bot-a', mk('100.1', 'first'))
-    // Second turn on the SAME session must NOT re-emit start, but it still emits
-    // a completion snapshot so CP metadata stays fresh.
+    // Second (warm) turn on the SAME session re-emits a start snapshot too: the
+    // CP-stored state is the only active-turn signal a console watching a platform
+    // session has, and the end snapshot fires only after the row resets to idle —
+    // without a per-turn start, a warm turn never reads as in flight.
     await (daemon as any).dispatch('bot-a', mk('100.2', 'second'))
 
-    expect(emitEventSession).toHaveBeenCalledTimes(3)
-    expect(emitEventSession.mock.calls.map(([payload]) => payload.phase)).toEqual(['start', 'end', 'end'])
+    expect(emitEventSession).toHaveBeenCalledTimes(4)
+    expect(emitEventSession.mock.calls.map(([payload]) => payload.phase)).toEqual(['start', 'end', 'start', 'end'])
+    // The warm turn's start snapshot is what flips the console's work panel open:
+    // it must carry the ACTIVE raw state, on the same session row.
+    expect(emitEventSession.mock.calls[2]![0]).toMatchObject({
+      sessionId: 'acp-sess-1',
+      phase: 'start',
+      status: 'prompting'
+    })
     const start = emitEventSession.mock.calls[0]![0]
     expect(start).toMatchObject({
       sessionId: 'acp-sess-1',
@@ -379,7 +388,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(typeof start.lastActivityAt).toBe('string')
     expect(typeof start.ts).toBe('string')
     expect(start.launchId).toBeUndefined() // Slack/Discord path — no CP launch fence
-    const final = emitEventSession.mock.calls[2]![0]
+    const final = emitEventSession.mock.calls[3]![0]
     expect(final).toMatchObject({ sessionId: 'acp-sess-1', phase: 'end', status: 'idle', title: 'first' })
     await daemon.stop()
   }, 15_000)

@@ -11204,8 +11204,6 @@ export class Daemon {
       thread: msg.thread,
       statusThread
     })
-    // First metadata snapshot: enough for the CP's DB-backed session list/detail to
-    // resolve this daemon-local session without pulling `session/list` on every view.
     if (created) {
       // Classify for session visibility BEFORE the first milestone: the CP's
       // ingest is first-wins, and the daemon's own capture gate must be closed
@@ -11213,20 +11211,30 @@ export class Daemon {
       // §4.1/§5.1). Persisted on the session row so later re-emits — including
       // after a restart, when `msg` is long gone — still carry the same facts.
       this.classifyNewSession(agentId, key, sessionId, msg, callMeta, hookContext, webchat?.evaluation === true)
-      this.emitSessionMetadataSnapshot({
-        sessionId,
-        agentId,
-        phase: 'start',
-        platform: msg.platform,
-        channel: msg.channel,
-        thread: statusThread
-      })
-      // A first-seen Telegram/Discord/Feishu chat widens the observed reachable set
-      // (approach-A discovery) — report it after the session row exists so the console
-      // cannot miss a name lookup that completed during cold session startup.
-      if (originKindOf(msg.platform) === 'chat' && manifestFor(msg.platform).membershipEnumeration === 'observed') {
-        this.refreshObservedChannels()
-      }
+    }
+    // Turn-start metadata snapshot — EVERY turn, not only `created`. The row is
+    // already `prompting` (sessions.handle), and the CP-stored state is the only
+    // active-turn signal a console watching a platform session has: the end-of-turn
+    // snapshot fires after cleanup resets the row to `idle`, so without this a warm
+    // turn never reads as in flight (the work panel could not follow it live).
+    // recordMilestone upserts, so a repeated 'start' phase is safe on the CP.
+    this.emitSessionMetadataSnapshot({
+      sessionId,
+      agentId,
+      phase: 'start',
+      platform: msg.platform,
+      channel: msg.channel,
+      thread: statusThread
+    })
+    if (
+      created &&
+      originKindOf(msg.platform) === 'chat' &&
+      manifestFor(msg.platform).membershipEnumeration === 'observed'
+    ) {
+      // A first-seen chat widens the observed reachable set (approach-A discovery) —
+      // report it after the session row exists so the console cannot miss a name
+      // lookup that completed during cold session startup.
+      this.refreshObservedChannels()
     }
     try {
       onSessionReady?.(sessionId)
