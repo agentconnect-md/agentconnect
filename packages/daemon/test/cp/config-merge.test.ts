@@ -29,8 +29,12 @@ describe('mergeConfigPush', () => {
     expect(cfg.sessions.retention).toBe('90d')
     expect(r.applied).toEqual(['sessions.retention'])
 
-    const bad = mergeConfigPush(cfg, { 'sessions.retention': '3d' })
-    expect(cfg.sessions.retention).toBe('90d') // unchanged — not a known window
+    const custom = mergeConfigPush(cfg, { 'sessions.retention': '3d' })
+    expect(cfg.sessions.retention).toBe('3d') // any '<n>d' day count is a valid window
+    expect(custom.applied).toEqual(['sessions.retention'])
+
+    const bad = mergeConfigPush(cfg, { 'sessions.retention': '0d' })
+    expect(cfg.sessions.retention).toBe('3d') // unchanged — not a valid window
     expect(bad.applied).toEqual([])
     expect(bad.ignored).toEqual(['sessions.retention'])
   })

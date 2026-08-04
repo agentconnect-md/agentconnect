@@ -2,7 +2,9 @@ import { z } from 'zod'
 import {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   normalizeWorkspaceGitOrigin,
-  RelayRosterEntry
+  RelayRosterEntry,
+  SESSION_RETENTION_RE,
+  type SessionRetentionSetting
 } from '@agentconnect.md/protocol'
 
 /** The `{name, value}[]` shape shared by runtime env, MCP env, and MCP headers. */
@@ -179,10 +181,17 @@ export const ConfigSchema = z.object({
       // store, together with its per-session Git worktree. A worktree holding
       // dirty/untracked files or commits unreachable from any remote ref is never
       // auto-deleted — the sweep reports it and keeps the session instead.
-      // 'never' disables the sweep entirely.
-      // '30d'/'90d' are the console-facing windows (CP-set via register/ok +
-      // config/push); '2weeks'/'1month' are kept for existing local config files.
-      retention: z.enum(['never', '7d', '2weeks', '1month', '30d', '90d']).default('7d')
+      // 'never' disables the sweep; any '<n>d' day count is accepted (CP-set via
+      // register/ok + config/push). Legacy '2weeks'/'1month' from existing local
+      // config files normalize to their day equivalents.
+      retention: z
+        .union([
+          z.custom<SessionRetentionSetting>((v) => typeof v === 'string' && SESSION_RETENTION_RE.test(v), {
+            message: "expected 'never' or '<days>d' (e.g. '7d')"
+          }),
+          z.enum(['2weeks', '1month']).transform((v): SessionRetentionSetting => (v === '2weeks' ? '14d' : '30d'))
+        ])
+        .default('7d')
     })
     .default({ retention: '7d' }),
   limits: z
@@ -255,20 +264,12 @@ export type Config = z.infer<typeof ConfigSchema>
 
 export type SessionRetention = Config['sessions']['retention']
 
-/** Retention keyword → sweep window in ms ('1month' = 30 days); null ⇒ retention
+/** Retention setting → sweep window in ms ('<n>d' = n days); null ⇒ retention
  * is disabled and the sweep never deletes anything. */
 export function sessionRetentionMs(retention: SessionRetention): number | null {
-  switch (retention) {
-    case 'never':
-      return null
-    case '7d':
-      return 7 * 24 * 3_600_000
-    case '2weeks':
-      return 14 * 24 * 3_600_000
-    case '1month':
-    case '30d':
-      return 30 * 24 * 3_600_000
-    case '90d':
-      return 90 * 24 * 3_600_000
-  }
+  if (retention === 'never') return null
+  const days = Number.parseInt(retention, 10)
+  // Schema-validated 'Nd' always parses; a malformed value fails open to 'never'
+  // (keep sessions) rather than sweeping with a NaN window.
+  return Number.isFinite(days) && days > 0 ? days * 24 * 3_600_000 : null
 }
