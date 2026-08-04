@@ -78,6 +78,7 @@ import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-t
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
+import { platformTranscriptOrdering } from '@/components/console/platforms/registry'
 import { mergeSessionMessages } from '@/lib/session-transcript'
 import { useStickToBottom } from '@/lib/stick-to-bottom'
 import { socialLoginProviders } from '@/lib/social-login-providers'
@@ -238,7 +239,7 @@ function ComposerSendButton({
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
 // transcript kind (text | tool | reasoning) onto the existing lane styling.
-function msgStep(m: SessionMessageDto, toolSessionId?: string): FmtStep {
+function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
   if (k === 'tool') {
     return {
@@ -252,6 +253,7 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string): FmtStep {
       code: m.text,
       files: [],
       time: formatTranscriptRowTime(m),
+      ...(platform ? { platform } : {}),
       // Carry the raw message so the row can render the captured tool body (input /
       // output / content / diff / locations) below the title, on demand.
       ...(m.body ? { msg: m, ...(toolSessionId ? { toolSessionId } : {}) } : {})
@@ -268,7 +270,8 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string): FmtStep {
       text: m.text,
       code: '',
       files: [],
-      time: formatTranscriptRowTime(m)
+      time: formatTranscriptRowTime(m),
+      ...(platform ? { platform } : {})
     }
   }
   return {
@@ -281,7 +284,8 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string): FmtStep {
     text: m.text,
     code: '',
     files: [],
-    time: formatTranscriptRowTime(m)
+    time: formatTranscriptRowTime(m),
+    ...(platform ? { platform } : {})
   }
 }
 
@@ -307,14 +311,16 @@ function mergeConversationRows(
   sources: { sessionId: string; agentId: string; platform: string }[],
   rows: Map<string, SessionMessageDto[]>,
   sourceSessionByMessage: WeakMap<SessionMessageDto, string>,
-  sourceTurnByMessage: WeakMap<SessionMessageDto, string>
+  sourceTurnByMessage: WeakMap<SessionMessageDto, string>,
+  sourcePlatformByMessage: WeakMap<SessionMessageDto, string>
 ): SessionMessageDto[] {
   return mergeConversation(
     sources
       .filter((source) => rows.has(source.sessionId))
       .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
-  ).map(({ row, sourceSessionId, sourceTurnKey }) => {
+  ).map(({ row, sourceSessionId, sourcePlatform, sourceTurnKey }) => {
     sourceSessionByMessage.set(row, sourceSessionId)
+    sourcePlatformByMessage.set(row, sourcePlatform)
     if (sourceTurnKey) sourceTurnByMessage.set(row, sourceTurnKey)
     return row
   })
@@ -338,11 +344,15 @@ interface FmtStep {
   // Conversation rows keep their owning session out-of-band so full-body reads
   // do not accidentally target the representative member.
   toolSessionId?: string
+  // The platform this row was authored on — the key `MessageText` resolves its
+  // renderer under (§10). Per STEP, not per turn or per page: a merged
+  // conversation interleaves sources, so neighbouring rows can differ.
+  platform?: string
 }
 
 // A bare text step (no lane chrome) — how a peer participant's message renders
 // inside its agent block.
-function plainStep(text: string, time?: string, image?: SessionImage): FmtStep {
+function plainStep(text: string, time?: string, image?: SessionImage, platform?: string): FmtStep {
   return {
     lane: '',
     laneColor: 'var(--text-tertiary)',
@@ -354,7 +364,8 @@ function plainStep(text: string, time?: string, image?: SessionImage): FmtStep {
     code: '',
     files: [],
     ...(time ? { time } : {}),
-    ...(image ? { image } : {})
+    ...(image ? { image } : {}),
+    ...(platform ? { platform } : {})
   }
 }
 
@@ -456,7 +467,7 @@ function maxTime(...values: Array<number | null | undefined>): number | null {
   return finite.length > 0 ? Math.max(...finite) : null
 }
 
-function fmtStep(stp: SessionStep): FmtStep {
+function fmtStep(stp: SessionStep, platform?: string): FmtStep {
   const L = lane(stp.kind)
   return {
     lane: L.lane,
@@ -468,7 +479,8 @@ function fmtStep(stp: SessionStep): FmtStep {
     text: stp.text,
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
-    time: stp.time ?? ''
+    time: stp.time ?? '',
+    ...(platform ? { platform } : {})
   }
 }
 
@@ -708,6 +720,8 @@ type Turn =
       image?: SessionImage
       isCron: boolean
       cronId: string | null
+      /** The platform this message was authored on — see `FmtStep.platform`. */
+      platform?: string
     }
   | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[] }
 
@@ -1210,6 +1224,10 @@ export default function SessionDetailView() {
   }>({ rows: new Map(), cursors: new Map(), older: new Map() })
   const conversationSourceSessionByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const conversationSourceTurnByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
+  // Each merged row's OWN platform (§10) — the key its text renderer resolves
+  // under. Out-of-band like the two above so the row objects keep their
+  // identity, and per row because sources interleave by event time.
+  const conversationSourcePlatformByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   // Which conversation key the CURRENT fan-out state belongs to — the focus
@@ -1777,7 +1795,8 @@ export default function SessionDetailView() {
             sources,
             rowsBySession,
             conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current
+            conversationSourceTurnByMessageRef.current,
+            conversationSourcePlatformByMessageRef.current
           )
         )
         setMsgLoading(false)
@@ -1871,7 +1890,10 @@ export default function SessionDetailView() {
               })
               if (tailSessionRef.current !== sid) return
               const current = state.rows.get(src.sessionId) ?? []
-              state.rows.set(src.sessionId, mergeSessionMessages(current, page.messages, src.platform))
+              state.rows.set(
+                src.sessionId,
+                mergeSessionMessages(current, page.messages, platformTranscriptOrdering(src.platform))
+              )
               if (src.sessionId === sid) repRows.push(...page.messages)
               if (page.liveCursor !== null) {
                 cursor = page.liveCursor
@@ -1890,7 +1912,8 @@ export default function SessionDetailView() {
             sources,
             state.rows,
             conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current
+            conversationSourceTurnByMessageRef.current,
+            conversationSourcePlatformByMessageRef.current
           )
         )
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
@@ -1919,7 +1942,7 @@ export default function SessionDetailView() {
         })
         if (tailSessionRef.current !== sid) return
         persisted.push(...page.messages)
-        setMsgs((current) => mergeSessionMessages(current ?? [], page.messages, platform))
+        setMsgs((current) => mergeSessionMessages(current ?? [], page.messages, platformTranscriptOrdering(platform)))
         if (page.liveCursor !== null) {
           cursor = page.liveCursor
           liveCursorRef.current = cursor
@@ -1969,7 +1992,8 @@ export default function SessionDetailView() {
           sources,
           state.rows,
           conversationSourceSessionByMessageRef.current,
-          conversationSourceTurnByMessageRef.current
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current
         )
       )
       setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
@@ -2394,6 +2418,9 @@ export default function SessionDetailView() {
     for (const m of visibleMsgs ?? []) {
       const toolSessionId = conversationSourceSessionByMessageRef.current.get(m)
       const sourceTurnKey = conversationSourceTurnByMessageRef.current.get(m)
+      // A merged conversation stamps every row with the platform of the source
+      // it came from; a single-session page has one platform for all of them.
+      const rowPlatform = conversationSourcePlatformByMessageRef.current.get(m) ?? session.platform
       if (m.sender === session.agentId) {
         let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
@@ -2409,7 +2436,7 @@ export default function SessionDetailView() {
           turns.push(last)
           if (sourceTurnKey) botTurnByKey.set(sourceTurnKey, last)
         }
-        const step = msgStep(m, toolSessionId)
+        const step = msgStep(m, toolSessionId, rowPlatform)
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       } else {
@@ -2423,7 +2450,7 @@ export default function SessionDetailView() {
           pushAgentTurn(
             senderAgent,
             {
-              ...msgStep(m, toolSessionId),
+              ...msgStep(m, toolSessionId, rowPlatform),
               ...(m.attachments?.[0] ? { image: m.attachments[0] } : {})
             },
             sourceTurnKey
@@ -2447,7 +2474,8 @@ export default function SessionDetailView() {
           text: m.text,
           image: m.attachments?.[0],
           isCron: !!cron,
-          cronId: cron?.id ?? null
+          cronId: cron?.id ?? null,
+          platform: rowPlatform
         })
       }
     }
@@ -2463,7 +2491,7 @@ export default function SessionDetailView() {
         if (senderAgent && !self) {
           pushAgentTurn(
             senderAgent,
-            plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image),
+            plainStep(stp.text, stp.time ?? (firstMsg ? session.time : ''), stp.image, session.platform),
             liveBotTurnKey(stp.turnId, senderAgent.id)
           )
           firstMsg = false
@@ -2483,7 +2511,8 @@ export default function SessionDetailView() {
           text: stp.text,
           image: stp.image,
           isCron: !!cron,
-          cronId: cron?.id ?? null
+          cronId: cron?.id ?? null,
+          platform: session.platform
         })
         firstMsg = false
       } else {
@@ -2514,7 +2543,7 @@ export default function SessionDetailView() {
           // A tagged step continuing an untagged block names its author retroactively.
           last.agentId = stp.agentId
         }
-        const step = fmtStep(stp)
+        const step = fmtStep(stp, session.platform)
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       }
@@ -2533,7 +2562,7 @@ export default function SessionDetailView() {
         if (senderAgent && !self) {
           pushAgentTurn(
             senderAgent,
-            plainStep(stp.text, stp.time ?? '', stp.image),
+            plainStep(stp.text, stp.time ?? '', stp.image, session.platform),
             liveBotTurnKey(stp.turnId, senderAgent.id)
           )
           continue
@@ -2550,7 +2579,8 @@ export default function SessionDetailView() {
           text: stp.text,
           image: stp.image,
           isCron: false,
-          cronId: null
+          cronId: null,
+          platform: session.platform
         })
       } else {
         const stepAgent = stp.agentId ? agentById.get(stp.agentId) : undefined
@@ -2575,7 +2605,7 @@ export default function SessionDetailView() {
           // A tagged step continuing an untagged block names its author retroactively.
           last.agentId = stp.agentId
         }
-        const step = fmtStep(stp)
+        const step = fmtStep(stp, session.platform)
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       }
@@ -3177,7 +3207,7 @@ export default function SessionDetailView() {
                             className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
                           />
                         )}
-                        {turn.text && <MessageText text={turn.text} />}
+                        {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
                       </div>
                     </div>
                     <ParticipantAvatar
@@ -3259,7 +3289,7 @@ export default function SessionDetailView() {
                               )}
                               {st.text && (
                                 <div className="whitespace-pre-wrap">
-                                  <MessageText text={st.text} />
+                                  <MessageText text={st.text} platform={st.platform} />
                                 </div>
                               )}
                               <StepExtras step={st} sessionId={sid} />
@@ -3309,7 +3339,7 @@ export default function SessionDetailView() {
                                             className="font-sans text-[13px] leading-[1.5]"
                                             style={{ fontWeight: st.weight, color: st.textColor }}
                                           >
-                                            <MessageText text={st.text} />
+                                            <MessageText text={st.text} platform={st.platform} />
                                           </div>
                                         )}
                                         <StepExtras step={st} sessionId={sid} />

@@ -538,41 +538,63 @@ export interface WebPlatformModule<TApi = unknown> {
    *  noun, `#` glyph, `leave: 'none'`, generic copy. */
   channelList?: WebChannelListSemantics
   /**
-   * Per-platform transcript text renderer — the §14 defect-3 seam, DECLARED
-   * here and adopted separately. Today ONE global renderer applies Slack
-   * mrkdwn rewriting to every platform's rows (`MessageText`,
-   * components/console/MessageText.tsx:30-54 over `slackToMarkdown`,
-   * slack-mrkdwn.ts:64; call sites SessionDetailView.tsx:3022, :3104,
-   * :3154). NOTHING consults this member in this PR: adoption means a
-   * renderer registry keyed by platformId that ships the Slack renderer as
-   * the default for all chat platforms (preserving today's behavior), with
-   * per-platform overrides landing as their own explicitly-reviewed behavior
-   * changes (§10, §14). A component rather than a `(text, ctx) => ReactNode`
-   * function so the memoization that keeps the transcript affordable
-   * (MessageText.tsx:26-30) survives the seam.
+   * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:
+   * `MessageText` resolves it from the ROW's platform key
+   * (`MergedRow.sourcePlatform`, falling back to the session's platform) on
+   * every row it renders, through `platformTextRenderer` in the registry.
+   *
+   * NO MODULE DECLARES ONE TODAY, and that is the shipped state §10 asks for:
+   * "a renderer registry keyed by platformId ships with the Slack renderer as
+   * the default for all chat platforms, then per-platform overrides land
+   * separately (§14)". The default is core (`SlackMrkdwnText`,
+   * components/console/MessageText.tsx over `slackToMarkdown`,
+   * slack-mrkdwn.ts) rather than the Slack module's member, because three
+   * other platforms render through it: making it Slack's would leave Telegram,
+   * Discord and Feishu reading another module's internals. It moves into
+   * `platforms/slack/` on the day Slack's semantics stop being everyone's —
+   * i.e. with the first override, which is also the first change here with
+   * visible pixels.
+   *
+   * A component rather than §10's sketched `(text, ctx) => ReactNode` so the
+   * memoization that keeps the transcript affordable survives the seam: the
+   * transcript re-renders on every unrelated state change in
+   * SessionDetailView, and `MessageText` is `memo`ized over its plain-string
+   * props precisely so each row's remark pipeline does NOT re-run. A bare
+   * function returning a `ReactNode` cannot be memoized by the host, and no
+   * call site has a `ctx` to pass.
    */
   textRenderer?: ComponentType<{ text: string }>
   /**
    * Provider-native duplicate identity of one transcript row — the
-   * per-platform arms of the merged-conversation dedupe
-   * (`duplicateIdentity`, lib/conversation-merge.ts:115-122: Slack decimal
-   * ts, Discord snowflakes, Telegram short sequence ids, Feishu `om_` ids;
+   * per-platform arms of the merged-conversation dedupe (Slack decimal ts,
+   * Discord snowflakes, Telegram short sequence ids, Feishu `om_` ids;
    * platform selects the rule via `MergeSource.platform`,
-   * :14-19). `null` = this row never dedupes across sources. Absent ⇒ the
-   * merge never dedupes this platform's rows — its stated fail-closed
-   * direction ("toward a visible duplicate, never toward data loss",
-   * :108-110). Consumed by a CORE routine (audit Appendix D, ambiguous
-   * row 5): the merge algorithm stays host-owned; only the identity rule is
-   * the module's.
+   * lib/conversation-merge.ts). `null` = this row never dedupes across
+   * sources. Absent ⇒ the merge never dedupes this platform's rows — its
+   * stated fail-closed direction ("toward a visible duplicate, never toward
+   * data loss").
+   *
+   * Consumed by a CORE routine (audit Appendix D, ambiguous row 5): the merge
+   * algorithm stays host-owned, and so do the two rules that are not any
+   * platform's — only `kind === 'text'` rows dedupe at all, and `webchat`
+   * keys on its canonical `postId`. `webchat` is not a module (it has no bot
+   * identity to install), so its arm cannot move here. What the module owns is
+   * the id SHAPE of its own provider.
+   *
+   * ADOPTED, and the "absent ⇒ never" direction is now REAL rather than
+   * documentary: it used to be Slack's decimal-ts rule that ran for every
+   * unrecognized platform id, because Slack was the fall-through arm of an
+   * if-chain. Nothing is the fall-through now.
    */
   messageIdentity?(row: SessionMessageDto): string | null
   /**
    * Whether transcript pages re-sort by event time or trust the daemon
-   * sequence — today's `platform !== 'slack'` fork in `mergeSessionMessages`
-   * (lib/session-transcript.ts:8-20): Slack rows carry provider send-times
-   * that the display order must follow; everyone else orders by `seq`.
-   * Absent ⇒ `'seq'` (the conservative arm every non-Slack platform takes
-   * today).
+   * sequence — the `platform !== 'slack'` fork `mergeSessionMessages`
+   * (lib/session-transcript.ts) used to spell out: Slack rows carry provider
+   * send-times that the display order must follow; everyone else orders by
+   * `seq`. Absent ⇒ `'seq'`, which is both the conservative arm and the arm
+   * every non-Slack platform already took, so ADOPTING this member moved the
+   * fork without moving the behavior.
    */
   transcriptOrdering?: 'seq' | 'event-time'
 }

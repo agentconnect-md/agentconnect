@@ -4,17 +4,32 @@ import { transcriptRowTimeMs } from '@/lib/transcript-time'
 
 const LIVE_TURN_CONFIRM_WINDOW_MS = 5 * 60_000
 
-/** Upsert stable transcript rows and restore the platform's display ordering. */
+/**
+ * Upsert stable transcript rows and restore the requested display ordering.
+ *
+ * `ordering` replaces the `platform !== 'slack'` literal this used to carry:
+ * it is the owning platform module's `transcriptOrdering` (§10), resolved by
+ * the caller through `platformTranscriptOrdering`. Same two arms and the same
+ * platforms in each — a module that declares nothing, and every id no module
+ * claims, takes `'seq'`.
+ *
+ * The RESOLUTION deliberately stays at the call site rather than moving in
+ * here: this module is shared with `PlaygroundProvider` (for
+ * `reconcilePersistedLiveSteps`), and a registry import would pull all four
+ * platform modules — wizard panes and CP bindings included — into the
+ * playground's graph for a value it never reads. Same trade `lib/data.ts`
+ * makes by keeping `lib/platform-labels.ts` out of the registry.
+ */
 export function mergeSessionMessages(
   current: SessionMessageDto[],
   incoming: SessionMessageDto[],
-  platform: string
+  ordering: 'seq' | 'event-time'
 ): SessionMessageDto[] {
   if (incoming.length === 0) return current
   const bySeq = new Map(current.map((message) => [message.seq, message]))
   for (const message of incoming) bySeq.set(message.seq, message)
   return [...bySeq.values()].sort((a, b) => {
-    if (platform !== 'slack') return a.seq - b.seq
+    if (ordering !== 'event-time') return a.seq - b.seq
     return (transcriptRowTimeMs(a) ?? 0) - (transcriptRowTimeMs(b) ?? 0) || a.seq - b.seq
   })
 }

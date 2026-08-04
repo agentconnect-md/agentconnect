@@ -1,5 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
+import type { ComponentType } from 'react'
+import type { SessionMessageDto } from '@/lib/api'
 import type { WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
@@ -44,4 +46,39 @@ export const DEFAULT_CHANNEL_LIST: WebChannelListSemantics = {
 /** One platform's channel-list display semantics, defaulted. */
 export function channelListSemantics(platformId?: string): WebChannelListSemantics {
   return (platformId ? platformRegistry.get(platformId)?.channelList : undefined) ?? DEFAULT_CHANNEL_LIST
+}
+
+/**
+ * This platform's transcript text renderer OVERRIDE, or `undefined` for the
+ * core default — which is every platform today (§10: the registry "ships with
+ * the Slack renderer as the default for all chat platforms, then per-platform
+ * overrides land separately").
+ *
+ * The default itself deliberately stays in `MessageText`, so this lookup does
+ * NOT return it: resolving it here would pull the markdown pipeline
+ * (react-markdown + remark-gfm + remark-breaks + node-emoji) into this module,
+ * and `ModalProvider` — mounted by the console shell on EVERY route — imports
+ * this registry through `AddIntegrationModal`. Only the session transcript
+ * renders message text; only it should carry the parser. Same reasoning that
+ * keeps `platforms/marks.ts` and `lib/platform-labels.ts` out of here.
+ */
+export function platformTextRenderer(platformId?: string): ComponentType<{ text: string }> | undefined {
+  return platformId ? platformRegistry.get(platformId)?.textRenderer : undefined
+}
+
+/**
+ * This row's provider-native duplicate identity under `platformId`'s rule, or
+ * `null` when it must never dedupe across sources — including every platform
+ * id no module claims. See {@link WebPlatformModule.messageIdentity}: the
+ * caller (`lib/conversation-merge.ts`) keeps the rules that are core rather
+ * than any platform's, and this resolves only the provider id SHAPE.
+ */
+export function platformMessageIdentity(platformId: string, row: SessionMessageDto): string | null {
+  return platformRegistry.get(platformId)?.messageIdentity?.(row) ?? null
+}
+
+/** This platform's transcript page ordering, defaulted to the conservative
+ *  daemon sequence. See {@link WebPlatformModule.transcriptOrdering}. */
+export function platformTranscriptOrdering(platformId: string): 'seq' | 'event-time' {
+  return platformRegistry.get(platformId)?.transcriptOrdering ?? 'seq'
 }

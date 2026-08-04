@@ -8,6 +8,10 @@ import { FeishuMark } from './mark'
 import { feishuBrand, feishuRegionOf } from './region'
 import { feishuSettingsFragments } from './settings'
 
+/** Lark / Feishu's provider-native message id: an `om_`-prefixed opaque id,
+ *  which no numeric daemon-local stamp can collide with. */
+const FEISHU_MESSAGE_ID = /^om_[A-Za-z0-9_-]+$/
+
 export const feishuModule: WebPlatformModule<FeishuApi> = {
   platformId: 'feishu',
   Mark: FeishuMark,
@@ -42,5 +46,6 @@ export const feishuModule: WebPlatformModule<FeishuApi> = {
     roomGlyph: '',
     // No console-driven leave: the bot is removed from a group in Lark itself.
     leave: 'none'
-  }
+  },
+  messageIdentity: (row) => (FEISHU_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null)
 }

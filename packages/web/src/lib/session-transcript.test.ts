@@ -8,12 +8,12 @@ function message(seq: number, ts: string, text: string): SessionMessageDto {
 }
 
 describe('mergeSessionMessages', () => {
-  it('upserts stable rows and restores chronological Slack order after a backfill', () => {
+  it('upserts stable rows and restores chronological order after a backfill', () => {
     const current = [message(1, '1784098843.000000', 'trigger'), message(2, '1784098844000', 'running')]
     const merged = mergeSessionMessages(
       current,
       [message(2, '1784098844000', 'complete'), message(3, '1784098711.000000', 'backfilled')],
-      'slack'
+      'event-time'
     )
 
     expect(merged.map(({ seq, text }) => [seq, text])).toEqual([
@@ -21,6 +21,18 @@ describe('mergeSessionMessages', () => {
       [1, 'trigger'],
       [2, 'complete']
     ])
+  })
+
+  it('trusts the daemon sequence under the conservative ordering', () => {
+    // The arm every platform but Slack takes (§10 `transcriptOrdering`), and
+    // the one an unrecognized platform id resolves to. Same upsert, no re-sort.
+    const merged = mergeSessionMessages(
+      [message(1, '1784098843.000000', 'trigger')],
+      [message(3, '1784098711.000000', 'backfilled'), message(2, '1784098844000', 'running')],
+      'seq'
+    )
+
+    expect(merged.map(({ seq }) => seq)).toEqual([1, 2, 3])
   })
 })
 
