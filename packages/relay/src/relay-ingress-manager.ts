@@ -31,7 +31,12 @@ import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarge
 import { SlackHttpIngest } from './platforms/slack/http-ingest.js'
 import { FeishuHttpIngest } from './platforms/feishu/http-ingest.js'
 import { DemuxIndex, IngressPool } from './platforms/registry.js'
-import type { HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from './platforms/contract.js'
+import type {
+  HandledDelivery,
+  RelayBotIngress,
+  RelayIngressHost,
+  RelayPlatformIngressPlugin
+} from './platforms/contract.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
 import { slackIngressPlugin } from './platforms/slack/ingress-plugin.js'
 import { feishuIngressPlugin } from './platforms/feishu/ingress-plugin.js'
@@ -519,6 +524,15 @@ export class RelayIngressManager {
     )
   }
 
+  /** The bot's live ingest, found through its ASSIGNMENT's platform entry —
+   *  the §8 read that replaced "which map the bot lives in" acting as the
+   *  platform test. Undefined when the bot has no assignment or no built ingest. */
+  private ingestFor(botId: string): RelayBotIngress | undefined {
+    const platform = this.router.get(botId)?.platform
+    const entry = platform ? this.ingressPlugins.get(platform) : undefined
+    return entry?.pool.get(botId)
+  }
+
   private async stopIngest(botId: string): Promise<void> {
     const cur = this.slackPool.get(botId)
     if (cur) {
@@ -530,8 +544,12 @@ export class RelayIngressManager {
   }
 
   private isAgentBotMessage(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): boolean {
+    // The sender's platform APP identity is the capability signal: only
+    // platforms whose normalizers attribute one (Slack's api_app_id) can be
+    // checked against the CP's agent-bot index, and the index lookup itself is
+    // platform-keyed — a platform with no entries answers false (fail closed).
     const appId = msg.sender.appId
-    if (msg.platform !== 'slack' || !msg.sender.isBot || !appId) return false
+    if (!msg.sender.isBot || !appId) return false
     return (
       this.router
         .get(botId)
@@ -745,12 +763,13 @@ export class RelayIngressManager {
       if (!msg.sender.isBot && hasGatedMembers && speaks) {
         const mentioned = assignment?.botUserId !== undefined && msg.mentionedBots.includes(assignment.botUserId)
         if (msg.isDm || mentioned) {
-          // Feishu callback credentials are receive-only. For its currently
-          // single-install HTTP bot, hand the addressed Off-conversation event to
-          // the owning daemon: the daemon reports discovery, posts through its API
-          // client, and drops before agent dispatch. Slack keeps its existing
-          // relay-owned notice path because that ingest already owns bot egress.
-          if (assignment?.platform === 'feishu') tgt = this.router.soleGatedTarget(botId) ?? null
+          // §8 relayOwnsEgress, derived from the egress FACET: an ingest without
+          // one (Feishu — its callback credentials are receive-only) hands the
+          // addressed Off-conversation event to the owning daemon, which reports
+          // discovery, posts through its API client, and drops before agent
+          // dispatch. An ingest WITH the facet (Slack) keeps the relay-owned
+          // notice path below.
+          if (!this.ingestFor(botId)?.egress) tgt = this.router.soleGatedTarget(botId) ?? null
           if (!tgt) {
             await this.noticeGatedUnrouted(botId, msg)
             return
@@ -817,7 +836,7 @@ export class RelayIngressManager {
     const latch = `${botId}:${msg.channel}`
     if (this.gatedDmReported.has(latch)) return
     // A group DM's counterpart is the room, not the sender, so it carries no name here.
-    const name = msg.isDm ? await this.slackPool.get(botId)?.lookupUserName(msg.sender.id) : undefined
+    const name = msg.isDm ? await this.ingestFor(botId)?.egress?.lookupUserName(msg.sender.id) : undefined
     const sent = this.deps.reportBotConversation({
       botId,
       conversation: { id: msg.channel, ...(name ? { name } : {}), kind: msg.isDm ? 'im' : 'mpim' }
@@ -854,14 +873,15 @@ export class RelayIngressManager {
     }
     const key = `${botId}:${msg.channel}`
     if (this.gatedNoticesSent.has(key)) return
-    const ingest = this.slackPool.get(botId)
-    // Feishu relay ingress is receive-only. Its caller first tries the assignment
-    // directory's sole gated daemon target; an old CP that did not include the
-    // integration id safely lands here and drops instead of leaking API secrets.
-    if (!ingest) return
+    const egress = this.ingestFor(botId)?.egress
+    // No egress facet (Feishu — receive-only ingress): the caller first tried
+    // the assignment directory's sole gated daemon target; an old CP that did
+    // not include the integration id safely lands here and drops instead of
+    // leaking API secrets.
+    if (!egress) return
     this.gatedNoticesSent.add(key)
     try {
-      await ingest.postText(
+      await egress.notice(
         msg.channel,
         '🔒 This agent isn’t enabled in this conversation. Ask an admin to enable it in the AgentConnect console.',
         msg.isDm ? undefined : msg.thread

@@ -376,6 +376,16 @@ export class SlackHttpIngest {
     return this.secrets.signingSecret
   }
 
+  /** §8 relay-side egress/read facet: Slack is the platform whose relay ingest
+   *  owns bot egress (the §14 gating notice, DM-row labeling). Its PRESENCE is
+   *  the platform-neutral fact core reads — a platform that keeps egress on the
+   *  daemon simply exposes none. */
+  readonly egress = {
+    notice: (channelId: string, text: string, threadTs?: string): Promise<void> =>
+      this.postText(channelId, text, threadTs),
+    lookupUserName: (userId: string): Promise<string | undefined> => this.lookupUserName(userId)
+  }
+
   /** Post one plain, chrome-marked text message (the §14 gating notice) — chrome so
    *  peer daemons' thread backfill never re-ingests it as conversation. */
   async postText(channel: string, text: string, threadTs?: string): Promise<void> {
