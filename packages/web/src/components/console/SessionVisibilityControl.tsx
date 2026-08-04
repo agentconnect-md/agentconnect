@@ -10,7 +10,7 @@
  * look without reusing its ResourceVisibility (`org` | `restricted`) types or
  * share-set machinery.
  *
- * - Read-only viewers see the same bordered audience badge for private, org,
+ * - Read-only viewers see the same inline audience indicator for private, org,
  *   and provider-managed sessions.
  * - `canChange` (server-computed: the identity-matched session owner only)
  *   renders a two-option dropdown instead. Tightening (org → private)
@@ -123,7 +123,7 @@ export function SessionVisibilityControl({
     return (
       <span
         title={title}
-        className="inline-flex h-[26px] flex-none items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+        className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name="users" size={13} color="var(--text-tertiary)" />
         {`${provider} members`}
@@ -137,7 +137,7 @@ export function SessionVisibilityControl({
     return (
       <span
         title={privateSession ? SESSION_PRIVATE_TITLE : SESSION_EVERYONE_TITLE}
-        className="inline-flex h-[26px] flex-none items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+        className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
       >
         <Icon name={privateSession ? 'lock' : 'globe'} size={13} color="var(--text-tertiary)" />
         {privateSession ? 'Private' : 'Everyone'}
@@ -198,7 +198,7 @@ export function SessionVisibilityControl({
           aria-haspopup="menu"
           aria-expanded={open}
           aria-controls={open ? menuId : undefined}
-          className="inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-md border border-(--border-default) bg-(--surface-card) px-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-default disabled:opacity-60"
+          className="inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-sm border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-default disabled:opacity-60"
           onClick={() => setOpen((value) => !value)}
           onKeyDown={(event) => {
             if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -211,7 +211,7 @@ export function SessionVisibilityControl({
           {state === 'pending' ? (
             <Spinner size={10} />
           ) : (
-            <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
+            <Icon name="chevron-down" size={12} color="var(--text-tertiary)" />
           )}
         </button>
         {open && (
@@ -219,7 +219,7 @@ export function SessionVisibilityControl({
             id={menuId}
             role="menu"
             aria-labelledby={headingId}
-            className="absolute top-[calc(100%+7px)] right-0 z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+            className="absolute top-[calc(100%+7px)] left-0 z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) max-desktop:right-0 max-desktop:left-auto"
             onKeyDown={moveFocus}
           >
             <span id={headingId} className="sr-only">
