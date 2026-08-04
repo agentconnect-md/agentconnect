@@ -41,9 +41,17 @@ describe('planned daemon lifecycle status', () => {
     expect(lifecycleStatus({ op: 'upgrade', status: 'succeeded' })).toBeUndefined()
     const upgrading = { status: 'offline' as const, lifecycleStatus: 'upgrading' as const }
     expect(presentedDaemonStatus(upgrading)).toBe('upgrading')
-    expect(effectiveAgentStatus('online', upgrading)).toBe('upgrading')
-    expect(effectiveAgentStatus('online', { status: 'offline', lifecycleStatus: null })).toBe('offline')
-    expect(effectiveAgentStatus('paused', upgrading)).toBe('paused')
+    const placed = (status: 'online' | 'paused') => ({ status, daemon: 'daemon-1' })
+    expect(effectiveAgentStatus(placed('online'), upgrading)).toBe('upgrading')
+    expect(effectiveAgentStatus(placed('online'), { status: 'offline', lifecycleStatus: null })).toBe('offline')
+    expect(effectiveAgentStatus(placed('paused'), upgrading)).toBe('paused')
+  })
+
+  it('reads an unplaced agent as offline whatever its stored status says', () => {
+    // A deleted daemon clears the placement; a stale 'active'/'online' status must not
+    // survive that as a green dot on an agent with nothing hosting it.
+    expect(effectiveAgentStatus({ status: 'online', daemon: '—' }, undefined)).toBe('offline')
+    expect(effectiveAgentStatus({ status: 'online', daemon: 'daemon-1' }, undefined)).toBe('online')
   })
 
   it('uses the transition tone while a pending daemon is still connected', () => {

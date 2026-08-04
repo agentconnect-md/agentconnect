@@ -343,7 +343,7 @@ export default function DaemonDetailView() {
           {hosted.length > 0 ? (
             hosted.map((a, i) => {
               // Daemon status is known here, so gate the agent's effective online on it.
-              const as = status(effectiveAgentStatus(a.status, daemon))
+              const as = status(effectiveAgentStatus(a, daemon))
               return (
                 <button
                   key={a.id}
@@ -767,7 +767,7 @@ export default function DaemonDetailView() {
                 </div>
                 {hosted.map((a) => {
                   // On this page we know the daemon's status, so gate the agent's online.
-                  const as = status(effectiveAgentStatus(a.status, daemon))
+                  const as = status(effectiveAgentStatus(a, daemon))
                   return (
                     <div
                       key={a.id}

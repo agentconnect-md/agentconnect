@@ -89,7 +89,7 @@ export function GlobalSearch({
       // Gate "online" on the owning daemon being connected (as the Agents view does),
       // and surface the daemon's display NAME — never its host.
       const owning = daemonById.get(a.daemon)
-      const s = status(effectiveAgentStatus(a.status, owning))
+      const s = status(effectiveAgentStatus(a, owning))
       return {
         key: `agent:${a.id}`,
         kind: 'agent',

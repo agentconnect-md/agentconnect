@@ -95,7 +95,7 @@ export default function AgentsView() {
   const onlineCount = agents.filter(
     (a) =>
       effectiveAgentStatus(
-        a.status,
+        a,
         daemons.find((d) => d.daemonId === a.daemon)
       ) === 'online'
   ).length
@@ -139,7 +139,7 @@ export default function AgentsView() {
     if (scope === 'mine' && (!me?.userId || a.createdBy !== me.userId)) return false
     if (seg === 'all') return true
     const eff = effectiveAgentStatus(
-      a.status,
+      a,
       daemons.find((d) => d.daemonId === a.daemon)
     )
     // A lifecycle transition is a temporary processing pause, not an outage.
@@ -152,7 +152,7 @@ export default function AgentsView() {
   const statusRank = (a: Agent) =>
     STATUS_RANK[
       effectiveAgentStatus(
-        a.status,
+        a,
         daemons.find((d) => d.daemonId === a.daemon)
       )
     ] ?? 3
@@ -379,7 +379,7 @@ export default function AgentsView() {
             {filtered.map((a, i) => {
               const owning = daemons.find((d) => d.daemonId === a.daemon)
               const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
-              const s = status(effectiveAgentStatus(a.status, owning))
+              const s = status(effectiveAgentStatus(a, owning))
               const agentInts = integrations.filter((int) => int.agentId === a.id)
               const first = agentInts[0]
               const n24 = sessions24h(a.id)
@@ -541,7 +541,7 @@ export default function AgentsView() {
           visible.map((a) => {
             const owning = daemons.find((d) => d.daemonId === a.daemon)
             const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
-            const s = status(effectiveAgentStatus(a.status, owning))
+            const s = status(effectiveAgentStatus(a, owning))
             const sessionCount = sessions24h(a.id)
             // Keep the resolved name for sorting, assistive text, and the avatar's hint.
             const creatorName = creatorText(a)

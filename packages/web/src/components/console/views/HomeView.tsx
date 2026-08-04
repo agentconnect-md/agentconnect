@@ -122,7 +122,7 @@ export default function HomeView() {
   // runtime is signed in (its last probe wasn't rejected with ACP auth-required).
   const isOnline = (a: Agent) =>
     effectiveAgentStatus(
-      a.status,
+      a,
       daemons.find((d) => d.daemonId === a.daemon)
     ) === 'online'
   const authRequiredFor = (a: Agent) =>

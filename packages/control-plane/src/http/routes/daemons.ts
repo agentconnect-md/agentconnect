@@ -316,6 +316,14 @@ export function daemonRoutes(deps: HttpDeps) {
         // Capture the placed agents BEFORE the delete: the agent FK is SetNull,
         // so their placement silently clears with the row.
         const placedAgents = await deps.repos.agent.listForDaemon(DaemonId(req.params.id))
+        // Unplace them EXPLICITLY first. The FK's SetNull clears `daemonId` in the DB
+        // but never touches `Agent.status` — `setPlacement` is the only writer that
+        // pairs the two — so a delete alone leaves `daemonId: null, status: 'active'`
+        // and every reader (console badge, `status !== 'active'` gates) sees a live
+        // agent with nowhere to run. Going through the repo also revokes the agents'
+        // webchat MCP delegations and bumps their hook dispatchRevision, exactly as an
+        // operator-initiated unplacement would.
+        for (const a of placedAgents) await deps.repos.agent.setPlacement(a.id, null)
         await deps.registry.remove(DaemonId(req.params.id))
         // The daemon (and its FK-cascaded keys) is gone — tell relays to drop it (§9).
         deps.relayControl.daemonRevoke(req.params.id)

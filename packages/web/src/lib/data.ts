@@ -59,15 +59,24 @@ export function presentedDaemonStatus(daemon: Pick<DaemonRow, 'status' | 'lifecy
 // remain intact while the daemon drains and relaunches, so carry that explicit amber
 // transition onto the agent instead of flashing it red. When the owning daemon isn't
 // in the fleet (e.g. the demo agents' placeholder daemons), trust the stored status.
+//
+// An UNPLACED agent is offline regardless of what the stored status says: no daemon
+// means nothing is hosting it. That is a deliberate belt-and-braces read — the CP is
+// supposed to flip `status` on unplacement, but any path that clears the placement
+// without writing the status (a bare FK SetNull, say) would otherwise paint a green
+// dot on an agent that cannot run.
 export function effectiveAgentStatus(
-  agentStatus: StatusKey,
+  agent: Pick<Agent, 'status' | 'daemon'>,
   owningDaemon: Pick<DaemonRow, 'status' | 'lifecycleStatus'> | undefined
 ): StatusKey {
-  if (agentStatus === 'online' && owningDaemon !== undefined) {
-    if (owningDaemon.lifecycleStatus) return owningDaemon.lifecycleStatus
-    if (owningDaemon.status !== 'online') return 'offline'
+  if (agent.status === 'online') {
+    if (agent.daemon === '—') return 'offline'
+    if (owningDaemon !== undefined) {
+      if (owningDaemon.lifecycleStatus) return owningDaemon.lifecycleStatus
+      if (owningDaemon.status !== 'online') return 'offline'
+    }
   }
-  return agentStatus
+  return agent.status
 }
 
 // "Placed" = the agent has a daemon AND a runtime, so it can actually run. Every org
