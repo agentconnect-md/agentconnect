@@ -88,6 +88,9 @@ describe('WorkspaceScopePicker', () => {
     const trigger = container.querySelector<HTMLButtonElement>('[aria-label^="Workspace checkout:"]')!
     expect(trigger.textContent).toContain('PR #576')
     expect(trigger.textContent).toContain('fix(auth): make selected visibility explicit')
+    expect(trigger.querySelector('[title]')?.getAttribute('title')).toBe(
+      'PR #576: fix(auth): make selected visibility explicit · 3:09 PM'
+    )
     expect(container.querySelector('a')?.getAttribute('href')).toBe('/agentconnect/sessions/session-576')
 
     await act(async () => trigger.click())
@@ -97,12 +100,13 @@ describe('WorkspaceScopePicker', () => {
     expect(menu.textContent).not.toContain('Primary checkout')
     expect(menu.textContent).toContain('Worktrees·2')
     expect(menu.textContent).toContain('PR #568')
-    expect(menu.textContent).toContain('3:10 PM')
+    expect(menu.textContent).not.toContain('3:10 PM')
     expect(menu.textContent).toContain('Showing 2 recent worktrees')
 
     const other = Array.from(menu.querySelectorAll<HTMLButtonElement>('[data-workspace-choice]')).find((choice) =>
       choice.textContent?.includes('PR #568')
     )!
+    expect(other.title).toBe('PR #568: bind the conversation audience · 3:10 PM')
     await act(async () => other.click())
     expect(onChange).toHaveBeenCalledWith('session-568')
     expect(container.querySelector('[role="menu"]')).toBeNull()
