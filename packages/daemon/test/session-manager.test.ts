@@ -1336,6 +1336,111 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  // ── cursorOrdering, per platform (platforms/message-ordering.ts) ──
+  // Both cases below run the SAME activation with the SAME message ids on two
+  // platforms, so the only variable is whether the platform's ids carry a native
+  // order. Slack's do; every other platform's are opaque, and the opaque arm is
+  // the fail-closed default a future platform inherits until it registers one.
+
+  /** One activation shape: open a session, plant two peer rows whose text order
+   *  disagrees with their instant order, then trigger. Returns the assembled
+   *  prompt and the read cursor the turn left behind. */
+  async function orderingRun(platform: string, channel: string, thread: string) {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const at = (ts: string, over: Record<string, unknown> = {}) =>
+      msg({ platform, channel, thread, ts, msgId: `${platform}:${channel}:${ts}`, ...over })
+
+    await sm.handle('bot-a', at('10.0', { text: 'opening request' }))
+    // '9.0' is the OLDER instant but sorts LAST as text, so the store hands the
+    // gap back in an order only a native comparator can fix.
+    for (const [ts, text] of [
+      ['11.0', 'later reply'],
+      ['9.0', 'earlier reply']
+    ]) {
+      store.appendTranscript({
+        channel,
+        thread,
+        ts: ts!,
+        sender: 'U2',
+        recipient: 'bot-a',
+        kind: 'text',
+        text: text!
+      })
+    }
+    const out = await sm.handle('bot-a', at('20.0', { text: 'trigger' }))
+    const cursor = store.getSession(sessionKey(platform, channel, thread, 'bot-a'))?.lastDeliveredTs
+    store.close()
+    return { prompt: out.blocks.map((b: any) => b.text ?? '').join('\n'), cursor }
+  }
+
+  it('re-sorts the replay gap into native order on Slack and leaves opaque ids alone', async () => {
+    const slack = await orderingRun('slack', 'C1', '100.1')
+    expect(slack.prompt.indexOf('earlier reply')).toBeLessThan(slack.prompt.indexOf('later reply'))
+    // Slack advances through the newest row of the stable window it just consumed.
+    expect(slack.cursor).toBe('20.0')
+
+    // No native order ⇒ nothing is re-sorted: the store's text order survives
+    // verbatim, and the cursor advances to the trigger itself.
+    const telegram = await orderingRun('telegram', '42', 'tg:1')
+    expect(telegram.prompt.indexOf('later reply')).toBeLessThan(telegram.prompt.indexOf('earlier reply'))
+    expect(telegram.cursor).toBe('20.0')
+  })
+
+  it('discards a coordinate-less read cursor only where ids order natively', async () => {
+    /** A cron turn persists its synthetic trace id as the cursor, then a real
+     *  follow-up arrives. `zzz-` makes the synthetic id sort AFTER every numeric
+     *  ts as text, so a cursor that is honoured hides the whole thread. */
+    const run = async (platform: string, channel: string, thread: string) => {
+      const store = newStore()
+      const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: vi.fn(() => true) } as any
+      const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+      await sm.handle(
+        'bot-a',
+        msg({
+          platform,
+          channel,
+          thread,
+          msgId: 'cron:daily:zzz-trace',
+          traceId: 'zzz-trace',
+          source: 'cron',
+          text: 'scheduled task'
+        })
+      )
+      const key = sessionKey(platform, channel, thread, 'bot-a')
+      expect(store.getSession(key)?.lastDeliveredTs).toBe('zzz-trace')
+      store.appendTranscript({
+        channel,
+        thread,
+        ts: '5.0',
+        sender: 'U2',
+        recipient: 'bot-a',
+        kind: 'text',
+        text: 'context row'
+      })
+      const out = await sm.handle(
+        'bot-a',
+        msg({ platform, channel, thread, ts: '6.0', msgId: `${platform}:${channel}:6.0`, text: 'are you sure?' })
+      )
+      store.close()
+      return out.blocks.map((b: any) => b.text ?? '').join('\n')
+    }
+
+    // Slack: the persisted id is not one Slack ever issued, so the cursor is
+    // dropped and the turn runs one bounded catch-up from scratch.
+    const slack = await run('slack', 'C1', '100.100000')
+    expect(slack).toContain('scheduled task')
+    expect(slack).toContain('context row')
+
+    // Telegram: ids are opaque, so no id can be judged "not one this platform
+    // issued" — the cursor is honoured exactly as before this seam.
+    const telegram = await run('telegram', '42', 'tg:1')
+    expect(telegram).not.toContain('scheduled task')
+    expect(telegram).not.toContain('context row')
+    expect(telegram).toContain('are you sure?')
+  })
+
   it('a toAgent+channel wake dedups against the recorded post and keeps a canonical cursor', async () => {
     // Mirrors the real ops → delivery → SessionManager path for
     // `sendMessage({toAgent, channel, thread})`: ops posts a visible message (recordOutbound

@@ -8,6 +8,7 @@
  * previously-unservable rule servable). `agent.id` IS the CP `agentId`.
  */
 import type { Agent, BindMatch, BindRuleConfig, Integration } from '../agents/agent-schema.js'
+import { configuredBotSelfId, integrationCore } from '../platforms/integration-config.js'
 import type { RouteAssign, RouteUpdate } from '@agentconnect.md/protocol'
 
 export type RoutingMatch = BindMatch
@@ -31,45 +32,24 @@ export interface RoutingRule {
   platform?: string
 }
 
-/** Extract the platform-agnostic routing bits from a (discriminated) Integration.
- *  Exported for the daemon's conversation-gating ingress checks (§14). */
+/**
+ * The routing bits of an Integration, with no knowledge of which platform it is.
+ * Exported for the daemon's conversation-gating ingress checks (§14).
+ *
+ * This used to be a four-arm switch on `int.platform` that only ever reached
+ * identically-named fields. §6.4 says those knobs are the CORE ENVELOPE, so this
+ * is an envelope read (`platforms/integration-config.ts`) plus the one genuinely
+ * per-platform value — the bot's own id, which each platform names in its own
+ * vocabulary. Same values as before, and a new platform is now routable without
+ * editing the router.
+ */
 export function integrationRouting(int: Integration): {
   staticBotUserId?: string
   bindRules: BindRuleConfig[]
   mutedChannels: string[]
   gated: boolean
 } {
-  // `mutedChannels` post-dates the schema, so an integration assembled by hand rather
-  // than parsed (a fixture, a caller mapping a partial spec) can reach here without it.
-  // Absent means "nothing muted" — the behaviour before the field existed — and
-  // normalizing once here keeps every reader free of the same defaulting.
-  if (int.platform === 'slack')
-    return {
-      staticBotUserId: int.slack.botUserId,
-      bindRules: int.slack.bindRules,
-      mutedChannels: int.slack.mutedChannels ?? [],
-      gated: int.slack.gated
-    }
-  if (int.platform === 'discord')
-    return {
-      staticBotUserId: int.discord.botUserId,
-      bindRules: int.discord.bindRules,
-      mutedChannels: int.discord.mutedChannels ?? [],
-      gated: int.discord.gated
-    }
-  if (int.platform === 'feishu')
-    return {
-      staticBotUserId: int.feishu.botOpenId,
-      bindRules: int.feishu.bindRules,
-      mutedChannels: int.feishu.mutedChannels ?? [],
-      gated: int.feishu.gated
-    }
-  return {
-    staticBotUserId: int.telegram.botUserId,
-    bindRules: int.telegram.bindRules,
-    mutedChannels: int.telegram.mutedChannels ?? [],
-    gated: int.telegram.gated
-  }
+  return { staticBotUserId: configuredBotSelfId(int), ...integrationCore(int) }
 }
 
 /**
@@ -120,6 +100,11 @@ export function resolveAgentIntegration(
   // integration; otherwise the turn's output posts through the wrong platform's client
   // (e.g. a Telegram chat id sent via the Slack client → channel_not_found). Fall back to
   // the first integration only when the platform is unspecified or unmatched.
+  //
+  // This comparison STAYS platform-keyed on purpose (audit Appendix A,
+  // router/routing-rule.ts:124, classified "routing"): it is a platform-vs-platform
+  // equality with no literal in it, so it is already correct for every platform an
+  // open `PlatformId` can name and there is nothing here to extract.
   const int =
     (platform ? agent?.integrations.find((i) => i.platform === platform) : undefined) ?? agent?.integrations[0]
   if (!int) return null
