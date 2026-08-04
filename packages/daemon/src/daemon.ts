@@ -3706,7 +3706,7 @@ export class Daemon {
         group,
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
-          this.channelNameResolver?.noteChannel(conn, msg.channel, msg.sender.id)
+          this.channelNameResolver?.noteMessage(conn, msg)
           this.onInbound(msg, this.srcIntegrationIds(conn))
         },
         onBotAddedToChat: (chat) => {

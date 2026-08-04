@@ -116,6 +116,12 @@ function quotedSenderLabel(sender: TelegramUser | undefined): string | undefined
   return sender.username ? `@${sender.username}` : String(sender.id)
 }
 
+function telegramSenderName(sender: TelegramUser | undefined): string | undefined {
+  if (!sender) return undefined
+  if (sender.username) return `@${sender.username}`
+  return [sender.first_name, sender.last_name].filter(Boolean).join(' ') || undefined
+}
+
 export function quotedFromTelegramReply(message: TelegramMessage): QuotedMessage | undefined {
   const source = message.reply_to_message
   if (!source) return undefined
@@ -183,6 +189,7 @@ export function normalizeTelegramMessage(
   const isForumTopic = message.is_topic_message === true
   const replyTo = message.reply_to_message?.message_id != null ? String(message.reply_to_message.message_id) : undefined
   const quoted = quotedFromTelegramReply(message)
+  const senderName = telegramSenderName(message.from)
 
   return {
     msgId: `telegram:${message.chat.id}:${message.message_id}`,
@@ -201,7 +208,8 @@ export function normalizeTelegramMessage(
     ...(quoted !== undefined ? { quoted } : {}),
     sender: {
       id: message.from ? String(message.from.id) : 'unknown',
-      isBot: Boolean(message.from?.is_bot)
+      isBot: Boolean(message.from?.is_bot),
+      ...(senderName ? { name: senderName } : {})
     },
     text,
     mentionedBots: extractTelegramMentions(text, entities),

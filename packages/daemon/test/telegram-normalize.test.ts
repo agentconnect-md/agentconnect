@@ -22,7 +22,7 @@ describe('normalizeTelegramMessage', () => {
       source: 'user',
       platform: 'telegram',
       channel: '-100123',
-      sender: { id: '42', isBot: false },
+      sender: { id: '42', isBot: false, name: '@ada' },
       text: 'hello',
       mentionedBots: [],
       isDm: false
@@ -39,7 +39,15 @@ describe('normalizeTelegramMessage', () => {
 
   it('marks a bot sender as isBot', () => {
     const n = normalizeTelegramMessage(msg({ from: { id: 7, is_bot: true, username: 'somebot' } }), ctx)
-    expect(n.sender).toEqual({ id: '7', isBot: true })
+    expect(n.sender).toEqual({ id: '7', isBot: true, name: '@somebot' })
+  })
+
+  it('falls back to the sender first and last name when there is no username', () => {
+    const n = normalizeTelegramMessage(
+      msg({ from: { id: 42, is_bot: false, first_name: 'Ada', last_name: 'Lovelace' } }),
+      ctx
+    )
+    expect(n.sender).toEqual({ id: '42', isBot: false, name: 'Ada Lovelace' })
   })
 
   it('carries a forum-topic message_thread_id in the generic topicId (thread left to the daemon)', () => {

@@ -160,11 +160,22 @@ describe('ChannelNameResolver', () => {
     expect(avatars.get('U7')).toBe('https://avatars.example.test/dana.png')
   })
 
+  it('noteMessage rate-limits an observed sender name without a profile lookup', async () => {
+    const save = vi.fn()
+    const src = source({ id: 'C1', name: 'general' })
+    const r = new ChannelNameResolver(save)
+    r.noteMessage(src, { channel: 'C1', sender: { id: 'U9', isBot: false, name: '@dana' } })
+    r.noteMessage(src, { channel: 'C1', sender: { id: 'U9', isBot: false, name: '@dana' } })
+    await flush()
+    expect(save.mock.calls.filter(([id]) => id === 'U9')).toEqual([['U9', '@dana']])
+    expect(src.getUserProfile).not.toHaveBeenCalled()
+  })
+
   it('noteMessage skips a bot sender (agent frames are labelled by agentId upstream)', async () => {
     const saved = new Map<string, string>()
     const src = source({ id: 'C1', name: 'general' })
     const r = new ChannelNameResolver((id, name) => saved.set(id, name))
-    r.noteMessage(src, { channel: 'C1', sender: { id: 'B1', isBot: true } })
+    r.noteMessage(src, { channel: 'C1', sender: { id: 'B1', isBot: true, name: '@bot' } })
     await flush()
     expect(src.getUserProfile).not.toHaveBeenCalled()
     expect(saved.has('B1')).toBe(false)

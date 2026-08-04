@@ -70,8 +70,10 @@ export interface ChannelNameResolverOpts {
 }
 
 export class ChannelNameResolver {
-  /** channel id → epoch ms until which we won't re-attempt a lookup. */
+  /** Platform id → epoch ms until which we won't re-attempt a lookup. */
   private nextAttemptAt = new Map<string, number>()
+  /** Inline names use a separate TTL namespace because a channel and user may share an id. */
+  private observedNameNextSaveAt = new Map<string, number>()
   private saveScope?: (id: string, scope: ResolvedChannelScope) => void
   private saveAvatar?: (source: ChannelInfoSource, id: string, avatarUrl: string) => void
   private log?: Logger
@@ -105,25 +107,31 @@ export class ChannelNameResolver {
    */
   noteMessage(
     src: ChannelInfoSource,
-    msg: { channel: string; sender: { id: string; isBot: boolean }; mentionedUserIds?: string[] }
+    msg: { channel: string; sender: { id: string; isBot: boolean; name?: string }; mentionedUserIds?: string[] }
   ): void {
     void this.resolveChannel(src, msg.channel, msg.sender.id)
-    if (!msg.sender.isBot) void this.resolveUser(src, msg.sender.id)
+    if (!msg.sender.isBot) {
+      if (msg.sender.name) {
+        if (this.claim(msg.sender.id, this.observedNameNextSaveAt)) this.save(msg.sender.id, msg.sender.name)
+      } else {
+        void this.resolveUser(src, msg.sender.id)
+      }
+    }
     for (const id of msg.mentionedUserIds ?? []) void this.resolveUser(src, id)
   }
 
-  private claim(id: string): boolean {
-    const at = this.nextAttemptAt.get(id)
+  private claim(id: string, attempts = this.nextAttemptAt): boolean {
+    const at = attempts.get(id)
     if (at !== undefined && this.now() < at) return false
     // Mark before the async call so concurrent messages dedup in-flight lookups.
     // Re-inserting moves the id to the tail so Map insertion order stays LRU-ish.
-    this.nextAttemptAt.delete(id)
-    this.nextAttemptAt.set(id, this.now() + OK_TTL_MS)
+    attempts.delete(id)
+    attempts.set(id, this.now() + OK_TTL_MS)
     // Bound the cache by evicting the oldest entries — never a full clear, which would
     // drop every TTL at once and burst-re-resolve against the platform API.
-    for (const key of this.nextAttemptAt.keys()) {
-      if (this.nextAttemptAt.size <= MAX_TRACKED_IDS) break
-      this.nextAttemptAt.delete(key)
+    for (const key of attempts.keys()) {
+      if (attempts.size <= MAX_TRACKED_IDS) break
+      attempts.delete(key)
     }
     return true
   }
