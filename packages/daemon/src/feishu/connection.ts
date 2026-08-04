@@ -10,6 +10,7 @@ import type {
   WireFeishuCardActionTarget
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
@@ -72,17 +73,21 @@ export function consolidateFeishu(agents: Agent[]): Map<string, ConsolidatedFeis
   for (const a of agents) {
     for (const int of a.integrations) {
       if (int.platform !== 'feishu') continue
-      const k = int.feishu.appId
+      // §6.4: config validated by this platform's module schema; invalid ⇒ no
+      // connection. The ingress mode is a core-envelope read.
+      const feishu = platformIntegrationConfig('feishu', int)
+      if (!feishu) continue
+      const k = feishu.appId
       const g = groups.get(k) ?? {
         appId: k,
-        appSecret: int.feishu.appSecret,
-        mode: int.feishu.mode,
-        region: int.feishu.region,
-        ...(int.feishu.botOpenId ? { botOpenId: int.feishu.botOpenId } : {}),
+        appSecret: feishu.appSecret,
+        mode: integrationCore(int).mode,
+        region: feishu.region,
+        ...(feishu.botOpenId ? { botOpenId: feishu.botOpenId } : {}),
         integrations: []
       }
       // A later integration on the same app may carry the botOpenId the first lacked.
-      if (!g.botOpenId && int.feishu.botOpenId) g.botOpenId = int.feishu.botOpenId
+      if (!g.botOpenId && feishu.botOpenId) g.botOpenId = feishu.botOpenId
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)
     }

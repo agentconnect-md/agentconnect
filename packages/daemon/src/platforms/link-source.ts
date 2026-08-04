@@ -24,9 +24,9 @@ const SOURCES = new Map<string, LinkSource>([
   [
     'feishu',
     (integration) => {
-      // The integration's own config block (legacy disk shape until the emission
-      // flip); structurally read so this file needs no agent-schema import.
-      const feishu = (integration as { feishu?: { region?: string } } | undefined)?.feishu
+      // The integration's own opaque config payload (§6.4 flat shape);
+      // structurally read so this file needs no agent-schema import.
+      const feishu = (integration as { config?: { region?: string } } | undefined)?.config
       return feishu?.region
     }
   ]

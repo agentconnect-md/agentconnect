@@ -13,7 +13,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AgentSpec, CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
+import type { AgentSpec, CronUpsert } from '@agentconnect.md/protocol'
 import {
   agentRemovalTombstones,
   archiveAgent,
@@ -30,7 +30,6 @@ import {
   stagedAgentIds,
   writeAgentSpec
 } from '../src/agents/write-agent.js'
-import { writeIntegrationSpec } from '../src/agents/write-integration.js'
 import { writeCronDef } from '../src/agents/write-cron.js'
 
 const deps = { knownRuntimes: ['claude', 'codex'] }
@@ -646,7 +645,7 @@ describe('writeAgentSpec — create (no agent.json)', () => {
     expect(warn).toHaveBeenCalledOnce()
   })
 
-  it.skipIf(process.platform === 'win32')('repairs legacy modes when an integration rewrites agent.json', () => {
+  it.skipIf(process.platform === 'win32')('repairs legacy modes when a dependent write rewrites agent.json', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {
       id: 'bot-a',
@@ -658,21 +657,19 @@ describe('writeAgentSpec — create (no agent.json)', () => {
     chmodSync(join(dir, 'bot-a'), 0o755)
     chmodSync(file, 0o644)
 
+    // CP integrations stopped being disk state (#599); the cron write is the
+    // remaining CP-dependent path that rewrites agent.json in place.
     expect(
-      writeIntegrationSpec(
+      writeCronDef(
         dir,
         {
-          integrationId: 'int-a',
+          cronId: 'cron-a',
           agentId: 'bot-a',
-          platform: 'slack',
-          config: {
-            mode: 'direct',
-            shareable: false,
-            botToken: 'xoxb-secret',
-            appToken: 'xapp-secret',
-            bindRules: []
-          }
-        },
+          schedule: '* * * * *',
+          timezone: 'UTC',
+          trigger: 'tick',
+          enabled: true
+        } as never,
         {}
       )
     ).toBe(true)
@@ -767,8 +764,8 @@ describe('cold-move archive', () => {
       runtime: 'claude',
       workspace: { mode: 'from-scratch', path: './workspace' },
       integrations: [
-        { id: 'int-current', platform: 'slack', slack: { botToken: 'current', appToken: 'current' } },
-        { id: 'int-stale', platform: 'slack', slack: { botToken: 'stale', appToken: 'stale' } }
+        { id: 'int-current', platform: 'slack', config: { botToken: 'current', appToken: 'current' } },
+        { id: 'int-stale', platform: 'slack', config: { botToken: 'stale', appToken: 'stale' } }
       ],
       crons: [
         { id: 'cron-current', schedule: '* * * * *', trigger: 'current', origin: 'cp' },
@@ -788,7 +785,7 @@ describe('cold-move archive', () => {
     expect((raw.crons as Array<{ id: string }>).map((item) => item.id)).toEqual(['cron-current', 'cron-local'])
   })
 
-  it('authoritative bundle writes overwrite same-id stale values before exact pruning', () => {
+  it('detach scrubs credentials; activation re-writes crons and exact-sets disk integrations to none', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
     const file = seedAgent(dir, 'bot-a', {
       id: 'bot-a',
@@ -800,27 +797,21 @@ describe('cold-move archive', () => {
         {
           id: 'int-current',
           platform: 'slack',
-          slack: { mode: 'direct', botToken: 'old-secret', appToken: 'old-app' }
+          core: { mode: 'direct' },
+          config: { botToken: 'old-secret', appToken: 'old-app' }
         },
-        { id: 'int-stale', platform: 'slack', slack: { mode: 'direct', botToken: 'stale', appToken: 'stale' } }
+        {
+          id: 'int-stale',
+          platform: 'slack',
+          core: { mode: 'direct' },
+          config: { botToken: 'stale', appToken: 'stale' }
+        }
       ],
       crons: [
         { id: 'cron-current', schedule: '* * * * *', trigger: 'old-trigger', origin: 'cp' },
         { id: 'cron-stale', schedule: '* * * * *', trigger: 'stale-trigger', origin: 'cp' }
       ]
     })
-    const integration = {
-      integrationId: 'int-current',
-      agentId: 'bot-a',
-      platform: 'slack',
-      config: {
-        mode: 'direct',
-        botToken: 'new-secret',
-        appToken: 'new-app',
-        appId: 'A123',
-        bindRules: []
-      }
-    } as IntegrationSpec
     const cron = {
       cronId: 'cron-current',
       agentId: 'bot-a',
@@ -843,7 +834,8 @@ describe('cold-move archive', () => {
     legacy.integrations = {
       id: 'legacy',
       platform: 'slack',
-      slack: { mode: 'direct', botToken: 'legacy-secret', appToken: 'legacy' }
+      core: { mode: 'direct' },
+      config: { botToken: 'legacy-secret', appToken: 'legacy' }
     }
     legacy.crons = [
       { id: 'legacy-cp', schedule: '* * * * *', trigger: 'stale', origin: 'cp' },
@@ -857,35 +849,18 @@ describe('cold-move archive', () => {
       expect.objectContaining({ id: 'legacy-local' })
     ])
     // AgentActivate's bundle writes the agent spec first; this restores the old
-    // archive while it is still hidden behind the daemon's staging gate.
+    // archive while it is still hidden behind the daemon's staging gate. CP
+    // integrations are memory-only (#599) — the move bundle re-upserts them into
+    // the registry, so the disk exact-set is integration-free by construction.
     writeAgentSpec(dir, 'bot-a', baseSpec({ name: 'bot-a', runtime: 'claude' }), deps)
-    expect(writeIntegrationSpec(dir, integration, {})).toBe(true)
     expect(writeCronDef(dir, cron, {})).toBe(true)
     pruneMovedAgentDependents(dir, 'bot-a', {
-      integrationIds: [integration.integrationId],
+      integrationIds: [],
       cronIds: [cron.cronId]
     })
 
     const raw = readJson(file)
-    expect(raw.integrations).toEqual([
-      {
-        id: 'int-current',
-        origin: 'cp',
-        platform: 'slack',
-        slack: {
-          mode: 'direct',
-          // The per-platform wire schema fills the defaulted knobs at the
-          // consumer parse (envelope reader) — they now always reach disk.
-          shareable: false,
-          botToken: 'new-secret',
-          appToken: 'new-app',
-          appId: 'A123',
-          bindRules: [],
-          mutedChannels: [],
-          gated: false
-        }
-      }
-    ])
+    expect(raw.integrations).toEqual([])
     expect(raw.crons).toEqual([
       {
         id: 'legacy-local',
@@ -934,86 +909,6 @@ describe('cold-move archive', () => {
 
     expect(archiveAgent(dir, 'bot-a')).toBe('archived')
     expect(existsSync(join(residue, 'agent', 'agent.json'))).toBe(true)
-  })
-})
-
-describe('writeIntegrationSpec §6.4 envelope reader (legacy retired)', () => {
-  const AGENT = '33333333-3333-4333-8333-333333333333'
-  const INT = '66666666-6666-4666-8666-666666666666'
-  const seeded = () => {
-    const dir = mkdtempSync(join(tmpdir(), 'ac-dualshape-'))
-    seedAgent(dir, 'bot-a', {
-      id: AGENT,
-      name: 'bot-a',
-      status: 'active',
-      runtime: 'claude',
-      workspace: { mode: 'from-scratch', path: 'workspace' },
-      integrations: []
-    })
-    return dir
-  }
-  const telegram = { botToken: '12345:AAA', bindRules: [], mutedChannels: [], gated: false }
-  const disk = (dir: string) =>
-    (readJson(join(dir, 'bot-a', 'agent.json')).integrations as Record<string, unknown>[])[0]
-
-  it('an envelope spec folds to the pre-envelope on-disk shape (agent.json unchanged)', () => {
-    const dir = seeded()
-    writeIntegrationSpec(
-      dir,
-      {
-        integrationId: INT,
-        agentId: AGENT,
-        platform: 'telegram',
-        core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
-        config: telegram
-      } as never,
-      {}
-    )
-    // The DISK shape is frozen (#516): the wire envelope folds back into the
-    // nested per-platform block everything downstream of agent.json reads.
-    expect(disk(dir)).toMatchObject({ id: INT, platform: 'telegram', telegram: { botToken: telegram.botToken } })
-  })
-
-  it('core overrides the routing knobs wherever present', () => {
-    const dir = seeded()
-    writeIntegrationSpec(
-      dir,
-      {
-        integrationId: INT,
-        agentId: AGENT,
-        platform: 'telegram',
-        core: { mode: 'direct', bindRules: [], mutedChannels: ['C_OFF'], gated: true },
-        config: telegram
-      } as never,
-      {}
-    )
-    expect(disk(dir)).toMatchObject({ telegram: { gated: true, mutedChannels: ['C_OFF'] } })
-  })
-
-  it('a LEGACY-only spec (retired nested block, no config) is refused, not read', () => {
-    // An emitter this old predates §6.4's dual emission entirely — the reader
-    // refuses (warn + skip) and the CP re-sends on its next push.
-    const dir = seeded()
-    const warns: string[] = []
-    const ok = writeIntegrationSpec(
-      dir,
-      { integrationId: INT, agentId: AGENT, platform: 'telegram', telegram } as never,
-      { warn: (m) => warns.push(m) }
-    )
-    expect(ok).toBe(false)
-    expect(warns[0]).toContain('no usable platform payload')
-    expect(readJson(join(dir, 'bot-a', 'agent.json')).integrations).toEqual([])
-  })
-
-  it('a spec with no payload at all is refused (warn + not persisted)', () => {
-    const dir = seeded()
-    const warns: string[] = []
-    const ok = writeIntegrationSpec(dir, { integrationId: INT, agentId: AGENT, platform: 'telegram' } as never, {
-      warn: (m) => warns.push(m)
-    })
-    expect(ok).toBe(false)
-    expect(warns[0]).toContain('no usable platform payload')
-    expect(readJson(join(dir, 'bot-a', 'agent.json')).integrations).toEqual([])
   })
 })
 

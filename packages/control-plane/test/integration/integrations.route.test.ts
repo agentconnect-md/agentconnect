@@ -617,8 +617,8 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(spy.upserts).toHaveLength(1)
     const upsert = spy.upserts[0]!.u
     if (upsert.platform !== 'feishu') throw new Error('expected Feishu upsert')
+    expect(upsert.core).toMatchObject({ mode: 'shared' })
     expect(upsert.config).toMatchObject({
-      mode: 'shared',
       appId: 'cli_http_app',
       appSecret: 'app-secret',
       botOpenId: 'ou_http_bot',

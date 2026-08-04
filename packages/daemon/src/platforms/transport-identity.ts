@@ -15,22 +15,24 @@
  *    rotation, so it prefers the platform's own tenant id and falls back to a
  *    scope minted once per integration and persisted by core.
  *
- * Both read the integration's legacy disk-shape config blocks structurally —
- * the same S1b decision (#516) that froze that shape until the emission flip is
- * why these reads belong in a platform strategy and not in core.
+ * Both read the integration's §6.4 envelope + opaque `config` structurally
+ * (`{ core, config }` since the S3 flatten) — which credential fields exist in
+ * a platform's payload is that platform's own vocabulary, which is why these
+ * reads belong in a platform strategy and not in core.
  */
 
 interface SlackConfig {
-  slack: { mode?: string; botToken: string; appToken?: string }
+  core?: { mode?: string }
+  config?: { botToken: string; appToken?: string }
 }
 interface TelegramConfig {
-  telegram: { botToken: string }
+  config?: { botToken: string }
 }
 interface DiscordConfig {
-  discord: { botToken: string }
+  config?: { botToken: string }
 }
 interface FeishuConfig {
-  feishu: { region: string; appId: string }
+  config?: { region?: string; appId: string }
 }
 
 /** The stable public BotFather bot-id prefix, or undefined for non-standard
@@ -40,13 +42,14 @@ function telegramBotId(botToken: string): string | undefined {
   return /^\d+$/.test(botId ?? '') ? botId : undefined
 }
 
-const CONNECTION_IDENTITY = new Map<string, (integration: unknown) => string>([
+const CONNECTION_IDENTITY = new Map<string, (integration: unknown) => string | undefined>([
   // A shared bot has no app token to key on; a socket integration keys on it.
   [
     'slack',
     (i) => {
-      const slack = (i as SlackConfig).slack
-      return slack.mode === 'shared' ? slack.botToken : (slack.appToken ?? slack.botToken)
+      const { core, config } = i as SlackConfig
+      if (!config) return undefined
+      return core?.mode === 'shared' ? config.botToken : (config.appToken ?? config.botToken)
     }
   ],
   // The bot-id prefix survives a secret rotation; non-standard tokens fall back
@@ -54,23 +57,24 @@ const CONNECTION_IDENTITY = new Map<string, (integration: unknown) => string>([
   [
     'telegram',
     (i) => {
-      const token = (i as TelegramConfig).telegram.botToken
-      return telegramBotId(token) ?? token
+      const token = (i as TelegramConfig).config?.botToken
+      return token === undefined ? undefined : (telegramBotId(token) ?? token)
     }
   ],
-  ['discord', (i) => (i as DiscordConfig).discord.botToken],
+  ['discord', (i) => (i as DiscordConfig).config?.botToken],
   [
     'feishu',
     (i) => {
-      const feishu = (i as FeishuConfig).feishu
-      return `${feishu.region}:${feishu.appId}`
+      const feishu = (i as FeishuConfig).config
+      return feishu && `${feishu.region ?? 'feishu'}:${feishu.appId}`
     }
   ]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
  *  hashed by the caller, never persisted raw. Fail-CLOSED default: an
- *  unregistered platform identifies by integration id, so its scope never
+ *  unregistered platform — or an entry whose config payload is missing the
+ *  strategy's credential — identifies by integration id, so its scope never
  *  consolidates across integrations (over-isolating is safe; over-sharing a
  *  scope would merge unrelated conversations). */
 export function connectionIdentityFor(integration: { id: string; platform: string }): string {
@@ -95,16 +99,17 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: unknow
   [
     'telegram',
     (host, i) => {
-      const botId = telegramBotId((i as TelegramConfig).telegram.botToken)
+      const token = (i as TelegramConfig).config?.botToken
+      const botId = token === undefined ? undefined : telegramBotId(token)
       return botId ? `bot${botId}` : host.minted((i as { id: string }).id)
     }
   ],
   // App id + region is the tenant anchor Feishu/Lark exposes to us.
   [
     'feishu',
-    (_host, i) => {
-      const feishu = (i as FeishuConfig).feishu
-      return `${feishu.region}:${feishu.appId}`
+    (host, i) => {
+      const feishu = (i as FeishuConfig).config
+      return feishu ? `${feishu.region ?? 'feishu'}:${feishu.appId}` : host.minted((i as { id: string }).id)
     }
   ]
 ])

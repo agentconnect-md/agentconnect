@@ -21,11 +21,8 @@ function agent(over: Partial<Agent> = {}): Agent {
       {
         id: 'int1',
         platform: 'slack',
-        slack: {
-          botToken: 'x',
-          appToken: 'y',
-          bindRules: [{ match: { kind: 'mention' } }, { channel: 'C1', match: { kind: 'auto' } }]
-        } as any
+        core: { bindRules: [{ match: { kind: 'mention' } }, { channel: 'C1', match: { kind: 'auto' } }] },
+        config: { botToken: 'x', appToken: 'y' } as any
       }
     ],
     output: { mode: 'medium' },
@@ -37,55 +34,56 @@ function agent(over: Partial<Agent> = {}): Agent {
 
 describe('integrationRouting (§6.4 core-envelope read)', () => {
   const bindRules = [{ channel: 'C1', match: { kind: 'mention' as const } }]
-  // One row per platform, each with the SAME core knobs but its own config block
-  // and its own name for the bot's id. The expected values are today's, read from
-  // the four arms this replaced.
-  const cases: { int: Integration; selfId: string }[] = [
+  // One row per platform, each with the SAME core envelope but its own opaque
+  // config payload and its own name for the bot's id. The expected values are
+  // today's, read from the four arms this replaced.
+  const cases: { int: Integration; selfId: string; parsedConfig: Record<string, unknown> }[] = [
     {
       int: {
         id: 'i-slack',
         platform: 'slack',
-        slack: { botToken: 'x', botUserId: 'U-SLACK', bindRules, mutedChannels: ['C9'], gated: true } as any
-      },
-      selfId: 'U-SLACK'
+        core: { mode: 'direct', bindRules, mutedChannels: ['C9'], gated: true },
+        config: { botToken: 'x', appToken: 'y', botUserId: 'U-SLACK' }
+      } as unknown as Integration,
+      selfId: 'U-SLACK',
+      parsedConfig: { botToken: 'x', appToken: 'y', botUserId: 'U-SLACK', shareable: false }
     },
     {
       int: {
         id: 'i-tg',
         platform: 'telegram',
-        telegram: { botToken: 'x', botUserId: 'U-TG', bindRules, mutedChannels: ['C9'], gated: true } as any
-      },
-      selfId: 'U-TG'
+        core: { mode: 'direct', bindRules, mutedChannels: ['C9'], gated: true },
+        config: { botToken: 'x', botUserId: 'U-TG' }
+      } as unknown as Integration,
+      selfId: 'U-TG',
+      parsedConfig: { botToken: 'x', botUserId: 'U-TG' }
     },
     {
       int: {
         id: 'i-dc',
         platform: 'discord',
-        discord: { botToken: 'x', botUserId: 'U-DC', bindRules, mutedChannels: ['C9'], gated: true } as any
-      },
-      selfId: 'U-DC'
+        core: { mode: 'direct', bindRules, mutedChannels: ['C9'], gated: true },
+        config: { botToken: 'x', botUserId: 'U-DC' }
+      } as unknown as Integration,
+      selfId: 'U-DC',
+      parsedConfig: { botToken: 'x', botUserId: 'U-DC' }
     },
     {
       int: {
         id: 'i-fs',
         platform: 'feishu',
+        core: { mode: 'direct', bindRules, mutedChannels: ['C9'], gated: true },
         // Feishu's bot id is an open_id under a DIFFERENT field name — the one
         // knob §6.4 deliberately leaves out of the core envelope.
-        feishu: {
-          appId: 'cli_x',
-          appSecret: 's',
-          botOpenId: 'OU-FS',
-          bindRules,
-          mutedChannels: ['C9'],
-          gated: true
-        } as any
-      },
-      selfId: 'OU-FS'
+        config: { appId: 'cli_x', appSecret: 's', botOpenId: 'OU-FS' }
+      } as unknown as Integration,
+      selfId: 'OU-FS',
+      parsedConfig: { appId: 'cli_x', appSecret: 's', botOpenId: 'OU-FS', region: 'feishu' }
     }
   ]
 
-  it('extracts identical core knobs from every platform config block', () => {
-    for (const { int, selfId } of cases) {
+  it('reads identical core knobs from every platform, and the self id from the module config', () => {
+    for (const { int, selfId, parsedConfig } of cases) {
       expect(integrationRouting(int)).toEqual({
         staticBotUserId: selfId,
         bindRules,
@@ -94,22 +92,58 @@ describe('integrationRouting (§6.4 core-envelope read)', () => {
       })
       // The envelope read and the self-id strategy are separable: core owns one,
       // the platform owns the other.
-      expect(integrationCore(int)).toEqual({ bindRules, mutedChannels: ['C9'], gated: true })
+      expect(integrationCore(int)).toEqual({ mode: 'direct', bindRules, mutedChannels: ['C9'], gated: true })
       expect(configuredBotSelfId(int)).toBe(selfId)
-      expect(integrationConfig(int)).toBe((int as unknown as Record<string, unknown>)[int.platform])
+      // The opaque config is the MODULE-VALIDATED parse (schema defaults applied),
+      // resolved through the platform registry — not the raw stored value.
+      expect(integrationConfig(int)).toEqual(parsedConfig)
     }
+  })
+
+  it('fails closed on an unregistered platform id and on a payload the module schema rejects', () => {
+    const foreign = {
+      id: 'i-x',
+      platform: 'mastodon',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      config: { botToken: 'x' }
+    } as unknown as Integration
+    expect(integrationConfig(foreign)).toBeUndefined()
+    expect(configuredBotSelfId(foreign)).toBeUndefined()
+    // A pre-S3 nested-shape entry parses with its block stripped => no config.
+    const legacy = {
+      id: 'i-legacy',
+      platform: 'slack',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false }
+    } as unknown as Integration
+    expect(integrationConfig(legacy)).toBeUndefined()
+    // Malformed payload (missing the required botToken) => no config, no self id.
+    const malformed = {
+      id: 'i-bad',
+      platform: 'slack',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      config: { botUserId: 'U-ONLY' }
+    } as unknown as Integration
+    expect(integrationConfig(malformed)).toBeUndefined()
+    expect(configuredBotSelfId(malformed)).toBeUndefined()
   })
 
   it('normalizes an absent mutedChannels to empty and an unset bot id to undefined', () => {
     // A hand-assembled integration (fixture / partial spec) never carried the
-    // post-hoc `mutedChannels` field; absent means "nothing muted".
-    const int = { id: 'i', platform: 'slack', slack: { botToken: 'x', bindRules: [] } } as unknown as Integration
+    // post-hoc `mutedChannels` field; absent means "nothing muted". `mode` and
+    // `gated` normalize to their schema defaults for the same reason.
+    const int = {
+      id: 'i',
+      platform: 'slack',
+      core: { bindRules: [] },
+      config: { botToken: 'x' }
+    } as unknown as Integration
     expect(integrationRouting(int)).toEqual({
       staticBotUserId: undefined,
       bindRules: [],
       mutedChannels: [],
-      gated: undefined
+      gated: false
     })
+    expect(integrationCore(int).mode).toBe('direct')
   })
 })
 
@@ -157,7 +191,14 @@ describe('resolveCpRule', () => {
 describe('resolveAgentIntegration', () => {
   it('resolves the first integration + platform; botUserIds overrides the static id', () => {
     const a = agent({
-      integrations: [{ id: 'int1', platform: 'slack', slack: { botUserId: 'STATIC', bindRules: [] } as any }]
+      integrations: [
+        {
+          id: 'int1',
+          platform: 'slack',
+          core: { bindRules: [] },
+          config: { botToken: 'x', botUserId: 'STATIC' } as any
+        }
+      ]
     })
     expect(resolveAgentIntegration(a, { int1: 'B1' })).toEqual({
       integrationId: 'int1',
@@ -180,8 +221,13 @@ describe('resolveAgentIntegration', () => {
     // (Slack) and the Telegram chat id fails with channel_not_found.
     const a = agent({
       integrations: [
-        { id: 'slack1', platform: 'slack', slack: { botUserId: 'BSLACK', bindRules: [] } as any },
-        { id: 'tg1', platform: 'telegram', telegram: { botUserId: 'BTG', bindRules: [] } as any }
+        {
+          id: 'slack1',
+          platform: 'slack',
+          core: { bindRules: [] },
+          config: { botToken: 'x', botUserId: 'BSLACK' } as any
+        },
+        { id: 'tg1', platform: 'telegram', core: { bindRules: [] }, config: { botToken: 'x', botUserId: 'BTG' } as any }
       ]
     })
     expect(resolveAgentIntegration(a, {}, 'telegram')).toMatchObject({ integrationId: 'tg1', platform: 'telegram' })

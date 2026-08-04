@@ -44,11 +44,8 @@ function makeTelegramRoutable(daemon: Daemon) {
     {
       id: 'i-tg',
       platform: 'telegram',
-      telegram: {
-        botToken: '123:abc',
-        botUsername: 'mybot',
-        bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
-      }
+      core: { bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }] },
+      config: { botToken: '123:abc', botUsername: 'mybot' }
     }
   ]
   const conn = {
@@ -71,11 +68,8 @@ function makeTelegramGated(daemon: Daemon) {
     {
       id: 'i-tg',
       platform: 'telegram',
-      telegram: {
-        botToken: '123:abc',
-        bindRules: [],
-        gated: true
-      }
+      core: { bindRules: [], gated: true },
+      config: { botToken: '123:abc' }
     }
   ]
   const conn = {
@@ -175,10 +169,8 @@ describe('Telegram ingress attribution', () => {
       {
         id: 'wrong-tg',
         platform: 'telegram',
-        telegram: {
-          botToken: 'wrong-token',
-          bindRules: [{ match: { kind: 'dm' } }]
-        }
+        core: { bindRules: [{ match: { kind: 'dm' } }] },
+        config: { botToken: 'wrong-token' }
       }
     ]
     ;(daemon as any).agents.set('target', {
@@ -189,11 +181,8 @@ describe('Telegram ingress attribution', () => {
         {
           id: 'target-tg',
           platform: 'telegram',
-          telegram: {
-            botToken: 'target-token',
-            bindRules: [{ channel: '424242', match: { kind: 'dm' } }],
-            gated: true
-          }
+          core: { bindRules: [{ channel: '424242', match: { kind: 'dm' } }], gated: true },
+          config: { botToken: 'target-token' }
         }
       ]
     })
@@ -228,12 +217,14 @@ describe('Telegram ingress attribution', () => {
       {
         id: 'i-a',
         platform: 'telegram',
-        telegram: { botToken: '111:a', bindRules: [{ match: { kind: 'dm' } }] }
+        core: { bindRules: [{ match: { kind: 'dm' } }] },
+        config: { botToken: '111:a' }
       },
       {
         id: 'i-b',
         platform: 'telegram',
-        telegram: { botToken: '222:b', bindRules: [{ match: { kind: 'dm' } }] }
+        core: { bindRules: [{ match: { kind: 'dm' } }] },
+        config: { botToken: '222:b' }
       }
     ]
     const scopeA = (daemon as any).transportScopeForIntegrationIds(['i-a'])
@@ -508,11 +499,8 @@ function makeScopedTelegramPair(daemon: Daemon) {
     {
       id: 'i-a',
       platform: 'telegram',
-      telegram: {
-        botToken: '111:a',
-        botUsername: 'bota',
-        bindRules: [{ match: { kind: 'mention' } }]
-      }
+      core: { bindRules: [{ match: { kind: 'mention' } }] },
+      config: { botToken: '111:a', botUsername: 'bota' }
     }
   ]
   const agentB = {
@@ -523,11 +511,8 @@ function makeScopedTelegramPair(daemon: Daemon) {
       {
         id: 'i-b',
         platform: 'telegram',
-        telegram: {
-          botToken: '222:b',
-          botUsername: 'botb',
-          bindRules: [{ match: { kind: 'mention' } }]
-        }
+        core: { bindRules: [{ match: { kind: 'mention' } }] },
+        config: { botToken: '222:b', botUsername: 'botb' }
       }
     ]
   }

@@ -147,6 +147,7 @@ import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
+import { integrationCore, platformIntegrationConfig } from './platforms/integration-config.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
 import { threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
@@ -7462,7 +7463,9 @@ export class Daemon {
     }
     const integration = agent.integrations.find(
       (candidate) =>
-        candidate.id === msg.integrationId && candidate.platform === 'slack' && candidate.slack.mode === 'shared'
+        candidate.id === msg.integrationId &&
+        candidate.platform === 'slack' &&
+        integrationCore(candidate).mode === 'shared'
     )
     if (!integration) {
       this.log.warn(
@@ -7570,7 +7573,9 @@ export class Daemon {
     }
     const integration = agent.integrations.find(
       (candidate) =>
-        candidate.id === msg.integrationId && candidate.platform === 'feishu' && candidate.feishu.mode === 'shared'
+        candidate.id === msg.integrationId &&
+        candidate.platform === 'feishu' &&
+        integrationCore(candidate).mode === 'shared'
     )
     if (!integration) {
       this.log.warn(
@@ -13631,7 +13636,7 @@ export class Daemon {
     if (!integrationId) return false
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((i) => i.id === integrationId)
-    return int?.platform === 'slack' && int.slack.mode === 'shared'
+    return int?.platform === 'slack' && integrationCore(int).mode === 'shared'
   }
 
   /** Whether this turn's Slack bot is SHAREABLE (multi-agent). Only a shareable bot
@@ -13641,7 +13646,8 @@ export class Daemon {
     if (!integrationId) return false
     const agent = this.agents.get(agentId)
     const int = agent?.integrations.find((i) => i.id === integrationId)
-    return int?.platform === 'slack' && int.slack.mode === 'shared' && int.slack.shareable === true
+    if (int?.platform !== 'slack' || integrationCore(int).mode !== 'shared') return false
+    return platformIntegrationConfig('slack', int)?.shareable === true
   }
 
   /** The Web App console origin (trailing slash stripped): the explicit local `webAppUrl`,

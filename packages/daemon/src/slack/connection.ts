@@ -8,6 +8,7 @@ import {
   normalizeSlackResponseFinalization
 } from '@agentconnect.md/message'
 import type { Agent } from '../agents/agent-schema.js'
+import { integrationCore, platformIntegrationConfig } from '../platforms/integration-config.js'
 import { normalizeSlackEvent, toAttachment, type SlackFile, type SlackMessageEvent } from './normalize.js'
 import type { Attachment, NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
@@ -167,12 +168,17 @@ export function consolidate(agents: Agent[]): Map<string, ConsolidatedGroup> {
   for (const a of agents) {
     for (const int of a.integrations) {
       if (int.platform !== 'slack') continue
-      if (int.slack.mode === 'shared' || !int.slack.appToken) continue
-      const k = int.slack.appToken
-      const appId = int.slack.appId ?? slackAppIdFromAppToken(k)
+      // §6.4: the opaque config is validated by THIS platform's module schema;
+      // an invalid/absent payload fails closed (no socket). The appToken guard
+      // stays the consolidator's own: a hand-authored direct entry may simply
+      // not have one yet (CP-pushed specs are refused at ingest without it).
+      const slack = platformIntegrationConfig('slack', int)
+      if (!slack || integrationCore(int).mode === 'shared' || !slack.appToken) continue
+      const k = slack.appToken
+      const appId = slack.appId ?? slackAppIdFromAppToken(k)
       const g = groups.get(k) ?? {
         appToken: k,
-        botToken: int.slack.botToken,
+        botToken: slack.botToken,
         ...(appId ? { appId } : {}),
         integrations: []
       }
@@ -206,15 +212,17 @@ export function consolidateShared(agents: Agent[]): Map<string, ConsolidatedGrou
   const groups = new Map<string, ConsolidatedGroup>()
   for (const a of agents) {
     for (const int of a.integrations) {
-      if (int.platform !== 'slack' || int.slack.mode !== 'shared') continue
-      const k = int.slack.botToken
+      if (int.platform !== 'slack' || integrationCore(int).mode !== 'shared') continue
+      const slack = platformIntegrationConfig('slack', int)
+      if (!slack) continue
+      const k = slack.botToken
       const g = groups.get(k) ?? {
         appToken: '',
         botToken: k,
-        ...(int.slack.appId ? { appId: int.slack.appId } : {}),
+        ...(slack.appId ? { appId: slack.appId } : {}),
         integrations: []
       }
-      if (!g.appId && int.slack.appId) g.appId = int.slack.appId
+      if (!g.appId && slack.appId) g.appId = slack.appId
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)
     }

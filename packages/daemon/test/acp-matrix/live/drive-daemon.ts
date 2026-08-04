@@ -94,11 +94,8 @@ function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds): string {
         {
           id: INT,
           platform: 'slack',
-          slack: {
-            mode: 'shared',
-            botToken: creds.botToken,
-            bindRules: [{ channel: creds.channel, match: { kind: 'mention' } }]
-          }
+          core: { mode: 'shared', bindRules: [{ channel: creds.channel, match: { kind: 'mention' } }] },
+          config: { botToken: creds.botToken }
         }
       ]
     })

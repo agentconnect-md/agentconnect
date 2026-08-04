@@ -9,6 +9,7 @@ import {
   type ChatInputCommandInteraction
 } from 'discord.js'
 import type { Agent } from '../agents/agent-schema.js'
+import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
@@ -60,7 +61,10 @@ export function consolidateDiscord(agents: Agent[]): Map<string, ConsolidatedDis
   for (const a of agents) {
     for (const int of a.integrations) {
       if (int.platform !== 'discord') continue
-      const k = int.discord.botToken
+      // §6.4: config validated by this platform's module schema; invalid ⇒ no gateway.
+      const discord = platformIntegrationConfig('discord', int)
+      if (!discord) continue
+      const k = discord.botToken
       const g = groups.get(k) ?? { botToken: k, integrations: [] }
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)

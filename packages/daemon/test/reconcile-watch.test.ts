@@ -230,7 +230,8 @@ describe('Daemon.reconcile per-dimension host eviction', () => {
         {
           id: 'int-1',
           platform: 'slack',
-          slack: { botToken: 'xoxb', appToken: 'xapp', bindRules: [{ match: { kind: 'mention' } }] }
+          core: { bindRules: [{ match: { kind: 'mention' } }] },
+          config: { botToken: 'xoxb', appToken: 'xapp' }
         }
       ]
     })
@@ -364,7 +365,9 @@ describe('Daemon.reconcileSlackConnections', () => {
         'bot-shared',
         {
           id: 'bot-shared',
-          integrations: [{ id: 'int-shared', platform: 'slack', slack: { mode: 'shared', botToken: 'xoxb-shared' } }]
+          integrations: [
+            { id: 'int-shared', platform: 'slack', core: { mode: 'shared' }, config: { botToken: 'xoxb-shared' } }
+          ]
         }
       ]
     ])
@@ -402,14 +405,14 @@ describe('Daemon.reconcileSlackConnections', () => {
         'bot-x',
         {
           id: 'bot-x',
-          integrations: [{ id: 'int-1', platform: 'slack', slack: { appToken: 'xapp-B', botToken: 'xoxb-B' } }]
+          integrations: [{ id: 'int-1', platform: 'slack', config: { appToken: 'xapp-B', botToken: 'xoxb-B' } }]
         }
       ],
       [
         'bot-y',
         {
           id: 'bot-y',
-          integrations: [{ id: 'int-other', platform: 'slack', slack: { appToken: 'xapp-B', botToken: 'xoxb-B' } }]
+          integrations: [{ id: 'int-other', platform: 'slack', config: { appToken: 'xapp-B', botToken: 'xoxb-B' } }]
         }
       ]
     ])
@@ -442,7 +445,7 @@ describe('Daemon.reconcileSlackConnections', () => {
         'bot-live',
         {
           id: 'bot-live',
-          integrations: [{ id: 'int-live', platform: 'slack', slack: { appToken: 'xapp-A', botToken: 'xoxb-A' } }]
+          integrations: [{ id: 'int-live', platform: 'slack', config: { appToken: 'xapp-A', botToken: 'xoxb-A' } }]
         }
       ]
     ])
@@ -487,9 +490,9 @@ describe('Daemon.reconcileSlackConnections', () => {
         {
           id: 'bot-live',
           integrations: [
-            { id: 'slack-live', platform: 'slack', slack: { mode: 'shared', botToken: 'xoxb-live' } },
-            { id: 'tg-live', platform: 'telegram', telegram: { botToken: 'tg-live' } },
-            { id: 'dc-live', platform: 'discord', discord: { botToken: 'dc-live' } }
+            { id: 'slack-live', platform: 'slack', core: { mode: 'shared' }, config: { botToken: 'xoxb-live' } },
+            { id: 'tg-live', platform: 'telegram', config: { botToken: 'tg-live' } },
+            { id: 'dc-live', platform: 'discord', config: { botToken: 'dc-live' } }
           ]
         }
       ]
@@ -547,7 +550,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     // cpClient is wired AFTER start() so any backfill emits during start were no-ops.
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
-    const telegramIntegration = { id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } }
+    const telegramIntegration = { id: 'tg-int', platform: 'telegram', config: { botToken: 'tg' } }
     ;(daemon as any).agents = new Map([
       [
         'bot-tg',
@@ -555,7 +558,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
           id: 'bot-tg',
           integrations: [
             telegramIntegration,
-            { id: 'slack-int', platform: 'slack', slack: { appToken: 'a', botToken: 'x' } }
+            { id: 'slack-int', platform: 'slack', config: { appToken: 'a', botToken: 'x' } }
           ]
         }
       ]
@@ -589,7 +592,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
 
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
-    const discordIntegration = { id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }
+    const discordIntegration = { id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }
     ;(daemon as any).agents = new Map([
       [
         'bot-dc',
@@ -630,7 +633,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     const feishuIntegration = {
       id: 'fs-int',
       platform: 'feishu',
-      feishu: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
+      config: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
     }
     const transportScope = (daemon as any).transportScopeForIntegration(feishuIntegration)
     ;(daemon as any).agents = new Map([
@@ -675,13 +678,13 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       id: 'fs-old',
       platform: 'feishu',
       name: 'private-bot',
-      feishu: { appId: 'cli_old', appSecret: 'old-secret', region: 'lark' }
+      config: { appId: 'cli_old', appSecret: 'old-secret', region: 'lark' }
     }
     const newIntegration = {
       id: 'fs-new',
       platform: 'feishu',
       name: 'private-bot',
-      feishu: { appId: 'cli_new', appSecret: 'new-secret', region: 'lark' }
+      config: { appId: 'cli_new', appSecret: 'new-secret', region: 'lark' }
     }
     ;(daemon as any).agents = new Map([['bot-fs', { id: 'bot-fs', integrations: [newIntegration] }]])
     const store = (daemon as any).store
@@ -753,7 +756,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       {
         id: 'fs-int',
         platform: 'feishu',
-        feishu: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
+        config: { appId: 'cli_fs', appSecret: 'secret', region: 'lark' }
       }
     ]
     const dispatch = (daemon as any).dispatch(
@@ -799,7 +802,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     ;(daemon as any).agents = new Map([
-      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
     // Three turns in #general ⇒ three thread channels, each labelled with the enclosing
     // channel — the console showed "#general" three times before the fold.
@@ -832,7 +835,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     ;(daemon as any).agents = new Map([
-      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
     const store = (daemon as any).store
     store.setChannelScope('900777', { isIm: true }, 1)
@@ -859,8 +862,8 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
 
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
-    const telegramA = { id: 'tg-a', platform: 'telegram', telegram: { botToken: '100:a' } }
-    const telegramB = { id: 'tg-b', platform: 'telegram', telegram: { botToken: '200:b' } }
+    const telegramA = { id: 'tg-a', platform: 'telegram', config: { botToken: '100:a' } }
+    const telegramB = { id: 'tg-b', platform: 'telegram', config: { botToken: '200:b' } }
     ;(daemon as any).agents = new Map([
       [
         'bot-tg2',
@@ -908,7 +911,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
         'bot-tg',
         {
           id: 'bot-tg',
-          integrations: [{ id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } }]
+          integrations: [{ id: 'tg-int', platform: 'telegram', config: { botToken: 'tg' } }]
         }
       ]
     ])
@@ -956,7 +959,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
  */
 describe('Daemon.leaveConversation', () => {
   const telegramAgent = (daemon: unknown) => {
-    const integration = { id: 'tg-int', platform: 'telegram', telegram: { botToken: 'tg' } }
+    const integration = { id: 'tg-int', platform: 'telegram', config: { botToken: 'tg' } }
     ;(daemon as any).agents = new Map([['bot-tg', { id: 'bot-tg', integrations: [integration] }]])
     return integration
   }
@@ -1074,7 +1077,7 @@ describe('Daemon.leaveConversation', () => {
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     ;(daemon as any).agents = new Map([
-      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
     ;(daemon as any).channelSnapshots.set('dc-int', {
       channels: [{ id: 'C1', spaceId: 'G1' }],
@@ -1183,7 +1186,7 @@ describe('Daemon.leaveConversation', () => {
     const { daemon } = makeStubDaemon(root1())
     await daemon.start()
     ;(daemon as any).agents = new Map([
-      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
     const leaveSpace = vi.fn()
     ;(daemon as any).connForIntegration = () =>
@@ -1205,7 +1208,7 @@ describe('Daemon.leaveConversation', () => {
     const emit = vi.fn()
     ;(daemon as any).cpClient = { emitIntegrationChannels: emit, stop: vi.fn().mockResolvedValue(undefined) }
     ;(daemon as any).agents = new Map([
-      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', discord: { botToken: 'dc' } }] }]
+      ['bot-dc', { id: 'bot-dc', integrations: [{ id: 'dc-int', platform: 'discord', config: { botToken: 'dc' } }] }]
     ])
     ;(daemon as any).channelSnapshots.set('dc-int', {
       channels: [

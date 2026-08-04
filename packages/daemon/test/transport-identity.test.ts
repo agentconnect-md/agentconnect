@@ -11,26 +11,32 @@ describe('connection identity (transport scope)', () => {
   it('names the credential that identifies one physical connection', () => {
     // A shared Slack bot has no app token to key on; a socket integration keys on it.
     expect(
-      connectionIdentityFor({ id: 'i1', platform: 'slack', slack: { mode: 'shared', botToken: 'xoxb-1' } } as never)
+      connectionIdentityFor({
+        id: 'i1',
+        platform: 'slack',
+        core: { mode: 'shared' },
+        config: { botToken: 'xoxb-1' }
+      } as never)
     ).toBe('xoxb-1')
     expect(
       connectionIdentityFor({
         id: 'i1',
         platform: 'slack',
-        slack: { mode: 'socket', botToken: 'xoxb-1', appToken: 'xapp-1' }
+        core: { mode: 'socket' },
+        config: { botToken: 'xoxb-1', appToken: 'xapp-1' }
       } as never)
     ).toBe('xapp-1')
     // The BotFather bot-id prefix survives a secret rotation…
-    expect(connectionIdentityFor({ id: 'i2', platform: 'telegram', telegram: { botToken: '42:AAff' } } as never)).toBe(
+    expect(connectionIdentityFor({ id: 'i2', platform: 'telegram', config: { botToken: '42:AAff' } } as never)).toBe(
       '42'
     )
     // …non-standard tokens fall back to the full credential.
+    expect(connectionIdentityFor({ id: 'i2', platform: 'telegram', config: { botToken: 'test-token' } } as never)).toBe(
+      'test-token'
+    )
+    expect(connectionIdentityFor({ id: 'i3', platform: 'discord', config: { botToken: 'dt' } } as never)).toBe('dt')
     expect(
-      connectionIdentityFor({ id: 'i2', platform: 'telegram', telegram: { botToken: 'test-token' } } as never)
-    ).toBe('test-token')
-    expect(connectionIdentityFor({ id: 'i3', platform: 'discord', discord: { botToken: 'dt' } } as never)).toBe('dt')
-    expect(
-      connectionIdentityFor({ id: 'i4', platform: 'feishu', feishu: { region: 'lark', appId: 'cli_1' } } as never)
+      connectionIdentityFor({ id: 'i4', platform: 'feishu', config: { region: 'lark', appId: 'cli_1' } } as never)
     ).toBe('lark:cli_1')
   })
 
@@ -46,20 +52,20 @@ describe('tenant scope (durable owner identity)', () => {
     expect(tenantScopeFor(host('T012', 'm1'), { id: 'i1', platform: 'slack' })).toBe('T012')
     expect(tenantScopeFor(host(undefined, 'm1'), { id: 'i1', platform: 'slack' })).toBe('m1')
     expect(
-      tenantScopeFor(host(undefined, 'm2'), { id: 'i2', platform: 'telegram', telegram: { botToken: '42:x' } } as never)
+      tenantScopeFor(host(undefined, 'm2'), { id: 'i2', platform: 'telegram', config: { botToken: '42:x' } } as never)
     ).toBe('bot42')
     expect(
       tenantScopeFor(host(undefined, 'm2'), {
         id: 'i2',
         platform: 'telegram',
-        telegram: { botToken: 'weird' }
+        config: { botToken: 'weird' }
       } as never)
     ).toBe('m2')
     expect(
       tenantScopeFor(host(undefined, 'm3'), {
         id: 'i4',
         platform: 'feishu',
-        feishu: { region: 'lark', appId: 'c1' }
+        config: { region: 'lark', appId: 'c1' }
       } as never)
     ).toBe('lark:c1')
   })

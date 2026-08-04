@@ -11,7 +11,8 @@ const integration = (id: string, agentId = A1, token = 'xoxb-one'): IntegrationS
   integrationId: id,
   agentId,
   platform: 'slack',
-  config: { mode: 'direct', botToken: token, appToken: 'xapp-one', bindRules: [], mutedChannels: [], gated: false }
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+  config: { botToken: token, appToken: 'xapp-one' }
 })
 
 function makeReg() {
@@ -27,7 +28,7 @@ describe('CpIntegrationRegistry (memory-only)', () => {
     reg.upsert(integration('i1'))
     reg.upsert(integration('i1', A1, 'xoxb-two'))
     expect(reg.forAgent(A1)).toHaveLength(1)
-    expect(reg.forAgent(A1)[0]).toMatchObject({ id: 'i1', origin: 'cp', slack: { botToken: 'xoxb-two' } })
+    expect(reg.forAgent(A1)[0]).toMatchObject({ id: 'i1', origin: 'cp', config: { botToken: 'xoxb-two' } })
   })
 
   it('keeps agent ownership, removes by id, and exact-prunes one agent only', () => {
@@ -42,8 +43,35 @@ describe('CpIntegrationRegistry (memory-only)', () => {
 
   it('rejects an unusable envelope without retaining secret material', () => {
     const { reg, warn } = makeReg()
-    reg.upsert({ integrationId: 'bad', agentId: A1, platform: 'slack' } as IntegrationSpec)
+    const core = { mode: 'direct', bindRules: [], mutedChannels: [], gated: false } as const
+    // No config at all.
+    reg.upsert({ integrationId: 'bad', agentId: A1, platform: 'slack', core } as IntegrationSpec)
+    // A payload the module schema refuses.
+    reg.upsert({
+      integrationId: 'bad2',
+      agentId: A1,
+      platform: 'slack',
+      core,
+      config: { nope: true }
+    } as IntegrationSpec)
+    // An unregistered platform id (S1a open reader; the registry is the refusal).
+    reg.upsert({
+      integrationId: 'bad3',
+      agentId: A1,
+      platform: 'mastodon',
+      core,
+      config: { botToken: 'x' }
+    } as IntegrationSpec)
+    // A DIRECT slack spec without the app-level token (the retired wire refine,
+    // preserved at this seam).
+    reg.upsert({
+      integrationId: 'bad4',
+      agentId: A1,
+      platform: 'slack',
+      core,
+      config: { botToken: 'xoxb-x' }
+    } as IntegrationSpec)
     expect(reg.forAgent(A1)).toEqual([])
-    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledTimes(4)
   })
 })

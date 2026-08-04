@@ -1,8 +1,8 @@
 /**
  * Persist CP-owned crons onto the owning agent's on-disk `agent.json` `crons[]`,
- * which is the SINGLE SOURCE OF TRUTH (same model as write-integration.ts) — so
- * CP crons survive a daemon restart with the Control Plane down: the Scheduler
- * re-registers them from disk alone at start.
+ * which is the SINGLE SOURCE OF TRUTH — so CP crons survive a daemon restart
+ * with the Control Plane down: the Scheduler re-registers them from disk alone
+ * at start.
  *
  * CP entries are marked `origin:"cp"` so they coexist with hand-authored crons:
  * the CP replaces/removes only its own entries and never touches user ones.

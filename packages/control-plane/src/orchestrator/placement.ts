@@ -244,11 +244,9 @@ export async function integrationToSpec(
     .map((c) => ({ channel: c.channelId, match: { kind: 'auto' as const } }))
   const bindRules = gated ? gatedBindRules(channels) : [...DEFAULT_BIND_RULES, ...channelRules]
   const mutedChannels = mutedChannelIds(channels, gated)
-  // §6.4 emission flip (gate 2 closed): the legacy nested block is no longer
-  // emitted — the fleet's dual-shape reader (write-integration.ts) validates the
-  // opaque `config` against the same wire schema and takes the routing knobs
-  // from `core`. The nested members stay OPTIONAL in the wire schema until the
-  // legacy readers retire.
+  // §6.4 final shape: envelope + opaque config. The daemon takes the routing
+  // knobs from `core` (its platform module validates `config` against its own
+  // schema); the config payload never duplicates them.
   //
   // 'direct' (transport==='socket') — this daemon owns the long-lived inbound
   // connection (Slack Socket Mode, the Telegram long-poll, the Discord Gateway,
@@ -282,7 +280,7 @@ export async function httpIntegrationToSpec(
   channels: IntegrationChannelRecord[] = [],
   gated = false
 ): Promise<IntegrationSpec> {
-  // §6.4 emission flip (see integrationToSpec): envelope + opaque config only.
+  // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
   // The shared-mode payload's remaining inputs — `shareable` (the daemon's
   // in-thread "Switch agent" control), the provider app id, the bot's own user
   // id — all live on the BOT row, so the projector reads them there instead of
@@ -307,19 +305,14 @@ export async function httpIntegrationToSpec(
  * with the envelope's `mode` because every call site picks the assembler from
  * that same field.
  *
- * TWO fail-closed fences remain core's, and both are unreachable today:
- *  - `toDbPlatform` narrows the open registry id back to the CLOSED wire union
- *    (`IntegrationSpec` is still a discriminated union of the four literals;
- *    collapsing it to one flat `platformId` object is the S3 protocol cleanup).
- *    It throws for a session-identity id and for anything outside the served
- *    set — the same fence every persistence write already passes through, so a
- *    row that reached this function has already satisfied it.
- *  - a registered provider is required. The previous code let an unrecognized
- *    platform fall through to the slack arm, which would have shipped a
- *    slack-shaped config (and `platform: 'slack'`) for a foreign row; that arm
- *    was dead code — writes are fenced by `toDbPlatform` and the create route
- *    admits only registered platform ids — so refusing is the fail-closed
- *    reading of the same unreachable branch, not a new behavior.
+ * ONE fail-closed fence remains core's, unreachable today: a registered
+ * provider is required. Writes are fenced by `toDbPlatform` and the create
+ * route admits only registered platform ids, so a row with an unregistered
+ * platform cannot exist — refusing here is the fail-closed statement of that,
+ * not a live branch. (`IntegrationSpec.platform` is the OPEN id since the S3
+ * flatten, so the row's own platform rides the wire verbatim; the pre-flatten
+ * `toDbPlatform` narrowing back to the closed wire union is gone with the
+ * union.)
  *
  * Token-bearing — NEVER log the result.
  */
@@ -330,11 +323,10 @@ async function projectSpec(
   core: IntegrationCoreEnvelope,
   secret: BotSecretMaterial
 ): Promise<IntegrationSpec> {
-  const platform = toDbPlatform(i.platform)
   const provider = platforms.get(i.platform)
   if (!provider) throw new Error(`no control-plane platform provider registered for ${i.platform}`)
   const config = await provider.projectIntegrationConfig(i, bot, core, secret)
-  return { integrationId: i.id, agentId: i.agentId, platform, core, config }
+  return { integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
 }
 
 /** A session to re-home: its key + the agent/workspace that should own it. */

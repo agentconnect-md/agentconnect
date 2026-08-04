@@ -19,7 +19,7 @@ const ctx: SessionContext = {
   channel: 'C_CURRENT',
   thread: '111.1',
   tools: toolsForIntegrations([
-    { id: 'int-1', platform: 'slack', slack: { botToken: 'x', appToken: 'y', bindRules: [] } }
+    { id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }
   ]),
   integrations: [{ id: 'int-1', platform: 'slack' }]
 }

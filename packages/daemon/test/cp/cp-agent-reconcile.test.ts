@@ -220,12 +220,8 @@ describe('Daemon CP agent → memory + reconcile', () => {
       integrationId: 'stale-int',
       agentId: 'bot-a',
       platform: 'slack',
-      slack: {
-        mode: 'direct',
-        botToken: 'must-not-return',
-        appToken: 'xapp-stale',
-        bindRules: []
-      }
+      core: { mode: 'direct', bindRules: [] },
+      config: { botToken: 'must-not-return', appToken: 'xapp-stale' }
     }
     const staleCron = {
       cronId: 'stale-cron',
@@ -475,7 +471,8 @@ describe('Daemon CP agent → memory + reconcile', () => {
       {
         id: 'int-only',
         platform: 'slack',
-        slack: { mode: 'direct', appToken: 'xapp-only', botToken: 'xoxb-only' }
+        core: { mode: 'direct' },
+        config: { appToken: 'xapp-only', botToken: 'xoxb-only' }
       }
     ]
     ;(daemon as any).slackPool.add(connection)

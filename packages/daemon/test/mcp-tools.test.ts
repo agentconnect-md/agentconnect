@@ -5,13 +5,15 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  slack: { botToken: 'xoxb', appToken: 'xapp', bindRules: [] }
+  core: { bindRules: [] },
+  config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  telegram: { botToken: '123456:ABC', bindRules: [] }
+  core: { bindRules: [] },
+  config: { botToken: '123456:ABC' }
 }
 
 // Connected platforms that declare NO credentialed-attachment read port — the
@@ -19,21 +21,15 @@ const telegramInt: Integration = {
 const discordInt: Integration = {
   id: 'int-3',
   platform: 'discord',
-  discord: { botToken: 'dc', bindRules: [], mutedChannels: [], gated: false }
+  core: { bindRules: [], mutedChannels: [], gated: false },
+  config: { botToken: 'dc' }
 }
 
 const feishuInt: Integration = {
   id: 'int-4',
   platform: 'feishu',
-  feishu: {
-    mode: 'direct',
-    appId: 'cli_x',
-    appSecret: 's',
-    region: 'feishu',
-    bindRules: [],
-    mutedChannels: [],
-    gated: false
-  }
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+  config: { appId: 'cli_x', appSecret: 's', region: 'feishu' }
 }
 
 describe('toolsForIntegrations', () => {

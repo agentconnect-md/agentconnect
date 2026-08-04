@@ -227,12 +227,9 @@ describe('telegram projection equivalence with the live integrationToSpec path',
       agentId: INTEGRATION.agentId,
       platform: 'telegram',
       core: { mode: 'direct', bindRules, mutedChannels: ['-300'], gated: false },
-      config: {
-        botToken: '123456:ABC-tg-token',
-        bindRules,
-        mutedChannels: ['-300'],
-        gated: false
-      }
+      // §6.4 final shape: platform-private material ONLY — the routing knobs
+      // ride the core envelope, never the config payload.
+      config: { botToken: '123456:ABC-tg-token' }
     })
   })
 
@@ -241,8 +238,8 @@ describe('telegram projection equivalence with the live integrationToSpec path',
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the telegram projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, channels, gated)
-      expect(spec.core!.mode).toBe('direct')
-      expect(spec.config).toEqual(telegramIntegrationConfig(spec.core!, SECRET))
+      expect(spec.core.mode).toBe('direct')
+      expect(spec.config).toEqual(telegramIntegrationConfig(SECRET))
       // The payload satisfies the daemon reader's wire schema (§6.4).
       expect(() => IntegrationTelegramConfig.parse(spec.config)).not.toThrow()
     })

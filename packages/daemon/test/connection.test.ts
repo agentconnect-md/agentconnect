@@ -14,11 +14,8 @@ const mk = (id: string, appToken: string, botToken: string): Agent =>
       {
         id: `${id}-int`,
         platform: 'slack',
-        slack: {
-          botToken,
-          appToken,
-          bindRules: []
-        }
+        core: { bindRules: [] },
+        config: { botToken, appToken }
       }
     ],
     output: { mode: 'medium' },

@@ -20,11 +20,8 @@ function agent(id: string, bindRules: Agent['integrations'][number]['slack']['bi
       {
         id: `${id}-int`,
         platform: 'slack',
-        slack: {
-          botToken: 'x',
-          appToken: 'x',
-          bindRules
-        }
+        core: { bindRules },
+        config: { botToken: 'x', appToken: 'x' }
       }
     ],
     output: { mode: 'medium' },

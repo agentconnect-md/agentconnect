@@ -639,8 +639,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         daemonId: D1,
         spec: expect.objectContaining({
           platform: 'feishu',
+          core: expect.objectContaining({ mode: 'shared' }),
           config: expect.objectContaining({
-            mode: 'shared',
             appId: 'cli_http_app',
             appSecret: 'app-secret',
             botOpenId: 'ou_bot',

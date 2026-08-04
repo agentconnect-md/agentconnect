@@ -673,14 +673,15 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
           }
         : null
   if (!secrets) return null
-  // §6.7 dual-shape READER for the demux identity: prefer the opaque ingress
-  // bag, fall back to the named top-level fields. This reader lands one release
-  // BEFORE the CP stops emitting the named fields (reader-first, the S1a rule) —
-  // a bag-less assign from an older CP keeps working through the fallback.
+  // §6.7: the opaque ingress bag is the ONE carrier of the demux identity. The
+  // named top-level twins left the wire schema with the S3 protocol cleanup
+  // (emission had already stopped, #556), so there is nothing to fall back to —
+  // a non-string slot in the bag reads as absent, and an absent identity means
+  // the verify-scan path, exactly as a manual-paste install always demuxed.
   const ingress = (a.ingress ?? {}) as { apiAppId?: unknown; teamId?: unknown; botUserId?: unknown }
-  const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : a.apiAppId
-  const teamId = typeof ingress.teamId === 'string' ? ingress.teamId : a.teamId
-  const botUserId = typeof ingress.botUserId === 'string' ? ingress.botUserId : a.botUserId
+  const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
+  const teamId = typeof ingress.teamId === 'string' ? ingress.teamId : undefined
+  const botUserId = typeof ingress.botUserId === 'string' ? ingress.botUserId : undefined
   return {
     botId: a.botId,
     platform: a.platform,

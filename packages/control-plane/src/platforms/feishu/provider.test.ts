@@ -392,14 +392,12 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
       agentId: INTEGRATION.agentId,
       platform: 'feishu',
       core: { mode: 'direct', bindRules, mutedChannels: ['oc_3'], gated: false },
+      // §6.4 final shape: platform-private material ONLY — the routing knobs
+      // and the ingress mode ride the core envelope, never the config payload.
       config: {
-        mode: 'direct',
         appId: 'cli_testapp',
         appSecret: 'feishu-app-secret',
-        region: 'lark',
-        bindRules,
-        mutedChannels: ['oc_3'],
-        gated: false
+        region: 'lark'
       }
     })
   })
@@ -414,8 +412,8 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
   for (const { label, integration, channels, gated } of cases) {
     it(`routes the live path through the feishu projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, integration, SOCKET_BOT, SOCKET_SECRET, channels, gated)
-      expect(spec.core!.mode).toBe('direct')
-      expect(spec.config).toEqual(feishuIntegrationConfig(spec.core!, SOCKET_SECRET, integration))
+      expect(spec.core.mode).toBe('direct')
+      expect(spec.config).toEqual(feishuIntegrationConfig(SOCKET_SECRET, integration))
       // The payload satisfies the daemon reader's wire schema (§6.4).
       expect(() => IntegrationFeishuConfig.parse(spec.config)).not.toThrow()
     })
@@ -469,14 +467,10 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
       // Ungated shared installs ship NO bindRules — the relay arbitrates.
       core: { mode: 'shared', bindRules: [], mutedChannels: ['oc_2'], gated: false },
       config: {
-        mode: 'shared',
         appId: 'cli_testapp',
         appSecret: 'feishu-app-secret',
         botOpenId: 'ou_bot',
-        region: 'lark',
-        bindRules: [],
-        mutedChannels: ['oc_2'],
-        gated: false
+        region: 'lark'
       }
     })
   })
@@ -486,9 +480,9 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
       // The bot row is passed WHOLE now: `botUserId` is read off it by the
       // projector instead of being forwarded positionally by each call site.
       const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
-      expect(spec.core!.mode).toBe('shared')
+      expect(spec.core.mode).toBe('shared')
       expect(spec.config).toEqual(
-        feishuSharedIntegrationConfig(spec.core!, HTTP_SECRET, INTEGRATION, httpBot.botUserId ?? undefined)
+        feishuSharedIntegrationConfig(HTTP_SECRET, INTEGRATION, httpBot.botUserId ?? undefined)
       )
       expect(() => IntegrationFeishuConfig.parse(spec.config)).not.toThrow()
     })

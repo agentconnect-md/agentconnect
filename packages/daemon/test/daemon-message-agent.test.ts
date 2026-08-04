@@ -1518,7 +1518,8 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const slackInteg = {
       id: 'int-slack-1',
       platform: 'slack',
-      slack: { mode: 'direct', shareable: false, botToken: 'xoxb-scope-test' }
+      core: { mode: 'direct' },
+      config: { shareable: false, botToken: 'xoxb-scope-test' }
     }
     ;(daemon as any).agents.get('bot-a').integrations.push(slackInteg)
     const scope = (daemon as any).transportScopeForIntegration(slackInteg)
@@ -1566,7 +1567,7 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     const tgInteg = {
       id: 'int-tg-1',
       platform: 'telegram',
-      telegram: { botToken: '12345:AAA-test-token' }
+      config: { botToken: '12345:AAA-test-token' }
     }
     ;(daemon as any).agents.get('bot-a').integrations.push(tgInteg)
     const scope = (daemon as any).transportScopeForIntegration(tgInteg)
