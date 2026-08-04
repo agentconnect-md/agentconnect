@@ -661,9 +661,13 @@ guarantee, so rollout is daemon-first:
    the monotonic comparison, and advertise `agent-config-revision-v1`.
 2. Deploy the CP schema/writers and begin attaching revisions to every CP-owned
    agent projection.
-3. Enable an organization-environment write only when every retained or newly
-   affected placed agent is on a compatible daemon. An unplaced bound agent may
-   be saved, but placement then requires the same daemon feature.
+3. Gate the organization-environment writes that cannot avoid an incompatible
+   daemon: an explicitly requested binding and a value rotation that reaches an
+   already-bound placed agent are refused until the daemon is upgraded. `all`
+   enrollment instead SKIPS an agent placed on an incompatible daemon — one
+   stale daemon must not block an organization-wide entry — and the skipped
+   agent enrolls on a later authorized configuration write. An unplaced bound
+   agent may be saved, but placement then requires the same daemon feature.
 4. Enable the Settings UI after the API capability is available.
 
 Old daemons may ignore the optional field, but the feature never relies on that

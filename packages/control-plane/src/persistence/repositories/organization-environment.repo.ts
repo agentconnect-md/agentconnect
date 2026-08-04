@@ -156,7 +156,7 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
       // pass the same edit projection.
       const targets =
         input.audience === 'all'
-          ? await this.editableAgentIds(tx, orgId, actor.viewer)
+          ? await this.editableAgentIds(tx, orgId, actor.viewer, input.excludeAgentIds)
           : await this.authorizeTargets(tx, orgId, input.agentIds ?? [], actor.viewer)
       if (targets === null) return { outcome: 'agent_not_found' }
 
@@ -220,7 +220,9 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
       // enrollment — it never silently revokes a binding to a private agent this
       // actor cannot see.
       const enrolled =
-        input.audience === 'all' ? await this.editableAgentIds(tx, orgId, actor.viewer) : ([] as string[])
+        input.audience === 'all'
+          ? await this.editableAgentIds(tx, orgId, actor.viewer, input.excludeAgentIds)
+          : ([] as string[])
       const added = enrolled.filter((agentId) => !current.includes(agentId))
       const bound = [...current, ...added]
 
@@ -404,10 +406,23 @@ export class PgOrganizationEnvironmentRepo implements OrganizationEnvironmentRep
     })
   }
 
-  /** Every agent id in the org the actor may edit, ascending. */
-  private async editableAgentIds(tx: Tx, orgId: string, viewer: ViewCtx | undefined): Promise<string[]> {
+  /** Every agent id in the org the actor may edit, ascending, minus `exclude`
+   *  (the HTTP edge's daemon-compatibility skip for `all` enrollment). */
+  private async editableAgentIds(
+    tx: Tx,
+    orgId: string,
+    viewer: ViewCtx | undefined,
+    exclude?: readonly string[]
+  ): Promise<string[]> {
     const rows = await tx.agent.findMany({
-      where: editableAgentWhere(orgId, viewer),
+      // AND, not a spread: `editableAgentWhere` may itself constrain `id` (the
+      // viewer projection), and a spread `id` key would replace that clause.
+      where: {
+        AND: [
+          editableAgentWhere(orgId, viewer),
+          ...(exclude && exclude.length > 0 ? [{ id: { notIn: [...exclude] } }] : [])
+        ]
+      },
       select: { id: true },
       orderBy: { id: 'asc' }
     })

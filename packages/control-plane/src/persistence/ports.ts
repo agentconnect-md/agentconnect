@@ -4380,6 +4380,11 @@ export interface CreateOrganizationEnvironmentEntryInput {
   audience: OrganizationEnvironmentAudience
   /** Initial explicit selection; `selected` audience only. */
   agentIds?: readonly string[]
+  /** Agents to SKIP from `all` enrollment — placed on a daemon that cannot yet
+   *  apply organization entries safely (§10 step 3). Computed at the HTTP edge
+   *  from the live daemon registry; ignored for `selected` audience. A skipped
+   *  agent enrolls on a later authorized configuration write. */
+  excludeAgentIds?: readonly string[]
 }
 
 export interface UpdateOrganizationEnvironmentEntryInput {
@@ -4389,6 +4394,9 @@ export interface UpdateOrganizationEnvironmentEntryInput {
   sealedSecret?: string
   /** Retarget. Omitted ⇒ unchanged. */
   audience?: OrganizationEnvironmentAudience
+  /** Agents to SKIP when a retarget to `all` enrolls new bindings — same
+   *  daemon-compatibility skip as on create. Never removes an existing binding. */
+  excludeAgentIds?: readonly string[]
 }
 
 /**
