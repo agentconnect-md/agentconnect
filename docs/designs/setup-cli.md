@@ -1,7 +1,8 @@
 # Setup and Integration Diagnostics CLI
 
 > **Status:** Accepted; the Phase 1 MVP implements `init` and
-> `check deployment`. Provider reconciliation remains planned.
+> `check deployment`, and Phase 1.1 adds narrow one-time GitHub/Slack App
+> bootstrap commands. Provider reconciliation remains planned.
 >
 > **Related designs:**
 >
@@ -29,12 +30,16 @@ deployment still owns its provider applications and secrets.
    `npx @agentconnect.md/setup`. It is not a subcommand of `agentconnect`: the
    existing CLI manages one daemon host, while setup manages deployment-wide
    external resources.
-2. **One small command vocabulary.** The public workflow is `init`, `plan`,
-   `apply`, and `check`. Provider-specific behavior lives behind registered
-   contributors rather than top-level provider commands or core switches.
-3. **Desired state, not a one-shot wizard.** A versioned, non-secret
+2. **One small target command vocabulary.** The reconciled workflow is `init`,
+   `plan`, `apply`, and `check`. Phase 1.1 deliberately ships only
+   `create github|slack` as two explicit bootstrap commands instead of building
+   a provider framework before it is needed. The later reconcilers live behind
+   registered contributors rather than more top-level provider commands.
+3. **Desired state for reconciliation.** A versioned, non-secret
    `agentconnect.setup.yaml` records intended capabilities and resource
-   identity. Re-running `plan` or `apply` is safe.
+   identity. Re-running `plan` or `apply` is safe. The Phase 1.1 bootstrap does
+   not extend the alpha schema; it fails closed on partial env configuration and
+   never overwrites provider credentials.
 4. **Actual grants are authoritative.** A manifest or desired permission is
    only the declaration. `check` separately reports effective token scopes,
    installation permissions, callbacks, connectivity, and runtime readiness.
@@ -234,8 +239,8 @@ npx -y @agentconnect.md/setup check all
 CI should pin an exact package version instead of using an implicit latest
 version.
 
-The shipped Phase 1 MVP intentionally registers only `init` and
-`check deployment`. It does not expose `plan` or `apply` as placeholders:
+The shipped MVP registers `init`, `check deployment`, and two narrow one-time
+provider App bootstraps. It does not expose `plan` or `apply` as placeholders:
 those commands arrive with the first real provider reconciler in Phase 2.
 
 Its current package-name form is:
@@ -244,8 +249,18 @@ Its current package-name form is:
 npx -y @agentconnect.md/setup init local
 npx -y @agentconnect.md/setup init local-auth
 npx -y @agentconnect.md/setup init external --web-url <url> --control-plane-url <url> --issuer <url>
+npx -y @agentconnect.md/setup create github [--github-org <login>]
+npx -y @agentconnect.md/setup create slack
 npx -y @agentconnect.md/setup check deployment
 ```
+
+Both `create` commands require an `external` profile with an HTTPS Relay URL
+and write the returned credentials directly to an owner-only env file. GitHub
+uses its browser-assisted App Manifest flow; Slack reads a temporary
+`SLACK_CONFIG_TOKEN` from the process environment and verifies the created
+manifest through `apps.manifest.export`. Neither command adopts, updates, or
+deletes an App. Slack Public Distribution and organization/workspace
+installation remain explicit provider-console actions.
 
 ### 4.1 Target v1 common options
 
@@ -780,15 +795,26 @@ The report is still written on exit 1 or 2 so CI can archive it.
   readiness, Relay readiness, API auth mode, OIDC discovery, and signing keys;
 - add the opt-in official Logto Compose overlay with a separate logical
   database on the shared Postgres instance; and
-- keep TLS, DNS, tunnels, provider mutation, and external orchestration out of
-  the implementation.
+- keep TLS, DNS, tunnels, and external orchestration out of the implementation.
+
+### Phase 1.1: one-time deployment App bootstrap
+
+- add explicit `create github` and `create slack` commands without introducing
+  the target provider/reconciliation framework;
+- require external HTTPS Control Plane, Web, and Relay endpoints already
+  described by the existing alpha schema;
+- atomically write the exact runtime credentials to an env file with mode
+  `0600`, refuse Git-tracked or unignored sinks, and never log or overwrite
+  secrets; and
+- verify Slack's managed permissions and callback manifest after creation while
+  keeping Public Distribution manual.
 
 ### Phase 2: deployment providers
 
 - add `plan` and `apply`, secret sources/sinks, redaction, and provider
   dependency ordering with the first real provider implementation;
-- implement GitHub App Manifest create/adopt/check;
-- implement Slack App Manifest create/adopt/check; and
+- extend GitHub App handling with adopt/update/check;
+- extend Slack App handling with adopt/update/check; and
 - implement Logto plan/apply/check, including runtime env projection and the
   explicit Management API bootstrap handoff.
 

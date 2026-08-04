@@ -196,18 +196,18 @@ For a complete local Control Plane and PostgreSQL development setup, follow the
 
 This repository is a pnpm workspace. Product packages live under `packages/`:
 
-| Package                               | Path                                                         | Role                                                              |
-| ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `@agentconnect.md/cli`                | [`packages/cli`](packages/cli)                               | Stable `agentconnect` entry point, daemon lifecycle, and upgrades |
-| `@agentconnect.md/connection`         | [`packages/connection`](packages/connection)                 | Shared WebSocket transport, correlation, backoff, and keepalive   |
-| `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF           |
-| `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
-| `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
-| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                               |
-| `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
-| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy              |
-| `@agentconnect.md/setup`              | [`packages/setup`](packages/setup)                           | Self-hosting profiles and read-only deployment checks             |
-| `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
+| Package                               | Path                                                         | Role                                                                |
+| ------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `@agentconnect.md/cli`                | [`packages/cli`](packages/cli)                               | Stable `agentconnect` entry point, daemon lifecycle, and upgrades   |
+| `@agentconnect.md/connection`         | [`packages/connection`](packages/connection)                 | Shared WebSocket transport, correlation, backoff, and keepalive     |
+| `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF             |
+| `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                    |
+| `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                           |
+| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                                 |
+| `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts              |
+| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy                |
+| `@agentconnect.md/setup`              | [`packages/setup`](packages/setup)                           | Self-hosting profiles, provider App bootstrap, and readiness checks |
+| `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                        |
 
 ## Explore
 

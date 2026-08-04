@@ -1,7 +1,7 @@
 {
   "name": "@agentconnect.md/setup",
   "version": "1.0.0-dev",
-  "description": "AgentConnect self-hosting setup and deployment checks",
+  "description": "AgentConnect self-hosting setup, provider App bootstrap, and deployment checks",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

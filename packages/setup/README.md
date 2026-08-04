@@ -1,18 +1,24 @@
 # `@agentconnect.md/setup`
 
-Small, read-only-first setup tooling for AgentConnect self-hosting.
+Small setup and readiness tooling for AgentConnect self-hosting.
 
-The MVP has two commands:
+The MVP has four entry points:
 
 ```bash
 npx -y @agentconnect.md/setup init [local | local-auth | external]
 npx -y @agentconnect.md/setup check deployment
+npx -y @agentconnect.md/setup create github
+npx -y @agentconnect.md/setup create slack
 ```
 
 `init` writes only non-secret desired state to `agentconnect.setup.yaml`.
 `check deployment` verifies the Web console, the database-backed API readiness
 endpoint, the callback service when configured, and OIDC discovery/signing keys
 when authentication is enabled.
+
+`create github` and `create slack` are one-time bootstraps for a deployment-owned
+provider App. They require an `external` setup config with an HTTPS Relay URL.
+They do not add provider state to the setup YAML.
 
 ## Installation modes
 
@@ -76,6 +82,56 @@ npx -y @agentconnect.md/setup init external \
   --relay-url https://relay.example.test
 ```
 
+## Create provider Apps
+
+Both commands refuse a partial existing configuration and never overwrite
+provider keys. They append credentials to `.env` (or `--env-file`) with file
+mode `0600`. Inside a Git worktree, the target must be ignored and untracked.
+Secret values are never accepted as command flags, written to the setup YAML,
+or printed.
+
+Create a GitHub App under your account, or name an organization owner:
+
+```bash
+npx -y @agentconnect.md/setup create github --name AgentConnect
+npx -y @agentconnect.md/setup create github --github-org example-org
+```
+
+The CLI prints a loopback URL. Open it in a browser, review the GitHub App, and
+confirm its creation. The CLI then exchanges the one-time manifest code and
+writes the App id, slug, private key, client id/secret, and webhook secret. The
+client secret is retained because the manifest flow returns it only once; the
+AgentConnect runtime does not consume it directly, but it can be used later for
+the Logto GitHub social connector.
+
+The browser must be able to reach loopback on the machine running the CLI. For
+an SSH session, forward the printed port to that host (for example,
+`ssh -N -L <port>:127.0.0.1:<port> <host>`) before opening the URL locally, or
+run the CLI on the browser machine with access to the intended secret sink.
+
+After restarting the Control Plane and Relay, connect GitHub from the
+AgentConnect console. Repository installation remains a separate GitHub
+approval step.
+
+For Slack, first generate a temporary App Configuration access token in Slack.
+Load it into `SLACK_CONFIG_TOKEN` with your shell or secret manager, then run:
+
+```bash
+SLACK_CONFIG_TOKEN="$SLACK_CONFIG_TOKEN" \
+  npx -y @agentconnect.md/setup create slack --name AgentConnect
+```
+
+The token is used for `apps.manifest.create` and a manifest export check; it is
+not saved. The CLI writes the four `SLACK_PLATFORM_*` runtime values and verifies
+the requested scopes, events, redirect URL, and Relay callback URLs. Slack still
+requires an App manager to activate Public Distribution before other workspaces
+can install the App.
+
+If a provider creates an App but the process stops before `.env` is updated,
+delete that orphaned App in the provider console before retrying. Provider create
+APIs do not offer an idempotency key.
+
 The Relay URL is optional when no selected capability needs inbound callbacks.
 DNS, TLS, reverse proxies, Cloudflare Tunnel, external databases, provider App
-creation, and Logto upgrades remain operator-owned in this MVP.
+distribution, Logto connector setup, and Logto upgrades remain operator-owned in
+this MVP.
