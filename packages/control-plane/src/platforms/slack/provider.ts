@@ -47,7 +47,12 @@ import type { IntegrationCoreEnvelope, IntegrationSlackConfig } from '@agentconn
 import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../http/slack-identity.js'
 import { configUsable, resolveUserConfigAccessToken, type SlackUserConfigDeps } from '../../http/slack-user-config.js'
-import type { CpConfigValidation, CpInstallTransport, CpPlatformProvider } from '../provider.js'
+import type {
+  CpConfigValidation,
+  CpInstallTransport,
+  CpPlatformProvider,
+  CpProviderToolingCredentials
+} from '../provider.js'
 
 /** The `slack` credential block of the `POST /integrations` create body —
  *  relocated from `http/dto/index.ts`, which imports it back (one
@@ -237,11 +242,14 @@ export interface SlackCpProviderDeps {
     org: FastifyPluginAsync[]
     publicCallback: FastifyPluginAsync[]
   }
-  /** The per-user App Configuration token seam (`http/slack-user-config.ts`) —
-   *  store + rotation API. `HttpDeps` is structurally assignable, so the
-   *  composition root passes the same bundle the routes get. Absent ⇒ the
-   *  platform reports no provider tooling credentials. */
-  userConfigs?: SlackUserConfigDeps
+  /** The §9 per-user provider tooling-credential facet, built once by the
+   *  composition root with {@link createSlackToolingCredentials} and handed to
+   *  BOTH this provider and the Slack routes that call back into it (the
+   *  quick-install funnel start, the config status route, and the
+   *  Settings→Bots manifest refresh). One instance, so "which store answers"
+   *  cannot drift between the provider and its callers. Absent ⇒ the platform
+   *  reports no provider tooling credentials. */
+  toolingCredentials?: CpProviderToolingCredentials
   /** Pending-install funnel state (§9 `pendingInstalls`): the two stores'
    *  reap slices + the shared TTL/interval from this provider's env keys
    *  (`SLACK_INSTALL_TTL_SEC` / `SLACK_INSTALL_REAP_INTERVAL_SEC`, ms).
@@ -259,8 +267,33 @@ export interface SlackCpProviderDeps {
   identityReconciler?: { start(): void; stop(): void }
 }
 
+/**
+ * The §9 `providerToolingCredentials` facet over one `SlackUserConfig` store —
+ * the SINGLE authority for "the caller's Slack App Configuration token" that
+ * every flow now reads through: the provider itself, the quick-install funnel
+ * start, the `GET|PUT /slack/config` status projection, and the Settings→Bots
+ * manifest refresh. Both members delegate to the same
+ * `http/slack-user-config.ts` bodies those flows used to call directly, so this
+ * is a call-site swap, not a rewrite:
+ *
+ *  - `resolveAccessToken` → `resolveUserConfigAccessToken` (rotate-near-expiry
+ *    + the spent-refresh reload retry);
+ *  - `usableNow` → `configUsable` over a FRESH read of the same row. It answers
+ *    only the credential question; deployment-level terms (the funnel's public
+ *    callback origin, the relay pool) stay with the status route, which is what
+ *    knows them.
+ */
+export function createSlackToolingCredentials(userConfigs: SlackUserConfigDeps): CpProviderToolingCredentials {
+  return {
+    model: 'SlackUserConfig',
+    resolveAccessToken: (orgId, userId, now) => resolveUserConfigAccessToken(userConfigs, orgId, userId, now),
+    usableNow: async (orgId, userId, now) =>
+      configUsable(await userConfigs.repos.slackUserConfig.get(orgId, userId), now)
+  }
+}
+
 export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProvider<SlackCreateCredentials> {
-  const { verifyBot, verifyAppToken, funnelRoutes, userConfigs, pendingInstalls, identityReconciler } = deps
+  const { verifyBot, verifyAppToken, funnelRoutes, toolingCredentials, pendingInstalls, identityReconciler } = deps
   return {
     platformId: 'slack',
 
@@ -414,19 +447,12 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     // member presence is the capability probe in `http/agent-bot-icon-sync.ts`).
 
     // Per-user provider tooling credentials (§9): the caller's stored Slack
-    // App Configuration token, resolved/rotated by the SAME functions the
-    // funnel start and the Settings→Bots refresh call
-    // (`http/slack-user-config.ts`).
-    ...(userConfigs
-      ? {
-          providerToolingCredentials: {
-            model: 'SlackUserConfig',
-            resolveAccessToken: (orgId, userId, now) => resolveUserConfigAccessToken(userConfigs, orgId, userId, now),
-            usableNow: async (orgId, userId, now) =>
-              configUsable(await userConfigs.repos.slackUserConfig.get(orgId, userId), now)
-          }
-        }
-      : {}),
+    // App Configuration token. The composition root builds ONE facet
+    // ({@link createSlackToolingCredentials}) and injects the same instance
+    // into the Slack routes that call back into it, so the funnel start, the
+    // config status route and the Settings→Bots refresh cannot drift from what
+    // the registry advertises.
+    ...(toolingCredentials ? { providerToolingCredentials: toolingCredentials } : {}),
 
     // The bot-identity reconciler (backfills app/workspace identity onto
     // pre-capture Bot rows from the stored token) — declared so

@@ -23,6 +23,7 @@ import {
 import { installNewFeishuBot } from '../install-feishu.js'
 import { feishuEventsRequestUrl, type ConfigureFeishuHttpAppInput } from '../feishu-app-config.js'
 import { relayHttpBase } from './slack-install.js'
+import type { FeishuRouteSeams } from '../platform-route-seams.js'
 import {
   ErrorDto,
   FeishuAppRegistrationStartBody,
@@ -31,7 +32,7 @@ import {
   IdParam
 } from '../dto/index.js'
 
-export function feishuRegistrationRoutes(deps: HttpDeps) {
+export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeams) {
   return async function feishuRegistrationRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
@@ -115,7 +116,7 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
           })
         }
         try {
-          const started = await deps.feishuAppRegistration.start({
+          const started = await feishu.registrations.start({
             orgId,
             agentId: targetAgentId,
             fallbackRegion: req.body.region,
@@ -163,9 +164,9 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         const orgId = orgIdOf(req)
-        const session = await deps.feishuAppRegistration.get(req.params.id, orgId, async (registration) => {
-          const check = deps.verifyFeishuBot
-            ? await deps.verifyFeishuBot(registration.appId, registration.appSecret, registration.region)
+        const session = await feishu.registrations.get(req.params.id, orgId, async (registration) => {
+          const check = feishu.verifyBot
+            ? await feishu.verifyBot(registration.appId, registration.appSecret, registration.region)
             : null
           if (check?.status === 'invalid') {
             throw new FeishuRegistrationSetupError('invalid_credentials')
@@ -245,7 +246,7 @@ export function feishuRegistrationRoutes(deps: HttpDeps) {
           // Provider configuration is independent of placement. Keep this network
           // round-trip outside the agent move fence; a failure leaves the durable
           // authorized registration retryable with the same callback credentials.
-          if (httpAppConfig) await deps.configureFeishuHttpApp(httpAppConfig)
+          if (httpAppConfig) await feishu.configureHttpApp(httpAppConfig)
         })
         if (!session) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'registration not found' })

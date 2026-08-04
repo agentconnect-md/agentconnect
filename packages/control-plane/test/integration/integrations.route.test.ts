@@ -147,7 +147,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const agentId = await placedAgent()
     const { app } = withSpy()
     app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: 'http-bot',
       appId: 'AHTTPBOT',
@@ -192,11 +192,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       const { app } = withSpy()
       // No relay is registered on the fake app by default.
       let verified = false
-      app.deps.verifySlackBot = async () => {
+      app.platformStubs.verifySlackBot = async () => {
         verified = true
         return { status: 'invalid' }
       }
-      app.deps.verifyFeishuBot = async () => {
+      app.platformStubs.verifyFeishuBot = async () => {
         verified = true
         return { status: 'invalid' }
       }
@@ -220,7 +220,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
 
   it('POST telegram check reports Group Privacy Mode without storing the token', async () => {
     const { app } = withSpy()
-    app.deps.verifyTelegramBot = async (botToken) => ({
+    app.platformStubs.verifyTelegramBot = async (botToken) => ({
       status: 'ok',
       name: 'acme-tg',
       privacyModeDisabled: botToken.endsWith('ready')
@@ -247,7 +247,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST telegram refuses an enabled Group Privacy Mode before storing credentials', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.deps.verifyTelegramBot = async () => ({
+    app.platformStubs.verifyTelegramBot = async () => ({
       status: 'ok',
       name: 'acme-tg',
       privacyModeDisabled: false
@@ -274,7 +274,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
     let iconSync: { botToken: string; agentId: string } | undefined
-    app.deps.syncTelegramBotIcon = async (botToken, agent) => {
+    app.platformStubs.syncTelegramBotIcon = async (botToken, agent) => {
       iconSync = { botToken, agentId: agent.id }
       throw new Error('fixture rate limit')
     }
@@ -313,11 +313,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const { app, spy } = withSpy()
     let profileSync: { botToken: string; agentId: string; hasDescription: boolean } | undefined
     let intentToken: string | undefined
-    app.deps.ensureDiscordMessageContentIntent = async (botToken) => {
+    app.platformStubs.ensureDiscordMessageContentIntent = async (botToken) => {
       intentToken = botToken
       return 'ready'
     }
-    app.deps.syncDiscordBotProfile = async (botToken, agent) => {
+    app.platformStubs.syncDiscordBotProfile = async (botToken, agent) => {
       profileSync = { botToken, agentId: agent.id, hasDescription: 'description' in agent }
       throw new Error('fixture rate limit')
     }
@@ -366,7 +366,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects a discord bot token Discord refuses (400) and stores nothing', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.deps.verifyDiscordBot = async () => ({ status: 'invalid' })
+    app.platformStubs.verifyDiscordBot = async () => ({ status: 'invalid' })
 
     const res = await app.app.inject({
       method: 'POST',
@@ -382,8 +382,8 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST stops before storing when Discord cannot enable Message Content Intent', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.deps.verifyDiscordBot = async () => ({ status: 'ok', name: 'matrix' })
-    app.deps.ensureDiscordMessageContentIntent = async () => 'rejected'
+    app.platformStubs.verifyDiscordBot = async () => ({ status: 'ok', name: 'matrix' })
+    app.platformStubs.ensureDiscordMessageContentIntent = async () => 'rejected'
 
     const res = await app.app.inject({
       method: 'POST',
@@ -405,7 +405,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST asks the user to retry when Discord intent setup is unreachable', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.deps.ensureDiscordMessageContentIntent = async () => 'unreachable'
+    app.platformStubs.ensureDiscordMessageContentIntent = async () => 'unreachable'
 
     const res = await app.app.inject({
       method: 'POST',
@@ -427,7 +427,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST discord derives the bot name from users/@me, and proceeds when Discord is unreachable', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifyDiscordBot = async () => ({ status: 'ok', name: 'matrix#4242' })
+    app.platformStubs.verifyDiscordBot = async () => ({ status: 'ok', name: 'matrix#4242' })
 
     const named = await app.app.inject({
       method: 'POST',
@@ -440,7 +440,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // Unreachable is best-effort, not a gate: a second agent installs fine, name falls back.
     const agentId2 = randomUUID()
     await seedAgent(prisma, agentId2, { daemonId: DAEMON })
-    app.deps.verifyDiscordBot = async () => ({ status: 'unreachable' })
+    app.platformStubs.verifyDiscordBot = async () => ({ status: 'unreachable' })
     const unreachable = await app.app.inject({
       method: 'POST',
       url: `${ORG}/integrations`,
@@ -563,7 +563,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       send: (type: string, payload: unknown) => relaySends.push({ type, payload }),
       close() {}
     } as RelayChannel)
-    app.deps.verifyFeishuBot = async () => ({
+    app.platformStubs.verifyFeishuBot = async () => ({
       status: 'ok',
       name: 'HTTP Lark Bot',
       openId: 'ou_http_bot'
@@ -630,7 +630,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
     const verifierCalls: Array<string | undefined> = []
-    app.deps.verifyFeishuBot = async (_appId, _appSecret, region) => {
+    app.platformStubs.verifyFeishuBot = async (_appId, _appSecret, region) => {
       verifierCalls.push(region)
       return { status: 'ok', name: null, openId: 'ou_feishu_bot' }
     }
@@ -661,7 +661,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects feishu credentials Feishu refuses (400) and stores nothing', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.deps.verifyFeishuBot = async () => ({ status: 'invalid' })
+    app.platformStubs.verifyFeishuBot = async () => ({ status: 'invalid' })
 
     const res = await app.app.inject({
       method: 'POST',
@@ -678,7 +678,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST feishu derives the bot name from bot/v3/info, and proceeds when Feishu is unreachable', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifyFeishuBot = async () => ({ status: 'ok', name: 'Matrix Bot', openId: 'ou_matrix_bot' })
+    app.platformStubs.verifyFeishuBot = async () => ({ status: 'ok', name: 'Matrix Bot', openId: 'ou_matrix_bot' })
 
     const named = await app.app.inject({
       method: 'POST',
@@ -693,7 +693,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // D6 external-identity fence, covered in its own test.)
     const agentId2 = randomUUID()
     await seedAgent(prisma, agentId2, { daemonId: DAEMON })
-    app.deps.verifyFeishuBot = async () => ({ status: 'unreachable' })
+    app.platformStubs.verifyFeishuBot = async () => ({ status: 'unreachable' })
     const unreachable = await app.app.inject({
       method: 'POST',
       url: `${ORG}/integrations`,
@@ -731,7 +731,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects a bot token Slack refuses (400) and stores nothing', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.deps.verifySlackBot = async () => ({ status: 'invalid' })
+    app.platformStubs.verifySlackBot = async () => ({ status: 'invalid' })
 
     const res = await app.app.inject({
       method: 'POST',
@@ -747,7 +747,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects an app-level token Slack refuses (400) and stores nothing', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: null,
       appId: null,
@@ -755,7 +755,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       teamName: null,
       scopes: []
     })
-    app.deps.verifySlackAppToken = async () => 'invalid'
+    app.platformStubs.verifySlackAppToken = async () => 'invalid'
 
     const res = await app.app.inject({
       method: 'POST',
@@ -770,7 +770,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects valid Slack tokens that belong to different apps', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: null,
       appId: 'AOTHER',
@@ -778,7 +778,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       teamName: null,
       scopes: []
     })
-    app.deps.verifySlackAppToken = async () => 'ok'
+    app.platformStubs.verifySlackAppToken = async () => 'ok'
 
     const res = await app.app.inject({
       method: 'POST',
@@ -798,7 +798,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST derives the bot name from auth.test when none is given', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: 'matrix_test',
       appId: null,
@@ -819,8 +819,8 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST proceeds when Slack is unreachable (verification is best-effort, not a gate)', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
-    app.deps.verifySlackBot = async () => ({ status: 'unreachable' })
-    app.deps.verifySlackAppToken = async () => 'unreachable'
+    app.platformStubs.verifySlackBot = async () => ({ status: 'unreachable' })
+    app.platformStubs.verifySlackAppToken = async () => 'unreachable'
 
     const res = await app.app.inject({
       method: 'POST',
@@ -1161,7 +1161,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       accessExpiresAt: new Date(Date.now() + 60 * 60 * 1000)
     })
     let submitted: unknown
-    app.deps.slackConfigApi = {
+    app.platformStubs.slackConfigApi = {
       createApp: async () => ({ ok: false, error: 'unused' }),
       exportApp: async () => ({
         ok: true,
@@ -1179,7 +1179,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       exchangeOAuth: async () => ({ ok: false, error: 'unused' }),
       rotateConfigToken: async () => ({ ok: false, error: 'unused' })
     } satisfies SlackConfigApi
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: 'refresh-me',
       appId: 'A0TESTAPP1',
@@ -1225,7 +1225,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
         }
       })
     ).json() as { botId: string }
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: 'manual-app',
       appId: 'A0MANUAL01',
@@ -1269,7 +1269,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       accessExpiresAt: new Date(Date.now() + 60 * 60 * 1000)
     })
     let exportCalls = 0
-    app.deps.slackConfigApi = {
+    app.platformStubs.slackConfigApi = {
       createApp: async () => ({ ok: false, error: 'unused' }),
       exportApp: async () => {
         exportCalls += 1
@@ -1279,7 +1279,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       exchangeOAuth: async () => ({ ok: false, error: 'unused' }),
       rotateConfigToken: async () => ({ ok: false, error: 'unused' })
     } satisfies SlackConfigApi
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: 'mismatched-app',
       appId: 'A0DIFFERENT',
@@ -1320,7 +1320,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
           }
         })
       ).json() as { botId: string }
-      app.deps.verifySlackBot = async () => ({
+      app.platformStubs.verifySlackBot = async () => ({
         status: 'ok',
         name: 'old-app',
         appId: 'A0OLDAPP01',

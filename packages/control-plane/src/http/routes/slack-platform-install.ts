@@ -39,6 +39,7 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
 import { closePageHtml, relayHttpBase } from './slack-install.js'
+import type { SlackRouteSeams } from '../platform-route-seams.js'
 import {
   SlackPlatformInstallStartBody,
   SlackPlatformInstallStartDto,
@@ -48,9 +49,9 @@ import {
 
 const SLACK_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize'
 
-export function slackPlatformInstallRoutes(deps: HttpDeps) {
+export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
   return async function slackPlatformInstallRoutesPlugin(app: FastifyInstance): Promise<void> {
-    const platform = deps.slackPlatformApp
+    const platform = slack.platformApp
     const publicCpUrl = deps.config.PUBLIC_CP_URL
     if (!platform || !publicCpUrl) return // feature off — routes 404, console hides "Add to Slack"
     const redirectUri = slackPlatformOAuthRedirectUri(publicCpUrl)
@@ -180,10 +181,10 @@ export function slackPlatformInstallRoutes(deps: HttpDeps) {
  * created — or an uninstalled workspace's Bot is revived with the fresh token.
  * A workspace already bound to a DIFFERENT org is refused (`workspace_taken`).
  */
-export function slackPlatformCallbackRoutes(deps: HttpDeps) {
+export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
   return async function slackPlatformCallbackRoutesPlugin(app: FastifyInstance): Promise<void> {
-    const platform = deps.slackPlatformApp
-    const api = deps.slackConfigApi
+    const platform = slack.platformApp
+    const api = slack.configApi
     const publicCpUrl = deps.config.PUBLIC_CP_URL
     if (!platform || !api || !publicCpUrl) return
     const redirectUri = slackPlatformOAuthRedirectUri(publicCpUrl)

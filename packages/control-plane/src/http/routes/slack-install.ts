@@ -30,7 +30,8 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { buildInstallManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
-import { CONFIG_ACCESS_TTL_MS, configUsable, resolveUserConfigAccessToken } from '../slack-user-config.js'
+import { CONFIG_ACCESS_TTL_MS } from '../slack-user-config.js'
+import type { SlackRouteSeams } from '../platform-route-seams.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
   SlackAppStartBody,
@@ -65,9 +66,9 @@ const SLACK_CONFIG_AUTH_ERRORS = new Set([
   'missing_scope'
 ])
 
-export function slackInstallRoutes(deps: HttpDeps) {
+export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
   return async function slackInstallRoutesPlugin(app: FastifyInstance): Promise<void> {
-    const api = deps.slackConfigApi
+    const api = slack.configApi
     const publicCpUrl = deps.config.PUBLIC_CP_URL
     if (!api || !publicCpUrl) return // feature off — routes 404, console uses the manual flow
     const redirectUri = slackOAuthRedirectUri(publicCpUrl)
@@ -132,7 +133,14 @@ export function slackInstallRoutes(deps: HttpDeps) {
 
         // The CALLER's own config token creates the app (rotated fresh if stale), so
         // the app is owned by them and only they can mint its app-level token.
-        const config = await resolveUserConfigAccessToken(deps, orgId, req.principal.userId, new Date())
+        // Resolved through the platform's §9 tooling-credential facet — the same
+        // instance the registry advertises — so the funnel and the provider can
+        // never disagree about which store answers or when a token is stale.
+        const config = (await slack.toolingCredentials?.resolveAccessToken(
+          orgId,
+          req.principal.userId,
+          new Date()
+        )) ?? { ok: false as const, reason: 'unreachable' as const }
         if (!config.ok) {
           if (config.reason === 'unreachable') {
             return reply.code(502).send({ error: 'Bad Gateway', statusCode: 502, message: 'could not reach Slack' })
@@ -320,7 +328,7 @@ export function slackInstallRoutes(deps: HttpDeps) {
               message: 'The app-level token belongs to a different Slack app.'
             })
           }
-          const appCheck = await deps.verifySlackAppToken?.(req.body.appToken)
+          const appCheck = await slack.verifyAppToken?.(req.body.appToken)
           if (appCheck === 'invalid') {
             return reply.code(400).send({
               error: 'Bad Request',
@@ -362,7 +370,7 @@ export function slackInstallRoutes(deps: HttpDeps) {
 
         // auth.test supplies display-only workspace metadata for the Settings
         // grouping. It also remains the fallback source for an omitted app name.
-        const botCheck = deps.verifySlackBot ? await deps.verifySlackBot(row.botToken) : null
+        const botCheck = slack.verifyBot ? await slack.verifyBot(row.botToken) : null
         const name = row.name || (botCheck?.status === 'ok' ? botCheck.name : null) || agent.name
         const release = deps.agentMutations.tryBeginMutation(agent.id)
         if (!release) {
@@ -437,9 +445,9 @@ export function slackInstallRoutes(deps: HttpDeps) {
  * API (used to validate the token on save). The tokens are secret material — GET
  * returns only status, never the token.
  */
-export function slackConfigRoutes(deps: HttpDeps) {
+export function slackConfigRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
   return async function slackConfigRoutesPlugin(app: FastifyInstance): Promise<void> {
-    const api = deps.slackConfigApi
+    const api = slack.configApi
     if (!api) return // no Slack API wired ⇒ routes 404, console shows the manual flow
     const r = app.withTypeProvider<ZodTypeProvider>()
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
@@ -454,6 +462,10 @@ export function slackConfigRoutes(deps: HttpDeps) {
       // Durable = a refresh token is stored (the pair auto-rotates). Usable now = durable
       // or the access-only token is still fresh; a lapsed access-only token forces re-entry.
       const durable = !!row?.refreshToken
+      // The credential half of "auto-install is offerable" comes from the §9
+      // facet (one authority for the stored token); the deployment half — a
+      // configured public callback origin — stays here, which is what knows it.
+      const credentialUsable = (await slack.toolingCredentials?.usableNow(orgId, userId, now)) ?? false
       // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
       // is connected to receive the Events API POSTs.
       const relayAvailable = !!relayPublicUrl && deps.httpBot.hasConnectedRelay()
@@ -461,13 +473,13 @@ export function slackConfigRoutes(deps: HttpDeps) {
         configured: !!row,
         durable,
         funnelEnabled,
-        autoAvailable: funnelEnabled && configUsable(row, now),
+        autoAvailable: funnelEnabled && credentialUsable,
         accessExpiresAt: row ? row.accessExpiresAt.toISOString() : null,
         relayAvailable,
         relayPublicUrl,
         // The platform-published "Add to Slack" app (preset-agents.md §5.3): env
         // credentials + public callback + the relay pool, all present.
-        platformInstallAvailable: !!deps.slackPlatformApp && funnelEnabled && relayAvailable,
+        platformInstallAvailable: !!slack.platformApp && funnelEnabled && relayAvailable,
         updatedAt: row ? row.updatedAt.toISOString() : null
       }
     }
@@ -620,9 +632,9 @@ export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): str
  * bot token is stashed on the row and NEVER handed to the browser, and the
  * callback tab just self-closes (it carries no token).
  */
-export function slackOauthCallbackRoutes(deps: HttpDeps) {
+export function slackOauthCallbackRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
   return async function slackOauthCallbackRoutesPlugin(app: FastifyInstance): Promise<void> {
-    const api = deps.slackConfigApi
+    const api = slack.configApi
     const publicCpUrl = deps.config.PUBLIC_CP_URL
     if (!api || !publicCpUrl) return
     const redirectUri = slackOAuthRedirectUri(publicCpUrl)

@@ -4,6 +4,37 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
 import type { AgentRecord, BotRecord, IntegrationRecord } from '../persistence/ports.js'
 import type { BotProfileIconAgent } from './bot-profile-icon.js'
 import { syncAgentBotIcons } from './agent-bot-icon-sync.js'
+import { buildCpPlatformRegistry } from '../platforms/registry.js'
+import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../platforms/discord/provider.js'
+import { createSlackCpProvider } from '../platforms/slack/provider.js'
+import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+
+/**
+ * The four production providers, composed with whichever icon pushers a case
+ * wants. `sideEffects.syncBotProfileIcon` IS the capability probe the fan-out
+ * reads, so a provider composed WITHOUT its syncer contributes no member and the
+ * bot is skipped — and Slack never declares one at all (it renders per-message
+ * `icon_url` from the public CP endpoint instead of pushing a bot avatar).
+ */
+function platformsWith(pushers: {
+  telegram?: (token: string, agent: BotProfileIconAgent) => Promise<void>
+  discord?: (token: string, agent: BotProfileIconAgent) => Promise<void>
+  feishu?: (appId: string, appSecret: string, region: 'feishu' | 'lark', agent: BotProfileIconAgent) => Promise<void>
+}) {
+  return buildCpPlatformRegistry([
+    createTelegramCpProvider({
+      verifyBot: async () => ({ status: 'unreachable' }),
+      ...(pushers.telegram ? { syncBotIcon: pushers.telegram } : {})
+    }),
+    createDiscordCpProvider({
+      ensureMessageContentIntent: async () => 'ready',
+      ...(pushers.discord ? { syncBotProfile: pushers.discord } : {})
+    }),
+    createSlackCpProvider({}),
+    createFeishuCpProvider({ ...(pushers.feishu ? { syncAppIcon: pushers.feishu } : {}) })
+  ])
+}
 
 const ORG_ID = OrgId('org_test')
 const AGENT_ID = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
@@ -128,9 +159,7 @@ describe('syncAgentBotIcons', () => {
               }
             }
           },
-          syncTelegramBotIcon: telegramSync,
-          syncDiscordBotProfile: discordSync,
-          syncFeishuAppIcon: feishuSync
+          platforms: platformsWith({ telegram: telegramSync, discord: discordSync, feishu: feishuSync })
         },
         agent,
         { warn }
@@ -153,6 +182,37 @@ describe('syncAgentBotIcons', () => {
     expect(feishuSync.mock.calls[0]![3]).not.toHaveProperty('description')
     expect(secretGets.sort()).toEqual([telegramId, discordId, feishuId].sort())
     expect(warn).toHaveBeenCalledOnce()
+    // Slack declares NO `syncBotProfileIcon`, so its dedicated bot is skipped
+    // before its credential is even read — the same no-op the three-way
+    // `bot.platform === … && deps.syncX` conjunction produced.
+    expect(secretGets).not.toContain(slackId)
+  })
+
+  it('is a no-op for a platform whose provider declares no icon pusher', async () => {
+    const feishuId = '00000000-0000-4000-8000-000000000021'
+    const membership = integration(feishuId, 'feishu')
+    const secretGets: string[] = []
+    const warn = vi.fn()
+    const deps = {
+      repos: {
+        agent: { get: async () => agentRecord(agent.icon) },
+        integration: { listForAgent: async () => [membership], listForBot: async () => [membership] },
+        bot: { get: async () => bot(feishuId, 'feishu', { feishuAppId: 'cli_feishu' }) },
+        botSecret: {
+          get: async (id: string) => {
+            secretGets.push(id)
+            return { botToken: 'feishu-secret', appToken: 'cli_feishu', signingSecret: null }
+          }
+        }
+      },
+      // Feishu composed WITHOUT `syncAppIcon` ⇒ no `sideEffects.syncBotProfileIcon`
+      // member ⇒ the platform is not icon-capable, exactly like Slack.
+      platforms: platformsWith({})
+    }
+
+    await expect(syncAgentBotIcons(deps, agent, { warn })).resolves.toBeUndefined()
+    expect(secretGets).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('repairs a delayed stale write with the latest Agent icon', async () => {
@@ -192,7 +252,7 @@ describe('syncAgentBotIcons', () => {
           get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
         }
       },
-      syncDiscordBotProfile: discordSync
+      platforms: platformsWith({ discord: discordSync })
     }
     const warn = vi.fn()
 
@@ -247,7 +307,7 @@ describe('syncAgentBotIcons', () => {
           get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
         }
       },
-      syncDiscordBotProfile: discordSync
+      platforms: platformsWith({ discord: discordSync })
     }
     const warn = vi.fn()
 

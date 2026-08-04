@@ -22,6 +22,7 @@
  * ONE implementation behind that projector and the equivalence tests.
  */
 import { z } from 'zod'
+import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationCoreEnvelope, IntegrationTelegramConfig } from '@agentconnect.md/protocol'
 import type { BotSecretMaterial } from '../../persistence/ports.js'
 import type { TelegramBotVerifier } from '../../http/telegram-identity.js'
@@ -66,16 +67,31 @@ export interface TelegramCpProviderDeps {
    *  pipeline) — presence of `sideEffects.syncBotProfileIcon` is the
    *  capability probe (`http/agent-bot-icon-sync.ts`). */
   syncBotIcon?: TelegramBotIconSyncer
+  /**
+   * Route plugins per mount scope, injected PRE-BOUND to the route deps
+   * (`telegramCheckRoutes` at `'org'`; no public callback — Telegram's inbound
+   * transport is the daemon's own long-lived connection). Injected rather than
+   * imported for the same reason as Slack's: the route module consumes the
+   * create-DTO module, which imports this provider's credential block, so
+   * importing the factory here would close a runtime import cycle. Absent ⇒ no
+   * contributed routes (focused tests).
+   */
+  funnelRoutes?: {
+    org: FastifyPluginAsync[]
+    publicCallback: FastifyPluginAsync[]
+  }
 }
 
 export function createTelegramCpProvider(deps: TelegramCpProviderDeps): CpPlatformProvider<TelegramCreateCredentials> {
-  const { syncBotIcon } = deps
+  const { syncBotIcon, funnelRoutes } = deps
   return {
     platformId: 'telegram',
 
-    // No install funnel: no org-scoped wizard routes, no public OAuth
-    // callbacks. The whole install is the create-DTO path (contract §9 note).
-    installRoutes: () => [],
+    // No install FUNNEL — the whole install is the create-DTO path, and there is
+    // no public OAuth callback (contract §9 note). One org-scoped route all the
+    // same: the pre-install credential probe `POST /integrations/telegram/check`,
+    // which surfaces Group Privacy Mode while the operator is still typing.
+    installRoutes: (scope) => (scope === 'org' ? (funnelRoutes?.org ?? []) : (funnelRoutes?.publicCallback ?? [])),
 
     credentialBodySchema: TelegramCreateCredentials,
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { slackAppLinks } from './bots.js'
+import { slackAppLinks } from './slack-bot-refresh.js'
 
 describe('slackAppLinks', () => {
   it('opens the current Slack editors when the workspace id is known', () => {

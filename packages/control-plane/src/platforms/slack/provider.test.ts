@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { FastifyPluginAsync } from 'fastify'
 import {
   createSlackCpProvider,
+  createSlackToolingCredentials,
   slackAppIdFromAppToken,
   slackBotAssignBags,
   slackIntegrationConfig,
@@ -373,7 +374,7 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
   })
 
   it('resolves a fresh stored access token (resolveUserConfigAccessToken body)', async () => {
-    const provider = createSlackCpProvider({ userConfigs: userConfigDeps(row()) })
+    const provider = createSlackCpProvider({ toolingCredentials: createSlackToolingCredentials(userConfigDeps(row())) })
     const tooling = provider.providerToolingCredentials!
     expect(tooling.model).toBe('SlackUserConfig')
     expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({
@@ -384,7 +385,7 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
   })
 
   it('reports not_configured / unusable when nothing is stored', async () => {
-    const provider = createSlackCpProvider({ userConfigs: userConfigDeps(null) })
+    const provider = createSlackCpProvider({ toolingCredentials: createSlackToolingCredentials(userConfigDeps(null)) })
     const tooling = provider.providerToolingCredentials!
     expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({ ok: false, reason: 'not_configured' })
     expect(await tooling.usableNow(ORG, 'user-1', NOW)).toBe(false)
@@ -392,7 +393,9 @@ describe('slack providerToolingCredentials (delegation to slack-user-config)', (
 
   it('a lapsed access-only token is expired for installs and unusable for the wizard', async () => {
     const lapsed = row({ accessExpiresAt: new Date(NOW.getTime() - 1000) })
-    const provider = createSlackCpProvider({ userConfigs: userConfigDeps(lapsed) })
+    const provider = createSlackCpProvider({
+      toolingCredentials: createSlackToolingCredentials(userConfigDeps(lapsed))
+    })
     const tooling = provider.providerToolingCredentials!
     expect(await tooling.resolveAccessToken(ORG, 'user-1', NOW)).toEqual({ ok: false, reason: 'expired' })
     expect(await tooling.usableNow(ORG, 'user-1', NOW)).toBe(false)

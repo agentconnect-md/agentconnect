@@ -40,6 +40,9 @@ import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
+import { slackBotRefreshRoutes } from './routes/slack-bot-refresh.js'
+import { telegramCheckRoutes } from './routes/telegram-check.js'
+import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './platform-route-seams.js'
 
 /**
  * TODAY'S TABLE — captured from the routing table the pre-refactor `server.ts`
@@ -60,6 +63,11 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     // The §9 `providerToolingCredentials` surface (Slack's App Configuration
     // token): status, entry, removal.
     slackConfigRoutesPlugin: ['GET /slack/config', 'PUT /slack/config', 'DELETE /slack/config'],
+    // Moved OUT of core `routes/bots.ts` / `routes/integrations.ts` and into the
+    // owning provider — the paths are unchanged, which is the whole point of
+    // pinning them here (both core route sets register into this same scope).
+    slackBotRefreshRoutesPlugin: ['POST /bots/:id/slack/refresh'],
+    telegramCheckRoutesPlugin: ['POST /integrations/telegram/check'],
     feishuRegistrationRoutesPlugin: ['POST /integrations/feishu/app', 'GET /integrations/feishu/app/:id']
   },
   'public-callback': {
@@ -83,9 +91,6 @@ function stubDeps(): { deps: HttpDeps; assignRegistry: (registry: CpPlatformRegi
   let registry: CpPlatformRegistry | undefined
   const deps = {
     repos: { user: { provisionOidcUser: async () => ({ userId: 'u' }) } },
-    // Presence is the feature flag for the two Slack funnels.
-    slackConfigApi: {},
-    slackPlatformApp: { appId: 'A1', clientId: 'c', clientSecret: 's', signingSecret: 'sig' },
     get platforms(): CpPlatformRegistry {
       if (!registry) throw new Error('platform registry read before composition')
       return registry
@@ -100,19 +105,39 @@ function stubDeps(): { deps: HttpDeps; assignRegistry: (registry: CpPlatformRegi
   return { deps, assignRegistry: (r) => (registry = r) }
 }
 
-/** The production provider set, with the funnel plugins pre-bound exactly as
+/** Route seams with every funnel's feature flag ON: presence of `configApi` /
+ *  `platformApp` is what makes the two Slack funnels register at all. Handlers
+ *  are never invoked here, so they can stay hollow. */
+const SLACK_SEAMS = {
+  configApi: {},
+  platformApp: { appId: 'A1', clientId: 'c', clientSecret: 's', signingSecret: 'sig' }
+} as unknown as SlackRouteSeams
+const TELEGRAM_SEAMS = { verifyBot: async () => ({ status: 'unreachable' }) } as unknown as TelegramRouteSeams
+const FEISHU_SEAMS = { configureHttpApp: async () => {}, registrations: {} } as unknown as FeishuRouteSeams
+
+/** The production provider set, with the route plugins pre-bound exactly as
  *  `buildContainer` pre-binds them. */
 function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
   return buildCpPlatformRegistry([
-    createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+    createTelegramCpProvider({
+      verifyBot: async () => ({ status: 'unreachable' }),
+      funnelRoutes: { org: [telegramCheckRoutes(deps, TELEGRAM_SEAMS)], publicCallback: [] }
+    }),
     createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
     createSlackCpProvider({
       funnelRoutes: {
-        org: [slackInstallRoutes(deps), slackPlatformInstallRoutes(deps), slackConfigRoutes(deps)],
-        publicCallback: [slackOauthCallbackRoutes(deps), slackPlatformCallbackRoutes(deps)]
+        org: [
+          slackInstallRoutes(deps, SLACK_SEAMS),
+          slackPlatformInstallRoutes(deps, SLACK_SEAMS),
+          slackConfigRoutes(deps, SLACK_SEAMS),
+          slackBotRefreshRoutes(deps, SLACK_SEAMS)
+        ],
+        publicCallback: [slackOauthCallbackRoutes(deps, SLACK_SEAMS), slackPlatformCallbackRoutes(deps, SLACK_SEAMS)]
       }
     }),
-    createFeishuCpProvider({ funnelRoutes: { org: [feishuRegistrationRoutes(deps)], publicCallback: [] } })
+    createFeishuCpProvider({
+      funnelRoutes: { org: [feishuRegistrationRoutes(deps, FEISHU_SEAMS)], publicCallback: [] }
+    })
   ])
 }
 
@@ -215,12 +240,36 @@ describe('platform route mounts', () => {
     }
   })
 
-  it('a platform with no funnel contributes nothing at either scope', async () => {
+  it('a platform composed without route plugins contributes nothing at either scope', async () => {
     const telegram = createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) })
     const discord = createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' })
     for (const provider of [telegram, discord]) {
       expect(provider.installRoutes('org')).toEqual([])
       expect(provider.installRoutes('public-callback')).toEqual([])
+    }
+  })
+
+  it('serves the two relocated routes at their original core paths, and only there', async () => {
+    // §9 moved `POST /bots/:id/slack/refresh` out of `routes/bots.ts` and
+    // `POST /integrations/telegram/check` out of `routes/integrations.ts` into
+    // their owning providers. Both core route sets and the registry's org plugins
+    // register into the SAME `/api/v1/orgs/:orgId` scope, so the public paths are
+    // byte-identical — that is the deploy-surface claim, asserted against
+    // Fastify's own table rather than restated from the mount code.
+    const { app, routes } = await builtServer()
+    try {
+      for (const path of [
+        '/api/v1/orgs/:orgId/bots/:id/slack/refresh',
+        '/api/v1/orgs/:orgId/integrations/telegram/check'
+      ]) {
+        expect(routes.filter((route) => route.endsWith(` ${path}`))).toEqual([`POST ${path}`])
+      }
+      // Contributed exactly once — a double registration would 500 at boot, but
+      // pin the count so a stray second mount is caught here instead.
+      expect(routes.filter((route) => route.includes('/slack/refresh'))).toHaveLength(1)
+      expect(routes.filter((route) => route.includes('/integrations/telegram/check'))).toHaveLength(1)
+    } finally {
+      await app.close()
     }
   })
 

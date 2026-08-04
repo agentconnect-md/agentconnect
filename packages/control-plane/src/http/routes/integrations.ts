@@ -35,8 +35,6 @@ import { integrationPlatformAvailability } from '../daemon-platform-capability.j
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
 import type { CpConfigRefusal } from '../../platforms/provider.js'
 import {
-  TelegramBotCheckBody,
-  TelegramBotCheckDto,
   UpdateIntegrationChannelBody,
   LeaveIntegrationConversationBody,
   IntegrationDto,
@@ -174,33 +172,6 @@ export function integrationRoutes(deps: HttpDeps) {
         app.log.debug({ integrationId, daemonId }, 'integration/remove skipped: daemon offline')
       }
     }
-
-    r.post(
-      '/integrations/telegram/check',
-      {
-        schema: {
-          tags: [Tag.Integrations],
-          summary: 'Check a Telegram bot',
-          description:
-            'Validate a pasted Telegram bot token and report whether Group Privacy Mode is disabled, without storing the token.',
-          operationId: 'checkTelegramBot',
-          body: TelegramBotCheckBody,
-          response: { 200: TelegramBotCheckDto, 403: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        if (denyViewerWrite(req, reply)) return
-        const checked = await deps.verifyTelegramBot(req.body.botToken)
-        return {
-          status:
-            checked.status === 'ok'
-              ? checked.privacyModeDisabled
-                ? ('ready' as const)
-                : ('privacy_enabled' as const)
-              : checked.status
-        }
-      }
-    )
 
     r.post(
       '/integrations',

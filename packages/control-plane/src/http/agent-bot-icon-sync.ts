@@ -7,9 +7,7 @@ import type {
   IntegrationRepo
 } from '../persistence/ports.js'
 import type { BotProfileIconAgent } from './bot-profile-icon.js'
-import type { DiscordBotProfileSyncer } from './discord-bot-profile.js'
-import type { FeishuAppIconSyncer } from './feishu-app-icon.js'
-import type { TelegramBotIconSyncer } from './telegram-bot-profile.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 
 interface AgentBotIconSyncDeps {
   repos: {
@@ -18,9 +16,19 @@ interface AgentBotIconSyncDeps {
     bot: Pick<BotRepo, 'get'>
     botSecret: Pick<BotSecretStore, 'get'>
   }
-  syncTelegramBotIcon?: TelegramBotIconSyncer
-  syncDiscordBotProfile?: DiscordBotProfileSyncer
-  syncFeishuAppIcon?: FeishuAppIconSyncer
+  /** §9 platform registry. `sideEffects.syncBotProfileIcon` IS the capability
+   *  probe this fan-out used to spell as three `bot.platform === … && deps.syncX`
+   *  conjunctions: a platform that declares no member is skipped, exactly as
+   *  Slack always was (it renders per-message `icon_url` from the public CP
+   *  endpoint instead of pushing a bot avatar). Read at CALL time — every reader
+   *  of the registry runs long after composition. */
+  platforms: CpPlatformRegistry
+}
+
+/** The platform's profile-icon pusher, or `undefined` when this platform has no
+ *  dedicated-bot avatar to converge. */
+function iconPusherFor(deps: AgentBotIconSyncDeps, platform: string) {
+  return deps.platforms.get(platform)?.sideEffects?.syncBotProfileIcon
 }
 
 interface AgentBotIconSyncLogger {
@@ -54,11 +62,7 @@ async function currentBotIconState(
   const bot = await deps.repos.bot.get(botId)
   if (!bot || bot.shareable || bot.revokedAt) return null
 
-  const supported =
-    (bot.platform === 'telegram' && deps.syncTelegramBotIcon) ||
-    (bot.platform === 'discord' && deps.syncDiscordBotProfile) ||
-    (bot.platform === 'feishu' && deps.syncFeishuAppIcon)
-  if (!supported) return null
+  if (!iconPusherFor(deps, bot.platform)) return null
 
   const memberships = await deps.repos.integration.listForBot(bot.id)
   if (memberships.length !== 1) return null
@@ -96,23 +100,10 @@ async function syncBotIconUntilCurrent(
         icon: state.agent.icon,
         runtime: state.agent.runtime
       }
-      if (state.bot.platform === 'telegram' && deps.syncTelegramBotIcon) {
-        await deps.syncTelegramBotIcon(secret.botToken, profileAgent)
-      } else if (state.bot.platform === 'discord' && deps.syncDiscordBotProfile) {
-        await deps.syncDiscordBotProfile(secret.botToken, profileAgent)
-      } else if (state.bot.platform === 'feishu' && deps.syncFeishuAppIcon) {
-        // The secret row keeps the credential pair together; public bot
-        // metadata is only the fallback for older rows.
-        const appId = secret.appToken ?? state.bot.feishuAppId
-        if (!appId) {
-          log.warn(
-            { agentId: state.agent.id, botId: state.bot.id, platform: state.bot.platform },
-            'agent bot icon sync skipped: Feishu App ID is missing'
-          )
-          return
-        }
-        await deps.syncFeishuAppIcon(appId, secret.botToken, state.bot.feishuRegion ?? 'feishu', profileAgent)
-      }
+      // One awaited provider call, no platform branch: which credential the push
+      // needs (Feishu resolves its app id from `secrets.appToken ?? bot.feishuAppId`
+      // and no-ops without one) is the provider's business, not this fan-out's.
+      await iconPusherFor(deps, state.bot.platform)?.(state.bot, secret, profileAgent)
     } catch (err) {
       log.warn(
         { err, agentId: state.agent.id, botId: state.bot.id },
@@ -126,8 +117,9 @@ async function syncBotIconUntilCurrent(
   }
 }
 
-/** Push one changed Agent icon to each dedicated Telegram/Discord/Feishu bot currently
- * installed on it. Shared identities are deliberately excluded: one platform
+/** Push one changed Agent icon to each dedicated bot currently installed on it
+ * whose platform declares `sideEffects.syncBotProfileIcon` (Telegram, Discord and
+ * Feishu today). Shared identities are deliberately excluded: one platform
  * avatar cannot represent several agents. After each provider call, re-read and
  * repair to the latest icon/current owner so detached requests are latest-wins.
  * Every failure stays cosmetic. */

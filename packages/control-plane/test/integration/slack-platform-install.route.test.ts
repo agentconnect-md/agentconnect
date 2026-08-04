@@ -210,7 +210,7 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(bot!.integrations).toHaveLength(1)
     expect(bot!.integrations[0]).toMatchObject({ agentId: preset!.id, status: 'active' })
 
-    app.deps.verifySlackBot = async () => ({
+    app.platformStubs.verifySlackBot = async () => ({
       status: 'ok',
       name: 'agentconnect',
       appId: PLATFORM.appId,
