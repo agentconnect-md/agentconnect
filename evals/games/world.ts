@@ -58,7 +58,7 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     for (const agent of topology.agents) this.agentAliasById.set(agent.agentId, agent.alias)
     for (const room of topology.rooms) {
       this.channelsById.set(room.channel, {
-        info: { id: room.channel, name: room.alias, isIm: false, isPrivate: false },
+        info: { id: room.channel, name: room.alias, isIm: room.isDm, isPrivate: room.isPrivate },
         memberAgentIds: new Set(room.memberAgentIds),
         threads: new Set([room.thread]),
         visibleTo: new Set([...room.memberIntegrationIds, ...room.observerIntegrationIds])

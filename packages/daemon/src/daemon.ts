@@ -2218,8 +2218,37 @@ export class Daemon {
       }
     }
     this.cpCollab.replace(environment.collaborationRoutes)
+    // §6 evaluation tool registry: name-collision rejection at startup — an
+    // evaluation tool may never shadow a product tool, and the registry itself
+    // may not carry duplicates.
+    const registryTools = environment.tools ?? []
+    if (registryTools.length > 0) {
+      const productNames = new Set<string>()
+      for (const agent of this.agents.values()) {
+        for (const tool of toolsForIntegrations(agent.integrations, {
+          collaboration: true,
+          organizationKnowledge: true
+        })) {
+          productNames.add(tool.name)
+        }
+        try {
+          for (const tool of this.memory.toolsForAgent(agent.id)) productNames.add(tool.name)
+        } catch {
+          /* a memory provider that cannot enumerate pre-start never shadows */
+        }
+      }
+      for (const tool of GITHUB_REVIEW_TOOLS) productNames.add(tool.name)
+      for (const name of MEMORY_TOOL_NAMES) productNames.add(name)
+      const seen = new Set<string>()
+      for (const definition of registryTools) {
+        const name = definition.descriptor.name
+        if (productNames.has(name)) throw new Error(`evaluation tool "${name}" shadows a product tool`)
+        if (seen.has(name)) throw new Error(`duplicate evaluation tool "${name}"`)
+        seen.add(name)
+      }
+    }
     this.log.info(
-      `evaluation: installed ${environment.integrations.length} virtual integration(s) from the evaluation environment`
+      `evaluation: installed ${environment.integrations.length} virtual integration(s) and ${registryTools.length} evaluation tool(s) from the evaluation environment`
     )
   }
 
@@ -2807,6 +2836,21 @@ export class Daemon {
           ? this.store.observedUsers(agentId, platform, this.transportScopeForIntegration(integrations[0]!))
           : []
       },
+      // Collaboration Arena §6: evaluation-registry tool dispatch. Resolution
+      // is by exact name; a tool invisible to the caller is indistinguishable
+      // from an unknown tool. The trusted SessionContext is the caller identity.
+      evaluationTool: async (ctx, name, args) => {
+        const definition = this.opts.evaluation?.environment?.tools?.find((def) => def.descriptor.name === name)
+        if (!definition) return undefined
+        if (!definition.visibleTo(ctx.agentId)) throw new Error(`unknown tool: ${name}`)
+        const result = await definition.handler({
+          runId: this.opts.evaluation?.runId ?? 'evaluation',
+          agentId: ctx.agentId,
+          sessionContext: ctx,
+          input: args
+        })
+        return { result }
+      },
       // Peer discovery goes to the CP (the only authority for the cross-daemon
       // roster). Resolve the client lazily; fail closed when it isn't connected.
       channelAgents: async ({ currentChannel, currentThread, currentTransportScope, ...req }) => {
@@ -3005,6 +3049,13 @@ export class Daemon {
         tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
         if (this.evaluationProfile.memory === 'configured') {
           tools.push(...this.memory.toolsForAgent(agent.id))
+        }
+        // Collaboration Arena §6: game-owned structured action tools, appended
+        // AFTER the product tools (collision-checked at startup) and filtered
+        // by per-agent visibility (e.g. only living players see `vote`).
+        const evaluationTools = this.opts.evaluation?.environment?.tools
+        if (evaluationTools?.length) {
+          tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
         }
         // Bind the bridge token to the exact integration that delivered this turn.
         // Falling back to agent.integrations[0] can send a title/message through the

@@ -16,7 +16,8 @@
  */
 import type { AgentAuthorshipClaim, ChannelAgentsOk, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { IntegrationSchema, type BindRuleConfig, type Integration } from '../agents/agent-schema.js'
-import type { ChannelAgentsRequest } from '../mcp/ops.js'
+import type { ChannelAgentsRequest, SessionContext } from '../mcp/ops.js'
+import type { ToolDescriptor } from '../mcp/tools.js'
 import type { VirtualPlatform, VirtualPlatformConnection } from './virtual-connections.js'
 
 /** One synthetic integration, projected into both `agent.integrations` and the
@@ -40,6 +41,32 @@ export interface EffectiveIntegration {
   connection: VirtualPlatformConnection
 }
 
+/** One game-owned structured action tool (collaboration-arena.md §6).
+ *
+ *  Contract:
+ *  - the descriptor is APPENDED to the per-session tool set after the product
+ *    tools, with name-collision rejection at daemon startup (an evaluation
+ *    tool may never shadow a product tool);
+ *  - the handler receives the trusted `SessionContext` captured at
+ *    `session/new` — never tool-input-supplied identity;
+ *  - role-aware authorization is the game's job, IN the handler: the daemon
+ *    only guarantees authentic caller identity;
+ *  - the handler is idempotent per (runId, phase, agentId, action) and reports
+ *    `duplicate` rather than double-applying;
+ *  - handler results are the game's world effects — the game records them in
+ *    `world-events.jsonl` through the same monotonic ordering as §7.2. */
+export interface EvaluationToolDefinition {
+  descriptor: ToolDescriptor
+  /** Which agents see and may call the tool (e.g. only living players). */
+  visibleTo(agentId: string): boolean
+  handler(call: {
+    runId: string
+    agentId: string
+    sessionContext: SessionContext
+    input: Record<string, unknown>
+  }): Promise<unknown>
+}
+
 export interface DaemonEvaluationEnvironment {
   integrations: readonly EffectiveIntegration[]
   /** Peer discovery (`listAgents`) answered from the evaluation peer directory
@@ -48,6 +75,8 @@ export interface DaemonEvaluationEnvironment {
   /** Synthetic collaboration topology, loaded into the daemon's existing
    *  `CpCollabRoutes` — the same table a live CP would replace. */
   collaborationRoutes: CollabRoutesSnapshot
+  /** §6 evaluation tool registry — game-owned structured action tools. */
+  tools?: readonly EvaluationToolDefinition[]
 }
 
 // ─── §4 ingress payloads ────────────────────────────────────────────────────
