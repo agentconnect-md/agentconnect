@@ -75,6 +75,22 @@ export interface RelayBotIngress {
   start?(): Promise<void>
   /** Release everything. Idempotent — assign rebuilds call it first. */
   stop(): Promise<void> | void
+  /**
+   * OPTIONAL relay-side egress/read facet (§8: "Slack performs relay-side
+   * egress …; Feishu deliberately keeps egress on the daemon. Optional by
+   * design."). Core consults it AFTER arbitration for the two §14 gating
+   * flows: the one-time "explicitly addressed but routed nowhere" notice, and
+   * labeling a discovered DM row with its counterpart's name. A platform
+   * without the facet silently skips both — the pre-seam behavior of every
+   * non-Slack platform, which the audit recorded as a structural fork
+   * ("which map the bot lives in" acting as the platform test).
+   */
+  egress?: {
+    /** Post one plain-text notice into a conversation (never recorded). */
+    notice(channelId: string, text: string, threadTs?: string): Promise<void>
+    /** Resolve a platform user id to a display name (DM-row labeling). */
+    lookupUserName(userId: string): Promise<string | undefined>
+  }
 }
 
 /**
@@ -106,7 +122,22 @@ export interface RelayIngressHost {
     agents(botId: string): { agentId: string; name: string }[]
     channelOwner(botId: string, channelId: string): string | undefined
     targetForAgentId(botId: string, agentId: string): RouteTarget | undefined
+    /**
+     * CORE-owned resolution of bare conversation coordinates to a routable
+     * target — the ladder a coordinate-only interaction (a Slack message
+     * shortcut) needs before it can be forwarded: live thread affinity, then
+     * channel owner, then the default agent, with the mute and gating fences
+     * applied at every rung. `undefined` = nothing addressable (the plugin
+     * answers the platform accordingly and forwards nothing).
+     */
+    resolveTarget(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget | undefined
   }
+  /** Report the bot's own platform user identity once the platform reveals it
+   *  (Slack resolves it lazily via auth.test on start). Arbitration's mention
+   *  matching and echo suppression keep their fallback through this — an
+   *  assignment is NOT guaranteed to carry `botUserId` (a manual-paste bot's
+   *  CP row learns it from this very report). */
+  reportBotUserId(botId: string, botUserId: string): void
   /** Persist an explicit channel default-agent change (the config modal's
    *  durable, CP-broadcast side; no local routing effect of its own). */
   setChannelAgent(botId: string, channelId: string, agentId: string): void
@@ -178,6 +209,14 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * its response deadline (it races {@link RelayIngressHost.forwardAction}
    * against the platform's window on the host clock, degrading to an ack-only
    * body on timeout); core owns only the route's outer hard cap.
+   *
+   * DOCUMENTED EXCEPTION — pre-candidate challenges: Slack's unauthenticated
+   * `url_verification` is answered by the plugin's ROUTE before any ingest
+   * candidate exists, so it never reaches verify → handle. That stays
+   * plugin-owned (§8: challenge ordering relative to verification differs per
+   * platform and is a per-plugin hook, not a fixed pipeline step); Feishu's
+   * challenge is encrypted, so it flows through verify → handle as a
+   * `syncResponse`.
    */
   handle(ingest: TIngest, verified: TVerified): Promise<HandledDelivery>
 }
