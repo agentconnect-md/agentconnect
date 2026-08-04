@@ -1,7 +1,7 @@
 import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
-import { prepareWorkspace } from '../workspace/workspace-manager.js'
+import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
 import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
 import { agentChildEnv } from '../agents/agent-env.js'
@@ -590,10 +590,19 @@ export class SessionManager {
       const value = initialEffort ?? this.deps.store.getEffortOverride(key)
       return { value, chatSelected: value !== undefined }
     }
+    const runtimeWorkspaceDirectories = (cwd: string): string[] =>
+      additionalWorkspaceDirectories(agent, cwd, {
+        sessionKey: key,
+        isolation: workspaceIsolation
+      })
     const newRuntimeSession = async (cwd: string, mcpServers: McpServer[], systemAppend?: string): Promise<string> => {
+      const additionalDirectories = runtimeWorkspaceDirectories(cwd)
       while (true) {
         const selected = sessionStartEffort()
-        const sessionId = await abortable(() => host.newSession(cwd, mcpServers, selected.value, systemAppend), signal)
+        const sessionId = await abortable(
+          () => host.newSession(cwd, mcpServers, selected.value, systemAppend, additionalDirectories),
+          signal
+        )
         if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
         host.discardSession(sessionId)
       }
@@ -605,7 +614,11 @@ export class SessionManager {
       systemAppend?: string
     ): Promise<boolean> => {
       const selected = sessionStartEffort()
-      await abortable(() => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend), signal)
+      const additionalDirectories = runtimeWorkspaceDirectories(cwd)
+      await abortable(
+        () => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend, additionalDirectories),
+        signal
+      )
       if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return true
       // The pinned Claude adapter treats a repeated load of the same session/cwd/MCP
       // fingerprint as idempotent, so another load cannot replace metadata-only effort.

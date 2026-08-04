@@ -40,6 +40,7 @@ vi.mock('simple-git', () => ({
 
 // Imported after vi.mock so the mock is in effect.
 const {
+  additionalWorkspaceDirectories,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   prepareSessionWorkspace,
@@ -367,11 +368,15 @@ describe('prepareSessionWorkspace', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-session-ws-'))
     const path = join(root, 'workspace')
     mkdirSync(join(path, '.git'), { recursive: true })
-    const agent = gitRepoAgent(path)
+    mkdirSync(join(path, 'agents', 'node-operator'), { recursive: true })
+    const agent = gitRepoAgent(path, 'agents/node-operator')
     agent.workspace.pullOnNewSession = false
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'remote' && args[1] === 'get-url') return 'https://github.com/acme/repo.git\n'
-      if (args[0] === 'worktree' && args[1] === 'add') mkdirSync(join(args[3]!, '.git'), { recursive: true })
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        mkdirSync(join(args[3]!, '.git'), { recursive: true })
+        mkdirSync(join(args[3]!, 'agents', 'node-operator'), { recursive: true })
+      }
       return args[0] === 'rev-parse' ? `${'c'.repeat(40)}\n` : ''
     })
 
@@ -381,8 +386,12 @@ describe('prepareSessionWorkspace', () => {
 
     expect(again).toBe(first)
     expect(second).not.toBe(first)
-    expect(dirname(first)).toBe(realpathSync(sessionWorktreeRoot(agent)))
-    expect(dirname(second)).toBe(realpathSync(sessionWorktreeRoot(agent)))
+    expect(additionalWorkspaceDirectories(agent, first, { sessionKey: 'session-a', isolation: 'session' })).toEqual([
+      realpathSync(sessionWorktreePath(agent, 'session-a'))
+    ])
+    expect(additionalWorkspaceDirectories(agent, second, { sessionKey: 'session-b', isolation: 'session' })).toEqual([
+      realpathSync(sessionWorktreePath(agent, 'session-b'))
+    ])
   })
 })
 

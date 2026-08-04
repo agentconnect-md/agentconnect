@@ -493,6 +493,9 @@ export class AcpHost {
   private loadingSessions = new Set<string>()
   // whether the agent advertised the `loadSession` capability at initialize.
   private canLoad = false
+  // whether the agent accepts repository roots in addition to the session cwd.
+  // This is capability-gated because older ACP adapters reject the field.
+  private canUseAdditionalDirectories = false
   // prompt content-block variants the agent opted into at initialize. text +
   // resource_link are always baseline; image/audio/embeddedContext are gated.
   private promptCaps: { image?: boolean; audio?: boolean; embeddedContext?: boolean } = {}
@@ -789,6 +792,7 @@ export class AcpHost {
     })
     this.negotiatedProtocolVersion = init.protocolVersion
     this.canLoad = init.agentCapabilities?.loadSession ?? false
+    this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     const mcp = init.agentCapabilities?.mcpCapabilities
     this.mcpCaps = {
@@ -804,7 +808,7 @@ export class AcpHost {
         }
       : undefined
     this.opts.log?.debug(
-      `acp: agent initialized (${this.agentInfo?.name ?? 'agent'}${this.agentInfo?.version ? ` v${this.agentInfo.version}` : ''}, loadSession=${this.canLoad}, prompt caps: image=${!!this.promptCaps.image} audio=${!!this.promptCaps.audio} embeddedContext=${!!this.promptCaps.embeddedContext}, mcp: http=${this.mcpCaps.http} sse=${this.mcpCaps.sse})`
+      `acp: agent initialized (${this.agentInfo?.name ?? 'agent'}${this.agentInfo?.version ? ` v${this.agentInfo.version}` : ''}, loadSession=${this.canLoad}, additionalDirectories=${this.canUseAdditionalDirectories}, prompt caps: image=${!!this.promptCaps.image} audio=${!!this.promptCaps.audio} embeddedContext=${!!this.promptCaps.embeddedContext}, mcp: http=${this.mcpCaps.http} sse=${this.mcpCaps.sse})`
     )
   }
 
@@ -828,12 +832,14 @@ export class AcpHost {
    *  effort/model/fast overrides are layered on afterward by the daemon at turn start.
    *  `systemAppend` (the agent meta object + the agent's memory index, for a FRESH
    *  session) rides the Claude `_meta.systemPrompt` append — standing context, never a
-   *  user turn (see #398). */
+   *  user turn (see #398). `additionalDirectories` expands the runtime workspace
+   *  without changing the configured working-subdirectory `cwd`. */
   async newSession(
     cwd: string,
     mcpServers: McpServer[] = [],
     effortOverride?: string,
-    systemAppend?: string
+    systemAppend?: string,
+    additionalDirectories: string[] = []
   ): Promise<string> {
     const _meta = claudeSessionMeta(
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
@@ -844,8 +850,10 @@ export class AcpHost {
       this.opts.sandbox?.claudeProtectedSettings,
       this.opts.sandbox?.allowModelToolUnixSockets
     )
+    const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
       cwd,
+      ...(activeAdditionalDirectories.length > 0 ? { additionalDirectories: activeAdditionalDirectories } : {}),
       mcpServers,
       ...(_meta ? { _meta } : {})
     })
@@ -1099,7 +1107,8 @@ export class AcpHost {
     cwd: string,
     mcpServers: McpServer[] = [],
     effortOverride?: string,
-    systemAppend?: string
+    systemAppend?: string,
+    additionalDirectories: string[] = []
   ): Promise<void> {
     this.loadingSessions.add(sessionId)
     try {
@@ -1112,9 +1121,11 @@ export class AcpHost {
         this.opts.sandbox?.claudeProtectedSettings,
         this.opts.sandbox?.allowModelToolUnixSockets
       )
+      const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
       const res = await this.conn!.agent.request(methods.agent.session.load, {
         sessionId,
         cwd,
+        ...(activeAdditionalDirectories.length > 0 ? { additionalDirectories: activeAdditionalDirectories } : {}),
         mcpServers,
         ...(_meta ? { _meta } : {})
       })
