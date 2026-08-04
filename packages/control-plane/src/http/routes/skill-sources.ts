@@ -81,7 +81,6 @@ function toDto(s: SkillSourceRecord, ctx: ViewCtx): SkillSourceDtoT {
     visibility: s.visibility,
     sharedWith: s.sharedWith,
     createdBy: s.createdByUserId,
-    ownerUserId: s.ownerUserId,
     canEdit: canEdit(s, ctx),
     canManageSharing: canManageSharing(s, ctx),
     createdAt: s.createdAt.toISOString()
@@ -424,7 +423,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
           tags: [Tag.Skills],
           summary: 'Set skill source sharing',
           description:
-            'Set an owned source’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
+            'Set a skill source’s visibility (Everyone vs Selected) and complete Selected audience. Requires edit rights; Selected must retain at least one current organization member, and sharedWith is intersected with current membership.',
           operationId: 'setSkillSourceSharing',
           params: IdParam,
           body: SetSharingBody,

@@ -44,7 +44,6 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
            AND delegated_agent."daemonId" = authority."daemonId"
            AND (
              delegated_agent."visibility" = 'org'
-             OR delegated_agent."ownerUserId" = authority."userId"
              OR authority."userId" = ANY(delegated_agent."sharedWith")
            )
           JOIN "preset_agent" AS preset
@@ -196,7 +195,6 @@ export class PgWebchatMcpOperationRepo implements WebchatMcpOperationRepo {
            AND delegated_agent."daemonId" = authority."daemonId"
            AND (
              delegated_agent."visibility" = 'org'
-             OR delegated_agent."ownerUserId" = authority."userId"
              OR authority."userId" = ANY(delegated_agent."sharedWith")
            )
           JOIN "preset_agent" AS preset

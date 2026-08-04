@@ -33,7 +33,6 @@ function agentViewerSql(orgId: OrgId, viewer?: ViewCtx): Prisma.Sql {
   const visible = viewer
     ? Prisma.sql`(
         a."visibility" = 'org'::"ResourceVisibility"
-        OR a."ownerUserId" = ${viewer.userId}
         OR ${viewer.userId} = ANY(a."sharedWith")
       )`
     : Prisma.sql`TRUE`

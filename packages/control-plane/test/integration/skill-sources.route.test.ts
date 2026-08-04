@@ -28,7 +28,7 @@ import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { lockSkillSourceNameScope } from '../../src/persistence/skill-source-lock.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const opened: HttpApp[] = []
@@ -344,7 +344,7 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const bCreate = ownerApp.app.inject({
       method: 'POST',
       url: `${ORG}/skill-sources`,
-      payload: { name: 'kit', source: 'example-org/example-kit', visibility: 'restricted', sharedWith: [] }
+      payload: { name: 'kit', source: 'example-org/example-kit', visibility: 'restricted', sharedWith: [owner] }
     })
     await waitForAdvisoryWaiters(2)
     const stalePatch = collabApp.app.inject({
@@ -422,7 +422,7 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const bCreate = await ownerApp.app.inject({
       method: 'POST',
       url: `${ORG}/skill-sources`,
-      payload: { name: 'kit', source: 'example-org/example-kit', visibility: 'restricted', sharedWith: [] }
+      payload: { name: 'kit', source: 'example-org/example-kit', visibility: 'restricted', sharedWith: [owner] }
     })
     expect(bCreate.statusCode).toBe(201)
 
@@ -446,7 +446,7 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const ownerApp = appAs(owner)
     const collabApp = appAs(collab)
 
-    await createSource(ownerApp, 'kit', { visibility: 'restricted', sharedWith: [] })
+    await createSource(ownerApp, 'kit', { visibility: 'restricted', sharedWith: [owner] })
     const agentId = await createAgent(ownerApp, 'held-agent', ['kit/helper'])
 
     const writer = collabApp.deps.repos.agentConfig
@@ -501,7 +501,7 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const share = app.app.inject({
       method: 'PUT',
       url: `${ORG}/skill-sources/${sourceId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
     })
     const winner = await Promise.race([
       share.then(() => 'shared' as const),
@@ -525,7 +525,10 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const collab = await makeUser('sklf-collab', 'collaborator')
     const ownerApp = appAs(owner)
     const collabApp = appAs(collab)
-    const sourceId = await createSource(ownerApp, 'kit', { visibility: 'restricted', sharedWith: [collab] })
+    const sourceId = await createSource(ownerApp, 'kit', {
+      visibility: 'restricted',
+      sharedWith: [collab, owner]
+    })
     const agentId = await createAgent(collabApp, 'flip-racer', [])
 
     const hold = holdSkillSourceScope('kit')
@@ -533,7 +536,7 @@ describe('DELETE /skill-sources/:id — serialized against agent enable-list wri
     const share = ownerApp.app.inject({
       method: 'PUT',
       url: `${ORG}/skill-sources/${sourceId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [owner] }
     })
     await waitForAdvisoryWaiters(1)
     const enable = collabApp.app.inject({

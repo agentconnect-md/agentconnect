@@ -20,7 +20,7 @@ import {
   type MemberRemovalPreview,
   type OrgMemberRecord,
   type OrgMemberRole,
-  type OwnedResourceKind,
+  type VisibilityResourceKind,
   type UserProfileRecord,
   SYNTHETIC_EMAIL_SUFFIX,
   isSyntheticEmail
@@ -28,7 +28,7 @@ import {
 import { provisionPresetAgents } from '../preset-agents.js'
 import { OrgMembershipMissing, OrgOwnerRequired } from '../errors.js'
 
-const RESOURCE_AUTHORITY_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source'] as const
+const RESOURCE_AUDIENCE_TABLES = ['agent', 'daemon', 'cron_def', 'mcp_provider', 'skill_source'] as const
 const ORG_ROLE_RANK: Record<OrgMemberRole, number> = { viewer: 0, collaborator: 1, owner: 2 }
 
 interface LockedOrgMembership {
@@ -71,93 +71,113 @@ async function lockOrgMemberships(
 }
 
 /**
- * Replace one local user identity with another in a resource's effective
- * authority fields. Creator/modifier attribution is deliberately not touched:
- * those columns are audit history, while ownerUserId/sharedWith are live access.
+ * Replace one local user identity with another in a resource's Selected
+ * audience. Creator/modifier attribution is deliberately not touched.
  */
-function mergeResourceAuthoritySql(table: (typeof RESOURCE_AUTHORITY_TABLES)[number], from: string, to: string) {
+function mergeResourceAudienceSql(table: (typeof RESOURCE_AUDIENCE_TABLES)[number], from: string, to: string) {
   return Prisma.sql`
     UPDATE ${Prisma.raw(`"public"."${table}"`)} AS resource
-    SET
-      "ownerUserId" = CASE
-        WHEN resource."ownerUserId" = ${from} THEN ${to}
-        ELSE resource."ownerUserId"
-      END,
-      "sharedWith" = (
-        SELECT COALESCE(array_agg(deduplicated.user_id ORDER BY deduplicated.first_ordinal), ARRAY[]::TEXT[])
+    SET "sharedWith" = (
+      SELECT COALESCE(array_agg(deduplicated.user_id ORDER BY deduplicated.first_ordinal), ARRAY[]::TEXT[])
+      FROM (
+        SELECT mapped.user_id, MIN(mapped.ordinality) AS first_ordinal
         FROM (
-          SELECT mapped.user_id, MIN(mapped.ordinality) AS first_ordinal
-          FROM (
-            SELECT
-              CASE WHEN shared.user_id = ${from} THEN ${to} ELSE shared.user_id END AS user_id,
-              shared.ordinality
-            FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
-              WITH ORDINALITY AS shared(user_id, ordinality)
-          ) AS mapped
-          GROUP BY mapped.user_id
-        ) AS deduplicated
-      )
-    WHERE resource."ownerUserId" = ${from}
-       OR ${from} = ANY(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+          SELECT
+            CASE WHEN shared.user_id = ${from} THEN ${to} ELSE shared.user_id END AS user_id,
+            shared.ordinality
+          FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+            WITH ORDINALITY AS shared(user_id, ordinality)
+        ) AS mapped
+        GROUP BY mapped.user_id
+      ) AS deduplicated
+    )
+    WHERE ${from} = ANY(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
   `
 }
 
-/** Kind label (the API's vocabulary) → the table ownership transfers from. */
-const OWNED_RESOURCE_KINDS = [
+/** Kind label (the API's vocabulary) → the visibility-carrier table. */
+const VISIBILITY_RESOURCE_KINDS = [
   ['agent', 'agent'],
   ['daemon', 'daemon'],
   ['cron', 'cron_def'],
   ['mcpProvider', 'mcp_provider'],
   ['skillSource', 'skill_source']
-] as const satisfies ReadonlyArray<readonly [OwnedResourceKind, (typeof RESOURCE_AUTHORITY_TABLES)[number]]>
+] as const satisfies ReadonlyArray<readonly [VisibilityResourceKind, (typeof RESOURCE_AUDIENCE_TABLES)[number]]>
 
-interface OwnedResourceCountRow {
-  kind: OwnedResourceKind
-  owned: number
-  restricted: number
-  recipientOnly: number
+interface SelectedResourceCountRow {
+  kind: VisibilityResourceKind
+  selected: number
+  reassigned: number
 }
 
 /**
- * One kind's slice of the removal preview: how much of `table` this member owns,
- * how much of it is restricted, and how much of THAT only `recipient` would be
- * left able to see.
- *
- * The last number is the one worth warning about, and it is not simply
- * "restricted": `canView` admits the ownership arm OR an explicit share, and
- * removal prunes only the departing id from `sharedWith` (§8.1), so a resource
- * shared with anyone still in the organization does not vanish for them. The
- * share set is intersected with CURRENT membership here for the same reason a
- * role never widens visibility — an id that is no longer a member cannot see
- * anything, so counting it as a viewer would suppress a warning that is due.
+ * One kind's removal preview: Selected resources that include this member, and
+ * the subset with no other current member that therefore needs a replacement.
  */
-function ownedResourceCountsSql(
-  table: (typeof RESOURCE_AUTHORITY_TABLES)[number],
-  kind: OwnedResourceKind,
+function selectedResourceCountsSql(
+  table: (typeof RESOURCE_AUDIENCE_TABLES)[number],
+  kind: VisibilityResourceKind,
   orgId: string,
-  ownerUserId: string,
-  recipientUserId: string
+  departingUserId: string
 ) {
   return Prisma.sql`
     SELECT
       ${kind} AS "kind",
-      count(*)::int AS "owned",
-      (count(*) FILTER (WHERE resource."visibility" = 'restricted'))::int AS "restricted",
+      count(*)::int AS "selected",
       (count(*) FILTER (
-        WHERE resource."visibility" = 'restricted'
-          AND NOT EXISTS (
-            SELECT 1
-            FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[])) AS shared(user_id)
-            JOIN "membership" AS other
-              ON other."userId" = shared.user_id
-             AND other."orgId" = resource."orgId"
-            WHERE shared.user_id <> ${ownerUserId}
-              AND shared.user_id <> ${recipientUserId}
-          )
-      ))::int AS "recipientOnly"
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[])) AS shared(user_id)
+          JOIN "membership" AS other
+            ON other."userId" = shared.user_id
+           AND other."orgId" = resource."orgId"
+          WHERE shared.user_id <> ${departingUserId}
+        )
+      ))::int AS "reassigned"
     FROM ${Prisma.raw(`"public"."${table}"`)} AS resource
     WHERE resource."orgId" = ${orgId}
-      AND resource."ownerUserId" = ${ownerUserId}
+      AND resource."visibility" = 'restricted'
+      AND ${departingUserId} = ANY(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+  `
+}
+
+/** Remove one member from every audience and add `replacementUserId` only when
+ * a Selected resource would otherwise have no current member left. */
+function removeMemberFromResourceAudiencesSql(
+  table: (typeof RESOURCE_AUDIENCE_TABLES)[number],
+  orgId: string,
+  departingUserId: string,
+  replacementUserId: string
+) {
+  return Prisma.sql`
+    UPDATE ${Prisma.raw(`"public"."${table}"`)} AS resource
+    SET "sharedWith" = CASE
+      WHEN resource."visibility" = 'restricted'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM unnest(array_remove(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]), ${departingUserId}))
+           AS shared(user_id)
+         JOIN "membership" AS remaining
+           ON remaining."orgId" = resource."orgId"
+          AND remaining."userId" = shared.user_id
+       )
+      THEN ARRAY[${replacementUserId}]::TEXT[]
+      ELSE (
+        SELECT COALESCE(array_agg(candidate.user_id ORDER BY candidate.first_ordinal), ARRAY[]::TEXT[])
+        FROM (
+          SELECT shared.user_id, MIN(shared.ordinality) AS first_ordinal
+          FROM unnest(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
+            WITH ORDINALITY AS shared(user_id, ordinality)
+          JOIN "membership" AS remaining
+            ON remaining."orgId" = resource."orgId"
+           AND remaining."userId" = shared.user_id
+          WHERE shared.user_id <> ${departingUserId}
+          GROUP BY shared.user_id
+        ) AS candidate
+      )
+    END
+    WHERE resource."orgId" = ${orgId}
+      AND ${departingUserId} = ANY(COALESCE(resource."sharedWith", ARRAY[]::TEXT[]))
   `
 }
 
@@ -204,18 +224,15 @@ function toMemberRecord(m: {
 }
 
 /**
- * Who inherits a departing member's resources (resource-visibility.md §8.2).
+ * Who repairs a Selected audience that would otherwise become empty
+ * (resource-visibility.md §8.2).
  *
- * Removing someone else hands their resources to the acting owner — they made
- * the decision, so they carry what it leaves behind. A member leaving on their
- * own has no such actor, so the org's LONGEST-STANDING owner inherits: the
- * closest available stand-in for "whoever runs this organization", and stable
- * against a later join or promotion. `snapshot` must already be ordered by
- * membership age (ties by `userId`, so the choice is deterministic under
- * same-instant joins). Null ⇒ nobody qualifies, which only happens when the
- * departing member is the last owner and the caller must refuse.
+ * Removing someone else uses the acting organization owner; a member leaving
+ * on their own uses the longest-standing remaining owner. `snapshot` must
+ * already be ordered by membership age (ties by user id). Null means the
+ * departing member is the final owner and removal must be refused.
  */
-function chooseTransferRecipient(
+function chooseAudienceReplacement(
   snapshot: readonly { userId: string; role: OrgMemberRole }[],
   departingUserId: string,
   actingUserId: string
@@ -541,12 +558,10 @@ export class PgUserRepo implements UserRepo {
           }
         }
 
-        // Resource-table order matches removeMember. Translate grants as well as
-        // ownership: sharedWith has no FK, so deleting the invited row alone
-        // would otherwise strand a stale id. The SQL de-duplicates after
-        // replacement while preserving first-seen order.
-        for (const table of RESOURCE_AUTHORITY_TABLES) {
-          await tx.$executeRaw(mergeResourceAuthoritySql(table, holder.id, userId))
+        // sharedWith has no FK, so deleting the invited row alone would strand
+        // a stale audience id. Preserve first-seen order while de-duplicating.
+        for (const table of RESOURCE_AUDIENCE_TABLES) {
+          await tx.$executeRaw(mergeResourceAudienceSql(table, holder.id, userId))
         }
 
         await tx.user.delete({ where: { id: holder.id } }) // frees the unique email
@@ -675,8 +690,8 @@ export class PgUserRepo implements UserRepo {
   }
 
   async removeMember(orgId: string, userId: string, actingUserId: string): Promise<void> {
-    // Transfer ownership, prune the departing user's grants, then remove the
-    // membership in ONE transaction (docs/designs/resource-visibility.md §8).
+    // Prune the departing user from Selected audiences, repair only audiences
+    // that would become empty, then remove membership in ONE transaction.
     // createdByUserId is immutable audit attribution and is deliberately untouched.
     await withAmbientTx(this.db, async (tx) => {
       await lockOrgOwnerTransition(tx, orgId)
@@ -690,23 +705,21 @@ export class PgUserRepo implements UserRepo {
       const leaving = userId === actingUserId
       if (!departing || (!leaving && actor?.role !== 'owner')) throw new OrgMembershipMissing()
 
-      const transferToUserId = chooseTransferRecipient(membershipSnapshot, userId, actingUserId)
-      if (!transferToUserId) throw new OrgOwnerRequired()
+      const replacementUserId = chooseAudienceReplacement(membershipSnapshot, userId, actingUserId)
+      if (!replacementUserId) throw new OrgOwnerRequired()
 
-      // Fence ownership-bearing resource writes on both ends, then recheck the
+      // Fence audience-bearing resource writes on both ends, then recheck the
       // snapshot used above. The org transition lock keeps every competing
       // demotion/removal out until this transaction commits.
-      const locked = await lockOrgMemberships(tx, orgId, [userId, transferToUserId])
+      const locked = await lockOrgMemberships(tx, orgId, [userId, replacementUserId])
       const byUserId = new Map(locked.map((membership) => [membership.userId, membership]))
-      if (!byUserId.has(userId) || byUserId.get(transferToUserId)?.role !== 'owner') {
+      if (!byUserId.has(userId) || byUserId.get(replacementUserId)?.role !== 'owner') {
         throw new OrgMembershipMissing()
       }
 
-      await tx.$executeRaw`UPDATE "agent" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
-      await tx.$executeRaw`UPDATE "daemon" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
-      await tx.$executeRaw`UPDATE "cron_def" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
-      await tx.$executeRaw`UPDATE "mcp_provider" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
-      await tx.$executeRaw`UPDATE "skill_source" SET "ownerUserId" = CASE WHEN "ownerUserId" = ${userId} THEN ${transferToUserId} ELSE "ownerUserId" END, "sharedWith" = array_remove("sharedWith", ${userId}) WHERE "orgId" = ${orgId} AND ("ownerUserId" = ${userId} OR ${userId} = ANY("sharedWith"))`
+      for (const table of RESOURCE_AUDIENCE_TABLES) {
+        await tx.$executeRaw(removeMemberFromResourceAudiencesSql(table, orgId, userId, replacementUserId))
+      }
       // The row is still locked here; deletion completes the same transaction.
       await tx.membership.delete({ where: { orgId_userId: { orgId, userId } } })
     })
@@ -722,18 +735,16 @@ export class PgUserRepo implements UserRepo {
     })
     if (!rows.some((row) => row.userId === userId)) throw new OrgMembershipMissing()
 
-    const recipientId = chooseTransferRecipient(
+    const replacementId = chooseAudienceReplacement(
       rows.map((row) => ({ userId: row.userId, role: row.role as OrgMemberRole })),
       userId,
       actingUserId
     )
-    const recipient = rows.find((row) => row.userId === recipientId)
+    const replacement = rows.find((row) => row.userId === replacementId)
 
-    const counts = await this.db.$queryRaw<OwnedResourceCountRow[]>(
+    const counts = await this.db.$queryRaw<SelectedResourceCountRow[]>(
       Prisma.join(
-        OWNED_RESOURCE_KINDS.map(([kind, table]) =>
-          ownedResourceCountsSql(table, kind, orgId, userId, recipientId ?? '')
-        ),
+        VISIBILITY_RESOURCE_KINDS.map(([kind, table]) => selectedResourceCountsSql(table, kind, orgId, userId)),
         ' UNION ALL '
       )
     )
@@ -742,9 +753,9 @@ export class PgUserRepo implements UserRepo {
     const byKind = new Map(counts.map((row) => [row.kind, row]))
 
     return {
-      transferTo: recipient ? toMemberRecord(recipient) : null,
-      resources: OWNED_RESOURCE_KINDS.map(([kind]) => byKind.get(kind)).filter(
-        (row) => row !== undefined && row.owned > 0
+      replacement: replacement ? toMemberRecord(replacement) : null,
+      resources: VISIBILITY_RESOURCE_KINDS.map(([kind]) => byKind.get(kind)).filter(
+        (row) => row !== undefined && row.selected > 0
       ) as MemberRemovalPreview['resources']
     }
   }

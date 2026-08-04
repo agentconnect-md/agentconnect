@@ -522,7 +522,6 @@ const MOCK_CRONS: CronDto[] = [
     lastModifiedAt: '2026-03-01T00:00:00Z',
     visibility: 'org',
     sharedWith: [],
-    ownerUserId: 'u_dana',
     canEdit: true,
     canManageSharing: true
   },
@@ -545,7 +544,6 @@ const MOCK_CRONS: CronDto[] = [
     lastModifiedAt: '2026-03-04T00:00:00Z',
     visibility: 'org',
     sharedWith: [],
-    ownerUserId: 'u_sam',
     canEdit: true,
     canManageSharing: true
   },
@@ -568,7 +566,6 @@ const MOCK_CRONS: CronDto[] = [
     lastModifiedAt: '2026-04-02T00:00:00Z',
     visibility: 'org',
     sharedWith: [],
-    ownerUserId: 'u_lee',
     canEdit: true,
     canManageSharing: true
   },
@@ -591,7 +588,6 @@ const MOCK_CRONS: CronDto[] = [
     lastModifiedAt: '2026-02-14T00:00:00Z',
     visibility: 'org',
     sharedWith: [],
-    ownerUserId: 'u_dana',
     canEdit: true,
     canManageSharing: true
   }
@@ -611,7 +607,6 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_dana',
-    ownerUserId: 'u_dana',
     canEdit: true,
     canManageSharing: true,
     url: 'https://mcp.example.test/grafana/sse',
@@ -627,7 +622,6 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_sam',
-    ownerUserId: 'u_sam',
     canEdit: true,
     canManageSharing: true,
     url: 'https://connectors.example.test/mcp',
@@ -643,7 +637,6 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'restricted',
     sharedWith: ['u_sam', 'u_ana'],
     createdBy: 'u_dana',
-    ownerUserId: 'u_dana',
     canEdit: true,
     canManageSharing: true,
     url: 'https://connectors.example.test/mcp',
@@ -658,7 +651,6 @@ const MOCK_MCP_PROVIDERS: McpProviderDto[] = [
     visibility: 'restricted',
     sharedWith: ['u_noah'],
     createdBy: 'u_leo',
-    ownerUserId: 'u_leo',
     canEdit: true,
     canManageSharing: true,
     url: 'https://mcp.example.test/deepseek',
@@ -682,7 +674,6 @@ const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_dana',
-    ownerUserId: 'u_dana',
     canEdit: true,
     canManageSharing: true,
     createdAt: '2026-07-24T00:00:00Z'
@@ -698,7 +689,6 @@ const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
     visibility: 'org',
     sharedWith: [],
     createdBy: 'u_sam',
-    ownerUserId: 'u_sam',
     canEdit: true,
     canManageSharing: true,
     createdAt: '2026-06-30T00:00:00Z'
@@ -714,7 +704,6 @@ const MOCK_SKILL_SOURCES: SkillSourceDto[] = [
     visibility: 'restricted',
     sharedWith: ['u_noah', 'u_priya'],
     createdBy: 'u_leo',
-    ownerUserId: 'u_leo',
     canEdit: true,
     canManageSharing: true,
     createdAt: '2026-05-11T00:00:00Z'

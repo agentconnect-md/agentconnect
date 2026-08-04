@@ -10,7 +10,7 @@ import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { OrgMemberRole } from '../../src/persistence/ports.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const opened: HttpApp[] = []
@@ -350,7 +350,7 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     const bCreate = ownerApp.app.inject({
       method: 'POST',
       url: `${ORG}/mcp-providers`,
-      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [] }
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [owner] }
     })
     await settleTick(150)
     const stalePatch = collabApp.app.inject({
@@ -429,7 +429,7 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     const bCreate = await ownerApp.app.inject({
       method: 'POST',
       url: `${ORG}/mcp-providers`,
-      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [] }
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [owner] }
     })
     expect(bCreate.statusCode).toBe(201)
 
@@ -456,7 +456,7 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     const created = await ownerApp.app.inject({
       method: 'POST',
       url: `${ORG}/mcp-providers`,
-      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [] }
+      payload: { name: 'linear', url: 'https://mcp.example.com/mcp', visibility: 'restricted', sharedWith: [owner] }
     })
     expect(created.statusCode).toBe(201)
     const agentId = await createAgent(ownerApp, 'held-agent', ['linear'])
@@ -525,7 +525,7 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     const share = app.app.inject({
       method: 'PUT',
       url: `${ORG}/mcp-providers/${providerId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
     })
     const winner = await Promise.race([
       share.then(() => 'shared' as const),

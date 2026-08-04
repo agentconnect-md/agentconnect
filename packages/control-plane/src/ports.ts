@@ -209,11 +209,9 @@ export interface DaemonView {
   lastModifiedBy: { userId: string; displayName: string | null; email: string } | null
   /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
-  /** Current resource owner used by restricted visibility. */
-  ownerUserId: string | null
   /** Per-resource visibility (docs/designs/resource-visibility.md). */
   visibility: ResourceVisibility
-  /** app_user.id set granted view when `visibility === 'restricted'`. */
+  /** Complete app_user.id audience when `visibility === 'restricted'`. */
   sharedWith: string[]
 }
 

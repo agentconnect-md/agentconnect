@@ -1122,10 +1122,10 @@ the cache and stops requesting.
    and never persists a social access or refresh token.
 
    Resource visibility continues to govern agent content independently:
-   `visibility('org'|'restricted')`, the current ownership arm backed by
-   `createdByUserId`, and `sharedWith[]`. Organization role is not a visibility
+   `visibility('org'|'restricted')` and the complete Selected audience in
+   `sharedWith[]`; `createdByUserId` is audit-only. Organization role is not a visibility
    bypass, so an owner reaches repository content through a restricted agent
-   only when they own it or it is explicitly shared with them.
+   only when they are explicitly selected.
 
    Personal API keys retain their bound `userId`; the CP resolves that user's
    `oidcSubject` and GitHub identity without requiring a live browser session.

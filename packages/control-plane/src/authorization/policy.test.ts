@@ -17,16 +17,14 @@ import type { OrgMemberRole } from '../persistence/ports.js'
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 const CREATOR = 'user_creator'
-const RESOURCE_OWNER = 'user_resource_owner'
 const GRANTEE = 'user_grantee'
 const OTHER = 'user_other'
 
 const ctx = (userId: string, role: OrgMemberRole): ViewCtx => ({ userId, role })
 
-const orgVisible: Shareable = { ownerUserId: RESOURCE_OWNER, visibility: 'org', sharedWith: [] }
-const ownerlessOrg: Shareable = { ownerUserId: null, visibility: 'org', sharedWith: [] }
-const restricted: Shareable = { ownerUserId: RESOURCE_OWNER, visibility: 'restricted', sharedWith: [GRANTEE] }
-const orphaned: Shareable = { ownerUserId: null, visibility: 'restricted', sharedWith: [] }
+const orgVisible: Shareable = { visibility: 'org', sharedWith: [] }
+const restricted: Shareable = { visibility: 'restricted', sharedWith: [GRANTEE] }
+const emptyRestricted: Shareable = { visibility: 'restricted', sharedWith: [] }
 
 describe('canView', () => {
   it('org-visible resource is visible to every role, granted or not', () => {
@@ -35,16 +33,10 @@ describe('canView', () => {
     expect(canView(orgVisible, ctx(OTHER, 'owner'))).toBe(true)
   })
 
-  it('restricted resource hides from every non-owner and non-grantee, regardless of role', () => {
+  it('restricted resource hides from every non-grantee, regardless of role', () => {
     expect(canView(restricted, ctx(OTHER, 'collaborator'))).toBe(false)
     expect(canView(restricted, ctx(OTHER, 'viewer'))).toBe(false)
     expect(canView(restricted, ctx(OTHER, 'owner'))).toBe(false)
-  })
-
-  it('restricted resource is visible to the current ownership arm in every role', () => {
-    expect(canView(restricted, ctx(RESOURCE_OWNER, 'collaborator'))).toBe(true)
-    expect(canView(restricted, ctx(RESOURCE_OWNER, 'viewer'))).toBe(true)
-    expect(canView(restricted, ctx(RESOURCE_OWNER, 'owner'))).toBe(true)
   })
 
   it('restricted resource is visible to a shared member (any role)', () => {
@@ -52,10 +44,10 @@ describe('canView', () => {
     expect(canView(restricted, ctx(GRANTEE, 'viewer'))).toBe(true)
   })
 
-  it('an orphaned restricted resource is invisible to every role', () => {
-    expect(canView(orphaned, ctx(OTHER, 'collaborator'))).toBe(false)
-    expect(canView(orphaned, ctx(GRANTEE, 'collaborator'))).toBe(false)
-    expect(canView(orphaned, ctx(OTHER, 'owner'))).toBe(false)
+  it('an invalid empty restricted resource fails closed for every role', () => {
+    expect(canView(emptyRestricted, ctx(OTHER, 'collaborator'))).toBe(false)
+    expect(canView(emptyRestricted, ctx(GRANTEE, 'collaborator'))).toBe(false)
+    expect(canView(emptyRestricted, ctx(OTHER, 'owner'))).toBe(false)
   })
 })
 
@@ -74,16 +66,15 @@ describe('canEdit', () => {
   it('collaborator edits iff they can view', () => {
     expect(canEdit(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
     expect(canEdit(restricted, ctx(GRANTEE, 'collaborator'))).toBe(true)
-    expect(canEdit(restricted, ctx(RESOURCE_OWNER, 'collaborator'))).toBe(true)
     expect(canEdit(restricted, ctx(OTHER, 'collaborator'))).toBe(false) // can't even see it
   })
 })
 
 describe('canManageSharing (§13.3)', () => {
-  it('is identical to canEdit for resources with a current owner', () => {
+  it('is identical to canEdit', () => {
     const resources = [orgVisible, restricted]
     const roles: OrgMemberRole[] = ['owner', 'collaborator', 'viewer']
-    const users = [RESOURCE_OWNER, GRANTEE, OTHER]
+    const users = [GRANTEE, OTHER]
     for (const r of resources) {
       for (const role of roles) {
         for (const u of users) {
@@ -100,10 +91,10 @@ describe('canManageSharing (§13.3)', () => {
     expect(canManageSharing(orgVisible, ctx(OTHER, 'collaborator'))).toBe(true)
   })
 
-  it('keeps ownerless org-visible resources public while preserving content edits', () => {
+  it('lets a collaborator manage sharing for an org-visible resource', () => {
     const collaborator = ctx(OTHER, 'collaborator')
-    expect(canEdit(ownerlessOrg, collaborator)).toBe(true)
-    expect(canManageSharing(ownerlessOrg, collaborator)).toBe(false)
+    expect(canEdit(orgVisible, collaborator)).toBe(true)
+    expect(canManageSharing(orgVisible, collaborator)).toBe(true)
   })
 })
 
@@ -337,7 +328,7 @@ describe('canChangeSessionVisibility', () => {
 describe('visibilityWhere', () => {
   it('filters owners through the same resource-visibility projection as every human role', () => {
     expect(visibilityWhere(ctx(OTHER, 'owner'))).toEqual({
-      OR: [{ visibility: 'org' }, { ownerUserId: OTHER }, { sharedWith: { has: OTHER } }]
+      OR: [{ visibility: 'org' }, { sharedWith: { has: OTHER } }]
     })
   })
 
@@ -347,11 +338,11 @@ describe('visibilityWhere', () => {
 
   it('is the canView disjunction for collaborators and viewers', () => {
     expect(visibilityWhere(ctx(GRANTEE, 'collaborator'))).toEqual({
-      OR: [{ visibility: 'org' }, { ownerUserId: GRANTEE }, { sharedWith: { has: GRANTEE } }]
+      OR: [{ visibility: 'org' }, { sharedWith: { has: GRANTEE } }]
     })
     // viewers filter identically to collaborators — the row filter is view-based
     expect(visibilityWhere(ctx(GRANTEE, 'viewer'))).toEqual({
-      OR: [{ visibility: 'org' }, { ownerUserId: GRANTEE }, { sharedWith: { has: GRANTEE } }]
+      OR: [{ visibility: 'org' }, { sharedWith: { has: GRANTEE } }]
     })
   })
 })

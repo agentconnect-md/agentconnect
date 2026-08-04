@@ -95,21 +95,16 @@ model User {
   memberships                      Membership[]
   apiKeys                          ApiKey[]
   createdAgents                    Agent[]                    @relation("AgentCreatedBy")
-  ownedAgents                      Agent[]                    @relation("AgentOwner")
   modifiedAgents                   Agent[]                    @relation("AgentModifiedBy")
   createdIntegrations              Integration[]
   createdBots                      Bot[]
   createdMcpProviders              McpProvider[]              @relation("McpProviderCreatedBy")
-  ownedMcpProviders                McpProvider[]              @relation("McpProviderOwner")
   createdSkillSources              SkillSource[]              @relation("SkillSourceCreatedBy")
-  ownedSkillSources                SkillSource[]              @relation("SkillSourceOwner")
   createdMemoryPluginInstallations MemoryPluginInstallation[] @relation("MemoryPluginInstallationCreatedBy")
   createdExternalMemoryConnections ExternalMemoryConnection[] @relation("ExternalMemoryConnectionCreatedBy")
   createdDaemons                   Daemon[]                   @relation("DaemonCreatedBy")
-  ownedDaemons                     Daemon[]                   @relation("DaemonOwner")
   modifiedDaemons                  Daemon[]                   @relation("DaemonModifiedBy")
   createdCrons                     CronDef[]                  @relation("CronCreatedBy")
-  ownedCrons                       CronDef[]                  @relation("CronOwner")
   modifiedCrons                    CronDef[]                  @relation("CronModifiedBy")
   createdHooks                     HookDef[]                  @relation("HookCreatedBy")
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
@@ -161,8 +156,8 @@ enum OrgRole {
 }
 
 // Per-resource visibility (docs/designs/resource-visibility.md §1): 'org' (default)
-// = visible to every org member (current behavior); 'restricted' = current
-// ownership arm + the `sharedWith` set only. Enforced ONLY on console read/write paths —
+// = visible to every org member; 'restricted' = the complete non-empty
+// `sharedWith` audience. Enforced ONLY on console read/write paths —
 // never crosses the daemon↔CP wire (a restricted-but-active resource still runs).
 enum ResourceVisibility {
   org
@@ -318,7 +313,6 @@ model Daemon {
   maxAgents     Int     @default(0)
 
   createdByUserId String? // WebUI user who provisioned the daemon (immutable audit; null for CLI/self-registered). Surfaced in the console "Created" row.
-  ownerUserId     String? // Current resource owner for restricted visibility; transferred when its member leaves.
 
   // ── last-modification audit (human edits only) ──
   // Stamped together on user-initiated writes (provision, rename). Deliberately
@@ -328,8 +322,8 @@ model Daemon {
   lastModifiedAt       DateTime @default(now()) @db.Timestamptz(6) // defaults to createdAt; app-bumped on each human edit
 
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
-  visibility ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
-  sharedWith String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  visibility ResourceVisibility @default(org) // 'org' = all members; 'restricted' = the complete sharedWith audience
+  sharedWith String[]           @default([]) // complete app_user.id audience when visibility='restricted'
 
   // ── fencing root ──
   sessionEpoch BigInt @default(0) @db.BigInt // bumped each successful (re)auth
@@ -354,7 +348,6 @@ model Daemon {
 
   org                   Org                    @relation(fields: [orgId], references: [id], onDelete: Restrict)
   createdBy             User?                  @relation("DaemonCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  owner                 User?                  @relation("DaemonOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                  @relation("DaemonModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   agents                Agent[]
   assignments           Assignment[]
@@ -367,7 +360,6 @@ model Daemon {
   webchatMcpDelegations WebchatMcpDelegation[]
 
   @@index([orgId])
-  @@index([orgId, ownerUserId])
   @@index([status])
   @@index([lastSeenAt])
   @@map("daemon")
@@ -633,14 +625,13 @@ model Agent {
   runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)
   managedSkills         String[]           @default([]) // centrally accepted managed_skill ids, explicitly enabled
   createdByUserId       String? // WebUI user who created the agent (immutable audit; null for daemon/CLI-created). Surfaced in the console "Created" row.
-  ownerUserId           String? // Current resource owner for restricted visibility; transferred when its member leaves.
   // Last-modification audit (human edits only): stamped on create + PATCH. Kept
   // separate from `updatedAt`, which also bumps on system writes (e.g. placement).
   lastModifiedByUserId  String? // WebUI user who last edited the agent (null ⇒ never edited by a human)
   lastModifiedAt        DateTime           @default(now()) @db.Timestamptz(6) // defaults to createdAt; app-bumped on each PATCH
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
-  visibility            ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
-  sharedWith            String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  visibility            ResourceVisibility @default(org) // 'org' = all members; 'restricted' = the complete sharedWith audience
+  sharedWith            String[]           @default([]) // complete app_user.id audience when visibility='restricted'
   // ── inbound agent-call policy (UI: Agent visibility) ──
   callPolicy            AgentCallPolicy    @default(all) // 'all' = any org peer agent may call this as a sub-agent
   allowedCallerAgentIds String[]           @default([]) // agent.id set used when callPolicy='selected'
@@ -662,7 +653,6 @@ model Agent {
   org                   Org                        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   daemon                Daemon?                    @relation(fields: [daemonId], references: [id], onDelete: SetNull)
   createdBy             User?                      @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  owner                 User?                      @relation("AgentOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   lastModifiedBy        User?                      @relation("AgentModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   assignments           Assignment[]
   launches              AgentLaunch[]
@@ -686,7 +676,6 @@ model Agent {
   // another organization (organization-secrets-and-variables.md §5).
   @@unique([id, orgId])
   @@index([orgId])
-  @@index([orgId, ownerUserId])
   @@index([daemonId])
   @@map("agent")
 }
@@ -1360,15 +1349,14 @@ model CronDef {
   enabled              Boolean            @default(true)
   lastRunAt            DateTime?          @db.Timestamptz(6) // advisory (cron/report EVT, latest-wins); daemon authoritative
   createdByUserId      String? // WebUI user who created the cron (immutable audit; stamped on create only)
-  ownerUserId          String? // Current resource owner for restricted visibility; transferred when its member leaves.
   // Last-modification audit (human edits only): stamped on create AND on every
   // edit through the PUT upsert. Separate from `updatedAt`, which also bumps on
   // system writes (e.g. `lastRunAt` advanced by a daemon cron/report).
   lastModifiedByUserId String? // WebUI user who last edited the cron (null ⇒ never edited by a human)
   lastModifiedAt       DateTime           @default(now()) @db.Timestamptz(6) // defaults to createdAt; app-bumped on each upsert-edit
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
-  visibility           ResourceVisibility @default(org) // 'org' = all members; 'restricted' = ownership arm + sharedWith
-  sharedWith           String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  visibility           ResourceVisibility @default(org) // 'org' = all members; 'restricted' = the complete sharedWith audience
+  sharedWith           String[]           @default([]) // complete app_user.id audience when visibility='restricted'
   createdAt            DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
 
@@ -1376,12 +1364,10 @@ model CronDef {
   agent             Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
   targetIntegration Integration? @relation(fields: [targetIntegrationId], references: [id], onDelete: SetNull)
   createdBy         User?        @relation("CronCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  owner             User?        @relation("CronOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   lastModifiedBy    User?        @relation("CronModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   runs              CronRun[]
 
   @@index([orgId])
-  @@index([orgId, ownerUserId])
   @@index([agentId])
   @@index([targetIntegrationId])
   @@map("cron_def")
@@ -2225,24 +2211,21 @@ model McpProvider {
   url             String // upstream endpoint (non-secret; may appear in DTOs)
   // Console visibility — same Shareable model as Agent/Daemon/Cron
   // (docs/designs/resource-visibility.md): 'org' = every member sees it; 'restricted'
-  // = ownership arm + sharedWith. Governs console access only — an agent that
+  // = the complete sharedWith audience. Governs console access only — an agent that
   // already enabled a provider keeps reaching it regardless (never crosses the wire).
   visibility      ResourceVisibility @default(org)
-  sharedWith      String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  sharedWith      String[]           @default([]) // complete app_user.id audience when visibility='restricted'
   createdByUserId String?
-  ownerUserId     String? // Current resource owner for restricted visibility; transferred when its member leaves.
   createdAt       DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
 
   org       Org                @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy User?              @relation("McpProviderCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  owner     User?              @relation("McpProviderOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   secret    McpProviderSecret?
   grants    McpGrant[]
 
   @@unique([orgId, name])
   @@index([orgId])
-  @@index([orgId, ownerUserId])
   @@map("mcp_provider")
 }
 
@@ -2300,19 +2283,16 @@ model SkillSource {
   subDir          String? // optional repo-relative install dir
   skills          String[]           @default([]) // empty ⇒ install every skill; else only these (passed as -s)
   visibility      ResourceVisibility @default(org)
-  sharedWith      String[]           @default([]) // app_user.id set granted view when visibility='restricted'
+  sharedWith      String[]           @default([]) // complete app_user.id audience when visibility='restricted'
   createdByUserId String?
-  ownerUserId     String? // Current resource owner for restricted visibility; transferred when its member leaves.
   createdAt       DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
 
   org       Org   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy User? @relation("SkillSourceCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  owner     User? @relation("SkillSourceOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
 
   @@unique([orgId, name])
   @@index([orgId])
-  @@index([orgId, ownerUserId])
   @@map("skill_source")
 }
 

@@ -44,7 +44,6 @@ function toProviderRecord(p: McpProvider): McpProviderRecord {
     visibility: p.visibility as ResourceVisibility,
     sharedWith: p.sharedWith,
     createdByUserId: p.createdByUserId,
-    ownerUserId: p.ownerUserId,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt
   }
@@ -54,13 +53,11 @@ export class PgMcpProviderRepo implements McpProviderRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async create(input: CreateMcpProviderInput): Promise<McpProviderRecord> {
-    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return withAmbientTx(this.db, async (tx) => {
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
         actorUserId: input.createdByUserId,
-        ownerUserId,
         sharedWith: input.sharedWith
       })
       const p = await tx.mcpProvider.create({
@@ -72,8 +69,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
           ...(input.transport ? { transport: input.transport } : {}),
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
-          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
-          ...(ownerUserId ? { ownerUserId } : {})
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
         }
       })
       return toProviderRecord(p)
@@ -85,8 +81,8 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     return p ? toProviderRecord(p) : null
   }
 
-  // Same visibility filter as agents/daemons/crons: org-visible OR mine OR shared with
-  // me (undefined ⇒ unfiltered internal read). See visibilityWhere.
+  // Same visibility filter as agents/daemons/crons: org-visible OR explicitly
+  // selected (undefined ⇒ unfiltered internal read). See visibilityWhere.
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<McpProviderRecord[]> {
     const rows = await this.db.mcpProvider.findMany({
       where: { orgId, ...visibilityWhere(viewer) },
@@ -103,13 +99,12 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     return withAmbientTx(this.db, async (tx) => {
       const existing = await tx.mcpProvider.findUniqueOrThrow({
         where: { id },
-        select: { orgId: true, ownerUserId: true }
+        select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
         visibility: sharing.visibility,
         actorUserId: byUserId,
-        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       const p = await tx.mcpProvider.update({

@@ -39,7 +39,6 @@ function toRecord(c: CronWithUsers): CronRecord {
       ? { userId: c.createdBy.id, displayName: c.createdBy.displayName, email: c.createdBy.email }
       : null,
     createdByUserId: c.createdByUserId,
-    ownerUserId: c.ownerUserId,
     visibility: c.visibility,
     sharedWith: c.sharedWith,
     createdAt: c.createdAt,
@@ -54,7 +53,6 @@ export class PgCronRepo implements CronRepo {
   constructor(private readonly db: PrismaLike) {}
 
   async upsert(input: UpsertCronInput): Promise<CronRecord> {
-    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     const data = {
       orgId: input.orgId,
       agentId: input.agentId,
@@ -72,7 +70,6 @@ export class PgCronRepo implements CronRepo {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
         actorUserId: input.lastModifiedByUserId ?? input.createdByUserId,
-        ownerUserId,
         sharedWith: input.sharedWith
       })
       const c = await tx.cronDef.upsert({
@@ -85,7 +82,6 @@ export class PgCronRepo implements CronRepo {
           id: input.cronId,
           ...data,
           ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
-          ...(ownerUserId ? { ownerUserId } : {}),
           ...(input.lastModifiedByUserId ? { lastModifiedByUserId: input.lastModifiedByUserId } : {}),
           // Initial visibility on create only; the update branch never touches
           // sharing — that goes through setSharing / PUT /sharing.
@@ -111,13 +107,12 @@ export class PgCronRepo implements CronRepo {
     return withAmbientTx(this.db, async (tx) => {
       const existing = await tx.cronDef.findUniqueOrThrow({
         where: { id: cronId },
-        select: { orgId: true, ownerUserId: true }
+        select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
         visibility: sharing.visibility,
         actorUserId: byUserId,
-        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       // A sharing change is a human edit — advance the last-modified audit

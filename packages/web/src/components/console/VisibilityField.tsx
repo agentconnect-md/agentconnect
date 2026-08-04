@@ -15,9 +15,9 @@
  * - `RestrictedLock` — the small lock glyph shown next to a restricted resource's
  *   name in list rows.
  *
- * A resource owner who is still an organization member is pinned as a
- * non-removable locked chip. Every other member, including organization owners,
- * is a normal share target. Sharing is gated server-side by canManageSharing.
+ * Selected stores the complete audience. Every selected member is removable as
+ * long as at least one current organization member remains. Sharing is gated
+ * server-side by canManageSharing.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, Icon } from '@/components/ui'
@@ -49,34 +49,10 @@ function memberInitials(m: Pick<MemberDto, 'name' | 'email'>): string {
   return initialsFrom(m.name ?? '', m.email ?? undefined)
 }
 
-/** Members eligible to be toggled into the share set: everyone except the
- *  resource owner, whose ownership access cannot be removed here. */
-function useSharePool(ownerUserId?: string | null): MemberDto[] {
+/** Current organization members eligible for the Selected audience. */
+function useSharePool(): MemberDto[] {
   const { members } = useConsoleData()
-  return useMemo(() => members.filter((m) => m.userId !== ownerUserId), [members, ownerUserId])
-}
-
-/** The resource owner, resolved only after the member directory has loaded. */
-function useOwner(ownerUserId?: string | null): { owner?: MemberDto; membersLoaded: boolean } {
-  const { members, membersLoaded } = useConsoleData()
-  return useMemo(
-    () => ({
-      owner: ownerUserId ? members.find((m) => m.userId === ownerUserId) : undefined,
-      membersLoaded
-    }),
-    [members, membersLoaded, ownerUserId]
-  )
-}
-
-function ownerAccessNote(
-  owner: MemberDto | undefined,
-  ownerUserId: string | null | undefined,
-  membersLoaded: boolean
-): string {
-  if (!membersLoaded) return 'Owner access will be confirmed when organization members are available.'
-  if (owner) return 'The owner is included while they remain a member — you can’t remove them here.'
-  if (ownerUserId) return 'The recorded owner is no longer a member. Selected access can’t be saved.'
-  return 'Selected access requires an owner who is a current organization member.'
+  return members
 }
 
 // ── the create/edit control ──────────────────────────────────────────────────
@@ -84,24 +60,29 @@ function ownerAccessNote(
 export function VisibilityField({
   value,
   onChange,
-  ownerUserId,
   disabled,
   label = 'Visibility'
 }: {
   value: SharingValue
   onChange: (next: SharingValue) => void
-  /** The current resource owner's userId (self on create) — excluded from the pool. */
-  ownerUserId?: string | null
   disabled?: boolean
   /** Field label (e.g. "Team visibility" in the agent Access section). */
   label?: string
 }) {
   const isMobile = useIsMobile()
+  const { members } = useConsoleData()
   const restricted = value.visibility === 'restricted'
-  const pick = (visibility: ResourceVisibility) => !disabled && onChange({ ...value, visibility })
+  const currentUserId = members.find((member) => member.isCurrentUser)?.userId
+  const pick = (visibility: ResourceVisibility) => {
+    if (disabled) return
+    const sharedWith =
+      visibility === 'restricted' && value.sharedWith.length === 0 && currentUserId ? [currentUserId] : value.sharedWith
+    onChange({ visibility, sharedWith })
+  }
   const toggle = (userId: string) => {
     if (disabled) return
     const has = value.sharedWith.includes(userId)
+    if (has && value.sharedWith.length === 1) return
     onChange({
       ...value,
       sharedWith: has ? value.sharedWith.filter((id) => id !== userId) : [...value.sharedWith, userId]
@@ -118,9 +99,9 @@ export function VisibilityField({
       )}
       {restricted &&
         (isMobile ? (
-          <ShareWithPills selected={value.sharedWith} onToggle={toggle} ownerUserId={ownerUserId} />
+          <ShareWithPills selected={value.sharedWith} onToggle={toggle} />
         ) : (
-          <ShareWithList selected={value.sharedWith} onToggle={toggle} ownerUserId={ownerUserId} />
+          <ShareWithList selected={value.sharedWith} onToggle={toggle} />
         ))}
     </div>
   )
@@ -149,25 +130,15 @@ function VisibilityTiles({ restricted, onPick }: { restricted: boolean; onPick: 
   return (
     <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-2">
       {tile('org', 'globe', 'Everyone', 'All members can see it.')}
-      {tile('restricted', 'lock', 'Selected', 'The owner and people you choose.')}
+      {tile('restricted', 'lock', 'Selected', 'Only people you choose.')}
     </div>
   )
 }
 
 // ── desktop: searchable member list ──────────────────────────────────────────
 
-function ShareWithList({
-  selected,
-  onToggle,
-  ownerUserId
-}: {
-  selected: string[]
-  onToggle: (userId: string) => void
-  ownerUserId?: string | null
-}) {
-  const pool = useSharePool(ownerUserId)
-  const { owner, membersLoaded } = useOwner(ownerUserId)
-  const ownerUnavailable = membersLoaded && !owner
+function ShareWithList({ selected, onToggle }: { selected: string[]; onToggle: (userId: string) => void }) {
+  const pool = useSharePool()
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -208,16 +179,6 @@ function ShareWithList({
         }`}
       >
         <Icon name="search" size={14} color="var(--text-tertiary)" className="flex-none" />
-        {owner && (
-          <span
-            title="Included while they remain a member — you can’t remove them here"
-            className="inline-flex items-center gap-[5px] rounded-full bg-(--surface-active) py-[2px] pr-[7px] pl-[3px] font-sans text-[11.5px] font-medium leading-normal"
-          >
-            <Avatar src={owner.picture} initials={memberInitials(owner)} size={17} fontSize={8} />
-            {memberDisplayName(owner)}
-            <Icon name="lock" size={10} color="var(--text-tertiary)" className="flex-none" />
-          </span>
-        )}
         {chips.map((m) => (
           <span
             key={m.userId}
@@ -230,8 +191,12 @@ function ShareWithList({
                 e.stopPropagation()
                 onToggle(m.userId)
               }}
-              title="Remove access"
-              className="inline-flex h-[15px] w-[15px] cursor-pointer items-center justify-center rounded-full text-(--text-tertiary)"
+              title={selected.length === 1 ? 'Select another member before removing the last person' : 'Remove access'}
+              className={
+                selected.length === 1
+                  ? 'inline-flex h-[15px] w-[15px] cursor-not-allowed items-center justify-center rounded-full text-(--text-tertiary) opacity-45'
+                  : 'inline-flex h-[15px] w-[15px] cursor-pointer items-center justify-center rounded-full text-(--text-tertiary)'
+              }
             >
               <Icon name="x" size={10} />
             </span>
@@ -246,10 +211,10 @@ function ShareWithList({
           className="min-w-[110px] flex-1 border-0 bg-transparent py-[2px] font-sans text-[12.5px] font-normal leading-normal text-(--text-primary) outline-none"
         />
       </div>
-      {ownerUnavailable && !open && (
+      {selected.length === 0 && !open && (
         <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
           <Icon name="info" size={13} className="mt-[2px] flex-none" />
-          <span>{ownerAccessNote(owner, ownerUserId, membersLoaded)}</span>
+          <span>Select at least one organization member.</span>
         </div>
       )}
       {open && (
@@ -288,7 +253,11 @@ function ShareWithList({
           </div>
           <div className="flex items-start gap-[7px] border-t border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
             <Icon name="info" size={13} className="mt-[2px] flex-none" />
-            <span>{ownerAccessNote(owner, ownerUserId, membersLoaded)}</span>
+            <span>
+              {selected.length === 0
+                ? 'Select at least one organization member.'
+                : 'At least one organization member must remain selected.'}
+            </span>
           </div>
         </>
       )}
@@ -323,43 +292,22 @@ function VisibilityPills({ restricted, onPick }: { restricted: boolean; onPick: 
   )
 }
 
-function ShareWithPills({
-  selected,
-  onToggle,
-  ownerUserId
-}: {
-  selected: string[]
-  onToggle: (userId: string) => void
-  ownerUserId?: string | null
-}) {
-  const pool = useSharePool(ownerUserId)
-  const { owner, membersLoaded } = useOwner(ownerUserId)
-
-  // A current-member resource owner's non-removable access pill.
-  const lockedPill = (m: MemberDto) => (
-    <span
-      key={m.userId}
-      title="Included while they remain a member — you can’t remove them here"
-      className="inline-flex h-9 items-center gap-[7px] rounded-full border border-(--border-default) bg-(--surface-sunken) pr-3 pl-[6px] font-sans text-[13px] font-medium leading-normal text-(--text-secondary)"
-    >
-      <Avatar src={m.picture} initials={memberInitials(m)} size={24} fontSize={9} />
-      {memberDisplayName(m)}
-      <Icon name="lock" size={12} color="var(--text-tertiary)" />
-    </span>
-  )
+function ShareWithPills({ selected, onToggle }: { selected: string[]; onToggle: (userId: string) => void }) {
+  const pool = useSharePool()
 
   return (
     <>
       <span className="fldlbl mt-[14px] block">Share with</span>
       <div className="mt-[6px] flex flex-wrap gap-2">
-        {owner && lockedPill(owner)}
         {pool.map((m) => {
           const on = selected.includes(m.userId)
+          const lastSelected = on && selected.length === 1
           return (
             <button
               key={m.userId}
               type="button"
               onClick={() => onToggle(m.userId)}
+              title={lastSelected ? 'Select another member before removing the last person' : undefined}
               className={
                 on
                   ? 'inline-flex h-9 cursor-pointer items-center gap-[7px] rounded-full border border-(--brand) bg-(--brand-soft) pr-[14px] pl-[6px] font-sans text-[13px] font-semibold leading-normal text-(--brand)'
@@ -379,7 +327,11 @@ function ShareWithPills({
       </div>
       <div className="mt-[10px] flex items-start gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
         <Icon name="info" size={13} className="mt-[2px] flex-none" />
-        <span>{ownerAccessNote(owner, ownerUserId, membersLoaded)}</span>
+        <span>
+          {selected.length === 0
+            ? 'Select at least one organization member.'
+            : 'At least one organization member must remain selected.'}
+        </span>
       </div>
     </>
   )
@@ -387,16 +339,7 @@ function ShareWithPills({
 
 // ── read-only detail row ─────────────────────────────────────────────────────
 
-export function VisibilityValue({
-  visibility,
-  sharedWith,
-  ownerUserId
-}: {
-  visibility: ResourceVisibility
-  sharedWith: string[]
-  /** Current resource owner. Ownership grants access independently of sharedWith. */
-  ownerUserId?: string | null
-}) {
+export function VisibilityValue({ visibility, sharedWith }: { visibility: ResourceVisibility; sharedWith: string[] }) {
   const { members } = useConsoleData()
   if (visibility === 'org') {
     return (
@@ -406,9 +349,7 @@ export function VisibilityValue({
       </span>
     )
   }
-  // Owner first, then the explicit share set (deduped for legacy rows).
-  const ids = ownerUserId ? [ownerUserId, ...sharedWith.filter((id) => id !== ownerUserId)] : sharedWith
-  const resolved = ids.map((id) => members.find((m) => m.userId === id)).filter((m): m is MemberDto => !!m)
+  const resolved = sharedWith.map((id) => members.find((m) => m.userId === id)).filter((m): m is MemberDto => !!m)
   const shown = resolved.slice(0, 3)
   const extra = resolved.length - shown.length
   const title =
@@ -419,7 +360,7 @@ export function VisibilityValue({
     <span className="inline-flex items-center gap-2" title={title}>
       <Icon name="lock" size={14} color="var(--text-tertiary)" className="flex-none" />
       {resolved.length === 0 ? (
-        // Only when no current owner/share identity resolves (legacy or corrupt row).
+        // Only for a legacy/corrupt row whose audience no longer resolves.
         <span className="font-sans text-[12.5px] font-medium leading-normal">Restricted</span>
       ) : (
         <span className="inline-flex">

@@ -34,7 +34,6 @@ describe('cronUpdateInput', () => {
     lastModifiedAt: '2026-01-01T00:00:00.000Z',
     visibility: 'org',
     sharedWith: [],
-    ownerUserId: null,
     canEdit: true,
     canManageSharing: true
   }

@@ -151,7 +151,6 @@ function toDto(p: McpProviderRecord, ctx: ViewCtx, headers: McpHeader[]): McpPro
     visibility: p.visibility,
     sharedWith: p.sharedWith,
     createdBy: p.createdByUserId,
-    ownerUserId: p.ownerUserId,
     canEdit: canEdit(p, ctx),
     canManageSharing: canManageSharing(p, ctx),
     headerNames: headers.map((h) => h.name), // NEVER the values
@@ -372,7 +371,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           tags: [Tag.Mcp],
           summary: 'Set MCP provider sharing',
           description:
-            'Set an owned provider’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
+            'Set an MCP provider’s visibility (Everyone vs Selected) and complete Selected audience. Requires edit rights; Selected must retain at least one current organization member, and sharedWith is intersected with current membership.',
           operationId: 'setMcpProviderSharing',
           params: IdParam,
           body: SetSharingBody,

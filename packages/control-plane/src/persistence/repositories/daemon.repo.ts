@@ -52,7 +52,6 @@ function toRecord(d: DaemonWithUsers): DaemonRecord {
       ? { userId: d.createdBy.id, displayName: d.createdBy.displayName, email: d.createdBy.email }
       : null,
     createdByUserId: d.createdByUserId,
-    ownerUserId: d.ownerUserId,
     visibility: d.visibility,
     sharedWith: d.sharedWith,
     lastModifiedAt: d.lastModifiedAt,
@@ -70,8 +69,7 @@ export class PgDaemonRepo implements DaemonRepo {
       await lockResourceWriteMemberships(tx, {
         orgId,
         visibility: 'org',
-        actorUserId: createdByUserId,
-        ownerUserId: createdByUserId
+        actorUserId: createdByUserId
       })
       const daemon = await tx.daemon.create({
         data: {
@@ -80,9 +78,7 @@ export class PgDaemonRepo implements DaemonRepo {
           status: 'provisioned', // sessionEpoch defaults to 0 (§4.1)
           // Console-provisioned: the provisioning principal is both creator and
           // first last-modifier (lastModifiedAt defaults to now = createdAt).
-          ...(createdByUserId
-            ? { createdByUserId, ownerUserId: createdByUserId, lastModifiedByUserId: createdByUserId }
-            : {})
+          ...(createdByUserId ? { createdByUserId, lastModifiedByUserId: createdByUserId } : {})
         },
         include: withUsers
       })
@@ -194,13 +190,12 @@ export class PgDaemonRepo implements DaemonRepo {
     return withAmbientTx(this.db, async (tx) => {
       const existing = await tx.daemon.findUniqueOrThrow({
         where: { id: daemonId },
-        select: { orgId: true, ownerUserId: true }
+        select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
         visibility: sharing.visibility,
         actorUserId: byUserId,
-        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       // A sharing change is a human edit — advance the last-modified audit

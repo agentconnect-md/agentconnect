@@ -35,7 +35,6 @@ const AGENT: AgentRecord = {
   createdAt: new Date('2026-01-01T00:00:00Z'),
   createdBy: null,
   createdByUserId: null,
-  ownerUserId: null,
   visibility: 'org',
   sharedWith: [],
   callPolicy: 'all',

@@ -77,7 +77,6 @@ beforeEach(() => {
       visibility: 'org',
       sharedWith: [],
       createdBy: 'owner-1',
-      ownerUserId: 'owner-1',
       canEdit: true,
       canManageSharing: true,
       createdAt: '2026-07-30T00:00:00.000Z'

@@ -210,7 +210,7 @@ function ProviderTile({
       }
       footer={
         <div className="flex min-w-0 items-center gap-2">
-          <VisibilityValue visibility={p.visibility} sharedWith={p.sharedWith} ownerUserId={p.ownerUserId} />
+          <VisibilityValue visibility={p.visibility} sharedWith={p.sharedWith} />
           <span className="mono ml-auto flex-none text-[10.5px] text-(--text-disabled)">
             added {fmtDate(p.createdAt)}
           </span>
@@ -367,7 +367,7 @@ function CreateMcpProviderModal({ onClose }: { onClose: () => void }) {
             </span>
           </div>
           <HeadersEditor rows={headers} onChange={setHeaders} />
-          <VisibilityField value={sharing} onChange={setSharing} ownerUserId={me?.userId} />
+          <VisibilityField value={sharing} onChange={setSharing} />
         </div>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
       </div>
@@ -490,12 +490,7 @@ function EditMcpProviderModal({ provider, onClose }: { provider: McpProviderDto;
               </span>
             </div>
           )}
-          <VisibilityField
-            value={sharing}
-            onChange={setSharing}
-            ownerUserId={provider.ownerUserId}
-            disabled={!provider.canManageSharing}
-          />
+          <VisibilityField value={sharing} onChange={setSharing} disabled={!provider.canManageSharing} />
         </div>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
       </div>
@@ -728,12 +723,7 @@ function EditConnectorModal({ provider, onClose }: { provider: McpProviderDto; o
             </div>
           )}
 
-          <VisibilityField
-            value={sharing}
-            onChange={setSharing}
-            ownerUserId={provider.ownerUserId}
-            disabled={!provider.canManageSharing}
-          />
+          <VisibilityField value={sharing} onChange={setSharing} disabled={!provider.canManageSharing} />
         </div>
         {err && <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
       </div>

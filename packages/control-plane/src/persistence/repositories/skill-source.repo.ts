@@ -55,7 +55,6 @@ function toRecord(s: SkillSource): SkillSourceRecord {
     visibility: s.visibility as ResourceVisibility,
     sharedWith: s.sharedWith,
     createdByUserId: s.createdByUserId,
-    ownerUserId: s.ownerUserId,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt
   }
@@ -73,7 +72,6 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
    * instances, not just this process.
    */
   async create(input: CreateSkillSourceInput): Promise<SkillSourceRecord | null> {
-    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return withAmbientTx(this.db, async (tx) => {
       await lockSkillSourceNameScope(tx, input.orgId, input.name)
       if (await skillSourceNameReferenced(tx, input.orgId, input.name)) return null
@@ -81,7 +79,6 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
         actorUserId: input.createdByUserId,
-        ownerUserId,
         sharedWith: input.sharedWith
       })
       const s = await tx.skillSource.create({
@@ -95,8 +92,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
           ...(input.skills ? { skills: input.skills } : {}),
           ...(input.visibility ? { visibility: input.visibility } : {}),
           ...(memberships.sharedWith ? { sharedWith: memberships.sharedWith } : {}),
-          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {}),
-          ...(ownerUserId ? { ownerUserId } : {})
+          ...(input.createdByUserId ? { createdByUserId: input.createdByUserId } : {})
         }
       })
       return toRecord(s)
@@ -108,7 +104,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
     return s ? toRecord(s) : null
   }
 
-  // Same visibility filter as agents/MCP: org-visible OR mine OR shared with me
+  // Same visibility filter as agents/MCP: org-visible OR explicitly selected
   // (undefined ⇒ unfiltered internal read). See visibilityWhere.
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]> {
     const rows = await this.db.skillSource.findMany({
@@ -131,7 +127,7 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
     return withAmbientTx(this.db, async (tx) => {
       const existing = await tx.skillSource.findUniqueOrThrow({
         where: { id },
-        select: { orgId: true, name: true, ownerUserId: true }
+        select: { orgId: true, name: true }
       })
       // Agent enable-list writes authorize against source visibility inside the
       // same (orgId, name) advisory scope (name is immutable, so the pre-lock
@@ -142,7 +138,6 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
         orgId: existing.orgId,
         visibility: sharing.visibility,
         actorUserId: byUserId,
-        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       const s = await tx.skillSource.update({

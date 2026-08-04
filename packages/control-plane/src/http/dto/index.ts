@@ -33,8 +33,8 @@ import { TelegramCreateCredentials } from '../../platforms/telegram/provider.js'
 import { DiscordCreateCredentials } from '../../platforms/discord/provider.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
-/** 'org' = visible to every org member (default); 'restricted' = the current
- *  ownership arm + the `sharedWith` set. */
+/** 'org' = visible to every org member (default); 'restricted' = the complete
+ *  non-empty `sharedWith` audience. */
 export const ResourceVisibilityEnum = z.enum(['org', 'restricted'])
 /** Per-SESSION visibility (docs/designs/session-visibility.md §1) — a different
  *  tier vocabulary from `ResourceVisibilityEnum`: sessions have no share set,
@@ -49,8 +49,8 @@ export const SessionVisibilityStateEnum = z.enum(['pending', 'applied'])
 export const SetSharingBody = z
   .object({
     visibility: ResourceVisibilityEnum,
-    // app_user.id set; ignored while `visibility === 'org'` (kept, restore-friendly).
-    // The route intersects this with current org members before storing.
+    // Complete app_user.id audience; ignored while `visibility === 'org'`
+    // (kept, restore-friendly). The route intersects it with current members.
     sharedWith: z.array(z.string()).default([])
   })
   .strict()
@@ -203,14 +203,13 @@ export const DaemonViewDto = z.object({
   lastSeenAt: z.string().nullable(),
   createdAt: z.string(), // ISO-8601
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/self-registered
-  ownerUserId: z.string().nullable(), // current resource owner; null for genuinely ownerless/system rows
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for system rows
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
-  sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
+  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
-  canManageSharing: z.boolean(), // canEdit + owned row; gates the sharing control
+  canManageSharing: z.boolean(), // visible + non-viewer; gates the sharing control
   /** Whether the CALLER may command restart/upgrade on this daemon (org OWNER only, §7).
    *  Gates the console's lifecycle controls so non-owners never see an action they'd 403 on. */
   canManageLifecycle: z.boolean()
@@ -664,14 +663,13 @@ export const AgentDto = z.object({
   capabilities: z.array(z.string()),
   createdAt: z.string(), // ISO-8601
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for daemon/CLI-created
-  ownerUserId: z.string().nullable(), // current resource owner; separate from immutable creator audit
   lastModifiedAt: z.string(), // ISO-8601; last human edit, defaults to createdAt
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for daemon/CLI-created
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
-  sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
+  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
-  canManageSharing: z.boolean(), // canEdit + owned row; gates sharing
+  canManageSharing: z.boolean(), // visible + non-viewer; gates sharing
   callPolicy: AgentCallPolicyEnum, // which peer agents may call this agent as a sub-agent
   allowedCallerAgentIds: z.array(z.string()), // agent.id set, meaningful when callPolicy='selected'
   outboundPolicy: AgentCallPolicyEnum, // which peer agents this agent may discover/call
@@ -908,9 +906,8 @@ export const McpProviderDto = z.object({
   // non-secret binding marker, surfaced so the console can show the provider's icon.
   service: z.string().optional(),
   visibility: z.string(), // 'org' | 'restricted'
-  sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
+  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
   createdBy: z.string().nullable(), // immutable creator audit; null when unknown
-  ownerUserId: z.string().nullable(), // current resource owner; pins the non-removable access chip
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
   canManageSharing: z.boolean(), // whether THIS caller may change the provider's sharing
   headerNames: z.array(z.string()), // upstream auth header keys; values are secret and never returned
@@ -1053,7 +1050,6 @@ export const SkillSourceDto = z.object({
   visibility: z.string(), // 'org' | 'restricted'
   sharedWith: z.array(z.string()),
   createdBy: z.string().nullable(),
-  ownerUserId: z.string().nullable(),
   canEdit: z.boolean(),
   canManageSharing: z.boolean(),
   createdAt: z.string() // ISO-8601
@@ -1972,19 +1968,16 @@ export const MemberListDto = z.array(MemberDto)
  *  confirmation dialog. Advisory: nothing is locked, and the real decision is
  *  re-derived inside the DELETE transaction. */
 export const MemberRemovalPreviewDto = z.object({
-  // Null when removal would be refused anyway (the last owner has no successor).
-  transferTo: MemberDto.nullable(),
+  // Added only to Selected audiences that would otherwise become empty. Null
+  // when removal would be refused anyway (the final owner has no successor).
+  replacement: MemberDto.nullable(),
   resources: z.array(
     z.object({
       kind: z.enum(['agent', 'daemon', 'cron', 'mcpProvider', 'skillSource']),
-      owned: z.number().int(),
-      // Not org-visible: reached through ownership or an explicit share.
-      restricted: z.number().int(),
-      // The subset of `restricted` with no OTHER member on its share list, so
-      // after the transfer only `transferTo` could see it. This is the part that
-      // silently disappears from everyone else's console; the rest stay visible
-      // to the members they are already shared with.
-      recipientOnly: z.number().int()
+      // Selected resources whose explicit audience contains the departing member.
+      selected: z.number().int(),
+      // The subset with no other current member; `replacement` is added to these.
+      reassigned: z.number().int()
     })
   )
 })
@@ -2194,15 +2187,14 @@ export const CronDto = z.object({
   enabled: z.boolean(),
   lastRunAt: z.string().nullable(),
   createdBy: z.string().nullable(), // creator's userId (web resolves to a name / "You"); null for CLI/legacy
-  ownerUserId: z.string().nullable(), // current resource owner; separate from immutable creator audit
   createdAt: z.string(),
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for CLI/legacy
   lastModifiedAt: z.string(),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
-  sharedWith: z.array(z.string()), // app_user.id set (only meaningful when restricted)
+  sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
   canEdit: z.boolean(), // visible + non-viewer; gates non-sharing edits
-  canManageSharing: z.boolean() // canEdit + owned row; gates the sharing control
+  canManageSharing: z.boolean() // visible + non-viewer; gates the sharing control
 })
 
 // One daemon-reported fire (console run history). `running` = fire report seen,

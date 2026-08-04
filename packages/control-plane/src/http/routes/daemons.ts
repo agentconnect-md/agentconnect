@@ -157,7 +157,6 @@ function toDto(
     // The creator's userId — the web resolves it to a display name (or "You"). A
     // synthesized placeholder email (`<sub>@oidc.local`) means a non-human creator → null.
     createdBy: view.createdBy && !isSyntheticEmail(view.createdBy.email) ? view.createdBy.userId : null,
-    ownerUserId: view.ownerUserId,
     lastModifiedAt: view.lastModifiedAt.toISOString(),
     lastModifiedBy:
       view.lastModifiedBy && !isSyntheticEmail(view.lastModifiedBy.email) ? view.lastModifiedBy.userId : null,
@@ -349,8 +348,8 @@ export function daemonRoutes(deps: HttpDeps) {
       }
     )
 
-    // Set who can see this daemon (visibility + share set). Gated exactly like a
-    // content edit on owned rows (§13.3); ownerless rows stay org-visible.
+    // Set who can see this daemon (visibility + complete Selected audience).
+    // Gated exactly like a content edit (§13.3).
     // Independent of any agent's visibility — a daemon can be restricted-away
     // while its agents stay org-visible.
     r.put(
@@ -360,7 +359,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Set daemon sharing',
           description:
-            'Set an owned daemon’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
+            'Set a daemon’s visibility (Everyone vs Selected) and complete Selected audience. Requires edit rights; Selected must retain at least one current organization member, and sharedWith is intersected with current membership.',
           operationId: 'setDaemonSharing',
           params: IdParam,
           body: SetSharingBody,

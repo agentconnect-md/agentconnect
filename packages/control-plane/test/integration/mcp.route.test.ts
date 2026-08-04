@@ -553,7 +553,11 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
     const visible = randomUUID()
     const restricted = randomUUID()
     await seedAgent(prisma, visible)
-    await seedAgent(prisma, restricted, { visibility: 'restricted', createdByUserId: DEFAULT_OWNER_ID })
+    await seedAgent(prisma, restricted, {
+      visibility: 'restricted',
+      sharedWith: [DEFAULT_OWNER_ID],
+      createdByUserId: DEFAULT_OWNER_ID
+    })
 
     // Non-granted collaborator: the restricted agent is invisible in list and reads 404 on get.
     const listed = JSON.parse(toolText(await callTool(app, key, 'listAgents'))) as Array<{ id: string }>

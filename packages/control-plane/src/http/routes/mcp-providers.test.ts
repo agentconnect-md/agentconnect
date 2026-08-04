@@ -13,7 +13,6 @@ const provider: McpProviderRecord = {
   visibility: 'org',
   sharedWith: [],
   createdByUserId: null,
-  ownerUserId: null,
   createdAt: new Date(),
   updatedAt: new Date()
 }

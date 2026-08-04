@@ -4,10 +4,10 @@
 > sharing controls, and referenced-resource validation all use the same
 > visibility contract. User-facing labels are **Everyone** and **Selected**.
 > Resource and session decisions converge through
-> [`authorization-policy.md`](authorization-policy.md). Resource ownership is
-> independent from immutable creation attribution; normal member removal
-> transfers all five visibility carriers atomically, and competing last-owner
-> demotions/removals serialize on the organization row.
+> [`authorization-policy.md`](authorization-policy.md). A Selected member list
+> is the complete human audience; immutable creation attribution grants no
+> access. Normal member removal prunes all five visibility carriers atomically
+> and repairs only audiences that would otherwise become empty.
 > Section 14 (platform conversation gating) is a **proposed** addendum, not yet
 > implemented.
 >
@@ -40,7 +40,7 @@ This design adds **per-resource visibility**:
 
 | Decision                                   | Choice                                                                                                                                                                                 | Meaning                                                                                                               |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                           | Ownership/sharing controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
+| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                           | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
 | Does an owner have a governance exception? | **No**                                                                                                                                                                                 | Organization ownership grants org administration, never access to another member's restricted resource.               |
 | Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source are independent.** Integration, Session, Usage, CronRun, and daemon API keys derive from a parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
 
@@ -48,50 +48,40 @@ This design adds **per-resource visibility**:
 
 ```ts
 canView(res, { userId, role }) =
-  res.ownerUserId === userId || // Current resource owner
   res.visibility === 'org' || // Visible to everyone by default
-  res.sharedWith.includes(userId) // Explicit share
+  res.sharedWith.includes(userId) // Complete Selected audience
 
 canEdit(res, ctx) =
   ctx.role === 'viewer'
     ? false // A viewer is always read-only
     : canView(res, ctx)
 
-canManageSharing(res, ctx) =
-  res.ownerUserId !== null && // Ownerless org resources stay public
-  canEdit(res, ctx) // Relaxed in section 13.3 for owned resources
+canManageSharing(res, ctx) = canEdit(res, ctx)
 ```
 
-The unit-test truth table follows directly. After relaxation,
-`canManageSharing` equals `canEdit` on resources with a current owner:
+The unit-test truth table follows directly:
 
-| Scenario                                | Role         | Resource owner? | In `sharedWith`? | Visibility | `canView` | `canEdit` | `canManageSharing` |
-| --------------------------------------- | ------------ | --------------- | ---------------- | ---------- | --------- | --------- | ------------------ |
-| Owned org resource, any collaborator    | collaborator | No              | N/A              | org        | Yes       | Yes       | Yes                |
-| Ownerless default resource              | collaborator | N/A             | N/A              | org        | Yes       | Yes       | No                 |
-| Default resource, viewer                | viewer       | No              | N/A              | org        | Yes       | No        | No                 |
-| Restricted, unshared collaborator       | collaborator | No              | No               | restricted | No        | No        | No                 |
-| Restricted, shared collaborator         | collaborator | No              | Yes              | restricted | Yes       | Yes       | Yes                |
-| Restricted, shared viewer               | viewer       | No              | Yes              | restricted | Yes       | No        | No                 |
-| Restricted, ownership arm               | collaborator | Yes             | N/A              | restricted | Yes       | Yes       | Yes                |
-| Restricted, unshared organization owner | owner        | No              | No               | restricted | No        | No        | No                 |
+| Scenario                              | Role         | In `sharedWith`? | Visibility | `canView` | `canEdit` | `canManageSharing` |
+| ------------------------------------- | ------------ | ---------------- | ---------- | --------- | --------- | ------------------ |
+| Everyone resource, collaborator       | collaborator | N/A              | org        | Yes       | Yes       | Yes                |
+| Everyone resource, viewer             | viewer       | N/A              | org        | Yes       | No        | No                 |
+| Selected, unshared collaborator       | collaborator | No               | restricted | No        | No        | No                 |
+| Selected, shared collaborator         | collaborator | Yes              | restricted | Yes       | Yes       | Yes                |
+| Selected, shared viewer               | viewer       | Yes              | restricted | Yes       | No        | No                 |
+| Selected, unshared organization owner | owner        | No               | restricted | No        | No        | No                 |
 
-**Sharing management was relaxed to "any editor may change sharing" for
-resources with a current owner.** A collaborator or owner for whom `canView`
-is true may change `visibility` and `sharedWith`. Viewers remain read-only.
-Ownerless organization-visible resources remain content-editable but expose
-no sharing control: without a durable owner, restricting one would either
-orphan it or let an arbitrary collaborator seize it.
+A collaborator or organization owner for whom `canView` is true may change
+`visibility` and `sharedWith`. Viewers remain read-only. Creation attribution
+and the organization Owner role never create a hidden visibility arm.
 
 This has two consequences:
 
-1. **Restriction strength depends on shared collaborators.** A collaborator can
-   share onward or switch the resource to organization-wide visibility. A
-   resource owner who needs tighter control should share only with viewers.
-2. **Any collaborator can change an owned `org` resource to restricted and
-   select only themselves**, hiding it from other collaborators and
-   organization owners. The resource's ownership arm retains access and can
-   restore it.
+1. **Restriction strength depends on selected collaborators.** A collaborator
+   can share onward or switch the resource to Everyone. Use viewers when the
+   selected members should remain read-only.
+2. **Any collaborator can change an Everyone resource to Selected** and choose
+   a non-empty audience. The creator and organization owners retain no implicit
+   access if omitted.
 
 Both are accepted under a model of collaborator trust within an organization.
 
@@ -120,14 +110,12 @@ enum ResourceVisibility {
 }
 ```
 
-Each visibility carrier keeps immutable creator audit separate from the current
-resource owner:
+Each visibility carrier keeps immutable creator audit separate from access:
 
 ```prisma
 createdByUserId String? // immutable attribution
-ownerUserId     String? // effective ownership; transferred on member removal
 visibility  ResourceVisibility @default(org)
-sharedWith  String[]           @default([])  // app_user.id values; meaningful only when restricted
+sharedWith  String[]           @default([])  // complete, non-empty app_user.id audience when restricted
 ```
 
 `String[] @default([])` is an established repository pattern used by
@@ -142,17 +130,13 @@ has `visibility = 'org'`, making the column almost constant. A composite B-tree
 cannot cover the three-branch OR predicate and only adds write amplification.
 Section 6 defines the index strategy.
 
-`Shareable` carries `ownerUserId`, `visibility`, and `sharedWith`.
-Persistence records additionally retain raw `createdByUserId` for audit and
-the joined creator used by Console DTOs. Creation defaults ownership to the
-creator when one exists; system-created rows may remain ownerless and are
-organization-visible by default. Ownerless rows cannot be changed to
-restricted visibility. A restricted write also rechecks that the recorded owner
-is still a current organization member after taking membership locks. The write
-is rejected rather than allowing share filtering or a concurrent removal to
-leave no current member able to reach the resource. Assigning ownership later
-requires a separate, provenance-aware workflow; the sharing endpoint never lets
-an arbitrary editor claim one.
+`Shareable` carries only `visibility` and `sharedWith`. Persistence records
+additionally retain raw `createdByUserId` for audit and the joined creator used
+by Console DTOs. New resources default to Everyone. A Selected create or
+sharing write locks the actor and requested audience memberships, intersects
+the submitted IDs with current organization members, deduplicates them, and
+rejects the write if the resulting audience is empty. A database CHECK
+constraint also prevents a persisted Selected row with an empty array.
 
 After the schema change, run
 `pnpm --filter @agentconnect.md/control-plane prisma:generate` to regenerate the
@@ -325,8 +309,8 @@ restricted agent's tokens and spend would leak existence and cost through an
 organization aggregate.
 
 - Add `viewer?` to `SessionUsageRepo.aggregate(orgId, since, viewer?)` at
-  `session-usage.repo.ts:48` and pass `ctxOf(req)` from `usage.ts`. Owners
-  short-circuit to an empty filter. Both internal queries, groupBy at `:51` and
+  `session-usage.repo.ts:48` and pass `ctxOf(req)` from `usage.ts`. Every human
+  role uses the same visibility filter. Both internal queries, groupBy at `:51` and
   distinct currency at `:91`, already organize by agent relation.
 - For performance, compute the visible agent ID set for the viewer once with
   one indexed query by `orgId`, then pass `agentId IN (...)` to both queries.
@@ -341,10 +325,8 @@ needed, use `where: { cron: { ...visibilityWhere(viewer) } }`.
 
 ### 5.8 Sharing writes through dedicated `/api/v1` endpoints
 
-Sharing writes use the **same gate as content edits for resources with a
-current owner**, because section 13.3 relaxed `canManageSharing` to `canEdit`
-for those rows. Ownerless organization-visible resources remain editable but
-cannot be restricted.
+Sharing writes use the **same gate as content edits**:
+`canManageSharing = canEdit`.
 Register three route pairs with prefix-relative paths inside the existing
 organization subtree, for example `r.put('/agents/:id/sharing', ...)`. The
 organization routes are mounted at `server.ts:143-146`, and `API_V1_PREFIX` is
@@ -358,12 +340,12 @@ defined at `version.ts:26`. Public paths are
   `visibility` and `sharedWith`, stamp
   `lastModifiedByUserId`, and make it idempotent. The paired GET returns
   `{ visibility, sharedWith: string[], canManageSharing: boolean }`, where the
-  boolean is the caller's `canEdit` result only when `ownerUserId` is present.
+  boolean is the caller's `canEdit` result.
 - `/daemons/:id/sharing` uses `DaemonRepo.setSharing`, and
   `/crons/:id/sharing` follows the same shape.
-- **Validate `sharedWith` on write:** every ID must currently belong to the
-  organization. Otherwise return 400, or intersect silently and return the
-  resolved set from GET, to avoid a silent lockout from external or stale IDs.
+- **Validate `sharedWith` on write:** intersect IDs with current organization
+  membership, return the resolved set, and reject Selected with 409 when the
+  resolved audience is empty.
 - Return raw `string[]` user IDs for `sharedWith`. Web has a user-ID-to-name
   member directory through `setMemberDirectory` and
   `creatorLabel` at `api.ts:607-631`; server hydration to `MemberDto[]` is
@@ -399,7 +381,7 @@ The WHERE clause for every human role is:
 
 ```sql
 WHERE "orgId" = $1
-  AND ("visibility" = 'org' OR "ownerUserId" = $2 OR "sharedWith" @> ARRAY[$2])
+  AND ("visibility" = 'org' OR "sharedWith" @> ARRAY[$2])
 ```
 
 Only internal callers that omit the principal receive an unfiltered
@@ -412,10 +394,8 @@ human principal.
   accelerate the three-column disjunction, and adds write amplification.
 - **Create GIN indexes immediately.** Array containment on `sharedWith` is on
   the default human-read path, not an edge case. Add
-  `CREATE INDEX ... USING GIN ("sharedWith")` to all three tables. Empty arrays
+  `CREATE INDEX ... USING GIN ("sharedWith")` to all five tables. Empty arrays
   are cheap, and the index removes a sequential scan from the default path.
-  Add `(orgId, ownerUserId)` B-tree indexes to the five visibility carriers for
-  ownership lookups and member-removal transfers.
 - Do **not** apply a second in-memory `.filter` at runtime. SQL WHERE is
   authoritative. Assert in tests that SQL rows equal
   `rows.filter(canView)`, rather than adding another O(n) scan to unpaginated
@@ -441,9 +421,9 @@ human principal.
   `daemonId`--must pass `canView` on the target. Its failure response must match
   a nonexistent ID so the endpoint cannot become an existence oracle.
 
-## 8. Member removal and ownership transfer
+## 8. Member removal and audience repair
 
-### 8.1 Transfer ownership and prune sharing in the same transaction
+### 8.1 Prune and repair sharing in the same transaction
 
 Users are provisioned just in time from OIDC `sub`, and `app_user.id` is
 **stable**. Reinviting a removed member reuses the same ID. If pruning were only
@@ -453,10 +433,10 @@ restore shared access upon reinvitation.
 **Pruning is a correctness dependency, not hygiene.** For Agent, Daemon,
 CronDef, McpProvider, and SkillSource, the transaction:
 
-1. changes `ownerUserId` from the departing member to the selected remaining
-   organization owner (§8.2);
-2. removes the departing ID from `sharedWith`;
-3. leaves `createdByUserId` unchanged;
+1. removes the departing ID from every `sharedWith` array;
+2. for a Selected resource that would otherwise have no current member, adds
+   the deterministic repair member from §8.2;
+3. leaves `visibility` and `createdByUserId` unchanged;
 4. deletes the membership last.
 
 Owner demotion, removal, and invited-identity role merge first lock the
@@ -465,40 +445,32 @@ conflicts with organization deletion, while remaining compatible with the
 parent `FOR KEY SHARE` held by ordinary resource writes. Any member may remove
 their own membership; removing someone else remains owner-only. Removal then
 rechecks the actor's membership and any required owner role, chooses the
-transfer recipient from an authoritative membership snapshot, and locks the
-departing and recipient rows inside the same transaction. Every
-ownership-bearing resource create and dedicated sharing write uses the matching
+repair member from an authoritative membership snapshot, and locks the
+departing and repair rows inside the same transaction. Every resource create
+and dedicated sharing write uses the matching
 persistence seam: in the same transaction as the resource mutation it first
-protects the parent organization `FOR KEY SHARE`, then locks the current actor,
-initial owner, and requested share targets `FOR SHARE`, rechecks membership, and
+protects the parent organization `FOR KEY SHARE`, then locks the current actor
+and requested audience members `FOR SHARE`, rechecks membership, and
 intersects `sharedWith` again. The parent-first order remains compatible with
 organization deletion; the shared/exclusive membership lock pair establishes a
 commit order:
 
-- if the resource write commits first, removal waits and then transfers or
-  prunes that row;
-- if removal commits first, the queued write observes the missing actor/owner
-  and fails, while a departed share target is omitted.
+- if the resource write commits first, removal waits and then prunes or repairs
+  that row;
+- if removal commits first, the queued write observes the missing actor and
+  fails, while a departed audience member is omitted.
 
-The ownership migration sequence also intersects all five existing share
-vectors with current organization membership. This repairs stale stable user
-IDs left by older removal paths before a later re-invite can reactivate them.
+The Selected-audience migration folds every former resource owner into
+`sharedWith`, intersects all five arrays with current membership, deduplicates
+them, and deterministically backfills a current member only for legacy
+Selected rows that would otherwise be empty. It then adds non-empty CHECK
+constraints and drops the obsolete ownership columns and indexes.
 
-The initial ownership migration is not safe to run while any older Control
-Plane binary, admin job, or operator tool can still write organizations,
-memberships, or the five resource tables: older writers neither initialize nor
-transfer `ownerUserId`. Drain every such writer before applying the migrations,
-and start the ownership-aware version only after `migrate deploy` completes
-successfully. Each migration is explicitly transactional; if a later migration
-fails after an earlier one committed, keep the application stopped and repair
-forward.
-
-This is a coordinated, **forward-only** deployment boundary, not a rolling
-mixed-version upgrade. Once the ownership-aware binary has transferred an
-owner, rolling back only the application binary is unsupported: the old policy
-would read immutable `createdByUserId` as authority and could restore a departed
-creator's access. Recovery requires a forward fix or a coordinated full
-database restore, not an old-binary restart.
+This is a coordinated, **forward-only** deployment boundary. Older Control
+Plane binaries still read and write `ownerUserId`, so drain them before
+applying the migration and start the new version only after `migrate deploy`
+completes. Recovery uses a forward fix or coordinated database restore, not an
+old-binary restart.
 
 The HTTP `resolveShareSet` call remains useful early normalization, but it is
 not the correctness boundary because membership can change before the resource
@@ -509,30 +481,21 @@ rejects before either a demotion or membership deletion commits. No
 post-transaction compensation is used.
 
 This workflow covers managed membership removal only. Direct deletion of an
-`app_user` row is unsupported and does not run ownership transfer.
+`app_user` row is unsupported and does not run audience repair.
 
-### 8.2 Choosing the recipient, and showing it before the fact
+### 8.2 Choosing the repair member, and showing it before the fact
 
-Transfer keeps a resource inside the organization, but for a **restricted** one
-it also decides who can still see it. A restricted resource is reached through
-its ownership arm OR an explicit `sharedWith` grant, and no role overrides
-either (§4); removal preserves every remaining member's grant and prunes only
-the departing one (§8.1). So the ones whose visibility actually rides on this
-decision are those **nobody else was granted** — for them, "which owner
-inherits" is a user-visible outcome, not an implementation detail, and an
-unlucky choice reads as data loss to everyone else, including other owners.
+Most removals only prune one ID because another current member remains selected.
+Only an audience that would become empty needs a repair member. No additional
+organization owners are added.
 
-Two cases, one rule each:
+Two cases use deterministic rules:
 
-- **An owner removes someone else** — the acting owner inherits. They made the
-  decision, so they carry what it leaves behind, and they can immediately
-  re-share or re-classify.
-- **A member leaves on their own** — there is no actor to inherit, so the
-  organization's **longest-standing owner** does: `membership.createdAt`
-  ascending, ties broken by `userId` so concurrent joins still resolve
-  deterministically. It is the closest available stand-in for "whoever runs this
-  organization", and unlike a role-order or id-order pick it does not move when
-  someone is promoted or a new owner joins.
+- **An Owner removes someone else** — add the acting Owner where repair is
+  required. They can immediately re-share or re-classify the resource.
+- **A member leaves on their own** — add the organization's
+  **longest-standing remaining Owner**: `membership.createdAt` ascending, ties
+  broken by `userId`.
 
 `membership.createdAt` exists for this. Before it, the table carried no
 timestamps, so both this choice (`ORDER BY "userId"` over timestamp-prefixed
@@ -543,21 +506,15 @@ organization they are leaving. Existing rows were backfilled from the cuid in
 is historically accurate rather than merely well-defined going forward; rows
 whose id is not a cuid fall back to `max(account, organization)` creation.
 
-Because the choice is consequential, it is also **shown before it happens**.
-`GET /members/:id/removal-preview` returns the prospective recipient plus the
-departing member's owned-resource counts per kind, and the console renders it in
-the leave/remove confirmation. The counts distinguish `restricted` from the
-`recipientOnly` subset of it — restricted rows whose remaining `sharedWith`
-holds no other CURRENT member — because only the latter leaves everyone else's
-console. Claiming otherwise would be the same mistake the preview exists to
-prevent, in the opposite direction. The preview takes no locks and is never an
-authorization input: it shares the removal's authorization (§8.1) but the
-transaction re-derives the recipient itself, so a race can only make the dialog
-stale, never the transfer wrong.
+Because the repair choice is consequential, it is **shown before it happens**.
+`GET /members/:id/removal-preview` returns `replacement` plus per-kind
+`selected` and `reassigned` counts. `selected` counts affected Selected
+audiences; `reassigned` counts the subset that would otherwise become empty.
+The preview takes no locks and is never an authorization input: removal
+re-derives the repair member and counts inside its transaction.
 
-This does not extend visibility to the other owners. A restricted resource stays
-restricted across a transfer; the recipient may widen it afterwards through the
-ordinary sharing route.
+A resource stays Selected throughout repair. Organization roles do not widen
+its audience afterwards.
 
 ## 9. Data-plane isolation: visibility never enters the daemon wire
 
@@ -606,7 +563,7 @@ migrations and must not rewrite that file:
 ```sql
 -- Per-resource visibility for Agent, Daemon, and CronDef.
 -- 'org' is the current default visible to everyone.
--- 'restricted' means ownership arm + sharedWith.
+-- 'restricted' means the complete, non-empty sharedWith audience.
 -- DEFAULT 'org' and an empty array backfill every row in place without a null
 -- intermediate.
 CREATE TYPE "ResourceVisibility" AS ENUM ('org', 'restricted');
@@ -619,7 +576,7 @@ ALTER TABLE "cron_def" ADD COLUMN "visibility" "ResourceVisibility" NOT NULL DEF
                        ADD COLUMN "sharedWith" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
 
 -- GIN indexes from section 13.2 remove array-containment sequential scans from
--- the default non-owner read path.
+-- the default human read path.
 CREATE INDEX "agent_sharedWith_gin_idx"    ON "agent"    USING GIN ("sharedWith");
 CREATE INDEX "daemon_sharedWith_gin_idx"   ON "daemon"   USING GIN ("sharedWith");
 CREATE INDEX "cron_def_sharedWith_gin_idx" ON "cron_def" USING GIN ("sharedWith");
@@ -645,7 +602,7 @@ handler.
 ## 11. Web Console
 
 - **DTOs and Console:** `AgentDto`, `DaemonViewDto`, and `CronDto` carry
-  `visibility`, `sharedWith`, `ownerUserId`, and server-computed `canEdit` /
+  `visibility`, `sharedWith`, and server-computed `canEdit` /
   `canManageSharing` in
   `http/dto/index.ts`; web `api.ts` mirrors them:
   `AgentDto` at `:82-100`, `DaemonViewDto` at `:309-325`, and `CronDto` at
@@ -653,24 +610,22 @@ handler.
   `daemonFromDto` at `api.ts:744`. Add
   `fetchSharing(kind, id)` and
   `updateSharing(kind, id, { visibility, sharedWith })`.
-- **Compute `canManageSharing` on the server.** It equals `canEdit` for owned
-  resources and is false for ownerless rows. It depends on scalar
-  `ownerUserId` and `sharedWith`, while `dto.createdBy` may be null for a
-  synthetic-email creator because of the
+- **Compute `canManageSharing` on the server.** It equals `canEdit`, while
+  `dto.createdBy` may be null for a synthetic-email creator because of the
   `isSyntheticEmail` gates at `agents.ts:69`, `crons.ts:44`, and
   `daemons.ts:61`. Client derivation would diverge from the server predicate.
-- **Member selector:** store and transmit raw user IDs. Pin `ownerUserId`, not
-  immutable `createdBy`, because ownership may transfer while creation
-  attribution does not. Reuse the ID-to-name
+- **Member selector:** store and transmit raw user IDs. The selected IDs are the
+  complete audience; `createdBy` is display-only audit. Reuse the ID-to-name
   directory through `setMemberDirectory`, `creatorLabel`,
   `useConsoleData().members`, `Avatar` at `ui.tsx:39`, and
   `memberDisplayName` at `api.ts:607`. The member data comes from
   `data-context.tsx:69-70,:209`. Follow the role-tile interaction in
   `InviteMembersModal`.
 - **Visibility control:** radio options are Everyone and Selected. Selecting
-  Selected expands member multi-selection. The current owner is pinned and
-  cannot be removed; an empty selectable-member list is owner-only, never an
-  empty audience.
+  Selected expands member multi-selection. When switching from Everyone with
+  no saved selection, the Console initially selects the current user. Any
+  selected member can be replaced, but the final one cannot be removed until
+  another current member is selected.
 - **Locations:** agent creation in `AddAgentModal`; agent edit and detail in
   `EditAgentModal` and the General card; cron in `AddCronModal`, which is also
   the edit modal through its `cron?` prop and is opened by `ScheduleDetailView`;
@@ -680,24 +635,23 @@ handler.
   `isMobile` JSX branches; see `AgentDetailView.tsx:34,49` and `useIsMobile`.
   Add the sharing control and badge to both.
 - Gate enabled controls client-side by `dto.canManageSharing`, which equals the
-  caller's `canEdit` only when the row has an owner, while treating server 403
-  as authoritative. A viewer or a user viewing an ownerless row sees read-only
-  visibility state and the `sharedWith` member list.
+  caller's `canEdit`, while treating server 403 as authoritative. A viewer sees
+  read-only visibility state and the `sharedWith` member list.
 
 ## 12. Test plan
 
 **Unit test in `authorization/policy.test.ts`, with no database:** follow the
 truth table from section 1. A shared viewer still has `canEdit=false`; an
 unshared organization owner cannot view or edit a restricted resource; the
-ownership arm views it; a shared collaborator views and edits; a shared viewer
-only views; and `visibilityWhere(owner)` matches every other human principal
+creator has no implicit access; a shared collaborator views and edits; a shared
+viewer only views; and `visibilityWhere(owner)` matches every other human principal
 while `visibilityWhere(undefined)` equals `{}`.
 
 **Integration tests against real Postgres, per resource type:**
 
 1. An unauthorized collaborator does not receive a restricted agent from
    `list`, and `get` returns 404.
-2. The ownership arm and explicitly shared members can see it.
+2. Exactly the explicitly selected members can see it; the creator has no implicit access.
 3. An unshared organization owner receives the same hidden result as any other role.
 4. An authorized viewer gets 200 from GET and 403 from PATCH.
 5. A shared collaborator can edit content and sharing; a shared viewer cannot.
@@ -707,7 +661,7 @@ while `visibilityWhere(undefined)` equals `{}`.
 8. After `migrate deploy`, existing rows have `visibility='org'` and
    `sharedWith=[]`.
 9. Unauthorized users get 404 from workspace `gitstatus` and `gitpull`.
-10. Removing a member transfers all five resource owners, preserves creator
+10. Removing a member repairs all five Selected audiences, preserves creator
     audit, and removes their ID from every `sharedWith` in the same transaction.
 11. `tool-body` returns 404 for both a cross-organization agent ID and a hidden
     restricted agent in the same organization.
@@ -733,19 +687,16 @@ while `visibilityWhere(undefined)` equals `{}`.
    `UpdateAgentBody` is strict and returns 400 for extra fields, and the
    architecture supports a separate surface.
 2. **Add GIN indexes immediately** for `sharedWith` on all three tables.
-3. **Relax `canManageSharing = canEdit` for owned resources.** An owner or
-   collaborator who can view and edit an owned resource can change sharing;
-   only a viewer is read-only. Ownerless org-visible resources stay public.
-   Role never widens resource visibility.
+3. **Use `canManageSharing = canEdit`.** An Owner or collaborator who can view
+   and edit a resource can change sharing; only a viewer is read-only. Role
+   never widens resource visibility.
 4. **Preserve `sharedWith` when changing `restricted -> org`** so switching
    back restores the selection. The `org` predicate already ignores shares.
-5. **Separate ownership from creation attribution.** `ownerUserId` drives
-   authorization and transfers when a member leaves; `createdByUserId` remains
-   immutable audit history.
+5. **Creation attribution is audit-only.** `createdByUserId` remains immutable
+   history and never grants access; `sharedWith` is the full Selected audience.
 6. **Show non-managers read-only sharing state.** Anyone for whom `canView` is
    true sees visibility and the `sharedWith` members. Edit controls use
-   `canManageSharing`, which equals `canEdit` for owned rows and is false for
-   ownerless rows. Showing co-sharees read-only is accepted as minor
+   `canManageSharing`, which equals `canEdit`. Showing co-sharees read-only is accepted as minor
    information disclosure within the same resource.
 7. **Drop the entire SSE `/stream` envelope for an invisible agent.** Resolve
    `agentId -> canView` per envelope and send nothing when false. A restricted
