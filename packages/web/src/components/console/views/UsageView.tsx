@@ -10,6 +10,7 @@ import { AgentIconView, Spinner } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
+import SessionAccessNotice from '@/components/console/SessionAccessNotice'
 
 const RANGES: { key: UsageRange; label: string }[] = [
   { key: 'd1', label: '24 hours' },
@@ -197,12 +198,7 @@ export default function UsageView() {
         })}
       </div>
 
-      {data?.accessSyncDegraded && (
-        <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4">
-          Some external access checks are unavailable. Usage is temporarily under-counted rather than exposing
-          inaccessible sessions.
-        </div>
-      )}
+      <SessionAccessNotice degraded={data?.accessSyncDegraded} issues={data?.accessIssues} impact="usage" />
 
       {/* Mobile compact 3-metric strip (Sessions / Tokens / Spend — no fabricated
           p95 latency, it's not in the UsageDto) */}

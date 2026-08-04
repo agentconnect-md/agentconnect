@@ -532,6 +532,14 @@ membership. Guests and Slack Connect users also require current conversation mem
 including for a channel that is public to full members of the installing workspace. The
 organization-owner role never bypasses these provider checks.
 
+An external membership check that cannot complete fails closed: affected sessions stay
+hidden. The console offers a provider-specific reconnect only when the failure occurred
+while retrieving the signed-in user's own federated authorization; provider API failures
+and unclassified degradation keep the generic unavailable notice. Feishu versus Lark is
+named from the session scope's verified regional app, never from a URL hint. Diagnostics
+may retain only the provider target, failure stage, HTTP status, and a bounded upstream
+error code — never account ids, bearer tokens, or upstream error messages.
+
 Making a session private hides its transcript immediately, but agent memory is shared
 across the whole agent, so the guarantee about memory is narrower and must be stated
 plainly wherever the change is offered: capture into shared memory stops once the owning

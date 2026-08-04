@@ -111,6 +111,16 @@ export function useSessionList(
     return [...byId.values()]
   }, [pages])
   const nextCursor = pages.at(-1)?.nextCursor ?? null
+  const accessIssues = useMemo(
+    () => [
+      ...new Map(
+        pages
+          .flatMap((page) => page.accessIssues ?? [])
+          .map((issue) => [`${issue.provider}:${issue.region ?? ''}:${issue.reason}`, issue])
+      ).values()
+    ],
+    [pages]
+  )
   const loadingMore = isValidating && size > pages.length
   const loadMore = useCallback(async () => {
     if (!nextCursor || loadingMore) return
@@ -127,6 +137,7 @@ export function useSessionList(
     /** Org-level "any session exists" (first page carries it; older CPs omit it). */
     orgHasSessions: pages[0]?.orgHasSessions,
     accessSyncDegraded: pages.some((page) => page.accessSyncDegraded === true),
+    accessIssues,
     nextCursor,
     loadingMore,
     loadMore,

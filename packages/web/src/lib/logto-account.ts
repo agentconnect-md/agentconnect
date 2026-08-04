@@ -1,6 +1,10 @@
 import { getAccountToken, getLogtoPublicConfig } from '@/lib/auth'
 
 export interface SocialLinkFlow {
+  /** Existing link flows predate this discriminator and are treated as `link`. */
+  purpose?: 'link' | 'reauthorize'
+  /** Connector target whose stored token set is renewed after reauthorization. */
+  target?: string
   state: string
   connectorId: string
   /** The Account API verification this flow is completing. The provider's
@@ -155,6 +159,16 @@ export async function saveSocialIdentity(
   })
 }
 
+/** Replace an existing social identity's stored provider tokens after the same
+ * verified provider round trip used for linking. The returned access token is
+ * deliberately discarded; Session authorization retrieves it request-bound. */
+export async function renewSocialIdentityToken(target: string, verificationRecordId: string): Promise<void> {
+  await accountRequest(`/api/my-account/identities/${encodeURIComponent(target)}/access-token`, {
+    method: 'PUT',
+    body: JSON.stringify({ verificationRecordId })
+  })
+}
+
 export function createSocialState(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32))
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
@@ -183,6 +197,9 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
       typeof flow.verificationRecordId !== 'string' ||
       typeof flow.redirectUri !== 'string' ||
       (flow.currentVerificationRecordId !== undefined && typeof flow.currentVerificationRecordId !== 'string') ||
+      (flow.purpose !== undefined && flow.purpose !== 'link' && flow.purpose !== 'reauthorize') ||
+      (flow.target !== undefined && typeof flow.target !== 'string') ||
+      (flow.purpose === 'reauthorize' && (typeof flow.target !== 'string' || flow.target.length === 0)) ||
       typeof flow.providerName !== 'string' ||
       typeof flow.returnTo !== 'string' ||
       !flow.returnTo.startsWith('/') ||
@@ -198,16 +215,23 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
   }
 }
 
-export function accountErrorMessage(error: unknown, context?: { providerName?: string; linking?: boolean }): string {
+export function accountErrorMessage(
+  error: unknown,
+  context?: { providerName?: string; operation?: 'link' | 'reauthorize' }
+): string {
   const requestError =
     error instanceof LogtoAccountError ||
     (error instanceof Error && typeof (error as Error & { status?: unknown }).status === 'number')
       ? (error as Error & { status: number; code?: string })
       : undefined
   if (!requestError) return 'Something went wrong. Try again.'
-  if ((requestError.status === 409 || requestError.status === 422) && context?.linking) {
+  if ((requestError.status === 409 || requestError.status === 422) && context?.operation) {
     const reason = `${requestError.code ?? ''} ${requestError.message}`.toLowerCase()
-    if (reason.includes('already') && (reason.includes('use') || reason.includes('link'))) {
+    if (
+      context.operation === 'link' &&
+      reason.includes('already') &&
+      (reason.includes('use') || reason.includes('link'))
+    ) {
       return `That ${context.providerName ?? 'social'} account is already linked to another AgentConnect account.`
     }
     return `The ${context.providerName ?? 'social'} authorization expired or could not be used. Try again.`
@@ -215,14 +239,17 @@ export function accountErrorMessage(error: unknown, context?: { providerName?: s
   if (requestError.status === 400) return 'The social authorization response is invalid or expired. Try again.'
   // 403 while linking is Logto refusing an unproven identity change, not a dead
   // session — saying "sign in again" sent us chasing the wrong thing once.
-  if (requestError.status === 403 && context?.linking) {
+  if (requestError.status === 403 && context?.operation === 'link') {
     return 'Verifying your account timed out. Return to Profile and start again.'
   }
-  // A 401 on the link path is usually not an expired session: the identity
+  if (requestError.status === 403 && context?.operation === 'reauthorize') {
+    return `The ${context.providerName ?? 'social'} authorization could not be renewed. Return to Profile and try again.`
+  }
+  // A 401 on a social-authorization path is usually not an expired session: the identity
   // endpoints are scope-gated, and a session opened before the deployment
   // granted that scope keeps working everywhere else while these calls refuse.
   // Only a fresh sign-in re-issues the token, so say that rather than "expired".
-  if (requestError.status === 401 && context?.linking) {
+  if (requestError.status === 401 && context?.operation) {
     return 'This sign-in session cannot change sign-in methods. Sign out, sign in again, and retry.'
   }
   if (requestError.status === 401 || requestError.status === 403) {

@@ -420,6 +420,12 @@ export interface ConversationDto {
   memberSessionIds?: string[]
 }
 
+export interface SessionAccessIssue {
+  provider: string
+  region?: string
+  reason: 'authorization' | 'unavailable'
+}
+
 export interface SessionListPageDto {
   /** Present on `view=flat` responses (and older CPs). */
   sessions?: SessionDto[]
@@ -431,6 +437,7 @@ export interface SessionListPageDto {
    *  getting-started conversation step can be org-wide without exposing hidden rows. */
   orgHasSessions?: boolean
   accessSyncDegraded?: boolean
+  accessIssues?: SessionAccessIssue[]
 }
 
 export interface SessionListFilters {
@@ -463,6 +470,7 @@ export interface SessionListPage {
   nextCursor: string | null
   orgHasSessions?: boolean
   accessSyncDegraded?: boolean
+  accessIssues?: SessionAccessIssue[]
 }
 
 export interface SessionRelationDto {
@@ -512,6 +520,7 @@ export interface SessionDetailDto {
   /** Actual source gateway for Feishu/Lark external sessions. Absent on older CPs. */
   feishuRegion?: 'feishu' | 'lark' | null
   accessSyncDegraded?: boolean
+  accessIssues?: SessionAccessIssue[]
   /** Multi-agent webchat conversation roster, in pick order. Null for single-agent
    *  conversations and other platforms; absent on a CP that predates the feature.
    *  `name` is null when the caller cannot view that participant's agent. */
@@ -1994,7 +2003,8 @@ export async function fetchSessions(
     total: page.total,
     nextCursor: page.nextCursor,
     ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),
-    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {})
+    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {}),
+    ...(page.accessIssues !== undefined ? { accessIssues: page.accessIssues } : {})
   }
 }
 
@@ -2076,7 +2086,8 @@ export async function fetchConversations(
     total: page.total,
     nextCursor: page.nextCursor,
     ...(page.orgHasSessions !== undefined ? { orgHasSessions: page.orgHasSessions } : {}),
-    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {})
+    ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {}),
+    ...(page.accessIssues !== undefined ? { accessIssues: page.accessIssues } : {})
   }
 }
 
@@ -2820,6 +2831,7 @@ export interface UsageAgentDto {
 export interface UsageDto {
   range: UsageRange
   accessSyncDegraded?: boolean
+  accessIssues?: SessionAccessIssue[]
   totals: { sessions: number; totalTokens: number; costAmount: number; costCurrency: string | null }
   agents: UsageAgentDto[]
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),

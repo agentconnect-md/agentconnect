@@ -7,8 +7,17 @@ import type {
 } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { makeViewerIdentitySet } from './viewer-identity.js'
-import { LOGTO_ACCOUNT_TOKEN_HEADER } from './logto-federated-token.js'
+import { LOGTO_ACCOUNT_TOKEN_HEADER, LogtoFederatedTokenError } from './logto-federated-token.js'
 import { ctxOf, orgOf } from './rbac.js'
+
+/** Provider-neutral, requester-safe diagnostic from a session-visibility
+ * plugin. A platform may add a region without turning that region into a
+ * separate provider identity. */
+export interface SessionAccessIssue {
+  provider: string
+  region?: string
+  reason: 'authorization' | 'unavailable'
+}
 
 export interface ResolvedSessionAccess {
   identitySet: Set<string>
@@ -18,6 +27,7 @@ export interface ResolvedSessionAccess {
    *  provider variant from the session's protocol platform. */
   externalScopes: readonly ExternalScopeRecord[]
   degraded: boolean
+  accessIssues: SessionAccessIssue[]
 }
 
 /** Request-bound resolver shared by list/detail/SSE. It never persists a user
@@ -52,7 +62,23 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
     const feishuViewer = federated
       ? {
           subject: req.oidcSubject!,
-          accessTokenFor: (region: 'feishu' | 'lark') => federated.accessTokenFor(region)
+          accessTokenFor: async (region: 'feishu' | 'lark') => {
+            try {
+              return await federated.accessTokenFor(region)
+            } catch (error) {
+              const diagnostic =
+                error instanceof LogtoFederatedTokenError
+                  ? {
+                      target: error.target ?? region,
+                      stage: error.stage,
+                      status: error.status ?? null,
+                      code: error.code ?? null
+                    }
+                  : { target: region, stage: 'federated_token', status: null, code: 'unclassified_failure' }
+              req.log.warn({ provider: 'feishu', ...diagnostic }, 'Federated session access token is unavailable')
+              throw error
+            }
+          }
         }
       : undefined
     const [slackResult, githubResult, feishuResult] = await Promise.all([
@@ -64,7 +90,7 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
         : Promise.resolve({ allowedScopes: [], degraded: githubScopes.length > 0 }),
       deps.feishuSessionAccess
         ? deps.feishuSessionAccess.resolve(feishuScopes, feishuViewer)
-        : Promise.resolve({ allowedScopes: [], degraded: feishuScopes.length > 0 })
+        : Promise.resolve({ allowedScopes: [], degraded: feishuScopes.length > 0, accessIssues: [] })
     ])
     const resolvedScopes = [...slackResult.allowedScopes, ...githubResult.allowedScopes, ...feishuResult.allowedScopes]
     // Provider lookup can take multiple round trips. Re-read the durable fence
@@ -104,7 +130,8 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
         slackResult.degraded ||
         githubResult.degraded ||
         feishuResult.degraded ||
-        allowedScopes.length !== resolvedScopes.length
+        allowedScopes.length !== resolvedScopes.length,
+      accessIssues: feishuResult.accessIssues ?? []
     }
   }
 

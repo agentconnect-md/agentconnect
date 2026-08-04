@@ -48,11 +48,11 @@ function RevalidateAccount() {
 }
 
 async function renderCard({
-  autoLinkTarget,
-  onAutoLinkHandled = vi.fn()
+  autoAuthorize,
+  onAutoAuthorizeHandled = vi.fn()
 }: {
-  autoLinkTarget?: 'github'
-  onAutoLinkHandled?: () => void
+  autoAuthorize?: { target: 'github'; purpose: 'link' }
+  onAutoAuthorizeHandled?: () => void
 } = {}) {
   const cache = new Map()
   container = document.createElement('div')
@@ -68,7 +68,11 @@ async function renderCard({
           shouldRetryOnError: true
         }}
       >
-        <SocialSignInCard onNotice={vi.fn()} autoLinkTarget={autoLinkTarget} onAutoLinkHandled={onAutoLinkHandled} />
+        <SocialSignInCard
+          onNotice={vi.fn()}
+          autoAuthorize={autoAuthorize}
+          onAutoAuthorizeHandled={onAutoAuthorizeHandled}
+        />
         <RevalidateAccount />
       </SWRConfig>
     )
@@ -118,6 +122,23 @@ describe('SocialSignInCard account state', () => {
     expect(
       Array.from(container?.querySelectorAll('button') ?? []).filter((item) => item.textContent === 'Link')
     ).toHaveLength(2)
+  })
+
+  it('offers token renewal for an already linked regional identity', async () => {
+    window.__AC_ENV = { SOCIAL_PROVIDERS: 'lark' }
+    vi.mocked(fetchMySocialAccount).mockResolvedValue({
+      identities: [{ target: 'lark', userId: 'lark-user', name: 'Phil Z' }],
+      hasSecurityVerificationMethod: true,
+      primaryEmail: 'phil@example.test'
+    })
+
+    await renderCard()
+    await waitUntil(() => button('Reconnect') !== undefined)
+    await act(async () => button('Reconnect')?.click())
+    await waitUntil(() => vi.mocked(resolveMySocialConnectorId).mock.calls.length === 1)
+
+    expect(resolveMySocialConnectorId).toHaveBeenCalledWith('lark')
+    expect(container?.querySelector('[role="dialog"]')).toBeNull()
   })
 
   it('keeps a failed request idle and marks an explicit Retry as busy', async () => {
@@ -197,12 +218,12 @@ describe('SocialSignInCard account state', () => {
 
   it('continues a verified install through linking only when GitHub is unlinked', async () => {
     vi.mocked(fetchMySocialAccount).mockResolvedValue({ identities: [], hasSecurityVerificationMethod: false })
-    const onAutoLinkHandled = vi.fn()
+    const onAutoAuthorizeHandled = vi.fn()
 
-    await renderCard({ autoLinkTarget: 'github', onAutoLinkHandled })
+    await renderCard({ autoAuthorize: { target: 'github', purpose: 'link' }, onAutoAuthorizeHandled })
     await waitUntil(() => vi.mocked(resolveMySocialConnectorId).mock.calls.length === 1)
 
-    expect(onAutoLinkHandled).toHaveBeenCalledOnce()
+    expect(onAutoAuthorizeHandled).toHaveBeenCalledOnce()
   })
 
   it('does not reauthorize GitHub when the installed app user already linked it', async () => {
@@ -210,10 +231,10 @@ describe('SocialSignInCard account state', () => {
       identities: [{ target: 'github', userId: 'github-user', name: 'Phil Z' }],
       hasSecurityVerificationMethod: false
     })
-    const onAutoLinkHandled = vi.fn()
+    const onAutoAuthorizeHandled = vi.fn()
 
-    await renderCard({ autoLinkTarget: 'github', onAutoLinkHandled })
-    await waitUntil(() => onAutoLinkHandled.mock.calls.length === 1)
+    await renderCard({ autoAuthorize: { target: 'github', purpose: 'link' }, onAutoAuthorizeHandled })
+    await waitUntil(() => onAutoAuthorizeHandled.mock.calls.length === 1)
 
     expect(resolveMySocialConnectorId).not.toHaveBeenCalled()
   })

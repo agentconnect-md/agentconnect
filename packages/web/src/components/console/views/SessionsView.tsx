@@ -36,6 +36,7 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
+import SessionAccessNotice from '@/components/console/SessionAccessNotice'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -579,11 +580,11 @@ export default function SessionsView() {
           </span>
         </div>
       )}
-      {sessionList.accessSyncDegraded && (
-        <div className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4">
-          Some external access checks are unavailable. Affected sessions are hidden until access can be verified.
-        </div>
-      )}
+      <SessionAccessNotice
+        degraded={sessionList.accessSyncDegraded}
+        issues={sessionList.accessIssues}
+        impact="sessions"
+      />
       {initialLoading && (
         <div className="desktop:hidden">
           <LoadingState fill />

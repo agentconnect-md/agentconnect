@@ -59,7 +59,7 @@ export function useGsActions() {
             : openModal('agent')
         case 'github-profile':
           // Land on Profile with the GitHub link flow auto-started (`link=github` is
-          // consumed one-shot by ProfileView → SocialSignInCard's autoLinkTarget).
+          // consumed one-shot by ProfileView → SocialSignInCard's autoAuthorize).
           return router.push(orgPath('/profile?link=github'))
         case 'chat':
           // The chat-first Home landing is where conversations start.
