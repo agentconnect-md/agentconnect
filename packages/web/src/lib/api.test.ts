@@ -8,6 +8,7 @@ import {
   deleteMemoryRecord,
   deleteOrgIcon,
   fetchAllGithubRepos,
+  fetchConversations,
   fetchGithubRepoRoster,
   fetchMySessionIdentity,
   fetchMemoryAdminSurface,
@@ -700,5 +701,91 @@ describe('GET denials keep the machine-readable code', () => {
       message: 'this agent version does not support memory dreaming; upgrade its daemon'
     })
     await expect(listDreams('agent-1')).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('retention-purge projection (#485)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const memberDto = (sessionId: string, agentId: string, contentPurgedAt: string | null) => ({
+    sessionId,
+    sessionKey: { platform: 'slack', channel: 'C1', thread: 'T1' },
+    agentId,
+    title: sessionId,
+    status: null,
+    lastActivityAt: '2026-08-01T00:00:00.000Z',
+    usage: null,
+    triggeredBy: null,
+    hookKind: null,
+    channelName: null,
+    triggeredByName: null,
+    threadUrl: null,
+    runtime: null,
+    model: null,
+    effort: null,
+    fastMode: null,
+    permissionMode: null,
+    outputMode: null,
+    daemonId: null,
+    visibility: 'org',
+    externalProvider: null,
+    externalResolution: null,
+    contentPurgedAt
+  })
+
+  const stubConversations = (sessions: unknown[]) =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              conversations: [
+                {
+                  key: 'slack:C1:T1',
+                  platform: 'slack',
+                  channel: 'C1',
+                  thread: 'T1',
+                  sessions,
+                  memberSessionIds: sessions.map((s) => (s as { sessionId: string }).sessionId)
+                }
+              ],
+              total: 1,
+              nextCursor: null
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+      )
+    )
+
+  it('marks a grouped row when a NON-representative member was purged', async () => {
+    // The representative is intact; without projecting across members the purged
+    // peer would be invisible in the list.
+    stubConversations([memberDto('rep', 'agent-a', null), memberDto('peer', 'agent-b', '2026-08-04T09:00:00.000Z')])
+
+    const page = await fetchConversations(undefined, 50, 'org-1')
+    expect(page.sessions[0]).toMatchObject({
+      id: 'rep',
+      contentPurgedAt: '2026-08-04T09:00:00.000Z',
+      contentPurgedPartial: true
+    })
+  })
+
+  it('reports the earliest member purge and drops `partial` once every member is gone', async () => {
+    stubConversations([
+      memberDto('rep', 'agent-a', '2026-08-06T09:00:00.000Z'),
+      memberDto('peer', 'agent-b', '2026-08-04T09:00:00.000Z')
+    ])
+
+    const page = await fetchConversations(undefined, 50, 'org-1')
+    expect(page.sessions[0]!.contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+    expect(page.sessions[0]!.contentPurgedPartial).toBeUndefined()
+  })
+
+  it('leaves an intact conversation unmarked', async () => {
+    stubConversations([memberDto('rep', 'agent-a', null), memberDto('peer', 'agent-b', null)])
+
+    const page = await fetchConversations(undefined, 50, 'org-1')
+    expect(page.sessions[0]!.contentPurgedAt).toBeUndefined()
   })
 })

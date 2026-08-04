@@ -2501,11 +2501,32 @@ export default function SessionDetailView() {
   // `turns`, so once you've sent one the empty card gives way to the transcript.
   const transcriptEmpty =
     wantTranscript && !visibleMsgLoading && !visibleMsgErr && (visibleMsgs?.length ?? 0) === 0 && turns.length === 0
-  // Retention GC (#485): the owning daemon deleted this session's local content,
-  // so its emptiness is FINAL, not pending. This replaces both the "no messages
-  // yet" card (nothing is coming) and the daemon-offline error (bringing the
-  // daemon back would not bring the transcript back).
-  const transcriptPurged = wantTranscript && !!session.contentPurgedAt && turns.length === 0
+  // ── retention GC (#485) ─────────────────────────────────────────────────────
+  // The mark belongs to each SESSION whose content was deleted, so in merged mode
+  // it must come from the ROSTER, not from `session` (the representative alone):
+  // `turns` is the union of every member, so a purged peer would otherwise be
+  // invisible, and a purged representative would be silenced by any surviving
+  // member's turn. Both cases would put us back to rendering a deleted transcript
+  // as "that participant said nothing".
+  const purgedMemberDates = (
+    conversationMembers
+      ? conversationMembers.map((member) => member.contentPurgedAt ?? null)
+      : [session.contentPurgedAt ?? null]
+  ).filter((at): at is string => !!at)
+  // The notice states one date; the earliest is when this view's history first
+  // started going away.
+  const purgedAt = purgedMemberDates.length > 0 ? purgedMemberDates.slice().sort()[0]! : null
+  const purgedMemberCount = purgedMemberDates.length
+  const memberCount = conversationMembers ? conversationMembers.length : 1
+  // Nothing survives AND nothing is rendered ⇒ the emptiness is FINAL, not pending.
+  // Replaces both the "no messages yet" card (nothing is coming) and the offline
+  // error (reconnecting would not bring the transcript back).
+  const transcriptPurged =
+    wantTranscript && purgedMemberCount > 0 && purgedMemberCount === memberCount && turns.length === 0
+  // Some history was deleted but the view still renders turns — from surviving
+  // members, or from the live tail. Say so ALONGSIDE the transcript rather than
+  // instead of it, so a partial record is never read as the whole record.
+  const transcriptPartiallyPurged = !isPg && purgedMemberCount > 0 && !transcriptPurged
   const prompts = pgPrompts(session.agentId ?? '')
   const loadedTranscriptStats = wantTranscript && visibleMsgs !== null ? activityStatsFromTranscript(visibleMsgs) : null
   const liveActivityStats = isPg ? activityStatsFromSteps(session.steps) : activityStatsFromSteps(liveSteps)
@@ -2918,9 +2939,20 @@ export default function SessionDetailView() {
           <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
             <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
             <span>
-              This transcript was deleted on {fmtDate(session.contentPurgedAt ?? null)} by the daemon&apos;s session
-              retention policy, together with any workspace it had. The details on this page are all that remain of the
-              session.
+              This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with any
+              workspace created just for it. The details on this page are all that remain.
+            </span>
+          </div>
+        )}
+        {transcriptPartiallyPurged && (
+          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+            <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+            <span>
+              Part of this history is missing:{' '}
+              {memberCount > 1
+                ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
+                : 'this transcript was deleted'}{' '}
+              on {fmtDate(purgedAt)} by the session retention policy. What you see below is the remaining record.
             </span>
           </div>
         )}

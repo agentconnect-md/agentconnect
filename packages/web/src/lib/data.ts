@@ -954,9 +954,14 @@ export interface Session {
   daemon?: string
   /** Retention GC (#485): ISO timestamp at which the owning daemon deleted this
    *  session's local content. Set ⇒ the transcript is gone for good, so the views
-   *  mark the row and explain the empty replay instead of offering one. Absent on
-   *  live rows, mock rows, and a CP that predates the field. */
+   *  mark the row and explain the empty replay instead of offering one. On a
+   *  grouped conversation row this is the EARLIEST mark across its visible members,
+   *  not the representative's. Absent on live rows, mock rows, and a CP that
+   *  predates the field. */
   contentPurgedAt?: string
+  /** Set when only SOME of a grouped row's members are purged, so the copy can say
+   *  part of the history is missing rather than all of it. */
+  contentPurgedPartial?: boolean
 }
 
 /** A live Playground row starts with a synthetic id, then learns the durable ACP

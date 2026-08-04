@@ -2437,10 +2437,8 @@ export class LocalStore {
    *  all) is stale metadata no one is waiting on, and an unbounded table would be
    *  the worse outcome. */
   pruneSessionPurges(cutoff: number): number {
-    const before = this.db.prepare('SELECT COUNT(*) AS n FROM session_purges').get() as { n: number } | undefined
-    this.db.prepare('DELETE FROM session_purges WHERE purgedAt < ?').run(cutoff)
-    const after = this.db.prepare('SELECT COUNT(*) AS n FROM session_purges').get() as { n: number } | undefined
-    return Math.max(0, (before?.n ?? 0) - (after?.n ?? 0))
+    const result = this.db.prepare('DELETE FROM session_purges WHERE purgedAt < ?').run(cutoff)
+    return Number(result.changes)
   }
 
   // ── memory dream jobs (docs/designs/memory-dreaming.md §4; DreamStorePort) ──

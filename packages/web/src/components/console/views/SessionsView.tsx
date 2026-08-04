@@ -68,9 +68,14 @@ function AvatarFace({ label, member }: { label: string; member?: MemberDto }) {
  *  in the list rather than hidden — the metadata is deliberately kept. */
 function PurgedMark({ session }: { session: Session }) {
   if (!session.contentPurgedAt) return null
+  const when = fmtDate(session.contentPurgedAt)
   return (
     <span
-      title={`Transcript deleted ${fmtDate(session.contentPurgedAt)} by the session retention policy — only metadata remains`}
+      title={
+        session.contentPurgedPartial
+          ? `Part of this conversation's history was deleted from ${when} by the session retention policy`
+          : `Transcript deleted ${when} by the session retention policy — only metadata remains`
+      }
       className="inline-flex flex-none"
     >
       <Icon name="trash-2" size={12} color="var(--text-tertiary)" />

@@ -277,6 +277,35 @@ describe('retention-GC purge mark (#485)', () => {
     expect(sessionFromDto(sessionDto({ contentPurgedAt: null })).contentPurgedAt).toBeUndefined()
   })
 
+  it('overlays the detail mark onto a stale local row (30s detail vs 60s list refresh)', () => {
+    // The list row predates the purge. mergeSessionDetailUsage is the path the
+    // detail view takes whenever the list/rail already supplied the session, so
+    // dropping the mark here would keep showing the unexplained empty state.
+    const stale = sessionFromDto(sessionDto({ sessionId: 's1' }))
+    expect(stale.contentPurgedAt).toBeUndefined()
+    const purgedDetail = sessionFromDto(sessionDto({ sessionId: 's1', contentPurgedAt: '2026-08-04T09:00:00.000Z' }))
+
+    // No usage on either side — the early-return path, which is the common one.
+    expect(mergeSessionDetailUsage(stale, purgedDetail).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+
+    // ...and on the path that does merge usage.
+    const withUsage = sessionFromDto(
+      sessionDto({
+        sessionId: 's1',
+        contentPurgedAt: '2026-08-04T09:00:00.000Z',
+        usage: { reportedAt: '2026-08-04T10:00:00.000Z', totalTokens: 10, costAmount: 0.01, costCurrency: 'USD' }
+      })
+    )
+    expect(mergeSessionDetailUsage(stale, withUsage)).toMatchObject({
+      contentPurgedAt: '2026-08-04T09:00:00.000Z',
+      usage: { totalTokens: 10 }
+    })
+
+    // A detail response with no mark never clears one the local row already has.
+    const purgedLocal = sessionFromDto(sessionDto({ sessionId: 's1', contentPurgedAt: '2026-08-04T09:00:00.000Z' }))
+    expect(mergeSessionDetailUsage(purgedLocal, stale).contentPurgedAt).toBe('2026-08-04T09:00:00.000Z')
+  })
+
   it('carries contentPurgedAt through the detail hydration path too', () => {
     const detail = {
       id: 'purged-session',

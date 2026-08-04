@@ -25,12 +25,13 @@ function purgedFrame(): AnyFrame {
 
 function depsWith(
   markContentPurged: ReturnType<typeof vi.fn>,
-  placedOn: string = DAEMON_ID
+  placedOn: string | null = DAEMON_ID,
+  lease: 'free' | 'held' = 'free'
 ): { deps: DaemonWsDeps; release: ReturnType<typeof vi.fn> } {
   const release = vi.fn()
   const deps = {
-    agent: { get: vi.fn().mockResolvedValue({ daemonId: placedOn }) },
-    agentMutations: { tryBeginMutation: vi.fn(() => release) },
+    agent: { get: vi.fn().mockResolvedValue(placedOn === null ? null : { daemonId: placedOn }) },
+    agentMutations: { tryBeginMutation: vi.fn(() => (lease === 'free' ? release : null)) },
     session: { markContentPurged }
   } as unknown as DaemonWsDeps
   return { deps, release }
@@ -69,6 +70,46 @@ describe('handleSessionPurged', () => {
     expect(markContentPurged).not.toHaveBeenCalled()
     expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'ack', { ok: true })
     expect(c.sendError).not.toHaveBeenCalled()
+  })
+
+  it('ACKs a report for an agent that no longer exists, collecting its receipts', async () => {
+    // The agent's SessionMeta rows cascaded away with it, so the claim can never be
+    // accepted; retrying it forever is worse than letting the daemon drop it.
+    const markContentPurged = vi.fn()
+    const { deps } = depsWith(markContentPurged, null)
+    const c = conn()
+
+    await handleSessionPurged(purgedFrame(), c, deps)
+
+    expect(markContentPurged).not.toHaveBeenCalled()
+    expect(c.replyTo).toHaveBeenCalledWith(expect.anything(), 'ack', { ok: true })
+  })
+
+  it('answers a RETRYABLE error while a cold move holds the placement lease', async () => {
+    // Lease contention is transient (a move lasts as long as a drain). ACKing here
+    // would release the daemon's receipt — the last copy of the fact — for a mark
+    // that was never written.
+    const markContentPurged = vi.fn()
+    const { deps, release } = depsWith(markContentPurged, DAEMON_ID, 'held')
+    const c = conn()
+    const frame = purgedFrame()
+
+    await handleSessionPurged(frame, c, deps)
+
+    expect(markContentPurged).not.toHaveBeenCalled()
+    expect(c.replyTo).not.toHaveBeenCalled()
+    expect(c.sendError).toHaveBeenCalledWith(frame.id, 'INTERNAL', expect.any(String), true)
+    // Nothing was acquired, so nothing must be released.
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('releases the placement lease even when the stamp throws', async () => {
+    const markContentPurged = vi.fn().mockRejectedValue(new Error('db down'))
+    const { deps, release } = depsWith(markContentPurged)
+
+    await handleSessionPurged(purgedFrame(), conn(), deps)
+
+    expect(release).toHaveBeenCalledOnce()
   })
 
   it('answers a retryable error when the stamp fails, so the receipt is kept', async () => {
