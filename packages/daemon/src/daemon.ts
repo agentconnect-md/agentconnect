@@ -141,6 +141,7 @@ import { threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
+import { sessionLinkSourceFor } from './platforms/link-source.js'
 import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
 import { slackCommandChrome } from './platforms/slack/command-chrome.js'
 import {
@@ -6421,36 +6422,51 @@ export class Daemon {
    * dual-carries the generic `response` beside the deprecated Feishu-named slot
    * while the relay may still read either.
    */
+  /** §6.6 platform_action decoders, one registry entry per platform: validate the
+   *  opaque payload against the platform's own wire schema and hand it to that
+   *  platform's action handler. Adding a platform adds one entry — the dispatch
+   *  itself never grows a branch. An unregistered platformId (or a payload its
+   *  schema rejects) NAKs `unsupported_action`, which the relay surfaces per item. */
+  private readonly platformActionDecoders = new Map<string, (msg: RdMsgPlatformAction) => RdAck>([
+    [
+      'slack',
+      (msg) => {
+        const payload = RdSlackAction.safeParse(msg.payload)
+        if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+        return this.handleRelaySlackAction({
+          source: 'slack_action',
+          agentId: msg.agentId,
+          sessionKey: msg.sessionKey,
+          msgId: msg.msgId,
+          botId: msg.botId,
+          integrationId: msg.integrationId,
+          ...(msg.userId !== undefined ? { userId: msg.userId } : {}),
+          payload: payload.data
+        })
+      }
+    ],
+    [
+      'feishu',
+      (msg) => {
+        const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
+        if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+        const ack = this.handleRelayFeishuAction({
+          source: 'feishu_action',
+          agentId: msg.agentId,
+          sessionKey: msg.sessionKey,
+          msgId: msg.msgId,
+          botId: msg.botId,
+          integrationId: msg.integrationId,
+          payload: payload.data
+        })
+        return ack.feishuCardAction !== undefined ? { ...ack, response: ack.feishuCardAction } : ack
+      }
+    ]
+  ])
+
   private handleRelayPlatformAction(msg: RdMsgPlatformAction): RdAck {
-    if (msg.platformId === 'slack') {
-      const payload = RdSlackAction.safeParse(msg.payload)
-      if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
-      return this.handleRelaySlackAction({
-        source: 'slack_action',
-        agentId: msg.agentId,
-        sessionKey: msg.sessionKey,
-        msgId: msg.msgId,
-        botId: msg.botId,
-        integrationId: msg.integrationId,
-        ...(msg.userId !== undefined ? { userId: msg.userId } : {}),
-        payload: payload.data
-      })
-    }
-    if (msg.platformId === 'feishu') {
-      const payload = WireFeishuCardActionEvent.safeParse(msg.payload)
-      if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
-      const ack = this.handleRelayFeishuAction({
-        source: 'feishu_action',
-        agentId: msg.agentId,
-        sessionKey: msg.sessionKey,
-        msgId: msg.msgId,
-        botId: msg.botId,
-        integrationId: msg.integrationId,
-        payload: payload.data
-      })
-      return ack.feishuCardAction !== undefined ? { ...ack, response: ack.feishuCardAction } : ack
-    }
-    return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+    const decode = this.platformActionDecoders.get(msg.platformId)
+    return decode ? decode(msg) : { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
   }
 
   private handleRelaySlackAction(msg: RdMsgSlackAction): RdAck {
@@ -9292,14 +9308,17 @@ export class Daemon {
     }> = []
     for (const [agentId, agent] of this.agents) {
       for (const integration of agent.integrations) {
+        // Only reachable when the message's platform has a coarse loop-guard
+        // circuit (loopGuardScopesFor), so filtering by the MESSAGE's platform is
+        // the platform-neutral statement of the old `!== 'slack'` literal.
         if (
-          integration.platform !== 'slack' ||
+          integration.platform !== msg.platform ||
           !this.integrationBelongsToSource(integration.id, srcIntegrationIds) ||
           !this.commandSenderAllowed(agentId, integration.id, msg)
         )
           continue
-        const mentioned =
-          integration.slack.botUserId !== undefined && msg.mentionedBots.includes(integration.slack.botUserId)
+        const botUserId = integrationRouting(integration).staticBotUserId
+        const mentioned = botUserId !== undefined && msg.mentionedBots.includes(botUserId)
         candidates.push({
           agentId,
           integrationId: integration.id,
@@ -12351,13 +12370,10 @@ export class Daemon {
    *  when the CP couldn't resolve it; then the segment is dropped. */
   private cpOrgSlug?: string
 
-  /** Presentation-only source hint carried by provider-rendered session links. Feishu and
-   *  Lark share one protocol platform, so their integration region supplies the visible brand. */
-  private sessionLinkSource(platform: string, integrationId?: string): 'slack' | 'github' | FeishuRegion | undefined {
-    if (platform === 'slack' || platform === 'github') return platform
-    if (platform !== 'feishu' || !integrationId) return undefined
-    const integration = this.integrationConfigById(integrationId)
-    return integration?.platform === 'feishu' ? integration.feishu.region : undefined
+  /** Presentation-only source hint carried by provider-rendered session links —
+   *  the platform's own fact (§7.4 link-source strategy). */
+  private sessionLinkSource(platform: string, integrationId?: string): string | undefined {
+    return sessionLinkSourceFor(platform, integrationId ? this.integrationConfigById(integrationId) : undefined)
   }
 
   /** The Web App console URL for a session: `<base>/<orgSlug>/sessions/<id>`, where base is
@@ -12365,7 +12381,7 @@ export class Daemon {
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
    *  known; without it the link falls back to `<base>/sessions/<id>`. Provider-rendered
    *  links carry a presentation-only source hint for the generic 404 profile-linking action. */
-  private sessionLink(acpSessionId: string, source?: 'slack' | 'github' | FeishuRegion): string {
+  private sessionLink(acpSessionId: string, source?: string): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
     const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
     return source ? `${link}?source=${source}` : link
