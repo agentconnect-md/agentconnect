@@ -702,8 +702,14 @@ export class RelayIngressManager {
     } else {
       const primary = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
       deliveries = this.router
-        .conversationTargets(botId, msg, primary, claim.authorAgentId, claim.mentionedAgentIds, (target) =>
-          this.reportParticipant(botId, sessionKeyOf(msg), target)
+        .conversationTargets(
+          botId,
+          msg,
+          primary,
+          claim.authorAgentId,
+          claim.mentionedAgentIds,
+          (target) => this.reportParticipant(botId, sessionKeyOf(msg), target),
+          (target) => this.deps.admitsAgentCall(claim.authorAgentId, target.agentId)
         )
         .map(({ target, via }) => ({ targetAgentId: target.agentId, routeVia: via }))
       if (deliveries.length === 0) return drop('no participant admitted for this bot')

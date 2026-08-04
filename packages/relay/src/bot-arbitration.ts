@@ -566,7 +566,8 @@ export class BotArbitrationRouter {
     primary?: RouteTarget | null,
     verifiedAgentAuthor?: string,
     joinedAgentIds: readonly string[] = [],
-    onJoin?: (target: RouteTarget) => void
+    onJoin?: (target: RouteTarget) => void,
+    admitsNewJoin?: (target: RouteTarget) => boolean
   ): ConversationTarget[] {
     const a = this.bots.get(botId)
     if (!a || a.mutedChannels?.includes(msg.channel)) return []
@@ -592,6 +593,12 @@ export class BotArbitrationRouter {
       if (candidate.agentId === verifiedAgentAuthor) return
       const current = this.agentTarget(botId, candidate.agentId, msg.channel)
       if (!current) return
+      const previousParticipant = remembered.get(current.agentId)
+      // Policy is part of admission, not merely this event's delivery. A denied
+      // agent-authored edge must not leave behind local or durable membership that
+      // a later human follow-up could activate. Existing legitimate membership is
+      // retained; the caller still re-checks policy before each agent-authored copy.
+      if (!previousParticipant && admitsNewJoin && !admitsNewJoin(current)) return
       const effectiveVia = verifiedAgentAuthor === undefined && via === 'mention' ? 'mention' : 'implicit'
       const previous = selected.get(current.agentId)
       if (!previous || effectiveVia === 'mention') selected.set(current.agentId, { target: current, via: effectiveVia })
@@ -600,7 +607,6 @@ export class BotArbitrationRouter {
         byConversation.set(key, remembered)
         this.participants.set(botId, byConversation)
       }
-      const previousParticipant = remembered.get(current.agentId)
       remembered.set(current.agentId, current)
       if (
         !previousParticipant ||

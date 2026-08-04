@@ -900,6 +900,63 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       })
     })
 
+    it('does not remember or persist a policy-denied join for a later human follow-up', async () => {
+      const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+      const reportThreadParticipant = vi.fn(() => true)
+      const manager = new RelayIngressManager(
+        deps({
+          getDaemon: (id) =>
+            id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined,
+          isAgentBotApp: vi.fn(() => true),
+          admitsAgentCall: vi.fn((_author, target) => target !== OTHER_AGENT_ID),
+          reportThreadParticipant
+        })
+      )
+      const internals = manager as unknown as ManagerInternals
+      const shared = assignment()
+      shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+      shared.agents.push({
+        agentId: OTHER_AGENT_ID,
+        name: 'Other',
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID
+      })
+      shared.routes = [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          scope: { channel: 'C123' },
+          match: { kind: 'auto' }
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'other' }
+        }
+      ]
+      internals.router.upsert(shared)
+
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [OTHER_AGENT_ID] },
+          { text: '<@opaque-other> please join', mentionedBots: ['UBOT'] }
+        )
+      )
+
+      expect(second).not.toHaveBeenCalled()
+      expect(reportThreadParticipant).not.toHaveBeenCalledWith(expect.objectContaining({ agentId: OTHER_AGENT_ID }))
+
+      first.mockClear()
+      await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:human-after-denied-join' }))
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).not.toHaveBeenCalled()
+    })
+
     it('admits source depth 7 as delivery depth 8 and rejects 8 because the next hop is 9', async () => {
       // §10 case 15 — the boundary the whole hop transition exists to hold.
       const admitted = managerWith()
