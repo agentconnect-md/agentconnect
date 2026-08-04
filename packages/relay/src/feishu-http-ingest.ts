@@ -93,6 +93,9 @@ export class FeishuHttpIngest {
     private readonly deps: FeishuHttpIngestDeps
   ) {}
 
+  /** §8 RelayBotIngress: a Feishu ingest is a pure decoder — nothing to release. */
+  stop(): void {}
+
   decode(rawBody: Buffer, outerBody: unknown, headers: FeishuCallbackHeaders): VerifiedFeishuCallback | null {
     const outer = asRecord(outerBody)
     if (!outer) return null

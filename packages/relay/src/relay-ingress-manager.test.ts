@@ -81,13 +81,15 @@ const action = (over: Partial<HttpSlackSessionAction> = {}): HttpSlackSessionAct
 
 interface ManagerInternals {
   router: BotArbitrationRouter
-  ingests: Map<
-    string,
-    {
-      lookupUserName(u: string): Promise<string | undefined>
-      postText(c: string, t: string, th?: string): Promise<void>
-    }
-  >
+  slackPool: {
+    set(
+      botId: string,
+      ingest: {
+        lookupUserName(u: string): Promise<string | undefined>
+        postText(c: string, t: string, th?: string): Promise<void>
+      }
+    ): void
+  }
   reportChannels(snapshot: RcBotChannels): void
   reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
@@ -1073,7 +1075,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).toHaveBeenCalledWith({
@@ -1094,7 +1096,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY, not this pod
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
     expect(ingest.postText).toHaveBeenCalledTimes(1)
@@ -1107,7 +1109,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     a.noticedDmConversations = ['D42'] // delivery reported + re-stamped by the CP
     internals.router.upsert(a)
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
     expect(ingest.postText).not.toHaveBeenCalled()
@@ -1142,7 +1144,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     a.defaultDaemonId = OTHER_DAEMON_ID
     internals.router.upsert(a)
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     // DM 1 routes to the public default: row discovery happens, NO notice.
     await internals.forward(BOT_ID, dm())
@@ -1187,7 +1189,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     a.defaultDaemonId = OTHER_DAEMON_ID
     internals.router.upsert(a)
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
     // The DM routed to the public default — the gated install still needs its
@@ -1205,7 +1207,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const internals = manager as unknown as ManagerInternals
     const a = gatedAssignment()
     internals.router.upsert(a)
-    internals.ingests.set(BOT_ID, fakeIngest())
+    internals.slackPool.set(BOT_ID, fakeIngest())
 
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).toHaveBeenCalledTimes(1) // latched for this assignment
@@ -1238,7 +1240,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
-    internals.ingests.set(BOT_ID, fakeIngest())
+    internals.slackPool.set(BOT_ID, fakeIngest())
 
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).toHaveBeenCalledTimes(1) // dropped — not latched
@@ -1255,7 +1257,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(gatedAssignment())
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(
       BOT_ID,
@@ -1337,7 +1339,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const internals = manager as unknown as ManagerInternals
     const ingest = fakeIngest()
     internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
     return { internals, ingest }
   }
   const mention = (msgId: string, thread: string) =>
@@ -1409,7 +1411,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, selfRelayId: () => SELF_RELAY }))
     const internals = manager as unknown as ManagerInternals
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
     internals.router.upsert({
       ...gatedAssignment(),
       agents: [
@@ -1457,7 +1459,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     delete a.noticeAuthority
     internals.router.upsert(a)
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, mention(M1, '1.1'))
     expect(ingest.postText).not.toHaveBeenCalled()
@@ -1474,7 +1476,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     a.gatedAgentIds = []
     internals.router.upsert(a)
     const ingest = fakeIngest()
-    internals.ingests.set(BOT_ID, ingest)
+    internals.slackPool.set(BOT_ID, ingest)
 
     await internals.forward(BOT_ID, dm())
     expect(reportBotConversation).not.toHaveBeenCalled()
@@ -1501,10 +1503,12 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
 
   interface DemuxInternals {
     router: BotArbitrationRouter
-    ingests: Map<string, { signingSecret: string; stop(): Promise<void> }>
-    demuxByApiApp: Map<string, string>
-    demuxByAppTeam: Map<string, string>
-    appTeamKeyByBot: Map<string, string>
+    slackPool: {
+      set(botId: string, ingest: { signingSecret: string; stop(): Promise<void> }): void
+      get(botId: string): { signingSecret: string } | undefined
+    }
+    feishuPool: { get(botId: string): unknown }
+    slackDemux: import('./platforms/registry.js').DemuxIndex
   }
 
   /** Register a bot the way `assign()` would, minus the network-touching ingest
@@ -1517,7 +1521,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
   ) => {
     const internals = manager as unknown as DemuxInternals
-    internals.ingests.set(botId, { signingSecret, stop: async () => {} })
+    internals.slackPool.set(botId, { signingSecret, stop: async () => {} })
     internals.router.upsert({
       ...assignment(),
       botId,
@@ -1526,10 +1530,9 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
       ...(opts.teamId ? { teamId: opts.teamId } : {})
     })
     if (opts.apiAppId && opts.teamId && opts.indexed !== false) {
-      internals.demuxByAppTeam.set(`${opts.apiAppId}\u0000${opts.teamId}`, botId)
-      internals.appTeamKeyByBot.set(botId, `${opts.apiAppId}\u0000${opts.teamId}`)
+      internals.slackDemux.indexAssign(botId, { appId: opts.apiAppId, tenantId: opts.teamId })
     }
-    if (opts.apiAppId && !opts.teamId) internals.demuxByApiApp.set(opts.apiAppId, botId)
+    if (opts.apiAppId && !opts.teamId) internals.slackDemux.indexAssign(botId, { appId: opts.apiAppId })
   }
 
   const resolve = (manager: RelayIngressManager, over: { apiAppId?: string; teamId?: string; secret?: string }) =>
@@ -1547,8 +1550,8 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
 
     const internals = manager as unknown as DemuxInternals
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBe(internals.ingests.get(BOT_T1))
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.ingests.get(BOT_T2))
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBe(internals.slackPool.get(BOT_T1))
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.slackPool.get(BOT_T2))
   })
 
   it('never serves a team-scoped bot to another workspace via the signature scan', () => {
@@ -1560,9 +1563,9 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2', indexed: false })
 
     const internals = manager as unknown as DemuxInternals
-    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.ingests.get(BOT_T2))
+    expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).toBe(internals.slackPool.get(BOT_T2))
     // The scan hit must not poison the app-only learned map for a team-scoped bot.
-    expect(internals.demuxByApiApp.has(PLATFORM_APP)).toBe(false)
+    expect(internals.slackDemux.indexes.byApp.has(PLATFORM_APP)).toBe(false)
   })
 
   it('fails closed when a distributed-app envelope carries no team id', () => {
@@ -1579,12 +1582,12 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_LEGACY, 'legacy-secret', {}) // no app id stamped — scan learns it
 
     const internals = manager as unknown as DemuxInternals
-    expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).toBe(internals.ingests.get(BOT_LEGACY))
-    expect(internals.demuxByApiApp.get('ALEGACY')).toBe(BOT_LEGACY)
+    expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).toBe(internals.slackPool.get(BOT_LEGACY))
+    expect(internals.slackDemux.indexes.byApp.get('ALEGACY')).toBe(BOT_LEGACY)
     // A team-scoped envelope still resolves the legacy bot (guard only skips
     // bots whose ASSIGNMENT carries a different team id).
     expect(resolve(manager, { apiAppId: 'ALEGACY', teamId: 'T9', secret: 'legacy-secret' })).toBe(
-      internals.ingests.get(BOT_LEGACY)
+      internals.slackPool.get(BOT_LEGACY)
     )
   })
 
@@ -1594,7 +1597,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
   it('unassign carrying an OLDER generation than the held assignment is ignored', async () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     const internals = manager as unknown as DemuxInternals
-    internals.ingests.set(BOT_T1, { signingSecret: SHARED_SECRET, stop: async () => {} })
+    internals.slackPool.set(BOT_T1, { signingSecret: SHARED_SECRET, stop: async () => {} })
     internals.router.upsert({
       ...assignment(),
       botId: BOT_T1,
@@ -1603,19 +1606,19 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
       teamId: 'T1',
       credentialRevision: 2 // the re-install's assign already landed here
     })
-    internals.demuxByAppTeam.set(`${PLATFORM_APP}\u0000T1`, BOT_T1)
+    internals.slackDemux.indexAssign(BOT_T1, { appId: PLATFORM_APP, tenantId: 'T1' })
 
     await manager.unassign(BOT_T1, 1) // the revoke of the REPLACED credential
 
     // Still serving: routing table, ingest, and demux index all intact.
     expect(internals.router.get(BOT_T1)).toBeDefined()
-    expect(internals.ingests.has(BOT_T1)).toBe(true)
-    expect(internals.demuxByAppTeam.size).toBe(1)
+    expect(internals.slackPool.get(BOT_T1)).toBeDefined()
+    expect(internals.slackDemux.indexes.byAppTenant.size).toBe(1)
 
     // The matching generation still releases it.
     await manager.unassign(BOT_T1, 2)
     expect(internals.router.get(BOT_T1)).toBeUndefined()
-    expect(internals.ingests.has(BOT_T1)).toBe(false)
+    expect(internals.slackPool.get(BOT_T1)).toBeUndefined()
   })
 
   it('unassign drops the composite index entries', async () => {
@@ -1624,8 +1627,8 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
 
     await manager.unassign(BOT_T1)
     const internals = manager as unknown as DemuxInternals
-    expect(internals.demuxByAppTeam.size).toBe(0)
-    expect(internals.appTeamKeyByBot.size).toBe(0)
+    expect(internals.slackDemux.indexes.byAppTenant.size).toBe(0)
+    // The reverse map is DemuxIndex-internal now; an empty composite index IS the proof.
     expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).toBeUndefined()
   })
 })
