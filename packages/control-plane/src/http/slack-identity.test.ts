@@ -16,7 +16,14 @@ describe('verifySlackBot (auth.test)', () => {
     mockFetch(
       () =>
         new Response(
-          JSON.stringify({ ok: true, user: 'matrix_test', team: 'Acme', team_id: 'T0123', app_id: 'A0123' }),
+          JSON.stringify({
+            ok: true,
+            user: 'matrix_test',
+            user_id: 'U0123BOT',
+            team: 'Acme',
+            team_id: 'T0123',
+            app_id: 'A0123'
+          }),
           {
             status: 200,
             headers: { 'x-oauth-scopes': 'chat:write, channels:read, assistant:write' }
@@ -27,6 +34,7 @@ describe('verifySlackBot (auth.test)', () => {
       status: 'ok',
       name: 'matrix_test',
       appId: 'A0123',
+      botUserId: 'U0123BOT',
       teamId: 'T0123',
       teamName: 'Acme',
       scopes: ['chat:write', 'channels:read', 'assistant:write']
@@ -39,6 +47,7 @@ describe('verifySlackBot (auth.test)', () => {
       status: 'ok',
       name: 'Acme',
       appId: null,
+      botUserId: null,
       teamId: null,
       teamName: 'Acme',
       scopes: null
@@ -57,6 +66,7 @@ describe('verifySlackBot (auth.test)', () => {
       status: 'ok',
       name: 'matrix_test',
       appId: 'A0123',
+      botUserId: null,
       teamId: null,
       teamName: null,
       scopes: null
@@ -74,6 +84,7 @@ describe('verifySlackBot (auth.test)', () => {
       status: 'ok',
       name: null,
       appId: null,
+      botUserId: null,
       teamId: null,
       teamName: null,
       scopes: null

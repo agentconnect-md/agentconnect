@@ -55,6 +55,7 @@ const verifierOk = (over: Partial<Extract<SlackBotVerification, { status: 'ok' }
         status: 'ok',
         name: 'support-bot',
         appId: 'A0TESTAPP',
+        botUserId: 'U0TESTBOT',
         teamId: 'T0TESTTEAM',
         teamName: 'Example Workspace',
         scopes: null,
@@ -272,6 +273,7 @@ describe('slack validateConfig (route parity: integrations.ts slack arm)', () =>
       identity: {
         name: 'support-bot',
         externalAppId: 'A0TESTAPP',
+        botUserId: 'U0TESTBOT',
         workspaceId: 'T0TESTTEAM',
         workspaceName: 'Example Workspace'
       }

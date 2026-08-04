@@ -282,6 +282,43 @@ describe('CpCollabRoutes: org-scoped directory', () => {
   })
 })
 
+describe('CpCollabRoutes: conversation-scoped mention identities', () => {
+  it('corrects an old CP false-positive botShared flag for a sole channel member', () => {
+    const r = routes(
+      [agent('a')],
+      [
+        {
+          orgId: ORG,
+          platform: 'slack',
+          channelId: 'C1',
+          agents: [agent('a', { botUserId: 'U01ONLY', botShared: true, name: 'reviewer' })]
+        }
+      ]
+    )
+    expect(r.mentionDirectory(ORG, 'slack', 'C1')).toEqual([{ agentId: 'a', botUserId: 'U01ONLY', name: 'reviewer' }])
+    expect(r.mentionAddress(ORG, 'slack', 'C1', 'a')).toBe('<@U01ONLY>')
+  })
+
+  it('corrects a missing botShared flag when several agents use one channel identity', () => {
+    const r = routes(
+      [agent('a'), agent('b')],
+      [
+        {
+          orgId: ORG,
+          platform: 'slack',
+          channelId: 'C1',
+          agents: [
+            agent('a', { botUserId: 'U09SHARED', name: 'reviewer' }),
+            agent('b', { botUserId: 'U09SHARED', name: 'planner' })
+          ]
+        }
+      ]
+    )
+    expect(r.mentionAddress(ORG, 'slack', 'C1', 'a')).toBe('<@U09SHARED> reviewer')
+    expect(r.mentionAddress(ORG, 'slack', 'C1', 'b')).toBe('<@U09SHARED> planner')
+  })
+})
+
 /** Minimal daemon root — enough to boot and read the MCP deps bundle. */
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-directory-'))

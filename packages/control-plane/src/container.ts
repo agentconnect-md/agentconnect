@@ -1031,11 +1031,19 @@ export function buildContainer(
     async (botToken) => {
       const result = await verifySlackBot(botToken)
       return result.status === 'ok'
-        ? { appId: result.appId, workspaceId: result.teamId, workspaceName: result.teamName }
+        ? {
+            appId: result.appId,
+            botUserId: result.botUserId,
+            workspaceId: result.teamId,
+            workspaceName: result.teamName
+          }
         : null
     },
     clock,
-    { intervalMs: 15 * 60 * 1000 },
+    {
+      intervalMs: 15 * 60 * 1000,
+      onMentionIdentityChanged: (orgId) => collabRoutes.broadcast(orgId)
+    },
     http.log
   )
 

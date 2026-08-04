@@ -7,10 +7,13 @@
  * Settings page must not fan out to Slack or turn a metadata read into a write.
  */
 import type { Clock, TimerHandle } from '../domain/clock.js'
+import type { OrgId } from '../domain/ids.js'
 import type { BotRepo, BotSecretStore } from '../persistence/ports.js'
 
 export interface SlackBotIdentityReconcilerConfig {
   intervalMs: number
+  /** Refresh conversation-scoped mention directories after a member id is repaired. */
+  onMentionIdentityChanged?: (orgId: OrgId) => Promise<void>
 }
 
 export interface SlackBotIdentityReconcilerLog {
@@ -21,6 +24,7 @@ export interface SlackBotIdentityReconcilerLog {
 
 export interface ResolvedSlackIdentity {
   appId: string | null
+  botUserId?: string | null
   workspaceId: string | null
   workspaceName: string | null
 }
@@ -28,12 +32,15 @@ export interface ResolvedSlackIdentity {
 export type ResolveSlackIdentity = (botToken: string) => Promise<ResolvedSlackIdentity | null>
 
 const SLACK_APP_ID = /^A[A-Z0-9]+$/
+const SLACK_MEMBER_ID = /^[A-Z][A-Z0-9]+$/
 const SLACK_WORKSPACE_ID = /^T[A-Z0-9]+$/
 
 export class SlackBotIdentityReconciler {
   private timer: TimerHandle | undefined
   private stopped = true
   private running = false
+  /** Retained across ticks so a transient broadcast failure cannot strand repaired data. */
+  private readonly pendingMentionIdentityOrgs = new Set<OrgId>()
 
   constructor(
     private readonly bots: BotRepo,
@@ -85,6 +92,15 @@ export class SlackBotIdentityReconciler {
               this.log?.info({ botId: bot.id, slackAppId: identity.appId }, 'slack-bot-identity: backfilled app id')
             }
           }
+          if (identity.botUserId && SLACK_MEMBER_ID.test(identity.botUserId)) {
+            if (await this.bots.setSlackBotUserIdIfMissing(bot.id, identity.botUserId)) {
+              this.log?.info(
+                { botId: bot.id, botUserId: identity.botUserId },
+                'slack-bot-identity: backfilled bot user id'
+              )
+              if (this.cfg.onMentionIdentityChanged) this.pendingMentionIdentityOrgs.add(bot.orgId)
+            }
+          }
           if (identity.workspaceId && SLACK_WORKSPACE_ID.test(identity.workspaceId)) {
             await this.bots.setWorkspaceMetadata(bot.id, identity.workspaceId, identity.workspaceName)
             this.log?.info(
@@ -94,6 +110,14 @@ export class SlackBotIdentityReconciler {
           }
         } catch (err) {
           this.log?.warn({ err, botId: bot.id }, 'slack-bot-identity: bot lookup failed')
+        }
+      }
+      for (const orgId of this.pendingMentionIdentityOrgs) {
+        try {
+          await this.cfg.onMentionIdentityChanged?.(orgId)
+          this.pendingMentionIdentityOrgs.delete(orgId)
+        } catch (err) {
+          this.log?.warn({ err, orgId }, 'slack-bot-identity: mention directory refresh failed')
         }
       }
     } catch (err) {

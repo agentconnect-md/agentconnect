@@ -398,6 +398,7 @@ export function slackInstallRoutes(deps: HttpDeps) {
             slackAppId: row.appId,
             ...(botCheck?.status === 'ok' && botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
             ...(botCheck?.status === 'ok' && botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
+            ...(botCheck?.status === 'ok' && botCheck.botUserId ? { botUserId: botCheck.botUserId } : {}),
             // socket: the pasted xapp; http: the signing secret captured at create. The
             // shareable choice rides the finalize body (installNewSlackBot coerces it off
             // for socket regardless).

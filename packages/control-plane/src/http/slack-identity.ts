@@ -25,6 +25,8 @@ export type SlackBotVerification =
       status: 'ok'
       name: string | null
       appId: string | null
+      /** Slack member id used by `<@...>` mentions (`auth.test.user_id`). */
+      botUserId?: string | null
       teamId: string | null
       teamName: string | null
       scopes: string[] | null
@@ -100,6 +102,7 @@ export const verifySlackBot: SlackBotVerifier = async (botToken) => {
       team_id?: string
       app_id?: string
       bot_id?: string
+      user_id?: string
     }
     if (!body.ok) return { status: rejectedCredential(body.error) }
     const scopeHeader = res.headers.get('x-oauth-scopes')
@@ -114,6 +117,7 @@ export const verifySlackBot: SlackBotVerifier = async (botToken) => {
       status: 'ok',
       name: body.user ?? body.team ?? null,
       appId,
+      botUserId: body.user_id ?? null,
       teamId: body.team_id ?? null,
       teamName: body.team ?? null,
       scopes

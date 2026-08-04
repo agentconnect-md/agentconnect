@@ -2472,10 +2472,12 @@ export interface BotRepo {
   /** Record workspace metadata learned from OAuth/auth.test. A missing name
    *  preserves the last known label. */
   setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
-  /** Slack bots missing public app/workspace identity metadata. */
+  /** Slack bots missing public app/workspace/member identity metadata. */
   listSlackMissingIdentity(): Promise<BotRecord[]>
   /** Backfill only a missing id; never replace an established Slack app identity. */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
+  /** Backfill only a missing Slack member id; never replace an established identity. */
+  setSlackBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
   /** Stamp the freed-bot display hints when its LAST integration is removed. */
   markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void>
   /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
@@ -3129,14 +3131,10 @@ export interface ChannelPlacementRecord {
   /** Public platform app identity used to recognize messages from another
    *  AgentConnect-managed bot. Currently populated for Slack (`A…`). */
   botAppId?: string
-  /** Public member id this agent's bot posts as (Slack `U…`) — with {@link botShared}
-   *  and `name`, the mention-address input the daemon/relay need to render and resolve
-   *  an exact `@mention` for this agent in this channel
-   *  (send-message-routing-rework.md §8.5). */
+  /** Public member id this agent's bot posts as (Slack `U…`). Together with the
+   *  complete channel placement set and `name`, this lets the snapshot builder derive
+   *  an exact conversation-scoped `@mention` (send-message-routing-rework.md §8.5). */
   botUserId?: string
-  /** True when the bot identity backs more than one agent, so its address needs the
-   *  agent slug (`<@U_SHARED> reviewer`) and a bare mention selects no agent. */
-  botShared?: boolean
   callPolicy: AgentCallPolicy
   allowedCallerAgentIds: string[]
   outboundPolicy: AgentCallPolicy

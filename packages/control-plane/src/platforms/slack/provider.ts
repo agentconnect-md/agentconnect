@@ -311,14 +311,16 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
       // auth.test-derived → owning agent); `externalAppId` is the "A…" app id
       // auth.test resolved; workspaceId/workspaceName are the display-only
       // tenant metadata the create tail persists (distinct from the DEMUX
-      // `Bot.teamId`, which only the platform-app OAuth funnel writes).
+      // `Bot.teamId`, which only the platform-app OAuth funnel writes). `botUserId`
+      // is the public Slack member id used to render exact channel mentions.
       const identity =
         botCheck?.status === 'ok'
           ? {
               ...(botCheck.name ? { name: botCheck.name } : {}),
               ...(botCheck.appId ? { externalAppId: botCheck.appId } : {}),
               ...(botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
-              ...(botCheck.teamName ? { workspaceName: botCheck.teamName } : {})
+              ...(botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
+              ...(botCheck.botUserId ? { botUserId: botCheck.botUserId } : {})
             }
           : {}
       return { ok: true, identity }

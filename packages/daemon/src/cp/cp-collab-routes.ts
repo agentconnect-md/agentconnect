@@ -289,25 +289,29 @@ export class CpCollabRoutes {
   mentionDirectory(orgId: string, platform: string, channelId: string): AgentMentionIdentity[] {
     const members = this.channels.get(this.key(orgId, platform, channelId))
     if (!members) return []
-    return [...members.values()].map((a) => ({
+    const identities = [...members.values()].map((a) => ({
       agentId: a.agentId,
       ...(a.botUserId !== undefined ? { botUserId: a.botUserId } : {}),
-      ...(a.botShared ? { botShared: true } : {}),
       ...(a.name !== undefined ? { name: a.name } : {})
+    }))
+    const counts = new Map<string, number>()
+    for (const identity of identities) {
+      if (identity.botUserId) counts.set(identity.botUserId, (counts.get(identity.botUserId) ?? 0) + 1)
+    }
+    // Recompute instead of trusting the wire flag. This corrects an older CP that
+    // derived `botShared` from the bot's shareable CAPACITY rather than from the
+    // identities actually present in this conversation.
+    return identities.map((identity) => ({
+      ...identity,
+      ...(identity.botUserId && (counts.get(identity.botUserId) ?? 0) > 1 ? { botShared: true } : {})
     }))
   }
 
   /** The exact address for `agentId` in this conversation, or undefined when it has
    *  none there (no Slack presence, or a shared bot with no slug to disambiguate it). */
   mentionAddress(orgId: string, platform: string, channelId: string, agentId: string): string | undefined {
-    const placement = this.resolve(orgId, platform, channelId, agentId)
-    if (!placement) return undefined
-    return slackMentionAddress({
-      agentId,
-      ...(placement.botUserId !== undefined ? { botUserId: placement.botUserId } : {}),
-      ...(placement.botShared ? { botShared: true } : {}),
-      ...(placement.name !== undefined ? { name: placement.name } : {})
-    })
+    const identity = this.mentionDirectory(orgId, platform, channelId).find((agent) => agent.agentId === agentId)
+    return identity ? slackMentionAddress(identity) : undefined
   }
 
   /** True when an inbound app backs another AgentConnect agent in this channel.
