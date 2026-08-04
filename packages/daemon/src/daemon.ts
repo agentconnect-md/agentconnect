@@ -287,7 +287,6 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
-  EventSession as EventSessionSchema,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
@@ -13712,18 +13711,10 @@ export class Daemon {
     runtime?: string
     model?: string | null
     permissionMode?: string
-    /** Reconnect replay uses the durable activity time rather than making an
-     * old missing session look newer than a replacement session. */
-    at?: number
-    /** Avoid re-projecting the full session list for every reconnect row. */
-    projection?: SessionListItem
-    /** A pre-snapshot legacy row can safely replay identity/classification, but
-     * must not reconstruct historical status or execution config. */
-    durableOnly?: boolean
   }): void {
     if (!this.cpClient) return
-    const now = new Date(input.at ?? this.clock.now()).toISOString()
-    const row = input.projection ?? this.sessionListProjection(input.sessionId, input.agentId)
+    const now = new Date(this.clock.now()).toISOString()
+    const row = this.sessionListProjection(input.sessionId, input.agentId)
     const key = row?.sessionKey
     const event: EventSession = {
       sessionId: input.sessionId,
@@ -13781,7 +13772,8 @@ export class Daemon {
     if (row?.threadUrl !== undefined) event.threadUrl = row.threadUrl
     // Effective execution config: the session's sticky overrides (console/⚙-modal
     // in-session switches) win over the agent's configured values; absent ⇒ the
-    // runtime's own default. The exact result is persisted below for reconnect.
+    // runtime's own default. Snapshotted here so the CP records what this session
+    // actually ran with — the agent's config can change later without rewriting history.
     const agent = this.agents.get(input.agentId)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
@@ -13816,102 +13808,11 @@ export class Daemon {
     else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
-    if (input.durableOnly) {
-      for (const field of [
-        'status',
-        'runtime',
-        'model',
-        'observedModel',
-        'effort',
-        'fastMode',
-        'permissionMode',
-        'outputMode',
-        'workspaceIsolation'
-      ] as const) {
-        delete event[field]
-      }
-    }
-
-    const snapshot = this.convergedEventSessionSnapshot(sessionRecord, event)
-    try {
-      this.store.setEventSessionSnapshot(input.agentId, input.sessionId, JSON.stringify(snapshot))
-    } catch (err) {
-      this.log.debug(`event/session snapshot persist failed (session ${input.sessionId}): ${(err as Error).message}`)
-    }
 
     try {
-      this.cpClient?.emitEventSession(event)
+      this.cpClient.emitEventSession(event)
     } catch (err) {
       this.log.debug(`event/session emit failed (session ${input.sessionId}): ${(err as Error).message}`)
-    }
-  }
-
-  private storedEventSessionSnapshot(session: SessionRecord): EventSession | undefined {
-    if (!session.eventSessionSnapshot) return undefined
-    try {
-      const parsed = EventSessionSchema.safeParse(JSON.parse(session.eventSessionSnapshot))
-      if (parsed.success && parsed.data.agentId === session.agentId && parsed.data.sessionId === session.acpSessionId) {
-        return parsed.data
-      }
-    } catch {
-      // Corrupt/legacy local state is ignored and replaced by the next valid snapshot.
-    }
-    return undefined
-  }
-
-  /** Match the CP's terminal-phase convergence before persisting a replay
-   * snapshot. Metadata enrichment may arrive after a turn ends, but it must not
-   * replace the terminal phase or its endedAt timestamp with a later plan event. */
-  private convergedEventSessionSnapshot(session: SessionRecord | undefined, next: EventSession): EventSession {
-    if (!session) return next
-    const previous = this.storedEventSessionSnapshot(session)
-    if (previous?.phase !== 'end' && previous?.phase !== 'problem') return next
-    return { ...next, phase: previous.phase, ts: previous.ts }
-  }
-
-  /**
-   * Re-converge the exact latest metadata milestone after each register. Relay
-   * ingress remains local-first while the control client is unavailable, so a
-   * whole turn can otherwise finish without creating its CP row.
-   *
-   * Rows from an older daemon have no snapshot. Their fallback deliberately
-   * carries only durable identity/classification fields: reconstructing status
-   * or execution config from today's agent would rewrite history.
-   */
-  private replaySessionMetadataSnapshots(): void {
-    const stored = this.store.listSessions()
-    if (stored.length === 0) return
-
-    const replay = stored.map((session) => ({ session, event: this.storedEventSessionSnapshot(session) }))
-    const needsFallback = replay.some((entry) => entry.event === undefined)
-    const projectionBySession = needsFallback
-      ? new Map(
-          createSessionReader(this.store, (session) => this.sessionThreadUrl(session))
-            .list({})
-            .sessions.map((session) => [`${session.agentId}\0${session.sessionId}`, session] as const)
-        )
-      : undefined
-
-    // Replay oldest-first so a legacy missing row's durable activity timestamp
-    // preserves the webchat current-session ordering.
-    for (const { session, event } of replay.reverse()) {
-      const sessionId = session.acpSessionId
-      if (!sessionId) continue
-      if (event) {
-        this.cpClient?.emitEventSession(event)
-        continue
-      }
-      this.emitSessionMetadataSnapshot({
-        sessionId,
-        agentId: session.agentId,
-        phase: 'plan',
-        platform: session.platform as SessionKey['platform'],
-        channel: session.channel,
-        thread: session.thread,
-        at: session.updatedAt,
-        projection: projectionBySession?.get(`${session.agentId}\0${sessionId}`),
-        durableOnly: true
-      })
     }
   }
 
@@ -18854,15 +18755,15 @@ export class Daemon {
       // Daemon-configured MCP servers, derived from the effective def set (no
       // probing), riding the same facts frame with replace-on-register semantics.
       mcpServerFacts: (): FactsMcpServer[] => this.mcpServerFactsFromDefs(),
-      // On (re)connect, probe runtimes in the background and re-assert the
-      // daemon-owned snapshots the CP may have missed while disconnected.
+      // On (re)connect, probe runtimes in the background and push refreshed profiles,
+      // and re-assert each integration's cached channel-membership snapshot (the CP
+      // may have missed emits while we were disconnected; latest-wins upsert).
       onReady: () => {
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
         )
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
-        this.replaySessionMetadataSnapshots()
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
         this.replayChannelSnapshots()
