@@ -25,6 +25,8 @@ export interface VirtualPostOptions extends SendIdentity {
   chromeOwnerAgentId?: string
   trailingBlocks?: unknown[]
   replyTo?: number
+  /** §4 finalized-response routing block on agent-authored posts. */
+  response?: VirtualResponseMetadata
 }
 
 export interface VirtualChannelInfo {
@@ -51,8 +53,20 @@ export type VirtualPlatform = 'slack' | 'discord' | 'telegram'
 
 /** Which daemon path produced the effect. `reply` is the agent's conversational
  *  output (ordinary replies AND MCP sends — both are room speech); `chrome` is
- *  daemon delivery chrome (status bars, progress cards, footer migration). */
-export type OutboundEffectKind = 'reply' | 'chrome'
+ *  daemon delivery chrome (status bars, progress cards, footer migration);
+ *  `finalize` is the §5 response-closing edit that re-stamps the last delivered
+ *  message with the finalized routing metadata. */
+export type OutboundEffectKind = 'reply' | 'chrome' | 'finalize'
+
+/** Daemon-owned response metadata (send-message-routing-rework.md §4) — the
+ *  virtual mirror of the real connection's SlackResponseMetadata. */
+export interface VirtualResponseMetadata {
+  responseId: string
+  deliveryState: 'streaming' | 'final'
+  hopCount: number
+  mentionedAgentIds: string[]
+  agentCallDeliveryId?: string
+}
 
 export interface OutboundEffectInput {
   kind: OutboundEffectKind
@@ -63,6 +77,10 @@ export interface OutboundEffectInput {
   /** Per-message sender identity stamped by the daemon (agentAuthorId is the
    *  trusted AgentConnect author id on Slack sends). */
   identity?: SendIdentity
+  /** §4 response metadata the daemon attached to this delivery. */
+  response?: VirtualResponseMetadata
+  /** For `finalize`: the platform id of the message being re-stamped. */
+  messageTs?: string
   text: string
 }
 
@@ -96,6 +114,8 @@ export interface VirtualThreadMessage {
   isBot: boolean
   /** Stable AgentConnect author id for agent-authored posts (Slack metadata). */
   agentAuthorId?: string
+  /** §4 response metadata as `conversations.replies` would report it. */
+  response?: VirtualResponseMetadata
   /** Daemon delivery chrome (status bars, progress cards) — never conversation. */
   chrome?: boolean
 }
@@ -220,12 +240,52 @@ export class VirtualSlackConnection implements PlatformConnection {
     options?: VirtualPostOptions
   ): Promise<string | undefined> {
     const kind: OutboundEffectKind = options?.chrome ? 'chrome' : 'reply'
-    const result = await this.record(kind, channel, text, threadTs, identityOf(options))
+    const result = await this.world.recordOutbound({
+      kind,
+      platform: 'slack',
+      integrationId: this.integrationId,
+      channel,
+      ...(threadTs !== undefined ? { thread: threadTs } : {}),
+      ...(identityOf(options) ? { identity: identityOf(options)! } : {}),
+      // The real connection persists the response block into Slack message
+      // metadata (ignored on chrome, which is never routable) — preserve it.
+      ...(options?.response !== undefined && !options.chrome ? { response: options.response } : {}),
+      text
+    })
     if (result.status !== 'delivered') {
       if (kind === 'chrome') return undefined
       throw new VirtualDeliveryRejected(result)
     }
     return result.messageId
+  }
+
+  /**
+   * Close a logical response (send-message-routing-rework.md §5): re-stamp the
+   * last delivered message with the finalized routing metadata. The real
+   * connection does this with chat.update + message metadata; the virtual
+   * transport records a `finalize` effect against the SAME platform message id
+   * so the world's provider history — and the platform echo built from it —
+   * carries the claim a peer's ingress verifies.
+   */
+  async finalizeResponse(
+    channel: string,
+    ts: string,
+    _blocks: unknown[],
+    text: string,
+    agentAuthorId: string,
+    response: VirtualResponseMetadata
+  ): Promise<boolean> {
+    const result = await this.world.recordOutbound({
+      kind: 'finalize',
+      platform: 'slack',
+      integrationId: this.integrationId,
+      channel,
+      identity: { agentAuthorId },
+      response,
+      messageTs: ts,
+      text
+    })
+    return result.status === 'delivered'
   }
 
   /** In-place edits are recorded as chrome effects: counting parses candidates

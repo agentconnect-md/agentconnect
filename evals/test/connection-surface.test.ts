@@ -112,39 +112,48 @@ describe('virtual connection surface guard', () => {
     expect(replies.find((reply) => reply.text === 'hello')).toMatchObject({ agentAuthorId: 'agent-1-id' })
   })
 
-  // Behavioral metadata round-trip scaffold (PR #520 review, comment on this
-  // file): prototype reflection cannot catch NEW FIELDS added to existing
-  // postMessage options. #503 §4 extends the daemon-owned per-message metadata
-  // with response/recipient/pairing/hop fields; when the real connection
-  // starts persisting them, the virtual transport must carry them into the
-  // world sink and provider history too — otherwise the arena silently drops
-  // exactly the metadata the rework routes on. This pins that requirement:
-  // it passes-as-failing today (the virtual's identity projection ignores the
-  // fields) and must be flipped to `it` when #503's driver metadata lands,
-  // with the carrier shape adjusted to the implementation if needed.
-  it.fails(
-    'round-trips #503 response/recipient/pairing/hop metadata [pending #503 §4 — flip with the driver change]',
-    async () => {
-      const { connection, effects } = recordingConnection()
-      const rework = {
-        response_id: 'resp-1',
-        delivery_state: 'final',
-        hop_count: 2,
-        mentioned_agent_ids: ['agent-2-id'],
-        agent_call_delivery_id: 'acd-1'
-      }
-      await connection.postMessage('C-META', '<@UB22222222> over to you', undefined, {
-        agentAuthorId: 'agent-1-id',
-        ...rework
-      } as never)
-      const identity = (effects[0]!.identity ?? {}) as Record<string, unknown>
-      for (const [field, value] of Object.entries(rework)) {
-        expect(identity[field], `postMessage options.${field} was silently dropped by the virtual transport`).toEqual(
-          value
-        )
-      }
+  // Behavioral metadata round-trip (PR #520 review): prototype reflection
+  // cannot catch NEW FIELDS added to existing postMessage options. #503 §4
+  // landed the driver contract as `options.response` (SlackResponseMetadata)
+  // plus the response-closing `finalizeResponse` edit — both must round-trip
+  // through the virtual transport, or the arena silently drops exactly the
+  // metadata the rework routes on. Green now; extend alongside the driver.
+  it('round-trips #503 response/recipient/pairing/hop metadata (§4) through post and finalize', async () => {
+    const { connection, effects, history } = recordingConnection()
+    const streaming = {
+      responseId: 'resp-1',
+      deliveryState: 'streaming' as const,
+      hopCount: 2,
+      mentionedAgentIds: ['agent-2-id']
     }
-  )
+    const ts = await connection.postMessage('C-META', '<@UB22222222> over to you', undefined, {
+      agentAuthorId: 'agent-1-id',
+      response: streaming
+    })
+    expect(ts).toBeDefined()
+    expect(effects[0]!.response).toEqual(streaming)
+    // Closing the response re-stamps the SAME message as the single final
+    // routing event, carrying the complete recipient set and pairing id.
+    const final = {
+      responseId: 'resp-1',
+      deliveryState: 'final' as const,
+      hopCount: 2,
+      mentionedAgentIds: ['agent-2-id'],
+      agentCallDeliveryId: 'acd-1'
+    }
+    const closed = await connection.finalizeResponse(
+      'C-META',
+      ts!,
+      [],
+      '<@UB22222222> over to you',
+      'agent-1-id',
+      final
+    )
+    expect(closed).toBe(true)
+    const finalize = effects.find((effect) => effect.kind === 'finalize')
+    expect(finalize).toMatchObject({ messageTs: ts, response: final, identity: { agentAuthorId: 'agent-1-id' } })
+    void history
+  })
 
   it('the virtual transport carries the identity fields the daemon reads off live connections', () => {
     const connection = new VirtualSlackConnection(

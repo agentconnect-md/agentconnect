@@ -20,6 +20,7 @@
  * coordinates — not mechanism internals.
  */
 import type {
+  DeliveryAdmission,
   DeliveryHandle,
   EvaluationEvent,
   RecordedOutboundEffect
@@ -62,6 +63,13 @@ export class RoutingFixture {
   private readonly harness: DaemonEvaluationHarness
   private readonly subjectCleanup: () => void
   private readonly echoHandles: DeliveryHandle[] = []
+  private readonly echoAdmissionRecords: {
+    messageId: string
+    integrationId: string
+    admission: Promise<DeliveryAdmission>
+  }[] = []
+  /** Thread each delivered message lives in (root posts anchor themselves). */
+  private readonly threadByMessageId = new Map<string, string>()
   private readonly aliasByAgentId = new Map<string, string>()
 
   private constructor(
@@ -156,14 +164,44 @@ export class RoutingFixture {
   }
 
   private echoDeliveredPost(effect: RecordedOutboundEffect): void {
-    if (effect.kind !== 'reply' || effect.status !== 'delivered') return
+    if (effect.status !== 'delivered') return
     if (effect.channel !== this.room.channel || effect.agentId === undefined) return
+    if (effect.kind !== 'reply' && effect.kind !== 'finalize') return
     const botUserId = this.world.botUserIdFor(effect.integrationId)
     if (botUserId === undefined || effect.messageId === undefined) return
     const appId = this.world.botAppIdFor(effect.integrationId)
-    // Slack normalizes a top-level message with thread = its own ts.
-    const thread = effect.thread ?? effect.messageId
+    // Slack normalizes a top-level message with thread = its own ts; the
+    // finalized message_changed edit keeps the ORIGINAL post's coordinates but
+    // carries a distinct `<ts>:final` msgId so per-connection dedup admits it
+    // (packages/message SLACK_RESPONSE_FINAL_MSG_ID_SUFFIX).
+    let thread: string
+    let echoMessageId: string
+    if (effect.kind === 'reply') {
+      thread = effect.thread ?? effect.messageId
+      this.threadByMessageId.set(effect.messageId, thread)
+      echoMessageId = effect.messageId
+    } else {
+      thread = this.threadByMessageId.get(effect.messageId) ?? effect.thread ?? effect.messageId
+      echoMessageId = `${effect.messageId}:final`
+    }
     const mentions = [...effect.text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!)
+    // The authorship CLAIM travels exactly as the platform normalizer would
+    // surface it: streaming on ordinary posts (unroutable), final only on the
+    // response-closing edit. Verification stays entirely in the daemon.
+    const authorAgentId = effect.identity?.agentAuthorId ?? effect.agentId
+    const claim =
+      effect.response !== undefined
+        ? {
+            authorAgentId,
+            responseId: effect.response.responseId,
+            deliveryState: effect.response.deliveryState,
+            hopCount: effect.response.hopCount,
+            mentionedAgentIds: effect.response.mentionedAgentIds,
+            ...(effect.response.agentCallDeliveryId !== undefined
+              ? { agentCallDeliveryId: effect.response.agentCallDeliveryId }
+              : {})
+          }
+        : undefined
     for (const integrationId of this.room.memberIntegrationIds) {
       if (integrationId === effect.integrationId) continue
       const handle = this.harness.inject({
@@ -171,14 +209,27 @@ export class RoutingFixture {
         payload: {
           channel: this.room.channel,
           thread,
-          messageId: effect.messageId,
+          messageId: echoMessageId,
           text: effect.text,
           sender: { id: botUserId, isBot: true, ...(appId !== undefined ? { appId } : {}) },
-          ...(mentions.length > 0 ? { mentions } : {})
+          ...(mentions.length > 0 ? { mentions } : {}),
+          ...(claim !== undefined ? { agentAuthorship: claim } : {})
         }
       })
       this.echoHandles.push(handle)
+      this.echoAdmissionRecords.push({ messageId: echoMessageId, integrationId, admission: handle.admission })
     }
+  }
+
+  /** Admission outcome of every platform echo injected so far, in order. */
+  async echoAdmissions(): Promise<{ messageId: string; integrationId: string; admission: DeliveryAdmission }[]> {
+    return Promise.all(
+      this.echoAdmissionRecords.map(async (record) => ({
+        messageId: record.messageId,
+        integrationId: record.integrationId,
+        admission: await record.admission
+      }))
+    )
   }
 
   agentId(alias: string): string {

@@ -130,6 +130,10 @@ export function compileTopology(manifest: GameTopologyManifest): CompiledTopolog
         ...(integrationByAgentPlatform.get(`${alias}/${room.platform}`)!.botAppId !== undefined
           ? { botAppId: integrationByAgentPlatform.get(`${alias}/${room.platform}`)!.botAppId }
           : {}),
+        // send-message-routing-rework.md §8.5 mention-address input: the bot
+        // user id an inbound `<@…>` mention resolves to, and what the daemon
+        // renders for outbound agent mentions.
+        botUserId: integrationByAgentPlatform.get(`${alias}/${room.platform}`)!.botUserId,
         callPolicy: 'all',
         allowedCallerAgentIds: [],
         outboundPolicy: 'all',

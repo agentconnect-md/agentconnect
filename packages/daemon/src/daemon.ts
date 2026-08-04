@@ -2251,6 +2251,7 @@ export class Daemon {
       },
       text: payload.text,
       mentionedBots: payload.mentions ?? [],
+      ...(payload.agentAuthorship !== undefined ? { agentAuthorship: payload.agentAuthorship } : {}),
       isDm: payload.isDm ?? false
     }
     // Same source resolution as a live connection callback: all integrations

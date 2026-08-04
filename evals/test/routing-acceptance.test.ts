@@ -94,22 +94,18 @@ describe('case 1 — sendMessage {toAgent, channel}: one visible root post, one 
   }, 120_000)
 
   // #503 §3.2: "Renders the target's platform-native mention into the visible
-  // body" — for a dedicated Slack bot the body begins with <@U_TARGET>. The
-  // current implementation posts the message body without the mention.
-  it.fails(
-    'renders the target agent mention into the visible root post [pending #503 §3.2]',
-    async () => {
-      fixture = await startCase1()
-      const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> WAKE ${fixture.agentId('agent2')}`, {
-        mentions: [fixture.botUserId('agent1')]
-      })
-      await fixture.settle(trigger.handles)
-      const roots = fixture.deliveredPosts().filter((post) => post.thread === undefined)
-      expect(roots).toHaveLength(1)
-      expect(roots[0]!.text).toContain(`<@${fixture.botUserId('agent2')}>`)
-    },
-    120_000
-  )
+  // body" — for a dedicated Slack bot the body begins with <@U_TARGET>.
+  // Flipped green when the rework landed (PR #503 merged).
+  it('renders the target agent mention into the visible root post (#503 §3.2)', async () => {
+    fixture = await startCase1()
+    const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> WAKE ${fixture.agentId('agent2')}`, {
+      mentions: [fixture.botUserId('agent1')]
+    })
+    await fixture.settle(trigger.handles)
+    const roots = fixture.deliveredPosts().filter((post) => post.thread === undefined)
+    expect(roots).toHaveLength(1)
+    expect(roots[0]!.text).toContain(`<@${fixture.botUserId('agent2')}>`)
+  }, 120_000)
 })
 
 describe('case 1b — sendMessage {sessionId: parent}: session-only parent resume', () => {
@@ -155,46 +151,45 @@ describe('case 1b — sendMessage {sessionId: parent}: session-only parent resum
     const agent1Effects = fixture!.effectsOf('agent1')
     const delegated = agent1Effects.find((effect) => effect.kind === 'reply' && /delegated/.test(effect.text))
     expect(delegated, "agent1's first turn should have posted its 'delegated' reply").toBeDefined()
-    return agent1Effects.filter((effect) => effect.sequence > delegated!.sequence)
+    // Turn 1 ends by CLOSING its own response (the §5 finalize edit of the
+    // 'delegated' message) — that belongs to the first turn, not the resume.
+    const firstTurnClose = agent1Effects.find(
+      (effect) => effect.kind === 'finalize' && effect.messageTs === delegated!.messageId
+    )
+    const boundary = Math.max(delegated!.sequence, firstTurnClose?.sequence ?? 0)
+    return agent1Effects.filter((effect) => effect.sequence > boundary)
   }
 
   // #503 §7: the parent session is resumed with headless: true — the injected
   // input and the resumed turn's ORDINARY output stay in the session; no IM
   // body, typing indicator, status chrome, footer, or completion notification
-  // is emitted for that turn. Under the CURRENT architecture the resumed
-  // parent turn still owns an ordinary IM reply connection, so its reply posts
-  // visibly — this test pins the target invariant and passes-as-failing until
-  // the rework lands.
-  it.fails(
-    'parent resume produces ZERO new IM outbound while the parent still processes the reply [pending #503 §7]',
-    async () => {
-      fixture = await RoutingFixture.start({
-        agents: ['agent1', 'agent2'],
-        scripts: case1bScripts((ctx) => {
-          ctx.reply('thanks, result noted')
-        })
+  // is emitted for that turn. Flipped green when the rework landed (PR #503
+  // merged): the full accounting below (every effect attributable to the
+  // resumed turn, delivered or attempted) must stay empty.
+  it('parent resume produces ZERO new IM outbound while the parent still processes the reply (#503 §7)', async () => {
+    fixture = await RoutingFixture.start({
+      agents: ['agent1', 'agent2'],
+      scripts: case1bScripts((ctx) => {
+        ctx.reply('thanks, result noted')
       })
-      const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> WAKE ${fixture.agentId('agent2')}`, {
-        mentions: [fixture.botUserId('agent1')]
-      })
-      await fixture.settle(trigger.handles)
+    })
+    const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> WAKE ${fixture.agentId('agent2')}`, {
+      mentions: [fixture.botUserId('agent1')]
+    })
+    await fixture.settle(trigger.handles)
 
-      // The parent DID process the child's reply (this half holds today too).
-      expect(fixture.activations('agent1')).toBe(2)
-      const resumeInput = fixture.turnInputs('agent1')[1] ?? ''
-      expect(resumeInput).toContain('RESULT R-42')
+    // The parent DID process the child's reply (this half holds today too).
+    expect(fixture.activations('agent1')).toBe(2)
+    const resumeInput = fixture.turnInputs('agent1')[1] ?? ''
+    expect(resumeInput).toContain('RESULT R-42')
 
-      // INVARIANT UNDER #503 §7 — FULL accounting, not a body-string probe:
-      // the COMPLETE set of world effects attributable to the resumed turn is
-      // empty. Any body text, typing indicator, status message, footer, or
-      // other chrome — delivered OR merely attempted — fails this.
-      const resumeEffects = parentResumeEffects()
-      expect(resumeEffects.map((effect) => ({ kind: effect.kind, status: effect.status, text: effect.text }))).toEqual(
-        []
-      )
-    },
-    120_000
-  )
+    // INVARIANT UNDER #503 §7 — FULL accounting, not a body-string probe:
+    // the COMPLETE set of world effects attributable to the resumed turn is
+    // empty. Any body text, typing indicator, status message, footer, or
+    // other chrome — delivered OR merely attempted — fails this.
+    const resumeEffects = parentResumeEffects()
+    expect(resumeEffects.map((effect) => ({ kind: effect.kind, status: effect.status, text: effect.text }))).toEqual([])
+  }, 120_000)
 
   // #503 §7: "An explicit visible sendMessage from the resumed parent remains
   // allowed and uses its normal authorization and delivery semantics" —
@@ -294,14 +289,16 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     return { agent1: script('agent1'), agent2: script('agent2') }
   }
 
-  // #503 §2.3/§4.1/§6: a VERIFIED AgentConnect-authored platform message with
-  // an explicit mention activates exactly the mentioned agent; every edge
-  // increments the trusted hop depth and MAX_AGENT_CALL_HOPS terminates the
-  // chain with a recorded hop_limit rejection instead of a dispatch. The
-  // CURRENT architecture's first ingress gate drops every managed-bot-authored
-  // message before routing, so nothing past the first reply ever activates.
+  // #503 §2.3/§4.1/§6 landed the first edge (see the green single-edge test
+  // below), but the FULL A -> B -> A chain of design test #16 still terminates
+  // early: the verified-mention dispatch installs hop metadata yet carries no
+  // external-origin lineage, so RE-ENTERING the human-bound thread session is
+  // cancelled with `session_source_mismatch` at the audience binding — the
+  // second edge admits and then never runs a turn. This stays expected-fail
+  // until that lineage gap is closed; the expected sequence below encodes
+  // exactly-once per finalized response for the full chain.
   it.fails(
-    'a finalized agent reply mentioning a peer activates it once, and the hop cap ends the chain [pending #503 §2.3/§4.1/§6]',
+    'an A->B->A ordinary-mention chain advances one hop per edge until the cap [pending #503 design test #16 — blocked on session_source_mismatch]',
     async () => {
       fixture = await RoutingFixture.start({
         agents: ['agent1', 'agent2'],
@@ -340,6 +337,45 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     },
     120_000
   )
+
+  // Landed with #503 (§2.3/§5): the ordinary reply's FINALIZED response event
+  // — not the streaming post — activates exactly the mentioned peer, once.
+  it('a finalized agent reply mentioning a peer activates it exactly once (#503 §2.3/§5)', async () => {
+    fixture = await RoutingFixture.start({
+      agents: ['agent1', 'agent2'],
+      scripts: {
+        agent1: (ctx) => {
+          if (/START/.test(ctx.text)) {
+            ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
+            return
+          }
+          ctx.reply('nothing to do')
+        },
+        agent2: (ctx) => {
+          if (/please review/.test(ctx.text)) {
+            ctx.reply('reviewing now')
+            return
+          }
+          ctx.reply('nothing to do')
+        }
+      }
+    })
+    const trigger = fixture.injectHuman(`<@${fixture.botUserId('agent1')}> START`, {
+      mentions: [fixture.botUserId('agent1')]
+    })
+    await fixture.settle(trigger.handles)
+    // Exactly one activation from the finalized response; the streaming echo
+    // of the same message never routes.
+    expect(fixture.activations('agent2')).toBe(1)
+    expect(fixture.turnInputs('agent2')[0]).toContain('please review the rollout')
+    const admissions = await fixture.echoAdmissions()
+    const streaming = admissions.filter((record) => !record.messageId.endsWith(':final'))
+    const finalized = admissions.filter((record) => record.messageId.endsWith(':final'))
+    expect(streaming.every((record) => record.admission.admitted === false)).toBe(true)
+    expect(finalized.some((record) => record.admission.admitted === true)).toBe(true)
+    // agent2's own unmentioning reply wakes nobody further.
+    expect(fixture.activations('agent1')).toBe(1)
+  }, 120_000)
 
   it('negative invariants that hold in BOTH architectures: unmentioned agent posts and self-mentions activate no one', async () => {
     fixture = await RoutingFixture.start({

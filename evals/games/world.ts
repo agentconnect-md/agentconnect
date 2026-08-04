@@ -173,8 +173,26 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     if (!channel.memberAgentIds.has(integration.agentId)) return reject('not_a_member')
     if (effect.thread !== undefined && !channel.threads.has(effect.thread)) return reject('invalid_thread')
 
-    const messageId = this.mintMessageId(effect.platform)
-    if (effect.thread === undefined) channel.threads.add(messageId)
+    // A `finalize` effect is an EDIT of an existing message, not a new post: it
+    // keeps the original platform id and re-stamps the provider-visible history
+    // row with the finalized routing metadata (what conversations.replies with
+    // include_all_metadata would now report).
+    const messageId =
+      effect.kind === 'finalize' && effect.messageTs !== undefined
+        ? effect.messageTs
+        : this.mintMessageId(effect.platform)
+    if (effect.kind === 'finalize') {
+      for (const rows of this.history.values()) {
+        const row = rows.find((message) => message.ts === messageId)
+        if (row) {
+          row.text = effect.text
+          if (effect.response !== undefined) row.response = effect.response
+          if (effect.identity?.agentAuthorId !== undefined) row.agentAuthorId = effect.identity.agentAuthorId
+        }
+      }
+    } else if (effect.thread === undefined) {
+      channel.threads.add(messageId)
+    }
     const record: RecordedOutboundEffect = {
       ...effect,
       sequence,
@@ -185,7 +203,7 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     this.effects.push(record)
     // The post is now part of the provider-visible thread — a concurrent turn's
     // final snapshot must see it (that is what trips the regeneration fence).
-    if (effect.thread !== undefined) {
+    if (effect.thread !== undefined && effect.kind !== 'finalize') {
       this.recordThreadMessage(effect.channel, effect.thread, {
         ts: messageId,
         text: effect.text,
