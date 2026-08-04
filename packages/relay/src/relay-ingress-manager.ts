@@ -183,10 +183,10 @@ export class RelayIngressManager {
         return daemon.sendMsg(msg)
       },
       reportChannels: (snapshot) => this.reportChannels(snapshot),
-      reportRevoked: (botId, reason, eventAtMs) => {
-        // Core composes the fenced report: it holds the assignment's credential
-        // generation, which the CP uses to refuse a report a re-install overtook.
-        const credentialRevision = this.router.get(botId)?.credentialRevision
+      reportRevoked: (botId, reason, eventAtMs, credentialRevision) => {
+        // The revision is the OBSERVING assignment's, captured by the plugin at
+        // buildIngest — never the mutable current one, which a fire-and-forget
+        // older ingest could otherwise use to revoke a replacement credential.
         this.reportRevoked({
           botId,
           reason: reason as 'app_uninstalled' | 'tokens_revoked',
@@ -204,6 +204,7 @@ export class RelayIngressManager {
           this.router.integrationTarget(botId, agentId, integrationId),
         soleTarget: (botId) => this.router.soleTarget(botId)
       },
+      canDeliver: (route) => this.deps.getDaemon(route.daemonId) !== undefined,
       setChannelAgent: (botId, channelId, agentId) => this.deps.setChannelAgent(botId, channelId, agentId),
       selectThreadAgent: (botId, channelId, threadTs, agentId) =>
         this.selectThreadAgent(botId, channelId, threadTs, agentId),

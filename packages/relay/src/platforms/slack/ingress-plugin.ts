@@ -136,7 +136,10 @@ export function forwardSessionShortcut(
   shortcut: HttpSlackSessionShortcut
 ): boolean {
   const route = host.directory.resolveTarget(botId, { channelId: shortcut.channelId, threadTs: shortcut.threadTs })
-  if (!route) return false
+  // A shortcut's trigger id is one-shot: returning true here CONSUMES it, so
+  // delivery must be possible NOW — an offline daemon falls back to the local
+  // unavailable modal exactly as an unroutable conversation does.
+  if (!route || !host.canDeliver(route)) return false
   const rd: RdMsgPlatformAction = {
     source: 'platform_action',
     platformId: 'slack',
@@ -199,7 +202,10 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
         onSessionShortcut: (shortcut) => forwardSessionShortcut(host, botId, shortcut),
         onBotRevoked: (reason, eventAtMs) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)
-          host.reportRevoked(botId, reason, eventAtMs)
+          // Fence with the generation THIS ingest was built from — assignments
+          // start fire-and-forget, and an older ingest's auth.test finishing
+          // after a re-assign must not revoke the replacement credential.
+          host.reportRevoked(botId, reason, eventAtMs, a.credentialRevision)
         },
         log: host.log
       }
@@ -236,7 +242,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
     }
   },
 
-  async handle(ingest, verified): Promise<HandledDelivery> {
+  async handle(ingest, verified, host): Promise<HandledDelivery> {
     if (verified.kind === 'interaction') {
       // block_suggestion needs its options ON the 200 body; every other branch
       // resolves to '' — the same contract the interactions route holds today.
@@ -244,9 +250,11 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
       return { syncResponse: result ?? '' }
     }
     // Events are ACK'd by the route within Slack's 3s window; handling is async
-    // and a forward miss is bounded loss. The plugin preserves that shape by
-    // not awaiting delivery here.
-    void ingest.handleEvent(verified.event, verified.eventAtMs)
+    // and a forward miss is bounded loss. Failures log exactly as the live
+    // route logs them today.
+    void ingest
+      .handleEvent(verified.event, verified.eventAtMs)
+      .catch((err) => host.log.warn(`slack ingress: event handler error: ${(err as Error).message}`))
     return {}
   }
 }

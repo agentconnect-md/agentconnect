@@ -121,7 +121,7 @@ export const feishuIngressPlugin: RelayPlatformIngressPlugin<FeishuHttpIngest, V
     return ingest.decode(rawBody, body, headers as FeishuCallbackHeaders) ?? undefined
   },
 
-  async handle(ingest, verified): Promise<HandledDelivery> {
+  async handle(ingest, verified, host): Promise<HandledDelivery> {
     // Feishu's challenge is ENCRYPTED, so unlike Slack's it flows through
     // verify → handle rather than being answered pre-candidate (§8 exception
     // note on the contract).
@@ -130,9 +130,13 @@ export const feishuIngressPlugin: RelayPlatformIngressPlugin<FeishuHttpIngest, V
     if (verified.eventType === 'card.action.trigger') {
       // The card toast must ride THIS request's 200 — race the daemon round
       // trip against the platform window, degrading to an ack-only body.
+      // Failures log exactly as the live route logs them today.
       let timeout: ReturnType<typeof setTimeout> | undefined
       const response = await Promise.race([
-        ingest.handle(verified).catch(() => undefined),
+        ingest.handle(verified).catch((err) => {
+          host.log.warn(`feishu ingress: card action handler error: ${(err as Error).message}`)
+          return undefined
+        }),
         new Promise<undefined>((resolve) => {
           timeout = setTimeout(() => resolve(undefined), CARD_ACTION_RESPONSE_TIMEOUT_MS)
         })
@@ -140,7 +144,9 @@ export const feishuIngressPlugin: RelayPlatformIngressPlugin<FeishuHttpIngest, V
       if (timeout) clearTimeout(timeout)
       return { syncResponse: response ?? {} }
     }
-    void ingest.handle(verified).catch(() => undefined)
+    void ingest
+      .handle(verified)
+      .catch((err) => host.log.warn(`feishu ingress: event handler error: ${(err as Error).message}`))
     return { syncResponse: {} }
   }
 }

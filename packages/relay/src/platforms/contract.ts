@@ -118,10 +118,13 @@ export interface RelayIngressHost {
   /** Report the bot's channel-membership snapshot (queued while the CP link is
    *  down; a newer snapshot supersedes). */
   reportChannels(snapshot: RcBotChannels): void
-  /** Report a platform-side revocation for `botId`. Core composes the fenced
-   *  report itself (it holds the assignment's credential generation), so the
-   *  plugin states only WHAT the platform said and WHEN it happened. */
-  reportRevoked(botId: string, reason: string, eventAtMs?: number): void
+  /** Report a platform-side revocation for `botId`. `credentialRevision` is
+   *  the generation of the ASSIGNMENT THAT OBSERVED the dead credential — the
+   *  plugin captures it at buildIngest time, because assignments start
+   *  fire-and-forget and an older ingest's lifecycle probe can finish after a
+   *  newer assignment installed: fencing with the mutable current revision
+   *  would let that stale observation revoke the replacement credential. */
+  reportRevoked(botId: string, reason: string, eventAtMs?: number, credentialRevision?: number): void
   /** Arbitration reads — never the router object itself. */
   directory: {
     agents(botId: string): { agentId: string; name: string }[]
@@ -156,6 +159,12 @@ export interface RelayIngressHost {
    *  assignment is NOT guaranteed to carry `botUserId` (a manual-paste bot's
    *  CP row learns it from this very report). */
   reportBotUserId(botId: string, botUserId: string): void
+  /** Whether `route`'s daemon is connected RIGHT NOW. For interactions whose
+   *  platform affordance is one-shot (a Slack shortcut consumes its trigger
+   *  id), the plugin must know synchronously that delivery is possible, so it
+   *  can surface the platform's local unavailable path instead of silently
+   *  eating the interaction. */
+  canDeliver(route: RouteTarget): boolean
   /** Persist an explicit channel default-agent change (the config modal's
    *  durable, CP-broadcast side; no local routing effect of its own). */
   setChannelAgent(botId: string, channelId: string, agentId: string): void
@@ -239,5 +248,5 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * challenge is encrypted, so it flows through verify → handle as a
    * `syncResponse`.
    */
-  handle(ingest: TIngest, verified: TVerified): Promise<HandledDelivery>
+  handle(ingest: TIngest, verified: TVerified, host: RelayIngressHost): Promise<HandledDelivery>
 }
