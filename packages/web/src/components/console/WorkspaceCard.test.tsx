@@ -40,6 +40,14 @@ const agent = (
 
 const GITHUB = { mode: 'github', repo: 'acme/infra', branch: 'main', agentDir: '/' }
 
+it('does not repeat the checkout branch in the Source card', () => {
+  repos.rows = []
+  const branch = 'release/source-should-not-render'
+  const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB, branch })} />)
+
+  expect(html).not.toContain(branch)
+})
+
 // Only an App-backed workspace has implicit authority over its own repository. A
 // manual checkout's effective access comes from an explicit agent-repo grant (or
 // is none), so an implicit chip there would claim authorization it does not have

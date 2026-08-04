@@ -95,7 +95,7 @@ export function FileBrowserShell({
   return (
     <div className="card relative max-desktop:rounded-lg">
       <div className="cardhead min-h-[41px] min-w-0 justify-between py-[6px]">
-        <div className="cardtitle min-w-0 flex-1">{title}</div>
+        <div className="cardtitle min-w-0 flex-1 overflow-hidden">{title}</div>
         {headerEnd}
       </div>
       <div className="overflow-hidden rounded-b-[inherit]">{children}</div>

@@ -106,6 +106,22 @@ afterEach(async () => {
   vi.mocked(deleteWorkspaceFile).mockClear()
   vi.mocked(fetchWorkspaceFiles).mockClear()
   vi.mocked(fetchWorkspaceGitStatus).mockClear()
+  vi.mocked(fetchWorkspaceGitStatus).mockImplementation(() =>
+    Promise.resolve({
+      isRepo: false,
+      clean: true,
+      repo: null,
+      agentDir: null,
+      branch: null,
+      tracking: null,
+      ahead: null,
+      behind: null,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    })
+  )
   vi.mocked(writeWorkspaceFile).mockClear()
 })
 
@@ -122,7 +138,7 @@ it('places the checkout selector in the file browser header', () => {
       agentId="agent-a"
       workdir="/workspace"
       canEdit={false}
-      workspacePicker={<span data-testid="workspace-picker">Checkout</span>}
+      renderWorkspacePicker={() => <span data-testid="workspace-picker">Checkout</span>}
       renderHeader={() => <div data-testid="source-card">Source</div>}
     />
   )
@@ -132,6 +148,46 @@ it('places the checkout selector in the file browser header', () => {
 
   expect(picker?.closest('.cardhead')).not.toBeNull()
   expect(picker?.closest('.card')?.querySelector('[data-testid="source-card"]')).toBeNull()
+  expect(picker?.parentElement?.className).toContain('w-1/4')
+})
+
+it('uses the primary checkout live branch while browsing a worktree', async () => {
+  vi.mocked(fetchWorkspaceGitStatus).mockImplementation((_agentId, sessionId) =>
+    Promise.resolve({
+      isRepo: true,
+      clean: true,
+      repo: 'https://github.com/acme/infra.git',
+      agentDir: '/',
+      branch: sessionId ? 'worktree-branch' : 'primary-live-branch',
+      tracking: null,
+      ahead: 0,
+      behind: 0,
+      files: [],
+      truncated: false,
+      lastCommit: null,
+      lastFetchAt: null
+    })
+  )
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        sessionId="session-a"
+        workdir="/workspace"
+        canEdit={false}
+        renderWorkspacePicker={(branch) => <span data-testid="primary-branch">{branch}</span>}
+        renderHeader={() => null}
+      />
+    )
+    await Promise.resolve()
+  })
+
+  expect(container.querySelector('[data-testid="primary-branch"]')?.textContent).toBe('primary-live-branch')
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a')
+  expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a')
 })
 
 // The workspace editor lives in the card this browser renders, so a replacement

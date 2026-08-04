@@ -416,7 +416,6 @@ export default function AgentDetailView() {
   const mockWorkspaceHeader: WorkspaceHeaderInfo =
     ws.mode === 'github'
       ? {
-          branch: ws.branch,
           status: workspaceStatus(ws),
           ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
           repoUrl: ws.repoUrl ?? `https://github.com/${ws.repo}`
@@ -1634,13 +1633,10 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
-              workspacePicker={
-                da.workspace.mode === 'github' &&
-                (da.workspace.worktree === true ||
-                  selectedWorktreeSessionId !== null ||
-                  workspaceSessionsNextCursor !== null ||
-                  workspaceSessions.some((session) => session.workspaceIsolation === 'session')) ? (
+              renderWorkspacePicker={(primaryBranch) =>
+                da.workspace.mode === 'github' ? (
                   <WorkspaceScopePicker
+                    primaryBranch={primaryBranch ?? da.workspace.branch}
                     sessions={workspaceSessions}
                     selectedSessionId={selectedWorktreeSessionId}
                     selectedSession={selectedWorktreeSession}
@@ -1667,7 +1663,25 @@ export default function AgentDetailView() {
 
             <FileBrowserShell
               title="Files"
-              headerEnd={<span className="mono text-[11px] text-(--text-tertiary)">{filesSummary}</span>}
+              headerEnd={
+                ws.mode === 'github' ? (
+                  <div className="flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]">
+                    <WorkspaceScopePicker
+                      primaryBranch={ws.branch}
+                      sessions={[]}
+                      selectedSessionId={null}
+                      loading={false}
+                      hasMore={false}
+                      loadingMore={false}
+                      onLoadMore={() => undefined}
+                      onChange={() => undefined}
+                      orgPath={orgPath}
+                    />
+                  </div>
+                ) : (
+                  <span className="mono text-[11px] text-(--text-tertiary)">{filesSummary}</span>
+                )
+              }
             >
               {ws.files.length > 0 ? (
                 <WorkspaceFilesMock files={ws.files} />

@@ -158,7 +158,7 @@ export function WorkspaceFiles({
   sessionId,
   workdir,
   canEdit,
-  workspacePicker,
+  renderWorkspacePicker,
   renderHeader
 }: {
   agentId: string
@@ -167,8 +167,9 @@ export function WorkspaceFiles({
   sessionId?: string
   workdir?: string
   canEdit: boolean
-  /** Checkout selector rendered opposite the current file breadcrumb. */
-  workspacePicker?: ReactNode
+  /** Checkout control rendered opposite the breadcrumb. The branch comes from
+   *  the primary checkout's live git status, even while browsing a worktree. */
+  renderWorkspacePicker?: (primaryBranch: string | null) => ReactNode
   /** Renders the workspace card above the tree from the live git read model.
    *  Called on every render — including before the status lands (empty info) and
    *  for non-repo workspaces — so the card's own controls are never gated on a
@@ -186,6 +187,7 @@ export function WorkspaceFiles({
   // loading, for a non-repo workspace, and when the owning daemon is offline —
   // the workspace card falls back to the agent's configured source in all three.
   const [git, setGit] = useState<WorkspaceGitStatusDto | null>(null)
+  const [primaryBranch, setPrimaryBranch] = useState<string | null>(null)
   const [gitPulling, setGitPulling] = useState(false)
   const [gitMsg, setGitMsg] = useState<string | null>(null)
   // Bumped after a pull to re-fetch both the git status and the tree.
@@ -382,12 +384,26 @@ export function WorkspaceFiles({
     let active = true
     fetchWorkspaceGitStatus(agentId, sessionId).then(
       (s) => {
-        if (active) setGit(s.isRepo ? s : null)
+        if (!active) return
+        setGit(s.isRepo ? s : null)
+        if (!sessionId) setPrimaryBranch(s.isRepo ? s.branch : null)
       },
       () => {
-        if (active) setGit(null)
+        if (!active) return
+        setGit(null)
+        if (!sessionId) setPrimaryBranch(null)
       }
     )
+    if (sessionId) {
+      fetchWorkspaceGitStatus(agentId).then(
+        (s) => {
+          if (active) setPrimaryBranch(s.isRepo ? s.branch : null)
+        },
+        () => {
+          if (active) setPrimaryBranch(null)
+        }
+      )
+    }
     return () => {
       active = false
     }
@@ -677,7 +693,6 @@ export function WorkspaceFiles({
   // status/commit/pull half of the card empty.
   const remote = git ? parseRemote(git.repo) : null
   const header: WorkspaceHeaderInfo = {
-    branch: git?.branch ?? null,
     status: git
       ? git.clean
         ? { dot: 'var(--status-online)', bg: 'var(--status-online-soft)', text: '#0f7a48', label: 'clean' }
@@ -701,6 +716,7 @@ export function WorkspaceFiles({
     pulling: gitPulling,
     pullMsg: gitMsg
   }
+  const workspacePicker = renderWorkspacePicker?.(primaryBranch)
 
   return (
     <div className="flex flex-col gap-4">
@@ -732,7 +748,13 @@ export function WorkspaceFiles({
               }
             />
           ) : (
-            <div className="flex min-w-0 flex-none items-center gap-2">
+            <div
+              className={
+                workspacePicker
+                  ? 'flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]'
+                  : 'flex min-w-0 flex-none items-center gap-2'
+              }
+            >
               {workspacePicker}
               {deleteDraft ? (
                 <>
