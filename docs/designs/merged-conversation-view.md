@@ -256,9 +256,12 @@ grouped list and the merged page both hold to it (§7).
   always link to their raw `/sessions/:id?view=flat` page.
 - Existing `/sessions/:id` deep links (GitHub check footers, shared URLs,
   crumbs) whose session belongs to a multi-participant conversation
-  **redirect** to `/conversations/:key?focus=<agentId>` — the focus preserves
-  "whose perspective was linked" as scroll/highlight rather than as a
-  different page. The explicit `/sessions/:id?view=flat` diagnostic route
+  **redirect** to `/conversations/:key`. The landing carries no per-participant
+  focus: it opens the merged conversation exactly as any other entry point
+  does, with no scroll jump and no highlighted block — "whose perspective was
+  linked" is not worth a visual state the reader did not ask for. The
+  header's participant selector remains available for picking whose
+  Workspace/Details the header shows. The explicit `/sessions/:id?view=flat` diagnostic route
   suppresses that redirect and keeps `view=flat` through the session rail,
   lineage links, list back-navigation, and copied links.
 - Participant chips link to the agent's page (`/agents/:id`); session-level
@@ -473,8 +476,8 @@ how divergence starts.
   visible confusion (N rows per conversation).
 - **C2 — merged page.** `conversation-merge.ts` (union/dedupe/order, unit
   tests over both adapters' fixtures), `/conversations/:key` route, renderer
-  reuse, partial-merge notices, session→conversation deep-link redirects
-  (`?focus=<agentId>`), conversation-level lineage links (§9.2). Daemon
+  reuse, partial-merge notices, session→conversation deep-link redirects,
+  conversation-level lineage links (§9.2). Daemon
   prerequisite: persist the canonical `postId` on webchat text rows and
   expose it on the messages DTO (§6 step 2). Webchat composer wired through
   the existing adoption path; Slack read-only with deep link. Playground
@@ -514,8 +517,9 @@ how divergence starts.
    page boundaries and is rejected (review finding).
 3. **Per-agent session pages are not surfaced for multi-participant
    conversations.** Every entry point leads to the merged page; existing
-   session deep links redirect with `?focus=<agentId>`; the conversation
-   composer exists only on the merged page.
+   session deep links redirect to it plainly (no `?focus` scroll/highlight —
+   revised, see §5.3); the conversation composer exists only on the merged
+   page.
 4. **Webchat and Slack adapters ship together** in every milestone — the
    platform-neutral core is the point.
 5. **Lineage never changes conversation membership** — parent/child edges are

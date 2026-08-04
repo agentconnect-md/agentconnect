@@ -14,7 +14,6 @@ import {
 import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
-import { focusAction } from '@/lib/conversation-focus'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -288,10 +287,6 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
     ...(platform ? { platform } : {})
   }
 }
-
-/** Focus auto-paging budget (§5.3): how many older windows the ?focus landing
- *  may pull looking for the focused participant's first block. */
-const MAX_FOCUS_PAGES = 10
 
 /** Whether a member-source read failure may surface in the offline notice.
  *  Only a CONFIRMED daemon-offline response counts (the CP answers 503 when
@@ -1062,9 +1057,6 @@ export default function SessionDetailView() {
       ?.map((m) => m.sessionId)
       .sort()
       .join(',') ?? ''
-  // §5.3: the redirect carries whose perspective was linked; scroll to and
-  // briefly flash that participant's first block once the merge renders.
-  const focusAgentId = conversationKey ? searchParams.get('focus') : null
   // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
   // the members' parent/child links, keep only CROSS-conversation edges, and
   // link targets as /sessions/:id — the §5.3 self-redirect forwards
@@ -1263,12 +1255,6 @@ export default function SessionDetailView() {
         }))
     : null
   const [conversationOffline, setConversationOffline] = useState(0)
-  // ?focus scroll/flash (one-shot per mount): the ref attaches to the focused
-  // participant's first block during render; once the transcript is in, scroll
-  // it to center and flash its background briefly.
-  const focusRef = useRef<HTMLDivElement | null>(null)
-  const focusDoneRef = useRef(false)
-  const [focusFlash, setFocusFlash] = useState(false)
   const [msgLoading, setMsgLoading] = useState(false)
   const [msgPaging, setMsgPaging] = useState(false)
   const [msgErr, setMsgErr] = useState<string | null>(null)
@@ -1409,8 +1395,7 @@ export default function SessionDetailView() {
       : sessionMerged
   // Session mode: does this session belong to a multi-participant conversation?
   // One bounded resolver probe per detail view (same SWR cache family as
-  // conversation mode); a hit redirects to the merged page (§5.3), carrying
-  // whose perspective was linked as ?focus.
+  // conversation mode); a hit redirects to the merged page (§5.3).
   const selfKey = useMemo(() => {
     if (flatView || conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') {
       return null
@@ -1429,7 +1414,7 @@ export default function SessionDetailView() {
   )
   const selfConversationRedirect =
     !flatView && selfKey && selfConversation && selfConversation.sessions.length > 1
-      ? orgPath(`/conversations/${encodeURIComponent(selfKey)}?focus=${currentSessionDetail?.agentId ?? ''}`)
+      ? orgPath(`/conversations/${encodeURIComponent(selfKey)}`)
       : null
   useEffect(() => {
     if (selfConversationRedirect) router.replace(selfConversationRedirect)
@@ -1506,17 +1491,12 @@ export default function SessionDetailView() {
       ]
     })
   }, [agentById, conversationMembers, orgPath, session])
-  // A client-side history change can update ?focus without remounting this view.
-  // Include that route target in the selection scope so it supersedes the last
-  // explicit menu choice, while ordinary rerenders keep the current selection.
-  const headerFocusScope = `${conversationKey ?? session?.id ?? id}?focus=${focusAgentId ?? ''}`
+  // The persistent layout survives route-to-route navigation without remounting
+  // this view. Scope the selection to the current route target so it supersedes
+  // the last explicit menu choice, while ordinary rerenders keep the selection.
+  const headerFocusScope = conversationKey ?? session?.id ?? id
   const headerFocusOptionIds = headerFocusOptions.map((option) => option.agentId).join('|')
-  const defaultHeaderFocusAgentId =
-    (focusAgentId && headerFocusOptions.some((option) => option.agentId === focusAgentId)
-      ? focusAgentId
-      : session?.agentId) ??
-    headerFocusOptions[0]?.agentId ??
-    ''
+  const defaultHeaderFocusAgentId = session?.agentId ?? headerFocusOptions[0]?.agentId ?? ''
   const [headerFocusSelection, setHeaderFocusSelection] = useState({ scope: '', agentId: '' })
   const storedHeaderFocusValid =
     headerFocusSelection.scope === headerFocusScope &&
@@ -2018,54 +1998,6 @@ export default function SessionDetailView() {
   // live session's newest output landed below the fold. Follow it — but only for
   // a reader who is already at the bottom (see lib/stick-to-bottom).
   const stickToBottom = useStickToBottom(conversationKey ?? sid ?? null)
-
-  const focusPagesRef = useRef(0)
-  // The persistent layout survives key-to-key navigation: re-arm the one-shot
-  // focus state whenever the (conversation, participant) target changes.
-  useEffect(() => {
-    focusDoneRef.current = false
-    focusPagesRef.current = 0
-    setFocusFlash(false)
-  }, [conversationKey, focusAgentId])
-  useEffect(() => {
-    if (!focusAgentId || focusDoneRef.current) return
-    // The decision is pure (conversation-focus.ts) and every input is SCOPED
-    // to the current key: `transcriptReady` compares the fan-out's stamped key
-    // against this render's, so a key-to-key navigation in the persistent
-    // layout can never page or give up on the previous conversation's state.
-    const action = focusAction({
-      targetVisible: focusRef.current !== null,
-      transcriptReady: !msgLoading && conversationLoadedKey === conversationKey,
-      hasEarlier: conversationHasEarlier,
-      paging: conversationPagingEarlier,
-      pagesUsed: focusPagesRef.current,
-      pageBudget: MAX_FOCUS_PAGES
-    })
-    if (action === 'wait' || action === 'pause') return
-    if (action === 'page') {
-      focusPagesRef.current += 1
-      void loadEarlierConversation()
-      return
-    }
-    if (action === 'give-up') {
-      focusDoneRef.current = true
-      return
-    }
-    focusDoneRef.current = true
-    focusRef.current!.scrollIntoView({ block: 'center' })
-    setFocusFlash(true)
-    const timer = window.setTimeout(() => setFocusFlash(false), 1_800)
-    return () => window.clearTimeout(timer)
-  }, [
-    focusAgentId,
-    msgLoading,
-    msgs,
-    conversationKey,
-    conversationLoadedKey,
-    conversationHasEarlier,
-    conversationPagingEarlier,
-    loadEarlierConversation
-  ])
 
   useEffect(() => {
     if (!session || (session.platform !== 'playground' && session.platform !== 'webchat') || !sessionBusy) return
@@ -2628,10 +2560,6 @@ export default function SessionDetailView() {
       rememberAgentParticipant(p.agentId, rosterParticipantName(p, rosterAgent ?? undefined), rosterAgent)
     }
   }
-
-  // The focused participant's FIRST block (§5.3 ?focus): ref target for the
-  // one-shot scroll/flash above.
-  const focusTurnIndex = focusAgentId ? turns.findIndex((t) => t.kind === 'bot' && t.agentId === focusAgentId) : -1
 
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
@@ -3255,13 +3183,7 @@ export default function SessionDetailView() {
                       // display name, which is stable for as long as the row is.
                       const turnTone = agentToneColor(turn.agentId || turn.agentName)
                       return (
-                        <div
-                          key={`${session.id}:${ti}`}
-                          ref={ti === focusTurnIndex ? focusRef : undefined}
-                          className={`flex items-start gap-[10px] rounded-md transition-colors duration-700 ${
-                            ti === focusTurnIndex && focusFlash ? 'bg-(--surface-active)' : ''
-                          }`}
-                        >
+                        <div key={`${session.id}:${ti}`} className="flex items-start gap-[10px]">
                           <span className="av h-[26px] w-[26px] flex-none rounded-md">
                             <AgentIconView
                               icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
