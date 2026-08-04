@@ -92,10 +92,27 @@ describe('PlatformMark', () => {
     expect(inset.match(/width:60%/g)).toHaveLength(1)
     expect(inset).toContain('<svg')
     expect(inset).not.toContain('<span')
-    expect(full).toContain('width:100%')
-    expect(full).toContain('height:100%')
+    // The full-bleed request is CAPPED at 80% for this mark — see the square-glyph
+    // note in PlatformMark. The style is still applied exactly once.
+    expect(full).toContain('width:80%')
+    expect(full).toContain('height:80%')
     expect(full).toContain('display:block')
     expect(full).not.toContain('width:60%')
+  })
+
+  it('caps the square brand glyphs at 80% while other marks honour a full-bleed box', () => {
+    // Slack / GitHub / Discord have no padding inside their artwork, so a
+    // fillPct=100 caller (the session rail rows) would draw them larger than the
+    // marks beside them. Slack is an Iconify mark, which renders an empty <span>
+    // until it hydrates, so only the react-icons pair is assertable from SSR.
+    for (const platform of ['github', 'discord']) {
+      const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)
+      expect(markup, platform).toContain('width:80%')
+      expect(markup, platform).not.toContain('width:100%')
+    }
+    // Below the cap nothing changes, and an uncapped mark still fills its box.
+    expect(renderToStaticMarkup(<PlatformMark platform="discord" fillPct={70} />)).toContain('width:70%')
+    expect(renderToStaticMarkup(<PlatformMark platform="telegram" fillPct={100} />)).toContain('width:100%')
   })
 
   it('uses the filled Lark brand asset for the shared Lark and Feishu platform family', () => {
