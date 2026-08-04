@@ -37,6 +37,12 @@
  *    their per-platform copy, {@link WebWizardFacet.identityCards});
  *  - the generic free-bot reuse list (:2935-2988; the module supplies only
  *    the eligibility predicate, {@link WebWizardFacet.freeBotFilter});
+ *  - the Bot-identity header and the visibility of that whole identity
+ *    chassis (:2867-2883) — a module whose pane REPLACES it (Slack's
+ *    built-in/custom fork) publishes visibility and the header's
+ *    return-to-built-in action through
+ *    {@link WizardHost.setIdentityChrome}, never by reaching into host
+ *    chrome;
  *  - the footer bar and its Cancel action (:3758-3771; the module drives the
  *    primary through {@link WizardHost.setFooter});
  *  - the shared-bot toggle widget (:3736-3750) and the error banner
@@ -113,6 +119,35 @@ export interface WizardFooterState {
    *  their own: the Slack built-in "Add to Slack" pane and the Feishu deeplink
    *  flow (`!hideIdentitySection && !isFeishuDeeplink`, :3765-3770). */
   hidden?: boolean
+}
+
+/**
+ * Identity-chassis publication — how a module-owned pane state drives the
+ * HOST-owned identity chrome it must hide or extend. The audited case is
+ * Slack's built-in/custom fork: `hideIdentitySection` derives from
+ * module-owned funnel state (`slackChecking || slackBuiltin`,
+ * AddIntegrationModal.tsx:1298-1301) yet gates the host's Bot-identity header
+ * (:2867), mode cards (:2887), free-bot list (:2935), and share toggle
+ * (:3736), while the host-owned header renders "Use the built-in Slack app"
+ * — an action that mutates the module's own `slackIdentity` state
+ * (:2872-2881). Published through {@link WizardHost.setIdentityChrome},
+ * exactly like the footer channel, so the module never reaches around the
+ * boundary and the host never grows a platform branch.
+ */
+export interface WizardIdentityChromeState {
+  /** Hide the whole identity chassis — header, mode cards, free-bot list, and
+   *  the share toggle (today's `hideIdentitySection` consumers, :2867, :2887,
+   *  :2935, :3736) — while the Body renders its own replacement pane (the
+   *  Slack built-in "Add to Slack" pane :2825-2866) or its probe spinner
+   *  (`slackChecking`, :1299-1301). The footer rides its own channel
+   *  ({@link WizardFooterState.hidden}). */
+  hidden: boolean
+  /** Optional action the host renders in the identity header, calling back
+   *  into the module — today's "Use the built-in Slack app" return
+   *  affordance (:2872-2881), shown only while the custom flow is open and
+   *  the built-in pane is offered (`builtinAppOffered`, :1298). Presentation
+   *  (icon, placement) is the host's. */
+  headerAction?: { label: string; onSelect(): void }
 }
 
 /** Wizard state the reuse predicates read — one context type for both
@@ -195,6 +230,12 @@ export interface WizardHost {
    *  renders the reuse footer itself (label and `selectedBot !== null`
    *  enablement are platform-free, :1397, :2179). */
   setFooter(state: WizardFooterState | null): void
+  /** Publish or clear this platform's identity-chassis state — visibility of
+   *  the host-owned header/mode-cards/free-bot-list/share-toggle chrome plus
+   *  the header's module callback action. `null` (and every platform that
+   *  never calls this) ⇒ the default chassis: visible, no header action —
+   *  today's non-Slack behavior. See {@link WizardIdentityChromeState}. */
+  setIdentityChrome(state: WizardIdentityChromeState | null): void
   /** Show `message` in the host's error banner (:3751-3756); null clears. The
    *  terminal states of module-owned polls land here (the Feishu registration
    *  poll's failure copy, :1953-1974). */
@@ -254,8 +295,10 @@ export interface WebWizardFacet {
    * install polling, and per-step inline actions. Rendered by the host
    * between the mode cards and the shared footer chrome; remounted on
    * platform switch (the reset seam — see the module doc). The Body drives
-   * the host footer via {@link WizardHost.setFooter} and commits through its
-   * own api bindings + {@link WizardHost.createIntegration}.
+   * the host footer via {@link WizardHost.setFooter}, the identity chassis
+   * via {@link WizardHost.setIdentityChrome} (the Slack built-in/custom
+   * fork), and commits through its own api bindings +
+   * {@link WizardHost.createIntegration}.
    */
   Body: ComponentType<{ agent: Agent; host: WizardHost }>
   /**
