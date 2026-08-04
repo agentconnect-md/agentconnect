@@ -2,6 +2,7 @@ export {
   isTelegramMembershipServiceMessage,
   normalizeTelegramMessage,
   quotedFromTelegramReply,
+  telegramMessageUrl,
   telegramThread,
   toTelegramDocumentAttachment as documentToAttachment,
   toTelegramPhotoAttachment as photoToAttachment

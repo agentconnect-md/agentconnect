@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { createSessionReader } from '../src/cp/session-reader.js'
+import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const OTHER_AGENT = '22222222-2222-4222-8222-222222222222'
@@ -214,7 +215,7 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('builds a Slack threadUrl from the agent workspace URL; absent without a resolver or for non-Slack', () => {
+  it('uses persisted source URLs and derives the Slack fallback from the owning workspace', () => {
     const s = store()
     // Slack session with a realistic thread-root ts.
     s.upsertSession({
@@ -240,19 +241,39 @@ describe('SessionReader', () => {
       lastDeliveredTs: null,
       updatedAt: 1
     })
+    s.upsertSession({
+      key: sessionKey('hook', 'github:123', '42', AGENT),
+      agentId: AGENT,
+      platform: 'hook',
+      channel: 'github:123',
+      thread: '42',
+      threadUrl: 'https://github.com/acme/infra/issues/42',
+      acpSessionId: 'acp-github',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 3
+    })
 
-    // With a resolver: the Slack row gets a permalink, the Telegram row does not.
-    const withUrl = createSessionReader(s, () => 'https://acme.slack.com/')
+    // Persisted ingress links win; the strategy derives Slack's legacy/live fallback.
+    const withUrl = createSessionReader(s, (session) =>
+      sessionThreadUrlFor(session, { workspaceUrl: 'https://acme.slack.com/' })
+    )
     const byId = new Map(withUrl.list({}).sessions.map((x) => [x.sessionId, x]))
     expect(byId.get('acp-slack')!.threadUrl).toBe('https://acme.slack.com/archives/C1/p1710799200123456')
     expect(byId.get('acp-tg')!.threadUrl).toBeUndefined()
+    expect(byId.get('acp-github')!.threadUrl).toBe('https://github.com/acme/infra/issues/42')
 
-    // No resolver (or one returning undefined) ⇒ field simply absent.
+    // No resolver leaves only the persisted links available.
     expect(
       createSessionReader(s)
         .list({})
         .sessions.find((x) => x.sessionId === 'acp-slack')!.threadUrl
     ).toBeUndefined()
+    expect(
+      createSessionReader(s)
+        .list({})
+        .sessions.find((x) => x.sessionId === 'acp-github')!.threadUrl
+    ).toBe('https://github.com/acme/infra/issues/42')
     expect(
       createSessionReader(s, () => undefined)
         .list({})

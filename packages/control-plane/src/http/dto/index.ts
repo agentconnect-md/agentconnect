@@ -2330,8 +2330,8 @@ export const SessionDto = z.object({
   // canonical; null when the daemon hasn't resolved them).
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
-  // Platform-native deep link back to the source thread (e.g. a Slack archives
-  // permalink), built by the daemon; null when unavailable. Pure passthrough.
+  // Platform-native deep link back to the source message/thread, captured or
+  // derived by the daemon; null when unavailable. Pure passthrough.
   threadUrl: z.string().nullable(),
   // Execution-config snapshot the session actually ran with (daemon-reported;
   // daemonId is CP-stamped from the reporting WS connection). null ⇒ never

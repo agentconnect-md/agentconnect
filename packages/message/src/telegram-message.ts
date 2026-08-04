@@ -160,6 +160,29 @@ export function telegramThread(message: TelegramMessage): string | undefined {
   return message.message_thread_id != null ? String(message.message_thread_id) : undefined
 }
 
+/** A Telegram-native message permalink when the Bot API event carries enough
+ *  public coordinates. Public chats use their username; private supergroups and
+ *  channels use Telegram's documented `/c/<channel>/<message>` form. Basic
+ *  groups and 1:1 chats have no stable message link we can safely construct. */
+export function telegramMessageUrl(message: TelegramMessage): string | undefined {
+  const messageId = String(message.message_id)
+  if (!/^\d+$/.test(messageId)) return undefined
+
+  const username = message.chat.username?.replace(/^@/, '')
+  let base: string | undefined
+  if (username && /^[A-Za-z0-9_]+$/.test(username)) {
+    base = `https://t.me/${username}`
+  } else if (message.chat.type === 'supergroup' || message.chat.type === 'channel') {
+    const chatId = String(message.chat.id)
+    const privateChannelId = /^-100([1-9]\d*)$/.exec(chatId)?.[1]
+    if (privateChannelId) base = `https://t.me/c/${privateChannelId}`
+  }
+  if (!base) return undefined
+
+  const topicId = message.is_topic_message === true ? telegramThread(message) : undefined
+  return topicId && /^\d+$/.test(topicId) ? `${base}/${topicId}/${messageId}` : `${base}/${messageId}`
+}
+
 function extractTelegramMentions(text: string, entities: TelegramMessageEntity[]): string[] {
   const mentions = new Set<string>()
   for (const entity of entities) {
@@ -190,6 +213,7 @@ export function normalizeTelegramMessage(
   const replyTo = message.reply_to_message?.message_id != null ? String(message.reply_to_message.message_id) : undefined
   const quoted = quotedFromTelegramReply(message)
   const senderName = telegramSenderName(message.from)
+  const threadUrl = telegramMessageUrl(message)
 
   return {
     msgId: `telegram:${message.chat.id}:${message.message_id}`,
@@ -200,6 +224,7 @@ export function normalizeTelegramMessage(
     source: 'user',
     platform: 'telegram',
     channel: String(message.chat.id),
+    ...(threadUrl ? { threadUrl } : {}),
     // §6.5 dual-shape: generic coordinates alongside the deprecated named fields.
     // §6.5 emission flip: generic coordinates only — the Telegram-named twins retired.
     ...(isForumTopic && threadId !== undefined ? { topicId: threadId } : {}),

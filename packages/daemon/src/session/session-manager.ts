@@ -502,16 +502,18 @@ export class SessionManager {
           acpSessionId: null,
           memoryProvider: currentMemoryProvider,
           transportScope: transportScope ?? null,
+          ...(!rec.threadUrl && msg.threadUrl ? { threadUrl: msg.threadUrl } : {}),
           state: rec.state === 'closed' ? 'closed' : 'idle',
           lastDeliveredTs: null,
           updatedAt: Date.now()
         }
         this.deps.store.upsertSession(rec)
-      } else if (rec.memoryProvider == null || rec.transportScope == null) {
+      } else if (rec.memoryProvider == null || rec.transportScope == null || (!rec.threadUrl && msg.threadUrl)) {
         rec = {
           ...rec,
           memoryProvider: currentMemoryProvider,
-          ...(transportScope !== undefined ? { transportScope } : {})
+          ...(transportScope !== undefined ? { transportScope } : {}),
+          ...(!rec.threadUrl && msg.threadUrl ? { threadUrl: msg.threadUrl } : {})
         }
         this.deps.store.upsertSession(rec)
       }
@@ -870,6 +872,7 @@ export class SessionManager {
         // as `session/list`'s triggeredBy). Hook routing identity remains separate
         // from the GitHub actor credited on the transcript row above.
         triggeredBy: msg.sessionTriggerId ?? msg.sender.id,
+        ...(msg.threadUrl ? { threadUrl: msg.threadUrl } : {}),
         memoryProvider: currentMemoryProvider,
         workspaceIsolation,
         // Durable parent link, set once at spawn (first-wins in the store).

@@ -54,10 +54,9 @@ export const SessionListItem = z.object({
   // canonical identity; absent when the daemon hasn't resolved them (yet).
   channelName: z.string().optional(), // "general" for a Slack "C…" channel; "@Dana Reyes" for a "D…" DM
   triggeredByName: z.string().optional(), // display name for `triggeredBy`
-  // Platform-native deep link back to the source thread (e.g. a Slack
-  // `…/archives/<C…>/p<ts>` permalink), built by the daemon from the platform
-  // credentials it holds. Optional — absent when the daemon can't resolve the
-  // workspace URL (yet) or the platform has no addressable thread link.
+  // Platform-native deep link back to the source message/thread. The daemon
+  // either captures the provider URL at ingress or derives it from the owning
+  // integration. Optional when the platform exposes no addressable source.
   threadUrl: z.string().optional()
 })
 export type SessionListItem = z.infer<typeof SessionListItem>

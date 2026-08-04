@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeTelegramMessage, telegramThread, type TelegramMessage } from '../src/telegram/normalize.js'
+import {
+  normalizeTelegramMessage,
+  telegramMessageUrl,
+  telegramThread,
+  type TelegramMessage
+} from '../src/telegram/normalize.js'
 
 const ctx = { traceId: 'trace-1' }
 
@@ -35,6 +40,26 @@ describe('normalizeTelegramMessage', () => {
     const n = normalizeTelegramMessage(msg({ chat: { id: 42, type: 'private' } }), ctx)
     expect(n.isDm).toBe(true)
     expect(n.channel).toBe('42')
+  })
+
+  it('links addressable channel messages and topics without guessing private-chat links', () => {
+    expect(telegramMessageUrl(msg())).toBe('https://t.me/c/123/10')
+    expect(
+      telegramMessageUrl(
+        msg({ chat: { id: -100123, type: 'supergroup', title: 'devs', username: 'agentconnect_devs' } })
+      )
+    ).toBe('https://t.me/agentconnect_devs/10')
+    expect(
+      telegramMessageUrl(
+        msg({
+          chat: { id: -100123, type: 'supergroup', title: 'devs', username: 'agentconnect_devs' },
+          message_thread_id: 555,
+          is_topic_message: true
+        })
+      )
+    ).toBe('https://t.me/agentconnect_devs/555/10')
+    expect(telegramMessageUrl(msg({ chat: { id: 42, type: 'private' } }))).toBeUndefined()
+    expect(telegramMessageUrl(msg({ chat: { id: -42, type: 'group', title: 'small group' } }))).toBeUndefined()
   })
 
   it('marks a bot sender as isBot', () => {

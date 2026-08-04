@@ -89,6 +89,9 @@ export interface SessionRecord {
   // created, by the runtime (ACP `session_info_update`), or by AgentConnect's
   // `setSessionTitle` tool. Later runtime/tool updates win.
   title?: string | null
+  // Platform-native link to the source message/thread. First non-null wins so
+  // later messages in the same logical session cannot move the title link.
+  threadUrl?: string | null
   // Slack-only chrome: the current in-thread status-bar message ts. One per session
   // so later turns edit the same status line instead of posting duplicates.
   statusBarTs?: string | null
@@ -572,7 +575,7 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
-        usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, modelOverride TEXT,
+        usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
         observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
         outputModeOverride TEXT, statusBarTs TEXT, memoryProvider TEXT, workspaceIsolation TEXT,
@@ -1198,7 +1201,7 @@ export class LocalStore {
     }
   }
 
-  /** Add session columns introduced after the initial schema: usage JSON, mute/title,
+  /** Add session columns introduced after the initial schema: usage JSON, mute/title/link,
    *  sticky runtime controls, and Slack chrome pointers. CREATE TABLE IF NOT EXISTS
    *  above adds them for fresh DBs but never alters an existing table, so upgrade in
    *  place. No-op once the columns are present. */
@@ -1208,6 +1211,7 @@ export class LocalStore {
     if (!cols.some((c) => c.name === 'muted')) this.db.exec('ALTER TABLE sessions ADD COLUMN muted INTEGER')
     if (!cols.some((c) => c.name === 'triggeredBy')) this.db.exec('ALTER TABLE sessions ADD COLUMN triggeredBy TEXT')
     if (!cols.some((c) => c.name === 'title')) this.db.exec('ALTER TABLE sessions ADD COLUMN title TEXT')
+    if (!cols.some((c) => c.name === 'threadUrl')) this.db.exec('ALTER TABLE sessions ADD COLUMN threadUrl TEXT')
     if (!cols.some((c) => c.name === 'modelOverride'))
       this.db.exec('ALTER TABLE sessions ADD COLUMN modelOverride TEXT')
     if (!cols.some((c) => c.name === 'observedModel'))
@@ -1797,13 +1801,13 @@ export class LocalStore {
     this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
+           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind)
          VALUES
            (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
-            @triggeredBy, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
+            @triggeredBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
@@ -1815,6 +1819,7 @@ export class LocalStore {
              ELSE sessions.muted
            END,
            triggeredBy=COALESCE(sessions.triggeredBy, excluded.triggeredBy),
+           threadUrl=COALESCE(sessions.threadUrl, excluded.threadUrl),
            memoryProvider=excluded.memoryProvider,
            workspaceIsolation=COALESCE(excluded.workspaceIsolation, sessions.workspaceIsolation),
            externalProvider=COALESCE(sessions.externalProvider, excluded.externalProvider),
@@ -1850,6 +1855,7 @@ export class LocalStore {
         lastDeliveredTs: rec.lastDeliveredTs,
         updatedAt: rec.updatedAt,
         triggeredBy: rec.triggeredBy ?? null,
+        threadUrl: rec.threadUrl ?? null,
         memoryProvider: rec.memoryProvider ?? null,
         workspaceIsolation: rec.workspaceIsolation ?? null,
         externalProvider: rec.externalProvider ?? null,

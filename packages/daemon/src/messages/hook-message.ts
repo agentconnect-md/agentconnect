@@ -21,6 +21,7 @@
  *    repo-scoped tokens, permission mode), never content filtering.
  */
 import type { GithubHookMetadata, HookContext, RdMsgHook } from '@agentconnect.md/protocol'
+import { githubSourceThreadUrl } from './github-source-link.js'
 import type { NormalizedMessage } from './normalized.js'
 
 /** Fencing delimiters for github event bodies — exact strings, asserted by tests. */
@@ -336,7 +337,9 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
   const target = msg.target
   // With an anchoring target the fire behaves like a cron's: the message lives
   // on the target platform/channel, the pre-anchor thread is a fresh synthetic
-  // key (replaced by the real anchor ts once posted), and output is live.
+  // key (replaced by the real anchor ts once posted), and output is live. Its
+  // title link must therefore describe that target conversation; an available
+  // platform strategy derives it instead of mixing in the GitHub source URL.
   // Without one it runs headless under the affinity key.
   if (target) {
     return {
@@ -356,6 +359,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       trigger: 'hook'
     }
   }
+  const threadUrl = githubSourceThreadUrl(msg.context, msg.github)
   return {
     msgId: msg.msgId, // hookId:deliveryKey — unique per delivery (dedup happened upstream)
     transcriptTs,
@@ -364,6 +368,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     platform: 'hook',
     channel,
     ...(thread ? { thread } : {}),
+    ...(threadUrl ? { threadUrl } : {}),
     // A pre-audience daemon used an unscoped local key. Pinning the immutable
     // repository id here creates a clean runtime after upgrade instead of
     // letting a mutable hook id claim legacy context from another repository.

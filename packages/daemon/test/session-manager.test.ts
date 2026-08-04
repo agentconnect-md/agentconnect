@@ -63,11 +63,13 @@ describe('SessionManager', () => {
     const store = newStore()
     const host = fakeHost()
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
-    const { sessionId, blocks, created } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
+    const threadUrl = 'https://acme.slack.com/archives/C1/p1001'
+    const { sessionId, blocks, created } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', threadUrl }))
     expect(sessionId).toBe('acp-1')
     expect(created).toBe(true) // brand-new ACP session → daemon emits event/session start
     expect(host.newSession).toHaveBeenCalledOnce()
     expect(blocks.map((b: any) => b.text).join('')).toContain('first')
+    expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.threadUrl).toBe(threadUrl)
     store.close()
   })
 

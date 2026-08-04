@@ -17,6 +17,7 @@ import { collapseDiscordChannels, collapseNameLookupIds } from '../src/discord/c
 const base: DiscordMessageLike = {
   id: '111',
   channelId: 'C777',
+  url: 'https://discord.com/channels/222/C777/111',
   content: 'hello <@999>',
   authorId: 'U123',
   authorIsBot: false,
@@ -34,6 +35,7 @@ describe('normalizeDiscordMessage', () => {
       platform: 'discord',
       source: 'user',
       channel: 'C777',
+      threadUrl: 'https://discord.com/channels/222/C777/111',
       text: 'hello @999', // mention token humanized (see humanizeDiscordText)
       mentionedBots: ['999'],
       sender: { id: 'U123', isBot: false },

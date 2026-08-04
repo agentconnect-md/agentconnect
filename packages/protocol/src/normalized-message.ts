@@ -102,6 +102,15 @@ export const NormalizedPlatformMessageSchema = z.object({
   platform: Platform,
   channel: z.string(),
   thread: z.string().optional(),
+  /** Platform-native HTTPS link for the integration represented by this
+   *  message's session coordinates. The adapter owns construction; core only
+   *  persists and forwards it as session metadata. Optional because some
+   *  transports expose no stable user-facing permalink and older adapters do
+   *  not emit one. */
+  threadUrl: z
+    .string()
+    .url({ protocol: /^https$/ })
+    .optional(),
   sender: z.object({
     id: z.string(),
     isBot: z.boolean(),

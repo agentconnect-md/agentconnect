@@ -23,10 +23,14 @@ import type {
   ToolBody,
   Platform
 } from '@agentconnect.md/protocol'
-import { transcriptChannelKey, type LocalStore, type TranscriptEventCursor } from '../store/local-store.js'
+import {
+  transcriptChannelKey,
+  type LocalStore,
+  type SessionRecord,
+  type TranscriptEventCursor
+} from '../store/local-store.js'
 import { legacyGithubEventActor } from '../messages/hook-message.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
-import { slackThreadUrl } from '../slack/permalink.js'
 import { hasNativeMessageOrder } from '../platforms/message-ordering.js'
 
 /** Encoded-payload ceiling, leaving headroom under MAX_FRAME_BYTES for the
@@ -174,13 +178,13 @@ export interface SessionReader {
 }
 
 /**
- * @param workspaceUrlFor Resolve an agent's Slack workspace base URL (the daemon's
- *   live `SlackConnection.workspaceUrl` for that agent), used to build each Slack
- *   session's thread permalink. Absent (or returning undefined) ⇒ no `threadUrl`.
+ * @param threadUrlFor Best-effort platform strategy for legacy/dynamic links that
+ *   were not persisted on the session itself (Slack workspace permalinks today).
+ *   Absent (or returning undefined) leaves `threadUrl` unset.
  */
 export function createSessionReader(
   store: LocalStore,
-  workspaceUrlFor?: (agentId: string) => string | undefined
+  threadUrlFor?: (session: SessionRecord) => string | undefined
 ): SessionReader {
   return {
     list(req) {
@@ -211,10 +215,10 @@ export function createSessionReader(
         // Titles (explicit OR the first-message fallback) can carry raw `<@U…>`
         // mentions — rewrite to `@name` like the transcript does.
         const title = rawTitle ? substituteUserMentions(rawTitle, names) : undefined
-        // Slack thread deep link, built from the agent's live workspace URL + the
-        // session's channel/thread-root ts. Only Slack sessions have this form.
-        const threadUrl =
-          r.platform === 'slack' ? slackThreadUrl(workspaceUrlFor?.(r.agentId), r.channel, r.thread) : undefined
+        // A link captured by the ingress wins. The strategy fallback keeps links
+        // derivable from live platform identity (Slack workspace URLs) available
+        // for legacy rows without moving platform branches into this reader.
+        const threadUrl = r.threadUrl ?? threadUrlFor?.(r)
         return {
           sessionId: r.acpSessionId!, // listSessions filters out null acpSessionId
           ...(r.originSessionId ? { parentSessionId: r.originSessionId } : {}),
