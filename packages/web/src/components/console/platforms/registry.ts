@@ -1,7 +1,7 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
 import type { ComponentType } from 'react'
-import type { SessionMessageDto } from '@/lib/api'
+import type { BotDto, SessionMessageDto } from '@/lib/api'
 import type { WebBotCardCopy, WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
@@ -79,6 +79,44 @@ export function botCardCopy(platformId?: string): Required<WebBotCardCopy> {
     revokedHint: copy?.revokedHint ?? DEFAULT_BOT_CARD_COPY.revokedHint,
     shareHint: copy?.shareHint ?? DEFAULT_BOT_CARD_COPY.shareHint
   }
+}
+
+/**
+ * Whether this platform supports multi-agent bots at all — the §5
+ * `multiAgentShareable` fact, read from the ONE place a module declares it
+ * (`WebWizardAffordances.share`). Total, like every lookup here: a bot row
+ * carries whatever platform the CP sent, and `webhook`/`github` are not modules.
+ *
+ * Read by BOTH surfaces that offer sharing — the install wizard's opt-in and the
+ * Settings → Bots toggle — rather than mirrored onto a second member of
+ * `WebBotSettingsFragments`. Two declarations of one platform fact can
+ * disagree, and there is no state in which they legitimately would: the CP
+ * refuses a multi-agent install and a `shareable: true` PATCH on exactly the
+ * platforms that do not declare it here.
+ */
+export function platformSupportsSharing(platformId?: string): boolean {
+  return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === true
+}
+
+/**
+ * Whether the Settings → Bots Sharable toggle may be OPERATED for this bot —
+ * the platform half of its `disabled` predicate (the viewer's write access and
+ * the in-flight PATCH stay the card's own).
+ *
+ * Both server preconditions, in the order the CP checks them
+ * (`http/routes/bots.ts`): the platform must support multi-agent bots, and the
+ * bot must be on the http transport (immutable post-create — a socket bot can
+ * never be shared). Gating on transport ALONE is what let a Feishu HTTP bot
+ * present a live toggle for a capability the CP refuses.
+ *
+ * The `shareable` escape hatch is deliberate rather than defensive: while the
+ * toggle was transport-gated only, the PATCH accepted the flip, so rows on a
+ * non-sharing platform may already carry `shareable: true`. The CP still honors
+ * turning those OFF, so the console must keep the control that does it.
+ */
+export function botSharingEditable(bot: Pick<BotDto, 'platform' | 'transport' | 'shareable'>): boolean {
+  if (bot.shareable) return true
+  return platformSupportsSharing(bot.platform) && (bot.transport ?? 'socket') === 'http'
 }
 
 /**

@@ -283,10 +283,23 @@ export interface WebWizardAffordances {
    *  choice nor lets {@link WizardHost.transport} vary (Telegram/Discord,
    *  whose create DTOs carry no transport at all, api.ts:660-661). */
   transport?: WebTransportAffordance
-  /** The platform supports the shared-bot opt-in (§5 `multiAgentShareable`
-   *  mirror; Slack only today). The host still applies the http-only gate
-   *  itself — create mode on the chosen transport, reuse mode on the reused
-   *  bot's own (:1321-1326). */
+  /**
+   * The platform supports multi-agent bots (§5 `multiAgentShareable` mirror;
+   * Slack only today). The host still applies the http-only gate itself —
+   * create mode on the chosen transport, reuse mode on the reused bot's own
+   * (:1321-1326).
+   *
+   * Nested under `wizard` for where it is DECLARED, not for where it may be
+   * read: it is a platform fact, and the Settings → Bots Sharable toggle reads
+   * the same one through `platformSupportsSharing` (registry.ts). That toggle
+   * shipped gated on transport ALONE, which left a Feishu HTTP bot — the one
+   * non-Slack platform whose bots can be `transport: 'http'` — offering a live
+   * control for a capability the CP refuses ("multi-agent bots currently
+   * support Slack only", control-plane `platforms/sharing.ts`). The fix is this
+   * member, not a second one on {@link WebBotSettingsFragments}: a Settings-side
+   * mirror could disagree with the wizard's about the same platform, and one
+   * declaration cannot.
+   */
   share?: boolean
 }
 

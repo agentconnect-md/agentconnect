@@ -34,6 +34,7 @@ import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
 import type { CpConfigRefusal } from '../../platforms/provider.js'
+import { MULTI_AGENT_UNSUPPORTED_MESSAGE, supportsMultiAgentBots } from '../../platforms/sharing.js'
 import {
   UpdateIntegrationChannelBody,
   LeaveIntegrationConversationBody,
@@ -129,10 +130,10 @@ export function integrationRoutes(deps: HttpDeps) {
       agentId: string,
       platform: string
     ): Promise<{ code: 400 | 409; body: { error: string; statusCode: number; message: string } } | null> => {
-      if (platform !== 'slack') {
+      if (!supportsMultiAgentBots(platform)) {
         return {
           code: 400,
-          body: { error: 'Bad Request', statusCode: 400, message: 'multi-agent bots currently support Slack only' }
+          body: { error: 'Bad Request', statusCode: 400, message: MULTI_AGENT_UNSUPPORTED_MESSAGE }
         }
       }
       if (!deps.httpBot.hasConnectedRelay()) {

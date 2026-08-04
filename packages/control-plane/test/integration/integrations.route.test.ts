@@ -1342,3 +1342,120 @@ describe('bot roster (GET/DELETE /bots)', () => {
     }
   )
 })
+
+/**
+ * Multi-agent bots are a per-PLATFORM capability (`platforms/sharing.ts`), and
+ * the two routes that read it had drifted: the shareable install refused
+ * everything but Slack while `PATCH /bots/:id` gated only on the transport. So
+ * any HTTP-transport bot on another platform — Feishu is the one that exists,
+ * since it offers a transport choice of its own — could be flipped `shareable`,
+ * and the flag would sit on the row as a promise the install path never honors.
+ */
+describe('bot sharing capability (PATCH /bots/:id)', () => {
+  /** A durable bot row with no install — enough for the toggle, which reads
+   *  `platform`, `transport`, `shareable` and the membership count. */
+  async function seedBot(over: { platform: string; transport?: 'socket' | 'http'; shareable?: boolean }) {
+    const id = randomUUID()
+    await prisma.bot.create({
+      data: {
+        id,
+        orgId: DEFAULT_ORG_ID,
+        platform: over.platform,
+        name: `${over.platform}-bot`,
+        transport: over.transport ?? 'http',
+        shareable: over.shareable ?? false
+      }
+    })
+    return id
+  }
+
+  it('refuses enabling sharing on a platform without multi-agent bots', async () => {
+    const { app } = withSpy()
+    const botId = await seedBot({ platform: 'feishu', transport: 'http' })
+
+    const res = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${botId}`, payload: { shareable: true } })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ message: 'multi-agent bots currently support Slack only' })
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
+  })
+
+  it('names the platform rather than the transport when neither would help', async () => {
+    // Ordering claim: the platform gate runs FIRST. A Feishu socket bot used to
+    // be told to "recreate the bot in HTTP mode" — advice that would not have
+    // worked, because the install path refuses the platform either way.
+    const { app } = withSpy()
+    const botId = await seedBot({ platform: 'feishu', transport: 'socket' })
+
+    const res = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${botId}`, payload: { shareable: true } })
+
+    expect(res.statusCode).toBe(409)
+    expect((res.json() as { message: string }).message).toBe('multi-agent bots currently support Slack only')
+  })
+
+  it('still lets a row flipped before the guard existed be turned back off', async () => {
+    // Only the ENABLE direction is refused. While the toggle was transport-gated
+    // only, this PATCH accepted the flip — so such rows may exist, and the
+    // console's repair has to keep working.
+    const { app } = withSpy()
+    const botId = await seedBot({ platform: 'feishu', transport: 'http', shareable: true })
+
+    const res = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${botId}`, payload: { shareable: false } })
+
+    expect(res.statusCode).toBe(200)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
+  })
+
+  it('leaves Slack’s HTTP bots shareable, and its socket bots refused on transport', async () => {
+    const { app } = withSpy()
+    const http = await seedBot({ platform: 'slack', transport: 'http' })
+    const socket = await seedBot({ platform: 'slack', transport: 'socket' })
+
+    const ok = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${http}`, payload: { shareable: true } })
+    expect(ok.statusCode).toBe(200)
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: http } })).shareable).toBe(true)
+
+    const refused = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${socket}`,
+      payload: { shareable: true }
+    })
+    expect(refused.statusCode).toBe(409)
+    expect((refused.json() as { message: string }).message).toMatch(/HTTP-mode/)
+  })
+
+  it('refuses a second agent on a non-Slack HTTP bot — the rule this toggle now agrees with', async () => {
+    // The create path's half of the same predicate, pinned here so the two stay
+    // in one place: a reuse that would make the bot multi-agent is a 400 (there
+    // the platform is the client's assertion in the body; on the PATCH it is the
+    // stored row's, hence the 409 above).
+    const first = await placedAgent()
+    const second = randomUUID()
+    await seedAgent(prisma, second, { daemonId: DAEMON })
+    const { app } = withSpy()
+    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+    app.platformStubs.verifyFeishuBot = async () => ({ status: 'ok', name: 'shared-lark', openId: 'ou_shared_bot' })
+
+    const created = (
+      await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: {
+          platform: 'feishu',
+          agentId: first,
+          transport: 'http',
+          feishu: { appId: 'cli_shared', appSecret: 'app-secret', verificationToken: 'vt', encryptKey: 'ek' }
+        }
+      })
+    ).json() as { botId: string }
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId: second, botId: created.botId }
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ message: 'multi-agent bots currently support Slack only' })
+  })
+})

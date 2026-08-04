@@ -46,7 +46,7 @@ import {
   type SessionAccessProvider
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type AgentCallPolicy, type IntegrationRow } from '@/lib/data'
-import { botCardCopy, platformRegistry } from '@/components/console/platforms/registry'
+import { botCardCopy, botSharingEditable, platformRegistry } from '@/components/console/platforms/registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
@@ -1098,7 +1098,10 @@ function BotsCard({
                 </div>
                 {/* The host picks the arm by transport; the module owns both
                     sentences. A platform that declares none gets one sentence for
-                    both arms — its transport is not why sharing is unavailable. */}
+                    both arms — its transport is not why sharing is unavailable.
+                    Enablement asks the same question the CP does
+                    (`botSharingEditable`): transport ALONE left Feishu's HTTP bots
+                    with a live toggle for a capability the server refuses. */}
                 <span
                   className="flex items-center justify-self-start"
                   title={
@@ -1108,7 +1111,7 @@ function BotsCard({
                 >
                   <Toggle
                     checked={b.shareable}
-                    disabled={!canWrite || botBusyId === b.id || (b.transport ?? 'socket') === 'socket'}
+                    disabled={!canWrite || botBusyId === b.id || !botSharingEditable(b)}
                     onChange={(next) => void flipShareable(b, next)}
                   />
                 </span>
