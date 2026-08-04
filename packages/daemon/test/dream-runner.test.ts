@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -471,6 +471,42 @@ describe('DreamRunner adoption', () => {
     const history = await readFile(join(memoryDir(dir), MEMORY_HISTORY_FILENAME), 'utf8')
     expect(history).toContain('"source":"dream"')
     expect(history).toContain('"source":"tool"') // pre-adoption rows preserved
+  })
+
+  it('preserves the mtime of files the dream left unchanged, refreshing only changed ones', async () => {
+    // A dream rebuilds the whole store and swaps it in, so without care every
+    // file would show the adoption time. Only files whose content actually
+    // changed should get a fresh updated-time.
+    const { dir, store, runner } = await setup({
+      extract: async () =>
+        JSON.stringify({
+          index: '# Memory\n- [keep](keep.md)\n- [prefs](prefs.md)',
+          files: [
+            { path: 'keep.md', content: 'unchanged body' },
+            { path: 'prefs.md', content: 'changed by the dream' }
+          ]
+        })
+    })
+    const started = await runner.start('a1', { trigger: 'manual' })
+    await settle(store, started.dreamId)
+
+    // Seed a live keep.md byte-identical to what the dream staged, and backdate
+    // every current file so "fresh" is unambiguous. Adopt with force since this
+    // live edit intentionally drifts from the dream's start snapshot.
+    const out = join(dir, 'memory-dreams', started.dreamId, 'output')
+    const stagedKeep = await readFile(join(out, 'keep.md'), 'utf8')
+    await writeMemoryFile(dir, 'keep.md', stagedKeep, undefined, 'tool')
+    const OLD = new Date('2020-01-01T00:00:00.000Z')
+    for (const name of ['keep.md', 'prefs.md', MEMORY_INDEX]) {
+      await utimes(join(memoryDir(dir), name), OLD, OLD).catch(() => {})
+    }
+
+    const adopted = await runner.adopt('a1', started.dreamId, true)
+    expect(adopted.status).toBe('adopted')
+
+    // keep.md was byte-identical → its old mtime survives; prefs.md changed → fresh.
+    expect((await stat(join(memoryDir(dir), 'keep.md'))).mtime.getTime()).toBe(OLD.getTime())
+    expect((await stat(join(memoryDir(dir), 'prefs.md'))).mtime.getTime()).toBeGreaterThan(OLD.getTime())
   })
 
   it('binds adoption to the reviewed staged bytes (same-bytes review fence)', async () => {

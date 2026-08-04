@@ -897,6 +897,21 @@ export class DreamRunner {
           }
           await fsp.writeFile(join(replacement, MEMORY_HISTORY_FILENAME), history, { encoding: 'utf8', mode: 0o600 })
 
+          // Preserve the "last meaningfully changed" time of files the dream left
+          // byte-for-byte unchanged. The whole store is rebuilt into `replacement`
+          // and swapped in, so without this EVERY topic would show the adoption
+          // time as its updated time even when the dream didn't touch it. Files
+          // whose content actually changed (or are new) keep the fresh mtime.
+          for (const [path, after] of afterByPath) {
+            if (beforeByPath.get(path) !== after) continue
+            try {
+              const liveStat = await fsp.stat(join(live, path))
+              await fsp.utimes(join(replacement, path), liveStat.atime, liveStat.mtime)
+            } catch {
+              // Live file gone or unstattable — leave the fresh adoption mtime.
+            }
+          }
+
           const backupsRoot = join(dir, BACKUPS_DIRNAME)
           await fsp.mkdir(backupsRoot, { recursive: true })
           const backup = join(backupsRoot, `${at.replace(/[:.]/g, '-')}-pre-${dreamId}`)
