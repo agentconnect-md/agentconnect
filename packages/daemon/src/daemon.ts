@@ -2266,6 +2266,7 @@ export class Daemon {
       text: payload.text,
       mentionedBots: payload.mentions ?? [],
       ...(payload.agentAuthorship !== undefined ? { agentAuthorship: payload.agentAuthorship } : {}),
+      ...(payload.ingressEventTag !== undefined ? { ingressEventTag: payload.ingressEventTag } : {}),
       isDm: payload.isDm ?? false
     }
     // Same source resolution as a live connection callback: all integrations
@@ -5664,9 +5665,9 @@ export class Daemon {
    * A SEPARATE ladder from the human one because the checks differ, not the rungs: an
    * agent message carries a hop budget, a directional call policy, and an exactly-once
    * rendezvous that a human message has none of, and it can never issue control commands.
-   * A response that names nobody still ends up in the same rungs a human message would
-   * (`routeAgentMessageImplicitly`); a response that names somebody activates exactly the
-   * named agents or nobody.
+   * Every ordinary reply ends up in the same rungs a human message would
+   * (`routeAgentMessageImplicitly`) — the mention in its body selects nobody. The single
+   * exception is the paired `toAgent + channel` half, whose target the tool named.
    *
    * Every outcome that is not a dispatch records the message and returns — "transcript
    * only" in the design's terms. The conversation still SEES what the agent said; it

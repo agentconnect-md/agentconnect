@@ -67,6 +67,10 @@ export interface EvaluationPlatformPayload {
    *  would surface it (send-message-routing-rework.md §4/§8.1) — the daemon's
    *  ingress promotes it only after full verification. */
   agentAuthorship?: AgentAuthorshipClaim
+  /** The arrival tag a real normalizer sets on a response-FINALIZATION event, so a
+   *  fixture reproduces the production shape: one Slack message, two arrivals, told
+   *  apart here rather than by mangling the msgId (which also carries the platform ts). */
+  ingressEventTag?: string
   isDm?: boolean
 }
 

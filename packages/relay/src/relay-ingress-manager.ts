@@ -642,10 +642,26 @@ export class RelayIngressManager {
     // collaboration directory, so an unresolvable token silenced the conversation rather
     // than merely costing precision. Peers are meant to see what was said and judge for
     // themselves; every edge below is still checked against this relay's own snapshot.
-    const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
-    if (!implicit) return drop('no rung matched for this bot')
-    const targets = [implicit.agentId]
-    const routeVia: 'mention' | 'implicit' = 'implicit'
+    //
+    // ONE exception, and it is not an address: the visible half of a paired
+    // `toAgent + channel` send. Its target came from the tool call as an agent id, never
+    // from parsing text, and the rendezvous only converges when this observation and the
+    // internal wake name the SAME target — arbitration could pick the channel's default
+    // or thread owner instead, recording the observation against an agent the wake never
+    // mentions and stranding both halves. The daemon path special-cases it identically.
+    const paired = claim.agentCallDeliveryId !== undefined
+    let targets: string[]
+    let routeVia: 'mention' | 'implicit'
+    if (paired) {
+      targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
+      if (targets.length === 0) return drop('paired agent call named no other agent')
+      routeVia = 'mention'
+    } else {
+      const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
+      if (!implicit) return drop('no rung matched for this bot')
+      targets = [implicit.agentId]
+      routeVia = 'implicit'
+    }
 
     for (const targetAgentId of targets) {
       // Every listed author→target edge is checked independently and against the RELAY's

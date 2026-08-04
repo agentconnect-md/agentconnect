@@ -662,6 +662,27 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(explicit.sendMsg).not.toHaveBeenCalled()
     })
 
+    it('routes a PAIRED delivery to the exact agent `sendMessage` named', async () => {
+      // The one target that is structured rather than parsed. Arbitration could pick the
+      // channel default or thread owner instead, which would record the visible
+      // observation against an agent the internal wake never names — the rendezvous would
+      // then never reconcile and the delivery would expire transcript-only.
+      const { internals, sendMsg } = managerWith()
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [AGENT_ID], agentCallDeliveryId: 'd-7' },
+          { text: 'take a look', mentionedBots: [] }
+        )
+      )
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({
+        agentId: AGENT_ID,
+        trustedAgentCallDeliveryId: 'd-7',
+        trustedRouteVia: 'mention'
+      })
+    })
+
     it('always reports the delivery as implicitly selected', async () => {
       // Every agent-authored forward is arbitration-selected now, mention in the body or
       // not — the target needs that fact to apply its `!stop` gate correctly.

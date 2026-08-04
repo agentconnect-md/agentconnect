@@ -369,8 +369,8 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     expect(fixture.activations('agent2')).toBe(1)
     expect(fixture.turnInputs('agent2')[0]).toContain('please review the rollout')
     const admissions = await fixture.echoAdmissions()
-    const streaming = admissions.filter((record) => !record.messageId.endsWith(':final'))
-    const finalized = admissions.filter((record) => record.messageId.endsWith(':final'))
+    const streaming = admissions.filter((record) => record.ingressEventTag === undefined)
+    const finalized = admissions.filter((record) => record.ingressEventTag !== undefined)
     expect(streaming.every((record) => record.admission.admitted === false)).toBe(true)
     expect(finalized.some((record) => record.admission.admitted === true)).toBe(true)
     // agent2's unmentioning reply names nobody, so it continues the conversation
