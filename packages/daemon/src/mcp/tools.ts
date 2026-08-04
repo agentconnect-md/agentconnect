@@ -471,6 +471,29 @@ export const KNOWLEDGE_TOOLS: ToolDescriptor[] = [
       },
       ['query']
     )
+  },
+  {
+    name: 'listKnowledge',
+    description:
+      'List recent owner-approved organization knowledge (no query) to see what already exists before proposing new. Results are revisioned Markdown metadata; pair with findKnowledge to search by topic.',
+    inputSchema: obj({
+      limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Optional result count (default 10).' },
+      tags: {
+        type: 'array',
+        maxItems: 10,
+        items: { type: 'string', minLength: 1, maxLength: 64 },
+        description: 'Optional tags every result should match.'
+      }
+    })
+  },
+  {
+    name: 'listOrgSkills',
+    description:
+      'List or search accepted organization skills (managed skill bundles) to see which already exist — so you update an existing one instead of proposing a duplicate. Returns metadata only (id, name, description, revision); omit `query` to list, or pass it to filter by name/description.',
+    inputSchema: obj({
+      query: { type: 'string', minLength: 1, maxLength: 4096, description: 'Optional filter over name/description.' },
+      limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Optional result count (default 20).' }
+    })
   }
 ]
 

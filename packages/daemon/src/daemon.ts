@@ -92,7 +92,13 @@ import {
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
-import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
+import {
+  toolsForIntegrations,
+  MEMORY_TOOL_NAMES,
+  ALL_TOOL_NAMES,
+  GITHUB_REVIEW_TOOLS,
+  KNOWLEDGE_TOOLS
+} from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
 import {
@@ -2884,6 +2890,16 @@ export class Daemon {
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
         return client.knowledgeSearch(req)
       },
+      listKnowledge: async (req) => {
+        const client = this.cpClient
+        if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
+        return client.knowledgeList(req)
+      },
+      orgSkills: async (req) => {
+        const client = this.cpClient
+        if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
+        return client.orgSkills(req)
+      },
       // Agent→agent wake (§2.2). Same-daemon delivery only in P1; the daemon owns the
       // trusted caller identity + policy check + dispatch (a target elsewhere gets
       // reason:'not_local' — cross-daemon relay is P2).
@@ -5298,8 +5314,66 @@ export class Daemon {
     // await and immediately before dispatch so a canceled dream bails instead of
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
-    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
-    ref.sessionId = sessionId
+    // Give the dream on-demand tools to browse existing org knowledge/skills
+    // (findKnowledge / listKnowledge / listOrgSkills) so it can choose update
+    // over duplicate-create — instead of pre-stuffing that context into the
+    // prompt. Read-only, org-scoped from the trusted agentId in this context.
+    // The token is unregistered in finally so a leaked token cannot outlive the
+    // one-off dream host.
+    const mcpToken = this.mcp.register({
+      agentId,
+      platform: 'dream',
+      isDm: false,
+      channel: 'memory',
+      thread: context.dreamId,
+      tools: KNOWLEDGE_TOOLS
+    })
+    const mcpServers = buildMcpServers({
+      socketPath: mcpSocketPath(this.root),
+      token: mcpToken,
+      cliEntry: daemonEntryForShims(this.root)
+    })
+    try {
+      const sessionId = trusted
+        ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
+        : await host.newSession(cwd, mcpServers)
+      ref.sessionId = sessionId
+      return await this.runDreamExtractionSession(
+        host,
+        agent,
+        sessionId,
+        prompt,
+        signal,
+        context,
+        systemPrompt,
+        trusted
+      )
+    } finally {
+      this.mcp.unregister(mcpToken)
+    }
+  }
+
+  /** The prompt/collect body of a dream extraction, once the ACP session (with
+   *  its org-context tool bridge) exists. Split out so the MCP token registered
+   *  for the session is always unregistered in the caller's finally. */
+  private async runDreamExtractionSession(
+    host: AcpHost,
+    agent: LoadedAgent,
+    sessionId: string,
+    prompt: string,
+    signal: AbortSignal,
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string },
+    systemPrompt: string,
+    trusted: boolean
+  ): Promise<{
+    output: string
+    sessionId: string
+    runtime: string
+    model?: string
+    stopReason: string
+    usage?: StoredUsage
+  }> {
+    const agentId = agent.id
     const modelOptions = host.modelOptions?.(sessionId) ?? null
     const selectedModel = modelOptions?.current
     // Mirror ordinary-turn attribution: a runtime-owned `default` means the

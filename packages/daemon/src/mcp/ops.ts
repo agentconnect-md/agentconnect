@@ -8,7 +8,7 @@ import {
   offersDirectMessages,
   platformLabel
 } from '../platforms/read-ports.js'
-import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, Platform } from '@agentconnect.md/protocol'
+import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, OrgSkillsOk, Platform } from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
 import type {
@@ -414,6 +414,17 @@ export interface OpsDeps {
     maxBytes: number
     tags?: string[]
   }) => Promise<KnowledgeSearchOk>
+  /** Browse recent org knowledge (query-less); requester identity bound from the
+   * trusted session context. */
+  listKnowledge?: (req: {
+    requesterAgentId: string
+    limit: number
+    maxBytes: number
+    tags?: string[]
+  }) => Promise<KnowledgeSearchOk>
+  /** List or search accepted org skills (metadata only); requester identity bound
+   * from the trusted session context. `query` present ⇒ filter, absent ⇒ list. */
+  orgSkills?: (req: { requesterAgentId: string; query?: string; limit: number }) => Promise<OrgSkillsOk>
   /** Deliver a message into another agent's session (agent→agent wake). The daemon
    *  fills the trusted caller identity from the session context; this callback owns
    *  the same-daemon delivery (policy check, coord/integration resolution, dispatch)
@@ -823,6 +834,39 @@ export async function executeTool(
       limit,
       maxBytes: 8192,
       ...(tags?.length ? { tags } : {})
+    })
+    return { items: result.items }
+  }
+
+  if (name === 'listKnowledge') {
+    if (!deps.listKnowledge) throw new Error('organization knowledge is not available in this session')
+    const rawLimit = args.limit
+    const limit = rawLimit === undefined ? 10 : Number(rawLimit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error('limit must be an integer from 1 to 20')
+    const rawTags = args.tags
+    if (rawTags !== undefined && (!Array.isArray(rawTags) || rawTags.some((tag) => typeof tag !== 'string'))) {
+      throw new Error('tags must be an array of strings')
+    }
+    const tags = rawTags as string[] | undefined
+    const result = await deps.listKnowledge({
+      requesterAgentId: ctx.agentId,
+      limit,
+      maxBytes: 8192,
+      ...(tags?.length ? { tags } : {})
+    })
+    return { items: result.items }
+  }
+
+  if (name === 'listOrgSkills') {
+    if (!deps.orgSkills) throw new Error('organization skills are not available in this session')
+    const query = optionalString(args, 'query')?.trim()
+    const rawLimit = args.limit
+    const limit = rawLimit === undefined ? 20 : Number(rawLimit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('limit must be an integer from 1 to 50')
+    const result = await deps.orgSkills({
+      requesterAgentId: ctx.agentId,
+      ...(query ? { query } : {}),
+      limit
     })
     return { items: result.items }
   }
