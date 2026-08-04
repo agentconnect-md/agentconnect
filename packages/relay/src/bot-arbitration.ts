@@ -514,14 +514,22 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
           }
         : null
   if (!secrets) return null
+  // §6.7 dual-shape READER for the demux identity: prefer the opaque ingress
+  // bag, fall back to the named top-level fields. This reader lands one release
+  // BEFORE the CP stops emitting the named fields (reader-first, the S1a rule) —
+  // a bag-less assign from an older CP keeps working through the fallback.
+  const ingress = (a.ingress ?? {}) as { apiAppId?: unknown; teamId?: unknown; botUserId?: unknown }
+  const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : a.apiAppId
+  const teamId = typeof ingress.teamId === 'string' ? ingress.teamId : a.teamId
+  const botUserId = typeof ingress.botUserId === 'string' ? ingress.botUserId : a.botUserId
   return {
     botId: a.botId,
     platform: a.platform,
     secrets,
-    ...(a.apiAppId ? { apiAppId: a.apiAppId } : {}),
-    ...(a.teamId ? { teamId: a.teamId } : {}),
+    ...(apiAppId ? { apiAppId } : {}),
+    ...(teamId ? { teamId } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
-    ...(a.botUserId ? { botUserId: a.botUserId } : {}),
+    ...(botUserId ? { botUserId } : {}),
     members: a.members,
     agents: mapAgentDirectory(a.agents),
     routes: a.routes,

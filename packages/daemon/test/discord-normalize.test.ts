@@ -41,7 +41,9 @@ describe('normalizeDiscordMessage', () => {
     })
     // Discord: channel == conversation == session; top-level msg flagged for threading.
     expect(m.thread).toBe('C777')
-    expect(m.discordTopLevel).toBe(true)
+    // §6.5 emission flip: the generic coordinate only — discordTopLevel retired.
+    expect(m.promoteToThread).toBe(true)
+    expect(m.discordTopLevel).toBeUndefined()
     expect(m.attachments).toBeUndefined()
   })
 
@@ -49,13 +51,13 @@ describe('normalizeDiscordMessage', () => {
     const m = normalizeDiscordMessage({ ...base, channelId: 'T555', isThread: true }, { traceId: 't' })
     expect(m.channel).toBe('T555')
     expect(m.thread).toBe('T555')
-    expect(m.discordTopLevel).toBeUndefined()
+    expect(m.promoteToThread).toBeUndefined()
   })
 
   it('flags a non-guild message as a DM and does not auto-thread it', () => {
     const m = normalizeDiscordMessage({ ...base, inGuild: false }, { traceId: 't' })
     expect(m.isDm).toBe(true)
-    expect(m.discordTopLevel).toBeUndefined()
+    expect(m.promoteToThread).toBeUndefined()
   })
 
   it('carries attachments (public CDN url, no auth) when present', () => {

@@ -367,7 +367,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
 
     // send-only spec pushed to BOTH member daemons.
     expect(upserts.map((u) => u.daemonId).sort()).toEqual([D1, D2].sort())
-    for (const u of upserts) expect(u.spec.slack?.mode).toBe('shared')
+    for (const u of upserts) expect(u.spec.core?.mode).toBe('shared')
     // signing secret rides to the relay (to HMAC-verify inbound Events API POSTs), NOT the daemons.
     if (!('signingSecret' in assign.secrets)) throw new Error('expected Slack credentials')
     expect(assign.secrets.signingSecret).toBe('shh-x')
@@ -389,7 +389,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     botRow = bot({ slackAppId: 'A123' })
     await makeOrch().syncBot(BOT)
     expect(upserts).toHaveLength(2)
-    expect(upserts.every((upsert) => upsert.spec.slack?.appId === 'A123')).toBe(true)
+    expect(upserts.every((upsert) => (upsert.spec.config as { appId?: string })?.appId === 'A123')).toBe(true)
   })
 
   it('keeps Feishu API credentials on the daemon and sends only callback credentials to the relay', async () => {
@@ -436,7 +436,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         daemonId: D1,
         spec: expect.objectContaining({
           platform: 'feishu',
-          feishu: expect.objectContaining({
+          config: expect.objectContaining({
             mode: 'shared',
             appId: 'cli_http_app',
             appSecret: 'app-secret',
@@ -537,16 +537,17 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         channel({ integrationId: INT_A, channelId: 'C0', agentId: ALICE, trigger: 'off' })
       ]
       await makeOrch().syncBot(BOT)
+      // §6.4 emission flip: the spec carries the envelope only — knobs ride `core`.
       const alice = upserts.find((u) => u.daemonId === D1)!.spec as never as {
-        slack: { gated: boolean; bindRules: unknown[] }
+        core: { gated: boolean; bindRules: unknown[] }
       }
-      expect(alice.slack.gated).toBe(true)
-      expect(alice.slack.bindRules).toEqual([{ channel: 'C9', match: { kind: 'mention' } }])
+      expect(alice.core.gated).toBe(true)
+      expect(alice.core.bindRules).toEqual([{ channel: 'C9', match: { kind: 'mention' } }])
       const bob = upserts.find((u) => u.daemonId === D2)!.spec as never as {
-        slack: { gated: boolean; bindRules: unknown[] }
+        core: { gated: boolean; bindRules: unknown[] }
       }
-      expect(bob.slack.gated).toBe(false)
-      expect(bob.slack.bindRules).toEqual([])
+      expect(bob.core.gated).toBe(false)
+      expect(bob.core.bindRules).toEqual([])
     })
 
     it("replaceChannels makes a gated default owner's fresh channel Off on every membership row", async () => {

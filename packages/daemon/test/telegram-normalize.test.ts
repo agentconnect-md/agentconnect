@@ -42,7 +42,7 @@ describe('normalizeTelegramMessage', () => {
     expect(n.sender).toEqual({ id: '7', isBot: true })
   })
 
-  it('carries a forum-topic message_thread_id in telegramTopicId (thread left to the daemon)', () => {
+  it('carries a forum-topic message_thread_id in the generic topicId (thread left to the daemon)', () => {
     const n = normalizeTelegramMessage(
       msg({ message_thread_id: 555, is_topic_message: true, reply_to_message: { message_id: 999 } }),
       ctx
@@ -50,26 +50,29 @@ describe('normalizeTelegramMessage', () => {
     // normalize no longer owns Telegram threading — it surfaces the topic id + reply
     // target and leaves `thread` for the daemon's canonicalizeTelegramThread.
     expect(n.thread).toBeUndefined()
-    expect(n.telegramTopicId).toBe('555')
-    expect(n.telegramThreadRoot).toBeUndefined()
+    // §6.5 emission flip: generic coordinates only — the Telegram-named twins retired.
+    expect(n.topicId).toBe('555')
+    expect(n.telegramTopicId).toBeUndefined()
+    expect(n.threadRoot).toBeUndefined()
     expect(n.replyTo).toBe('999')
   })
 
-  it('carries a plain-supergroup message_thread_id as telegramThreadRoot (NOT a topic)', () => {
+  it('carries a plain-supergroup message_thread_id as the generic threadRoot (NOT a topic)', () => {
     // A reply in a non-forum supergroup: message_thread_id is the reply-thread ROOT, not
     // a forum topic — so it must not post back as message_thread_id.
     const n = normalizeTelegramMessage(msg({ message_thread_id: 6, reply_to_message: { message_id: 7 } }), ctx)
     expect(n.thread).toBeUndefined()
-    expect(n.telegramTopicId).toBeUndefined()
-    expect(n.telegramThreadRoot).toBe('6')
+    expect(n.topicId).toBeUndefined()
+    expect(n.threadRoot).toBe('6')
+    expect(n.telegramThreadRoot).toBeUndefined()
     expect(n.replyTo).toBe('7')
   })
 
   it('carries reply_to_message id in replyTo (no thread root) for a basic-group reply', () => {
     const n = normalizeTelegramMessage(msg({ reply_to_message: { message_id: 999 } }), ctx)
     expect(n.thread).toBeUndefined()
-    expect(n.telegramTopicId).toBeUndefined()
-    expect(n.telegramThreadRoot).toBeUndefined()
+    expect(n.topicId).toBeUndefined()
+    expect(n.threadRoot).toBeUndefined()
     expect(n.replyTo).toBe('999')
   })
 
