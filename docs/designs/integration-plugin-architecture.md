@@ -201,6 +201,7 @@ interface PlatformManifest {
   credentialShape: 'token' | 'token+appToken' | 'appId+appSecret' | 'appId+appSecret+signing'
   // Demux identity shape: tenant-scoped (Slack app+team) or app/token-scoped
   // (Linear urlToken). Drives how core persists Bot identity columns (§11).
+  // NOT a per-platform constant — amended in §5.1 below.
   identityScope: 'tenant' | 'app'
   multiAgentShareable: boolean
   membershipEnumeration: 'authoritative' | 'observed'
@@ -220,6 +221,55 @@ message length limits, parse mode, typing-indicator style, select-menu
 ceilings, thread-open mechanics. The current code exhibits at least ten such
 axes beyond the list above; encoding them as flags would reproduce the
 switch farm in data form.
+
+### 5.1 Amendment (S3): `identityScope` is per-ASSIGNMENT, not per-platform
+
+The relay's demux work (S3 §8) found this axis mis-modelled. A per-platform
+constant cannot express Slack, where **both shapes are live at the same
+time**: an install of a distributed platform app is tenant-scoped (many
+installs share one app id _and_ one signing secret, so only the composite
+`(appId, tenantId)` identifies the bot), while a legacy sibling bot may carry
+an app id alone — or no app id at all, if its CP row predates the column.
+Declaring `identityScope: 'tenant'` for the platform would either strand the
+legacy bots or, worse, invite a signature scan that resolves a callback to a
+_sibling install of the same app_ — one workspace's messages delivered to
+another tenant's bot. The axis therefore belongs to the assignment, derived
+from the identity the CP actually stamped on it:
+
+- **tenant id present** ⇒ composite index only. Assign-derived, **never
+  learned** from traffic, eagerly evicted on unassign — and a re-assign that
+  _gains_ a tenant id must evict the bot's stale app-only entry, or the
+  weaker index would keep answering cross-tenant.
+- **app id only** ⇒ app index, which **may** be learned from the first
+  verified delivery (bounded, lazily evicted), precisely because a legacy row
+  may not carry the id.
+- **neither** ⇒ no index entry; the bot is reachable only through the bounded
+  verify-scan, which skips same-secret siblings whose assigned tenant differs.
+
+What survives at manifest scope is the weaker statement that a platform's
+identity vocabulary _has_ a tenant axis at all (Slack `team_id`, Feishu
+tenantless) — the CP still needs it to know which columns to persist (§11).
+The relay reads scope from the assignment, never from the manifest.
+
+### 5.2 What actually shipped, and the discipline that kept it small
+
+The field list above is the **candidate** list derived from the S0 audit, not
+a contract. The manifest that exists
+(`packages/protocol/src/platform-manifest.ts`, promoted out of the daemon in
+S3 when the relay became its second consumer) carries three fields:
+`membershipEnumeration`, `botSenderRouting`, and `dmChannelPattern` — the
+last of which is **not** in the published list above, and was earned by a
+pre-dispatch read the audit surfaced (gated-conversation discovery must
+recognize a DM before any target resolves, and a Slack `app_mention` can omit
+`channel_type`). Each field landed in the same PR as the branches it retired.
+
+The rule also rejected a field in review: status-bar shape reads like a
+capability, but every read of it happens from a turn that already exists, so
+it is post-dispatch and belongs to an adapter strategy. **A manifest field is
+earned by a pre-dispatch read, in review, or it is a capability flag with
+better branding** — the exact pattern this migration exists to delete. The
+remaining candidates stay candidates until a branch is actually retired by
+one.
 
 ## 6. Protocol Changes
 
@@ -500,6 +550,62 @@ derived from the `egress` facet), and the echo-suppression guard. The
 existing `hooks/signature.ts` primitives are shared relay-core
 infrastructure serving both this seam and the webhook seam.
 
+### 8.1 Amendment (S3): the contract as it shipped
+
+The sketch above survived contact with both real ingests in shape but not in
+detail. What landed (`packages/relay/src/platforms/contract.ts`, three review
+rounds):
+
+- **The plugin is per-PLATFORM and stateless; the per-BOT object is what it
+  builds.** The sketch conflated them. `RelayPlatformIngressPlugin<TIngest,
+TVerified>` owns `buildIngest(assignment, host)`, `extractDemuxHints`,
+  `verify` and `handle`; the returned `RelayBotIngress` owns that bot's
+  credentials, its `stop()`, and the optional `egress` facet. Every lifecycle
+  edge (assign → build, rotate → rebuild, unassign/revoke → stop) goes through
+  the plugin, and core keeps one pool per platform.
+- **`verify` returns the plugin's typed product, not a verdict.**
+  `verify(ingest, rawBody, body, headers, now): TVerified | undefined`.
+  A boolean verdict was the first blocking review finding: Feishu's verify
+  _decrypts_, and the decrypted payload has to reach `handle` — deriving it a
+  second time there is both wasteful and a place for the two derivations to
+  disagree. `undefined` means reject.
+- **Challenge is not a third arm.** Slack's `url_verification` is answered by
+  the route BEFORE any candidate is selected (it is unauthenticated by
+  design — the documented pre-candidate exception), while Feishu's challenge
+  is _encrypted_ and therefore necessarily flows verify → handle like any
+  other event.
+- **`handle` returns only a sync body.** `handle(ingest, verified, host):
+Promise<HandledDelivery>` where `HandledDelivery` is `{ syncResponse? }`.
+  The sketch's `deliveries: PreAddressedDelivery[]` return does not exist:
+  events are ACK'd inside the platform's window and handled asynchronously, so
+  the plugin pushes through the host rather than returning work the route
+  would have to wait for.
+- **The host forwards NORMALIZED messages, not pre-addressed deliveries.**
+  `host.forward(botId, WireNormalizedMessage)` — arbitration and the routing
+  ladder stay in core (§12), so a plugin never resolves a target. Only
+  `forwardAction(msg, route)` carries a route, and it must not re-resolve one.
+- **`directory` has three trust models, not one lookup.** `targetForAgent`
+  (requires a live routing rule — the status-modal action path),
+  `integrationTarget` (directory-only, because a rendered card's target may
+  outlive the rule that created it and the daemon's active-card map is the
+  terminal fence), and `soleTarget` (single-install fallback for cards
+  rendered before action values embedded a target). Collapsing them would
+  either break stale-but-legitimate interactions or route them by guess.
+- **`getDaemonOnline` became `canDeliver(route)`**, and it is load-bearing for
+  one-shot triggers: a Slack shortcut's trigger id is consumed by returning
+  `true`, so an offline daemon must fall back to the local unavailable modal
+  while the trigger is still valid.
+- **`reportRevoked` carries a credential revision.** Assignments start
+  fire-and-forget, so an older ingest's `auth.test` can land after a newer
+  assignment installed; the report is fenced with the revision the OBSERVING
+  ingest was built from, never the mutable current one.
+- **`egress` is `{ notice, lookupUserName }`** — what relay-side egress
+  actually needs; modal and channel-snapshot work is driven through the
+  ingest's own callbacks. Facet presence remains the `relayOwnsEgress`
+  capability read, as designed.
+- **Dedup identity is per-assignment composite**, per §5.1: the plugin mints
+  `(appId, tenantId, eventId)`, core owns the TTL table.
+
 ## 9. Control-Plane Slot
 
 The CP slot is **behavioral, not declarative** — a descriptor cannot express
@@ -641,8 +747,11 @@ Two decisions specific to this host:
   tenantless platform writes the sentinel `'-'` as `externalTenantId`, so
   the composite unique index enforces `(platform, externalAppId)`
   uniqueness declaratively — no partial index, no `NULLS NOT DISTINCT`
-  migration hazard. The manifest's `identityScope` axis (§5) tells core
-  which shape to persist.
+  migration hazard. Which shape a row persists follows the identity the
+  install funnel captured for **that bot**, not a per-platform constant
+  (§5.1): a tenantless platform writes the sentinel, and a tenant-capable
+  platform writes the sentinel too for any bot whose install never yielded a
+  tenant id.
   `discordAppId`, `feishuAppId`, `feishuRegion` fold into `platformConfig`.
   If a platform later needs a _second_ identity axis, the fallback is a
   `bot_platform_identity(botId, platformId, identityKind, identityValue)`
@@ -690,6 +799,23 @@ Each stage lands independently and is independently valuable.
    Telegram/Discord/Feishu transcripts. The registry default keeps today's
    behavior; per-platform overrides are an explicit, separately-shipped
    behavior change (§10).
+4. **Revocation fenced with the wrong generation** — the relay reported a
+   platform revocation against the router's _current_ credential revision, so
+   a stale ingest's `auth.test` finishing after a re-assign could revoke the
+   replacement credential. Fixed in S3 by capturing the observing
+   assignment's revision at ingest construction (§8.1).
+5. **An offline daemon ate a Slack one-shot trigger** — the message-shortcut
+   path returned "handled" without checking deliverability, consuming the
+   trigger id and leaving the operator with neither a modal nor a retry.
+   Fixed in S3 by the synchronous `canDeliver` check (§8.1).
+6. **Slack event/interaction discrimination by absence** — classifying "no
+   `event` field ⇒ interaction" misroutes any envelope shape that omits it.
+   Fixed in S3 by discriminating positively on `type === 'event_callback'`;
+   caught by the route-conversion tests.
+7. **The relay ignored the ingress bag it was sent** — `toBotAssignment` read
+   only the legacy named fields, so a CP that had already moved to the §6.7
+   opaque ingress bag would have had its new-shape emission silently dropped.
+   Fixed reader-first in S1b, one release before the emission flip.
 
 ## 15. Third-Party Extensibility: Deferred, Not Foreclosed
 
