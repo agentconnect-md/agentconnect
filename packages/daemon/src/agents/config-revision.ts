@@ -8,8 +8,9 @@
  * optimization — slow assembly, several CP publishers, retries, and reconnects
  * can all still deliver snapshots out of order. This module is the correctness
  * boundary: the greatest applied revision plus a digest of that revision's
- * CP-owned spec is persisted beside `agent.json`, and every apply is decided
- * against it:
+ * CP-owned spec is tracked by the in-memory registry, and every apply is decided
+ * against it. The sidecar helpers below remain for legacy replica migration and
+ * low-level compatibility tests; current CP application does not call them:
  *
  *   - a GREATER revision      → apply normally;
  *   - an EQUAL revision, same digest    → idempotent retry, nothing to write;

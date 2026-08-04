@@ -712,17 +712,18 @@ export function syncAgentReplica(agentsDir: string, agentId: string): void {
 }
 
 /**
- * Apply the CP-owned spec fields onto a parsed raw agent.json object IN PLACE.
+ * Apply the CP-owned spec fields onto an agent-shaped raw object IN PLACE.
+ * Used by both the legacy disk writer and the current in-memory registry.
  * `creating` controls whether workspace.path may be set (only on create — an
  * update never overwrites a path).
  */
-function applySpecFields(
+export function applySpecFields(
   raw: Record<string, unknown>,
   spec: AgentSpec,
   opts: { agentId: string; agentDir: string; creating: boolean }
 ): void {
-  // Persist replica ownership separately from the wire spec. The reconnect
-  // handshake reports this marker so the CP can prune only its own stale copy.
+  // Mark replica ownership separately from the wire spec. The reconnect
+  // handshake reports this field from the in-memory effective representation.
   raw.origin = 'cp'
   raw.name = spec.name
   // displayName follows PATCH semantics: value ⇒ set, null ⇒ clear, absent ⇒

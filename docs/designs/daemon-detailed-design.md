@@ -114,7 +114,7 @@ The daemon does not implement these, but interacts with them through the section
 | `agentconnect status`               | Print service state (installed / running / PID / log path) and runtime state (CP connection, platform connections, active agents/sessions, degradation flag). Works even when no service is installed.                                                                                                                                                                                                                                                                                                          |
 | `agentconnect install-service`      | Generate/install a launchd plist or systemd unit and run `daemon-reload`; **do not start automatically**. Print the `agentconnect up` hint.                                                                                                                                                                                                                                                                                                                                                                     |
 | `agentconnect uninstall-service`    | Run `down`, then remove the unit file.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `agentconnect agent list`           | **Read-only:** list agents found under `--agents-dir`, including id, status, runtime, name, and directory. CP or manual `agent.json` editing owns business configuration; daemon only converges disk state, so CLI has no local create/update/delete operations.                                                                                                                                                                                                                                                |
+| `agentconnect agent list`           | **Read-only:** list user-authored agents found under `--agents-dir`, including id, status, runtime, name, and directory. CP agents are memory-only and therefore are not part of this local-file listing.                                                                                                                                                                                                                                                                                                       |
 | `agentconnect login`                | **Interactive CP onboarding:** prompt/read CP URL + token, then probe auth through `probeAuth`, which sends only `auth`, never `register`. On failure, show the reason and allow one token retry; a second failure exits 1. **Persist credentials only after success.** Ask whether to install as a background service: yes -> `install-service` + `up` and exit; no -> foreground `run` until Ctrl-C. Non-TTY falls back to flags, still probes/persists and skips prompts; there is no separate `--no-input`. |
 | `agentconnect chat [message]`       | **Connect locally to one agent:** recursively discover agents under `--agents-dir`; use the only agent automatically, or require `--agent <name>` when several exist. Resolve its runtime, including registry defaults, launch the local ACP adapter, and converse over ACP. With `message`, send once, stream the reply, and exit; without it, enter a REPL. Do **not** start Slack, scheduler, store, CP, or the rest of daemon.                                                                              |
 
@@ -160,7 +160,7 @@ isInstalled()   Whether the unit file exists.
 - **Linux (systemd `--user`):** `~/.config/systemd/user/agentconnect.service`, with `[Service] ExecStart=execPath cliEntry run`, `Restart=always`, `Environment=AGENTCONNECT_ROOT=<root>`, and `[Install] WantedBy=default.target`. Run `systemctl --user daemon-reload` after writing. `up = enable --now`; `down = disable --now`; status uses `is-active`, `is-enabled`, and `show -p MainPID`.
 - **Service environment (login-shell launch):** service managers give user units a minimal `PATH` and never source shell profiles, so without repair npx-distributed ACP runtimes probe as "not installed". The unit therefore runs the **CLI run shell** (`ExecStart=<node> <cli-entry> run`), which in service mode launches the daemon through the user's interactive login shell (`$SHELL -l -i -c 'exec "$0" "$@"' …`, `packages/cli/src/service-spawn.ts` + `shell-exec.ts`) — the daemon inherits a fresh terminal-equivalent environment and tracks profile edits at every restart. Readiness is verified via `<root>/daemon.lock` (pid preserved by `exec`); a hanging or broken profile is killed at a deadline and the run shell falls back to direct spawns. Two static floors back this up: an install-time `PATH` snapshot baked into the unit (`InstallOpts.envPath`) and the daemon prepending `dirname(process.execPath)` on startup (`packages/daemon/src/runtimes/exec-path.ts`, covers legacy direct-ExecStart units). See cli-daemon-split.md §4.2 for the full contract.
 - **Testability:** Pure builders `buildPlist` / `buildSystemdUnit` generate unit contents for direct assertions. Every `launchctl` / `systemctl` call uses an injectable `exec(cmd,args)` dependency, replaced by test stubs with no real side effects.
-- **Credentials:** Unit files include only nonsensitive `AGENTCONNECT_ROOT`, and only when nondefault. The opaque CP API key and platform tokens currently live directly in `config.json` / `agent.json`, never the plist/unit. The key has no prefix and cannot be redacted by a content pattern; logs, telemetry, and error frames must structurally redact values of `--api-key`, `apiKey`, and `Bearer ...` before leaving the edge.
+- **Credentials:** Unit files include only nonsensitive `AGENTCONNECT_ROOT`, and only when nondefault. The opaque CP API key lives in `config.json`; hand-authored local integrations may carry platform tokens in `agent.json`, while CP-delivered tokens remain memory-only. None belongs in the plist/unit. The key has no prefix and cannot be redacted by a content pattern; logs, telemetry, and error frames must structurally redact values of `--api-key`, `apiKey`, and `Bearer ...` before leaving the edge.
 - The `run` process handles `SIGTERM` / `SIGINT`: stop accepting new messages, drain active turns to a deadline, close platform connections, close ACP adapter children, then exit.
 
 > The service-install branch of `login` invokes this controller. After successful auth probing and persistence, yes -> `install()` + `up()` and exit; no -> start foreground `run` using the same Daemon construction and signal handling.
@@ -169,15 +169,15 @@ isInstalled()   Whether the unit file exists.
 
 ## 3. Configuration File: `~/.agentconnect/config.json`
 
-### 3.1 Core Principle: Configuration Files Are Desired State
+### 3.1 Core Principle: Local Files and CP Memory Are Separate Desired-State Sources
 
 This chapter, section 4 agents, and section 5 Reconciler form one theme:
 
-- `~/.agentconnect/config.json` + `~/.agentconnect/agents/**` are the daemon's **single source of truth for desired state**: agents, platform connections, and channel bindings are written to disk.
-- **Control Plane is not another source of truth; it is the remote editor + orchestrator for these files.** CP sends changes over the control WebSocket, daemon persists them, and Reconciler converges disk desired state into process actual state.
-- Therefore, **the last desired state remains complete when CP is offline**, and daemon continues running it. After reconnect, CP resumes editing and orchestration.
+- Hand-authored `~/.agentconnect/config.json` and `agents/**/agent.json` files are the local desired-state source and remain user-owned.
+- CP agent specs, integrations, and crons are a separate **memory-only** desired-state source, re-converged by `register/ok` after each connection. Receiving a CP agent deletes only a same-id `agent.json`; every other local file remains untouched.
+- An already-running daemon continues using its in-memory CP state while disconnected. After a daemon restart, CP-managed agents resume only after the CP roster reconnects; local agents remain independently bootable from disk.
 
-This directly satisfies the requirement that CP can modify agent configuration while a disconnected daemon continues using existing configuration: **CP edits these persistent files, and they remain present.**
+The daemon persists only a secret-free `.cp-agent-id` marker in a dedicated child data root for CP agents, so workspace and memory directories can be reused without persisting CP configuration or credentials. Marker-only roots discovered after restart are reported as CP-owned replicas but are not activated; this lets the next roster reconciliation remove stale roots without reviving an agent whose in-memory spec was lost.
 
 ```
         +------------- Control Plane -------------+
@@ -186,10 +186,10 @@ This directly satisfies the requirement that CP can modify agent configuration w
                    control WS | agent/upsert, integration/upsert, route/assign, ...
                               v
    +---------------- Daemon (local) ----------------+
-   | CP-Client ----persist----> ~/.agentconnect/** desired |
-   |                                  | watch/change        |
-   |                                  v                     |
-   | Reconciler -- diff desired/actual --> converge          |
+   | CP-Client ----memory-----> CP desired-state registries  |
+   | local files ----watch----> local desired-state snapshot |
+   |                                  |                     |
+   | Reconciler -- merge/diff desired/actual --> converge    |
    |   |- ConnectionManager (platform connections)           |
    |   |- AgentManager (ACP adapter child processes)          |
    |   `- Scheduler (cron/loop)                               |
@@ -511,7 +511,7 @@ Workspace preparation is implemented by `packages/daemon/src/workspace/workspace
 
 ### 4.4 Agent Environment / Secrets: CP Configuration + Child-Process Injection
 
-Ordinary environment variables and write-only secrets are configured only through Console / CP `AgentSpec.env` and `AgentSpec.secrets`. Daemon persists them under `agent.json.runtimeOverrides.{env,secrets}`, and `agentChildEnv()` merges/injects them when starting an ACP child.
+Ordinary environment variables and write-only secrets can be configured through Console / CP `AgentSpec.env` and `AgentSpec.secrets`. The daemon keeps CP values in memory and `agentChildEnv()` merges/injects them when starting an ACP child; it never writes those values to `agent.json`.
 
 - Secret wins over ordinary env with the same name; daemon security/runtime injection remains higher priority.
 - Env/secrets changes affect host spawn. Reconcile evicts the old host so the next start uses the new values.
@@ -524,21 +524,21 @@ Ordinary environment variables and write-only secrets are configured only throug
 
 This implements requirement 4 using section 3.1 configuration-as-desired-state.
 
-### 5.1 CP Changes Agent Configuration by Changing Files
+### 5.1 CP Configuration Is Applied in Memory
 
-CP orchestration/configuration frames are persisted atomically under `~/.agentconnect/**` by CP-Client:
+CP agent, integration, and cron frames are applied to memory-only registries by CP-Client. Other control-plane state retains the persistence policy listed below:
 
-| CP delivery                                      | Daemon persistence action                                                                                        |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `agent/upsert{ agentId, spec }` / `agent/remove` | Write/create/delete `agents/<id>/agent.json`; `CpAgentRegistry` uses disk as truth, with no in-memory duplicate. |
-| `integration/upsert` / `integration/remove`      | Mutate owning `agent.json.integrations[]` through `CpIntegrationRegistry`, marked `origin:"cp"`.                 |
-| `register/ok` roster snapshot                    | Fully **converge** agents/integrations/crons/assignments to disk/local cache; explicit `drop.*` removes entries. |
-| `agent/stop{ agentId }`                          | Set `status:"inactive"` while keeping directory.                                                                 |
-| `route/assign` / `route/update`                  | Update local route table persisted in `state/local.sqlite`.                                                      |
-| `cron/upsert` / `cron/remove`                    | Mutate `agent.json.crons[]`.                                                                                     |
-| `config/push{ keys }` EVT                        | Apply allowlisted runtime knobs **in memory**, without persistence; see note below.                              |
+| CP delivery                                      | Daemon persistence action                                                                    |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `agent/upsert{ agentId, spec }` / `agent/remove` | Upsert/remove the in-memory CP agent; delete only a same-id local `agent.json`.              |
+| `integration/upsert` / `integration/remove`      | Upsert/remove the in-memory CP integration overlay.                                          |
+| `register/ok` roster snapshot                    | Fully **converge** memory-only agents/integrations/crons; explicit `drop.*` removes entries. |
+| `agent/stop{ agentId }`                          | Set `status:"inactive"` while keeping directory.                                             |
+| `route/assign` / `route/update`                  | Update local route table persisted in `state/local.sqlite`.                                  |
+| `cron/upsert` / `cron/remove`                    | Upsert/remove the in-memory CP cron overlay.                                                 |
+| `config/push{ keys }` EVT                        | Apply allowlisted runtime knobs **in memory**, without persistence; see note below.          |
 
-REQ commands such as `agent/upsert`, `agent/stop`, `cron/upsert`, `cron/remove`, and `route/assign` receive `ack{ refId, ok }` after persistence/convergence.
+REQ commands such as `agent/upsert`, `agent/stop`, `cron/upsert`, `cron/remove`, and `route/assign` receive `ack{ refId, ok }` after application/convergence.
 
 `config/push` has only `{ keys }` as an EVT with **no reply**. It merges
 allowlisted nonsensitive keys (`logging.level`, `limits.maxAgents`,
@@ -554,7 +554,7 @@ state is delivered through the dedicated upsert frames and the authoritative
 Changes from **CP**, an **agentconnect agent command**, or **manual file edits** all use one reconciler, driven by `chokidar` on `agents/**` plus explicit triggers:
 
 ```
-desired = read(config.json + every agent.json with status=active)
+desired = merge(local active agent.json files, CP agents/integrations/crons in memory)
 actual  = live platform connections / ACP adapters / registered crons
 plan    = diff(desired, actual)
 apply(plan):
@@ -1052,24 +1052,24 @@ Metrics and traces use the direct **OTLP side path** bootstrapped by `OTEL_*`,
 not the Control Plane WebSocket. Only `usage/report` and `facts/*` use the
 control channel.
 
-**Downstream, CP -> daemon:** Most persist then reconcile, except in-memory `config/push` and CP-route `route/*`.
+**Downstream, CP -> daemon:** Agent specs, integrations, crons, and `config/push` stay in memory; routes and the other explicitly durable control state follow their per-frame policies below.
 
-| Type                                        | Payload highlights                                                                                                                              | Daemon action                                                                                                                                                     |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config/push` EVT                           | `{ keys }` only                                                                                                                                 | Merge allowlisted `logging.level`, `limits.*` into memory immediately; no disk/reply; ignore+log others.                                                          |
-| `webchat/mcp-grant/issued`                  | `{ grantId, authorityGeneration, descriptorInstanceId, grantRevision, token, expiresAt }`                                                       | CAS-stage only a newer persisted `(authorityGeneration, grantRevision)` fence; revision never resets across generations and raw token remains memory-only.        |
-| `webchat/mcp-grant/activate`                | Same exact grant/revision tuple as the accepted request                                                                                         | CAS-install only the activated full fence into the exact runtime session descriptor.                                                                              |
-| `agent/upsert` / `agent/remove`             | `{ agentId, spec }` / `{ agentId }`                                                                                                             | Write/delete `agents/<id>/agent.json`; hot reload.                                                                                                                |
-| `agent/launch`                              | `{ agentId, runtime, workspaceId, capabilities, spec, mode }` with launchId fence                                                               | CP-started agent; reply `agent/launched`.                                                                                                                         |
-| `agent/detach` / `agent/activate`           | `{ agentId, moveId, ... }`                                                                                                                      | Safe cold move: quiesce+archive local root / atomically apply authoritative bundle and resume.                                                                    |
-| `agent/stop`                                | `{ agentId }`                                                                                                                                   | Set inactive + drain.                                                                                                                                             |
-| `integration/upsert` / `integration/remove` | `{ integrationId, ... }`                                                                                                                        | Mutate owning `agent.json.integrations[]`.                                                                                                                        |
-| `route/assign`                              | `{ sessionKey:{platform,channel,thread}, agentId, bindRules }`                                                                                  | Persist CP assignment and return `route/assign/ack`.                                                                                                              |
-| `route/update`                              | `{ routingEpoch, rules:[...] }`                                                                                                                 | Replace CP global rules when epoch is current; EVT.                                                                                                               |
-| `register/ok` REP snapshot                  | `{ routingEpoch, agents[], integrations[], crons[], assignments[], leases[], mcpServers[], memoryConnections[], relays[], collabRoutes, drop }` | Authoritative full convergence: persist agents/integrations; upsert CP-origin crons and prune `drop.*`; converge assignments; persist/redial relays; adopt epoch. |
-| `cron/upsert` / `cron/remove`               | `{ cronId, agentId, schedule, target?, trigger, enabled }`                                                                                      | Mutate owning `agent.json.crons[]`, marked CP origin; Reconciler re-registers. On fire, post target anchor + thread reply, or execute headless.                   |
-| `daemon/drain`                              | `{ scope:{kind:"agent"\|"daemon"\|"session",...}, deadline }`                                                                                   | Graceful drain for scaling/rebalance; `drain/progress`, then `drain/done`.                                                                                        |
-| `daemon/restart` / `daemon/upgrade`         | `{ reason, drainFirst }` / `{ targetVersion, drainFirst }`                                                                                      | Fleet control: drain then exit for supervisor restart/upgrade.                                                                                                    |
+| Type                                        | Payload highlights                                                                                                                              | Daemon action                                                                                                                                              |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config/push` EVT                           | `{ keys }` only                                                                                                                                 | Merge allowlisted `logging.level`, `limits.*` into memory immediately; no disk/reply; ignore+log others.                                                   |
+| `webchat/mcp-grant/issued`                  | `{ grantId, authorityGeneration, descriptorInstanceId, grantRevision, token, expiresAt }`                                                       | CAS-stage only a newer persisted `(authorityGeneration, grantRevision)` fence; revision never resets across generations and raw token remains memory-only. |
+| `webchat/mcp-grant/activate`                | Same exact grant/revision tuple as the accepted request                                                                                         | CAS-install only the activated full fence into the exact runtime session descriptor.                                                                       |
+| `agent/upsert` / `agent/remove`             | `{ agentId, spec }` / `{ agentId }`                                                                                                             | Update the in-memory CP registry; delete only a same-id `agent.json`; hot reconcile.                                                                       |
+| `agent/launch`                              | `{ agentId, runtime, workspaceId, capabilities, spec, mode }` with launchId fence                                                               | CP-started agent; reply `agent/launched`.                                                                                                                  |
+| `agent/detach` / `agent/activate`           | `{ agentId, moveId, ... }`                                                                                                                      | Safe cold move: quiesce+archive local root / atomically apply authoritative bundle and resume.                                                             |
+| `agent/stop`                                | `{ agentId }`                                                                                                                                   | Set inactive + drain.                                                                                                                                      |
+| `integration/upsert` / `integration/remove` | `{ integrationId, ... }`                                                                                                                        | Update the in-memory CP integration overlay.                                                                                                               |
+| `route/assign`                              | `{ sessionKey:{platform,channel,thread}, agentId, bindRules }`                                                                                  | Persist CP assignment and return `route/assign/ack`.                                                                                                       |
+| `route/update`                              | `{ routingEpoch, rules:[...] }`                                                                                                                 | Replace CP global rules when epoch is current; EVT.                                                                                                        |
+| `register/ok` REP snapshot                  | `{ routingEpoch, agents[], integrations[], crons[], assignments[], leases[], mcpServers[], memoryConnections[], relays[], collabRoutes, drop }` | Authoritative full convergence of memory-only CP agent state; converge assignments, persist/redial relays, and adopt epoch.                                |
+| `cron/upsert` / `cron/remove`               | `{ cronId, agentId, schedule, target?, trigger, enabled }`                                                                                      | Update the in-memory CP cron overlay; Reconciler re-registers. On fire, post target anchor + thread reply, or execute headless.                            |
+| `daemon/drain`                              | `{ scope:{kind:"agent"\|"daemon"\|"session",...}, deadline }`                                                                                   | Graceful drain for scaling/rebalance; `drain/progress`, then `drain/done`.                                                                                 |
+| `daemon/restart` / `daemon/upgrade`         | `{ reason, drainFirst }` / `{ targetVersion, drainFirst }`                                                                                      | Fleet control: drain then exit for supervisor restart/upgrade.                                                                                             |
 
 ### 10.3 Register Payload (`RegisterReq`)
 

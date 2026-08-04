@@ -377,7 +377,10 @@ const CronUpsert = z.object({
 const CronRemove = z.object({ cronId: z.string().uuid() })
 ```
 
-On receipt the daemon persists the def into the owning agent's `agent.json` `crons[]` (marked `origin:"cp"`; the single source of truth, same model as integrations §5.6) — so crons survive a daemon restart with the CP down and the local Scheduler (D5) re-registers them from disk alone. `register/ok.crons[]` re-converges the CP-owned set on reconnect; `drop.crons[]` prunes stale ones.
+On receipt the daemon keeps the definition in its in-memory CP cron registry and
+reconciles the local Scheduler (D5). `register/ok.crons[]` re-converges the set
+after reconnect or daemon restart; `drop.crons[]` prunes stale entries. No CP cron
+definition is written to `agent.json`.
 
 On fire — **no CP round-trip**:
 
@@ -754,7 +757,7 @@ const AgentStop = z.object({ agentId: z.string().uuid(), launchId: z.string().uu
 
 ### 8.2a Live agent CRUD: `agent/upsert` · `agent/remove` (C→D, EVT)
 
-The console edited an agent's spec; the CP pushes it. `agent/upsert` carries the full new spec; `agent/remove` tears the agent down. The CP remains source of truth (REST C2) — these mirror the persisted spec onto the running daemon.
+The console edited an agent's spec; the CP pushes it. `agent/upsert` carries the full new spec; `agent/remove` tears the agent down. The CP remains source of truth (REST C2); the daemon applies the spec in memory and deletes only a same-id local `agent.json`. Other local agent files remain user-owned.
 
 ```ts
 const AgentUpsert = z.object({ agentId: z.string().uuid(), spec: AgentSpec }) // C→D, ControlExt(epoch,agentId)

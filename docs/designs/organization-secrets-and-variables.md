@@ -29,9 +29,9 @@ configuration revision is added beside those maps so a daemon cannot apply
 resolved snapshots out of order.
 
 The feature is configuration distribution, not a new secret lease system. The
-Control Plane remains off the message hot path, and the daemon continues to
-start agents entirely from its locally persisted `agent.json` after receiving
-the resolved spec.
+Control Plane remains off the message hot path. The daemon holds resolved CP
+agent specs in memory and re-converges them after restart; resolved environment
+and secret values are not persisted to `agent.json`.
 
 ## 2. Terminology and non-goals
 
@@ -515,8 +515,8 @@ configRevision: z.string()
 ```
 
 The CP includes it in `agent/upsert`, `register/ok` roster entries, and
-`agent/activate`. The daemon persists the greatest applied revision and a digest
-of that revision's CP-owned spec beside `agent.json`:
+`agent/activate`. The daemon tracks the greatest applied revision and a digest
+of that revision's CP-owned spec in its in-memory registry:
 
 - a greater revision is applied normally;
 - an equal revision with the same digest is an idempotent retry;
@@ -526,9 +526,9 @@ of that revision's CP-owned spec beside `agent.json`:
   `writeAgentSpec`.
 
 The CP also coalesces live projection work per agent so ordinary bursts assemble
-only the newest pending revision, but that is a load optimization. The persisted
-daemon comparison is the correctness boundary across slow assembly, multiple CP
-publishers, retries, and reconnects.
+only the newest pending revision, but that is a load optimization. The daemon's
+in-process comparison is the correctness boundary across slow assembly, multiple
+CP publishers, retries, and reconnects; a new process receives a fresh authoritative roster.
 
 An organization-entry mutation computes the union of bindings affected before
 and after the transaction:

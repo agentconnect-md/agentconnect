@@ -153,8 +153,8 @@ export type CronDef = z.infer<typeof CronDefSchema>
 
 export const AgentSchema = z.object({
   id: z.string(),
-  // Added when a CP spec is persisted. Absence continues to mean a genuinely
-  // local agent (or a legacy replica, which the CP handles conservatively).
+  // Added to the in-memory effective representation of a CP-managed agent.
+  // A disk file carrying this legacy field is still treated as user-owned.
   origin: z.literal('cp').optional(),
   name: z.string(),
   // Optional human-facing bot name. `name` remains the stable agent identifier;
@@ -175,8 +175,8 @@ export const AgentSchema = z.object({
   // a soft-only reconcile change (no host/session teardown).
   pause: z.boolean().default(false),
   runtime: z.string(),
-  // System-prompt seed + runtime knobs. Settable in agent.json and overlaid by
-  // the CP spec (agent/upsert + register/ok roster) — see cp/cp-agent-registry.ts.
+  // System-prompt seed + runtime knobs. Settable in a local agent.json or supplied
+  // in memory by the CP (agent/upsert + register/ok roster).
   description: z.string().optional(),
   reasoningEffort: z.string().optional(),
   executionMode: z.string().optional(),

@@ -194,9 +194,9 @@ over stdio; they do not create source-level coupling to TypeScript.
 
 ### D5. Local Scheduler
 
-- **Responsibilities**: trigger cron/loop **locally**, ensuring scheduled jobs run during a Control Plane outage instead of losing remote triggers while the daemon is offline. A cron schedule uses its trigger text to invoke a **specific agent**. The Web UI configures the definition, C3 delivers it to the owning daemon selected by `agentId`, and the daemon writes it into that agent's `agent.json.crons[]` (the single source of truth, matching the integrations model). At the scheduled time, if `target.channel` exists, the local scheduler first posts the trigger as a real channel message and attaches the agent session to the resulting thread for replies. Without a target, it runs headlessly.
+- **Responsibilities**: trigger cron/loop **locally**. A cron schedule uses its trigger text to invoke a **specific agent**. The Web UI configures the definition, C3 delivers it to the owning daemon selected by `agentId`, and the daemon keeps the CP-owned definition in memory alongside any hand-authored local crons. At the scheduled time, if `target.channel` exists, the local scheduler first posts the trigger as a real channel message and attaches the agent session to the resulting thread for replies. Without a target, it runs headlessly. An already-running daemon retains this state during a CP outage; after daemon restart the CP roster must re-converge it.
 - **Language/dependencies**: TypeScript; **`croner`** (pure JavaScript, dependency-free, supports time zones, and preferable to the aging `node-cron`); persist `last-run` in D11 for deduplication and catch-up.
-- **Key interfaces**: input: C3 sends `cron/upsert` and `cron/remove` (§6.1), which update `agent.json`; output: construct a `NormalizedMessage{ source: "cron" }` and dispatch it directly to the agent; reporting: execution results through D12.
+- **Key interfaces**: input: C3 sends `cron/upsert` and `cron/remove` (§6.1), which update the memory-only CP cron registry; output: construct a `NormalizedMessage{ source: "cron" }` and dispatch it directly to the agent; reporting: execution results through D12.
 
 ### D6. ACP Host (Local ACP Client)
 
