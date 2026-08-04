@@ -641,6 +641,7 @@ export function integrationRoutes(deps: HttpDeps) {
             ...(identity.externalAppId ? { slackAppId: identity.externalAppId } : {}),
             ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
             ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}),
+            ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
             ...(slack.appToken ? { appToken: slack.appToken } : {}),
             ...(slack.signingSecret ? { signingSecret: slack.signingSecret } : {}),
             ...(req.body.shareable === true ? { shareable: true } : {}),

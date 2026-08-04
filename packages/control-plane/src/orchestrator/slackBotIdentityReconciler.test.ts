@@ -36,12 +36,14 @@ function bot(): BotRecord {
 }
 
 describe('SlackBotIdentityReconciler', () => {
-  it('resolves and backfills missing Slack app/workspace identity without exposing the token', async () => {
+  it('resolves and backfills missing Slack app/workspace/member identity without exposing the token', async () => {
     const setSlackAppIdIfMissing = vi.fn(async () => true)
+    const setSlackBotUserIdIfMissing = vi.fn(async () => true)
     const setWorkspaceMetadata = vi.fn(async () => {})
     const bots = {
       listSlackMissingIdentity: async () => [bot()],
       setSlackAppIdIfMissing,
+      setSlackBotUserIdIfMissing,
       setWorkspaceMetadata
     } as unknown as BotRepo
     const secrets = {
@@ -49,17 +51,19 @@ describe('SlackBotIdentityReconciler', () => {
     } as unknown as BotSecretStore
     const resolve = vi.fn(async () => ({
       appId: 'AHTTPBOT',
+      botUserId: 'UHTTPBOT',
       workspaceId: 'TWORKSPACE',
       workspaceName: 'Acme'
     }))
     const info = vi.fn()
+    const onMentionIdentityChanged = vi.fn(async () => {})
 
     await new SlackBotIdentityReconciler(
       bots,
       secrets,
       resolve,
       new FakeClock(),
-      { intervalMs: 60_000 },
+      { intervalMs: 60_000, onMentionIdentityChanged },
       {
         info,
         warn() {},
@@ -69,16 +73,20 @@ describe('SlackBotIdentityReconciler', () => {
 
     expect(resolve).toHaveBeenCalledWith('xoxb-secret')
     expect(setSlackAppIdIfMissing).toHaveBeenCalledWith(BOT, 'AHTTPBOT')
+    expect(setSlackBotUserIdIfMissing).toHaveBeenCalledWith(BOT, 'UHTTPBOT')
     expect(setWorkspaceMetadata).toHaveBeenCalledWith(BOT, 'TWORKSPACE', 'Acme')
+    expect(onMentionIdentityChanged).toHaveBeenCalledWith(bot().orgId)
     expect(JSON.stringify(info.mock.calls)).not.toContain('xoxb-secret')
   })
 
   it('keeps unresolved rows retryable and never stores a malformed id', async () => {
     const setSlackAppIdIfMissing = vi.fn(async () => true)
+    const setSlackBotUserIdIfMissing = vi.fn(async () => true)
     const setWorkspaceMetadata = vi.fn(async () => {})
     const bots = {
       listSlackMissingIdentity: async () => [bot()],
       setSlackAppIdIfMissing,
+      setSlackBotUserIdIfMissing,
       setWorkspaceMetadata
     } as unknown as BotRepo
     const secrets = {
@@ -88,12 +96,18 @@ describe('SlackBotIdentityReconciler', () => {
     await new SlackBotIdentityReconciler(
       bots,
       secrets,
-      async () => ({ appId: 'not-an-app-id', workspaceId: 'not-a-workspace', workspaceName: 'Nope' }),
+      async () => ({
+        appId: 'not-an-app-id',
+        botUserId: 'not-a-member-id',
+        workspaceId: 'not-a-workspace',
+        workspaceName: 'Nope'
+      }),
       new FakeClock(),
       { intervalMs: 60_000 }
     ).tick()
 
     expect(setSlackAppIdIfMissing).not.toHaveBeenCalled()
+    expect(setSlackBotUserIdIfMissing).not.toHaveBeenCalled()
     expect(setWorkspaceMetadata).not.toHaveBeenCalled()
   })
 

@@ -151,6 +151,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       status: 'ok',
       name: 'http-bot',
       appId: 'AHTTPBOT',
+      botUserId: 'UHTTPBOT',
       teamId: 'T1',
       teamName: 'Acme',
       scopes: []
@@ -172,6 +173,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(await prisma.bot.findUnique({ where: { id: dto.botId } })).toMatchObject({
       transport: 'http',
       slackAppId: 'AHTTPBOT',
+      botUserId: 'UHTTPBOT',
       workspaceId: 'T1',
       workspaceName: 'Acme'
     })
@@ -1011,6 +1013,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       app.deps.repos.botSecret,
       async () => ({
         appId: 'ALEGACYHTTP',
+        botUserId: 'ULEGACYHTTP',
         workspaceId: 'TLEGACY',
         workspaceName: 'Legacy workspace'
       }),
@@ -1020,6 +1023,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
 
     await reconciler.tick()
 
+    expect((await prisma.bot.findUnique({ where: { id: botId } }))?.botUserId).toBe('ULEGACYHTTP')
     const res = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual([

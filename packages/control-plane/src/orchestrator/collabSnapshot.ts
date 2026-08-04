@@ -29,6 +29,20 @@ export function buildCollabSnapshot(
   generation: number,
   orgAgents: OrgAgentRecord[]
 ): CollabRoutesSnapshot {
+  // Sharing is an observed property of ONE conversation, not the bot's `shareable`
+  // capacity setting. A bot may be shareable while only one agent is present here;
+  // conversely duplicate legacy bot rows may expose the same member id. Count the
+  // actual placed agents behind each channel-scoped identity so old daemons receive a
+  // truthful compatibility flag.
+  const agentsByMentionIdentity = new Map<string, Set<string>>()
+  for (const p of placements) {
+    if (!p.daemonId || !p.botUserId) continue
+    const key = `${p.platform}\u0000${p.channelId}\u0000${p.botUserId}`
+    const agents = agentsByMentionIdentity.get(key) ?? new Set<string>()
+    agents.add(p.agentId)
+    agentsByMentionIdentity.set(key, agents)
+  }
+
   // (platform, channelId) → CollabChannelRoute
   const byChannel = new Map<string, CollabChannelRoute>()
   for (const p of placements) {
@@ -48,7 +62,10 @@ export function buildCollabSnapshot(
       // meaningful inside a conversation, which is also why the flat org directory below
       // omits them (an org-wide listing has no single conversation-specific address).
       ...(p.botUserId !== undefined ? { botUserId: p.botUserId } : {}),
-      ...(p.botShared ? { botShared: true } : {}),
+      ...(p.botUserId !== undefined &&
+      (agentsByMentionIdentity.get(`${p.platform}\u0000${p.channelId}\u0000${p.botUserId}`)?.size ?? 0) > 1
+        ? { botShared: true }
+        : {}),
       callPolicy: p.callPolicy,
       allowedCallerAgentIds: p.allowedCallerAgentIds,
       outboundPolicy: p.outboundPolicy,

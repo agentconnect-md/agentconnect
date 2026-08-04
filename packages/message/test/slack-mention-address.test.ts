@@ -90,6 +90,14 @@ describe('resolveSlackMentionedAgents (§5.1 / §6)', () => {
     expect(resolveSlackMentionedAgents('<@U09SHARED> planner hello', stale)).toEqual(['b'])
   })
 
+  it('ignores a stale shared flag when the conversation has only one candidate', () => {
+    expect(
+      resolveSlackMentionedAgents('<@U01ONLY> hello', [
+        { agentId: 'a', botUserId: 'U01ONLY', botShared: true, name: 'reviewer' }
+      ])
+    ).toEqual(['a'])
+  })
+
   it('is case-insensitive on the slug but not on the member id', () => {
     expect(resolveSlackMentionedAgents('<@U09SHARED> Planner go', directory)).toEqual(['agent-shared-b'])
   })

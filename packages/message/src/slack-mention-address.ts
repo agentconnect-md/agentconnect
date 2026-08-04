@@ -89,10 +89,10 @@ export function resolveSlackMentionedAgents(text: string, agents: readonly Agent
   for (const match of text.matchAll(MENTION_RE)) {
     const candidates = byUserId.get(match[1]!)
     if (!candidates) continue
-    // Treat the identity as shared when the SNAPSHOT says so, or when more than one
-    // agent sits behind the id — the second covers a stale/partial snapshot that forgot
-    // the flag, and erring toward "needs a slug" only ever resolves fewer agents.
-    const shared = candidates.length > 1 || candidates.some((c) => c.botShared)
+    // Sharing is a property of this complete conversation directory. Do not trust a
+    // stale `botShared` flag derived from bot configuration: one candidate is dedicated
+    // here; several candidates require the trailing agent slug.
+    const shared = candidates.length > 1
     let agent: AgentMentionIdentity | undefined
     if (!shared) {
       agent = candidates[0]

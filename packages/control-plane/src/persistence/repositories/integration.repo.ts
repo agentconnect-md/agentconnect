@@ -199,7 +199,12 @@ export class PgBotRepo implements BotRepo {
     const rows = await this.db.bot.findMany({
       where: {
         platform: 'slack',
-        OR: [{ transport: 'http', slackAppId: null }, { workspaceId: null }, { workspaceName: null }]
+        OR: [
+          { transport: 'http', slackAppId: null },
+          { workspaceId: null },
+          { workspaceName: null },
+          { botUserId: null }
+        ]
       },
       include: botInclude,
       orderBy: { createdAt: 'asc' }
@@ -214,6 +219,14 @@ export class PgBotRepo implements BotRepo {
     const result = await this.db.bot.updateMany({
       where: { id, slackAppId: null },
       data: { slackAppId, externalAppId: slackAppId }
+    })
+    return result.count === 1
+  }
+
+  async setSlackBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean> {
+    const result = await this.db.bot.updateMany({
+      where: { id, botUserId: null },
+      data: { botUserId }
     })
     return result.count === 1
   }
@@ -520,10 +533,10 @@ export class PgIntegrationRepo implements IntegrationRepo {
       select: {
         id: true,
         platform: true,
-        // `botUserId` + `shareable` are the §8.5 mention-address inputs: the member id a
-        // `<@…>` resolves to, and whether that identity backs more than one agent (so the
-        // address needs the agent slug). Both are public metadata already stored on the bot.
-        bot: { select: { slackAppId: true, botUserId: true, shareable: true } },
+        // `botUserId` is the public member id a `<@…>` resolves to. Whether it is
+        // shared is conversation-scoped and is derived from the complete placement set
+        // in `buildCollabSnapshot`; the bot's `shareable` capacity flag is not identity.
+        bot: { select: { slackAppId: true, botUserId: true } },
         agent: {
           select: {
             id: true,
@@ -555,7 +568,6 @@ export class PgIntegrationRepo implements IntegrationRepo {
           integrationId: IntegrationId(i.id),
           ...(platform === 'slack' && i.bot.slackAppId ? { botAppId: i.bot.slackAppId } : {}),
           ...(platform === 'slack' && i.bot.botUserId ? { botUserId: i.bot.botUserId } : {}),
-          ...(platform === 'slack' && i.bot.shareable ? { botShared: true } : {}),
           callPolicy: i.agent.callPolicy as ChannelPlacementRecord['callPolicy'],
           allowedCallerAgentIds: i.agent.allowedCallerAgentIds,
           outboundPolicy: i.agent.outboundPolicy as ChannelPlacementRecord['outboundPolicy'],

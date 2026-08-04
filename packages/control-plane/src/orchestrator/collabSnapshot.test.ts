@@ -76,7 +76,7 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     )
   })
 
-  it('carries the channel-scoped mention-address inputs, and omits them org-wide', () => {
+  it('derives channel-scoped mention sharing from actual identities, and omits mention inputs org-wide', () => {
     // send-message-routing-rework.md §8.5: an agent's `@mention` is only meaningful
     // inside a conversation — the bot user id resolves relative to that channel's
     // membership, and a shared bot needs the agent slug to be addressable at all. So the
@@ -86,7 +86,8 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
       DEFAULT_ORG_ID,
       [
         rec({ agentId: AGENT_1, botUserId: 'U01DEDICATED' }),
-        rec({ agentId: AGENT_2, botUserId: 'U09SHARED', botShared: true, name: 'reviewer' })
+        rec({ agentId: AGENT_2, botUserId: 'U09SHARED', name: 'reviewer' }),
+        rec({ agentId: AGENT_3, botUserId: 'U09SHARED', name: 'planner' })
       ],
       1,
       [orgAgent({ agentId: AGENT_1 })]
@@ -96,8 +97,24 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(byAgent.get(AGENT_1)).toMatchObject({ botUserId: 'U01DEDICATED' })
     expect(byAgent.get(AGENT_1)!.botShared).toBeUndefined()
     expect(byAgent.get(AGENT_2)).toMatchObject({ botUserId: 'U09SHARED', botShared: true, name: 'reviewer' })
+    expect(byAgent.get(AGENT_3)).toMatchObject({ botUserId: 'U09SHARED', botShared: true, name: 'planner' })
     expect(snap.agents[0]!.botUserId).toBeUndefined()
     expect(snap.agents[0]!.botShared).toBeUndefined()
+  })
+
+  it('does not confuse a bot sharing capability with sharing its identity in this channel', () => {
+    const snap = buildCollabSnapshot(
+      DEFAULT_ORG_ID,
+      [
+        rec({ channelId: 'C1', agentId: AGENT_1, botUserId: 'U09CAPABLE' }),
+        rec({ channelId: 'C2', agentId: AGENT_2, botUserId: 'U09CAPABLE' })
+      ],
+      1,
+      []
+    )
+    expect(snap.channels.flatMap((channel) => channel.agents).every((agent) => agent.botShared === undefined)).toBe(
+      true
+    )
   })
 
   it('drops unplaced agents (daemonId null) — they are not routable', () => {

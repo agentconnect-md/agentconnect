@@ -140,13 +140,14 @@ ladder a human message takes, with the author removed from the candidate set:
   user id is standing context (`- Slack identity: bot user <@U…> is YOU`), sourced from
   the daemon's own live connection, so it can tell whether a message concerns it and
   decline with `NO_RESPONSE`.
-- Selecting recipients by PARSING the body was tried and removed. It made delivery
-  depend on mapping an opaque `<@U…>` back to an agent through the collaboration
-  directory, and that lookup is not dependable — observed in a live workspace with
-  `botUserId` absent for most agents and `botShared` derived from "the app is
-  shareable" rather than from a bot user genuinely backing several agents. A correct,
-  well-formed peer mention then resolved to nobody and the conversation stopped: the
-  more precisely a model addressed its peer, the more reliably it silenced the thread.
+- Selecting the EXCLUSIVE recipient by parsing the body was tried and removed. It made
+  delivery depend entirely on mapping an opaque `<@U…>` back to an agent through the
+  collaboration directory. A live workspace exposed two metadata bugs in that path:
+  `botUserId` was absent for most agents, and `botShared` meant "the app is shareable"
+  rather than "this bot user currently backs several agents in this conversation."
+  Mention metadata now converges from Slack identity and actual channel placements, but
+  it is used only to render addresses and JOIN named agents; existing participants never
+  disappear merely because an address cannot be resolved.
 - ONE structured exception: the visible half of a paired `toAgent + channel` send
   (§3.2). Its target came from the tool call as an agent id, and the activation
   rendezvous only converges when the visible observation and the internal wake name the
