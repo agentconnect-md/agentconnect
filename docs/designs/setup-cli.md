@@ -1,6 +1,7 @@
 # Setup and Integration Diagnostics CLI
 
-> **Status:** Proposed
+> **Status:** Accepted; the Phase 1 MVP implements `init` and
+> `check deployment`. Provider reconciliation remains planned.
 >
 > **Related designs:**
 >
@@ -54,6 +55,19 @@ deployment still owns its provider applications and secrets.
 9. **The local quickstart stays zero-config.** Provider setup is for a
    configured deployment. A developer can still clone the repository, start
    Compose, and connect a daemon without Logto or any provider App.
+10. **Installation has three deliberately small levels.** `local` keeps the
+    existing no-auth loopback stack. `local-auth` adds localhost Logto without
+    requiring DNS or TLS. `external` describes an operator-managed deployment
+    whose existing HTTPS endpoints are checked but never provisioned by setup.
+11. **TLS and ingress stay outside the CLI.** Setup accepts and verifies an
+    endpoint. It does not model certificates, DNS records, Caddy, Nginx,
+    load-balancer topology, or tunnels. A temporary `cloudflared` URL is useful
+    during evaluation; a stable tunnel or company ingress is still
+    operator-owned.
+12. **Local Logto uses upstream components.** The optional Compose overlay runs
+    a pinned official Logto image and reuses the existing Postgres instance and
+    volume. It creates a separate `logto` database and role; database name,
+    user, and password all default to `logto`.
 
 ## 2. Goals and non-goals
 
@@ -61,6 +75,8 @@ The CLI must:
 
 - create or adopt the deployment GitHub App and Slack App;
 - reconcile the AgentConnect-owned portion of a Logto tenant;
+- offer an optional localhost Logto overlay without changing the default
+  no-auth Compose command;
 - generate non-default core deployment secrets and render the exact runtime
   environment values needed by Compose;
 - show a redacted plan before provider-side mutation;
@@ -73,7 +89,7 @@ The CLI must:
 The first version does not:
 
 - create a Logto tenant, GitHub organization, or Slack workspace;
-- provision DNS, TLS, ingress, databases, Kubernetes, or a Relay;
+- provision DNS, TLS, ingress, external databases, Kubernetes, or a Relay;
 - act as a general secret manager or deployment engine;
 - silently delete or replace provider resources;
 - prove settings in a provider console when the provider exposes no API for
@@ -85,7 +101,7 @@ The first version does not:
 
 The setup CLI is not a replacement for Docker Compose or a production
 orchestrator. It owns the configuration before startup and proves the resulting
-deployment afterward. The user journey has two intentionally different paths.
+deployment afterward. The user journey has three intentionally scoped paths.
 
 ### 3.1 Local evaluation
 
@@ -102,7 +118,35 @@ Compose creates the fixed no-auth local organization and built-in
 `agentconnect` agent. GitHub, Slack, and Logto are optional. Running
 `agentconnect-setup init` is not a prerequisite for this loopback-only path.
 
-### 3.2 Configured self-hosting
+### 3.2 Local authentication
+
+The middle path adds authentication without turning TLS or DNS into an
+installation project:
+
+```text
+setup init local-auth
+  -> start Postgres and the optional Logto Compose overlay
+  -> create the initial Logto administrator
+  -> create the AgentConnect SPA and one localhost-capable social connector
+  -> start the complete stack with the Logto runtime values
+  -> setup check deployment
+```
+
+The fixed issuer is `http://login.agentconnect.localhost:3001/oidc`.
+`.localhost` resolves to loopback for the browser, while the same name is a
+Compose network alias for the Control Plane, so both clients observe the exact
+same OIDC issuer without a certificate. The initial UI provider list is
+explicitly `github`; Google is not a local default. The overlay starts neither
+in the normal `docker compose up` command nor in production guidance.
+
+The official Logto image is pinned. It connects to the shared Postgres process
+through a separate `logto` database and role. `LOGTO_POSTGRES_PASSWORD`
+overrides the local `logto` password, and the idempotent database-init job also
+updates an existing role so changing the value works on a retained volume.
+Logto upgrades, database alterations across versions, external databases,
+SMTP, backups, and high availability remain outside this MVP.
+
+### 3.3 Configured self-hosting
 
 A non-local deployment uses the following single path:
 
@@ -129,11 +173,12 @@ values directly to the secret sink. It also records the chosen Logto and
 integration capabilities. It never puts those generated values in desired
 state or terminal output.
 
-Addressing, certificates, ingress, the database service, and the Logto process
-remain operator-owned. A user-owned DNS name is not a global prerequisite:
-private/VPN deployments may use private addresses, and a provider-reachable
-tunnel URL can satisfy a public callback requirement. Logto must be reachable
-and its one bootstrap Management API credential must exist before `apply`; the
+Addressing, certificates, ingress, external database services, and any external
+Logto process remain operator-owned. A user-owned public DNS name is not a
+global prerequisite: private/VPN deployments may use internal DNS with trusted
+HTTPS, and a provider-reachable tunnel URL can satisfy a public callback
+requirement. Logto must be reachable and its one bootstrap Management API
+credential must exist before `apply`; the
 GitHub and Slack Apps and all other AgentConnect-owned Logto resources can then
 be prepared before AgentConnect is exposed to its users. The generated runtime
 env enables OIDC on the first networked start, avoiding a temporary
@@ -168,7 +213,7 @@ not need to reconstruct the sequence from documentation.
 
 ## 4. Command surface
 
-The complete v1 surface is:
+The complete target v1 surface is:
 
 ```text
 agentconnect-setup init
@@ -189,7 +234,20 @@ npx -y @agentconnect.md/setup check all
 CI should pin an exact package version instead of using an implicit latest
 version.
 
-### 4.1 Common options
+The shipped Phase 1 MVP intentionally registers only `init` and
+`check deployment`. It does not expose `plan` or `apply` as placeholders:
+those commands arrive with the first real provider reconciler in Phase 2.
+
+Its current package-name form is:
+
+```bash
+npx -y @agentconnect.md/setup init local
+npx -y @agentconnect.md/setup init local-auth
+npx -y @agentconnect.md/setup init external --web-url <url> --control-plane-url <url> --issuer <url>
+npx -y @agentconnect.md/setup check deployment
+```
+
+### 4.1 Target v1 common options
 
 | Option                 | Meaning                                                                |
 | ---------------------- | ---------------------------------------------------------------------- |
@@ -201,23 +259,23 @@ version.
 | `--probe`              | Permit provider-contributed active delivery probes during `check`      |
 | `--strict`             | Treat optional warnings as failures                                    |
 
+The MVP implements `--config` and `check --format`; the remaining flags arrive
+with the commands or provider behaviors that use them.
+
 Secret values are intentionally not accepted as command-line flags because
 shell history and process listings expose them. Providers request named secret
 references from the configured source.
 
 ### 4.2 `init`
 
-`init` creates the non-secret desired-state file. Its first question is
-loopback-only evaluation or configured self-hosting. In an interactive
-networked run it asks for the target release, external origins, enabled
-features, providers, and a secret sink, then generates missing core deployment
-secrets. It derives whether public callback ingress is required from those
-features. It may import known non-secret values and secret **references** from
-an existing Compose env file with `--from-env <path>`, but never copies secret
-values into YAML.
+`init` creates the non-secret desired-state file. The MVP accepts `local`,
+`local-auth`, or `external`; the default is `local`. External mode requires the
+Web, Control Plane, and OIDC issuer URLs and accepts a Relay URL only when the
+deployment needs callback ingress. Later provider phases add release, feature,
+provider, and secret-sink selection without putting secret values in YAML.
 
-It refuses to overwrite an existing file unless that exact file is selected
-interactively. It performs no provider mutation.
+It refuses to overwrite an existing file; the operator must move it or choose
+another `--config` path. It performs no provider mutation.
 
 ### 4.3 `plan`
 
@@ -278,8 +336,26 @@ npx -y @agentconnect.md/setup check integrations --format json --strict
 
 The checked-in file contains intent and secret references only:
 
+The Phase 1 schema is deliberately narrow:
+
 ```yaml
 apiVersion: setup.agentconnect.md/v1alpha1
+kind: AgentConnectSetup
+mode: local-auth
+services:
+  web: http://localhost:3000
+  controlPlane: http://localhost:8080
+  relay: http://localhost:8090
+auth:
+  issuer: http://login.agentconnect.localhost:3001/oidc
+```
+
+Provider reconciliation will use a new alpha schema revision rather than
+silently reinterpreting an existing MVP file. Its target shape includes the
+following sections:
+
+```yaml
+apiVersion: setup.agentconnect.md/v1alpha2
 kind: AgentConnectSetup
 
 deployment:
@@ -697,15 +773,20 @@ The report is still written on exit 1 or 2 so CI can archive it.
 
 ### Phase 1: CLI shell and report contract
 
-- add `packages/setup` with the four-command surface;
-- add desired-state parsing, provider registry, dependency ordering, redacting
-  logger, environment secret source, Compose env sink, and JSON schema;
-- add exposure selection, release pinning, core-secret generation, and
-  next-command rendering; and
-- implement local configuration checks without provider mutation.
+- add the publishable `packages/setup` package with `init` and
+  `check deployment`;
+- model only `local`, `local-auth`, and `external` setup profiles;
+- add deterministic table/JSON checks for Web, database-backed Control Plane
+  readiness, Relay readiness, API auth mode, OIDC discovery, and signing keys;
+- add the opt-in official Logto Compose overlay with a separate logical
+  database on the shared Postgres instance; and
+- keep TLS, DNS, tunnels, provider mutation, and external orchestration out of
+  the implementation.
 
 ### Phase 2: deployment providers
 
+- add `plan` and `apply`, secret sources/sinks, redaction, and provider
+  dependency ordering with the first real provider implementation;
 - implement GitHub App Manifest create/adopt/check;
 - implement Slack App Manifest create/adopt/check; and
 - implement Logto plan/apply/check, including runtime env projection and the
@@ -734,28 +815,36 @@ The report is still written on exit 1 or 2 so CI can archive it.
 
 1. The loopback-only local quickstart still requires only Compose and Add
    daemon; setup adds no mandatory provider step.
-2. A networked OSS operator can create deployment GitHub and Slack Apps and reconcile
+2. The optional local-auth overlay starts the pinned official Logto image on
+   `*.agentconnect.localhost`, retains data in the shared Postgres volume under
+   a distinct `logto` database/role, and requires no DNS or TLS configuration.
+3. Changing `LOGTO_POSTGRES_PASSWORD` updates an existing role and Logto
+   reconnects without recreating the volume.
+4. `check deployment` fails when the database-backed Control Plane readiness,
+   Relay readiness, configured auth mode, OIDC issuer, or JWKS is wrong, and it
+   never mutates the deployment.
+5. A networked OSS operator can create deployment GitHub and Slack Apps and reconcile
    an existing Logto tenant without manually transcribing generated secrets.
    The same path works against Logto Cloud and a reachable self-hosted Logto
    endpoint.
-3. Networked `init` pins a release, creates the three non-default core secrets,
+6. Networked `init` pins a release, creates the three non-default core secrets,
    derives callback-ingress requirements from selected capabilities, and
    enables OIDC before the first networked start without printing a secret.
-4. Every unavoidable provider-console action is shown as an unfinished manual
+7. Every unavoidable provider-console action is shown as an unfinished manual
    operation with a direct remediation; the CLI never reports it as applied.
-5. Re-running `plan` immediately after `apply` yields no automatic operations.
-6. Removing an effective Slack scope, GitHub installation permission, or Logto
+8. Re-running `plan` immediately after `apply` yields no automatic operations.
+9. Removing an effective Slack scope, GitHub installation permission, or Logto
    role produces a known failing `grant` finding even when desired manifests are
    correct.
-7. A provider outage produces `unknown` and exit 2, not an invalid-token claim.
-8. `check integrations` never returns or logs a stored integration credential.
-9. Removing or demoting the personal key's user prevents both diagnostics and
-   probes before any subject credential is opened.
-10. Restricted integrations not shared with that owner are excluded before
+10. A provider outage produces `unknown` and exit 2, not an invalid-token claim.
+11. `check integrations` never returns or logs a stored integration credential.
+12. Removing or demoting the personal key's user prevents both diagnostics and
+    probes before any subject credential is opened.
+13. Restricted integrations not shared with that owner are excluded before
     credential access; owner role does not widen resource visibility.
-11. GitHub remains on the code-host seam and all core provider execution is
+14. GitHub remains on the code-host seam and all core provider execution is
     registry-driven.
-12. Golden redaction tests prove that every secret-shaped fixture is absent from
+15. Golden redaction tests prove that every secret-shaped fixture is absent from
     table output, JSON output, errors, and logs. Contract tests cover exit-code
     aggregation and one representative provider; provider API clients use only
     focused behavior tests.
@@ -767,3 +856,5 @@ The report is still written on exit 1 or 2 so CI can archive it.
 - [Logto Management API](https://docs.logto.io/integrate-logto/interact-with-management-api)
 - [Logto API resources](https://docs.logto.io/authorization/global-api-resources)
 - [Logto OSS](https://docs.logto.io/logto-oss)
+- [Logto deployment and database setup](https://docs.logto.io/logto-oss/deployment-and-configuration)
+- [GitHub OAuth loopback redirect URLs](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#loopback-redirect-urls)

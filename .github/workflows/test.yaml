@@ -157,7 +157,8 @@ jobs:
             'control-plane=@agentconnect.md/control-plane' \
             'relay=@agentconnect.md/relay' \
             'daemon=@agentconnect.md/daemon' \
-            'cli=@agentconnect.md/cli'
+            'cli=@agentconnect.md/cli' \
+            'setup=@agentconnect.md/setup'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:

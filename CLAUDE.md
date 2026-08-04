@@ -49,6 +49,7 @@ callback endpoint is required; the CP only orchestrates. Concretely:
 | `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                      |
 | `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                         |
 | `@agentconnect.md/relay`         | Fastify                            | Optional public ingress: Slack/Feishu HTTP callbacks, webhooks, webchat. Verifies, demuxes to the owning bot, forwards to the daemon. Persists no message content. |
+| `@agentconnect.md/setup`         | Node CLI (commander)               | Operator setup profiles and read-only deployment diagnostics. The MVP implements `init` and `check deployment`; provider mutation remains planned.                 |
 | `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                       |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild

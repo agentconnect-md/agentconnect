@@ -113,6 +113,18 @@ The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,
 workspaces, and runtime credentials.
 
+To evaluate local sign-in without configuring DNS or TLS, use the optional
+official Logto overlay and the setup CLI:
+
+```bash
+npx -y @agentconnect.md/setup init local-auth
+docker compose -f compose.yaml -f compose.logto.yaml up -d postgres logto
+```
+
+The setup command prints the remaining Logto application step and the exact
+deployment check command. The default no-auth Compose command above is
+unchanged.
+
 For image pinning, production networking, sign-in, secrets, GitHub App setup,
 and optional Mem0 configuration, see the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
@@ -194,6 +206,7 @@ This repository is a pnpm workspace. Product packages live under `packages/`:
 | `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                               |
 | `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
 | `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy              |
+| `@agentconnect.md/setup`              | [`packages/setup`](packages/setup)                           | Self-hosting profiles and read-only deployment checks             |
 | `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
 
 ## Explore
