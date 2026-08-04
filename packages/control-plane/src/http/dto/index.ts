@@ -2452,6 +2452,7 @@ export const SessionDetailDto = z.object({
   lastActivityAt: z.string(),
   usage: SessionUsageDto.nullable(),
   triggeredBy: z.string().nullable(),
+  hookKind: z.enum(['webhook', 'github']).nullable(),
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
   threadUrl: z.string().nullable(),

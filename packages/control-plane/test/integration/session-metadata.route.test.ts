@@ -440,6 +440,21 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
       triggeredByName: 'owner/repo'
     })
 
+    const webhookDetail = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/acp-webhook-1` })
+    expect(webhookDetail.statusCode).toBe(200)
+    expect(webhookDetail.json()).toMatchObject({
+      hookKind: 'webhook',
+      channelName: 'acme/build',
+      triggeredByName: 'acme/build'
+    })
+    const githubDetail = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/acp-github-headless` })
+    expect(githubDetail.statusCode).toBe(200)
+    expect(githubDetail.json()).toMatchObject({
+      hookKind: 'github',
+      channelName: 'owner/repo',
+      triggeredByName: 'owner/repo'
+    })
+
     const filtered = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&integration=github` })
     expect(filtered.statusCode).toBe(200)
     expect(

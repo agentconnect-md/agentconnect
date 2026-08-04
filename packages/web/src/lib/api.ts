@@ -495,6 +495,8 @@ export interface SessionDetailDto {
   lastActivityAt: string
   usage: SessionUsageDto | null
   triggeredBy: string | null
+  /** Stable source kind for hook-backed sessions. Absent on older Control Planes. */
+  hookKind?: 'webhook' | 'github' | null
   channelName: string | null
   triggeredByName: string | null
   threadUrl: string | null
@@ -1874,6 +1876,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
     lastActivityAt: d.lastActivityAt,
     usage: d.usage,
     triggeredBy: d.triggeredBy,
+    ...(d.hookKind !== undefined ? { hookKind: d.hookKind } : {}),
     channelName: d.channelName,
     triggeredByName: d.triggeredByName,
     threadUrl: d.threadUrl,

@@ -680,7 +680,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const visibleAgentIds = visibleAgents.map((a) => a.id)
         const visibleAgentIdSet = new Set<string>(visibleAgentIds)
         const ctx = ctxOf(req)
-        const [parent, children, siblingCandidates, usage, webchatRoster] = await Promise.all([
+        const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
           deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
           s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, visibleAgentIds) : Promise.resolve([]),
@@ -689,8 +689,11 @@ export function sessionRoutes(deps: HttpDeps) {
           // the adopted-session composer/header, which has no relay socket.
           s.platform === 'webchat' && s.channel
             ? deps.repos.webchatConversation.participants(s.channel)
-            : Promise.resolve([])
+            : Promise.resolve([]),
+          hookMetadataForSessions(deps, [s], orgOf(req))
         ])
+        const hook = hookMetadataForSession(hookMetadata, s)
+        const display = sessionDisplayMetadata(s, hook)
         const siblings = siblingCandidates.filter((candidate) => candidate.id !== s.id)
         const related = [...(parent ? [parent] : []), ...siblings, ...children]
         const relatedAccess = await sessionAccess.forSessions(req, related)
@@ -735,8 +738,9 @@ export function sessionRoutes(deps: HttpDeps) {
           lastActivityAt: s.lastActivityAt.toISOString(),
           usage,
           triggeredBy: s.triggeredBy,
-          channelName: s.channelName,
-          triggeredByName: s.triggeredByName,
+          hookKind: hook?.kind ?? null,
+          channelName: display.channelName,
+          triggeredByName: display.triggeredByName,
           threadUrl: s.threadUrl,
           tenantScope: s.tenantScope ?? null,
           participants:

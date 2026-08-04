@@ -1,16 +1,6 @@
 'use client'
 
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode
-} from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
@@ -744,7 +734,6 @@ function ParticipantAvatar({
   platformMark,
   sp,
   isCron,
-  showNameTitle = true,
   className = ''
 }: {
   agent: Agent | null
@@ -753,7 +742,6 @@ function ParticipantAvatar({
   platformMark?: string
   sp: ReturnType<typeof speaker>
   isCron: boolean
-  showNameTitle?: boolean
   /** Caller-side box tweaks — today only the transcript's vertical nudge. */
   className?: string
 }) {
@@ -762,8 +750,7 @@ function ParticipantAvatar({
       className={`av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
         !agent && !isCron ? 'bg-transparent' : ''
       } ${className}`}
-      title={showNameTitle ? sp.name : undefined}
-      aria-hidden={showNameTitle ? undefined : true}
+      title={sp.name}
     >
       {agent ? (
         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={26} />
@@ -790,65 +777,30 @@ function ParticipantAvatar({
   )
 }
 
-function SessionParticipantsHover({
-  label,
-  participants,
-  platformMark
-}: {
-  label: string
-  participants: SessionParticipant[]
-  platformMark?: string
-}) {
-  const tooltipId = useId()
-  const dismissOnEscape = (event: ReactKeyboardEvent<HTMLElement>): void => {
-    if (event.key !== 'Escape') return
-    event.preventDefault()
-    event.stopPropagation()
-    event.currentTarget.blur()
-  }
-
+function SessionHumanFaces({ participants }: { participants: SessionParticipant[] }) {
+  const names = participants.map((participant) => participant.sp.name)
   return (
-    <span className="group relative inline-flex min-w-0 flex-[0_1_auto]">
-      <button
-        type="button"
-        aria-describedby={tooltipId}
-        className="inline-flex min-w-0 cursor-default items-center gap-[6px] rounded-xs border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-        onKeyDown={dismissOnEscape}
-      >
-        <Icon name="users" size={13} className="flex-none" />
-        <span className="truncate">{label}</span>
-      </button>
-      <span className="pointer-events-none invisible absolute top-full left-0 z-40 w-[220px] max-w-[calc(100vw-40px)] -translate-y-1 pt-2 opacity-0 transition-[opacity,transform,visibility] group-hover:pointer-events-auto group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100">
+    <span
+      role="group"
+      className="flex flex-none items-center -space-x-[5px]"
+      aria-label={`People: ${names.join(', ')}`}
+    >
+      {participants.map((participant) => (
         <span
-          id={tooltipId}
-          role="tooltip"
-          tabIndex={0}
-          onKeyDown={dismissOnEscape}
-          className="block max-h-[min(360px,calc(100vh-120px))] overflow-y-auto overscroll-contain rounded-lg border border-(--border-default) bg-(--surface-card) p-2 shadow-(--shadow-lg) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+          key={participant.id}
+          title={participant.sp.name}
+          className="inline-flex flex-none rounded-full border-[1.5px] border-(--surface-card)"
         >
-          <span className="block px-2 pt-1 font-sans text-[10.5px] font-semibold leading-normal tracking-[0.06em] text-(--text-tertiary) uppercase">
-            Participants
-          </span>
-          <span className="mt-[5px] flex flex-col gap-[2px]">
-            {participants.map((participant) => (
-              <span key={participant.id} className="flex min-w-0 items-center gap-[9px] rounded-md px-2 py-[6px]">
-                <ParticipantAvatar
-                  agent={participant.agent}
-                  avatarUrl={participant.avatarUrl}
-                  avatarInitials={participant.avatarInitials}
-                  platformMark={platformMark}
-                  sp={participant.sp}
-                  isCron={participant.isCron}
-                  showNameTitle={false}
-                />
-                <span className="min-w-0 truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)">
-                  {participant.sp.name}
-                </span>
-              </span>
-            ))}
-          </span>
+          <Avatar
+            src={participant.avatarUrl}
+            initials={participant.avatarInitials || participant.sp.initials || '?'}
+            size={24}
+            bg={participant.sp.avBg}
+            fg={participant.sp.avText}
+            fontSize={9}
+          />
         </span>
-      </span>
+      ))}
     </span>
   )
 }
@@ -2547,33 +2499,21 @@ export default function SessionDetailView() {
     }
   }
 
-  // A multi-participant conversation names its WHOLE roster in the header, spoken
-  // or not. Deriving the chip from the transcript alone made it read "You" on a
-  // conversation two agents were visibly typing in — and it would stay wrong even
-  // afterwards, because the owning agent's own turns are the SESSION's and are
-  // never recorded as a speaker (they are what the agent chip stands for).
-  // Appended, so the people who actually spoke keep their order and their avatars.
-  // Single-agent sessions are untouched: there, "participants" still means the
-  // other people in the room.
-  const headerRoster = session.participants ?? []
-  if (headerRoster.length > 1) {
-    for (const p of headerRoster) {
-      if (speakers.has(p.agentId)) continue
-      const rosterAgent = agentById.get(p.agentId) ?? null
-      rememberAgentParticipant(p.agentId, rosterParticipantName(p, rosterAgent ?? undefined), rosterAgent)
-    }
-  }
-
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
   // steps are the playground equivalent of persisted THINK messages.
-  // Sole author reads as "You" when it's the viewer (webchat) — checked on the raw
-  // triggeredBy id, not the display `user`, since a resolved name would mask the match.
+  // Agent membership already has its own focus menu; this adjacent face stack is
+  // only for human speakers observed in the transcript.
+  const agentParticipantIds = new Set((session.participants ?? []).map((participant) => participant.agentId))
+  const humanParticipants = [...speakers.values()].filter(
+    (participant) =>
+      !participant.agent &&
+      !participant.isCron &&
+      !participant.id.startsWith('hook:') &&
+      !agentParticipantIds.has(participant.id)
+  )
   const soleAuthor = senderLabel(session.triggeredBy, session.user)
   const soleSpeaker = speakers.size === 1 ? speakers.entries().next().value : undefined
-  const participants = [...speakers.values()]
-  const participantsLabel =
-    speakers.size > 1 ? speakers.size + ' participants' : (soleSpeaker?.[1].sp.name ?? soleAuthor)
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host
   // (short-id fallback when it isn't in the fleet), matching the Agents list.
@@ -2594,7 +2534,7 @@ export default function SessionDetailView() {
   // it hasn't).
   const headerCron = soleSpeaker
     ? asCron(soleSpeaker[0])
-    : participantsLabel === session.user
+    : speakers.size === 0 && soleAuthor === session.user
       ? asCron(session.user)
       : null
   const pgEmpty = isPg && session.steps.length === 0 && !pgBusy
@@ -2857,7 +2797,7 @@ export default function SessionDetailView() {
             )}
           </span>
         </div>
-        {/* DESKTOP META ROW — focused agent · participants · workspace · visibility · Details
+        {/* DESKTOP META ROW — focused agent · people · workspace · visibility · Details
           popover · copy-link. The old stat/usage cards moved into the Details popover. */}
         <div className="mt-0 mb-[10px] hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
           <SessionAgentFocusMenu
@@ -2873,18 +2813,9 @@ export default function SessionDetailView() {
               <Icon name="calendar-clock" size={13} className="flex-none" />
               <span className="truncate">{headerCron.name || 'Schedule'}</span>
             </Link>
-          ) : participants.length > 1 ? (
-            <SessionParticipantsHover
-              label={participantsLabel}
-              participants={participants}
-              platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-            />
-          ) : (
-            <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)">
-              <Icon name="users" size={13} className="flex-none" />
-              <span className="truncate">{participantsLabel}</span>
-            </span>
-          )}
+          ) : humanParticipants.length > 0 ? (
+            <SessionHumanFaces participants={humanParticipants} />
+          ) : null}
           {workspaceHref ? (
             <Link
               className="lnk flex-none text-[12.5px] text-(--text-secondary)"
