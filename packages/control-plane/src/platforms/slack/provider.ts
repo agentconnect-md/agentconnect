@@ -27,13 +27,18 @@
  *    by BOTH the live paths (`orchestrator/placement.ts`,
  *    `orchestrator/httpBot.ts`) and the provider (one implementation).
  *
- * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
- * registry — its {@link SlackCreateCredentials} block + {@link
- * refineSlackCreateBody} are folded into the create body, and {@link
- * CpPlatformProvider.validateConfig} IS the route's live token check.
- * `placement.ts`, `httpBot.ts`, `server.ts` mounting, `loadConfig`'s schema
- * fold, and `startBackground()` remain live paths, sharing the implementations
- * above.
+ * ADOPTION SEQUENCING: core now reads this provider through the registry end to
+ * end — `server.ts` mounts {@link CpPlatformProvider.installRoutes} at both
+ * scopes, `POST /integrations` folds {@link SlackCreateCredentials} +
+ * {@link refineSlackCreateBody} into its body and runs
+ * {@link CpPlatformProvider.validateConfig} +
+ * {@link CpPlatformProvider.buildNewBotInstall} as its tail, `config/env.ts`
+ * folds {@link SlackCpEnvSchema}, the container's background lifecycle drives
+ * the declared reapers and loops, and spec assembly (`placement.ts`) /
+ * `rc/bot-assign` (`httpBot.ts`) await
+ * {@link CpPlatformProvider.projectIntegrationConfig} /
+ * {@link CpPlatformProvider.projectBotAssign}. The helpers below stay exported
+ * as the ONE implementation both the projectors and the equivalence tests call.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
@@ -88,9 +93,11 @@ export function slackAppIdFromAppToken(appToken: string): string | undefined {
 }
 
 /**
- * Env keys this provider owns (§9 `envSchema`) — spread into `AppConfigSchema`
- * by `config/env.ts` until `loadConfig` folds the registry's schemas (S3
- * adoption), so the live schema and the provider's declaration are ONE object.
+ * Env keys this provider owns (§9 `envSchema`) — folded into `AppConfigSchema`
+ * through `platforms/env.ts`, so the live schema and the provider's declaration
+ * are ONE object. (The fold reads the static declaration rather than the
+ * registry: `loadConfig` necessarily runs before a provider, which is
+ * constructed FROM the parsed config, can exist.)
  *
  *  - `SLACK_INSTALL_*` — the pending-install reaper knobs
  *    (slack-install-smoothing.md §Tier B): a `slack_install` pending row the
@@ -324,6 +331,39 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
             }
           : {}
       return { ok: true, identity }
+    },
+
+    /**
+     * The create tail's platform half (§9) — the same bot columns + secret row
+     * `installNewSlackBot` writes, which now shares core's one skeleton:
+     *
+     *  - `slackAppId` keeps the xapp DERIVATION as the authority when both are
+     *    present (`validateConfig` has already refused a mismatched pair), and
+     *    falls back to the "A…" id `auth.test` resolved;
+     *  - `workspaceId` / `workspaceName` are the display-only tenant metadata
+     *    (never `Bot.teamId`, which only the platform-app OAuth funnel writes);
+     *  - `botUserId` is the public Slack member id that renders exact channel
+     *    mentions (#601);
+     *  - `shareable` is echoed back — Slack is the one platform with multi-agent
+     *    bots — and core still coerces it off for a socket install.
+     */
+    buildNewBotInstall: ({ credentials, identity, shareable }) => {
+      const slackAppId =
+        (credentials.appToken ? slackAppIdFromAppToken(credentials.appToken) : undefined) ?? identity.externalAppId
+      return {
+        bot: {
+          ...(slackAppId ? { slackAppId } : {}),
+          ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
+          ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}),
+          ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
+          ...(shareable ? { shareable: true } : {})
+        },
+        secrets: {
+          botToken: credentials.botToken,
+          appToken: credentials.appToken ?? null,
+          signingSecret: credentials.signingSecret ?? null
+        }
+      }
     },
 
     // Slack stores the literal tokens in the shared row (`install-slack.ts`):

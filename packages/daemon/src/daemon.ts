@@ -1061,7 +1061,18 @@ interface HookDispatchContext {
   reviewReportResult?: HookReviewResult
 }
 
-type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed'
+type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
+
+const GITHUB_DELETED_HOOK_EVENTS = new Set([
+  'issues:deleted',
+  'pull_request:deleted',
+  'issue_comment:deleted',
+  'pull_request_review_comment:deleted'
+])
+
+function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
+  return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
+}
 
 /** Relay-authored lifecycle events that remove the isolated checkout without
  * opening a model turn. Pair the normalized event with trusted subject metadata
@@ -1073,6 +1084,7 @@ function githubThreadWorktreeCleanup(
     return 'pull_request_merged'
   }
   if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
+  if (hook?.event === 'issues:deleted' && hook.github?.subjectKind === 'issue') return 'issue_deleted'
   return undefined
 }
 
@@ -1684,9 +1696,9 @@ export class Daemon {
   /** Spawn-time config warnings per agent (config-file secrets: pointer-var
    *  conflicts, write failures) — flushed into the next dispatched session. */
   private pendingSpawnNotices = new Map<string, string[]>()
-  // Effective agents = the on-disk agent.json files (the single source of truth;
-  // CP specs are written into them). Everything (routing, dispatch, hosts) reads
-  // `agents`; `fileAgents` mirrors the loaded files and is rebuilt each reconcile.
+  // Effective agents combine user-authored agent.json files with the in-memory CP
+  // registries. Everything (routing, dispatch, hosts) reads `agents`; `fileAgents`
+  // mirrors only the loaded local files and is rebuilt each reconcile.
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
   private hosts = new Map<string, AcpHost>()
@@ -2726,9 +2738,9 @@ export class Daemon {
       },
       save: (s) => this.store.setCpRouting(s.routingEpoch, JSON.stringify(s.assignments), JSON.stringify(s.globalRules))
     })
-    // CP agent specs are written straight to the on-disk agent.json (the single
-    // source of truth) via create-or-merge keyed by agentId; a write re-reconciles
-    // (re-loads agents from disk; restarts a host only on a real config change).
+    // CP agent specs stay in memory and are re-converged on every CP connection.
+    // The registry removes a same-id agent.json and retains only a secret-free
+    // data-root marker on disk; unrelated local agent.json files remain user-owned.
     this.cpAgents = new CpAgentRegistry(
       this.agentsDir,
       { knownRuntimes: Object.keys(this.runtimeCatalog.runtimes), warn: (m) => this.log.warn(m) },
@@ -2738,10 +2750,7 @@ export class Daemon {
         ),
       (m) => this.log.warn(m)
     )
-    // CP integrations are written straight to the owning agent's on-disk agent.json
-    // `integrations[]` (the single source of truth) — so they survive a restart with
-    // the CP down and start() opens the Socket Mode sockets from disk alone. A write
-    // re-reconciles (diffAgents flags the integrations dimension → re-opens/binds).
+    // CP integrations are memory-only and overlaid onto the effective agent set.
     this.cpIntegrations = new CpIntegrationRegistry(
       this.agentsDir,
       { warn: (m) => this.log.warn(m) },
@@ -2750,10 +2759,7 @@ export class Daemon {
           this.log.error(`cp: integration reconcile failed: ${(err as Error).stack ?? err}`)
         )
     )
-    // CP crons are written straight into the owning agent's on-disk agent.json
-    // `crons[]` (the single source of truth, origin:"cp") — so they survive a
-    // restart with the CP down and the Scheduler registers them from disk alone.
-    // A write re-reconciles (diffAgents sees the crons change → Scheduler re-sync).
+    // CP crons are memory-only and overlaid onto the effective agent set.
     this.cpCrons = new CpCronRegistry(
       this.agentsDir,
       { warn: (m) => this.log.warn(m) },
@@ -3203,7 +3209,10 @@ export class Daemon {
     if (this.opts.agentName) {
       const match = validAgents.find((agent) => agent.id === this.opts.agentName)
       const previous = [...preserved.values()].find((agent) => agent.id === this.opts.agentName)
-      if (match) agents = [match]
+      // A CP upsert removes the selected same-id agent.json. Once that happens
+      // the memory registry, not file discovery, supplies the effective entry.
+      if (this.cpAgents?.has(this.opts.agentName)) agents = []
+      else if (match) agents = [match]
       else if (previous) agents = [previous]
       else {
         const available =
@@ -3223,22 +3232,32 @@ export class Daemon {
     return { agents, activeFleet }
   }
 
-  /**
-   * Effective agent set = the on-disk `agent.json` files, with the CP-owned
-   * integrations overlaid in memory. Agent SPECS are no longer overlaid — `agent/
-   * upsert` writes those straight to disk (cp/cp-agent-registry.ts). INTEGRATIONS,
-   * however, carry plaintext tokens and are kept in memory only (cp/cp-integration-
-   * registry.ts); they are merged onto the matching file agent's `integrations[]`
-   * HERE — the single seam so consolidate, routing rules, tool injection, and reply
-   * routing (all of which read `agent.integrations`) see one merged view.
-   */
-  private effectiveAgents(): LoadedAgent[] {
-    // Integrations live on disk in each agent.json (CP pushes are persisted by
-    // CpIntegrationRegistry before reconcile re-loads), so the file agents ARE
-    // the effective set — no in-memory overlay.
-    return [...this.fileAgents.values()].filter(
-      (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
-    )
+  /** Build one effective view from user-authored files plus CP memory registries. */
+  private effectiveAgents(fileAgents: ReadonlyMap<string, LoadedAgent> = this.fileAgents): LoadedAgent[] {
+    const bases = new Map(fileAgents)
+    // CP authority wins an id collision. In practice the registry already
+    // unlinks the matching file, but this also closes the file-watcher race.
+    for (const agent of this.cpAgents?.agents() ?? []) bases.set(agent.id, agent)
+    return [...bases.values()]
+      .filter((agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id))
+      .map((agent) => {
+        const integrations = [...agent.integrations]
+        for (const integration of this.cpIntegrations?.forAgent(agent.id) ?? []) {
+          const index = integrations.findIndex((current) => current.id === integration.id)
+          if (index >= 0) integrations[index] = integration
+          else integrations.push(integration)
+        }
+        const crons = [...agent.crons]
+        for (const cron of this.cpCrons?.forAgent(agent.id) ?? []) {
+          // A user's same-id cron remains user-owned. CP entries replace only CP entries.
+          const localCollision = crons.some((current) => current.id === cron.id && current.origin !== 'cp')
+          if (localCollision) continue
+          const index = crons.findIndex((current) => current.id === cron.id && current.origin === 'cp')
+          if (index >= 0) crons[index] = cron
+          else crons.push(cron)
+        }
+        return { ...agent, integrations, crons }
+      })
   }
 
   /**
@@ -3275,9 +3294,7 @@ export class Daemon {
     const snapshot = this.loadAgentList(true)
     const files = snapshot.agents
     const nextFileAgents = new Map(files.map((a) => [a.id, a]))
-    const desired = [...nextFileAgents.values()].filter(
-      (agent) => !this.moveStagedAgents.has(agent.id) && !this.removedAgentTombstones.has(agent.id)
-    )
+    const desired = this.effectiveAgents(nextFileAgents)
     // Keep the previous live roster intact when an incoming config would create
     // an unsafe/aliased workspace authority.
     if (!this.opts.hostFactory) {
@@ -9121,15 +9138,16 @@ export class Daemon {
    */
   private async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
     const cleanup = githubThreadWorktreeCleanup(msg)
+    const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
     if (!this.agents.has(msg.agentId)) {
       this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
     }
-    if (!cleanup && this.paused(msg.agentId)) {
+    if (!maintenance && this.paused(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'paused' }
     }
-    if (!cleanup && this.safetyDrainingAgents.has(msg.agentId)) {
+    if (!maintenance && this.safetyDrainingAgents.has(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is stopping an interrupted turn — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
     }
@@ -9156,9 +9174,10 @@ export class Daemon {
    */
   private async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
     const cleanup = githubThreadWorktreeCleanup(msg)
+    const deleted = githubDeletedHookEvent(msg)
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
-    const nmsg = buildHookMessage(cleanup ? { ...msg, target: undefined } : msg, randomUUID())
+    const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID())
     // The in-memory ACK cache closes same-process retransmits. This durable
     // probe closes the restart window *before* anchorTrigger posts externally:
     // a retained live row will replay, and a terminal row is already complete.
@@ -9177,7 +9196,7 @@ export class Daemon {
       ...(snapshot ? { snapshot } : {}),
       ...(msg.github ? { github: msg.github } : {})
     }
-    if (cleanup) {
+    if (cleanup || deleted) {
       const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
       const entry: QueueEntry = {
         agentId: msg.agentId,
@@ -9191,43 +9210,15 @@ export class Daemon {
       // retention's active-session predicate does not mistake this cleanup
       // obligation for a pending model turn.
       const persistence = this.persistInbox(entry, `maintenance:${key}`, { required: true })
-      if (persistence !== 'existing') void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
+      if (persistence !== 'existing') {
+        if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
+        else this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, entry)
+      }
       return { accepted: true }
     }
     // P3 outbound: github fires on a NUMBERED thread publish their completed reply as
     // one comment (always on — design; push fires have no thread and stay silent).
     const c = msg.context
-    // A GitHub `deleted` action (the issue/PR/comment was removed) is a teardown
-    // signal, not a work request: if this thread never had a session, there is
-    // nothing to react to, so don't spin up a brand-new session just to observe
-    // the deletion (it would only orphan a session pointing at a gone thread).
-    // Fire only when a session already exists for the thread's affinity key. A
-    // targeted fire keys a fresh per-delivery session (thread === msgId), so it
-    // has no prior session to gate on and is left alone; deleted github fires run
-    // headless in practice. The relay already opened the HookRun row, so close it
-    // honestly as a no-op success rather than orphaning it.
-    if (c?.source === 'github' && c.action === 'deleted' && !msg.target) {
-      const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
-      if (!this.store.getSession(key)?.acpSessionId) {
-        this.log.info(`hook: skipping github ${c.event ?? 'event'}:deleted fire ${msg.msgId} — no session for ${key}`)
-        // Preserve R2a's admission/outbox guarantee even though this teardown
-        // event deliberately does not enter the turn engine: persist the stable
-        // delivery first, then atomically redact it into a terminal receipt.
-        const entry: QueueEntry = {
-          agentId: msg.agentId,
-          msg: nmsg,
-          initAbort: new AbortController(),
-          hookContext,
-          resolve: () => {},
-          reject: () => {}
-        }
-        const persistence = this.persistInbox(entry, key, { required: true })
-        if (persistence !== 'existing') {
-          this.emitHookCompletion(hookContext, 'success', { reason: 'deleted: no existing session' }, entry)
-        }
-        return { accepted: true }
-      }
-    }
     const trustedInlineTarget =
       c?.source === 'github' &&
       msg.github?.subjectKind === 'pull_request' &&
@@ -15978,15 +15969,20 @@ export class Daemon {
     return this.connForIntegration(intId)
   }
 
-  /** The CP-owned cron ids currently on disk (register `localState.crons` — the
-   *  CP computes `drop.crons` against this; hand-authored crons are not reported). */
+  /** CP-owned cron ids currently held in memory. */
   private cpCronIds(): string[] {
     const out: string[] = []
     for (const a of this.effectiveAgents()) for (const c of a.crons) if (c.origin === 'cp') out.push(c.id)
     return out
   }
 
-  /** Ownership-aware active disk state sent during register. Single-agent mode
+  /** Exact-prune stale CP-only dependents without touching local file entries. */
+  private exactCpDependents(agentId: string, desired: { integrationIds: string[]; cronIds: string[] }): void {
+    this.cpIntegrations?.retainForAgent(agentId, new Set(desired.integrationIds))
+    this.cpCrons?.retainForAgent(agentId, new Set(desired.cronIds))
+  }
+
+  /** Ownership-aware active state sent during register. Single-agent mode
    * cannot archive its selected root, so it deliberately opts out of replica
    * pruning while still reporting the older assignment/cron/lease state. */
   private cpLocalState(): RegisterReq['localState'] {
@@ -15994,9 +15990,16 @@ export class Daemon {
     const agentReplicas = new Map(
       agents.map((agent) => [
         agent.id,
-        { agentId: agent.id, origin: agent.origin === 'cp' ? ('cp' as const) : ('unknown' as const) }
+        { agentId: agent.id, origin: this.cpAgents?.has(agent.id) ? ('cp' as const) : ('unknown' as const) }
       ])
     )
+    // Marker-only roots stay inactive after a restart, but remain CP-owned
+    // replicas. Report them so an offline deletion can still converge.
+    if (!this.opts.agentName) {
+      for (const agentId of this.cpAgents?.replicaIds() ?? []) {
+        agentReplicas.set(agentId, { agentId, origin: 'cp' })
+      }
+    }
     // A crash-tombstoned root is intentionally absent from effectiveAgents,
     // but the CP must still see the replica ownership so reconnect can reissue
     // its interrupted remove/drop. Never report its stale integrations.
@@ -17383,11 +17386,13 @@ export class Daemon {
         continue
       }
       const cleanup = githubThreadWorktreeCleanup(hookContext)
-      if (hookContext && cleanup) {
+      const deleted = githubDeletedHookEvent(hookContext)
+      if (hookContext && (cleanup || deleted)) {
         const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)
         const owner: HookCompletionOwner = { inboxId: row.id }
         this.liveInboxIds.add(row.id)
-        void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
+        if (cleanup) void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
+        else this.emitHookCompletion(hookContext, 'success', { reason: 'deleted_event_ignored' }, owner)
         replayedMaintenance += 1
         continue
       }
@@ -17457,7 +17462,7 @@ export class Daemon {
     }
     if (replayed) this.log.info(`durable inbox: replayed ${replayed} admitted message(s) through the serial gate`)
     if (replayedMaintenance) {
-      this.log.info(`durable inbox: replayed ${replayedMaintenance} GitHub worktree cleanup(s)`)
+      this.log.info(`durable inbox: replayed ${replayedMaintenance} GitHub maintenance delivery(s)`)
     }
   }
 
@@ -17687,11 +17692,11 @@ export class Daemon {
         // already admitted on the old connection. Join those per-agent lanes
         // before clearing a drop gate or republishing the whole desired set.
         await Promise.all(desiredAgents.map(({ agentId }) => this.queueAgentLifecycle(agentId, async () => undefined)))
-        // Write the authoritative replicas while any removal tombstone still
-        // excludes them from effectiveAgents. Only complete writes clear the
-        // durable latch and reopen their admission gate.
+        // Install the authoritative replicas in memory while any removal tombstone
+        // still excludes them from effectiveAgents. Only complete applications clear
+        // the durable latch and reopen their admission gate.
         const revivableAgents = desiredAgents.filter(({ agentId }) => !this.agentRemovalPending(agentId))
-        // Only entries the revision fence actually WROTE may clear a tombstone
+        // Only entries the revision fence actually applied may clear a tombstone
         // below: a stale or refused roster entry (organization-secrets-and-
         // variables.md §7) leaves the existing replica untouched, so it is not the
         // complete authority replacement that re-add requires.
@@ -17700,8 +17705,8 @@ export class Daemon {
           (integration) => !this.moveStagedAgents.has(integration.agentId)
         )
         this.cpIntegrations?.converge(desiredIntegrations)
-        // Crons AFTER agents: a cron def lands in its owning agent.json, which the
-        // roster may have just created. drop.crons prunes the stale CP entries.
+        // Crons AFTER agents: the owning in-memory agent must exist first.
+        // drop.crons prunes stale CP entries.
         for (const id of snap.drop.crons) this.cpCrons?.remove(id)
         const desiredCrons = (snap.crons ?? []).filter((cron) => !this.moveStagedAgents.has(cron.agentId))
         this.cpCrons?.converge(desiredCrons)
@@ -17712,7 +17717,7 @@ export class Daemon {
             // old root. Re-add is a complete authority replacement: exact-prune
             // every absent CP dependent and fsync the resulting bundle while the
             // tombstone gate is still closed.
-            this.cpAgents?.exactDependents(agentId, {
+            this.exactCpDependents(agentId, {
               integrationIds: desiredIntegrations
                 .filter((integration) => integration.agentId === agentId)
                 .map((integration) => integration.integrationId),
@@ -17751,13 +17756,13 @@ export class Daemon {
           if (this.moveStagedAgents.has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
           if (this.agentRemovalPending(agentId)) return { ok: false, reason: 'agent is pending removal' }
           if (!this.cpAgents) return { ok: false, reason: 'agent registry is not ready' }
-          // Publish bytes first while a crash tombstone (if present) still keeps
-          // the old/new root outside the effective roster. Clearing it is the
+          // Publish the in-memory spec first while a crash tombstone (if present)
+          // still keeps the root outside the effective roster. Clearing it is the
           // authoritative re-add commit point.
           const replacingDroppedAuthority =
             this.removedAgentTombstones.has(agentId) || this.cpDroppedAgents.has(agentId)
           const applied = this.cpAgents.upsert(agentId, spec)
-          // The revision fence wrote nothing (organization-secrets-and-variables.md
+          // The revision fence applied nothing (organization-secrets-and-variables.md
           // §7). A stale/idempotent snapshot is ACKed as a no-op — a newer revision
           // already went through this same path and cleared any tombstone — while an
           // equal revision carrying different content is a CP invariant violation and
@@ -17769,7 +17774,7 @@ export class Daemon {
           if (replacingDroppedAuthority) {
             // A standalone upsert has no dependent bundle. Scrub every stale CP
             // integration/cron now; subsequent live frames may repopulate them.
-            this.cpAgents.exactDependents(agentId, { integrationIds: [], cronIds: [] })
+            this.exactCpDependents(agentId, { integrationIds: [], cronIds: [] })
           }
           if (replacingDroppedAuthority) this.clearRemovalForReadd(agentId)
           if (this.cpDroppedAgents.delete(agentId) && !this.agentDestructivePending(agentId)) {
@@ -17931,7 +17936,7 @@ export class Daemon {
               return { ok: false, reason: 'agent/activate: cron bundle contains a different agentId' }
             }
             // Apply the complete authoritative bundle synchronously while the staged
-            // agent is still excluded from effectiveAgents. Every write either lands
+            // agent is still excluded from effectiveAgents. Every update either lands
             // before the ACK or throws; retries remain safe behind the same gate.
             this.gitCreds?.clearDenied(agentId)
             // The target enforces the revision fence independently (organization-
@@ -17947,6 +17952,10 @@ export class Daemon {
             }
             for (const integration of activate.integrations) this.cpIntegrations?.upsert(integration)
             for (const cron of activate.crons) this.cpCrons?.upsert(cron)
+            this.exactCpDependents(agentId, {
+              integrationIds: activate.integrations.map((integration) => integration.integrationId),
+              cronIds: activate.crons.map((cron) => cron.cronId)
+            })
             const activation =
               this.cpAgents?.activate(agentId, {
                 integrationIds: activate.integrations.map((integration) => integration.integrationId),

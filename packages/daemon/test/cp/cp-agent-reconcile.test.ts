@@ -73,7 +73,7 @@ function makeDaemon(root: string) {
 
 const seam = (d: Daemon) => (d as any).cpConfigApply()
 
-describe('Daemon CP agent → disk + reconcile', () => {
+describe('Daemon CP agent → memory + reconcile', () => {
   it('keeps a corrupt move tombstone fail-closed without poisoning reconnect registration', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
@@ -98,7 +98,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.stop()
   })
 
-  it('writes a CP spec onto the matching file agent.json (merge), keeping file runtime/workspace', async () => {
+  it('deletes the matching agent.json and keeps the effective CP spec in memory', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
@@ -115,7 +115,8 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect(eff.runtimeOverrides.model).toBe('opus')
     expect(eff.runtime).toBe('claude') // file-supplied, preserved on merge
     expect(eff.workspace.path).toBe(join(root, 'agents', 'bot-a', 'ws')) // path preserved
-    expect(JSON.parse(readFileSync(join(root, 'agents', 'bot-a', 'agent.json'), 'utf8')).origin).toBe('cp')
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+    expect(readFileSync(join(root, 'agents', 'bot-a', '.cp-agent-id'), 'utf8').trim()).toBe('bot-a')
     expect((daemon as any).cpLocalState().agents).toEqual([{ agentId: 'bot-a', origin: 'cp' }])
     await daemon.stop()
   })
@@ -152,15 +153,16 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.stop()
   })
 
-  it('CREATES a new agent.json for a spec with no on-disk base; remove deletes it', async () => {
+  it('creates a runnable memory-only agent for a spec with no on-disk base; remove deletes its data root', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
     await daemon.start()
 
-    // A CP spec for an id with no on-disk base now creates a runnable agent.json.
+    // A CP spec creates only a secret-free data-root marker.
     await seam(daemon).applyAgentUpsert({ agentId: 'ghost', spec: { name: 'ghost' } as AgentSpec })
-    expect(existsSync(join(root, 'agents', 'ghost', 'agent.json'))).toBe(true)
+    expect(existsSync(join(root, 'agents', 'ghost', 'agent.json'))).toBe(false)
+    expect(readFileSync(join(root, 'agents', 'ghost', '.cp-agent-id'), 'utf8').trim()).toBe('ghost')
     expect((daemon as any).agents.has('ghost')).toBe(true) // runnable, not degraded
     expect((daemon as any).cpDegradedScopes()).not.toContain('ghost')
 
@@ -172,6 +174,24 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.stop()
   })
 
+  it('reports marker-only CP ownership after restart and accepts an offline remove', async () => {
+    const root = root1()
+    const first = makeDaemon(root).daemon
+    await first.start()
+    await seam(first).applyAgentUpsert({ agentId: 'stale-cp', spec: { name: 'stale-cp' } as AgentSpec })
+    writeFileSync(join(root, 'agents', 'stale-cp', 'workspace-data'), 'keep')
+    await first.stop()
+
+    const restarted = makeDaemon(root).daemon
+    await restarted.start()
+    expect((restarted as any).agents.has('stale-cp')).toBe(false)
+    expect((restarted as any).cpLocalState().agents).toContainEqual({ agentId: 'stale-cp', origin: 'cp' })
+
+    await seam(restarted).applyAgentRemove('stale-cp')
+    expect(existsSync(join(root, 'agents', 'stale-cp'))).toBe(false)
+    await restarted.stop()
+  })
+
   it('detach drains/stops, archives the whole root, invalidates git creds, and activate restores + warms it', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
@@ -179,6 +199,10 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeFileSync(join(root, 'agents', 'bot-a', 'memory', 'keep.md'), 'local-memory')
     const { daemon, hosts } = makeDaemon(root)
     await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
     await (daemon as any).ensureHostAsync('bot-a')
     const first = hosts.at(-1)!
     const removeCred = vi.spyOn((daemon as any).gitCreds, 'remove')
@@ -190,9 +214,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
     expect(existsSync(stagedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(true)
     expect((daemon as any).cpLocalState().stagedAgents).toEqual([{ agentId: 'bot-a', moveId: MOVE_ID }])
-    expect(
-      readFileSync(join(detachedAgentDir(join(root, 'agents'), 'bot-a'), 'agent', 'memory', 'keep.md'), 'utf8')
-    ).toBe('local-memory')
+    expect(readFileSync(join(root, 'agents', 'bot-a', 'memory', 'keep.md'), 'utf8')).toBe('local-memory')
 
     const staleIntegration = {
       integrationId: 'stale-int',
@@ -230,9 +252,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     })
     await daemon.reconcile()
     expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
-    expect(
-      readFileSync(join(detachedAgentDir(join(root, 'agents'), 'bot-a'), 'agent', 'agent.json'), 'utf8')
-    ).not.toContain('must-not-return')
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
 
     const activation = {
       agentId: 'bot-a',
@@ -440,6 +460,10 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
     await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
 
     const connection = {
       appToken: 'xapp-only',
@@ -469,7 +493,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await new Promise((resolve) => setImmediate(resolve))
     expect(settled).toBe(false)
     expect(connection.stop).not.toHaveBeenCalled()
-    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    expect(existsSync(join(root, 'agents', 'bot-a', '.cp-agent-id'))).toBe(true)
 
     releaseDispatch()
     await expect(detach).resolves.toEqual({ ok: true })
@@ -677,7 +701,8 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect(staleHost.stop).toHaveBeenCalledTimes(1)
     expect((daemon as any).agents.has('stale-cp')).toBe(false)
     expect(existsSync(join(root, 'agents', 'stale-cp', 'agent.json'))).toBe(false)
-    expect(existsSync(join(detachedAgentDir(join(root, 'agents'), 'stale-cp'), 'agent', 'agent.json'))).toBe(true)
+    expect(existsSync(join(root, 'agents', 'stale-cp', '.cp-agent-id'))).toBe(true)
+    expect(existsSync(detachedAgentDir(join(root, 'agents'), 'stale-cp'))).toBe(false)
     expect(existsSync(join(root, 'agents', 'deleted-cp'))).toBe(false)
     expect(existsSync(detachedAgentDir(join(root, 'agents'), 'deleted-cp'))).toBe(false)
     expect((daemon as any).drainingAgents.has('deleted-cp')).toBe(true)
@@ -686,19 +711,22 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await daemon.stop()
   })
 
-  it('does not revive archived CP crons after detach, restart, and roster re-add', async () => {
+  it('does not revive memory-only CP crons after detach, restart, and roster re-add', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
-    const file = join(root, 'agents', 'bot-a', 'agent.json')
-    const seeded = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
-    seeded.crons = [
-      { id: 'stale-cp', schedule: '0 * * * *', trigger: 'stale', enabled: true, origin: 'cp' },
-      { id: 'local', schedule: '0 0 * * *', trigger: 'keep', enabled: true }
-    ]
-    writeFileSync(file, JSON.stringify(seeded))
-
     const first = makeDaemon(root).daemon
     await first.start()
+    await seam(first).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
+    seam(first).upsertCron({
+      cronId: 'stale-cp',
+      agentId: 'bot-a',
+      schedule: '0 * * * *',
+      trigger: 'stale',
+      enabled: true
+    })
     await seam(first).applyReconcileSnapshot({
       routingEpoch: 1,
       assignments: [],
@@ -727,12 +755,8 @@ describe('Daemon CP agent → disk + reconcile', () => {
       drop: { assignments: [], crons: [], agents: [], integrations: [] }
     })
 
-    const restored = findAgentFileById(join(root, 'agents'), 'bot-a')
-    expect(restored).toBe(file)
-    const crons = (JSON.parse(readFileSync(restored!, 'utf8')) as { crons: Array<{ id: string; origin?: string }> })
-      .crons
-    expect(crons.map((cron) => cron.id)).toEqual(['local'])
-    expect(crons[0]?.origin).toBeUndefined()
+    expect(findAgentFileById(join(root, 'agents'), 'bot-a')).toBeUndefined()
+    expect((reborn as any).agents.get('bot-a')?.crons).toEqual([])
     await reborn.stop()
   })
 
@@ -741,6 +765,10 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
     await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
     vi.spyOn((daemon as any).cpIntegrations, 'remove').mockImplementationOnce(() => {
       throw new Error('integration drop failed')
     })
@@ -816,14 +844,15 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
 
     expect(applied).toBe(false)
-    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    expect(existsSync(join(root, 'agents', 'bot-a', '.cp-agent-id'))).toBe(true)
     expect(existsSync(detachedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(false)
 
     releasePreparation()
     await preparing
     await applying
     expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
-    expect(existsSync(join(detachedAgentDir(join(root, 'agents'), 'bot-a'), 'agent', 'agent.json'))).toBe(true)
+    expect(existsSync(join(root, 'agents', 'bot-a', '.cp-agent-id'))).toBe(true)
+    expect(existsSync(detachedAgentDir(join(root, 'agents'), 'bot-a'))).toBe(false)
     await daemon.reconcile()
     await daemon.stop()
   })
@@ -913,7 +942,7 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
 
     expect(removed).toBe(false)
-    expect(existsSync(join(agentDir, 'agent.json'))).toBe(true)
+    expect(existsSync(join(agentDir, '.cp-agent-id'))).toBe(true)
     expect(existsSync(join(agentDir, 'skills', 'early-publication'))).toBe(true)
     expect(removeAgent).not.toHaveBeenCalled()
 
@@ -970,9 +999,8 @@ describe('Daemon CP agent → disk + reconcile', () => {
     await writing
     await removing
     await expect(upserting).resolves.toEqual({ ok: true })
-    const newRoot = findAgentFileById(join(root, 'agents'), 'bot-a')
-    expect(newRoot).toBe(join(root, 'agents', 'new', 'agent.json'))
-    expect(JSON.parse(readFileSync(newRoot!, 'utf8')).name).toBe('new')
+    expect(findAgentFileById(join(root, 'agents'), 'bot-a')).toBeUndefined()
+    expect(readFileSync(join(root, 'agents', 'new', '.cp-agent-id'), 'utf8').trim()).toBe('bot-a')
     expect((daemon as any).agents.get('bot-a')?.name).toBe('new')
     expect((daemon as any).drainingAgents.has('bot-a')).toBe(false)
     expect((daemon as any).cpDroppedAgents.has('bot-a')).toBe(false)
@@ -1103,7 +1131,8 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect((daemon as any).drainingAgents.has('bot-a')).toBe(true)
     expect((daemon as any).cpDroppedAgents.has('bot-a')).toBe(true)
     expect((daemon as any).agentLifecycleFailures.get('bot-a')?.owner).toBe('remove')
-    expect(JSON.parse(readFileSync(join(root, 'agents', 'bot-a', 'agent.json'), 'utf8')).name).toBe('old')
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
+    expect((daemon as any).agents.get('bot-a')?.name).toBe('old')
     // A later destructive retry is the explicit recovery path.
     await expect(seam(daemon).applyAgentRemove('bot-a')).resolves.toBeUndefined()
     await daemon.stop()
@@ -1114,6 +1143,10 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeAgent(root, 'bot-a')
     const { daemon, hosts } = makeDaemon(root)
     await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
     await (daemon as any).ensureHostAsync('bot-a')
     expect(hosts).toHaveLength(1)
     // Make the tombstone parent a regular file so its hashed child cannot be created.
@@ -1157,6 +1190,10 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeAgent(root, 'bot-a')
     const { daemon, hosts } = makeDaemon(root)
     await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
     await (daemon as any).ensureHostAsync('bot-a')
     expect(hosts).toHaveLength(1)
     // Both reserved marker paths are regular files, so neither mirror can
@@ -1274,33 +1311,16 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeAgent(root, 'bot-a')
     const first = makeDaemon(root).daemon
     await first.start()
+    await seam(first).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
     vi.spyOn(first as any, 'quiesceAgentWorkspaceAuthority').mockRejectedValueOnce(new Error('cleanup failed'))
 
     await expect(seam(first).applyAgentRemove('bot-a')).rejects.toThrow('cleanup failed')
     expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set(['bot-a']))
-    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(true)
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
     await first.stop()
-
-    // Model bytes left by the failed cleanup. Tombstoned localState deliberately
-    // omits these dependents, so authoritative re-add must scrub them as an
-    // exact empty set before reopening the agent.
-    const file = join(root, 'agents', 'bot-a', 'agent.json')
-    const stale = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
-    stale.integrations = [
-      {
-        id: 'stale-int',
-        origin: 'cp',
-        platform: 'slack',
-        slack: {
-          mode: 'direct',
-          botToken: 'must-not-revive',
-          appToken: 'xapp-stale',
-          bindRules: []
-        }
-      }
-    ]
-    stale.crons = [{ id: 'stale-cron', origin: 'cp', schedule: '0 * * * *', trigger: 'stale', enabled: true }]
-    writeFileSync(file, JSON.stringify(stale))
 
     const reborn = makeDaemon(root).daemon
     await reborn.start()
@@ -1317,10 +1337,9 @@ describe('Daemon CP agent → disk + reconcile', () => {
     expect(agentRemovalTombstones(join(root, 'agents'))).toEqual(new Set())
     expect((reborn as any).agents.has('bot-a')).toBe(true)
     expect((reborn as any).drainingAgents.has('bot-a')).toBe(false)
-    const revived = JSON.parse(readFileSync(file, 'utf8')) as { integrations?: unknown[]; crons?: unknown[] }
-    expect(revived.integrations).toEqual([])
-    expect(revived.crons).toEqual([])
-    expect(readFileSync(file, 'utf8')).not.toContain('must-not-revive')
+    expect((reborn as any).agents.get('bot-a')?.integrations).toEqual([])
+    expect((reborn as any).agents.get('bot-a')?.crons).toEqual([])
+    expect(existsSync(join(root, 'agents', 'bot-a', 'agent.json'))).toBe(false)
     await reborn.stop()
   })
 
@@ -1389,6 +1408,10 @@ describe('Daemon CP agent → disk + reconcile', () => {
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
     await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
     vi.spyOn(daemon as any, 'stopAgent')
       .mockRejectedValueOnce(new Error('stop failed'))
       .mockResolvedValue(undefined)

@@ -232,11 +232,13 @@ export interface HttpDeps {
     oauth: OAuthRepo
   }
   registry: DaemonRegistry
-  /** §9 platform-provider registry — the single platform-set authority. The
-   *  create route folds each provider's `credentialBodySchema` /
-   *  `refineCreateBody` into its request schema and dispatches the live
-   *  credential check through `validateConfig`, so no route file names a
-   *  platform to validate one. */
+  /** §9 platform-provider registry — the single platform-set authority.
+   *  `server.ts` mounts each provider's `installRoutes(scope)` (so no core file
+   *  imports a funnel-route factory), and the create route folds each
+   *  provider's `credentialBodySchema` / `refineCreateBody` into its request
+   *  schema, dispatches the live credential check through `validateConfig`, and
+   *  writes its rows from `buildNewBotInstall` — so no route file names a
+   *  platform. */
   platforms: CpPlatformRegistry
   /** The ONE assembler of CP→daemon AgentSpecs (owns secret loading + icon bases) —
    *  every spec emission (upsert replicate, icon refresh, move activation) uses it. */

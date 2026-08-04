@@ -21,7 +21,7 @@ import { agentIsPlaced, agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { isAuthConfigured } from '@/lib/auth'
 import { fetchMySocialAccount } from '@/lib/api'
 import { socialLoginProviders } from '@/lib/social-login-providers'
-import { useSlackPlatformInstall } from '@/lib/use-slack-platform-install'
+import { useSlackPlatformInstall } from '@/components/console/platforms/slack/use-platform-install'
 import { Button, Icon } from '@/components/ui'
 import { PlatformMark } from '@/components/marks'
 

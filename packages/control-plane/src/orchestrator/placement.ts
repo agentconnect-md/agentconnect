@@ -32,6 +32,7 @@ import type {
   BindRule,
   IntegrationSpec,
   IntegrationBindRule,
+  IntegrationCoreEnvelope,
   McpServerSpec,
   MemoryConnectionSpec,
   RelayRosterEntry
@@ -51,6 +52,7 @@ import type {
   IntegrationRecord,
   BotSecretStore,
   BotSecretMaterial,
+  BotRecord,
   BotRepo,
   IntegrationChannelRepo,
   IntegrationChannelRecord,
@@ -61,10 +63,7 @@ import type {
   ExternalMemoryGrantRepo,
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
-import { telegramIntegrationConfig } from '../platforms/telegram/provider.js'
-import { discordIntegrationConfig } from '../platforms/discord/provider.js'
-import { slackIntegrationConfig, slackSharedIntegrationConfig } from '../platforms/slack/provider.js'
-import { feishuIntegrationConfig, feishuSharedIntegrationConfig } from '../platforms/feishu/provider.js'
+import type { CpPlatformRegistry } from '../platforms/provider.js'
 import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 import type { DaemonId } from '../domain/ids.js'
@@ -230,12 +229,14 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
  * covers it. Gated (`gated`, derived from the owning agent's restricted
  * visibility): NO unscoped defaults — only {@link gatedBindRules}.
  */
-export function integrationToSpec(
+export async function integrationToSpec(
+  platforms: CpPlatformRegistry,
   i: IntegrationRecord,
+  bot: BotRecord,
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
   gated = false
-): IntegrationSpec {
+): Promise<IntegrationSpec> {
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
   // set to Any needs its own auto rule; Mention is covered by the default mention rule.
   const channelRules: IntegrationBindRule[] = channels
@@ -248,35 +249,14 @@ export function integrationToSpec(
   // opaque `config` against the same wire schema and takes the routing knobs
   // from `core`. The nested members stay OPTIONAL in the wire schema until the
   // legacy readers retire.
+  //
+  // 'direct' (transport==='socket') — this daemon owns the long-lived inbound
+  // connection (Slack Socket Mode, the Telegram long-poll, the Discord Gateway,
+  // the Feishu WSClient). The 'shared' envelope is assembled by
+  // {@link httpIntegrationToSpec}; the two differ ONLY in this envelope, which is
+  // why the fork stays core and the payload behind it does not.
   const core = { mode: 'direct' as const, bindRules, mutedChannels, gated }
-  if (i.platform === 'telegram') {
-    // §9 shared projection body — the same function the platform provider's
-    // `projectIntegrationConfig` calls (S3; provider adoption replaces this arm).
-    const telegram = telegramIntegrationConfig(core, secret)
-    return { integrationId: i.id, agentId: i.agentId, platform: 'telegram', core, config: telegram }
-  }
-  if (i.platform === 'discord') {
-    // Discord authenticates the Gateway with the single bot token (no appToken).
-    // §9 shared projection body — see the telegram arm above.
-    const discord = discordIntegrationConfig(core, secret)
-    return { integrationId: i.id, agentId: i.agentId, platform: 'discord', core, config: discord }
-  }
-  if (i.platform === 'feishu') {
-    // Feishu authenticates the WSClient with an appId + appSecret pair, stored in the
-    // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId. The
-    // region (feishu.cn vs larksuite.com) rides on the integration row; NULL ⇒ 'feishu'.
-    // §9 shared projection body — see the telegram arm above.
-    const feishu = feishuIntegrationConfig(core, secret, i)
-    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', core, config: feishu }
-  }
-  // 'direct' (transport==='socket') — this daemon owns the Socket Mode connection.
-  // The 'shared' wire variant (transport==='http', xoxb-only, no appToken/bindRules)
-  // is assembled by the HTTP-bot path, which reads the bot's `transport`; this mapper
-  // is always direct. A socket bot is single-agent, so it is never shareable. Slack
-  // always stores an app-level token (Socket Mode).
-  // §9 shared projection body — see the telegram arm above.
-  const slack = slackIntegrationConfig(core, secret)
-  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', core, config: slack }
+  return projectSpec(platforms, i, bot, core, secret)
 }
 
 /**
@@ -294,34 +274,67 @@ export function integrationToSpec(
  * same reason and for every install, gated or not: an Off channel must survive a
  * relay snapshot that has not caught up yet.
  */
-export function httpIntegrationToSpec(
+export async function httpIntegrationToSpec(
+  platforms: CpPlatformRegistry,
   i: IntegrationRecord,
+  bot: BotRecord,
   secret: BotSecretMaterial,
-  shareable: boolean,
   channels: IntegrationChannelRecord[] = [],
-  gated = false,
-  providerAppId?: string,
-  botUserId?: string
-): IntegrationSpec {
+  gated = false
+): Promise<IntegrationSpec> {
   // §6.4 emission flip (see integrationToSpec): envelope + opaque config only.
+  // The shared-mode payload's remaining inputs — `shareable` (the daemon's
+  // in-thread "Switch agent" control), the provider app id, the bot's own user
+  // id — all live on the BOT row, so the projector reads them there instead of
+  // taking them positionally from each call site (§9: the bot row is a required
+  // projector input, and passing it whole is what stopped three call sites from
+  // disagreeing about which of its fields to forward).
   const httpCore = {
     mode: 'shared' as const,
     bindRules: gated ? gatedBindRules(channels) : [],
     mutedChannels: mutedChannelIds(channels, gated),
     gated
   }
-  if (i.platform === 'feishu') {
-    // §9 shared projection body — the same function the platform provider's
-    // `projectIntegrationConfig` calls (S3; provider adoption replaces this arm).
-    const feishu = feishuSharedIntegrationConfig(httpCore, secret, i, botUserId)
-    return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', core: httpCore, config: feishu }
-  }
-  // `shareable` gates the daemon's in-thread "Switch agent" control: an HTTP bot
-  // routes through the relay either way, but only a multi-agent (shareable) bot has
-  // something to switch to.
-  // §9 shared projection body — see the feishu arm above.
-  const slack = slackSharedIntegrationConfig(httpCore, secret, shareable, providerAppId)
-  return { integrationId: i.id, agentId: i.agentId, platform: 'slack', core: httpCore, config: slack }
+  return projectSpec(platforms, i, bot, httpCore, secret)
+}
+
+/**
+ * The §9 projector seam: core has finished the part it owns (the envelope — the
+ * routing compile, the gating fold, the ingress mode) and hands the row + the
+ * decrypted secrets to the platform's provider, which returns the opaque
+ * `config` payload (§6.4). ONE await, no platform branch — `bot.transport` is
+ * the direct-vs-shared fork the provider itself applies, and it always agrees
+ * with the envelope's `mode` because every call site picks the assembler from
+ * that same field.
+ *
+ * TWO fail-closed fences remain core's, and both are unreachable today:
+ *  - `toDbPlatform` narrows the open registry id back to the CLOSED wire union
+ *    (`IntegrationSpec` is still a discriminated union of the four literals;
+ *    collapsing it to one flat `platformId` object is the S3 protocol cleanup).
+ *    It throws for a session-identity id and for anything outside the served
+ *    set — the same fence every persistence write already passes through, so a
+ *    row that reached this function has already satisfied it.
+ *  - a registered provider is required. The previous code let an unrecognized
+ *    platform fall through to the slack arm, which would have shipped a
+ *    slack-shaped config (and `platform: 'slack'`) for a foreign row; that arm
+ *    was dead code — writes are fenced by `toDbPlatform` and the create route
+ *    admits only registered platform ids — so refusing is the fail-closed
+ *    reading of the same unreachable branch, not a new behavior.
+ *
+ * Token-bearing — NEVER log the result.
+ */
+async function projectSpec(
+  platforms: CpPlatformRegistry,
+  i: IntegrationRecord,
+  bot: BotRecord,
+  core: IntegrationCoreEnvelope,
+  secret: BotSecretMaterial
+): Promise<IntegrationSpec> {
+  const platform = toDbPlatform(i.platform)
+  const provider = platforms.get(i.platform)
+  if (!provider) throw new Error(`no control-plane platform provider registered for ${i.platform}`)
+  const config = await provider.projectIntegrationConfig(i, bot, core, secret)
+  return { integrationId: i.id, agentId: i.agentId, platform, core, config }
 }
 
 /** A session to re-home: its key + the agent/workspace that should own it. */
@@ -347,6 +360,11 @@ export class Placement implements ReconcileService {
     private readonly specs: AgentSpecAssembler,
     private readonly integrationChannels: IntegrationChannelRepo,
     private readonly bots: BotRepo,
+    /** §9 platform providers — the ONLY source of an `IntegrationSpec.config`
+     *  payload. Late-bound in the composition root (the providers are built
+     *  with the route-dep bundle, which does not exist yet when Placement is
+     *  constructed); every read happens at reconcile time. */
+    private readonly platforms: CpPlatformRegistry,
     orch?: PlacementOrchDeps
   ) {
     this.orch = orch
@@ -389,21 +407,20 @@ export class Placement implements ReconcileService {
             this.integrationChannels.listForIntegration(i.id),
             this.bots.get(i.botId)
           ])
-          if (!secret) return null
+          // A spec needs BOTH halves of its identity: the bot row (the projector's
+          // required input — credentials shape, transport, demux identity) and the
+          // decrypted secret. Either missing ⇒ no deliverable spec, and the roster
+          // prunes the replica below. The bot row cannot actually be absent (the
+          // integration→bot FK is non-null and `onDelete: Restrict`); the guard is
+          // the fail-closed statement of that, not a live branch.
+          if (!secret || !bot) return null
           // An http-transport bot's ingest is on the relay pool — the daemon
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.
+          // Both arms await the SAME provider projector; only the envelope differs.
           const gated = gatedAgentIds.has(i.agentId)
-          return bot?.transport === 'http'
-            ? httpIntegrationToSpec(
-                i,
-                secret,
-                bot.shareable,
-                channels,
-                gated,
-                bot.slackAppId ?? undefined,
-                bot.botUserId ?? undefined
-              )
-            : integrationToSpec(i, secret, channels, gated)
+          return bot.transport === 'http'
+            ? await httpIntegrationToSpec(this.platforms, i, bot, secret, channels, gated)
+            : await integrationToSpec(this.platforms, i, bot, secret, channels, gated)
         })
       )
     ])

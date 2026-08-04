@@ -3,6 +3,7 @@
 
 import type { AgentIcon } from '@/lib/agent-icon'
 import type { DaemonSessionRetention, MemoryDreamingConfig } from '@/lib/api'
+import { platformLabel } from '@/lib/platform-labels'
 
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
@@ -1092,7 +1093,7 @@ export const AGENTS: Agent[] = (
       desc: 'A general-purpose development agent for this organization: code review, coding tasks, and everyday questions.',
       outputMode: '—',
       showFooter: true,
-      showStatusBar: true,
+      showStatusBar: false,
       reasoning: '',
       fastMode: false,
       pause: false,
@@ -1143,7 +1144,7 @@ export const AGENTS: Agent[] = (
       desc: 'Ships and rolls back deploys from chat.',
       outputMode: 'high',
       showFooter: true,
-      showStatusBar: true,
+      showStatusBar: false,
       reasoning: 'high',
       fastMode: false,
       pause: false,
@@ -1238,7 +1239,7 @@ export const AGENTS: Agent[] = (
       desc: 'Reviews open pull requests and leaves inline comments.',
       outputMode: 'medium',
       showFooter: true,
-      showStatusBar: true,
+      showStatusBar: false,
       reasoning: 'medium',
       fastMode: true,
       pause: false,
@@ -1316,7 +1317,7 @@ export const AGENTS: Agent[] = (
       desc: 'Triages incidents from on-call alerts.',
       outputMode: 'high',
       showFooter: true,
-      showStatusBar: true,
+      showStatusBar: false,
       reasoning: 'high',
       fastMode: false,
       pause: false,
@@ -1383,7 +1384,7 @@ export const AGENTS: Agent[] = (
       desc: 'Answers product questions and drafts docs.',
       outputMode: 'low',
       showFooter: true,
-      showStatusBar: true,
+      showStatusBar: false,
       reasoning: 'off',
       fastMode: false,
       pause: false,
@@ -1924,7 +1925,17 @@ export const MEMBERS: Member[] = [
   }
 ].map(tagName)
 
-// platform display name
+/**
+ * A platform's display name.
+ *
+ * The CORE kinds are matched by SUBSTRING because their ids are synthesized in
+ * several places (`sessionPlatform` folds playground→webchat and hook+github→
+ * github; `sessionChannelDisplay` mints `schedule`); order is load-bearing, since
+ * `hook` must be tested before `web` or `webhook` would read as "Playground".
+ * The four CHAT platforms are an exact-id lookup into the one shared label table
+ * (`lib/platform-labels.ts`) — their ids come off the wire, where the vocabulary
+ * is closed, and the chain that used to live here was one of three copies.
+ */
 export function platName(p: string): string {
   const x = (p || '').toLowerCase()
   if (x.includes('sched')) return 'Schedule'
@@ -1934,10 +1945,10 @@ export function platName(p: string): string {
   // 'playground' (live sandbox) and 'webchat' (its persisted CP session) are the same
   // surface to a user — label both "Playground".
   if (x.includes('play') || x.includes('web')) return 'Playground'
-  if (x.includes('tele')) return 'Telegram'
-  if (x.includes('disc')) return 'Discord'
-  if (x.includes('feishu') || x.includes('lark')) return 'Lark'
-  if (x.includes('slack') || x === '') return 'Slack'
+  const chat = platformLabel(x)
+  if (chat) return chat.name
+  // A missing platform means Slack — the legacy fold predating the platform axis.
+  if (x === '') return 'Slack'
   // Unknown platform ids render as themselves — falling back to 'Slack' was the
   // web mirror of the daemon's deleted narrowPlatform fold (S1a §6.3).
   return p.charAt(0).toUpperCase() + p.slice(1)

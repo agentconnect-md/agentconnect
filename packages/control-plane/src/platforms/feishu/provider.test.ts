@@ -1,15 +1,16 @@
 /**
  * Feishu / Lark CpPlatformProvider (§9, S3) — unit, no I/O.
  *
- * The load-bearing suites are the EQUIVALENCE blocks: while the live paths are
- * still `integrationToSpec` / `httpIntegrationToSpec`
- * (`orchestrator/placement.ts`) and `buildAssign` (`orchestrator/httpBot.ts`),
- * the provider's `projectIntegrationConfig` / `projectBotAssign` must produce
- * EXACTLY the payloads those paths emit for the same inputs — that equality is
- * what makes the eventual call-site flip a zero-behavior change. The
- * `projectBotAssign` block runs the REAL orchestrator (in-memory repos, a
- * recording relay channel) and compares the live `rc/bot-assign` frame's two
- * opaque bags against the provider's projection.
+ * The load-bearing suites are the EQUIVALENCE blocks. Now that the live paths
+ * (`integrationToSpec` / `httpIntegrationToSpec` in `orchestrator/placement.ts`
+ * and `buildAssign` in `orchestrator/httpBot.ts`) go THROUGH this provider,
+ * comparing their output to the provider's would prove nothing — so the pins are
+ * GOLDEN LITERALS of the payloads the pre-adoption per-platform arms emitted,
+ * plus, across the input permutations, equality with the extracted helper bodies
+ * those arms called (unchanged by the flip), which is what catches core
+ * threading the wrong envelope, secret, or bot row into the seam. The
+ * `projectBotAssign` block still runs the REAL orchestrator (in-memory repos, a
+ * recording relay channel) so the frame captured off the wire is the live one.
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { FastifyPluginAsync } from 'fastify'
@@ -138,6 +139,11 @@ const channel = (
   trigger,
   agentId: null
 })
+
+// §9 adoption: the live spec/assign paths reach this provider THROUGH the
+// registry, so the equivalence suites below drive the real registry rather than
+// calling the provider beside the live path.
+const PLATFORMS = buildCpPlatformRegistry([createFeishuCpProvider({ verifyBot: verifierOk() })])
 
 describe('feishu provider identity + declarative facets', () => {
   const provider = createFeishuCpProvider({ verifyBot: verifierOk() })
@@ -335,7 +341,6 @@ describe('feishu sideEffects (icon push delegation)', () => {
 })
 
 describe('feishu projection equivalence with the live integrationToSpec path (direct/socket)', () => {
-  const provider = createFeishuCpProvider({ verifyBot: verifierOk() })
   const SOCKET_BOT = bot()
 
   const cases: Array<{
@@ -365,25 +370,59 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
     }
   ]
 
+  // GOLDEN: the literal payload the PRE-ADOPTION `integrationToSpec` feishu arm
+  // emitted, including the two-slot overloading (appId ← the secret row's
+  // `appToken` slot, appSecret ← its `botToken` slot) and the row's region.
+  it('emits the byte-identical direct payload the pre-adoption feishu arm produced', async () => {
+    const spec = await integrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      SOCKET_BOT,
+      SOCKET_SECRET,
+      [channel('oc_1', 'any'), channel('oc_2', 'mention'), channel('oc_3', 'off')],
+      false
+    )
+    const bindRules = [
+      { match: { kind: 'mention' } },
+      { match: { kind: 'dm' } },
+      { channel: 'oc_1', match: { kind: 'auto' } }
+    ]
+    expect(spec).toEqual({
+      integrationId: INTEGRATION.id,
+      agentId: INTEGRATION.agentId,
+      platform: 'feishu',
+      core: { mode: 'direct', bindRules, mutedChannels: ['oc_3'], gated: false },
+      config: {
+        mode: 'direct',
+        appId: 'cli_testapp',
+        appSecret: 'feishu-app-secret',
+        region: 'lark',
+        bindRules,
+        mutedChannels: ['oc_3'],
+        gated: false
+      }
+    })
+  })
+
+  it("defaults a legacy region-less row to 'feishu', exactly as the pre-adoption arm did", async () => {
+    const spec = await integrationToSpec(PLATFORMS, LEGACY_INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [], false)
+    expect(spec.config).toMatchObject({ region: 'feishu' })
+  })
+
+  // Across the permutations the pin is the EXTRACTED helper — the unchanged body
+  // the pre-adoption arm called.
   for (const { label, integration, channels, gated } of cases) {
-    it(`emits exactly the live path's config — ${label}`, async () => {
-      const spec = integrationToSpec(integration, SOCKET_SECRET, channels, gated)
-      const projected = await provider.projectIntegrationConfig(integration, SOCKET_BOT, spec.core!, SOCKET_SECRET)
-      expect(projected).toEqual(spec.config)
-      // Both sides satisfy the daemon reader's wire schema (§6.4).
-      expect(IntegrationFeishuConfig.parse(projected)).toEqual(IntegrationFeishuConfig.parse(spec.config))
+    it(`routes the live path through the feishu projector unchanged — ${label}`, async () => {
+      const spec = await integrationToSpec(PLATFORMS, integration, SOCKET_BOT, SOCKET_SECRET, channels, gated)
+      expect(spec.core!.mode).toBe('direct')
+      expect(spec.config).toEqual(feishuIntegrationConfig(spec.core!, SOCKET_SECRET, integration))
+      // The payload satisfies the daemon reader's wire schema (§6.4).
+      expect(() => IntegrationFeishuConfig.parse(spec.config)).not.toThrow()
     })
   }
-
-  it('shares one implementation with placement.ts (the extracted helper)', () => {
-    const spec = integrationToSpec(INTEGRATION, SOCKET_SECRET, [channel('oc_1', 'any')], false)
-    expect(feishuIntegrationConfig(spec.core!, SOCKET_SECRET, INTEGRATION)).toEqual(spec.config)
-  })
 })
 
 describe('feishu projection equivalence with the live httpIntegrationToSpec path (shared/http)', () => {
-  const provider = createFeishuCpProvider({ verifyBot: verifierOk() })
-
   const cases: Array<{
     label: string
     bot: BotRecord
@@ -410,29 +449,50 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
     }
   ]
 
+  // GOLDEN: the literal payload the PRE-ADOPTION `httpIntegrationToSpec` feishu
+  // arm emitted. The daemon keeps the REST credentials for send/download; the
+  // bot's own open_id rides as `botOpenId` so it can skip a `bot/info` call.
+  it('emits the byte-identical shared payload the pre-adoption feishu arm produced', async () => {
+    const httpBot = bot({ transport: 'http', botUserId: 'ou_bot' })
+    const spec = await httpIntegrationToSpec(
+      PLATFORMS,
+      INTEGRATION,
+      httpBot,
+      HTTP_SECRET,
+      [channel('oc_1', 'any'), channel('oc_2', 'off')],
+      false
+    )
+    expect(spec).toEqual({
+      integrationId: INTEGRATION.id,
+      agentId: INTEGRATION.agentId,
+      platform: 'feishu',
+      // Ungated shared installs ship NO bindRules — the relay arbitrates.
+      core: { mode: 'shared', bindRules: [], mutedChannels: ['oc_2'], gated: false },
+      config: {
+        mode: 'shared',
+        appId: 'cli_testapp',
+        appSecret: 'feishu-app-secret',
+        botOpenId: 'ou_bot',
+        region: 'lark',
+        bindRules: [],
+        mutedChannels: ['oc_2'],
+        gated: false
+      }
+    })
+  })
+
   for (const { label, bot: httpBot, channels, gated } of cases) {
-    it(`emits exactly the live path's config — ${label}`, async () => {
-      // The live call sites feed the bot row's fields positionally
-      // (`placement.ts` reconcile, `httpBot.ts` pushSpecs).
-      const spec = httpIntegrationToSpec(
-        INTEGRATION,
-        HTTP_SECRET,
-        httpBot.shareable,
-        channels,
-        gated,
-        httpBot.slackAppId ?? undefined,
-        httpBot.botUserId ?? undefined
+    it(`routes the live path through the feishu projector unchanged — ${label}`, async () => {
+      // The bot row is passed WHOLE now: `botUserId` is read off it by the
+      // projector instead of being forwarded positionally by each call site.
+      const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
+      expect(spec.core!.mode).toBe('shared')
+      expect(spec.config).toEqual(
+        feishuSharedIntegrationConfig(spec.core!, HTTP_SECRET, INTEGRATION, httpBot.botUserId ?? undefined)
       )
-      const projected = await provider.projectIntegrationConfig(INTEGRATION, httpBot, spec.core!, HTTP_SECRET)
-      expect(projected).toEqual(spec.config)
-      expect(IntegrationFeishuConfig.parse(projected)).toEqual(IntegrationFeishuConfig.parse(spec.config))
+      expect(() => IntegrationFeishuConfig.parse(spec.config)).not.toThrow()
     })
   }
-
-  it('shares one implementation with placement.ts (the extracted helper)', () => {
-    const spec = httpIntegrationToSpec(INTEGRATION, HTTP_SECRET, false, [], false, undefined, 'ou_bot')
-    expect(feishuSharedIntegrationConfig(spec.core!, HTTP_SECRET, INTEGRATION, 'ou_bot')).toEqual(spec.config)
-  })
 })
 
 // ── projectBotAssign equivalence against the LIVE rc/bot-assign frame ────────
@@ -468,7 +528,8 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     { integrationUpsert: async () => {} } as never,
     { upsert: async () => {}, get: async () => null, listForBot: async () => [] } as unknown as ThreadAffinityStore,
     { findThreadOwner: async () => null } as unknown as SessionRepo,
-    { info() {}, warn() {}, debug() {} }
+    { info() {}, warn() {}, debug() {} },
+    PLATFORMS
   )
   await orch.syncBot(botRow.id)
   const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign | undefined

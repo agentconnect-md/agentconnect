@@ -1,48 +1,152 @@
 /**
- * `CpAgentRegistry` — applies CP-owned agent specs onto the daemon's on-disk
- * `agent.json` files, which are the SINGLE SOURCE OF TRUTH. The CP pushes deltas
- * over `agent/upsert` / `agent/remove` and the full set over the `register/ok`
- * reconcile roster; this writes each straight to disk (create-or-merge) keyed by
- * `agentId`. No spec is held in memory or in SQLite.
+ * In-memory registry for Control Plane agent specs.
  *
- * `converge` create-or-merges every roster entry. Reconnect pruning is explicit
- * through `register/ok.drop.agents`, after the CP has compared the daemon's
- * reported replica ownership with its authoritative placement.
- *
- * Every apply passes the monotonic `configRevision` fence first
- * (organization-secrets-and-variables.md §7): `env`/`secrets` are full resolved
- * maps, so an out-of-order snapshot would reinstate a rotated or deleted value.
- * A stale snapshot is acknowledged without ever reaching `writeAgentSpec`.
- *
- * Every mutation fires `onChange` so the daemon re-reconciles (re-loads agents
- * from disk; the reconciler is idempotent and only restarts a host on a real
- * config change).
+ * CP configuration is deliberately never persisted as `agent.json`. A matching
+ * hand-authored/legacy file is removed when the CP claims that id; every other
+ * `agent.json` remains untouched and is treated as user-owned. The agent's data
+ * directory remains durable and carries only a private id marker, allowing a
+ * reconnect after daemon restart to reuse workspace, memory, and session data
+ * without storing the CP spec or its secrets.
  */
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AgentSpec } from '@agentconnect.md/protocol'
-import {
-  writeAgentSpec,
-  removeAgent,
-  archiveAgent,
-  restoreArchivedAgent,
-  pruneMovedAgentDependents,
-  findAgentFileById,
-  findReplicaFileById,
-  syncAgentReplica,
-  type WriteAgentDeps
-} from '../agents/write-agent.js'
+import { AgentSchema } from '../agents/agent-schema.js'
+import type { LoadedAgent } from '../agents/load-agents.js'
+import { ensurePrivateAgentDirectory } from '../agents/agent-json-file.js'
+import { applySpecFields, findAgentFileById, type WriteAgentDeps } from '../agents/write-agent.js'
 import {
   agentSpecDigest,
   compareConfigRevision,
   parseConfigRevision,
-  readAppliedConfigRevision,
-  writeAppliedConfigRevision,
+  type AppliedConfigRevision,
   type ConfigRevisionDecision
 } from '../agents/config-revision.js'
 
-/** What one apply did. `stale`/`idempotent` wrote nothing; `conflict` refused. */
+const ROOT_MARKER = '.cp-agent-id'
+const MAX_DEPTH = 4
+
 export type AgentSpecApplyResult = ConfigRevisionDecision
 
+function safeLifecycleId(agentId: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(agentId) && agentId !== '.' && agentId !== '..'
+}
+
+function strictChildRoot(agentsDir: string, dir: string): boolean {
+  const rel = relative(resolve(agentsDir), resolve(dir))
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+function readRootMarker(dir: string): string | undefined {
+  try {
+    return readFileSync(join(dir, ROOT_MARKER), 'utf8').trim()
+  } catch {
+    return undefined
+  }
+}
+
+function markedRoots(
+  agentsDir: string,
+  dir = agentsDir,
+  depth = 0,
+  out = new Map<string, string[]>()
+): Map<string, string[]> {
+  if (depth > MAX_DEPTH || !existsSync(dir)) return out
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  const marker = entries.find((entry) => entry.isFile() && entry.name === ROOT_MARKER)
+  if (marker && strictChildRoot(agentsDir, dir)) {
+    const agentId = readRootMarker(dir)
+    if (agentId && safeLifecycleId(agentId)) {
+      const roots = out.get(agentId) ?? []
+      roots.push(dir)
+      out.set(agentId, roots)
+    }
+    // A marked data root is a discovery leaf; never inspect its workspace.
+    return out
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name === '.git') continue
+    markedRoots(agentsDir, join(dir, entry.name), depth + 1, out)
+  }
+  return out
+}
+
+function markerRoot(agentsDir: string, agentId: string): string | undefined {
+  return markedRoots(agentsDir).get(agentId)?.[0]
+}
+
+function fallbackDir(agentsDir: string, agentId: string): string {
+  return join(agentsDir, `agent-${createHash('sha256').update(agentId).digest('hex').slice(0, 32)}`)
+}
+
+function assertSafeLifecycleId(agentId: string): void {
+  if (!safeLifecycleId(agentId)) {
+    throw new Error('agent id is unsafe for daemon-local lifecycle storage')
+  }
+}
+
+function availableRoot(agentsDir: string, agentId: string, name: string): string {
+  const safeName = safeLifecycleId(name) && name !== 'node_modules'
+  const preferred = safeName ? join(agentsDir, name) : undefined
+  if (preferred && !existsSync(preferred)) return preferred
+
+  const fallback = fallbackDir(agentsDir, agentId)
+  if (!existsSync(fallback)) return fallback
+  for (let suffix = 2; suffix <= 10_000; suffix += 1) {
+    const candidate = `${fallback}-${suffix}`
+    if (!existsSync(candidate)) return candidate
+  }
+  throw new Error(`cannot allocate a private data root for agent "${agentId}"`)
+}
+
+function chooseRoot(agentsDir: string, agentId: string, spec: AgentSpec): { dir: string; file?: string } {
+  const file = findAgentFileById(agentsDir, agentId)
+  const marked = markerRoot(agentsDir, agentId)
+  if (marked) return { dir: marked, file }
+  if (file && strictChildRoot(agentsDir, dirname(file))) return { dir: dirname(file), file }
+  return { dir: availableRoot(agentsDir, agentId, spec.name), file }
+}
+
+function writeRootMarker(dir: string, agentId: string): void {
+  ensurePrivateAgentDirectory(dir)
+  const file = join(dir, ROOT_MARKER)
+  const temp = `${file}.tmp`
+  try {
+    writeFileSync(temp, `${agentId}\n`, { mode: 0o600 })
+    renameSync(temp, file)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
+}
+
+function rawAgent(agent: LoadedAgent): Record<string, unknown> {
+  const { dir: _dir, ...raw } = agent
+  return structuredClone(raw) as Record<string, unknown>
+}
+
+function readLegacyAgent(file: string): LoadedAgent | undefined {
+  try {
+    const dir = dirname(file)
+    const agent = AgentSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
+    if (!isAbsolute(agent.workspace.path)) agent.workspace.path = resolve(dir, agent.workspace.path)
+    return { ...agent, dir }
+  } catch {
+    return undefined
+  }
+}
+
 export class CpAgentRegistry {
+  private readonly active = new Map<string, LoadedAgent>()
+  private readonly detached = new Map<string, LoadedAgent>()
+  private readonly revisions = new Map<string, AppliedConfigRevision>()
+
   constructor(
     private readonly agentsDir: string,
     private readonly deps: WriteAgentDeps,
@@ -50,63 +154,75 @@ export class CpAgentRegistry {
     private readonly warn?: (msg: string) => void
   ) {}
 
-  /**
-   * Add or merge one agent's spec onto disk (agent/upsert EVT), under the
-   * revision fence. Returns what the fence decided so the caller can ACK a stale
-   * snapshot as a no-op and refuse an equal-revision digest mismatch.
-   */
+  has(agentId: string): boolean {
+    return this.active.has(agentId)
+  }
+
+  agents(): LoadedAgent[] {
+    return [...this.active.values()]
+  }
+
+  /** CP-owned data roots, including marker-only replicas after daemon restart. */
+  replicaIds(): string[] {
+    return [...new Set([...this.active.keys(), ...this.detached.keys(), ...markedRoots(this.agentsDir).keys()])]
+  }
+
   upsert(agentId: string, spec: AgentSpec): AgentSpecApplyResult {
     const decision = this.apply(agentId, spec)
     if (decision === 'apply') this.onChange()
     return decision
   }
 
-  /** Delete one agent's on-disk dir (agent/remove EVT). Unconditional. */
   remove(agentId: string): void {
-    removeAgent(this.agentsDir, agentId)
+    assertSafeLifecycleId(agentId)
+    const agent = this.active.get(agentId) ?? this.detached.get(agentId)
+    const roots = markedRoots(this.agentsDir).get(agentId) ?? []
+    if (agent && existsSync(agent.dir) && !roots.some((root) => resolve(root) === resolve(agent.dir))) {
+      throw new Error(`refusing to remove agent "${agentId}": its data-root marker is missing or invalid`)
+    }
+    // Delete validated roots before clearing memory. A failure remains retryable;
+    // after restart the marker inventory supplies the same roots without config.
+    for (const root of roots) {
+      if (!strictChildRoot(this.agentsDir, root) || readRootMarker(root) !== agentId) {
+        throw new Error(`refusing to remove agent "${agentId}": its data root is unsafe or no longer owned`)
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
+    this.active.delete(agentId)
+    this.detached.delete(agentId)
+    this.revisions.delete(agentId)
     this.onChange()
   }
 
-  /** Non-destructively move an agent root out of the active discovery tree. */
   detach(agentId: string): 'archived' | 'already-detached' | 'missing' {
-    const result = archiveAgent(this.agentsDir, agentId)
-    if (result !== 'missing') this.onChange()
-    return result
+    assertSafeLifecycleId(agentId)
+    const agent = this.active.get(agentId)
+    if (!agent) return this.detached.has(agentId) ? 'already-detached' : 'missing'
+    this.active.delete(agentId)
+    this.detached.set(agentId, agent)
+    this.onChange()
+    return 'archived'
   }
 
-  /**
-   * Exact-prune locally persisted CP dependents while an external lifecycle
-   * gate still keeps the agent dark. Used by move activation and by removal-
-   * tombstone re-add so stale platform credentials can never revive.
-   */
-  exactDependents(agentId: string, desired: { integrationIds: string[]; cronIds: string[] }): boolean {
-    const changed = pruneMovedAgentDependents(this.agentsDir, agentId, desired)
-    syncAgentReplica(this.agentsDir, agentId)
-    return changed
+  /** CP dependents are held by their own in-memory registries. */
+  exactDependents(_agentId: string, _desired: { integrationIds: string[]; cronIds: string[] }): boolean {
+    return false
   }
 
-  /** Restore a detached root in place. Idempotent while already active. */
   activate(
     agentId: string,
-    desired: { integrationIds: string[]; cronIds: string[] }
+    _desired: { integrationIds: string[]; cronIds: string[] }
   ): 'restored' | 'already-active' | 'missing' {
-    const alreadyActive = !!findAgentFileById(this.agentsDir, agentId)
-    if (!alreadyActive && !restoreArchivedAgent(this.agentsDir, agentId)) return 'missing'
-    const pruned = this.exactDependents(agentId, desired)
-    if (!alreadyActive || pruned) this.onChange()
-    return alreadyActive ? 'already-active' : 'restored'
+    assertSafeLifecycleId(agentId)
+    if (this.active.has(agentId)) return 'already-active'
+    const agent = this.detached.get(agentId)
+    if (!agent) return 'missing'
+    this.detached.delete(agentId)
+    this.active.set(agentId, agent)
+    this.onChange()
+    return 'restored'
   }
 
-  /**
-   * Apply the register/ok reconcile roster: create-or-merge EACH entry and
-   * NOTHING else. The caller applies the separately-authorized drop list first;
-   * roster absence alone is never enough to prune a hand-authored local agent.
-   *
-   * Returns the ids actually written. A stale or refused entry is skipped
-   * INDIVIDUALLY — one bad revision must never fail the whole handshake — so the
-   * caller must not treat roster membership as proof that a replica was rewritten
-   * (e.g. before clearing a removal tombstone).
-   */
   converge(roster: Array<AgentSpec & { agentId: string }>): string[] {
     const applied: string[] = []
     for (const { agentId, ...spec } of roster) {
@@ -116,18 +232,11 @@ export class CpAgentRegistry {
     return applied
   }
 
-  /** The fenced write shared by `upsert` and `converge`. */
   private apply(agentId: string, spec: AgentSpec): AgentSpecApplyResult {
+    assertSafeLifecycleId(agentId)
     const revision = parseConfigRevision(spec)
     const digest = agentSpecDigest(spec)
-    // Includes a cold-move archive: writeAgentSpec restores one before merging CP
-    // fields, so a stale fan-out that arrives after a move-away must not be able
-    // to both un-archive the root and downgrade its configuration.
-    const existingFile = findReplicaFileById(this.agentsDir, agentId)
-    // No local replica at all ⇒ nothing to compare against and nothing to reinstate.
-    const decision = existingFile
-      ? compareConfigRevision(readAppliedConfigRevision(existingFile), { revision, digest })
-      : 'apply'
+    const decision = compareConfigRevision(this.revisions.get(agentId), { revision, digest })
     if (decision === 'stale') {
       this.warn?.(`cp: agent "${agentId}" spec revision ${spec.configRevision} is older than the applied one; ignoring`)
       return decision
@@ -139,11 +248,60 @@ export class CpAgentRegistry {
       return decision
     }
     if (decision === 'idempotent') return decision
-    writeAgentSpec(this.agentsDir, agentId, spec, this.deps)
-    // AFTER the content: a crash in between re-applies on retry, whereas the
-    // reverse order would make an equal-revision retry look already-done.
-    const written = findAgentFileById(this.agentsDir, agentId)
-    if (written) writeAppliedConfigRevision(written, revision, digest)
-    return decision
+
+    const located = chooseRoot(this.agentsDir, agentId, spec)
+    const existing = this.active.get(agentId) ?? this.detached.get(agentId)
+    const previous = existing ?? (located.file ? readLegacyAgent(located.file) : undefined)
+    if (existing) located.dir = existing.dir
+    if (!strictChildRoot(this.agentsDir, located.dir)) {
+      throw new Error(`refusing to claim an unsafe data root for agent "${agentId}"`)
+    }
+    const runtime = spec.runtime ?? previous?.runtime ?? this.deps.knownRuntimes[0]
+    if (!runtime) throw new Error(`cannot create agent "${agentId}": spec has no runtime and no runtimes are known`)
+    if (!spec.runtime && !previous) {
+      this.deps.warn?.(`cp: agent "${agentId}" spec has no runtime; defaulting to "${runtime}"`)
+    }
+    const raw: Record<string, unknown> = previous
+      ? rawAgent(previous)
+      : {
+          id: agentId,
+          name: spec.name,
+          status: 'active',
+          runtime,
+          workspace: { mode: 'from-scratch', path: join(located.dir, 'workspace') }
+        }
+    raw.id = agentId
+    raw.runtime ??= runtime
+    raw.integrations = []
+    raw.crons = []
+    applySpecFields(raw, spec, { agentId, agentDir: located.dir, creating: !previous })
+    const agent = { ...AgentSchema.parse(raw), dir: located.dir }
+
+    const priorMarker = readRootMarker(located.dir)
+    if (priorMarker !== undefined && priorMarker !== agentId) {
+      throw new Error(`refusing to claim data root owned by agent "${priorMarker}"`)
+    }
+    const installedMarker = priorMarker === undefined
+    // Establish the secret-free durable identity before unlinking the local
+    // config. If an unlink fails, roll back a newly installed marker so the
+    // still-present local file remains discoverable and the apply can retry.
+    writeRootMarker(located.dir, agentId)
+    try {
+      // Remove every local file claiming this id. Duplicate ids are invalid local
+      // state, but CP authority must not leave an arbitrary duplicate discoverable.
+      if (located.file) rmSync(located.file, { force: true })
+      for (let matching = findAgentFileById(this.agentsDir, agentId); matching;) {
+        rmSync(matching, { force: true })
+        matching = findAgentFileById(this.agentsDir, agentId)
+      }
+    } catch (error) {
+      if (installedMarker) rmSync(join(located.dir, ROOT_MARKER), { force: true })
+      throw error
+    }
+    rmSync(join(located.dir, '.cp-config-revision.json'), { force: true })
+    this.detached.delete(agentId)
+    this.active.set(agentId, agent)
+    if (revision !== undefined) this.revisions.set(agentId, { revision, digest })
+    return 'apply'
   }
 }

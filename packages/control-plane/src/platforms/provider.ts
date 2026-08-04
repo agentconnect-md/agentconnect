@@ -76,7 +76,13 @@
 import type { FastifyPluginAsync } from 'fastify'
 import type { ZodRawShape, ZodType } from 'zod'
 import type { IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
-import type { BotRecord, BotSecretMaterial, IntegrationRecord } from '../persistence/ports.js'
+import type {
+  BotRecord,
+  BotSecretMaterial,
+  CreateBotInput,
+  CreateIntegrationInput,
+  IntegrationRecord
+} from '../persistence/ports.js'
 import type { BotProfileIconAgent } from '../http/bot-profile-icon.js'
 import type { OrgId } from '../domain/ids.js'
 
@@ -87,16 +93,18 @@ import type { OrgId } from '../domain/ids.js'
 export type CpInstallTransport = 'socket' | 'http'
 
 /** The two route mount scopes `http/server.ts` drives (§9):
- *  - `'org'` — behind humanAuth + the org guard under `/orgs/:orgId`
- *    (`server.ts:232-235`: today's `feishuRegistrationRoutes`,
- *    `slackInstallRoutes`, `slackPlatformInstallRoutes`, `slackConfigRoutes`);
+ *  - `'org'` — behind humanAuth + the org guard under `/api/v1/orgs/:orgId`
+ *    (today's `slackInstallRoutes`, `slackPlatformInstallRoutes`,
+ *    `slackConfigRoutes`, `feishuRegistrationRoutes`);
  *  - `'public-callback'` — unauthenticated at the version root, for browser
- *    redirects whose state rides the OAuth exchange (`server.ts:202-204`:
+ *    redirects whose state rides the OAuth exchange (today's
  *    `slackOauthCallbackRoutes`, `slackPlatformCallbackRoutes`). Core mounts
- *    this scope TWICE — internal `/api/v1` and the public `/v1` alias
- *    (`server.ts:270-280`) — because handed-out callback URLs leave the
- *    system in the public form; the double mount is core's, not the
- *    provider's. */
+ *    this scope TWICE — internal `/api/v1` and the public `/v1` alias —
+ *    because handed-out callback URLs leave the system in the public form; the
+ *    double mount is core's, not the provider's.
+ *
+ *  The resulting table is pinned path-by-path in
+ *  `http/platform-route-mounts.test.ts`: these URLs are external contracts. */
 export type CpRouteScope = 'org' | 'public-callback'
 
 /**
@@ -146,6 +154,63 @@ export interface CpConfigRefusal {
 }
 
 export type CpConfigValidation = { ok: true; identity: CpValidatedIdentity } | CpConfigRefusal
+
+/**
+ * The PLATFORM-SPECIFIC half of "register a new bot from pasted credentials" —
+ * everything core's one shared create tail (`http/install-bot.ts`) cannot know:
+ * which `bot` / `integration` columns this platform fills, how it packs the
+ * shared secret row, and whether it has a D6 external-identity to fence.
+ *
+ * The SKELETON around it stays core (§9): the id mint, the row writes in order,
+ * the socket `integration/upsert` vs http `syncBot` fork, and the shareable
+ * coercion. Before this existed, `http/routes/integrations.ts` carried four
+ * `req.body.platform === …` tails that each cast the opaque credential block
+ * back to a per-platform type — the last create-path platform branch in core.
+ */
+export interface CpNewBotInstall {
+  /** Platform-specific columns of the new `bot` row. Core owns `id`, `orgId`,
+   *  `platform`, `name`, `transport`, `prebuilt` and `createdByUserId`;
+   *  `shareable` is honored only by a platform that declares it here AND only
+   *  on the http transport (core coerces it off for socket at the single
+   *  bot-create seam). */
+  bot?: Readonly<
+    Partial<
+      Pick<
+        CreateBotInput,
+        | 'slackAppId'
+        | 'teamId'
+        | 'workspaceId'
+        | 'workspaceName'
+        | 'botUserId'
+        | 'discordAppId'
+        | 'feishuAppId'
+        | 'feishuRegion'
+        | 'shareable'
+      >
+    >
+  >
+  /** Platform-specific columns of the `integration` row (today: the Feishu
+   *  gateway region, carried so a freed bot reinstalls against it). */
+  integration?: Readonly<Partial<Pick<CreateIntegrationInput, 'feishuRegion'>>>
+  /** The shared two-slot `bot_secret` row as this platform packs it — see
+   *  {@link CpSecretShape}. Token-bearing; NEVER log. */
+  secrets: BotSecretMaterial
+  /**
+   * The D6 external-identity this install claims, when the platform has one.
+   * Core runs BOTH halves of the fence with it — the pre-check that turns the
+   * common case into a clean 409, and the `BotExternalIdentityTaken` race
+   * backstop from the composite unique — so the query and the copy stay one
+   * declaration (`integrations.ts`' feishu arm before adoption). Pass the `'-'`
+   * sentinel as `externalTenantId` on a tenantless platform, exactly as
+   * `BotRepo.getByExternalIdentity` documents.
+   */
+  externalIdentity?: {
+    externalAppId: string
+    externalTenantId: string
+    /** The 409 body's user-facing copy — platform-named reuse guidance. */
+    conflictMessage: string
+  }
+}
 
 /**
  * How this platform packs the shared two-slot `bot_secret` row (+ optional
@@ -333,6 +398,25 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    * is 503, never proof the credential is bad.
    */
   validateConfig(credentials: TCredentials, transport: CpInstallTransport): Promise<CpConfigValidation>
+
+  /**
+   * Map a validated credential block onto the rows a NEW bot install writes —
+   * the platform-specific half of the create tail (see {@link CpNewBotInstall}).
+   * Pure: no I/O, no provider round-trip (those all belong to
+   * {@link validateConfig}, which runs first and hands its
+   * {@link CpValidatedIdentity} in here).
+   *
+   * `shareable` is the caller's REQUEST, not a decision: a platform that does
+   * not support multi-agent bots simply drops it (the §5 manifest is the
+   * eventual declarative home for that axis — until it carries the field, the
+   * platform that supports sharing is the one that echoes the flag back).
+   */
+  buildNewBotInstall(input: {
+    credentials: TCredentials
+    identity: CpValidatedIdentity
+    transport: CpInstallTransport
+    shareable: boolean
+  }): CpNewBotInstall
 
   /** How this platform packs the shared secret row + which slots gate an
    *  http assign. See {@link CpSecretShape}. */

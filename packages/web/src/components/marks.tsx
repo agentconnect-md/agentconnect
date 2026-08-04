@@ -10,12 +10,14 @@ import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
 import { FcGoogle } from 'react-icons/fc'
-import { SiDiscord, SiGithub, SiTelegram } from 'react-icons/si'
+import { SiGithub } from 'react-icons/si'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { LARK_MARK_SRC } from './console/platforms/feishu/mark'
+import { platformMark } from './console/platforms/marks'
+import { markBox, squareMarkBox } from './mark-box'
 import type { SocialLoginTarget } from '@/lib/social-login-providers'
 
 const fill = { width: '60%', height: '60%', display: 'block' } as const
-const LARK_MARK_SRC = '/brands/lark.svg'
 
 // Dark-mode treatment for the brand logos we can only load as an <img> (ACP registry
 // / lobehub SVGs, so no per-path recoloring): most are `currentColor`-black and have
@@ -220,16 +222,30 @@ export function GithubMark({ color = 'currentColor', fillPct = 60 }: { color?: s
   )
 }
 
+/**
+ * A mark for one integration surface. The CORE kinds (github / webhook / schedule
+ * / memory dream / playground+webchat) are the host's own; the four chat platforms
+ * come from their modules (§10 {@link WebPlatformModule.Mark}) through the light
+ * `platforms/marks` lookup — see the note there on why this is not a read through
+ * `platformRegistry`.
+ *
+ * Core kinds are still matched by SUBSTRING because their ids are synthesized in
+ * several places (`sessionPlatform` folds `playground`→`webchat`, `hook`+github→
+ * `github`; `sessionChannelDisplay` mints `schedule`). Chat platforms are matched
+ * by EXACT id: those values come off the wire, where the vocabulary is closed.
+ * Order is load-bearing — `hook` must be tested before `web`, or `webhook` would
+ * take the playground arm.
+ */
 export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fillPct?: number }) {
   const x = (platform || '').toLowerCase()
   // Marks render at 60% of their box to sit inside .av / .imark tiles; callers can override
   // fillPct — e.g. the Bots row fills a 14px box (fillPct=100) to match the design's full-bleed mark.
-  const s = fillPct === 60 ? fill : ({ width: `${fillPct}%`, height: `${fillPct}%`, display: 'block' } as const)
-  // Slack / GitHub / Discord ship as full-bleed square glyphs with no internal
-  // padding of their own, so a caller asking for a full-bleed box (fillPct=100,
-  // e.g. the session rail rows) renders them visibly larger than every other mark
-  // beside them. Cap those three at 80% of the box.
-  const sq = fillPct > 80 ? ({ width: '80%', height: '80%', display: 'block' } as const) : s
+  const s = fillPct === 60 ? fill : markBox(fillPct)
+  // GitHub ships as a full-bleed square glyph with no internal padding of its own,
+  // so a caller asking for a full-bleed box (fillPct=100, e.g. the session rail
+  // rows) would render it visibly larger than every other mark beside it. The
+  // Slack and Discord marks take the same cap inside their own modules.
+  const sq = squareMarkBox(fillPct)
   if (x.includes('github')) {
     return <SiGithub style={sq} color="currentColor" aria-hidden />
   }
@@ -266,18 +282,8 @@ export function PlatformMark({ platform, fillPct = 60 }: { platform: string; fil
       </span>
     )
   }
-  if (x.includes('tele')) {
-    return <SiTelegram style={s} color="#26A5E4" aria-hidden />
-  }
-  if (x.includes('disc')) {
-    return <SiDiscord style={sq} color="#5865F2" aria-hidden />
-  }
-  if (x.includes('feishu') || x.includes('lark')) {
-    return <img src={LARK_MARK_SRC} alt="" style={s} className="object-contain" aria-hidden />
-  }
-  if (x.includes('slack')) {
-    return <IconifyIcon icon={slackIcon} style={sq} aria-hidden />
-  }
+  const Mark = platformMark(x)
+  if (Mark) return <Mark fillPct={fillPct} />
   return (
     <span style={{ width: s.width, height: s.height }} className="flex items-center justify-center" aria-hidden>
       <Icon name="plug" className="h-full w-full" />

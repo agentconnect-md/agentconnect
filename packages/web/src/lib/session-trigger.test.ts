@@ -93,6 +93,22 @@ describe('sessionTriggerKind', () => {
     expect(platName('teams-x')).toBe('Teams-x')
   })
 
+  // The chat arms are now an exact-id lookup into the shared label table while the
+  // core kinds stay an ORDERED substring chain — 'webhook' must not read as
+  // "Playground" via the `web` arm, and 'webchat' must.
+  it('names the chat platforms and the core kinds, in that order', () => {
+    expect(platName('telegram')).toBe('Telegram')
+    expect(platName('discord')).toBe('Discord')
+    expect(platName('lark')).toBe('Lark')
+    expect(platName('github')).toBe('GitHub')
+    expect(platName('schedule')).toBe('Schedule')
+    expect(platName('dream')).toBe('Memory dream')
+    expect(platName('webhook')).toBe('Webhook')
+    expect(platName('hook')).toBe('Webhook')
+    expect(platName('webchat')).toBe('Playground')
+    expect(platName('playground')).toBe('Playground')
+  })
+
   it('labels dream execution sessions without exposing their synthetic routing key', () => {
     const dream = sessionFromDto(
       sessionDto({

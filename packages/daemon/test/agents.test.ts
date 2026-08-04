@@ -152,6 +152,14 @@ describe('discoverAgents (recursive, bounded)', () => {
     writeFileSync(join(dir, 'agent.json'), JSON.stringify(slackAgent('solo')))
     expect(discoverAgents(dir).map((d) => d.agent.id)).toEqual(['solo'])
   })
+
+  it('does not let an unsafe root-level CP marker hide local child agents', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-discover-'))
+    writeFileSync(join(dir, '.cp-agent-id'), 'legacy-bad-root\n')
+    writeAgent(dir, 'bot-a', slackAgent('bot-a'))
+
+    expect(discoverAgents(dir).map((d) => d.agent.id)).toEqual(['bot-a'])
+  })
 })
 
 describe('selectAgent', () => {
@@ -198,7 +206,7 @@ describe('AgentSchema defaults', () => {
     })
     expect(parsed.output.mode).toBe('low')
     expect(parsed.output.showFooter).toBe(true)
-    expect(parsed.output.showStatusBar).toBe(true)
+    expect(parsed.output.showStatusBar).toBe(false)
     expect(parsed.allowRuntimeChangesInChat).toBe(false)
     expect(parsed.runInSandbox).toBe(false)
     expect(parsed.callPolicy).toBe('all')

@@ -33,6 +33,11 @@ import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
+import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
+import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
+import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
+import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -95,7 +100,16 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     repos.botSecret,
     new AgentSpecAssembler(repos.agentSecret),
     repos.integrationChannel,
-    repos.bot
+    repos.bot,
+    // §9: reconcile projects every `IntegrationSpec.config` through the platform
+    // registry, so compose the same four providers prod registers. Their verify
+    // seams are offline stubs — the projectors call none of them.
+    buildCpPlatformRegistry([
+      createSlackCpProvider({}),
+      createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+      createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+      createFeishuCpProvider({})
+    ])
   )
   const connReg = new ConnectionRegistry()
 

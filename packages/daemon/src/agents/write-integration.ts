@@ -36,10 +36,10 @@ import { findAgentFileById } from './write-agent.js'
  * wherever present. An older CP's legacy nested block is stripped at the frame
  * layer; that CP dual-emitted `config` since §6.4 landed, so nothing is lost.
  * The wire envelope is folded back into today's on-disk shape, so everything
- * downstream of agent.json is unchanged. Returns null (reader-side rejection)
- * for a spec carrying no usable config.
+ * downstream consumers use. Returns null (reader-side rejection) for a spec
+ * carrying no usable config.
  */
-function toIntegration(spec: IntegrationSpec): Integration | null {
+export function toIntegration(spec: IntegrationSpec): Integration | null {
   const core = spec.core
   const knobs = (legacy: { bindRules: IntegrationBindRule[]; mutedChannels: string[]; gated: boolean }) => ({
     bindRules: core?.bindRules ?? legacy.bindRules,

@@ -42,7 +42,7 @@ export interface ConfigApply {
   applyConfigPush(keys: Record<string, unknown>): void
   /** Converge crons + agent specs (+ record leases) from the register/ok reconcile snapshot. */
   applyReconcileSnapshot(snap: RegisterOk): void | Promise<void>
-  /** Apply a CP agent spec and resolve after disk + live reconcile converge. */
+  /** Apply a memory-only CP agent spec and resolve after live reconcile converges. */
   applyAgentUpsert(upsert: AgentUpsert): Promise<Ack>
   /** Drop a CP agent spec (agent/remove EVT). */
   applyAgentRemove(agentId: string): void | Promise<void>

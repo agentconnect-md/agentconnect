@@ -10,9 +10,9 @@ export interface RunAgentListOpts {
 
 // Read-only view of the local agent directory. Mutating agents (add/remove/
 // enable/disable) is intentionally not a CLI command — agent business config is
-// owned by the Control Plane (agent/upsert + register/ok roster, see
-// cp/cp-agent-registry.ts) or by hand-editing agent.json; the daemon only
-// reconciles what it finds on disk. This lists what that discovery sees.
+// supplied in memory by the Control Plane (agent/upsert + register/ok roster,
+// see cp/cp-agent-registry.ts) or by hand-editing agent.json. This command lists
+// only what local-file discovery sees.
 export async function runAgentList(opts: RunAgentListOpts): Promise<void> {
   const out = opts.out ?? process.stdout
   const cfg = loadConfig({

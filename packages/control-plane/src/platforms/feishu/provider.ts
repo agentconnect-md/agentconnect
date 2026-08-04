@@ -23,12 +23,18 @@
  *    called by BOTH the live paths (`orchestrator/placement.ts`,
  *    `orchestrator/httpBot.ts`) and the provider (one implementation).
  *
- * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
- * registry — its {@link FeishuCreateCredentials} block + {@link
- * refineFeishuCreateBody} are folded into the create body, and {@link
- * CpPlatformProvider.validateConfig} IS the route's live credential check.
- * `placement.ts`, `httpBot.ts`, `server.ts` mounting, and `loadConfig`'s schema
- * fold remain live paths, sharing the implementations above.
+ * ADOPTION SEQUENCING: core now reads this provider through the registry end to
+ * end — `server.ts` mounts the registration funnel from
+ * {@link CpPlatformProvider.installRoutes}, `POST /integrations` folds
+ * {@link FeishuCreateCredentials} + {@link refineFeishuCreateBody} into its body
+ * and runs {@link CpPlatformProvider.validateConfig} +
+ * {@link CpPlatformProvider.buildNewBotInstall} (D6 fence included) as its tail,
+ * `config/env.ts` folds {@link FeishuCpEnvSchema}, the container's background
+ * lifecycle drives the declared registration reaper, and spec assembly
+ * (`placement.ts`) / `rc/bot-assign` (`httpBot.ts`) await
+ * {@link CpPlatformProvider.projectIntegrationConfig} /
+ * {@link CpPlatformProvider.projectBotAssign}. The helpers below stay exported
+ * as the ONE implementation both the projectors and the equivalence tests call.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
@@ -75,9 +81,9 @@ export function refineFeishuCreateBody(
 }
 
 /**
- * Env keys this provider owns (§9 `envSchema`) — spread into `AppConfigSchema`
- * by `config/env.ts` until `loadConfig` folds the registry's schemas (S3
- * adoption), so the live schema and the provider's declaration are ONE object.
+ * Env keys this provider owns (§9 `envSchema`) — folded into `AppConfigSchema`
+ * through `platforms/env.ts`, so the live schema and the provider's declaration
+ * are ONE object.
  *
  * Platform-owned Feishu/Lark apps: each region is independently all-or-none —
  * the same app id must back its Logto social connector so app-scoped open_id
@@ -286,6 +292,42 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
         }
       }
     },
+
+    /**
+     * The create tail's platform half (§9) — the same rows `installNewFeishuBot`
+     * writes for a manual credential install (the one-click funnel keeps that
+     * function for its pre-reserved-id idempotency):
+     *
+     *  - the app id and the gateway region are durable on BOTH rows, so a freed
+     *    bot reinstalls against the region it was registered with;
+     *  - `botUserId` is the bot's own open_id where `validateConfig` resolved it
+     *    (http ingress demuxes @-mentions with it);
+     *  - the D6 fence declares the identity core checks BEFORE the write and the
+     *    copy core sends when either half of the fence fires. `'-'` is the
+     *    tenantless sentinel `BotRepo.getByExternalIdentity` documents;
+     *  - Feishu bots are single-agent — the requested `shareable` is dropped.
+     */
+    buildNewBotInstall: ({ credentials, identity }) => ({
+      bot: {
+        feishuAppId: credentials.appId,
+        feishuRegion: credentials.region,
+        ...(identity.botUserId ? { botUserId: identity.botUserId } : {})
+      },
+      integration: { feishuRegion: credentials.region },
+      secrets: {
+        botToken: credentials.appSecret,
+        appToken: credentials.appId,
+        signingSecret: null,
+        verificationToken: credentials.verificationToken ?? null,
+        encryptKey: credentials.encryptKey ?? null
+      },
+      externalIdentity: {
+        externalAppId: credentials.appId,
+        externalTenantId: '-',
+        conflictMessage:
+          'This Feishu app is already registered as a bot. Reuse that bot (pick it under "Existing") instead of registering the app again.'
+      }
+    }),
 
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):
     // botToken = app SECRET (the credential), appToken = app ID (the

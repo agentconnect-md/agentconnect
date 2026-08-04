@@ -225,7 +225,7 @@ function toRecord(a: AgentWithUsers): AgentRecord {
     reasoningEffort: ov.reasoningEffort ?? null,
     outputMode: ov.outputMode ?? null,
     showFooter: ov.showFooter ?? true,
-    showStatusBar: ov.showStatusBar ?? true,
+    showStatusBar: ov.showStatusBar ?? false,
     fastMode: ov.fastMode ?? null,
     permissionMode: ov.permissionMode ?? null,
     approvalsReviewer: ov.approvalsReviewer ?? null,

@@ -13,12 +13,13 @@
  * so tests fake the provider round-trips exactly like the route tests do.
  *
  * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
- * registry — its {@link TelegramCreateCredentials} block is folded into the
- * create body and {@link CpPlatformProvider.validateConfig} IS the route's live
- * token check. `placement.ts` remains a live path; to keep ONE implementation
- * while both exist, the §6.4 wire projection body is
- * {@link telegramIntegrationConfig}, called by BOTH `integrationToSpec`'s
- * telegram arm and {@link CpPlatformProvider.projectIntegrationConfig}.
+ * registry end to end — its {@link TelegramCreateCredentials} block is folded
+ * into the create body, {@link CpPlatformProvider.validateConfig} IS the route's
+ * live token check, {@link CpPlatformProvider.buildNewBotInstall} maps the rows,
+ * the avatar push runs as the tail's `sideEffects.postCreate`, and spec assembly
+ * (`placement.ts`) awaits {@link CpPlatformProvider.projectIntegrationConfig}
+ * for the §6.4 payload. {@link telegramIntegrationConfig} stays exported as the
+ * ONE implementation behind that projector and the equivalence tests.
  */
 import { z } from 'zod'
 import type { IntegrationCoreEnvelope, IntegrationTelegramConfig } from '@agentconnect.md/protocol'
@@ -116,6 +117,14 @@ export function createTelegramCpProvider(deps: TelegramCpProviderDeps): CpPlatfo
       // (operator-typed → getMe-derived → owning agent's name).
       return { ok: true, identity: { ...(checked.name ? { name: checked.name } : {}) } }
     },
+
+    // The create tail's platform half (§9): one token into the shared row, no
+    // extra bot/integration columns, no D6 identity to fence — the same rows
+    // the route's telegram arm wrote inline before adoption. Telegram cannot
+    // share a bot across agents, so the requested `shareable` is dropped.
+    buildNewBotInstall: ({ credentials }) => ({
+      secrets: { botToken: credentials.botToken, appToken: null, signingSecret: null }
+    }),
 
     // One-slot packing of the shared two-slot bot_secret row
     // (`integrations.ts:443`: appToken/signingSecret stored null). No slot

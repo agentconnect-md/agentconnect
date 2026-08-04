@@ -8,7 +8,7 @@
 // can be deleted here — the Add-integration picker only offers them for reuse),
 // and the Roles explainer.
 
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -23,7 +23,6 @@ import { useProfile } from '@/lib/profile'
 import { useOrgs } from '@/lib/org-context'
 import { initialsFrom } from '@/lib/auth'
 import {
-  ApiError,
   createOrgInviteLink,
   creatorLabel,
   fetchGithubInstallUrl,
@@ -32,12 +31,9 @@ import {
   fetchOrgInviteLink,
   fetchSessionExternalAccess,
   memberDisplayName,
-  refreshSlackBot,
-  getSlackPlatformInstall,
   revokeOrgInviteLink,
   ROLE_LABELS,
   syncGithubInstallations,
-  startSlackPlatformInstall,
   putSessionExternalAccess,
   updateOrg,
   uploadOrgIcon,
@@ -47,13 +43,10 @@ import {
   type MemberDto,
   type MemberRole,
   type OrgInviteLinkDto,
-  type SessionAccessProvider,
-  type SlackBotRefreshDto
+  type SessionAccessProvider
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type AgentCallPolicy, type IntegrationRow } from '@/lib/data'
-import { slackAppSettingsUrl } from '@/lib/slack-manifest'
-import { slackRefreshNoticeState } from '@/lib/slack-refresh-notice'
-import { discordBotInviteUrl } from '@/lib/discord-invite'
+import { platformRegistry } from '@/components/console/platforms/registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
@@ -68,9 +61,10 @@ function botSubline(b: BotDto): string {
   return b.freedFromAgent ? `freed from ${b.freedFromAgent}` : b.prebuilt ? 'builtin' : ''
 }
 
-function feishuAppSettingsUrl(appId: string | null | undefined, region: 'feishu' | 'lark'): string {
-  const host = region === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
-  return appId ? `${host}/app/${encodeURIComponent(appId)}/baseinfo` : `${host}/app`
+/** The Bots card's fallback `CardProvider`: a platform with no lifecycle
+ *  machinery still needs SOMETHING to key by platform id around the row list. */
+function PassThrough({ children }: { children: ReactNode }) {
+  return <>{children}</>
 }
 
 // One short sub-line per state — the full access policy (who keeps seeing what,
@@ -529,55 +523,6 @@ function DefaultDispatchPicker({
   )
 }
 
-function SlackRefreshNotice({
-  result,
-  builtin,
-  reinstalling,
-  onReinstall
-}: {
-  result: SlackBotRefreshDto
-  builtin?: boolean
-  reinstalling?: boolean
-  onReinstall?: () => void
-}) {
-  const { needsAttention, message: defaultMessage, action } = slackRefreshNoticeState(result)
-  const message =
-    builtin && result.authorization === 'invalid'
-      ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
-      : defaultMessage
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={`flex flex-col items-start gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] desktop:flex-row desktop:justify-between desktop:gap-3 ${
-        needsAttention ? 'bg-(--status-paused-soft) text-(--amber-500)' : 'text-(--green-500)'
-      }`}
-    >
-      <span className="min-w-0">
-        <span>{message}</span>
-        {result.missingScopes.length > 0 && (
-          <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
-        )}
-      </span>
-      {action?.label === 'Reinstall workspace' && onReinstall ? (
-        <button
-          type="button"
-          className="lnk flex-none border-0 bg-transparent p-0"
-          disabled={reinstalling}
-          onClick={onReinstall}
-        >
-          {reinstalling ? 'Reinstalling…' : action.label}
-        </button>
-      ) : action ? (
-        <a href={action.href} target="_blank" rel="noopener noreferrer" className="lnk flex-none">
-          {action.label}
-        </a>
-      ) : null}
-    </div>
-  )
-}
-
 function InviteLinksCard({ orgId }: { orgId: string }) {
   const key = consoleKeys.inviteLink(orgId)
   const {
@@ -996,9 +941,6 @@ function BotsCard({
   const [openBotId, setOpenBotId] = useState<string | null>(null)
   const [botBusyId, setBotBusyId] = useState<string | null>(null)
   const [botErr, setBotErr] = useState<{ id: string; msg: string } | null>(null)
-  const [slackRefreshBusyId, setSlackRefreshBusyId] = useState<string | null>(null)
-  const [slackRefresh, setSlackRefresh] = useState<Record<string, { result?: SlackBotRefreshDto; error?: string }>>({})
-  const [slackReinstall, setSlackReinstall] = useState<{ botId: string; installId: string } | null>(null)
 
   const targetBot = bots.find((bot) => bot.id === targetBotId)
   const targetBotPlatformTabKey = targetBot
@@ -1033,105 +975,16 @@ function BotsCard({
     }
   }
 
-  const refreshSlackApp = async (b: BotDto) => {
-    if (slackRefreshBusyId) return
-    setSlackRefreshBusyId(b.id)
-    setSlackRefresh((current) => ({ ...current, [b.id]: {} }))
-    try {
-      const result = await refreshSlackBot(b.id)
-      setSlackRefresh((current) => ({ ...current, [b.id]: { result } }))
-      refresh()
-    } catch (e) {
-      setSlackRefresh((current) => ({
-        ...current,
-        [b.id]: { error: e instanceof Error ? e.message : String(e) }
-      }))
-    } finally {
-      setSlackRefreshBusyId(null)
-    }
-  }
-
-  const reinstallBuiltinSlackApp = async (b: BotDto) => {
-    if (slackReinstall || slackRefreshBusyId) return
-    setSlackRefresh((current) => {
-      const result = current[b.id]?.result
-      return { ...current, [b.id]: result ? { result } : {} }
-    })
-    try {
-      const started = await startSlackPlatformInstall({ botId: b.id })
-      setSlackReinstall({ botId: b.id, installId: started.id })
-      window.open(started.installUrl, '_blank', 'noopener,width=680,height=760')
-    } catch (e) {
-      setSlackRefresh((current) => {
-        const result = current[b.id]?.result
-        const error = e instanceof Error ? e.message : String(e)
-        return { ...current, [b.id]: result ? { result, error } : { error } }
-      })
-    }
-  }
-
-  useEffect(() => {
-    if (!slackReinstall) return
-    const { botId, installId } = slackReinstall
-    let stopped = false
-
-    const stop = () => {
-      stopped = true
-      clearInterval(timer)
-    }
-    const fail = (message: string) => {
-      stop()
-      setSlackReinstall(null)
-      setSlackRefresh((current) => {
-        const result = current[botId]?.result
-        return { ...current, [botId]: result ? { result, error: message } : { error: message } }
-      })
-    }
-    const tick = async () => {
-      try {
-        const status = await getSlackPlatformInstall(installId)
-        if (stopped || status.status === 'pending') return
-        if (status.status === 'failed') {
-          fail(
-            status.failureReason === 'denied'
-              ? 'The reinstall was cancelled in Slack.'
-              : status.failureReason === 'workspace_mismatch'
-                ? 'Slack authorized a different workspace. Try again and choose this bot’s workspace.'
-                : 'Slack could not complete the reinstall. Please try again.'
-          )
-          return
-        }
-        if (status.botId !== botId) {
-          fail('Slack reauthorized a different bot. Please try again.')
-          return
-        }
-
-        stop()
-        setSlackReinstall(null)
-        setSlackRefreshBusyId(botId)
-        try {
-          const result = await refreshSlackBot(botId)
-          setSlackRefresh((current) => ({ ...current, [botId]: { result } }))
-          refresh()
-        } catch (e) {
-          setSlackRefresh((current) => ({
-            ...current,
-            [botId]: { error: e instanceof Error ? e.message : String(e) }
-          }))
-        } finally {
-          setSlackRefreshBusyId(null)
-        }
-      } catch (e) {
-        if (!stopped && e instanceof ApiError && e.status === 404) {
-          fail('This reinstall link expired. Please try again.')
-        }
-      }
-    }
-
-    const timer = setInterval(() => void tick(), 2500)
-    void tick()
-    return stop
-  }, [refresh, slackReinstall])
+  // The active platform's Settings fragments (§10 `settingsFragments`): row
+  // badges, provider deep links, and the lifecycle machinery that owns its own
+  // card-scope state. `CardProvider` is mounted below, KEYED BY PLATFORM, which
+  // is what keeps a module's hooks from changing identity when the tab changes.
+  const fragments = platformRegistry.get(platformTab.platform)?.settingsFragments
+  const RowBadges = fragments?.botCard?.RowBadges
+  const RowLinks = fragments?.botCard?.RowLinks
+  const RowActions = fragments?.lifecycleActions?.RowActions
+  const CardNotice = fragments?.lifecycleActions?.CardNotice
+  const CardProvider = fragments?.lifecycleActions?.CardProvider ?? PassThrough
 
   return (
     <div className="card mt-[18px]">
@@ -1170,279 +1023,205 @@ function BotsCard({
         <span className="whitespace-nowrap max-[479px]:hidden">Created by</span>
         <span />
       </div>
-      {rosterRows.map((row) => {
-        if (row.kind === 'workspace') {
-          return (
-            <div
-              key={row.key}
-              className="flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2"
-            >
-              <span className="font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                Workspace
-              </span>
-              <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">{row.label}</span>
-            </div>
-          )
-        }
-        const b = row.bot
-        const free = b.agentIds.length === 0
-        const open = openBotId === b.id
-        const channels = open ? botChannels(b, integrations) : []
-        const hasChannelRows = channels.some((c) => c.kind === 'channel')
-        const slackState = slackRefresh[b.id]
-        const reinstallingSlack = slackReinstall?.botId === b.id
-        const refreshingSlack = slackRefreshBusyId === b.id || reinstallingSlack
-        const slackNeedsAttention = slackState?.result
-          ? slackRefreshNoticeState(slackState.result).needsAttention
-          : false
-        const showDefaultDispatch = b.shareable && hasChannelRows
-        const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
-        const feishuRegion = b.feishuRegion ?? 'feishu'
-        const feishuBrand = feishuRegion === 'lark' ? 'Lark' : 'Feishu'
-        // The picker's choices: every agent installed on the bot.
-        const agentOptions = b.agentIds.map((id) => {
-          const ag = getAgent(id)
-          return {
-            id,
-            name: ag ? agentLabel(ag) : id,
-            model: ag?.model || ag?.runtime || '',
-            runtime: ag?.runtime || ag?.model || '',
-            icon: ag?.icon
-          }
-        })
-        return (
-          <Fragment key={b.id}>
-            <div
-              id={`settings-bot-${b.id}`}
-              className={`row click ${BOT_GRID} items-center gap-[11px]`}
-              onClick={() => setOpenBotId(open ? null : b.id)}
-            >
-              <div className="flex min-w-0 items-center gap-[10px]">
-                <Icon
-                  name="chevron-right"
-                  size={14}
-                  className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-90' : ''}`}
-                />
-                <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-                  <span className="flex h-[14px] w-[14px] items-center justify-center">
-                    <PlatformMark platform={b.platform} fillPct={100} />
-                  </span>
-                </span>
-                <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{b.name}</span>
-                {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>}
-                {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
-                    the credential is dead until a re-install refreshes it. */}
-                {b.revokedAt && (
-                  <span
-                    className="badge bg-(--status-error-soft) text-(--danger)"
-                    title="The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect"
-                  >
-                    revoked
-                  </span>
-                )}
-                {/* Transport tag (Slack) — makes the Sharable column's disabled state
-                    self-explanatory: only an http bot may be shared. */}
-                {platformTab.platform === 'slack' && (
-                  <span className="badge bg-(--surface-active) text-(--text-tertiary) max-[479px]:hidden">
-                    {b.transport ?? 'socket'}
-                  </span>
-                )}
-              </div>
-              <span
-                className="flex items-center justify-self-start"
-                title={
-                  (b.transport ?? 'socket') === 'socket'
-                    ? 'HTTP transport required to share'
-                    : 'Allow several agents to share this bot across channels'
-                }
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Toggle
-                  checked={b.shareable}
-                  disabled={!canWrite || botBusyId === b.id || (b.transport ?? 'socket') === 'socket'}
-                  onChange={(next) => void flipShareable(b, next)}
-                />
-              </span>
-              <div className="flex min-w-0 items-center">
-                {b.agentIds.length > 0 ? (
-                  b.agentIds.map((id, idx) => {
-                    const ag = getAgent(id)
-                    return (
-                      <Link
-                        key={id}
-                        href={orgPath(`/agents/${encodeURIComponent(id)}?tab=config`)}
-                        aria-label={`Open ${ag ? agentLabel(ag) : id} configuration`}
-                        title={ag ? agentLabel(ag) : id}
-                        className={`av h-[22px] w-[22px] rounded-[6px] no-underline focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
-                          idx > 0 ? '-ml-[6px] shadow-[-1px_0_0_0_var(--surface-card)]' : ''
-                        }`}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <AgentIconView icon={ag?.icon} runtime={ag?.runtime || ag?.model || ''} size={22} />
-                      </Link>
-                    )
-                  })
-                ) : (
-                  <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    {botSubline(b)}
-                  </span>
-                )}
-              </div>
-              <span className="min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) max-[479px]:hidden">
-                {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'}
-              </span>
-              <span className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                {platformTab.platform === 'slack' && b.slackAppId && canWrite && (
-                  <button
-                    className={`iconbtn h-7 w-7 flex-none ${
-                      slackNeedsAttention ? 'border-(--amber-500) bg-(--status-paused-soft) text-(--amber-500)' : ''
-                    } ${refreshingSlack ? 'cursor-default opacity-60' : ''}`}
-                    title={slackNeedsAttention ? 'Slack app needs attention' : 'Refresh Slack app'}
-                    aria-label="Refresh Slack app"
-                    disabled={refreshingSlack}
-                    onClick={() => void refreshSlackApp(b)}
-                  >
-                    <Icon
-                      name={refreshingSlack ? 'loader' : 'refresh-cw'}
-                      size={14}
-                      className={refreshingSlack ? 'animate-spin' : undefined}
-                    />
-                  </button>
-                )}
-                {platformTab.platform === 'slack' && b.slackAppId && (
-                  <a
-                    href={slackAppSettingsUrl(b.slackAppId)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Configure on Slack"
-                    aria-label="Configure on Slack"
-                    className="iconbtn h-7 w-7 flex-none"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Icon name="external-link" size={12} />
-                  </a>
-                )}
-                {platformTab.platform === 'discord' && b.discordAppId && (
-                  <a
-                    href={discordBotInviteUrl(b.discordAppId)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                    aria-label="Add this bot to a Discord server"
-                    className="iconbtn h-7 w-7 flex-none"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Icon name="external-link" size={12} />
-                  </a>
-                )}
-                {platformTab.platform === 'feishu' && (
-                  <a
-                    href={feishuAppSettingsUrl(b.feishuAppId, feishuRegion)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={`Configure on ${feishuBrand}`}
-                    aria-label={`Configure on ${feishuBrand}`}
-                    className="iconbtn h-7 w-7 flex-none"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Icon name="external-link" size={12} />
-                  </a>
-                )}
-                {free && canWrite ? (
-                  <button className="iconbtn h-7 w-7 flex-none" title={`Delete ${noun}`} onClick={() => onDelete(b)}>
-                    <Icon name="trash-2" size={14} />
-                  </button>
-                ) : !free ? (
-                  <span
-                    title="Uninstall its integration first"
-                    className="flex h-7 w-7 flex-none cursor-not-allowed items-center justify-center opacity-45"
-                  >
-                    <Icon name="trash-2" size={14} />
-                  </span>
-                ) : (
-                  <span className="h-7 w-7 flex-none" />
-                )}
-              </span>
-            </div>
-            {botErr?.id === b.id && (
-              <div className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
-                {botErr.msg}
-              </div>
-            )}
-            {slackState?.error && (
+      {/* Keyed by platform id: switching tabs REMOUNTS the module's card state,
+          which is the only way the fragments' hooks keep a stable identity when
+          the active module changes. Non-lifecycle platforms get `PassThrough`, so
+          the key is inert for them. */}
+      <CardProvider key={platformTab.platform}>
+        {rosterRows.map((row) => {
+          if (row.kind === 'workspace') {
+            return (
               <div
-                role="alert"
-                className="border-b border-(--border-subtle) bg-(--status-error-soft) px-4 py-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
+                key={row.key}
+                className="flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-2"
               >
-                Couldn&apos;t refresh this Slack app — {slackState.error}
+                <span className="font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                  Workspace
+                </span>
+                <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">{row.label}</span>
               </div>
-            )}
-            {slackState?.result && (
-              <SlackRefreshNotice
-                result={slackState.result}
-                builtin={b.prebuilt}
-                reinstalling={reinstallingSlack}
-                onReinstall={b.prebuilt ? () => void reinstallBuiltinSlackApp(b) : undefined}
-              />
-            )}
-            {open && (
-              <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
-                {channels.length > 0 ? (
-                  <>
-                    <div
-                      className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}
+            )
+          }
+          const b = row.bot
+          const free = b.agentIds.length === 0
+          const open = openBotId === b.id
+          const channels = open ? botChannels(b, integrations) : []
+          const hasChannelRows = channels.some((c) => c.kind === 'channel')
+          const showDefaultDispatch = b.shareable && hasChannelRows
+          const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
+          // The picker's choices: every agent installed on the bot.
+          const agentOptions = b.agentIds.map((id) => {
+            const ag = getAgent(id)
+            return {
+              id,
+              name: ag ? agentLabel(ag) : id,
+              model: ag?.model || ag?.runtime || '',
+              runtime: ag?.runtime || ag?.model || '',
+              icon: ag?.icon
+            }
+          })
+          return (
+            <Fragment key={b.id}>
+              <div
+                id={`settings-bot-${b.id}`}
+                className={`row click ${BOT_GRID} items-center gap-[11px]`}
+                onClick={() => setOpenBotId(open ? null : b.id)}
+              >
+                <div className="flex min-w-0 items-center gap-[10px]">
+                  <Icon
+                    name="chevron-right"
+                    size={14}
+                    className={`flex-none text-(--text-tertiary) transition-transform ${open ? 'rotate-90' : ''}`}
+                  />
+                  <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
+                    <span className="flex h-[14px] w-[14px] items-center justify-center">
+                      <PlatformMark platform={b.platform} fillPct={100} />
+                    </span>
+                  </span>
+                  <span className="mono min-w-0 flex-1 truncate text-[12.5px]">{b.name}</span>
+                  {b.prebuilt && <span className="badge bg-(--surface-active) text-(--text-tertiary)">builtin</span>}
+                  {/* Workspace uninstalled the app / revoked its tokens (rc/bot-revoked):
+                    the credential is dead until a re-install refreshes it. */}
+                  {b.revokedAt && (
+                    <span
+                      className="badge bg-(--status-error-soft) text-(--danger)"
+                      title="The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect"
                     >
-                      <span>Conversation</span>
-                      {showDefaultDispatch && <span className="justify-self-end">Default dispatch</span>}
-                    </div>
-                    <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
-                      {channels.map((c, index) => (
-                        <Fragment key={c.channelId}>
-                          {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
-                            <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                              Direct messages
-                            </div>
-                          )}
-                          <div
-                            className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
-                          >
-                            <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
-                              <Icon
-                                name={c.kind === 'mpim' ? 'users' : c.kind === 'im' ? 'at-sign' : 'hash'}
-                                size={12}
-                                color="var(--text-tertiary)"
-                                className="flex-none"
-                              />
-                              <span className="sr-only">
-                                {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : 'Channel'}:{' '}
-                              </span>
-                              <span className="truncate">
-                                {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
-                              </span>
-                            </span>
-                            {showDefaultDispatch && c.kind === 'channel' && (
-                              <DefaultDispatchPicker
-                                options={agentOptions}
-                                activeId={c.agentId ?? b.agentIds[0] ?? null}
-                                disabled={!canWrite || !c.integrationId}
-                                onPick={(agentId) => setChannelAgent(c.integrationId!, c.channelId, agentId)}
-                              />
-                            )}
-                          </div>
-                        </Fragment>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Not in any channel yet — invite the bot to a channel and it shows up here.
-                  </div>
-                )}
+                      revoked
+                    </span>
+                  )}
+                  {RowBadges && <RowBadges bot={b} />}
+                </div>
+                <span
+                  className="flex items-center justify-self-start"
+                  title={
+                    (b.transport ?? 'socket') === 'socket'
+                      ? 'HTTP transport required to share'
+                      : 'Allow several agents to share this bot across channels'
+                  }
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Toggle
+                    checked={b.shareable}
+                    disabled={!canWrite || botBusyId === b.id || (b.transport ?? 'socket') === 'socket'}
+                    onChange={(next) => void flipShareable(b, next)}
+                  />
+                </span>
+                <div className="flex min-w-0 items-center">
+                  {b.agentIds.length > 0 ? (
+                    b.agentIds.map((id, idx) => {
+                      const ag = getAgent(id)
+                      return (
+                        <Link
+                          key={id}
+                          href={orgPath(`/agents/${encodeURIComponent(id)}?tab=config`)}
+                          aria-label={`Open ${ag ? agentLabel(ag) : id} configuration`}
+                          title={ag ? agentLabel(ag) : id}
+                          className={`av h-[22px] w-[22px] rounded-[6px] no-underline focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) ${
+                            idx > 0 ? '-ml-[6px] shadow-[-1px_0_0_0_var(--surface-card)]' : ''
+                          }`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <AgentIconView icon={ag?.icon} runtime={ag?.runtime || ag?.model || ''} size={22} />
+                        </Link>
+                      )
+                    })
+                  ) : (
+                    <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                      {botSubline(b)}
+                    </span>
+                  )}
+                </div>
+                <span className="min-w-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) max-[479px]:hidden">
+                  {b.createdBy ? creatorLabel(b.createdBy, me) : b.prebuilt ? 'AgentConnect' : '—'}
+                </span>
+                {/* The 100px action track: the module's own controls (refresh, provider
+                  deep link) first, then the host's delete. */}
+                <span className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                  {RowActions && <RowActions bot={b} canWrite={canWrite} />}
+                  {RowLinks && <RowLinks bot={b} />}
+                  {free && canWrite ? (
+                    <button className="iconbtn h-7 w-7 flex-none" title={`Delete ${noun}`} onClick={() => onDelete(b)}>
+                      <Icon name="trash-2" size={14} />
+                    </button>
+                  ) : !free ? (
+                    <span
+                      title="Uninstall its integration first"
+                      className="flex h-7 w-7 flex-none cursor-not-allowed items-center justify-center opacity-45"
+                    >
+                      <Icon name="trash-2" size={14} />
+                    </span>
+                  ) : (
+                    <span className="h-7 w-7 flex-none" />
+                  )}
+                </span>
               </div>
-            )}
-          </Fragment>
-        )
-      })}
+              {botErr?.id === b.id && (
+                <div className="border-b border-(--border-subtle) px-4 py-2 font-sans text-[12px] font-normal leading-normal text-(--status-error)">
+                  {botErr.msg}
+                </div>
+              )}
+              {CardNotice && <CardNotice bot={b} />}
+              {open && (
+                <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
+                  {channels.length > 0 ? (
+                    <>
+                      <div
+                        className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}
+                      >
+                        <span>Conversation</span>
+                        {showDefaultDispatch && <span className="justify-self-end">Default dispatch</span>}
+                      </div>
+                      <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
+                        {channels.map((c, index) => (
+                          <Fragment key={c.channelId}>
+                            {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
+                              <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                                Direct messages
+                              </div>
+                            )}
+                            <div
+                              className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
+                            >
+                              <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
+                                <Icon
+                                  name={c.kind === 'mpim' ? 'users' : c.kind === 'im' ? 'at-sign' : 'hash'}
+                                  size={12}
+                                  color="var(--text-tertiary)"
+                                  className="flex-none"
+                                />
+                                <span className="sr-only">
+                                  {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : 'Channel'}
+                                  :{' '}
+                                </span>
+                                <span className="truncate">
+                                  {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
+                                </span>
+                              </span>
+                              {showDefaultDispatch && c.kind === 'channel' && (
+                                <DefaultDispatchPicker
+                                  options={agentOptions}
+                                  activeId={c.agentId ?? b.agentIds[0] ?? null}
+                                  disabled={!canWrite || !c.integrationId}
+                                  onPick={(agentId) => setChannelAgent(c.integrationId!, c.channelId, agentId)}
+                                />
+                              )}
+                            </div>
+                          </Fragment>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                      Not in any channel yet — invite the bot to a channel and it shows up here.
+                    </div>
+                  )}
+                </div>
+              )}
+            </Fragment>
+          )
+        })}
+      </CardProvider>
       {platformBots.length === 0 &&
         (dataLoading ? (
           <LoadingState size={22} padding={20} />

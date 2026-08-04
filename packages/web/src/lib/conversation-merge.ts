@@ -2,7 +2,15 @@
 // (merged-conversation-view.md §6). Pure functions over per-member message
 // pages so union/dedupe/ordering are unit-testable, mirroring how
 // webchat-lanes.ts isolates lane resolution.
+//
+// The one non-pure-lib import is the platform registry, which the per-platform
+// duplicate-identity rule now lives behind (§10). It costs no route its bundle:
+// unlike `lib/data.ts` — the reason `lib/platform-labels.ts` keeps its own
+// table — this module is imported by SessionDetailView alone, and the console
+// shell already mounts `ModalProvider` → `AddIntegrationModal` → the registry
+// on every route it renders.
 
+import { platformMessageIdentity } from '@/components/console/platforms/registry'
 import type { SessionMessageDto } from '@/lib/api'
 
 /** One member session's transcript page, in the order the daemon served it
@@ -23,6 +31,12 @@ export interface MergedRow {
   row: SessionMessageDto
   sourceSessionId: string
   sourceAgentId: string
+  /** The platform of the source this copy came from — the key the transcript
+   *  resolves its text renderer with (§10). Carried out of the merge rather
+   *  than re-derived by the caller so a row can never be rendered under a
+   *  neighbour's platform: sources interleave by event time, so this varies
+   *  ROW BY ROW and any per-conversation shortcut would be wrong. */
+  sourcePlatform: string
   /** Maximal owner-authored run in the source transcript. Conversation rendering
    *  uses this to preserve the same bot blocks a single-session page would build,
    *  even after another participant's private work interleaves by event time. */
@@ -87,38 +101,35 @@ function safeEventTimeUs(value: number): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
-/** Provider-native message-id shapes per platform — each is the identity a
- *  duplicate shares across every member's copy, chosen so a daemon-local
- *  13-digit `monotonicTs()` millisecond stamp can NEVER match:
- *  Slack decimal seconds; Discord 16–20-digit snowflakes; Telegram short
- *  per-chat sequence ids (≤9 digits — the 10-digit legacy-seconds era and
- *  13-digit local stamps are both excluded); Feishu om_ ids. */
-const SLACK_NATIVE_TS = /^\d+\.\d+$/
-const DISCORD_SNOWFLAKE = /^\d{16,20}$/
-const TELEGRAM_MESSAGE_ID = /^\d{1,9}$/
-const FEISHU_MESSAGE_ID = /^om_[A-Za-z0-9_-]+$/
-
 /**
  * The provenance-explicit duplicate identity of a row, or null when the row
- * must never dedupe across sources (§6 step 2):
+ * must never dedupe across sources (§6 step 2). Two rules are CORE — they
+ * belong to no platform — and the third is the platform module's:
  *
  * - only `kind === 'text'` rows dedupe — a coincidental `ts` collision with a
  *   work-lane row is inert by construction;
  * - webchat: the canonical `postId` — minted once at origin, identical on
  *   every copy regardless of a collision-bumped `ts`. Rows without one
  *   (daemon-local a2a report-backs, pre-upgrade rows) never dedupe: failing
- *   toward a visible duplicate, never toward data loss;
- * - everything else: the provider-native decimal `ts` only — daemon-local
- *   millisecond rows are single-source by construction, and two daemons can
- *   mint the same millisecond for distinct rows.
+ *   toward a visible duplicate, never toward data loss. Webchat has no bot
+ *   identity to install and therefore no platform module, so this arm is the
+ *   host's for good;
+ * - everything else: the owning module's `messageIdentity` (§10) — the
+ *   provider-native id shape, chosen so a daemon-local 13-digit
+ *   `monotonicTs()` millisecond stamp can never match it.
+ *
+ * AN UNREGISTERED PLATFORM ID NOW DEDUPES NOTHING. It used to take Slack's
+ * decimal-`ts` rule, purely because Slack sat in the fall-through arm of an
+ * if-chain; the published contract says the opposite (absent ⇒ never dedupe),
+ * and the contract is right. Deduping is the only step here that can DELETE a
+ * row from the transcript, so guessing that an unknown provider numbers its
+ * messages the way Slack does is a guess in the one direction §6 forbids —
+ * "toward a visible duplicate, never toward data loss".
  */
 export function duplicateIdentity(platform: string, row: SessionMessageDto): string | null {
   if (row.kind !== 'text') return null
   if (platform === 'webchat') return row.postId ? `post:${row.postId}` : null
-  if (platform === 'discord') return DISCORD_SNOWFLAKE.test(row.ts) ? `ts:${row.ts}` : null
-  if (platform === 'telegram') return TELEGRAM_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null
-  if (platform === 'feishu') return FEISHU_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null
-  return SLACK_NATIVE_TS.test(row.ts) ? `ts:${row.ts}` : null
+  return platformMessageIdentity(platform, row)
 }
 
 /**
@@ -147,6 +158,7 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
         row,
         sourceSessionId: source.sessionId,
         sourceAgentId: source.agentId,
+        sourcePlatform: source.platform,
         ...(authorCopy ? { sourceTurnKey: `${source.sessionId}\u0000${sourceTurn}` } : {}),
         authorCopy,
         // Prefer the daemon's stored axis (provider-authoritative for
@@ -183,10 +195,11 @@ export function mergeConversation(sources: MergeSource[]): MergedRow[] {
     if (a.sourceSessionId !== b.sourceSessionId) return a.sourceSessionId < b.sourceSessionId ? -1 : 1
     return a.order - b.order
   })
-  return kept.map(({ row, sourceSessionId, sourceAgentId, sourceTurnKey, authorCopy }) => ({
+  return kept.map(({ row, sourceSessionId, sourceAgentId, sourcePlatform, sourceTurnKey, authorCopy }) => ({
     row,
     sourceSessionId,
     sourceAgentId,
+    sourcePlatform,
     ...(sourceTurnKey ? { sourceTurnKey } : {}),
     authorCopy
   }))

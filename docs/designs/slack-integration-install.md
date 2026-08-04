@@ -135,10 +135,10 @@ The spec is sent only to the daemon that owns the integration's agent through:
 - live `integration/upsert` events; and
 - the daemon-filtered `register/ok.integrations` snapshot.
 
-The daemon's `CpIntegrationRegistry` writes the CP-owned spec into the matching
-agent's local `agent.json`, marked with `origin = cp`, and triggers
-reconciliation. Routing, tool injection, reply delivery, and Socket Mode
-startup all consume that consolidated on-disk view.
+The daemon's `CpIntegrationRegistry` keeps the CP-owned spec in memory and
+triggers reconciliation. Routing, tool injection, reply delivery, and Socket
+Mode startup consume the effective view formed from user-authored files plus
+the memory-only CP overlay.
 
 Per-channel trigger metadata contributes channel-scoped rules. The defaults
 respond to mentions and direct messages; channels configured for “any message”
@@ -180,7 +180,7 @@ On daemon registration:
 2. Open each bot secret through `BotSecretStore`.
 3. Build a direct or send-only spec from the bot transport.
 4. Return the complete desired set in `register/ok.integrations`.
-5. Persist each desired CP-owned integration into its agent file.
+5. Install each desired CP-owned integration in the daemon's memory-only registry.
 6. Explicitly drop stale Control Plane replicas that are not in the desired
    set, without deleting hand-authored local integrations.
 
@@ -190,10 +190,11 @@ This snapshot is the recovery backstop when:
 - a connection was interrupted during mutation; or
 - an agent moved between daemons.
 
-A restarted daemon first reconstructs effective integrations from local
-`agent.json` and can reconnect platform clients even while the Control Plane is
-unavailable. A later snapshot repairs any missed update or ownership change
-without asking the operator to enter credentials again.
+An already-running daemon retains effective integrations in memory while the
+Control Plane is unavailable. After daemon restart, user-authored integrations
+remain available from local `agent.json`; CP-owned integrations resume when the
+next snapshot re-converges them, without asking the operator to enter credentials
+again.
 
 ---
 
@@ -254,7 +255,7 @@ Tests cover:
 - bot and integration ownership and visibility;
 - secret-store sealing/opening and metadata-only reads;
 - absence of credentials from DTOs and logs;
-- CP-owned credential persistence only in the intended local agent file;
+- CP-owned credentials are absent from local agent files;
 - daemon-scoped snapshot filtering;
 - direct versus HTTP credential domaining;
 - live upsert/remove behavior and reconnect recovery;

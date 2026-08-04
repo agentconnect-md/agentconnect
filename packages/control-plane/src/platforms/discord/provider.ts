@@ -25,12 +25,14 @@
  * injected through {@link DiscordCpProviderDeps} so tests stay offline.
  *
  * ADOPTION SEQUENCING: `POST /integrations` now reads this provider through the
- * registry — its {@link DiscordCreateCredentials} block is folded into the
- * create body and {@link CpPlatformProvider.validateConfig} IS the route's live
- * token check + intent enablement. `placement.ts` remains a live path; the §6.4
- * wire projection body is therefore {@link discordIntegrationConfig}, called by
- * BOTH `integrationToSpec`'s discord arm and
- * {@link CpPlatformProvider.projectIntegrationConfig}.
+ * registry end to end — its {@link DiscordCreateCredentials} block is folded
+ * into the create body, {@link CpPlatformProvider.validateConfig} IS the route's
+ * live token check + intent enablement,
+ * {@link CpPlatformProvider.buildNewBotInstall} maps the rows, the profile push
+ * runs as the tail's `sideEffects.postCreate`, and spec assembly
+ * (`placement.ts`) awaits {@link CpPlatformProvider.projectIntegrationConfig}
+ * for the §6.4 payload. {@link discordIntegrationConfig} stays exported as the
+ * ONE implementation behind that projector and the equivalence tests.
  */
 import { z } from 'zod'
 import type { IntegrationCoreEnvelope, IntegrationDiscordConfig } from '@agentconnect.md/protocol'
@@ -149,6 +151,17 @@ export function createDiscordCpProvider(deps: DiscordCpProviderDeps): CpPlatform
         identity: { ...(name ? { name } : {}), ...(externalAppId ? { externalAppId } : {}) }
       }
     },
+
+    // The create tail's platform half (§9): one token into the shared row plus
+    // the application (client) id the token decoded to — public metadata the
+    // console turns into an "Add to Discord" invite URL, persisted as
+    // `Bot.discordAppId` exactly as the route's discord arm did inline. No D6
+    // identity to fence; Discord cannot share a bot across agents, so the
+    // requested `shareable` is dropped.
+    buildNewBotInstall: ({ credentials, identity }) => ({
+      ...(identity.externalAppId ? { bot: { discordAppId: identity.externalAppId } } : {}),
+      secrets: { botToken: credentials.botToken, appToken: null, signingSecret: null }
+    }),
 
     // One-slot packing of the shared two-slot bot_secret row
     // (`integrations.ts:515`: appToken/signingSecret stored null). No slot

@@ -935,6 +935,7 @@ export function agentRoutes(deps: HttpDeps) {
       integrationChannels: deps.repos.integrationChannel,
       bots: deps.repos.bot,
       botSecrets: deps.repos.botSecret,
+      platforms: deps.platforms,
       specs: deps.agentSpecs,
       crons: deps.repos.cron,
       control: deps.control,

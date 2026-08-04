@@ -9,7 +9,12 @@
  * graph, with the repos/registry/auth/events seams injected either real (Prisma)
  * or faked. No `@prisma/client` import here — only ports.
  */
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyServerOptions } from 'fastify'
+import Fastify, {
+  type FastifyError,
+  type FastifyInstance,
+  type FastifyPluginAsync,
+  type FastifyServerOptions
+} from 'fastify'
 import cors from '@fastify/cors'
 import { hasZodFastifySchemaValidationErrors, isResponseSerializationError } from 'fastify-type-provider-zod'
 import type { HttpDeps } from './deps.js'
@@ -24,9 +29,6 @@ import { agentRepoRoutes } from './routes/agent-repos.js'
 import { webchatTokenRoutes } from './routes/webchat-token.js'
 import { webchatMcpOperationRoutes } from './routes/webchat-mcp-operations.js'
 import { integrationRoutes } from './routes/integrations.js'
-import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
-import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
-import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { botRoutes } from './routes/bots.js'
 import { mcpProviderRoutes } from './routes/mcp-providers.js'
 import { skillSourceRoutes } from './routes/skill-sources.js'
@@ -56,10 +58,31 @@ import { oauthConsentRoutes } from './oauth/consent.js'
 import { oauthMetadataRoutes } from './oauth/metadata.js'
 import { oauthRoutes } from './oauth/routes.js'
 import { API_V1_PREFIX } from './version.js'
+import type { CpRouteScope } from '../platforms/provider.js'
 import { controlPlaneOtelFastifyPlugin } from '../observability.js'
 
 export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false, ...opts })
+
+  /**
+   * Every registered platform's route plugins for one mount scope
+   * (integration-plugin-architecture.md §9 `installRoutes`). Core mounts what
+   * the registry hands back and names no platform: the Slack quick-install and
+   * platform-app funnels, the Slack config-token surface and the Feishu
+   * one-click registration used to be five hand-listed imports here.
+   *
+   * Two scopes, and the PATHS ARE UNCHANGED BY CONSTRUCTION — a plugin declares
+   * its own routes, so mounting it from the registry instead of from an import
+   * moves nothing (`src/http/platform-route-mounts.test.ts` pins the table).
+   * The registration ORDER follows the registry rather than the old literal
+   * list; Fastify's radix router is order-independent for distinct paths.
+   *
+   * A plugin may still self-disable when its config is absent (the platform-app
+   * funnel returns early without SLACK_PLATFORM_* + PUBLIC_CP_URL) — "the routes
+   * 404" stays the feature flag.
+   */
+  const platformRoutes = (scope: CpRouteScope): FastifyPluginAsync[] =>
+    deps.platforms.all().flatMap((provider) => provider.installRoutes(scope))
 
   const otelPlugin = controlPlaneOtelFastifyPlugin()
   if (otelPlugin) void app.register(otelPlugin)
@@ -197,11 +220,14 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // Unauthenticated GitHub setup callback (browser redirect; org rides the
       // signed state) — version root, deliberately OUTSIDE the org subtree.
       await api.register(githubCallbackRoutes(deps))
-      // Unauthenticated Slack OAuth callback (browser redirect; the pending row
-      // rides the OAuth state) — same version-root placement as the GitHub one.
-      await api.register(slackOauthCallbackRoutes(deps))
-      // Its platform-app sibling (preset-agents.md §5.3) — same placement.
-      await api.register(slackPlatformCallbackRoutes(deps))
+      // Unauthenticated PLATFORM callbacks from the registry (§9
+      // `installRoutes('public-callback')`) — browser redirects whose state
+      // rides the OAuth exchange: today the Slack quick-install callback and its
+      // platform-app sibling (preset-agents.md §5.3). Same version-root
+      // placement as the GitHub one, and mounted AGAIN at the public `/v1`
+      // alias below, because a handed-out callback URL leaves the system in the
+      // public form.
+      for (const plugin of platformRoutes('public-callback')) await api.register(plugin)
       // Unauthenticated agent avatar PNG (Slack fetches it as the per-message
       // icon_url; no bearer, no org — only the agent UUID). Handed-out URL uses
       // the public `/v1` form, aliased below.
@@ -229,10 +255,10 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(webchatTokenRoutes(deps))
           await scope.register(webchatMcpOperationRoutes(deps))
           await scope.register(integrationRoutes(deps))
-          await scope.register(feishuRegistrationRoutes(deps))
-          await scope.register(slackInstallRoutes(deps))
-          await scope.register(slackPlatformInstallRoutes(deps))
-          await scope.register(slackConfigRoutes(deps))
+          // Org-scoped platform routes from the registry (§9 `installRoutes('org')`):
+          // the install funnels' wizard endpoints and the per-user provider tooling
+          // credential surface (Slack's App Configuration token).
+          for (const plugin of platformRoutes('org')) await scope.register(plugin)
           await scope.register(botRoutes(deps))
           await scope.register(mcpProviderRoutes(deps))
           await scope.register(skillSourceRoutes(deps))
@@ -270,8 +296,10 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   void app.register(
     async (pub) => {
       await pub.register(githubCallbackRoutes(deps))
-      await pub.register(slackOauthCallbackRoutes(deps))
-      await pub.register(slackPlatformCallbackRoutes(deps))
+      // The SAME platform callback plugins as the `/api/v1` mount above — the
+      // deliberate double mount (§9: "core mounts this scope twice"), so a
+      // callback URL handed out in the public form routes in both shapes.
+      for (const plugin of platformRoutes('public-callback')) await pub.register(plugin)
       await pub.register(agentIconRoutes(deps))
       await pub.register(orgIconRoutes(deps))
       await pub.register(mcpRoutes(deps))

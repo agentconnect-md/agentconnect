@@ -87,8 +87,8 @@ const INTEGRATION: IntegrationSpec = {
   }
 }
 
-describe('Daemon CP integration → persisted to agent.json (disk is the source of truth)', () => {
-  it('writes a CP integration into agent.json integrations[] + opens a socket', async () => {
+describe('Daemon CP integration → memory-only effective config', () => {
+  it('keeps the CP integration out of agent.json and opens a socket', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
@@ -97,13 +97,9 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     apply(daemon).applyIntegrationUpsert(INTEGRATION)
     await daemon.reconcile()
 
-    // Persisted to disk — the single source of truth (survives restart, CP down).
+    // The user's local file is never rewritten with CP credentials.
     const onDisk = JSON.parse(readFileSync(join(root, 'agents', 'bot-a', 'agent.json'), 'utf8'))
-    expect(onDisk.integrations).toHaveLength(1)
-    expect(onDisk.integrations[0].id).toBe(INTEGRATION.integrationId)
-    expect(onDisk.integrations[0].origin).toBe('cp')
-    expect(onDisk.integrations[0].slack.botToken).toBe('xoxb-secret-abc')
-    expect(onDisk.integrations[0].slack.appToken).toBe('xapp-1-secret-def')
+    expect(onDisk.integrations).toEqual([])
 
     // Loaded into the live agent set (consolidate / routing / tools all read this).
     const eff = (
@@ -125,7 +121,7 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     await daemon.stop()
   })
 
-  it('survives a restart with the CP down: a fresh daemon opens the socket from disk alone', async () => {
+  it('does not survive a restart without CP reconvergence', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
@@ -134,18 +130,17 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     await daemon.reconcile()
     await daemon.stop()
 
-    // New process, same root, controlPlane disabled — must come up connected.
+    // A new process must not recover CP credentials from the local file.
     const { daemon: reborn } = makeDaemon(root)
     await reborn.start()
     const eff = (reborn as unknown as { agents: Map<string, { integrations: { id: string }[] }> }).agents.get('bot-a')!
-    expect(eff.integrations).toHaveLength(1)
-    expect(eff.integrations[0]!.id).toBe(INTEGRATION.integrationId)
+    expect(eff.integrations).toEqual([])
     const connByIntegration = (reborn as unknown as { connByIntegration: Map<string, unknown> }).connByIntegration
-    expect(connByIntegration.has(INTEGRATION.integrationId)).toBe(true)
+    expect(connByIntegration.has(INTEGRATION.integrationId)).toBe(false)
     await reborn.stop()
   })
 
-  it('applyIntegrationRemove splices it out of agent.json and the live set', async () => {
+  it('applyIntegrationRemove drops it from memory without rewriting agent.json', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
@@ -167,7 +162,7 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     await daemon.stop()
   })
 
-  it('register/ok integrations[] converge persists the daemon-scoped set to disk', async () => {
+  it('register/ok integrations[] converges the daemon-scoped set in memory', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
     const { daemon } = makeDaemon(root)
@@ -187,7 +182,7 @@ describe('Daemon CP integration → persisted to agent.json (disk is the source 
     const eff = (daemon as unknown as { agents: Map<string, { integrations: { id: string }[] }> }).agents.get('bot-a')!
     expect(eff.integrations[0]!.id).toBe(INTEGRATION.integrationId)
     const onDisk = JSON.parse(readFileSync(join(root, 'agents', 'bot-a', 'agent.json'), 'utf8'))
-    expect(onDisk.integrations[0].id).toBe(INTEGRATION.integrationId)
+    expect(onDisk.integrations).toEqual([])
 
     await daemon.stop()
   })

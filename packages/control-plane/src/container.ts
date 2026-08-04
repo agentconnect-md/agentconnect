@@ -99,7 +99,6 @@ import { AgentSpecAssembler } from './orchestrator/agentSpecAssembler.js'
 import { Placement } from './orchestrator/placement.js'
 import { Watchdog } from './orchestrator/watchdog.js'
 import { CronRunReaper } from './orchestrator/cronRunReaper.js'
-import { SlackInstallReaper } from './orchestrator/slackInstallReaper.js'
 import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
@@ -166,10 +165,11 @@ import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/disc
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
 import type { CpPlatformRegistry } from './platforms/provider.js'
 import { buildCpPlatformRegistry } from './platforms/registry.js'
+import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider } from './platforms/slack/provider.js'
-import { createFeishuCpProvider, FEISHU_REGISTRATION_TTL_MS } from './platforms/feishu/provider.js'
+import { createFeishuCpProvider } from './platforms/feishu/provider.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
@@ -195,9 +195,10 @@ export interface Container {
   /** The single-tenant anchors the devAuth stub injects. */
   readonly defaults: { orgId: string; ownerId: string }
   /** §9 platform-provider registry (S3) — all four platforms (Telegram,
-   *  Discord, Slack, Feishu). Composed here so the graph is whole; the route /
-   *  spec-assembly / config / background-lifecycle call sites adopt it in
-   *  follow-up PRs (nothing consumes it yet). */
+   *  Discord, Slack, Feishu). Composed here so the graph is whole, and now the
+   *  authority for route mounting, the create body + its live credential check,
+   *  the pending-install reapers and the background convergence loops. Spec
+   *  assembly and `rc/bot-assign` adopt it in a follow-up PR. */
   readonly platforms: CpPlatformRegistry
   /** The process readiness gate — the bootstrap flips it at SIGTERM (`/readyz`). */
   readonly readiness: Readiness
@@ -528,6 +529,23 @@ export function buildContainer(
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
   const sender = new ControlSender(connReg, repos.launch)
 
+  // LATE-BOUND platform registry (§9). The providers are constructed FAR below —
+  // they close over `httpDeps`, whose own route plugins do not exist yet — but the
+  // orchestrators built here already need to reach them (spec assembly,
+  // `rc/bot-assign`). `platforms` is a stable façade every holder can capture now;
+  // it forwards to the composed registry, and every read runs at reconcile /
+  // sync / request time, long after `buildContainer` has assigned it.
+  let composedPlatforms: CpPlatformRegistry | undefined = undefined
+  const requirePlatforms = (): CpPlatformRegistry => {
+    if (!composedPlatforms) throw new Error('platform registry read before composition')
+    return composedPlatforms
+  }
+  const platforms: CpPlatformRegistry = {
+    get: (platformId) => requirePlatforms().get(platformId),
+    all: () => requirePlatforms().all(),
+    ids: () => requirePlatforms().ids()
+  }
+
   // Per-session memory-capture gate convergence (session-visibility.md §5.1):
   // the CP is the authority on effective visibility; daemons only enforce it.
   const visibilityPush = new SessionVisibilityPushService({
@@ -566,7 +584,8 @@ export function buildContainer(
       info: (o, m) => http.log.info(o, m),
       warn: (o, m) => http.log.warn(o, m),
       debug: (o, m) => http.log.debug(o, m)
-    }
+    },
+    platforms
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -575,6 +594,7 @@ export function buildContainer(
     integrationChannels: repos.integrationChannel,
     bots: repos.bot,
     botSecrets: repos.botSecret,
+    platforms,
     specs: agentSpecs,
     crons: repos.cron,
     control: sender,
@@ -598,6 +618,7 @@ export function buildContainer(
     agentSpecs,
     repos.integrationChannel,
     repos.bot,
+    platforms,
     {
       registry: connReg,
       sender,
@@ -782,19 +803,14 @@ export function buildContainer(
   const syncDiscordBotProfile = createDiscordBotProfileSyncer(iconStore)
   const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
-  // LATE-BOUND on purpose: the providers below are constructed WITH `httpDeps`
-  // (their funnel plugins are route factories pre-bound to this very bundle), so
-  // the registry cannot exist before this object does. Every reader runs at
-  // Fastify `ready()` time or later — route plugins are registered lazily — by
-  // which point `buildContainer` has assigned it.
-  let platformRegistry: CpPlatformRegistry | undefined = undefined
-
   const httpDeps: HttpDeps = {
     clock,
-    get platforms(): CpPlatformRegistry {
-      if (!platformRegistry) throw new Error('platform registry read before composition')
-      return platformRegistry
-    },
+    // The same late-bound façade the orchestrators above hold (see its
+    // definition): the providers below are constructed WITH `httpDeps` — their
+    // funnel plugins are route factories pre-bound to this very bundle — so the
+    // registry cannot exist before this object does. Every reader runs at
+    // Fastify `ready()` time or later, by which point it has been assigned.
+    platforms,
     repos: {
       agent: repos.agent,
       assignment: repos.assignment,
@@ -956,37 +972,6 @@ export function buildContainer(
       )
     : undefined
 
-  // Sweeps abandoned Slack auto-install sessions (§Tier B) so a client secret + bot
-  // token never lingers past the funnel. Same lifecycle as the cron reaper.
-  const slackInstallReaper = new SlackInstallReaper(
-    repos.slackInstall,
-    clock,
-    { ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
-    http.log
-  )
-
-  // The platform-app install rows (state → tenancy, no secrets) age out on the
-  // same TTL — an abandoned "Add to Slack" tab must not leave a live state nonce.
-  const slackPlatformInstallReaper = new SlackInstallReaper(
-    repos.slackPlatformInstall,
-    clock,
-    { ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
-    http.log,
-    'slack-platform-install'
-  )
-
-  // Device code/App Secret are encrypted but deliberately short-lived. Retain
-  // a terminal status briefly for the browser, then clear the durable row.
-  // (The TTL constant lives with the Feishu provider — one implementation with
-  // its §9 `pendingInstalls` declaration.)
-  const feishuRegistrationReaper = new SlackInstallReaper(
-    repos.feishuAppRegistration,
-    clock,
-    { ttlMs: FEISHU_REGISTRATION_TTL_MS, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
-    http.log,
-    'feishu-registration'
-  )
-
   // One-time preset backfill (preset-agents.md §3.2): existing orgs receive the
   // `agentconnect` general preset; the preset_agent row is the per-org marker, so
   // the sweep converges to a no-op after its first complete run.
@@ -1054,14 +1039,18 @@ export function buildContainer(
   // path). The Slack/Feishu funnel plugins are handed in PRE-BOUND to
   // `httpDeps` — the very factories `server.ts` mounts — keeping provider
   // construction one-directional (a provider never reaches back for a route
-  // factory). That is also why the registry is published to `httpDeps` through
-  // the late-bound getter above rather than as a plain field.
+  // factory). That is also why every holder captures the late-bound `platforms`
+  // façade defined near the top rather than this value directly.
   //
-  // ADOPTED SO FAR: the `POST /integrations` create body + its live
-  // `validateConfig` dispatch read the registry through `httpDeps.platforms`.
-  // Spec assembly, rc/bot-assign, route mounting, `loadConfig`'s schema fold,
-  // and `startBackground()` adopt it in follow-up PRs.
-  const platforms = buildCpPlatformRegistry([
+  // ADOPTED SO FAR: route mounting (`server.ts` asks each provider for its
+  // plugins per scope), the `POST /integrations` create body + its live
+  // `validateConfig` + `buildNewBotInstall` tail, the pending-install reapers and
+  // the background loops below, `loadConfig`'s env fold (through the static
+  // `platforms/env.ts` declaration — `loadConfig` runs before this registry can
+  // exist, since providers are constructed FROM the parsed config), and (§9) ALL
+  // wire projection: `IntegrationSpec.config` on every spec-assembly path and
+  // both `rc/bot-assign` bags.
+  composedPlatforms = buildCpPlatformRegistry([
     createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
     createDiscordCpProvider({
       verifyBot: verifyDiscordBot,
@@ -1094,7 +1083,13 @@ export function buildContainer(
       }
     })
   ])
-  platformRegistry = platforms
+
+  // Pending-install TTL reapers + provider-owned convergence loops, from the
+  // providers' §9 declarations (`platforms/lifecycle.ts`) instead of the four
+  // hand-listed instances this used to hold. Same lifecycle as the cron reaper:
+  // built here so the graph is whole, armed only by `startBackground()`.
+  const pendingInstallReapers = buildPendingInstallReapers(platforms, clock, http.log)
+  const backgroundLoops = platformBackgroundLoops(platforms)
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
@@ -1429,11 +1424,9 @@ export function buildContainer(
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
-      slackInstallReaper.start()
-      slackPlatformInstallReaper.start()
-      feishuRegistrationReaper.start()
+      for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
-      slackBotIdentityReconciler.start()
+      for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
@@ -1445,11 +1438,9 @@ export function buildContainer(
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
       installationDoorbell?.stop()
-      slackInstallReaper.stop()
-      slackPlatformInstallReaper.stop()
-      feishuRegistrationReaper.stop()
+      for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
-      slackBotIdentityReconciler.stop()
+      for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
       await Promise.allSettled([
         webchatMcpOperationSettled,

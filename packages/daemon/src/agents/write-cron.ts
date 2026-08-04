@@ -19,8 +19,8 @@ import { protectAgentJson, writeAgentJson } from './agent-json-file.js'
 import { findAgentFiles } from './load-agents.js'
 import { findAgentFileById } from './write-agent.js'
 
-/** Map the wire def to the agent.json `CronDef` shape (agent-schema). */
-function toCronDef(cron: CronUpsert): CronDef {
+/** Map the wire def to the daemon's `CronDef` shape (agent-schema). */
+export function toCronDef(cron: CronUpsert): CronDef {
   return {
     id: cron.cronId,
     schedule: cron.schedule,

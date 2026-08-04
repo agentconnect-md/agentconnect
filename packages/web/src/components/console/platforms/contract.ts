@@ -92,7 +92,7 @@
  * directories is exactly why D1 keeps modules in this tree (see
  * packages/web/STYLE.md).
  */
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import type { BotDto, CreateIntegrationInput, SessionMessageDto } from '@/lib/api'
 import type { Agent } from '@/lib/data'
 
@@ -351,16 +351,30 @@ export interface WebWizardFacet {
 /**
  * Settings → Bots fragments (§10 `settingsFragments`), split along the real
  * division in `SettingsView.tsx`: pure per-bot adornments vs the stateful
- * maintenance machinery. The host mounts a module's fragment slice as its own
- * component (one per platform tab), so the optional hook below never changes
- * a mounted component's hook order.
+ * maintenance machinery.
  *
- * @typeParam TCardState The module's OWN card-scope state type — the product
- *   of {@link lifecycleActions}' `useCardState`, flowing opaquely through the
- *   host into the fragments that need it (the relay contract's `TVerified`
- *   pattern). `void` for modules without lifecycle machinery.
+ * THE CARD STATE IS THE MODULE'S, NOT A HOST PROP. This interface was published
+ * with a `TCardState` type parameter — `useCardState()` returning it and the
+ * fragments taking it as a prop, "flowing opaquely through the host" the way the
+ * relay contract's `TVerified` does. The adoption PR found that shape cannot be
+ * built in TypeScript: `WebPlatformRegistry` stores modules as a homogeneous
+ * `WebPlatformModule[]`, which resolves `TCardState` to its default, and a
+ * `ComponentType<{ card: SlackBotCardState }>` is NOT assignable to
+ * `ComponentType<{ card: void }>` — component props are checked
+ * contravariantly under `strictFunctionTypes`, so the erasure a registry
+ * performs is exactly the one the parameter cannot survive. (The relay's
+ * generic works because each route binds `TVerified` at its own call site; a
+ * React registry array binds nothing.) Only `any` rescues the prop version.
+ *
+ * So the state stays INSIDE the module, behind its own context: the host mounts
+ * {@link lifecycleActions}' `CardProvider` once per platform tab and the
+ * module's own fragments read from it. The host still never learns the shape —
+ * it just no longer carries it — and the erasure hazard is gone rather than
+ * suppressed with `any`. Mounting per tab (keyed by platform id) is what keeps a
+ * module's hooks from changing identity under a live component, the same reset
+ * seam the wizard Body uses.
  */
-export interface WebBotSettingsFragments<TCardState = void> {
+export interface WebBotSettingsFragments {
   /** Pure per-bot row adornments, renderable from the `BotDto` alone. */
   botCard?: {
     /** Name-cell badges — the Slack transport tag that explains the Sharable
@@ -368,33 +382,46 @@ export interface WebBotSettingsFragments<TCardState = void> {
     RowBadges?: ComponentType<{ bot: BotDto }>
     /** Action-cell provider deep links: Slack's api.slack.com app settings
      *  (:1312-1324), Discord's ready-made invite (:1325-1337), the Feishu /
-     *  Lark console per region (:71-74, :1338-1345). The delete dialog's
-     *  provider link (DeleteBotModal.tsx:18-20) folds into the same member
-     *  when the module moves. */
+     *  Lark console per region (:71-74, :1338-1345). */
     RowLinks?: ComponentType<{ bot: BotDto }>
+    /**
+     * The delete dialog's "what AgentConnect cannot delete for you" block —
+     * the provider sentence plus its deep link (DeleteBotModal.tsx:51-71).
+     * A member of its own rather than a reuse of {@link RowLinks}: the row
+     * link is a bare icon button in a 100px action track, this is a labelled
+     * secondary button under an explanatory sentence. Absent ⇒ the dialog
+     * shows no provider block, which is the right answer for a platform whose
+     * bot has no console page to finish the job on (Telegram: BotFather is a
+     * chat, not a URL).
+     */
+    DeleteNotice?: ComponentType<{ bot: BotDto }>
   }
   /** Stateful bot-maintenance flows — today Slack's manifest-refresh and
    *  builtin-reinstall machinery, ~180 lines of card-scoped state
    *  (:1036-1134) feeding both a row control and a card banner. */
   lifecycleActions?: {
-    /** Card-scoped state hook, called once per platform tab by the host's
-     *  wrapper component. Owns the cross-row invariants the audit found —
-     *  one refresh in flight per card (`slackRefreshBusyId`), one reinstall
-     *  poll (`slackReinstall`, :1073-1134), the per-bot result map. */
-    useCardState(): TCardState
+    /** Mounts the card-scope state, once per platform tab, around the host's
+     *  row list. Owns the cross-row invariants the audit found — one refresh
+     *  in flight per card (`slackRefreshBusyId`), one reinstall poll
+     *  (`slackReinstall`, :1073-1134), the per-bot result map. Renders its
+     *  children unchanged; it is a state carrier, not chrome. */
+    CardProvider: ComponentType<{ children: ReactNode }>
     /** Row action-cell controls — the refresh button with its
      *  needs-attention halo (:1295-1311), driven by the card state and the
      *  viewer's write access. */
-    RowActions: ComponentType<{ bot: BotDto; canWrite: boolean; card: TCardState }>
-    /** Expanded-card banner — the refresh/reinstall outcome notice
+    RowActions: ComponentType<{ bot: BotDto; canWrite: boolean }>
+    /** Per-bot card banners — the refresh/reinstall outcome notice
      *  (`SlackRefreshNotice` :532-579 over the `slackRefreshNoticeState`
-     *  reducer, lib/slack-refresh-notice.ts:19-62). */
-    CardNotice?: ComponentType<{ bot: BotDto; card: TCardState }>
+     *  reducer, slack/refresh-notice.ts:19-62) AND the refresh FAILURE banner
+     *  beside it (:1372-1379), which is card state the host has no other way
+     *  to render. Rendered under the row, outside the expanded-channels
+     *  guard, exactly where both sit today. */
+    CardNotice?: ComponentType<{ bot: BotDto }>
   }
 }
 
 /** One install-polling flow's public state — the exact shape of
- *  `useSlackPlatformInstall` (lib/use-slack-platform-install.ts:30-36):
+ *  `useSlackPlatformInstall` (slack/use-platform-install.ts):
  *  mint the authorize URL, open the popup, poll the install row to a terminal
  *  state, recover when the popup is abandoned. */
 export interface WebInstallPoll {
@@ -455,11 +482,13 @@ export interface WebChannelListSemantics {
  * module is one line in the (future) registry file; no host component grows a
  * platform branch.
  *
- * @typeParam TApi       The module's OWN typed CP client surface — see
- *                       {@link apiBindings}.
- * @typeParam TCardState See {@link WebBotSettingsFragments}.
+ * @typeParam TApi The module's OWN typed CP client surface — see
+ *                 {@link apiBindings}. It survives the registry's erasure to
+ *                 `WebPlatformModule` because it appears only in a covariant
+ *                 position; see {@link WebBotSettingsFragments} for the one that
+ *                 did not.
  */
-export interface WebPlatformModule<TApi = unknown, TCardState = void> {
+export interface WebPlatformModule<TApi = unknown> {
   /** Platform id (§6.1 vocabulary). Never parsed. */
   readonly platformId: string
   /**
@@ -479,7 +508,7 @@ export interface WebPlatformModule<TApi = unknown, TCardState = void> {
   wizard: WebWizardFacet
   /** Settings → Bots fragments. Absent ⇒ the platform's bot rows carry no
    *  extra chrome. */
-  settingsFragments?: WebBotSettingsFragments<TCardState>
+  settingsFragments?: WebBotSettingsFragments
   /**
    * The module's own typed CP client bindings — today's platform-named
    * exports of `lib/api.ts` (the eight Slack install/funnel/config calls
@@ -490,6 +519,17 @@ export interface WebPlatformModule<TApi = unknown, TCardState = void> {
    * mock seam), and so the S4 packaging boundary is visible now. Generic,
    * platform-free calls (`createIntegration`, `leaveIntegrationConversation`
    * :3269-3274, `updateBot`) stay in `lib/api.ts`.
+   *
+   * The bindings NAME the calls; the fetch itself still lives in `lib/api.ts`,
+   * whose `apiGet`/`apiPost` transport helpers are deliberately unexported.
+   * Relocating the bodies would mean exporting that transport — widening
+   * `lib/api.ts` from "the typed CP client" to "a request kit any module may
+   * build on", which is a bigger contract change than this member is asking
+   * for. The seam is what matters: every module-side caller goes through here,
+   * so S4 can move the bodies without touching a call site. One direct caller
+   * remains outside a module — `SlackConfigCard`, which is a PROFILE-page card
+   * (the per-user Slack App Configuration token) and has no member here,
+   * because `settingsFragments` is scoped to Settings → Bots.
    */
   apiBindings: TApi
   /** Out-of-wizard install polling (Slack today). */
@@ -498,41 +538,63 @@ export interface WebPlatformModule<TApi = unknown, TCardState = void> {
    *  noun, `#` glyph, `leave: 'none'`, generic copy. */
   channelList?: WebChannelListSemantics
   /**
-   * Per-platform transcript text renderer — the §14 defect-3 seam, DECLARED
-   * here and adopted separately. Today ONE global renderer applies Slack
-   * mrkdwn rewriting to every platform's rows (`MessageText`,
-   * components/console/MessageText.tsx:30-54 over `slackToMarkdown`,
-   * slack-mrkdwn.ts:64; call sites SessionDetailView.tsx:3022, :3104,
-   * :3154). NOTHING consults this member in this PR: adoption means a
-   * renderer registry keyed by platformId that ships the Slack renderer as
-   * the default for all chat platforms (preserving today's behavior), with
-   * per-platform overrides landing as their own explicitly-reviewed behavior
-   * changes (§10, §14). A component rather than a `(text, ctx) => ReactNode`
-   * function so the memoization that keeps the transcript affordable
-   * (MessageText.tsx:26-30) survives the seam.
+   * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:
+   * `MessageText` resolves it from the ROW's platform key
+   * (`MergedRow.sourcePlatform`, falling back to the session's platform) on
+   * every row it renders, through `platformTextRenderer` in the registry.
+   *
+   * NO MODULE DECLARES ONE TODAY, and that is the shipped state §10 asks for:
+   * "a renderer registry keyed by platformId ships with the Slack renderer as
+   * the default for all chat platforms, then per-platform overrides land
+   * separately (§14)". The default is core (`SlackMrkdwnText`,
+   * components/console/MessageText.tsx over `slackToMarkdown`,
+   * slack-mrkdwn.ts) rather than the Slack module's member, because three
+   * other platforms render through it: making it Slack's would leave Telegram,
+   * Discord and Feishu reading another module's internals. It moves into
+   * `platforms/slack/` on the day Slack's semantics stop being everyone's —
+   * i.e. with the first override, which is also the first change here with
+   * visible pixels.
+   *
+   * A component rather than §10's sketched `(text, ctx) => ReactNode` so the
+   * memoization that keeps the transcript affordable survives the seam: the
+   * transcript re-renders on every unrelated state change in
+   * SessionDetailView, and `MessageText` is `memo`ized over its plain-string
+   * props precisely so each row's remark pipeline does NOT re-run. A bare
+   * function returning a `ReactNode` cannot be memoized by the host, and no
+   * call site has a `ctx` to pass.
    */
   textRenderer?: ComponentType<{ text: string }>
   /**
    * Provider-native duplicate identity of one transcript row — the
-   * per-platform arms of the merged-conversation dedupe
-   * (`duplicateIdentity`, lib/conversation-merge.ts:115-122: Slack decimal
-   * ts, Discord snowflakes, Telegram short sequence ids, Feishu `om_` ids;
+   * per-platform arms of the merged-conversation dedupe (Slack decimal ts,
+   * Discord snowflakes, Telegram short sequence ids, Feishu `om_` ids;
    * platform selects the rule via `MergeSource.platform`,
-   * :14-19). `null` = this row never dedupes across sources. Absent ⇒ the
-   * merge never dedupes this platform's rows — its stated fail-closed
-   * direction ("toward a visible duplicate, never toward data loss",
-   * :108-110). Consumed by a CORE routine (audit Appendix D, ambiguous
-   * row 5): the merge algorithm stays host-owned; only the identity rule is
-   * the module's.
+   * lib/conversation-merge.ts). `null` = this row never dedupes across
+   * sources. Absent ⇒ the merge never dedupes this platform's rows — its
+   * stated fail-closed direction ("toward a visible duplicate, never toward
+   * data loss").
+   *
+   * Consumed by a CORE routine (audit Appendix D, ambiguous row 5): the merge
+   * algorithm stays host-owned, and so do the two rules that are not any
+   * platform's — only `kind === 'text'` rows dedupe at all, and `webchat`
+   * keys on its canonical `postId`. `webchat` is not a module (it has no bot
+   * identity to install), so its arm cannot move here. What the module owns is
+   * the id SHAPE of its own provider.
+   *
+   * ADOPTED, and the "absent ⇒ never" direction is now REAL rather than
+   * documentary: it used to be Slack's decimal-ts rule that ran for every
+   * unrecognized platform id, because Slack was the fall-through arm of an
+   * if-chain. Nothing is the fall-through now.
    */
   messageIdentity?(row: SessionMessageDto): string | null
   /**
    * Whether transcript pages re-sort by event time or trust the daemon
-   * sequence — today's `platform !== 'slack'` fork in `mergeSessionMessages`
-   * (lib/session-transcript.ts:8-20): Slack rows carry provider send-times
-   * that the display order must follow; everyone else orders by `seq`.
-   * Absent ⇒ `'seq'` (the conservative arm every non-Slack platform takes
-   * today).
+   * sequence — the `platform !== 'slack'` fork `mergeSessionMessages`
+   * (lib/session-transcript.ts) used to spell out: Slack rows carry provider
+   * send-times that the display order must follow; everyone else orders by
+   * `seq`. Absent ⇒ `'seq'`, which is both the conservative arm and the arm
+   * every non-Slack platform already took, so ADOPTING this member moved the
+   * fork without moving the behavior.
    */
   transcriptOrdering?: 'seq' | 'event-time'
 }
