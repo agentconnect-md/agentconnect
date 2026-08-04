@@ -652,8 +652,17 @@ export class RelayIngressManager {
     if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    const targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
-    if (targets.length === 0) return drop('no verified recipient')
+    // §2.3: an agent message that names nobody still continues the conversation — it goes
+    // through the SAME arbitration a human message does, with the author excluded so it
+    // cannot wake itself. `arbitrate` normally stops bot traffic at the explicit-mention
+    // rung; a VERIFIED author is a known participant with a checked policy, not anonymous
+    // bot traffic, so it is allowed past.
+    let targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
+    if (targets.length === 0) {
+      const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
+      if (!implicit) return drop('no implicit rung matched')
+      targets = [implicit.agentId]
+    }
 
     for (const targetAgentId of targets) {
       // Every listed author→target edge is checked independently and against the RELAY's

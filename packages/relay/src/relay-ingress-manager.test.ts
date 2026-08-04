@@ -565,18 +565,35 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
-    it('does not route an agent message that addresses nobody', async () => {
-      // §2.3: an unmentioned agent message never activates through the `auto` channel
-      // rung this bot has — which is exactly the rung a human message would take here.
+    it('continues the conversation implicitly when the message addresses nobody', async () => {
+      // §2.3: an agent message that names nobody takes the SAME ladder a human message
+      // would — here the channel's `auto` rung. This is what lets agents converse without
+      // having to name each other in every line.
       const { internals, sendMsg } = managerWith()
       await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
-      expect(sendMsg).not.toHaveBeenCalled()
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedFromAgentId: AUTHOR_ID })
     })
 
-    it('does not let an author activate itself', async () => {
-      const { internals, sendMsg } = managerWith()
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
-      expect(sendMsg).not.toHaveBeenCalled()
+    it('never selects the author as the target, on either path', async () => {
+      // The one absolute in §2.3. Self-activation is not a loop that the hop cap slows
+      // down — it is unconditional, since the agent's own reply always matches its own
+      // rule. Holds for an explicit self-mention AND for the implicit fallback.
+      const explicit = managerWith()
+      await explicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
+      for (const call of explicit.sendMsg.mock.calls) {
+        expect((call[0] as { agentId: string }).agentId).not.toBe(AUTHOR_ID)
+      }
+
+      // With the author as the channel's ONLY route, the implicit rung has nobody left to
+      // pick — and must resolve to nothing rather than back to the author.
+      const alone = managerWith()
+      const selfOnly = channelAutoOwned()
+      selfOnly.routes = selfOnly.routes.map((r) => ({ ...r, agentId: AUTHOR_ID }))
+      selfOnly.defaultAgentId = AUTHOR_ID
+      alone.internals.router.upsert(selfOnly)
+      await alone.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [] }))
+      expect(alone.sendMsg).not.toHaveBeenCalled()
     })
 
     it('refuses a claimed author the sending app does not back', async () => {

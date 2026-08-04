@@ -118,19 +118,29 @@ const target = (r: AttributedRoute): RouteTarget => ({
 export function arbitrate(
   a: BotAssignment,
   msg: WireNormalizedMessage,
-  affinity: Map<string, RouteTarget>
+  affinity: Map<string, RouteTarget>,
+  /** send-message-routing-rework.md §2.3: a VERIFIED AgentConnect author routes through
+   *  this ladder exactly as a human would, with itself excluded so it cannot self-wake.
+   *  Unverified bots — including third-party ones — still stop at the explicit mention. */
+  verifiedAgentAuthor?: string
 ): RouteTarget | null {
   // Own echoes never route. A third-party Slack bot may enter only through an
   // explicit mention; AgentConnect-managed app messages are removed by the manager
   // using the collaboration snapshot before forwarding.
-  if (a.botUserId !== undefined && msg.sender.id === a.botUserId) return null
+  if (a.botUserId !== undefined && msg.sender.id === a.botUserId && verifiedAgentAuthor === undefined) return null
   const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
-  if (msg.sender.isBot && (msg.platform !== 'slack' || !explicitlyMentioned)) return null
+  if (msg.sender.isBot && verifiedAgentAuthor === undefined && (msg.platform !== 'slack' || !explicitlyMentioned)) {
+    return null
+  }
   // A channel switched Off resolves to no target at all — ahead of every rung, so
   // neither an @-mention nor an existing thread binding can reach into it.
   if (a.mutedChannels?.includes(msg.channel)) return null
 
-  const scoped = a.routes.filter((r) => r.scope?.channel !== undefined && scopeMatches(r, msg))
+  // The author is removed ONCE, so every rung below inherits the exclusion — an agent
+  // matching its own route would wake itself on its own reply, an unconditional self-loop.
+  const routes =
+    verifiedAgentAuthor === undefined ? a.routes : a.routes.filter((r) => r.agentId !== verifiedAgentAuthor)
+  const scoped = routes.filter((r) => r.scope?.channel !== undefined && scopeMatches(r, msg))
 
   // 1. Channel ownership (§10.1, the primary path): a channel-scoped rule that
   //    matches the message kind wins outright (mention rule needs the @bot; auto
@@ -150,7 +160,10 @@ export function arbitrate(
   //    conversation-gated agent (§14), provided the conversation is still enabled
   //    (a channel-scoped route for that agent exists). The affinity map is not
   //    scope-filtered, so without this check a pre-gate binding routes forever.
-  const cont = affinity.get(sessionKeyOf(msg))
+  // A continuity binding pointing at the author is skipped for the same reason: the
+  // thread's remembered owner may BE the agent that just spoke.
+  const remembered = affinity.get(sessionKeyOf(msg))
+  const cont = remembered && remembered.agentId === verifiedAgentAuthor ? undefined : remembered
   const contGateOk = !cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId)
   if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
     if (cont.integrationId) return cont
@@ -164,13 +177,13 @@ export function arbitrate(
   //    a normal channel message doesn't trigger it.
   const addressed = explicitlyMentioned || msg.isDm
   if (addressed) {
-    const kw = a.routes.find((r) => r.match.kind === 'keyword' && !r.scope && kindMatches(r, msg, a.botUserId))
+    const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && kindMatches(r, msg, a.botUserId))
     if (kw) return target(kw)
 
     // 4. Default agent (§10.3): a bare @bot / DM with no slug → the group default.
-    if (a.defaultAgentId && a.defaultDaemonId) {
+    if (a.defaultAgentId && a.defaultDaemonId && a.defaultAgentId !== verifiedAgentAuthor) {
       // Resolve the default's integrationId from its (keyword) route.
-      const def = a.routes.find((r) => r.agentId === a.defaultAgentId)
+      const def = routes.find((r) => r.agentId === a.defaultAgentId)
       if (def) return { agentId: a.defaultAgentId, daemonId: a.defaultDaemonId, integrationId: def.integrationId }
     }
   }
@@ -490,6 +503,22 @@ export class BotArbitrationRouter {
     const integrationId = route?.integrationId ?? a.agents.find((x) => x.agentId === agentId)?.integrationId
     if (!integrationId) return null
     return { agentId, daemonId, integrationId }
+  }
+
+  /**
+   * Resolve an AgentConnect-authored message through the ordinary ladder, with the
+   * verified author excluded (send-message-routing-rework.md §2.3).
+   *
+   * Deliberately does NOT record thread affinity: an agent continuing a conversation is
+   * not the same event as a human establishing who owns the thread, and letting agent
+   * traffic rewrite the binding would let two agents hand ownership back and forth away
+   * from the human who started it.
+   */
+  routeAgentAuthored(botId: string, msg: WireNormalizedMessage, authorAgentId: string): RouteTarget | null {
+    const a = this.bots.get(botId)
+    if (!a) return null
+    const aff = this.affinity.get(botId) ?? new Map<string, RouteTarget>()
+    return arbitrate(a, msg, aff, authorAgentId)
   }
 
   /** Every currently-assigned bot (ingest lifecycle reconciliation). */

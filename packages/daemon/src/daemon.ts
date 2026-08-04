@@ -5654,7 +5654,8 @@ export class Daemon {
    */
   private routeVerifiedAgentMessage(
     msg: NormalizedMessage,
-    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>
+    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
+    srcIntegrationIds?: string[]
   ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } {
     const transcriptOnly = (why: string): { kind: 'rejected'; reason: DeliveryRejectionReason } => {
       this.recordUnrouted(msg)
@@ -5668,10 +5669,12 @@ export class Daemon {
     if (deliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    // The author cannot activate itself (§2.3), and an empty set is the ordinary case:
-    // most agent messages address nobody.
+    // The author cannot activate itself (§2.3). An empty set is the ordinary case — most
+    // agent messages name nobody — and it is no longer the end of the road: the message
+    // falls through to the SAME implicit ladder a human message takes.
     const targets = verified.recipients.filter((id) => id !== verified.authorAgentId)
-    if (targets.length === 0) return transcriptOnly('no verified recipient')
+    if (targets.length === 0)
+      return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
 
     // EVERY admissible recipient is activated. One finalized response can address several
     // agents ("<@A> <@B> please both look"), and stopping at the first would silently drop
@@ -5715,7 +5718,62 @@ export class Daemon {
       }
       return first
     }
-    return transcriptOnly('no admissible local target in the verified recipient set')
+    // Every named recipient was refused (policy, gate, not local). The message still gets
+    // the implicit ladder: "the agents it named are unreachable here" is not the same
+    // statement as "this conversation has nobody to continue with".
+    return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
+  }
+
+  /**
+   * §2.3: an agent message that names nobody routes through the SAME ladder a human
+   * message takes — thread affinity, DM, keyword, channel `auto`, default agent — with
+   * the author excluded.
+   *
+   * This is what makes agents conversational participants rather than things that only
+   * respond when addressed by name. It also means a multi-agent conversation is bounded
+   * by the loop protections rather than by anyone choosing to stop: the hop cap
+   * (`MAX_AGENT_CALL_HOPS`) and the durable loop guard are now the ordinary terminating
+   * conditions for an agent-to-agent exchange, not exceptional ones.
+   *
+   * Everything the explicit path checks still applies — call policy, the conversation
+   * Off/gated fence, the hop transition, and exactly-once admission — because those are
+   * properties of the EDGE, and an implicitly-selected edge is still an agent call.
+   */
+  private routeAgentMessageImplicitly(
+    msg: NormalizedMessage,
+    verified: NonNullable<ReturnType<Daemon['verifyAgentAuthor']>>,
+    deliveryHopCount: number,
+    srcIntegrationIds?: string[]
+  ): { kind: 'rejected'; reason: DeliveryRejectionReason } | { kind: 'dispatched'; handle: DeliveryHandle } {
+    const transcriptOnly = (why: string): { kind: 'rejected'; reason: DeliveryRejectionReason } => {
+      this.recordUnrouted(msg)
+      this.log.debug(`routing: agent-authored ${msg.msgId} is transcript-only (${why})`)
+      return { kind: 'rejected', reason: 'unrouted' }
+    }
+    const routed = routeRules(
+      msg,
+      this.mergedRulesForSource(srcIntegrationIds),
+      (c, t) => this.sessions.threadOwner(c, t, msg.transportScope),
+      undefined,
+      verified.authorAgentId
+    )
+    if (!routed) return transcriptOnly('no implicit rung matched')
+    if (!this.agents.has(routed.agentId)) return transcriptOnly(`${routed.agentId} is not local`)
+    if (!this.cpCollab.admits(verified.authorAgentId, routed.agentId)) {
+      return transcriptOnly(`call policy excludes ${verified.authorAgentId} -> ${routed.agentId}`)
+    }
+    if (!this.agentConversationAdmits(routed.agentId, msg)) {
+      return transcriptOnly(`${routed.agentId} is off in this conversation`)
+    }
+    const outcome = this.activateVerifiedAgentTarget(msg, verified, routed.agentId, deliveryHopCount)
+    if (outcome) {
+      this.log.info(
+        `routing: agent-authored ${msg.msgId} continued the conversation "${verified.authorAgentId}" → ` +
+          `"${routed.agentId}" via ${routed.via} (hop ${deliveryHopCount})`
+      )
+      return outcome
+    }
+    return transcriptOnly(`${routed.agentId} produced no activation`)
   }
 
   /**
@@ -5932,7 +5990,7 @@ export class Daemon {
         this.log.debug(`routing: unverified AgentConnect message ${msg.msgId} is transcript-only`)
         return { kind: 'rejected', reason: 'suppressed' }
       }
-      return this.routeVerifiedAgentMessage(msg, verified)
+      return this.routeVerifiedAgentMessage(msg, verified, srcIntegrationIds)
     }
 
     // §14.3: gated-conversation discovery must precede command interception AND

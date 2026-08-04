@@ -10,11 +10,15 @@ import { sessionKey } from '../src/store/local-store.js'
  * platform message authored by an AgentConnect agent.
  *
  * The behavior under test is a reversal: an agent-authored Slack message used to be
- * dropped outright, and is now routable — but only through its own ladder. These tests
- * are mostly about what still must NOT happen. Activation may come only from an explicit,
- * verified recipient; every implicit rung a human message could take (thread affinity,
- * DM, keyword, channel `auto`, default-agent fallback) must stay unreachable, and every
- * unverifiable claim must fail closed.
+ * dropped outright, and now routes through the SAME ladder a human message takes — named
+ * recipients first, then the implicit rungs — so agents converse without having to name
+ * each other in every line.
+ *
+ * What remains absolute, and is most of what these tests pin: the author is never the
+ * target (self-activation is unconditional, not merely loop-prone), every edge still
+ * spends from the shared hop budget and passes call policy and the conversation Off
+ * fence, only FINAL events route, agent text can never issue control commands, and any
+ * unverifiable claim fails closed.
  */
 
 const TEST_ORG = 'org_test0000000000000000000'
@@ -41,8 +45,8 @@ function scaffold(agents: { id: string; callPolicy?: string; allowedCallerAgentI
         status: 'active',
         runtime: 'claude',
         workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
-        // An `auto` channel rule: every HUMAN message in C1 routes here. Agent-authored
-        // traffic must never reach it — that is the sharpest form of "no implicit rung".
+        // An `auto` channel rule: every message in C1 routes here, agent-authored included
+        // — that rung is exactly what carries an unaddressed agent reply to the next agent.
         integrations: [
           {
             id: `int-${a.id}`,
@@ -178,17 +182,25 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
-  it('never activates implicitly, even in an `auto` channel', async () => {
-    // §10 case 8 / §2.3. C1 has an `auto` rule: EVERY human message routes there. An
-    // agent message with no verified recipient must still activate nobody — this is the
-    // test that would catch the ladder being wired as a rung of the human one.
+  it('continues implicitly on a PEER connection, and never on the author’s own', async () => {
+    // §2.3 after the implicit-wake change. Each dedicated Slack app receives the same
+    // channel event on its OWN connection, and rules are scoped to the receiving
+    // connection — so the author's copy has only the author in scope (excluded ⇒ nothing)
+    // while the peer's copy resolves to the peer. That asymmetry is the whole mechanism:
+    // an agent never wakes itself, and every OTHER agent's connection wakes its agent.
     const { daemon, calls } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
-    expect(route(daemon, agentMessage({}, { mentionedAgentIds: [] })).kind).toBe('rejected')
-    // …and a DM from an agent is no different: a DM rung is still an implicit rung.
-    expect(route(daemon, agentMessage({ msgId: 'slack:C1:2:final', isDm: true }, { mentionedAgentIds: [] })).kind).toBe(
-      'rejected'
-    )
+    const unaddressed = agentMessage({}, { mentionedAgentIds: [] })
+
+    // The author's own connection: the only candidate is the author, so nothing happens.
+    expect((daemon as any).onInboundOutcome(unaddressed, ['int-bot-a']).kind).toBe('rejected')
     expect(calls).toHaveLength(0)
+
+    // bot-b's connection sees the same post and continues the conversation.
+    const peerCopy = agentMessage({ msgId: 'slack:C1:1720000000.000201:final' }, { mentionedAgentIds: [] })
+    expect((daemon as any).onInboundOutcome(peerCopy, ['int-bot-b']).kind).toBe('dispatched')
+    expect(calls.map((c) => c.agentId)).toEqual(['bot-b'])
+    // Still a genuine agent CALL: the hop advances, so the chain stays budgeted.
+    expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', hopCount: 1 })
     await daemon.stop()
   })
 

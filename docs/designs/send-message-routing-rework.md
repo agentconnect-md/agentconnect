@@ -29,8 +29,9 @@ Two implementation notes, recorded where they will be looked for:
 
 1. Let a finalized platform message authored by an AgentConnect agent participate
    in normal recipient routing.
-2. Make an ordinary reply with an explicit platform `@mention` the only way to
-   address an agent or human in the current thread.
+2. Make the ordinary reply the way an agent talks in its current thread — an
+   explicit `@mention` to address someone in particular, and plain text to
+   continue the conversation with whoever the ordinary routing ladder selects.
 3. Keep `sendMessage` for postless agent calls, direct messages, channel-root
    posts, and parent-session replies.
 4. Make a parent-session reply session-only by default: its injected input and
@@ -117,21 +118,37 @@ Consequences:
 - A channel-root post still starts a new platform thread/session according to
   the platform's conversation model.
 
-### 2.3 Agent-authored messages are mention-routable
+### 2.3 Agent-authored messages route like any other message
 
-A verified AgentConnect-authored platform message is eligible for routing. It is
-not eligible for implicit activation:
+A verified AgentConnect-authored platform message takes the SAME arbitration
+ladder a human message takes, with the author removed from the candidate set:
 
-- An explicit mention of agent B may activate B.
-- An unmentioned agent message never activates through thread affinity, DM,
-  keyword, channel `auto`, or default-agent fallback.
+- An explicit mention of agent B activates B.
+- An unmentioned agent message continues the conversation through the ordinary
+  implicit rungs — thread affinity, DM, keyword, channel `auto`, default agent.
+  This is what lets agents converse without naming each other in every line.
 - A mention of a human does not activate an agent.
-- The author cannot activate itself.
+- **The author can never be the target.** This is the one absolute. An agent's own
+  reply always matches its own rule, so self-activation is not a loop the hop cap
+  slows down — it is unconditional. The author is excluded once, before any rung.
 - A third-party bot keeps its existing behavior: where supported, it may activate
-  an agent only through an explicit mention.
+  an agent only through an explicit mention. The difference is verification, not
+  bot-ness — we know exactly which agent wrote a verified message and have already
+  checked its policy, so it is a participant rather than anonymous bot traffic.
 
-This rule removes the blanket managed-agent filter without turning every agent
-reply into an automatic agent call.
+Every implicitly-selected edge is still an agent call: it spends from the shared
+hop budget (§4.1), passes directional call policy, and passes the conversation
+Off/gated fence.
+
+**Consequence, stated plainly.** A multi-agent conversation now terminates because
+it hits a limit, not because someone stops addressing anyone. The hop cap and the
+durable loop guard become the ordinary terminating conditions rather than
+exceptional ones. On dedicated bots this is amplified: each app receives the same
+channel event on its own connection, so one agent message can wake every other
+agent in the channel. A channel with several `auto`-routed agents will reach the
+loop guard quickly, and the guard is a latch that only an explicit `!resume`
+clears. Operators wanting bounded multi-agent chatter should prefer `@mention`
+addressing or a narrower per-channel trigger.
 
 ## 3. `toAgent` delivery behavior
 
@@ -346,8 +363,9 @@ final platform event
 |
 |- structural/chrome event -> drop
 |- verified AgentConnect author?
-|    |- no verified logical-response recipient -> transcript only
-|    |- target == author -> transcript only
+|    |- target == author -> excluded from every rung
+|    |- no verified recipient -> fall through to the ordinary implicit ladder
+|    |    (thread affinity / dm / keyword / auto / default), author excluded
 |    |- source hop invalid or source hop + 1 exceeds cap -> transcript only (hop_limit)
 |    |- author -> target policy denied -> transcript only
 |    `- target in verified recipient set -> claim activation key -> dispatch once
