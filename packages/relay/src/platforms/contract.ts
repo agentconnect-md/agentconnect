@@ -48,6 +48,7 @@
  */
 import type { RcBotChannels, RdAck, RdMsgPlatformAction, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import type { BotAssignment, RouteTarget } from '../bot-arbitration.js'
+import type { Logger } from '../log.js'
 
 /** Demux hints a plugin extracts from one raw inbound callback BEFORE
  *  verification — the only pre-verify parse core performs on a plugin's behalf.
@@ -109,14 +110,21 @@ export interface RelayIngressHost {
   /** Forward one platform interaction as a §6.6 platform_action and return the
    *  daemon's ack — the sync-response race (see the module doc) awaits this.
    *  `msgId` is the DEDUP IDENTITY, and the plugin mints it (it derives from
-   *  parsed action semantics); core owns the dedup table on the daemon side. */
-  forwardAction(msg: RdMsgPlatformAction): Promise<RdAck>
+   *  parsed action semantics); core owns the dedup table on the daemon side.
+   *  `route` is the target the plugin resolved through the directory — the
+   *  three directory lookups are three distinct trust models, so delivery must
+   *  not re-resolve and silently substitute a different one. */
+  forwardAction(msg: RdMsgPlatformAction, route: RouteTarget): Promise<RdAck>
   /** Report the bot's channel-membership snapshot (queued while the CP link is
    *  down; a newer snapshot supersedes). */
   reportChannels(snapshot: RcBotChannels): void
-  /** Report a platform-side revocation, echoing the assignment's credential
-   *  generation so the CP's fence can refuse a stale report. */
-  reportRevoked(reason: string, eventAtMs?: number): void
+  /** Report a platform-side revocation for `botId`. `credentialRevision` is
+   *  the generation of the ASSIGNMENT THAT OBSERVED the dead credential — the
+   *  plugin captures it at buildIngest time, because assignments start
+   *  fire-and-forget and an older ingest's lifecycle probe can finish after a
+   *  newer assignment installed: fencing with the mutable current revision
+   *  would let that stale observation revoke the replacement credential. */
+  reportRevoked(botId: string, reason: string, eventAtMs?: number, credentialRevision?: number): void
   /** Arbitration reads — never the router object itself. */
   directory: {
     agents(botId: string): { agentId: string; name: string }[]
@@ -131,6 +139,19 @@ export interface RelayIngressHost {
      * answers the platform accordingly and forwards nothing).
      */
     resolveTarget(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget | undefined
+    /** Exact-pair validation for an interaction that CARRIES its rendered
+     *  target AND must still hold a live routing rule (a Slack status-modal
+     *  action): stale/tampered buttons reject instead of falling through to a
+     *  channel's current owner. */
+    targetForAgent(botId: string, agentId: string, integrationId: string): RouteTarget | undefined
+    /** Rendered-target resolution through the member DIRECTORY, with no
+     *  conversation-rule requirement (a Feishu card action — the daemon's
+     *  active-card map is its terminal fence). The three lookups are three
+     *  distinct trust models; a plugin picks the one its interaction earns. */
+    integrationTarget(botId: string, agentId: string, integrationId: string): RouteTarget | undefined
+    /** The single-install fallback for an interaction whose payload embeds no
+     *  target (a pre-target Feishu card): the bot's sole routable member. */
+    soleTarget(botId: string): RouteTarget | undefined
   }
   /** Report the bot's own platform user identity once the platform reveals it
    *  (Slack resolves it lazily via auth.test on start). Arbitration's mention
@@ -138,6 +159,12 @@ export interface RelayIngressHost {
    *  assignment is NOT guaranteed to carry `botUserId` (a manual-paste bot's
    *  CP row learns it from this very report). */
   reportBotUserId(botId: string, botUserId: string): void
+  /** Whether `route`'s daemon is connected RIGHT NOW. For interactions whose
+   *  platform affordance is one-shot (a Slack shortcut consumes its trigger
+   *  id), the plugin must know synchronously that delivery is possible, so it
+   *  can surface the platform's local unavailable path instead of silently
+   *  eating the interaction. */
+  canDeliver(route: RouteTarget): boolean
   /** Persist an explicit channel default-agent change (the config modal's
    *  durable, CP-broadcast side; no local routing effect of its own). */
   setChannelAgent(botId: string, channelId: string, agentId: string): void
@@ -148,7 +175,7 @@ export interface RelayIngressHost {
    *  CP (the 3-leg thread-affinity dance stays core). */
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   clock: { now(): number }
-  log: { info(m: string): void; warn(m: string): void; debug(m: string): void }
+  log: Logger
 }
 
 /** What handling one verified delivery produces. `syncResponse`, when present,
@@ -200,7 +227,10 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
     ingest: TIngest,
     rawBody: Buffer,
     body: unknown,
-    headers: Record<string, string | string[] | undefined>
+    headers: Record<string, string | string[] | undefined>,
+    /** Host-clock "now" (ms) — HMAC replay windows are time-based, and the
+     *  injection is what keeps verification testable under a fake clock. */
+    now: number
   ): TVerified | undefined
   /**
    * Handle one verified delivery: decode events into normalized messages and
@@ -218,5 +248,5 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
    * challenge is encrypted, so it flows through verify → handle as a
    * `syncResponse`.
    */
-  handle(ingest: TIngest, verified: TVerified): Promise<HandledDelivery>
+  handle(ingest: TIngest, verified: TVerified, host: RelayIngressHost): Promise<HandledDelivery>
 }

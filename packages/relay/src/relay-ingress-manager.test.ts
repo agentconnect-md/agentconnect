@@ -8,7 +8,6 @@ import type {
   RcThreadAssign,
   RcThreadLookupOk,
   WireFeishuCardActionEvent,
-  WireFeishuCardActionResponse,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
@@ -19,6 +18,8 @@ import {
   httpSlackActionMsgId,
   httpSlackShortcutMsgId
 } from './relay-ingress-manager.js'
+import { forwardSessionAction, forwardSessionShortcut } from './platforms/slack/ingress-plugin.js'
+import { forwardFeishuCardAction } from './platforms/feishu/ingress-plugin.js'
 import { BotArbitrationRouter, mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
 import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './slack-http-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -93,13 +94,7 @@ interface ManagerInternals {
   reportChannels(snapshot: RcBotChannels): void
   reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
-  forwardSessionAction(botId: string, action: HttpSlackSessionAction): void
-  forwardSessionShortcut(botId: string, shortcut: HttpSlackSessionShortcut): boolean
-  forwardFeishuAction(
-    botId: string,
-    action: WireFeishuCardActionEvent,
-    eventId: string | undefined
-  ): Promise<WireFeishuCardActionResponse | undefined>
+  ingressHost: import('./platforms/contract.js').RelayIngressHost
   forward(botId: string, msg: WireNormalizedMessage): Promise<void>
 }
 
@@ -165,8 +160,8 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     internals.router.upsert(assignment())
 
     const delivered = action()
-    internals.forwardSessionAction(BOT_ID, delivered)
-    internals.forwardSessionAction(BOT_ID, delivered) // Socket Mode redelivery
+    forwardSessionAction(internals.ingressHost, BOT_ID, delivered)
+    forwardSessionAction(internals.ingressHost, BOT_ID, delivered) // Socket Mode redelivery
 
     expect(sendMsg).toHaveBeenCalledTimes(2)
     const first = sendMsg.mock.calls[0]![0]
@@ -206,7 +201,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
       userId: 'U-ALICE'
     }
 
-    expect(internals.forwardSessionShortcut(BOT_ID, shortcut)).toBe(true)
+    expect(forwardSessionShortcut(internals.ingressHost, BOT_ID, shortcut)).toBe(true)
     expect(sendMsg).toHaveBeenCalledWith({
       source: 'platform_action',
       platformId: 'slack',
@@ -235,8 +230,8 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     internals.router.upsert(assignment())
 
     const attributed = action({ userId: 'U-ALICE' })
-    internals.forwardSessionAction(BOT_ID, attributed)
-    internals.forwardSessionAction(BOT_ID, action())
+    forwardSessionAction(internals.ingressHost, BOT_ID, attributed)
+    forwardSessionAction(internals.ingressHost, BOT_ID, action())
 
     const [withUser, withoutUser] = sendMsg.mock.calls.map((c) => c[0])
     expect(withUser!.userId).toBe('U-ALICE')
@@ -271,7 +266,8 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(assignment())
 
-    internals.forwardSessionAction(
+    forwardSessionAction(
+      internals.ingressHost,
       BOT_ID,
       action({
         target: {
@@ -340,7 +336,9 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
       }
     }
 
-    await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toEqual(response)
+    await expect(forwardFeishuCardAction(internals.ingressHost, BOT_ID, action, 'evt-action')).resolves.toEqual(
+      response
+    )
     expect(sendMsg).toHaveBeenCalledWith({
       source: 'platform_action',
       platformId: 'feishu',
@@ -382,7 +380,7 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
       operator: { open_id: 'ou_human' },
       action: { tag: 'overflow', option: 'cancel' }
     }
-    await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toBeUndefined()
+    await expect(forwardFeishuCardAction(internals.ingressHost, BOT_ID, action, 'evt-action')).resolves.toBeUndefined()
   })
 })
 

@@ -1,0 +1,88 @@
+import { describe, it, expect, vi } from 'vitest'
+import { forwardSessionShortcut, slackIngressPlugin } from './ingress-plugin.js'
+import type { RelayIngressHost } from '../contract.js'
+import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
+
+const ROUTE: RouteTarget = {
+  agentId: '44444444-4444-4444-8444-444444444444',
+  daemonId: '33333333-3333-4333-8333-333333333333',
+  integrationId: '66666666-6666-4666-8666-666666666666'
+}
+
+const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
+  forward: async () => {},
+  forwardAction: vi.fn(async (msg) => ({ msgId: msg.msgId, accepted: true })),
+  reportChannels: () => {},
+  reportRevoked: vi.fn(),
+  directory: {
+    agents: () => [],
+    channelOwner: () => undefined,
+    targetForAgentId: () => undefined,
+    resolveTarget: () => ROUTE,
+    targetForAgent: () => ROUTE,
+    integrationTarget: () => ROUTE,
+    soleTarget: () => ROUTE
+  },
+  canDeliver: () => true,
+  setChannelAgent: () => {},
+  selectThreadAgent: () => {},
+  reportBotUserId: () => {},
+  clock: { now: () => 1_720_000_000_000 },
+  log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+  ...over
+})
+
+const SHORTCUT = {
+  triggerId: 'trigger-1',
+  channelId: 'C1',
+  threadTs: 'T1',
+  interactionId: 'trigger-1'
+}
+
+describe('slack ingress plugin — review-pinned regressions', () => {
+  it('a shortcut whose daemon is OFFLINE returns false (local unavailable modal, trigger not eaten)', () => {
+    // The trigger id is one-shot: returning true consumes it. An offline daemon
+    // must fall back to the local unavailable path exactly like an unroutable
+    // conversation — not silently eat the interaction.
+    const h = host({ canDeliver: () => false })
+    expect(forwardSessionShortcut(h, 'bot-1', SHORTCUT)).toBe(false)
+    expect(h.forwardAction).not.toHaveBeenCalled()
+  })
+
+  it('a routable shortcut forwards and returns true', () => {
+    const h = host()
+    expect(forwardSessionShortcut(h, 'bot-1', SHORTCUT)).toBe(true)
+    expect(h.forwardAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('revocation reports carry the OBSERVING assignment revision, not the current one', () => {
+    // Assignments start fire-and-forget: an older ingest's auth.test can finish
+    // after a newer assignment installed. Fencing with the mutable current
+    // revision would let that stale observation revoke the replacement
+    // credential — the report must carry the generation this ingest was built
+    // from.
+    const h = host()
+    const assignment = {
+      botId: 'bot-1',
+      platform: 'slack',
+      secrets: { botToken: 'xoxb-1', signingSecret: 'sig' },
+      credentialRevision: 1,
+      members: [],
+      agents: [],
+      routes: [],
+      gatedAgentIds: [],
+      mutedChannels: [],
+      gatedOffChannels: [],
+      noticedDmConversations: []
+    } as unknown as BotAssignment
+    const ingest = slackIngressPlugin.buildIngest(assignment, h)!
+    // Simulate the platform revoking AFTER a re-assign bumped the live revision:
+    // the callback wired at buildIngest must still report revision 1.
+    ;(
+      ingest as unknown as {
+        deps: { onBotRevoked?: (reason: string, eventAtMs?: number) => void }
+      }
+    ).deps.onBotRevoked?.('app_uninstalled', 1_720_000_000_000)
+    expect(h.reportRevoked).toHaveBeenCalledWith('bot-1', 'app_uninstalled', 1_720_000_000_000, 1)
+  })
+})
