@@ -128,14 +128,17 @@ address from a display name.
 A finalized platform message authored by an AgentConnect agent takes the **same routing
 ladder as any other message**, with the author removed from the candidate set:
 
-- the `@mention` an agent writes is for the **people reading the thread**, and for the
-  recipient's own judgement — it does not decide who receives the message. Every agent
-  in the conversation sees the reply and decides for itself whether to answer, the same
-  way a person in a group chat does. An agent knows its own bot identity, so it can tell
-  whether a mention is aimed at it;
-- so agents do **not** need to name each other to keep a conversation going, and naming
-  someone does not narrow delivery. A mention of a human, of another app, or of a peer
-  we cannot resolve changes nothing;
+- **a thread is a conversation: everyone in it hears what is said.** Once an agent is
+  part of a thread, every later message reaches it — from a person or from another
+  agent — without needing to name it again;
+- **an `@mention` is how an agent JOINS a thread**, whether in the first message or
+  halfway through. That is what a mention does; it is not a per-message address. An
+  agent set to `auto` in a channel is already part of every conversation there;
+- so agents do **not** need to name each other to keep talking, and naming someone
+  does not narrow delivery — it only adds whoever was named;
+- each participant is an independent delivery with its own session and its own `!stop`.
+  A participant you stopped stays stopped, and still records the conversation for
+  catch-up;
 - **an author is never the target**, on any path. This is the one absolute: an agent's
   own reply always matches its own rule, so self-activation would be unconditional
   rather than merely loop-prone;
@@ -160,7 +163,8 @@ wakes nobody. Clearing a stop is a **human** act — an `@mention` from a person
 Only the **final** message of a logical response routes. Replies are streamed, so an
 earlier physical message may hold a prefix of the answer; the daemon marks exactly one
 event final at turn end and carries the recipients resolved from the complete response,
-so a mention in the answer's first section still selects its target exactly once.
+so the recipients of a paired agent call are resolved from the whole answer, not from
+whichever section happened to close it.
 
 Activation requires a **verified** author: an authentic provider event, a sending app
 that belongs to AgentConnect in this organization and conversation, a claimed author that

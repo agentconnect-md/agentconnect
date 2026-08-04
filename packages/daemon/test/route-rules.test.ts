@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeRules } from '../src/router/routing-table.js'
+import { mentionedAgents, participantAgents, routeRules } from '../src/router/routing-table.js'
 import { rulesFromAgent, resolveAgentIntegration, type RoutingRule } from '../src/router/routing-rule.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import type { Agent } from '../src/agents/agent-schema.js'
@@ -30,6 +30,45 @@ const rule = (over: Partial<RoutingRule>): RoutingRule => ({
 })
 
 describe('routeRules ladder', () => {
+  it('names EVERY mentioned agent, so nothing depends on rule order', () => {
+    // A mention JOINS an agent to the thread; it does not pick between agents. The
+    // primary-target rung uses `find`, which on a bot serving several agent routes would
+    // otherwise make the same event resolve to whichever rule happened to come first.
+    // `mentionedAgents` returns the whole named set, and the daemon delivers to all of
+    // them plus everyone already in the thread.
+    const rules = [
+      rule({ agentId: 'first', botUserId: 'B9', match: { kind: 'mention' } }),
+      rule({ agentId: 'second', botUserId: 'B9', match: { kind: 'mention' } }),
+      rule({ agentId: 'unnamed', botUserId: 'B7', match: { kind: 'mention' } }),
+      rule({ agentId: 'auto', match: { kind: 'auto' } })
+    ]
+    const named = mentionedAgents(msg({ mentionedBots: ['B9'] }), rules)
+    expect(new Set(named)).toEqual(new Set(['first', 'second']))
+    expect(named).not.toContain('unnamed')
+
+    // The author is never named back to itself.
+    expect(mentionedAgents(msg({ mentionedBots: ['B9'] }), rules, 'first')).toEqual(['second'])
+    // No mention ⇒ nobody is joined by this route.
+    expect(mentionedAgents(msg(), rules)).toEqual([])
+  })
+
+  it('keeps every thread participant this connection can serve', () => {
+    // Participation outlives the message that created it: once joined, an agent receives
+    // what is said next whether or not that message names it, and whoever said it.
+    const rules = [
+      rule({ agentId: 'joined', match: { kind: 'mention' }, botUserId: 'B9' }),
+      rule({ agentId: 'elsewhere', scope: { channel: 'OTHER' }, match: { kind: 'auto' } })
+    ]
+    const participants = ['joined', 'elsewhere', 'not-served-here']
+    expect(participantAgents(msg(), rules, participants)).toEqual(['joined'])
+    expect(participantAgents(msg(), rules, participants, 'joined')).toEqual([])
+
+    // An Off channel does not revive its participants — the fence is in the same scope
+    // filter every rung uses.
+    const muted = [rule({ agentId: 'joined', match: { kind: 'mention' }, mutedChannels: ['C1'] })]
+    expect(participantAgents(msg(), muted, ['joined'])).toEqual([])
+  })
+
   it('lets Slack bots enter only through an explicit mention', () => {
     const rules = [
       rule({ agentId: 'mentioned', botUserId: 'B9', match: { kind: 'mention' } }),

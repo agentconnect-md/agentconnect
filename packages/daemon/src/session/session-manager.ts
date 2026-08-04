@@ -336,6 +336,21 @@ export class SessionManager {
   private readonly turnsSinceReminder = new Map<string, number>()
   private readonly lastContextUsed = new Map<string, number>()
 
+  /**
+   * Every agent that is ALREADY part of this thread — open sessions first, then ones
+   * TTL-closed after idle (a dormant participant is still a participant).
+   *
+   * A mention is what JOINS an agent to a thread; this is what keeps it there. Unlike
+   * {@link threadOwner} it does not collapse to null when several agents share the
+   * thread — that collapse exists to disambiguate a SINGLE target, and a conversation
+   * does not have one: everyone in it sees what is said.
+   */
+  threadParticipants(channel: string, thread: string, transportScope?: string | null): string[] {
+    const open = this.deps.store.openSessionAgents(channel, thread, transportScope)
+    const dormant = this.deps.store.closedSessionAgents(channel, thread, transportScope)
+    return [...new Set([...open, ...dormant])]
+  }
+
   threadOwner(channel: string, thread: string, transportScope?: string | null): string | null {
     const owners = this.deps.store.openSessionAgents(channel, thread, transportScope)
     // 2+ live owners actively share the thread → ambiguous, fall through to

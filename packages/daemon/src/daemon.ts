@@ -103,7 +103,7 @@ import {
 } from './agents/dream-runner.js'
 import { createDreamReader } from './cp/dream-reader.js'
 import { createLocalSkillsReader } from './cp/local-skills-reader.js'
-import { routeRules, type RouteVia } from './router/routing-table.js'
+import { mentionedAgents, participantAgents, routeRules, type RouteVia } from './router/routing-table.js'
 import { parseCommand, type AgentCommand } from './commands/commands.js'
 import {
   rulesFromAgent,
@@ -5762,6 +5762,9 @@ export class Daemon {
     if (!this.agentConversationAdmits(routed.agentId, msg)) {
       return transcriptOnly(`${routed.agentId} is off in this conversation`)
     }
+    // Same conversation rule as the human path: everyone already in the thread hears it.
+    // Bounded by the SAME hop budget — each peer is one more edge of this agent call.
+    this.fanOutToThreadPeers(msg, this.mergedRulesForSource(srcIntegrationIds), routed.agentId, srcIntegrationIds)
     const outcome = this.activateVerifiedAgentTarget(msg, verified, routed.agentId, deliveryHopCount, 'implicit')
     if (outcome) {
       this.log.info(
@@ -6146,9 +6149,55 @@ export class Daemon {
         }
       }
     }
+    // A thread is a CONVERSATION, so everyone in it hears what is said — not just the one
+    // agent arbitration picked. Being @-mentioned is what JOINS an agent (at the root or
+    // mid-thread); after that it stays a participant and receives every later message,
+    // from a human or from another agent alike. Arbitration above still chooses the
+    // PRIMARY target (it owns the returned handle, thread promotion, and the mention
+    // trigger); this delivers the same message to the rest of the room.
+    this.fanOutToThreadPeers(msg, routingRules, result.agentId, srcIntegrationIds)
     const { handle, turn } = this.evaluationDispatchHandle(result.agentId, msg, result.integrationId)
     turn.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
     return { kind: 'dispatched', handle }
+  }
+
+  /**
+   * Deliver `msg` to every OTHER agent already in its thread (and to any further agent the
+   * body named), beyond the one arbitration selected.
+   *
+   * Each peer is an independent delivery: its own session key, its own `!stop` mute, its
+   * own Off fence, its own inbox row. Best-effort by design — a peer that cannot take the
+   * message must never fail the primary target's turn.
+   */
+  private fanOutToThreadPeers(
+    msg: NormalizedMessage,
+    rules: RoutingRule[],
+    primaryAgentId: string,
+    srcIntegrationIds?: string[]
+  ): void {
+    const thread = msg.thread
+    if (!thread) return
+    const participants = this.sessions.threadParticipants(msg.channel, thread, msg.transportScope)
+    const peers = new Set([
+      ...participantAgents(msg, rules, participants, primaryAgentId),
+      ...mentionedAgents(msg, rules, primaryAgentId)
+    ])
+    for (const agentId of peers) {
+      if (agentId === primaryAgentId) continue
+      if (!this.agents.has(agentId) || this.drainingAgents.has(agentId)) continue
+      const rule = rules.find((r) => r.agentId === agentId)
+      if (!rule) continue
+      // A muted peer stays muted: `!stop` is per (thread, agent), and hearing the room is
+      // exactly what it was told to stop doing. It still records for later catch-up.
+      const muteKey = sessionKey(msg.platform, msg.channel, thread, agentId, msg.transportScope)
+      if (this.isSessionMuted(muteKey)) {
+        this.recordObservedInbound(msg, agentId, this.cfg.features.turnFinalContextRefresh)
+        continue
+      }
+      const { turn } = this.evaluationDispatchHandle(agentId, msg, rule.integrationId)
+      turn.catch((err) => this.log.error(`thread fan-out failed for agent "${agentId}": ${formatErr(err)}`))
+    }
+    void srcIntegrationIds
   }
 
   /**

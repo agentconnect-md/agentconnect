@@ -145,6 +145,10 @@ export function arbitrate(
   // 1. Channel ownership (§10.1, the primary path): a channel-scoped rule that
   //    matches the message kind wins outright (mention rule needs the @bot; auto
   //    rule fires on any message — the operator's trigger choice).
+  // A mention JOINS an agent to the thread (§2.3), so the relay must still honour it —
+  // it is how a peer on ANOTHER daemon is reached at all. The owning daemon then fans the
+  // message out to the rest of the thread's local participants; the relay holds no
+  // sessions and cannot know them.
   const ownedMention = scoped.find((r) => r.match.kind === 'mention' && kindMatches(r, msg, a.botUserId))
   if (ownedMention) return target(ownedMention)
   // Conversation-scoped keyword (§14.3): slug disambiguation inside a multi-agent DM
