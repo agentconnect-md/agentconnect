@@ -177,7 +177,7 @@ This chapter, section 4 agents, and section 5 Reconciler form one theme:
 - CP agent specs, integrations, and crons are a separate **memory-only** desired-state source, re-converged by `register/ok` after each connection. Receiving a CP agent deletes only a same-id `agent.json`; every other local file remains untouched.
 - An already-running daemon continues using its in-memory CP state while disconnected. After a daemon restart, CP-managed agents resume only after the CP roster reconnects; local agents remain independently bootable from disk.
 
-The daemon persists only a secret-free `.cp-agent-id` data-root marker for CP agents, so workspace and memory directories can be reused without persisting CP configuration or credentials.
+The daemon persists only a secret-free `.cp-agent-id` marker in a dedicated child data root for CP agents, so workspace and memory directories can be reused without persisting CP configuration or credentials. Marker-only roots discovered after restart are reported as CP-owned replicas but are not activated; this lets the next roster reconciliation remove stale roots without reviving an agent whose in-memory spec was lost.
 
 ```
         +------------- Control Plane -------------+

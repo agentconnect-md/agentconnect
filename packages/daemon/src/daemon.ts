@@ -15922,6 +15922,13 @@ export class Daemon {
         { agentId: agent.id, origin: this.cpAgents?.has(agent.id) ? ('cp' as const) : ('unknown' as const) }
       ])
     )
+    // Marker-only roots stay inactive after a restart, but remain CP-owned
+    // replicas. Report them so an offline deletion can still converge.
+    if (!this.opts.agentName) {
+      for (const agentId of this.cpAgents?.replicaIds() ?? []) {
+        agentReplicas.set(agentId, { agentId, origin: 'cp' })
+      }
+    }
     // A crash-tombstoned root is intentionally absent from effectiveAgents,
     // but the CP must still see the replica ownership so reconnect can reissue
     // its interrupted remove/drop. Never report its stale integrations.

@@ -10,7 +10,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AgentSpec } from '@agentconnect.md/protocol'
 import { AgentSchema } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -29,28 +29,56 @@ const MAX_DEPTH = 4
 
 export type AgentSpecApplyResult = ConfigRevisionDecision
 
-function markerRoot(dir: string, agentId: string, depth = 0): string | undefined {
-  if (depth > MAX_DEPTH || !existsSync(dir)) return undefined
+function safeLifecycleId(agentId: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(agentId) && agentId !== '.' && agentId !== '..'
+}
+
+function strictChildRoot(agentsDir: string, dir: string): boolean {
+  const rel = relative(resolve(agentsDir), resolve(dir))
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+function readRootMarker(dir: string): string | undefined {
+  try {
+    return readFileSync(join(dir, ROOT_MARKER), 'utf8').trim()
+  } catch {
+    return undefined
+  }
+}
+
+function markedRoots(
+  agentsDir: string,
+  dir = agentsDir,
+  depth = 0,
+  out = new Map<string, string[]>()
+): Map<string, string[]> {
+  if (depth > MAX_DEPTH || !existsSync(dir)) return out
   let entries
   try {
     entries = readdirSync(dir, { withFileTypes: true })
   } catch {
-    return undefined
+    return out
   }
   const marker = entries.find((entry) => entry.isFile() && entry.name === ROOT_MARKER)
-  if (marker) {
-    try {
-      if (readFileSync(join(dir, ROOT_MARKER), 'utf8').trim() === agentId) return dir
-    } catch {
-      // A malformed marker cannot claim a directory.
+  if (marker && strictChildRoot(agentsDir, dir)) {
+    const agentId = readRootMarker(dir)
+    if (agentId && safeLifecycleId(agentId)) {
+      const roots = out.get(agentId) ?? []
+      roots.push(dir)
+      out.set(agentId, roots)
     }
+    // A marked data root is a discovery leaf; never inspect its workspace.
+    return out
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name === 'node_modules' || entry.name === '.git') continue
-    const found = markerRoot(join(dir, entry.name), agentId, depth + 1)
-    if (found) return found
+    markedRoots(agentsDir, join(dir, entry.name), depth + 1, out)
   }
-  return undefined
+  return out
+}
+
+function markerRoot(agentsDir: string, agentId: string): string | undefined {
+  return markedRoots(agentsDir).get(agentId)?.[0]
 }
 
 function fallbackDir(agentsDir: string, agentId: string): string {
@@ -58,19 +86,31 @@ function fallbackDir(agentsDir: string, agentId: string): string {
 }
 
 function assertSafeLifecycleId(agentId: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(agentId) || agentId === '.' || agentId === '..') {
+  if (!safeLifecycleId(agentId)) {
     throw new Error('agent id is unsafe for daemon-local lifecycle storage')
   }
 }
 
+function availableRoot(agentsDir: string, agentId: string, name: string): string {
+  const safeName = safeLifecycleId(name) && name !== 'node_modules'
+  const preferred = safeName ? join(agentsDir, name) : undefined
+  if (preferred && !existsSync(preferred)) return preferred
+
+  const fallback = fallbackDir(agentsDir, agentId)
+  if (!existsSync(fallback)) return fallback
+  for (let suffix = 2; suffix <= 10_000; suffix += 1) {
+    const candidate = `${fallback}-${suffix}`
+    if (!existsSync(candidate)) return candidate
+  }
+  throw new Error(`cannot allocate a private data root for agent "${agentId}"`)
+}
+
 function chooseRoot(agentsDir: string, agentId: string, spec: AgentSpec): { dir: string; file?: string } {
   const file = findAgentFileById(agentsDir, agentId)
-  if (file) return { dir: dirname(file), file }
   const marked = markerRoot(agentsDir, agentId)
-  if (marked) return { dir: marked }
-  const safeName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(spec.name) && spec.name !== '.' && spec.name !== '..'
-  const named = safeName ? join(agentsDir, spec.name) : undefined
-  return { dir: named && !existsSync(named) ? named : fallbackDir(agentsDir, agentId) }
+  if (marked) return { dir: marked, file }
+  if (file && strictChildRoot(agentsDir, dirname(file))) return { dir: dirname(file), file }
+  return { dir: availableRoot(agentsDir, agentId, spec.name), file }
 }
 
 function writeRootMarker(dir: string, agentId: string): void {
@@ -122,6 +162,11 @@ export class CpAgentRegistry {
     return [...this.active.values()]
   }
 
+  /** CP-owned data roots, including marker-only replicas after daemon restart. */
+  replicaIds(): string[] {
+    return [...new Set([...this.active.keys(), ...this.detached.keys(), ...markedRoots(this.agentsDir).keys()])]
+  }
+
   upsert(agentId: string, spec: AgentSpec): AgentSpecApplyResult {
     const decision = this.apply(agentId, spec)
     if (decision === 'apply') this.onChange()
@@ -131,10 +176,21 @@ export class CpAgentRegistry {
   remove(agentId: string): void {
     assertSafeLifecycleId(agentId)
     const agent = this.active.get(agentId) ?? this.detached.get(agentId)
+    const roots = markedRoots(this.agentsDir).get(agentId) ?? []
+    if (agent && existsSync(agent.dir) && !roots.some((root) => resolve(root) === resolve(agent.dir))) {
+      throw new Error(`refusing to remove agent "${agentId}": its data-root marker is missing or invalid`)
+    }
+    // Delete validated roots before clearing memory. A failure remains retryable;
+    // after restart the marker inventory supplies the same roots without config.
+    for (const root of roots) {
+      if (!strictChildRoot(this.agentsDir, root) || readRootMarker(root) !== agentId) {
+        throw new Error(`refusing to remove agent "${agentId}": its data root is unsafe or no longer owned`)
+      }
+      rmSync(root, { recursive: true, force: true })
+    }
     this.active.delete(agentId)
     this.detached.delete(agentId)
     this.revisions.delete(agentId)
-    if (agent) rmSync(agent.dir, { recursive: true, force: true })
     this.onChange()
   }
 
@@ -177,6 +233,7 @@ export class CpAgentRegistry {
   }
 
   private apply(agentId: string, spec: AgentSpec): AgentSpecApplyResult {
+    assertSafeLifecycleId(agentId)
     const revision = parseConfigRevision(spec)
     const digest = agentSpecDigest(spec)
     const decision = compareConfigRevision(this.revisions.get(agentId), { revision, digest })
@@ -193,11 +250,12 @@ export class CpAgentRegistry {
     if (decision === 'idempotent') return decision
 
     const located = chooseRoot(this.agentsDir, agentId, spec)
-    const previous =
-      this.active.get(agentId) ??
-      this.detached.get(agentId) ??
-      (located.file ? readLegacyAgent(located.file) : undefined)
-    if (previous) located.dir = previous.dir
+    const existing = this.active.get(agentId) ?? this.detached.get(agentId)
+    const previous = existing ?? (located.file ? readLegacyAgent(located.file) : undefined)
+    if (existing) located.dir = existing.dir
+    if (!strictChildRoot(this.agentsDir, located.dir)) {
+      throw new Error(`refusing to claim an unsafe data root for agent "${agentId}"`)
+    }
     const runtime = spec.runtime ?? previous?.runtime ?? this.deps.knownRuntimes[0]
     if (!runtime) throw new Error(`cannot create agent "${agentId}": spec has no runtime and no runtimes are known`)
     if (!spec.runtime && !previous) {
@@ -219,16 +277,27 @@ export class CpAgentRegistry {
     applySpecFields(raw, spec, { agentId, agentDir: located.dir, creating: !previous })
     const agent = { ...AgentSchema.parse(raw), dir: located.dir }
 
-    // Remove every local file claiming this id. Duplicate ids are invalid local
-    // state, but CP authority must not leave an arbitrary duplicate discoverable.
-    if (located.file) rmSync(located.file, { force: true })
-    for (let matching = findAgentFileById(this.agentsDir, agentId); matching;) {
-      rmSync(matching, { force: true })
-      matching = findAgentFileById(this.agentsDir, agentId)
+    const priorMarker = readRootMarker(located.dir)
+    if (priorMarker !== undefined && priorMarker !== agentId) {
+      throw new Error(`refusing to claim data root owned by agent "${priorMarker}"`)
     }
-    // Commit the memory representation only after its durable data-root marker
-    // succeeds. The marker contains no config or secret values.
+    const installedMarker = priorMarker === undefined
+    // Establish the secret-free durable identity before unlinking the local
+    // config. If an unlink fails, roll back a newly installed marker so the
+    // still-present local file remains discoverable and the apply can retry.
     writeRootMarker(located.dir, agentId)
+    try {
+      // Remove every local file claiming this id. Duplicate ids are invalid local
+      // state, but CP authority must not leave an arbitrary duplicate discoverable.
+      if (located.file) rmSync(located.file, { force: true })
+      for (let matching = findAgentFileById(this.agentsDir, agentId); matching;) {
+        rmSync(matching, { force: true })
+        matching = findAgentFileById(this.agentsDir, agentId)
+      }
+    } catch (error) {
+      if (installedMarker) rmSync(join(located.dir, ROOT_MARKER), { force: true })
+      throw error
+    }
     rmSync(join(located.dir, '.cp-config-revision.json'), { force: true })
     this.detached.delete(agentId)
     this.active.set(agentId, agent)

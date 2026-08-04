@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentSpec } from '@agentconnect.md/protocol'
@@ -67,6 +68,45 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
     expect(reg.agents()[0]).toMatchObject({ id: A1, description: 'current', dir: join(dir, 'custom') })
   })
 
+  it('never claims or removes agentsDir when the matching agent.json is at its root', () => {
+    const { dir, reg } = makeReg()
+    const matching = join(dir, 'agent.json')
+    writeFileSync(
+      matching,
+      JSON.stringify({
+        id: A1,
+        name: 'root-local',
+        runtime: 'claude',
+        workspace: { mode: 'from-scratch', path: './workspace' }
+      })
+    )
+    const other = writeLocal(dir, 'other-local', A2)
+
+    reg.upsert(A1, spec())
+
+    expect(existsSync(matching)).toBe(false)
+    expect(existsSync(join(dir, '.cp-agent-id'))).toBe(false)
+    expect(reg.agents()[0]?.dir).toBe(join(dir, 'helper'))
+    reg.remove(A1)
+    expect(existsSync(dir)).toBe(true)
+    expect(existsSync(other)).toBe(true)
+  })
+
+  it('allocates a new child when both the preferred and fallback roots are occupied', () => {
+    const { dir, reg } = makeReg()
+    const fallback = join(dir, `agent-${createHash('sha256').update(A1).digest('hex').slice(0, 32)}`)
+    mkdirSync(join(dir, 'helper'), { recursive: true })
+    mkdirSync(fallback, { recursive: true })
+    writeFileSync(join(dir, 'helper', 'keep'), 'preferred')
+    writeFileSync(join(fallback, 'keep'), 'fallback')
+
+    reg.upsert(A1, spec())
+
+    expect(reg.agents()[0]?.dir).toBe(`${fallback}-2`)
+    expect(readFileSync(join(dir, 'helper', 'keep'), 'utf8')).toBe('preferred')
+    expect(readFileSync(join(fallback, 'keep'), 'utf8')).toBe('fallback')
+  })
+
   it('keeps CP values in memory across partial updates and never recreates agent.json', () => {
     const { dir, reg } = makeReg()
     reg.upsert(A1, spec({ model: 'opus', outputMode: 'high', allowedCallerAgentIds: [A2] }))
@@ -111,6 +151,34 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
     expect(reg.agents()).toHaveLength(1)
     reg.remove(A1)
     expect(existsSync(join(dir, 'helper'))).toBe(false)
+  })
+
+  it('keeps removal retryable when deleting the owned root fails', () => {
+    const { dir, reg } = makeReg()
+    reg.upsert(A1, spec())
+    const root = join(dir, 'helper')
+    writeFileSync(join(root, 'keep'), 'data')
+    chmodSync(root, 0o500)
+    try {
+      expect(() => reg.remove(A1)).toThrow()
+      expect(reg.agents()).toHaveLength(1)
+    } finally {
+      chmodSync(root, 0o700)
+    }
+    expect(() => reg.remove(A1)).not.toThrow()
+    expect(existsSync(root)).toBe(false)
+  })
+
+  it('inventories and removes a marker-only root after registry restart', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-cpreg-'))
+    makeReg(dir).reg.upsert(A1, spec())
+
+    const restarted = makeReg(dir).reg
+    expect(restarted.agents()).toEqual([])
+    expect(restarted.replicaIds()).toEqual([A1])
+    restarted.remove(A1)
+    expect(existsSync(join(dir, 'helper'))).toBe(false)
+    expect(restarted.replicaIds()).toEqual([])
   })
 
   it('converge upserts roster entries without pruning unrelated local agent.json files', () => {

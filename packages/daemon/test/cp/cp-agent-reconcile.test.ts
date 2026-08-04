@@ -174,6 +174,24 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
+  it('reports marker-only CP ownership after restart and accepts an offline remove', async () => {
+    const root = root1()
+    const first = makeDaemon(root).daemon
+    await first.start()
+    await seam(first).applyAgentUpsert({ agentId: 'stale-cp', spec: { name: 'stale-cp' } as AgentSpec })
+    writeFileSync(join(root, 'agents', 'stale-cp', 'workspace-data'), 'keep')
+    await first.stop()
+
+    const restarted = makeDaemon(root).daemon
+    await restarted.start()
+    expect((restarted as any).agents.has('stale-cp')).toBe(false)
+    expect((restarted as any).cpLocalState().agents).toContainEqual({ agentId: 'stale-cp', origin: 'cp' })
+
+    await seam(restarted).applyAgentRemove('stale-cp')
+    expect(existsSync(join(root, 'agents', 'stale-cp'))).toBe(false)
+    await restarted.stop()
+  })
+
   it('detach drains/stops, archives the whole root, invalidates git creds, and activate restores + warms it', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')
