@@ -17,15 +17,14 @@ import type { AgentRecord, IntegrationRecord, SlackTransport } from '../persiste
 import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
 import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
 import { NoConnection } from '../orchestrator/outbound.js'
+import { slackAppIdFromAppToken } from '../platforms/slack/provider.js'
 
-/** App-level tokens are structured `xapp-1-{APP_ID}-{epoch}-{hex}`. The id segment
- *  (A…) is public metadata (it appears in every app-page URL) — stored on the bot so
- *  the console can deep-link "manage / delete the app on Slack". An unexpected shape
- *  just leaves it null. */
-export function slackAppIdFromAppToken(appToken: string): string | undefined {
-  const seg = appToken.split('-')[2]
-  return seg && /^A[A-Z0-9]+$/.test(seg) ? seg : undefined
-}
+// Relocated to the Slack platform provider (§9, S3): its `validateConfig` runs
+// the same same-app cross-check as the create route, and this module sits
+// downstream of `placement.ts` (which imports the provider's projection
+// helpers), so the provider cannot import it back. Re-exported so the existing
+// call sites (`routes/integrations.ts`, `routes/slack-install.ts`) are unchanged.
+export { slackAppIdFromAppToken }
 
 export interface InstallSlackBotArgs {
   orgId: OrgId

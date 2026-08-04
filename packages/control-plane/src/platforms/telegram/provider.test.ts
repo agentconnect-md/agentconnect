@@ -113,6 +113,12 @@ describe('telegram provider identity + declarative facets', () => {
     expect(provider.providerToolingCredentials).toBeUndefined()
     expect(provider.backgroundLoops).toBeUndefined()
   })
+
+  it('declares no projectBotAssign — Telegram has no HTTP callback ingress (S3 erratum)', () => {
+    // The create route refuses `transport: 'http'` for telegram, so no bot row
+    // can reach core's assign builder; absence IS the "no relay path" signal.
+    expect(provider.projectBotAssign).toBeUndefined()
+  })
 })
 
 describe('telegram validateConfig (route parity: integrations.ts telegram arm)', () => {
@@ -208,12 +214,5 @@ describe('telegram projection equivalence with the live integrationToSpec path',
   it('shares one implementation with placement.ts (the extracted helper)', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'any')], false)
     expect(telegramIntegrationConfig(spec.core!, SECRET)).toEqual(spec.config)
-  })
-})
-
-describe('telegram projectBotAssign (no HTTP ingress)', () => {
-  it('refuses: the create route never mints an http-transport telegram bot', async () => {
-    const provider = createTelegramCpProvider({ verifyBot: verifierOk() })
-    await expect(provider.projectBotAssign(BOT, SECRET)).rejects.toThrow(/no HTTP callback ingress/)
   })
 })

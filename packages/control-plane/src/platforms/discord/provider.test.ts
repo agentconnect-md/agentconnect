@@ -121,6 +121,12 @@ describe('discord provider identity + declarative facets', () => {
     expect(provider.providerToolingCredentials).toBeUndefined()
     expect(provider.backgroundLoops).toBeUndefined()
   })
+
+  it('declares no projectBotAssign — Discord has no HTTP callback ingress (S3 erratum)', () => {
+    // The create route refuses `transport: 'http'` for discord, so no bot row
+    // can reach core's assign builder; absence IS the "no relay path" signal.
+    expect(provider.projectBotAssign).toBeUndefined()
+  })
 })
 
 describe('discord validateConfig (route parity: integrations.ts discord arm)', () => {
@@ -257,12 +263,5 @@ describe('discord projection equivalence with the live integrationToSpec path', 
   it('shares one implementation with placement.ts (the extracted helper)', () => {
     const spec = integrationToSpec(INTEGRATION, SECRET, [channel('C1', 'any')], false)
     expect(discordIntegrationConfig(spec.core!, SECRET)).toEqual(spec.config)
-  })
-})
-
-describe('discord projectBotAssign (no HTTP ingress)', () => {
-  it('refuses: the create route never mints an http-transport discord bot', async () => {
-    const provider = createDiscordCpProvider({ verifyBot: verifierOk(), ensureMessageContentIntent: intent() })
-    await expect(provider.projectBotAssign(BOT, SECRET)).rejects.toThrow(/no HTTP callback ingress/)
   })
 })

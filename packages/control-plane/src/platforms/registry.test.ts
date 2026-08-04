@@ -8,6 +8,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildCpPlatformRegistry } from './registry.js'
 import { createTelegramCpProvider } from './telegram/provider.js'
 import { createDiscordCpProvider } from './discord/provider.js'
+import { createSlackCpProvider } from './slack/provider.js'
+import { createFeishuCpProvider } from './feishu/provider.js'
 
 const telegram = () =>
   createTelegramCpProvider({
@@ -17,6 +19,8 @@ const discord = () =>
   createDiscordCpProvider({
     ensureMessageContentIntent: vi.fn(async () => 'ready' as const)
   })
+const slack = () => createSlackCpProvider({})
+const feishu = () => createFeishuCpProvider({})
 
 describe('buildCpPlatformRegistry', () => {
   it('keys providers by platform id and misses unknown ids', () => {
@@ -35,6 +39,22 @@ describe('buildCpPlatformRegistry', () => {
     const registry = buildCpPlatformRegistry([tg, dc])
     expect(registry.all()).toEqual([tg, dc])
     expect(registry.ids()).toEqual(['telegram', 'discord'])
+  })
+
+  it('holds all four platforms — the container composition (S3 exit criterion)', () => {
+    const providers = [telegram(), discord(), slack(), feishu()]
+    const registry = buildCpPlatformRegistry(providers)
+    expect(registry.ids()).toEqual(['telegram', 'discord', 'slack', 'feishu'])
+    expect(registry.get('slack')).toBe(providers[2])
+    expect(registry.get('feishu')).toBe(providers[3])
+    // The §6.7 relay path is exactly the platforms that implement it (erratum:
+    // absence IS the "no relay path" signal).
+    expect(
+      registry
+        .all()
+        .filter((p) => p.projectBotAssign !== undefined)
+        .map((p) => p.platformId)
+    ).toEqual(['slack', 'feishu'])
   })
 
   it('fails construction on a duplicate platform id', () => {

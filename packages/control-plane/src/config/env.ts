@@ -6,6 +6,8 @@
  * (`API_KEY_PEPPER`, `HEARTBEAT_SEC`).
  */
 import { z } from 'zod'
+import { SlackCpEnvSchema } from '../platforms/slack/provider.js'
+import { FeishuCpEnvSchema } from '../platforms/feishu/provider.js'
 
 export const AppConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -25,12 +27,15 @@ export const AppConfigSchema = z.object({
   // sweeps every CRON_RUN_REAP_INTERVAL_SEC.
   CRON_RUN_TTL_SEC: z.coerce.number().int().default(1800),
   CRON_RUN_REAP_INTERVAL_SEC: z.coerce.number().int().default(300),
-  // Slack auto-install funnel (docs/designs/slack-install-smoothing.md §Tier B). A
-  // `slack_install` pending row the operator never finishes (holding a client
-  // secret + bot token) is deleted once older than SLACK_INSTALL_TTL_SEC; the
-  // SlackInstallReaper sweeps every SLACK_INSTALL_REAP_INTERVAL_SEC.
-  SLACK_INSTALL_TTL_SEC: z.coerce.number().int().default(3600),
-  SLACK_INSTALL_REAP_INTERVAL_SEC: z.coerce.number().int().default(600),
+  // Slack + Feishu platform-provider env keys (§9 `envSchema`): the
+  // auto-install reaper knobs (SLACK_INSTALL_*), the platform-published Slack
+  // app (SLACK_PLATFORM_*), and the platform-owned Feishu/Lark apps
+  // (FEISHU/LARK_PLATFORM_*). Defined BY the providers and spread here —
+  // one implementation with each provider's declared `envSchema` — until
+  // `loadConfig` folds the registry's schemas (S3 adoption). Key docs live
+  // with the shapes (`platforms/slack/provider.ts`, `platforms/feishu/provider.ts`).
+  ...SlackCpEnvSchema,
+  ...FeishuCpEnvSchema,
   // HMAC pepper for `api_key.hash` (C4). Required, ≥32 chars. Effectively immutable —
   // rotating it invalidates every stored key hash. See daemon-api-key-auth.md.
   API_KEY_PEPPER: z.string().min(32),
@@ -104,24 +109,8 @@ export const AppConfigSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
-  // ── Platform-published (distributed) Slack app (preset-agents.md §5.3) — opt-in ──
-  // The deployment-level Slack app users "Add to Slack" via standard OAuth v2.
-  // ALL FOUR must be set to enable the feature; any unset ⇒ absent (the
-  // self-hosted default: the console offers only the quick-install funnel).
-  // MUST stay .optional() so an image bump never fail-fasts an existing deploy.
-  // The install path additionally hard-depends on PUBLIC_CP_URL (the OAuth
-  // callback origin) + PUBLIC_RELAY_URL + a connected relay (Events-API-only).
-  SLACK_PLATFORM_APP_ID: z.string().optional(), // A… — the distributed app's id
-  SLACK_PLATFORM_CLIENT_ID: z.string().optional(),
-  SLACK_PLATFORM_CLIENT_SECRET: z.string().optional(),
-  SLACK_PLATFORM_SIGNING_SECRET: z.string().optional(),
-  // Platform-owned Feishu/Lark apps. Each region is independently all-or-none;
-  // the same app id must back its Logto social connector so app-scoped open_id
-  // values can be compared safely during Session membership checks.
-  FEISHU_PLATFORM_APP_ID: z.string().optional(),
-  FEISHU_PLATFORM_APP_SECRET: z.string().optional(),
-  LARK_PLATFORM_APP_ID: z.string().optional(),
-  LARK_PLATFORM_APP_SECRET: z.string().optional(),
+  // (SLACK_PLATFORM_* and FEISHU/LARK_PLATFORM_* moved into the provider env
+  // shapes spread above.)
   // The MCP endpoint's dedicated public origin (agent-assistant.md §6.1), e.g.
   // https://mcp.example.test. Set ⇒ the canonical MCP resource URL IS this origin (root resource;
   // the URL users paste is just the host) and auth discovery uses the origin-root

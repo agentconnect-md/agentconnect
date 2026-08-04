@@ -147,16 +147,12 @@ export function createTelegramCpProvider(deps: TelegramCpProviderDeps): CpPlatfo
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
     async projectIntegrationConfig(integration, bot, core, secrets) {
       return telegramIntegrationConfig(core, secrets)
-    },
-
-    // Telegram has no HTTP-bot path: the create route refuses
-    // `transport: 'http'` for it (`integrations.ts:392-400`), so no Telegram
-    // bot row can carry the http transport and core's assign builder
-    // (`orchestrator/httpBot.ts`) never sees one. The contract still declares
-    // the member as required, so this is a documented refusal stub — reaching
-    // it means a bug upstream, not a recoverable condition.
-    async projectBotAssign(): Promise<never> {
-      throw new Error('telegram has no HTTP callback ingress; rc/bot-assign is never built for a telegram bot')
     }
+
+    // `projectBotAssign` is DELIBERATELY absent: Telegram has no HTTP callback
+    // ingress — the create route refuses `transport: 'http'` for it
+    // (`integrations.ts:392-400`), so no telegram bot row can carry the http
+    // transport and core's assign builder (`orchestrator/httpBot.ts`) never
+    // sees one. Absence IS the "no relay path" signal (S3 contract erratum).
   }
 }

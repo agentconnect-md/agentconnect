@@ -17,8 +17,18 @@
  * resolution is `expired`, so the console asks the caller to re-enter it. Never logs
  * token material.
  */
-import type { HttpDeps } from './deps.js'
+import type { SlackConfigApi } from './slack-config-api.js'
+import type { SlackUserConfigStore } from '../persistence/ports.js'
 import type { OrgId } from '../domain/ids.js'
+
+/** The narrow slice of `HttpDeps` the resolution needs — a structural subset,
+ *  so route call sites keep passing the full bundle while the Slack platform
+ *  provider's `providerToolingCredentials` facet (§9) can delegate here without
+ *  faking an entire `HttpDeps` in tests. */
+export interface SlackUserConfigDeps {
+  slackConfigApi?: SlackConfigApi
+  repos: { slackUserConfig: SlackUserConfigStore }
+}
 
 /** Rotate when fewer than 5 minutes of access-token life remain (covers clock skew
  *  + the install round-trip that follows). */
@@ -45,7 +55,7 @@ export function configUsable(row: { refreshToken: string | null; accessExpiresAt
 }
 
 export async function resolveUserConfigAccessToken(
-  deps: HttpDeps,
+  deps: SlackUserConfigDeps,
   orgId: OrgId,
   userId: string,
   now: Date
