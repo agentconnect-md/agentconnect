@@ -70,6 +70,77 @@ export const handleKnowledgeSearch: Handler = async (frame, conn, deps) => {
   conn.replyTo(frame, 'knowledge/search/ok', { items })
 }
 
+/** List recent org knowledge (query-less) the requester's org can see — the
+ * browse companion to search, so a dreamer can enumerate what already exists
+ * before proposing new. Org scope comes from the placed requester. */
+export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
+  if (!isFrame('knowledge/list')(frame)) return
+  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const repo = deps.organizationKnowledge
+  if (!repo) {
+    conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
+    return
+  }
+  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
+    return
+  }
+  const tags = frame.payload.tags
+  const rows = (await repo.listKnowledge(requester.orgId, false))
+    .filter((row) => tags === undefined || tags.every((t) => row.tags.includes(t)))
+    .slice(0, frame.payload.limit)
+  let remaining = frame.payload.maxBytes
+  const items = []
+  for (const row of rows) {
+    if (remaining <= 0) break
+    const body = clampUtf8(row.content, remaining)
+    remaining -= body.bytes
+    items.push({
+      id: row.id,
+      title: row.title,
+      summary: row.summary,
+      tags: row.tags,
+      revision: row.currentRevision,
+      updatedAt: row.updatedAt.toISOString(),
+      content: body.content,
+      truncated: body.truncated
+    })
+  }
+  conn.replyTo(frame, 'knowledge/list/ok', { items })
+}
+
+/** List or search accepted organization skills (metadata only) the requester's
+ * org can see, so a dreamer can enumerate existing skills and choose
+ * update-vs-create. `query` filters by name/description; absent ⇒ list. */
+export const handleOrgSkills: Handler = async (frame, conn, deps) => {
+  if (!isFrame('skills/org')(frame)) return
+  if (!(await featureDaemon(frame.id, conn, deps))) return
+  const repo = deps.organizationKnowledge
+  if (!repo) {
+    conn.sendError(frame.id, 'INTERNAL', 'organization skills are unavailable', true)
+    return
+  }
+  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
+    return
+  }
+  const q = frame.payload.query?.toLowerCase()
+  const rows = (await repo.listManagedSkills(requester.orgId, false))
+    .filter((s) => q === undefined || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
+    .slice(0, frame.payload.limit)
+  conn.replyTo(frame, 'skills/org/ok', {
+    items: rows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      revision: s.currentRevision,
+      updatedAt: s.updatedAt.toISOString()
+    }))
+  })
+}
+
 /** Reconnect/completion inventory upsert. Only currently placed agents may
  * publish metadata; CP review state stays authoritative. */
 export const handleOrganizationSuggestionsSync: Handler = async (frame, conn, deps) => {

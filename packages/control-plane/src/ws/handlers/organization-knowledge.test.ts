@@ -8,6 +8,8 @@ import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import {
   handleKnowledgeSearch,
+  handleKnowledgeList,
+  handleOrgSkills,
   handleManagedSkillRead,
   handleOrganizationSuggestionsSync
 } from './organization-knowledge.js'
@@ -108,6 +110,186 @@ describe('handleKnowledgeSearch', () => {
       expect(connection.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
       expect(searchKnowledge).not.toHaveBeenCalled()
     }
+  })
+})
+
+describe('handleKnowledgeList', () => {
+  it('lists org knowledge (query-less), org-scoped from the placed requester', async () => {
+    const listKnowledge = vi.fn(async () => [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        title: 'Release',
+        summary: 'How releases work',
+        tags: ['release'],
+        currentRevision: 3,
+        updatedAt: new Date('2026-07-31T01:00:00.000Z'),
+        content: 'body'
+      }
+    ])
+    const deps = {
+      registry: featureRegistry,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      organizationKnowledge: { listKnowledge }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleKnowledgeList(
+      frame('knowledge/list', { requesterAgentId: AGENT, limit: 10, maxBytes: 8192 }),
+      connection,
+      deps
+    )
+
+    expect(listKnowledge).toHaveBeenCalledWith(ORG, false)
+    expect(connection.replyTo.mock.calls[0]![1]).toBe('knowledge/list/ok')
+    expect(connection.replyTo.mock.calls[0]![2]).toEqual({
+      items: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          title: 'Release',
+          summary: 'How releases work',
+          tags: ['release'],
+          revision: 3,
+          updatedAt: '2026-07-31T01:00:00.000Z',
+          content: 'body',
+          truncated: false
+        }
+      ]
+    })
+  })
+
+  it('fails closed when the requester is placed on another daemon', async () => {
+    const listKnowledge = vi.fn()
+    const deps = {
+      registry: featureRegistry,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: 'another-daemon' }) },
+      organizationKnowledge: { listKnowledge }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+    await handleKnowledgeList(
+      frame('knowledge/list', { requesterAgentId: AGENT, limit: 10, maxBytes: 8192 }),
+      connection,
+      deps
+    )
+    expect(connection.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+    expect(listKnowledge).not.toHaveBeenCalled()
+  })
+
+  it('requires ALL requested tags (AND), matching the tool contract', async () => {
+    const listKnowledge = vi.fn(async () => [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        title: 'Both',
+        summary: null,
+        tags: ['release', 'infra'],
+        currentRevision: 1,
+        updatedAt: new Date('2026-07-31T01:00:00.000Z'),
+        content: 'a'
+      },
+      {
+        id: '22222222-2222-4222-8222-222222222222',
+        title: 'One',
+        summary: null,
+        tags: ['release'],
+        currentRevision: 1,
+        updatedAt: new Date('2026-07-31T01:00:00.000Z'),
+        content: 'b'
+      }
+    ])
+    const deps = {
+      registry: featureRegistry,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      organizationKnowledge: { listKnowledge }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+    await handleKnowledgeList(
+      frame('knowledge/list', { requesterAgentId: AGENT, limit: 10, maxBytes: 8192, tags: ['release', 'infra'] }),
+      connection,
+      deps
+    )
+    const items = connection.replyTo.mock.calls[0]![2].items as { id: string }[]
+    expect(items.map((i) => i.id)).toEqual(['11111111-1111-4111-8111-111111111111']) // "One" (missing infra) excluded
+  })
+})
+
+describe('handleOrgSkills', () => {
+  const rows = [
+    {
+      id: SKILL,
+      orgId: ORG,
+      name: 'release-service',
+      description: 'Release with rollback',
+      currentRevision: 2,
+      updatedAt: new Date('2026-07-31T01:00:00.000Z')
+    },
+    {
+      id: 'aaaaaaaa-1111-4111-8111-111111111111',
+      orgId: ORG,
+      name: 'triage-issues',
+      description: 'Triage inbound issues',
+      currentRevision: 1,
+      updatedAt: new Date('2026-07-31T02:00:00.000Z')
+    }
+  ]
+
+  it('lists accepted org skills (metadata only) when no query is given', async () => {
+    const listManagedSkills = vi.fn(async () => rows)
+    const deps = {
+      registry: featureRegistry,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      organizationKnowledge: { listManagedSkills }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrgSkills(frame('skills/org', { requesterAgentId: AGENT, limit: 20 }), connection, deps)
+
+    expect(listManagedSkills).toHaveBeenCalledWith(ORG, false)
+    expect(connection.replyTo.mock.calls[0]![1]).toBe('skills/org/ok')
+    expect(connection.replyTo.mock.calls[0]![2]).toEqual({
+      items: [
+        {
+          id: SKILL,
+          name: 'release-service',
+          description: 'Release with rollback',
+          revision: 2,
+          updatedAt: '2026-07-31T01:00:00.000Z'
+        },
+        {
+          id: 'aaaaaaaa-1111-4111-8111-111111111111',
+          name: 'triage-issues',
+          description: 'Triage inbound issues',
+          revision: 1,
+          updatedAt: '2026-07-31T02:00:00.000Z'
+        }
+      ]
+    })
+  })
+
+  it('filters by name/description when a query is given', async () => {
+    const listManagedSkills = vi.fn(async () => rows)
+    const deps = {
+      registry: featureRegistry,
+      agent: { get: async () => ({ id: AGENT, orgId: ORG, daemonId: DAEMON }) },
+      organizationKnowledge: { listManagedSkills }
+    } as unknown as DaemonWsDeps
+    const connection = conn()
+
+    await handleOrgSkills(
+      frame('skills/org', { requesterAgentId: AGENT, query: 'triage', limit: 20 }),
+      connection,
+      deps
+    )
+
+    expect(connection.replyTo.mock.calls[0]![2]).toEqual({
+      items: [
+        {
+          id: 'aaaaaaaa-1111-4111-8111-111111111111',
+          name: 'triage-issues',
+          description: 'Triage inbound issues',
+          revision: 1,
+          updatedAt: '2026-07-31T02:00:00.000Z'
+        }
+      ]
+    })
   })
 })
 

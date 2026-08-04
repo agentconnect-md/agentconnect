@@ -39,40 +39,19 @@ describe('dream exploration prompt + materialized inputs', () => {
   it('bounds the exploration prompt no matter how large the trusted context is', () => {
     const prompt = buildDreamExplorationPrompt({
       sessionIds: Array.from({ length: 200 }, (_, i) => `sess-${i}`),
-      organizationKnowledge: [
-        {
-          id: '11111111-1111-4111-8111-111111111111',
-          title: 'big',
-          revision: 1,
-          summary: null,
-          tags: [],
-          content: 'x'.repeat(400_000)
-        }
-      ]
+      instructions: 'x'.repeat(400_000)
     })
     expect(Buffer.byteLength(prompt)).toBeLessThan(120_000)
   })
 
-  it('delimits accepted organization knowledge and managed-skill targets', () => {
-    const prompt = buildDreamExplorationPrompt({
-      sessionIds: [],
-      organizationKnowledge: [
-        {
-          id: '11111111-1111-4111-8111-111111111111',
-          title: 'Release process',
-          revision: 3,
-          summary: 'How releases work',
-          tags: ['release'],
-          content: '# Release\nUse the promotion gate.'
-        }
-      ],
-      managedSkills: [{ id: '22222222-2222-4222-8222-222222222222', name: 'release-service', revision: 4 }]
-    })
-    expect(prompt).toContain('<accepted-organization-knowledge>')
-    expect(prompt).toContain('revision="3"')
-    expect(prompt).toContain('Use the promotion gate.')
-    expect(prompt).toContain('<accepted-managed-skills>')
-    expect(prompt).toContain('name="release-service"')
+  it('points at the org knowledge/skill tools instead of inlining existing entries', () => {
+    const prompt = buildDreamExplorationPrompt({ sessionIds: [] })
+    // Existing org context is no longer pre-stuffed; the model fetches it on demand.
+    expect(prompt).not.toContain('<accepted-organization-knowledge>')
+    expect(prompt).not.toContain('<accepted-managed-skills>')
+    expect(prompt).toContain('listKnowledge')
+    expect(prompt).toContain('listOrgSkills')
+    expect(prompt).toContain('update')
   })
 
   it('renders a session file with a citable header, text, and tool titles (no raw bodies)', () => {
@@ -238,7 +217,7 @@ describe('structured organization proposals', () => {
   const skillMd = (name = 'release-service') =>
     `---\nname: ${name}\ndescription: Release a service safely\n---\n\n# Release\n`
 
-  it('parses grounded knowledge creates and only exact trusted update fences', () => {
+  it('parses grounded knowledge creates and structurally-valid updates, dropping malformed targets', () => {
     const proposal = parseDreamProposal(
       JSON.stringify({
         ...base,
@@ -261,18 +240,20 @@ describe('structured organization proposals', () => {
             sessionIds: ['sess-2']
           },
           {
+            // Malformed target: not a UUID → dropped by the structural check
+            // (existence/currency is the CP's authority at accept, not a
+            // daemon-side allow-list).
             operation: 'update',
-            targetId: TARGET,
+            targetId: 'not-a-uuid',
             targetRevision: 2,
-            title: 'Stale update',
+            title: 'Bad target',
             content: 'must be dropped',
             sessionIds: ['sess-1']
           }
         ],
         organizationSkills: []
       }),
-      ['sess-1', 'sess-2'],
-      [{ id: TARGET, revision: 3 }]
+      ['sess-1', 'sess-2']
     )
 
     expect(proposal?.organizationKnowledge).toHaveLength(2)
@@ -368,24 +349,21 @@ describe('structured organization proposals', () => {
     ])
   })
 
-  it('accepts only exact trusted id/name/revision fences for organization skill updates', () => {
+  it('stages structurally-valid organization skill updates, dropping malformed targets', () => {
     const target = '22222222-2222-4222-8222-222222222222'
-    const update = (revision: number, name = 'release-service') => ({
+    const update = (revision: number, targetId = target, name = 'release-service') => ({
       operation: 'update',
-      targetId: target,
+      targetId,
       targetRevision: revision,
       name,
       files: [{ path: 'SKILL.md', content: skillMd(name) }],
       sessionIds: ['sess-1', 'sess-2']
     })
 
-    expect(
-      parseOrganizationSkills(
-        [update(4), update(3), update(4, 'renamed-service')],
-        ['sess-1', 'sess-2'],
-        [{ id: target, name: 'release-service', revision: 4 }]
-      )
-    ).toEqual([
+    // A well-formed update (UUID + positive revision + manifest name == proposed
+    // name) is staged; whether the target exists/matches is the CP's authority at
+    // accept, not a daemon-side allow-list.
+    expect(parseOrganizationSkills([update(4)], ['sess-1', 'sess-2'])).toEqual([
       {
         operation: 'update',
         targetId: target,
@@ -396,7 +374,10 @@ describe('structured organization proposals', () => {
         sessionIds: ['sess-1', 'sess-2']
       }
     ])
-    expect(parseOrganizationSkills([update(4)], ['sess-1', 'sess-2'])).toEqual([])
+    // Structurally malformed targets are dropped: a non-UUID targetId, or a
+    // non-positive revision.
+    expect(parseOrganizationSkills([update(4, 'not-a-uuid')], ['sess-1', 'sess-2'])).toEqual([])
+    expect(parseOrganizationSkills([update(0)], ['sess-1', 'sess-2'])).toEqual([])
   })
 
   it('drops the whole skill candidate for traversal, case collisions, malformed base64, or size overflow', () => {
@@ -568,7 +549,7 @@ describe('mined skill candidates', () => {
     expect(dreamSystemPrompt(true)).toContain('extract procedures')
     expect(dreamSystemPrompt(true)).toContain('organizationSkills')
     expect(dreamSystemPrompt(true)).toContain('complete Agent Skills file tree')
-    expect(dreamSystemPrompt(true)).toContain('<accepted-managed-skills>')
+    expect(dreamSystemPrompt(true)).toContain('listOrgSkills')
     expect(dreamSystemPrompt(true)).toContain('never "groundedSessionIds"')
     expect(dreamSystemPrompt(true)).toContain('agentMemory.index is always the complete, non-empty MEMORY.md text')
     expect(dreamSystemPrompt(true).startsWith(MEMORY_DREAM_SYSTEM_PROMPT)).toBe(true)

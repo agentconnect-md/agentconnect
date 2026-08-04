@@ -117,6 +117,52 @@ export type KnowledgeSearchItem = z.infer<typeof KnowledgeSearchItem>
 export const KnowledgeSearchOk = z.object({ items: z.array(KnowledgeSearchItem).max(10) }).strict()
 export type KnowledgeSearchOk = z.infer<typeof KnowledgeSearchOk>
 
+// List (query-less) recent org knowledge the requester's org can see — the
+// "browse what already exists" companion to knowledge/search, so a dreamer can
+// enumerate existing knowledge before proposing new. Reuses KnowledgeSearchOk.
+export const KnowledgeListReq = z
+  .object({
+    requesterAgentId: z.string().uuid(),
+    limit: z.number().int().min(1).max(20).default(10),
+    maxBytes: z.number().int().min(1).max(32_768).default(8192),
+    tags: z.array(z.string().trim().min(1).max(64)).max(10).optional()
+  })
+  .strict()
+export type KnowledgeListReq = z.infer<typeof KnowledgeListReq>
+
+// Its own response cap: `KnowledgeListReq.limit` allows up to 20, so the reply
+// must not reuse the search response's max of 10 (11+ rows would fail codec
+// validation as BAD_PAYLOAD).
+export const KnowledgeListOk = z.object({ items: z.array(KnowledgeSearchItem).max(20) }).strict()
+export type KnowledgeListOk = z.infer<typeof KnowledgeListOk>
+
+// List or search accepted organization skills (managed skill bundles) the
+// requester's org can see. `query` present ⇒ filter by name/description; absent
+// ⇒ list recent. Metadata only (no bundle bytes), so a dreamer can enumerate
+// existing skills and choose update-vs-create.
+export const OrgSkillsReq = z
+  .object({
+    requesterAgentId: z.string().uuid(),
+    query: z.string().trim().min(1).max(4096).optional(),
+    limit: z.number().int().min(1).max(50).default(20)
+  })
+  .strict()
+export type OrgSkillsReq = z.infer<typeof OrgSkillsReq>
+
+export const OrgSkillItem = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    description: z.string(),
+    revision: z.number().int().positive(),
+    updatedAt: z.string().datetime()
+  })
+  .strict()
+export type OrgSkillItem = z.infer<typeof OrgSkillItem>
+
+export const OrgSkillsOk = z.object({ items: z.array(OrgSkillItem).max(50) }).strict()
+export type OrgSkillsOk = z.infer<typeof OrgSkillsOk>
+
 export const OrganizationSuggestionReadReq = z
   .object({
     sourceAgentId: z.string().uuid(),

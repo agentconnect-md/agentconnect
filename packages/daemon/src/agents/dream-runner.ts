@@ -7,7 +7,6 @@ import type {
   DreamInfo,
   DreamOrganizationSuggestionInfo,
   DreamTrigger,
-  KnowledgeSearchItem,
   MemoryDreamingPolicy,
   OrganizationSuggestionChunk,
   OrganizationSuggestionContent,
@@ -45,8 +44,7 @@ import {
   parseDreamProposal,
   storeDigest,
   type DreamProposal,
-  type DreamTranscriptSource,
-  type TrustedOrganizationSkillTarget
+  type DreamTranscriptSource
 } from './memory-dreamer.js'
 import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
@@ -183,11 +181,6 @@ export interface DreamRunnerDeps {
   /** Metadata-only lifecycle tap. Observer failures are contained by the
    *  runner and can never change the job outcome. */
   onEvent?(event: DreamLifecycleEvent): void
-  /** Dream-only, on-demand CP retrieval. Failure is non-fatal and produces an
-   * empty context; ordinary agent turns never call this seam. */
-  findOrganizationKnowledge?(agentId: string, query: string): Promise<KnowledgeSearchItem[]>
-  /** Exact managed-skill targets from the CP-authored AgentSpec. */
-  managedSkillsFor?(agentId: string): TrustedOrganizationSkillTarget[]
   /** Best-effort inventory convergence after completion/review. */
   onOrganizationSuggestions?(): void | Promise<void>
   /** Fence a warm runtime after a new accepted local source becomes active. */
@@ -463,29 +456,15 @@ export class DreamRunner {
         materializedSessionIds.push(transcript.sessionId)
       }
 
-      let organizationKnowledge: KnowledgeSearchItem[] = []
-      if (this.deps.findOrganizationKnowledge) {
-        const query = transcripts
-          .flatMap((transcript) => transcript.rows.map((row) => row.text))
-          .join('\n')
-          .slice(-4096)
-          .trim()
-        if (query) {
-          organizationKnowledge = await this.deps.findOrganizationKnowledge(agentId, query).catch((err) => {
-            this.deps.log.warn(
-              `dream ${dreamId}: organization knowledge context unavailable (${err instanceof Error ? err.name : 'unknown'})`
-            )
-            return []
-          })
-        }
-      }
-      const managedSkills = mineSkills ? (this.deps.managedSkillsFor?.(agentId) ?? []) : []
-
+      // The dreamer discovers existing org knowledge/skills on demand via its
+      // read-only tools (findKnowledge / listKnowledge / listOrgSkills) and
+      // proposes an update against any id it finds. The daemon only validates the
+      // proposal structurally (well-formed targetId + revision); whether that
+      // target exists and is current is the CP's authority when the owner accepts
+      // (updateKnowledge = getKnowledge + optimistic revision fence).
       const prompt = buildDreamExplorationPrompt({
         sessionIds: materializedSessionIds,
         mineSkills,
-        organizationKnowledge,
-        managedSkills,
         ...(mineSkills ? { dismissedSkills: this.dismissedSkillNames(agentId) } : {}),
         ...(dream.instructions ? { instructions: dream.instructions } : {})
       })
@@ -516,9 +495,7 @@ export class DreamRunner {
       // model invented can't be used to justify a recommendation (design §7).
       const proposal = parseDreamProposal(
         output,
-        sources.map((s) => s.sessionId),
-        organizationKnowledge.map(({ id, revision }) => ({ id, revision })),
-        managedSkills
+        sources.map((s) => s.sessionId)
       )
       if (!proposal) {
         this.finish(agentId, dreamId, {

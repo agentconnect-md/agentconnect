@@ -92,7 +92,13 @@ import {
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
-import { toolsForIntegrations, MEMORY_TOOL_NAMES, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS } from './mcp/tools.js'
+import {
+  toolsForIntegrations,
+  MEMORY_TOOL_NAMES,
+  ALL_TOOL_NAMES,
+  GITHUB_REVIEW_TOOLS,
+  KNOWLEDGE_TOOLS
+} from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
 import {
@@ -2783,15 +2789,7 @@ export class Daemon {
       socketPath: mcpSocketPath(root),
       log: this.log,
       now: () => Date.now(),
-      canRun: (ctx) => {
-        const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-        const active = this.activeGateEntries.get(key)
-        // A transient safety drain only gates NEW admissions while an interrupted turn
-        // unwinds. It must not break MCP tools in an unrelated, already-running turn.
-        // Persisted pause is agent-wide; cancellation is latched on the exact active key.
-        // MCP tokens are session-static, so absence of an active turn must fail closed too.
-        return !this.paused(ctx.agentId) && active !== undefined && !active.cancelledReason
-      },
+      canRun: (ctx) => this.toolTurnRunnable(ctx),
       setSessionTitle: (req) => this.setSessionTitleFromTool(req),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
@@ -2895,6 +2893,16 @@ export class Daemon {
         const client = this.cpClient
         if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
         return client.knowledgeSearch(req)
+      },
+      listKnowledge: async (req) => {
+        const client = this.cpClient
+        if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
+        return client.knowledgeList(req)
+      },
+      orgSkills: async (req) => {
+        const client = this.cpClient
+        if (!client) throw Object.assign(new Error('control plane is not connected'), { code: 'INTERNAL' })
+        return client.orgSkills(req)
       },
       // Agent→agent wake (§2.2). Same-daemon delivery only in P1; the daemon owns the
       // trusted caller identity + policy check + dispatch (a target elsewhere gets
@@ -5176,6 +5184,35 @@ export class Daemon {
    * in {@link runDreamExtractionOnHost}; credential isolation in
    * {@link buildDreamHost}.
    */
+  /**
+   * Whether an MCP tool call bound to `ctx` may run (the shared `canRun` gate).
+   * An ordinary chat turn must have an admitted, non-cancelled gate entry — a
+   * session-static MCP token must fail closed once its turn ends. A DREAM runs
+   * off the chat-turn queue with its own lifecycle (abort signal + one-off host +
+   * the tool bridge token unregistered on teardown), so it never populates
+   * `activeGateEntries`; its read-only org-context tools are gated only on the
+   * agent not being paused. Without this carve-out every dream tool call would
+   * throw "this agent turn has been stopped".
+   */
+  private toolTurnRunnable(ctx: {
+    agentId: string
+    platform: string
+    channel: string
+    thread: string
+    transportScope?: string
+  }): boolean {
+    if (this.paused(ctx.agentId)) return false
+    if (ctx.platform === 'dream') return true
+    const active = this.activeGateEntries.get(
+      sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    )
+    // A transient safety drain only gates NEW admissions while an interrupted
+    // turn unwinds; it must not break MCP tools in an already-running turn.
+    // Cancellation is latched on the exact active key; absence of an active turn
+    // fails closed (the token outlives nothing).
+    return active !== undefined && !active.cancelledReason
+  }
+
   private async runDreamExtraction(
     agentId: string,
     systemPrompt: string,
@@ -5310,8 +5347,66 @@ export class Daemon {
     // await and immediately before dispatch so a canceled dream bails instead of
     // launching an uncancellable prompt.
     if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
-    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
-    ref.sessionId = sessionId
+    // Give the dream on-demand tools to browse existing org knowledge/skills
+    // (findKnowledge / listKnowledge / listOrgSkills) so it can choose update
+    // over duplicate-create — instead of pre-stuffing that context into the
+    // prompt. Read-only, org-scoped from the trusted agentId in this context.
+    // The token is unregistered in finally so a leaked token cannot outlive the
+    // one-off dream host.
+    const mcpToken = this.mcp.register({
+      agentId,
+      platform: 'dream',
+      isDm: false,
+      channel: 'memory',
+      thread: context.dreamId,
+      tools: KNOWLEDGE_TOOLS
+    })
+    const mcpServers = buildMcpServers({
+      socketPath: mcpSocketPath(this.root),
+      token: mcpToken,
+      cliEntry: daemonEntryForShims(this.root)
+    })
+    try {
+      const sessionId = trusted
+        ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
+        : await host.newSession(cwd, mcpServers)
+      ref.sessionId = sessionId
+      return await this.runDreamExtractionSession(
+        host,
+        agent,
+        sessionId,
+        prompt,
+        signal,
+        context,
+        systemPrompt,
+        trusted
+      )
+    } finally {
+      this.mcp.unregister(mcpToken)
+    }
+  }
+
+  /** The prompt/collect body of a dream extraction, once the ACP session (with
+   *  its org-context tool bridge) exists. Split out so the MCP token registered
+   *  for the session is always unregistered in the caller's finally. */
+  private async runDreamExtractionSession(
+    host: AcpHost,
+    agent: LoadedAgent,
+    sessionId: string,
+    prompt: string,
+    signal: AbortSignal,
+    context: { dreamId: string; trigger: 'manual' | 'schedule' | 'auto'; sessionIds: string[]; inputDir: string },
+    systemPrompt: string,
+    trusted: boolean
+  ): Promise<{
+    output: string
+    sessionId: string
+    runtime: string
+    model?: string
+    stopReason: string
+    usage?: StoredUsage
+  }> {
+    const agentId = agent.id
     const modelOptions = host.modelOptions?.(sessionId) ?? null
     const selectedModel = modelOptions?.current
     // Mirror ordinary-turn attribution: a runtime-owned `default` means the
@@ -5610,19 +5705,6 @@ export class Daemon {
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
-      findOrganizationKnowledge: async (agentId, query) => {
-        const client = this.cpClient
-        if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return []
-        const reply = await client.knowledgeSearch({
-          requesterAgentId: agentId,
-          query,
-          limit: 5,
-          maxBytes: 8192
-        })
-        return reply.items
-      },
-      managedSkillsFor: (agentId) =>
-        (this.agents.get(agentId)?.managedSkills ?? []).map(({ id, name, revision }) => ({ id, name, revision })),
       onOrganizationSuggestions: () =>
         this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion sync failed (${err instanceof Error ? err.name : 'unknown'})`)

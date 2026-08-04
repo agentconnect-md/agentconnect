@@ -79,6 +79,10 @@ import type {
   WebchatMcpGrantRevoked,
   KnowledgeSearchReq,
   KnowledgeSearchOk,
+  KnowledgeListReq,
+  KnowledgeListOk,
+  OrgSkillsReq,
+  OrgSkillsOk,
   OrganizationSuggestionsSyncReq,
   OrganizationSuggestionsSyncOk,
   ManagedSkillReadReq,
@@ -769,6 +773,30 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected knowledge/search/ok, got ${rep.type}`, false)
     }
     return rep.payload as KnowledgeSearchOk
+  }
+
+  async knowledgeList(payload: KnowledgeListReq): Promise<KnowledgeListOk> {
+    this.requireReady('knowledge/list')
+    if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not support organization knowledge', false)
+    }
+    const rep = await this.request('knowledge/list', payload)
+    if (rep.type !== 'knowledge/list/ok') {
+      throw new WireError('INTERNAL', `expected knowledge/list/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as KnowledgeListOk
+  }
+
+  async orgSkills(payload: OrgSkillsReq): Promise<OrgSkillsOk> {
+    this.requireReady('skills/org')
+    if (!this.supportsServerFeature(ORGANIZATION_KNOWLEDGE_FEATURE)) {
+      throw new WireError('INTERNAL', 'control plane does not support organization skills', false)
+    }
+    const rep = await this.request('skills/org', payload)
+    if (rep.type !== 'skills/org/ok') {
+      throw new WireError('INTERNAL', `expected skills/org/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as OrgSkillsOk
   }
 
   async syncOrganizationSuggestions(payload: OrganizationSuggestionsSyncReq): Promise<OrganizationSuggestionsSyncOk> {

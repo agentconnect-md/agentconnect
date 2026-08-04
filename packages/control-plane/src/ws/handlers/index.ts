@@ -43,6 +43,8 @@ import {
 } from './webchat-mcp-grant.js'
 import {
   handleKnowledgeSearch,
+  handleKnowledgeList,
+  handleOrgSkills,
   handleManagedSkillRead,
   handleOrganizationSuggestionsSync
 } from './organization-knowledge.js'
@@ -78,6 +80,8 @@ export class FrameRouter {
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,
       'knowledge/search': handleKnowledgeSearch,
+      'knowledge/list': handleKnowledgeList,
+      'skills/org': handleOrgSkills,
       'knowledge/suggestions/sync': handleOrganizationSuggestionsSync,
       'managed-skill/read': handleManagedSkillRead,
       ...overrides

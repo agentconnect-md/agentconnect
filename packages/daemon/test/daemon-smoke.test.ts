@@ -115,6 +115,27 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     }
   })
 
+  it('lets a dream session run its org-context tools off the chat-turn queue (#36 canRun carve-out)', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({ root, sandboxMechanism: null, probeRuntimes: async () => [] })
+    try {
+      await daemon.start()
+      // A dream never populates activeGateEntries (it runs off the chat-turn
+      // queue), so without the carve-out its read-only tools would be gated shut.
+      expect(
+        (daemon as any).toolTurnRunnable({ agentId: 'bot-a', platform: 'dream', channel: 'memory', thread: 'drm-1' })
+      ).toBe(true)
+      // An ordinary session with no admitted turn still fails closed — a
+      // session-static MCP token must not outlive its turn.
+      expect(
+        (daemon as any).toolTurnRunnable({ agentId: 'bot-a', platform: 'slack', channel: 'C1', thread: 'T1' })
+      ).toBe(false)
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('keeps agent tool credentials out of the dream host without re-enabling repository hooks', async () => {
     const root = scaffold()
     const daemon = new Daemon({ root, sandboxMechanism: 'bwrap', probeRuntimes: async () => [] })
