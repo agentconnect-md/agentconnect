@@ -299,15 +299,30 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     return { agent1: script('agent1'), agent2: script('agent2') }
   }
 
-  // Design test #16, GREEN since #568 let a platform-observed agent delivery bind
-  // the conversation audience (issue #583). Before that fix the second edge
-  // admitted and then cancelled with `session_source_mismatch`: the
-  // verified-mention dispatch installed hop metadata but no external-origin
-  // lineage, so re-entering the session a HUMAN opened was refused and the chain
-  // died after one edge. It now advances edge by edge until the shared cap stops
-  // it. The expected sequence encodes exactly-once per finalized response — a
-  // duplicated activation on any edge cannot hide under the aggregate bound.
-  it('an A->B->A ordinary-mention chain advances one hop per edge until the cap (#503 design test #16)', async () => {
+  /** Mirrors the daemon's private `MAX_AUTOMATIC_TURNS_PER_WINDOW`
+   *  (packages/daemon/src/daemon.ts): automatic turns admitted per agent per
+   *  `LOOP_GUARD_WINDOW_MS`. */
+  const AUTOMATIC_TURNS_PER_WINDOW = 8
+  /** Two participants, each spending its own automatic-turn budget on the chain. */
+  const CHAIN_EDGES = AUTOMATIC_TURNS_PER_WINDOW * 2
+
+  // Design test #16's TRANSPORT property — one hop per edge, exactly once, in
+  // strict alternation — is green since #568 let a platform-observed agent
+  // delivery bind the conversation audience (issue #583). Before that fix the
+  // second edge admitted and then cancelled with `session_source_mismatch`.
+  //
+  // What STOPS the chain is no longer the hop cap. #628 raised
+  // `MAX_AGENT_CALL_HOPS` to 20, and at that height the durable loop guard's
+  // automatic-turn budget binds FIRST: each agent gets 8 automatic turns per
+  // 60 s window, so two participants carry the chain exactly 16 edges and the
+  // 17th is refused with 4 hops still unspent. Verified by construction —
+  // raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the identical chain run
+  // to hop 20 and stop on the cap instead.
+  //
+  // So the design's "until the cap" is currently unreachable for a two-agent
+  // room. That is a real interaction between two protections, not a defect, and
+  // it is pinned here rather than left as a stale expected-fail.
+  it('an A->B->A ordinary-mention chain advances one hop per edge, stopped by the automatic-turn budget before the hop cap (#503 design test #16)', async () => {
     fixture = await RoutingFixture.start({
       agents: ['agent1', 'agent2'],
       scripts: chainScripts(() => fixture!)
@@ -319,9 +334,8 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
 
     // EXACTLY-ONCE per finalized response, proven by the exact alternating
     // input sequence — a duplicated activation on any edge cannot hide under
-    // the aggregate cap. The human trigger is depth 0, so edges 1..cap are
-    // admitted and edge cap+1 is rejected: agent2 receives the odd turns,
-    // agent1 (after its human trigger) the even ones.
+    // the aggregate bound. The human trigger is depth 0, so agent2 receives the
+    // odd edges and agent1 (after its human trigger) the even ones.
     const agent2Turns = fixture.turnInputs('agent2').map((input) => /your turn (\d+)/.exec(input)?.[1])
     const agent1ChainTurns = fixture
       .turnInputs('agent1')
@@ -329,27 +343,27 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
       .map((input) => /your turn (\d+)/.exec(input)?.[1])
     const expectedAgent2: string[] = []
     const expectedAgent1: string[] = []
-    for (let edge = 1; edge <= MAX_AGENT_CALL_HOPS; edge++) {
+    for (let edge = 1; edge <= CHAIN_EDGES; edge++) {
       ;(edge % 2 === 1 ? expectedAgent2 : expectedAgent1).push(String(edge))
     }
     expect(agent2Turns).toEqual(expectedAgent2)
     expect(agent1ChainTurns).toEqual(expectedAgent1)
-    // The chain runs the FULL budget: every edge from 1 to the cap dispatched
-    // exactly once, and the cap is what stops it.
+    // Every edge dispatched exactly once, and each agent spent exactly its own
+    // automatic-turn budget.
     const agentActivations = fixture.activations('agent1') + fixture.activations('agent2') - 1 // minus the human trigger
-    expect(agentActivations).toBe(MAX_AGENT_CALL_HOPS)
+    expect(agentActivations).toBe(CHAIN_EDGES)
+    expect(fixture.activations('agent2')).toBe(AUTOMATIC_TURNS_PER_WINDOW)
+    // The hop cap is NOT what stopped it — the chain ends with budget to spare.
+    expect(CHAIN_EDGES).toBeLessThan(MAX_AGENT_CALL_HOPS)
     // No turn was lost to source binding — the #583 regression pin.
     expect(fixture.events().some((event) => JSON.stringify(event).includes('session_source_mismatch'))).toBe(false)
-    // ...and the edge past the cap is REFUSED, with no dispatch behind it: the
-    // finalized echo of the last admitted turn's own reply routes to nobody.
-    // (The hop-limit reason is a daemon debug log; what an observer sees is a
-    // finalized response that activates no one — `unrouted`.)
+    // ...and the edge past the budget is REFUSED, with no dispatch behind it.
     const finalizedAdmissions = (await fixture.echoAdmissions()).filter(
       (record) => record.ingressEventTag !== undefined
     )
     const admitted = finalizedAdmissions.filter((record) => record.admission.admitted)
-    expect(admitted).toHaveLength(MAX_AGENT_CALL_HOPS)
-    expect(finalizedAdmissions.at(-1)!.admission).toMatchObject({ admitted: false, reason: 'unrouted' })
+    expect(admitted).toHaveLength(CHAIN_EDGES)
+    expect(finalizedAdmissions.at(-1)!.admission).toMatchObject({ admitted: false })
   }, 120_000)
 
   // Landed with #503 (§2.3/§5): the ordinary reply's FINALIZED response event

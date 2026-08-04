@@ -73,17 +73,22 @@ cadence rather than by the hop cap.
 
 `evals/test/routing-acceptance.test.ts` — 8 tests, all green.
 
-| Case   | Shape                             | Pinned behavior                                                                                                                                                                                                     | Status |
-| ------ | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| **1**  | `sendMessage {toAgent, channel}`  | One visible root post, target activated **exactly once**, anchored to that single post; a thread reply reaches only the target. The target's mention is rendered into the visible root post.                        | Green  |
-| **1b** | `sendMessage {sessionId: parent}` | Session-only parent resume: **zero** new IM outbound while the parent still processes the reply; an explicit visible send from the resumed parent is still delivered.                                               | Green  |
-| **2**  | `sendMessage {channel}`           | Bare visible root post with **zero** activations; the author owns the resulting thread, and a human thread reply reaches only the author.                                                                           | Green  |
-| **3**  | Ordinary-reply mentions           | Agent-authored platform messages route: a finalized reply mentioning a peer activates it exactly once; an A→B→A chain advances one hop per edge until the cap; unmentioned posts and self-mentions activate no one. | Green  |
+| Case   | Shape                             | Pinned behavior                                                                                                                                                                                                                   | Status |
+| ------ | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **1**  | `sendMessage {toAgent, channel}`  | One visible root post, target activated **exactly once**, anchored to that single post; a thread reply reaches only the target. The target's mention is rendered into the visible root post.                                      | Green  |
+| **1b** | `sendMessage {sessionId: parent}` | Session-only parent resume: **zero** new IM outbound while the parent still processes the reply; an explicit visible send from the resumed parent is still delivered.                                                             | Green  |
+| **2**  | `sendMessage {channel}`           | Bare visible root post with **zero** activations; the author owns the resulting thread, and a human thread reply reaches only the author.                                                                                         | Green  |
+| **3**  | Ordinary-reply mentions           | Agent-authored platform messages route: a finalized reply mentioning a peer activates it exactly once; an A→B→A chain advances one hop per edge until a protection stops it; unmentioned posts and self-mentions activate no one. | Green  |
 
-Case 3 carries the design's test #16 at full budget: **8 admitted edges in exact
-alternating order**, asserted edge-by-edge rather than in aggregate — a
-duplicated activation on any single edge cannot hide under an aggregate bound —
-and the edge past the cap is refused with no dispatch behind it.
+Case 3 carries the design's test #16: **16 admitted edges in exact alternating
+order**, asserted edge-by-edge rather than in aggregate — a duplicated activation
+on any single edge cannot hide under an aggregate bound — and the edge past the
+budget is refused with no dispatch behind it.
+
+The design phrases this as running "until the cap". It no longer does: the chain
+stops on the **automatic-turn budget** with hops to spare. See §6.1 — this is the
+single most important thing that changed in the routing bounds, and the test now
+pins the behavior rather than the design's wording.
 
 Every suite also carries a regression pin that no turn is lost to
 `session_source_mismatch` (issue #583, fixed by #568).
@@ -197,31 +202,42 @@ Full gate, measured on this branch:
 
 ## 5. Real-model runs
 
-> **Provenance.** The numbers in this section were measured on **`main` @ 87d36bc**
-> with real local Claude Code over ACP (model sonnet), and are **carried forward
-> unrefreshed**. No ACP adapter is installed in the current environment, so they
-> could not be re-measured for this document. They are reported as inherited
-> measurements, not as re-verified results. Everything in §2, §3, §4 and §6 **was**
-> measured on the current branch.
+> **Provenance — read before quoting these.** These numbers were measured on
+> **`main` @ 87d36bc** with real local Claude Code over ACP (model sonnet). They
+> are **carried forward unrefreshed**: no ACP adapter is installed in the current
+> environment, so they could not be re-measured.
+>
+> They were also measured **when `MAX_AGENT_CALL_HOPS` was 8**. #628 has since
+> raised it to 20, so the depth-limited run below would terminate differently
+> today — and, per §6.1, on a different protection. Treat the **coordination
+> quality** figures (entropy, duplicates, regenerations) as the durable signal
+> and the **depth** figures as historical.
+>
+> Everything in §2, §3, §4 and §6 **was** measured on the current branch.
 
 Both runs use the peer-driven variant: one human-sourced start message, then a
 silent referee.
 
-**2 agents, target 20 — reached 10/20.**
+**2 agents, target 20 — reached 10/20** (at the then-current hop cap of 8).
 
 | Metric                | Value                                      |
 | --------------------- | ------------------------------------------ |
 | Numbers landed        | 10 of 20                                   |
-| Terminated by         | Hop cap (`unrouted` on the next echo)      |
+| Terminated by         | Hop cap of 8 (`unrouted` on the next echo) |
 | Structure             | Human-seeded wave + 8 agent-to-agent edges |
 | Participation entropy | 1.0 (perfect alternation)                  |
 | Duplicate posts       | 0                                          |
 | Regenerations         | 1                                          |
 | Final admissions      | 9 admitted + 1 `unrouted`                  |
 
-The 10 is not a coordination failure — it is the hop budget, exactly (see §6.1).
-Coordination quality was perfect over the whole budget. For contrast, before #568
-the same run stalled at 2 with `session_source_mismatch` at hop 1 of 8.
+The 10 was not a coordination failure — it was the hop budget of the day,
+exactly. Coordination quality was perfect over the whole budget. For contrast,
+before #568 the same run stalled at 2 with `session_source_mismatch` at hop 1.
+
+Under today's constants the same run would be bounded at 16 agent-to-agent edges
+by the automatic-turn budget rather than at 8 by the cap (§6.1). **That
+prediction is inferred, not measured** — it follows from the scripted chain
+result, but no real-model run has been done since #628.
 
 **4 agents, target 8 — completed 8/8.**
 
@@ -239,25 +255,45 @@ it has not represented, and regenerates rather than posting a stale number.
 
 ## 6. Limitations
 
-### 6.1 The hop cap is a fixed constant, and it binds long leaderless games
+### 6.1 The raised hop cap is unreachable — the automatic-turn budget binds first
 
-`MAX_AGENT_CALL_HOPS = 8` in `packages/protocol/src/consts.ts`. It is a **single
-shared constant** — the daemon, both relay paths, and the CP all import the same
-value, deliberately, so a relayed chain cannot outlive the budget an internal
-chain gets. There is **no per-conversation, per-agent, or environment override
-anywhere on `main`** (verified: no config-schema key, no CP env key, no
-`.env.example` entry).
+Two protections bound an agent-to-agent chain, and **which one binds changed
+under this branch's feet**:
 
-Consequence: a conversation carried purely by agent continuations gets the
-initial human-sourced wave plus 8 agent-to-agent edges. With two participants
-that is **10 numbers, structurally** — a 20-number leaderless count cannot
-finish, no matter how well the agents coordinate. Any longer target needs a
-human or referee message to re-seed the budget.
+| Bound                            | Where                                     | Value                          |
+| -------------------------------- | ----------------------------------------- | ------------------------------ |
+| `MAX_AGENT_CALL_HOPS`            | `packages/protocol/src/consts.ts`         | **20** (was 8, raised by #628) |
+| `MAX_AUTOMATIC_TURNS_PER_WINDOW` | `packages/daemon/src/daemon.ts` (private) | **8** per agent per 60 s       |
 
-This is a property of the probe, not a defect. It is what the routing rework
-means by "the exchange ends because it reaches a limit". It does mean the arena
-cannot currently measure leaderless coordination **quality** beyond depth 8 —
-past that point the metric measures the cap.
+`MAX_AGENT_CALL_HOPS` is a **single shared constant** — the daemon, both relay
+paths, and the CP import the same value, deliberately, so a relayed chain cannot
+outlive the budget an internal chain gets. There is **no per-conversation,
+per-agent, or environment override anywhere on `main`** (verified: no
+config-schema key, no CP env key, no `.env.example` entry). The loop guard's
+budget has no override either, and its latch is durable — only `!resume` clears
+it.
+
+**Measured on this branch:** a two-agent A→B→A chain advances one hop per edge in
+strict alternation, exactly once per finalized response, and stops at **16
+edges** — with **4 hops still unspent**. Each agent spent exactly its 8 automatic
+turns. Raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the identical chain run
+to hop 20 and stop on the cap instead, which is how the attribution was
+confirmed rather than inferred from arithmetic.
+
+So after #628 the hop cap is **not** the operative limit for a leaderless
+two-agent room; the automatic-turn budget is, at `2 × 8 = 16` edges. Raising the
+hop cap alone does not lengthen such a conversation.
+
+Consequence for the probe: a conversation carried purely by agent continuations
+gets the initial human-sourced wave plus 16 agent-to-agent edges, so with two
+participants roughly **17 numbers**. A longer target still needs a human or
+referee message to re-seed the budget. The arena cannot measure leaderless
+coordination **quality** past that depth — beyond it, the metric measures the
+protection.
+
+None of this is a defect. It is two protections composing, and the composition is
+worth stating plainly because the design's "advances until the cap" is currently
+unreachable.
 
 ### 6.2 A leaderless room does not stop at its goal
 
@@ -293,6 +329,11 @@ The consequence worth naming is **participation unfairness**: agents whose ring
 position never came up before the latch **never speak at all**. The room is
 bounded by the protections rather than by the game, and which agents got to
 participate is decided by scheduling order, not by the design of the game.
+
+This same budget is what stops the A→B→A chain in §6.1, and the two facts belong
+together: the automatic-turn budget is now the operative bound on agent-to-agent
+conversation in **both** the narrow (2-agent chain) and wide (4-bot fan-out)
+regimes, while the hop cap binds in neither.
 
 ### 6.4 The §10.2 cross-room handoff is not expressible
 
@@ -382,8 +423,11 @@ Stated explicitly, since several claims above are structural rather than observe
 | Cross-room handoff is refused, naming `thread`              | **Measured**, this branch (assertion on the product's own error text)                                         |
 | Leaderless rooms overshoot the target                       | **Measured**, this branch (scripted, 3 × 6)                                                                   |
 | 4-bot quota counting stalls 0/8 at 29 accepted / 10 started | **Measured**, this branch (scripted)                                                                          |
-| Real-model 2 × 20 → 10, entropy 1.0                         | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                 |
+| A 2-agent chain stops at 16 edges, not the hop cap of 20    | **Measured**, this branch (scripted A→B→A chain)                                                              |
+| ...and the automatic-turn budget is what stops it           | **Measured by construction** — raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the same chain reach hop 20 |
+| Real-model 2 × 20 → 10, entropy 1.0                         | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                         |
 | Real-model 4 × 8 → 8/8, entropy 0.70                        | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                 |
-| A 20-number 2-agent leaderless count _cannot_ finish        | **Inferred** from `MAX_AGENT_CALL_HOPS = 8` plus the absence of any override; consistent with the observed 10 |
-| No hop-cap override exists                                  | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                  |
+| The same real-model run would now stop at 16 edges          | **Inferred** from the scripted chain result; no real-model run has been done since #628                       |
+| A long leaderless count still cannot finish unaided         | **Inferred** from the 16-edge bound plus the absence of any override                                          |
+| No hop-cap or loop-guard override exists                    | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                  |
 | Participation unfairness under fan-out                      | **Measured** (agents that never spoke) — the _cause_ attributed to scheduling order is **inferred**           |
