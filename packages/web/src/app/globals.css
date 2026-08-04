@@ -1199,6 +1199,52 @@
     background: var(--border-subtle);
     margin: 5px 0;
   }
+  /* The reader's own bubble — deliberately NEUTRAL (it carries no agent tone) with
+     the tail corner mirrored against `.abub`. Light sinks it below the page; dark has
+     to RAISE it instead, because there --surface-sunken (#120c1a) is darker than
+     --surface-app (#17101f), so the sunken treatment turned the bubble into a hole
+     with a faint outline instead of a card. */
+  .ubub {
+    max-width: 100%;
+    border-radius: 12px 12px 4px 12px;
+    border: 1px solid var(--border-subtle);
+    background: var(--surface-sunken);
+    padding: 9px 12px;
+    font: 400 13.5px/1.55 var(--font-sans);
+    color: var(--text-primary);
+  }
+  :root[data-theme='dark'] .ubub {
+    border-color: var(--border-default);
+    background: var(--surface-hover);
+  }
+  /* Agent speech bubble — the left-aligned counterpart to the user's bubble (whose
+     tail corner is mirrored), tinted with the SPEAKING agent's accent. The accent
+     arrives as `--agent-accent` on the element (lib/agent-tone.ts, brand if unset —
+     an invalid var() inside color-mix would drop the whole rule) and is mixed INTO
+     the live surface rather than used as a background: one hex then reads correctly
+     in both themes, and adding a hue costs one array entry instead of a second
+     colour table. Dark mode needs a heavier mix — the same 7% over near-black is
+     invisible. Only the agent's SPEECH is bubbled; its work stays in the panel
+     below, which is not something it said. */
+  .abub {
+    max-width: 100%;
+    border-radius: 12px 12px 12px 4px;
+    border: 1px solid color-mix(in oklab, var(--agent-accent, var(--brand)) 22%, var(--surface-card));
+    background: color-mix(in oklab, var(--agent-accent, var(--brand)) 7%, var(--surface-card));
+    padding: 9px 12px;
+    font: 400 13.5px/1.55 var(--font-sans);
+    color: var(--text-primary);
+  }
+  /* Pulled toward --text-primary rather than used raw: gold or green at full
+     strength fails contrast on the light surface. The mix keeps the hue legible as
+     identity while staying readable in both themes. */
+  .abub-name {
+    color: color-mix(in oklab, var(--agent-accent, var(--brand)) 62%, var(--text-primary));
+  }
+  :root[data-theme='dark'] .abub {
+    border-color: color-mix(in oklab, var(--agent-accent, var(--brand)) 34%, var(--surface-card));
+    background: color-mix(in oklab, var(--agent-accent, var(--brand)) 15%, var(--surface-card));
+  }
   .codeblk {
     background: var(--surface-sunken);
     border: 1px solid var(--border-subtle);
