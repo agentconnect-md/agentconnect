@@ -134,7 +134,6 @@ import {
 import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord/connection.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
-import { manifestFor } from './platforms/manifest.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
 import { threadKeyForPost } from './platforms/thread-keys.js'
@@ -282,6 +281,7 @@ import {
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   MAX_AGENT_CALL_HOPS,
+  manifestFor,
   originKindOf,
   SessionPurgeReason
 } from '@agentconnect.md/protocol'

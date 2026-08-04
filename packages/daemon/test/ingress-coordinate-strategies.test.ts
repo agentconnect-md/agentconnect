@@ -3,7 +3,7 @@ import { threadKeyForPost } from '../src/platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from '../src/platforms/malformed-turn.js'
 import { threadPromotionFor, type ThreadPromotionHost } from '../src/platforms/thread-promotion.js'
 import { discordThreadPromotion, discordThreadName } from '../src/platforms/discord/thread-promotion.js'
-import { manifestFor } from '../src/platforms/manifest.js'
+import { manifestFor } from '@agentconnect.md/protocol'
 
 describe('outbound thread keys (threadKeyForPost)', () => {
   it('keeps each platform aligned with its inbound canonicalization', () => {

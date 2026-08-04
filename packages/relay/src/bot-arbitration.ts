@@ -14,7 +14,14 @@
  * Pure data + a pure `arbitrate()` — no I/O, no Slack, no sockets — so it unit
  * tests without a live ingest.
  */
-import type { AttributedRoute, RcAgentDirEntry, RcBotAssign, WireNormalizedMessage } from '@agentconnect.md/protocol'
+import {
+  manifestFor,
+  type AttributedRoute,
+  type RcAgentDirEntry,
+  type RcBotAssign,
+  type WireNormalizedMessage
+} from '@agentconnect.md/protocol'
+import { isThreadRootMessage } from '@agentconnect.md/message'
 
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
 export interface BotAssignment {
@@ -124,12 +131,18 @@ export function arbitrate(
    *  Unverified bots — including third-party ones — still stop at the explicit mention. */
   verifiedAgentAuthor?: string
 ): RouteTarget | null {
-  // Own echoes never route. A third-party Slack bot may enter only through an
-  // explicit mention; AgentConnect-managed app messages are removed by the manager
-  // using the collaboration snapshot before forwarding.
+  // Own echoes never route. A third-party bot may enter only through an explicit
+  // mention, and only on a platform whose manifest admits bot senders at all
+  // (§5 botSenderRouting — fail-closed for unknown ids); AgentConnect-managed app
+  // messages are removed by the manager using the collaboration snapshot before
+  // forwarding.
   if (a.botUserId !== undefined && msg.sender.id === a.botUserId && verifiedAgentAuthor === undefined) return null
   const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
-  if (msg.sender.isBot && verifiedAgentAuthor === undefined && (msg.platform !== 'slack' || !explicitlyMentioned)) {
+  if (
+    msg.sender.isBot &&
+    verifiedAgentAuthor === undefined &&
+    (!manifestFor(msg.platform).botSenderRouting || !explicitlyMentioned)
+  ) {
     return null
   }
   // A channel switched Off resolves to no target at all — ahead of every rung, so
@@ -415,9 +428,10 @@ export class BotArbitrationRouter {
     if (a.botUserId !== undefined && msg.sender.id === a.botUserId) return false
     const addressed = (a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)) || msg.isDm
     if (addressed) return false
-    // The message's own ts is the tail of `slack:${channel}:${ts}` (split on last ':').
-    const ownTs = msg.msgId.slice(msg.msgId.lastIndexOf(':') + 1)
-    if (!msg.thread || msg.thread === ownTs) return false
+    // A thread ROOT routes itself (its own send established the affinity) — only
+    // genuine follow-ups are worth a lookup. The coordinate parse belongs to the
+    // message package, which mints the `platform:channel:native` format.
+    if (!msg.thread || isThreadRootMessage(msg)) return false
     const sessionKey = sessionKeyOf(msg)
     if (this.affinity.get(botId)?.has(sessionKey)) return false
     if (this.noAffinity.get(botId)?.has(sessionKey)) return false
