@@ -632,41 +632,20 @@ export class RelayIngressManager {
     if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    // §2.3: an agent message that names nobody still continues the conversation — it goes
-    // through the SAME arbitration a human message does, with the author excluded so it
-    // cannot wake itself. `arbitrate` normally stops bot traffic at the explicit-mention
-    // rung; a VERIFIED author is a known participant with a checked policy, not anonymous
-    // bot traffic, so it is allowed past.
+    // The recipient set the author resolved is NOT consulted for delivery: a verified
+    // agent message goes to whoever this bot's ordinary arbitration selects, the author
+    // excluded. `arbitrate` normally stops bot traffic at the explicit-mention rung; a
+    // VERIFIED author is a known participant with a checked policy, not anonymous bot
+    // traffic, so it is allowed past.
     //
-    // "Names nobody" is judged BEFORE the author is filtered out. A response that did name
-    // an agent has explicitly addressed the conversation, so it gets an explicit outcome
-    // or none: retargeting it because the named agent is unreachable would substitute a
-    // recipient the author never asked for, and filtering first would make a self-mention
-    // — the one name every response can produce — indistinguishable from naming nobody.
-    const named = claim.mentionedAgentIds.length > 0
-    let targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
-    let routeVia: 'mention' | 'implicit' = 'mention'
-    if (!named) {
-      // Naming a HUMAN (or another app, or a bare shared bot) is still deliberate
-      // addressing even though it resolves to no agent — `mentionedBots` holds every
-      // `<@U…>` token, not only bots. The direct ladder stops there (`routeRules`:
-      // unmatched mention in a channel ⇒ no route), for human senders too, so stopping
-      // here is what keeps one message from waking a peer over the relay and nobody over
-      // a direct connection. A DM is already addressed to its recipient, so it is exempt
-      // on both sides.
-      // `mentionedBots` is reparsed from the FINAL section's text, so it misses a mention
-      // the splitter left in an earlier one; the author's claim covers the complete
-      // response and is the only place that fact survives. Either is enough — an address
-      // is an address wherever in the answer it appeared.
-      if (!msg.isDm && (msg.mentionedBots.length > 0 || claim.addressedAnyone === true)) {
-        return drop('addressed someone this relay cannot resolve')
-      }
-      const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
-      if (!implicit) return drop('no implicit rung matched')
-      targets = [implicit.agentId]
-      routeVia = 'implicit'
-    }
-    if (targets.length === 0) return drop('named only its own author')
+    // Selecting by mention made delivery depend on resolving a `<@U…>` through the
+    // collaboration directory, so an unresolvable token silenced the conversation rather
+    // than merely costing precision. Peers are meant to see what was said and judge for
+    // themselves; every edge below is still checked against this relay's own snapshot.
+    const implicit = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
+    if (!implicit) return drop('no rung matched for this bot')
+    const targets = [implicit.agentId]
+    const routeVia: 'mention' | 'implicit' = 'implicit'
 
     for (const targetAgentId of targets) {
       // Every listed author→target edge is checked independently and against the RELAY's

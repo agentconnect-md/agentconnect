@@ -5689,73 +5689,35 @@ export class Daemon {
     if (deliveryHopCount > MAX_AGENT_CALL_HOPS) {
       return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
     }
-    // Naming NOBODY is the ordinary case — most agent messages do — and it is no longer
-    // the end of the road: the message falls through to the SAME implicit ladder a human
-    // message takes. Naming somebody is an explicit address, and gets an explicit outcome
-    // or none. The test therefore runs BEFORE the author is filtered out: a response whose
-    // only name is its own author has still addressed the conversation explicitly, and
-    // must not be handed to an unrelated peer.
-    if (verified.recipients.length === 0) {
-      // The response named no AGENT — but it may still have addressed a human or another
-      // app, and §2.3 makes any address binding. `routeRules` catches that from
-      // `mentionedBots` when the mention is in this physical message; the author's claim
-      // catches it when the splitter left the mention in an earlier section, which is the
-      // only place that fact still exists by now.
-      if (verified.addressedAnyone && !msg.isDm) return transcriptOnly('addressed someone who is not an agent')
-      return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
+    // The VISIBLE half of a paired `toAgent + channel` send is the one case whose target
+    // is structured rather than parsed: `sendMessage` named the agent id outright, and the
+    // rendezvous only converges if both halves name the SAME target. Route it to exactly
+    // that agent — picking a different one implicitly would strand the internal wake.
+    if (verified.agentCallDeliveryId) {
+      const paired = verified.recipients.filter((id) => id !== verified.authorAgentId)
+      if (paired.length === 0) return transcriptOnly('paired agent call named no other agent')
+      let firstPaired: { kind: 'rejected'; reason: DeliveryRejectionReason } | undefined
+      for (const targetAgentId of paired) {
+        const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount, 'mention')
+        if (outcome) firstPaired ??= outcome as { kind: 'rejected'; reason: DeliveryRejectionReason }
+      }
+      return firstPaired ?? transcriptOnly('paired agent call produced no observation')
     }
-    // The author can never activate itself (§2.3).
-    const targets = verified.recipients.filter((id) => id !== verified.authorAgentId)
-    if (targets.length === 0) return transcriptOnly('named only its own author')
-
-    // EVERY admissible recipient is activated. One finalized response can address several
-    // agents ("<@A> <@B> please both look"), and stopping at the first would silently drop
-    // the rest — the sender saw one message go out and has no way to learn that only one
-    // reader woke. The returned handle names the first dispatch because the caller's
-    // contract is one outcome per inbound event; the others still ran.
-    let first: { kind: 'dispatched'; handle: DeliveryHandle } | undefined
-    let dispatched = 0
-    for (const targetAgentId of targets) {
-      // Directional call policy, org equality, and the conversation gate are re-checked
-      // HERE rather than inherited from the author's daemon: the sender's snapshot may be
-      // stale or the sender's daemon compromised, and this is the daemon that owns the
-      // target (agent-collaboration §2.5 #4, terminal verification).
-      if (!this.agents.has(targetAgentId)) continue
-      if (!this.cpCollab.admits(verified.authorAgentId, targetAgentId)) {
-        this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" denied by call policy`)
-        continue
-      }
-      if (!this.cpCollab.resolve(verified.orgId, msg.platform, msg.channel, targetAgentId)) {
-        this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" is not in this conversation`)
-        continue
-      }
-      // The per-conversation trigger (product-conventions "Per-channel trigger"): Off means
-      // the agent does not respond there AT ALL — explicitly including an @-mention. The
-      // human ladder enforces this through its scope filter (`mutedChannels`) and the
-      // relay's last-hop `gatedAdmission`; this ladder bypasses both, so it must apply the
-      // rule itself or an agent mention would become the one way into a silenced channel.
-      if (!this.agentConversationAdmits(targetAgentId, msg)) {
-        this.log.debug(`routing: agent-authored ${msg.msgId} → "${targetAgentId}" is off in this conversation`)
-        continue
-      }
-      const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount, 'mention')
-      if (outcome?.kind === 'dispatched') {
-        dispatched += 1
-        first ??= outcome
-      }
-    }
-    if (first) {
-      if (dispatched > 1) {
-        this.log.info(`routing: agent-authored ${msg.msgId} activated ${dispatched} recipients`)
-      }
-      return first
-    }
-    // Every named recipient was refused (policy, gate, not local). This stays transcript-
-    // only rather than falling through: the implicit ladder would pick a DIFFERENT agent,
-    // and "the one you asked for is off here, so here is someone else" is not a
-    // substitution the author consented to — least of all when the refusal was the
-    // conversation's own Off fence. Same rule the relay applies (`forwardVerifiedAgentMessage`).
-    return transcriptOnly('every named recipient was refused')
+    // The recipient set the author resolved is NOT consulted for delivery. A verified
+    // agent message goes to whoever the ordinary ladder selects in this conversation, the
+    // author excluded — the same thing that happens when it names nobody, which is the
+    // common case anyway. The mention in the body is for the humans reading the thread and
+    // for the target's own judgement; it is not an address this layer acts on.
+    //
+    // Deliberate, and it is the point of the rework: agents in one thread see each other's
+    // replies and decide for themselves whether to answer (`NO_RESPONSE` is how they
+    // decline). Selecting recipients here made delivery depend on resolving a `<@U…>` token
+    // through the collaboration directory, so a directory that could not resolve it — a
+    // missing `botUserId`, a shared-bot flag, a slug the model did not repeat — silenced
+    // the conversation instead of merely losing precision. Every edge is still checked
+    // below: author exclusion, call policy, the conversation fence, hop budget, and
+    // exactly-once admission are properties of the EDGE, not of how it was addressed.
+    return this.routeAgentMessageImplicitly(msg, verified, deliveryHopCount, srcIntegrationIds)
   }
 
   /**
@@ -12671,9 +12633,13 @@ export class Daemon {
         // outcome, so without this a response that addressed a peer but resolved to no
         // agent — a stale or unpopulated mention directory — is indistinguishable from
         // one that addressed nobody, on either side of the wire.
+        const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.platform, p.channel) : []
         this.log.debug(
           `slack: finalizing response ${p.responseId} for "${p.agentId}" — recipients=[${recipients.join(',')}] ` +
-            `addressedAnyone=${addressedAnyone} directory=${orgId ? this.cpCollab.mentionDirectory(orgId, p.platform, p.channel).length : 0}`
+            `addressedAnyone=${addressedAnyone} text=${JSON.stringify(p.replyText.slice(0, 120))} ` +
+            `directory=[${mentionDir
+              .map((e) => `${e.agentId.slice(0, 8)}:${e.botUserId ?? 'NO-BOT-USER-ID'}${e.botShared ? '(shared)' : ''}`)
+              .join(' ')}]`
         )
         await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
       }

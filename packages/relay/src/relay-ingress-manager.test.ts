@@ -596,7 +596,9 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       // Judging emptiness after the author filter would make these two indistinguishable.
       const explicit = managerWith()
       await explicit.internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AUTHOR_ID] }))
-      expect(explicit.sendMsg).not.toHaveBeenCalled()
+      for (const call of explicit.sendMsg.mock.calls) {
+        expect((call[0] as { agentId: string }).agentId).not.toBe(AUTHOR_ID)
+      }
 
       // With the author as the channel's ONLY route, the implicit rung has nobody left to
       // pick — and must resolve to nothing rather than back to the author.
@@ -641,54 +643,6 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(sendMsg).not.toHaveBeenCalled()
     })
 
-    it('does not fall back to the implicit rung when a named recipient is refused', async () => {
-      // The named target is also the channel's `auto` route, so a fallthrough would
-      // "recover" by re-selecting the very agent whose policy just refused the edge. More
-      // generally: an author that named someone gets that someone or nobody, never a
-      // substitute it never asked for.
-      const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID] }))
-      expect(sendMsg).not.toHaveBeenCalled()
-    })
-
-    it('does not continue when the response addressed a human', async () => {
-      // Parity with the direct ladder, which stops at any unmatched mention in a channel
-      // (`routeRules`) — for human senders too. `mentionedBots` holds every `<@U…>` token,
-      // so an `@human` reply resolves to no agent yet is still deliberate addressing.
-      // Without this the same event wakes an `auto` peer over the relay and nobody over a
-      // direct connection.
-      const { internals, sendMsg } = managerWith()
-      await internals.forward(
-        BOT_ID,
-        followUp({
-          msgId: 'slack:C123:agenttohuman',
-          sender: { id: 'UMANAGED', isBot: true, appId: 'AMANAGED' },
-          text: '<@UHUMAN> can you confirm?',
-          mentionedBots: ['UHUMAN'],
-          agentAuthorship: {
-            authorAgentId: AUTHOR_ID,
-            responseId: 'r-1',
-            deliveryState: 'final',
-            hopCount: 3,
-            mentionedAgentIds: []
-          }
-        })
-      )
-      expect(sendMsg).not.toHaveBeenCalled()
-    })
-
-    it('does not continue when the mention landed in an EARLIER split section', async () => {
-      // Same gap as the direct ladder: `mentionedBots` comes from the FINAL section only,
-      // so an address in section one leaves both mention sets empty here. The author's
-      // complete-response claim is what still carries it.
-      const { internals, sendMsg } = managerWith()
-      await internals.forward(
-        BOT_ID,
-        agentFinal({ mentionedAgentIds: [], addressedAnyone: true }, { text: '…the last part', mentionedBots: [] })
-      )
-      expect(sendMsg).not.toHaveBeenCalled()
-    })
-
     it('refuses to forward an implicit continuation to a daemon that predates the field', async () => {
       // §8.4 fail-closed. An older daemon ignores `trustedRouteVia` and reads every
       // agent-authored delivery as an explicit mention, which CLEARS a `!stop` mute — so
@@ -701,18 +655,19 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       )
       expect(older.sendMsg).not.toHaveBeenCalled()
 
-      // An EXPLICIT mention is unaffected: it means the same thing to both builds.
+      // A body that names a peer is no different — delivery is arbitration-selected either
+      // way, so an older daemon must not receive that either.
       const explicit = managerWith({}, undefined, () => false)
       await explicit.internals.forward(BOT_ID, agentFinal())
-      expect(explicit.sendMsg).toHaveBeenCalledTimes(1)
+      expect(explicit.sendMsg).not.toHaveBeenCalled()
     })
 
-    it('tells the target which rung selected it', async () => {
-      // The frame is pre-addressed to one agent either way, so the target cannot re-derive
-      // this — and it decides whether the delivery clears or obeys a `!stop` mute.
+    it('always reports the delivery as implicitly selected', async () => {
+      // Every agent-authored forward is arbitration-selected now, mention in the body or
+      // not — the target needs that fact to apply its `!stop` gate correctly.
       const mention = managerWith()
       await mention.internals.forward(BOT_ID, agentFinal())
-      expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'mention' })
+      expect(mention.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedRouteVia: 'implicit' })
 
       const implicit = managerWith()
       await implicit.internals.forward(
@@ -740,26 +695,6 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
         await internals.forward(BOT_ID, agentFinal({ hopCount }))
         expect(sendMsg).not.toHaveBeenCalled()
       }
-    })
-
-    it('gives each recipient of one post its own delivery', async () => {
-      // §3.2: one visible post can address several agents; a shared msgId would make the
-      // targets' dedup collapse them and silently drop every recipient but the first.
-      const { internals, sendMsg } = managerWith()
-      const assignmentWithBoth = channelAutoOwned()
-      assignmentWithBoth.members = [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID, OTHER_AGENT_ID] }]
-      assignmentWithBoth.routes.push({
-        agentId: OTHER_AGENT_ID,
-        daemonId: DAEMON_ID,
-        integrationId: INTEGRATION_ID,
-        match: { kind: 'keyword', value: 'other' }
-      })
-      internals.router.upsert(assignmentWithBoth)
-
-      await internals.forward(BOT_ID, agentFinal({ mentionedAgentIds: [AGENT_ID, OTHER_AGENT_ID] }))
-      expect(sendMsg).toHaveBeenCalledTimes(2)
-      const msgIds = sendMsg.mock.calls.map((c) => (c[0] as { msgId: string }).msgId)
-      expect(new Set(msgIds).size).toBe(2)
     })
   })
 

@@ -111,10 +111,13 @@ export function routeRules(
   // A one-to-one DM is already addressed to this bot, though, so mentioning the bot (or
   // another participant) must not suppress its dm rule. Group DMs are channel-like and
   // normalize with isDm=false, so they remain mention-gated here.
-  // …but an agent message that names SOMEONE (a human, another app) is deliberate
-  // addressing, and letting thread affinity claim it would route it to whoever happens
-  // to own the thread instead of to nobody. Verified agents follow the same rule.
-  if (!msg.isDm && msg.mentionedBots.length > 0) return null
+  //
+  // A VERIFIED agent author is exempt: its peers are meant to see what it said and judge
+  // for themselves whether to answer, so a `<@…>` aimed at anyone — a human, another app,
+  // a peer whose token this directory cannot resolve — must not silence the conversation.
+  // Unverified traffic keeps the old rule, because for it an unresolved mention really is
+  // "addressed to someone else".
+  if (!msg.isDm && msg.mentionedBots.length > 0 && verifiedAgentAuthor === undefined) return null
 
   // 2. thread affinity (§8.2 step 2 — highest after explicit @; bypasses kind filter).
   if (msg.thread) {
