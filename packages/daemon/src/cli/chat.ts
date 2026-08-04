@@ -7,7 +7,7 @@ import { selectAgent } from '../agents/load-agents.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { cleanupConfigFiles, materializeConfigFiles } from '../agents/config-file-env.js'
 import { memoryKindOf, memoryProviderFor } from '../agents/memory-provider.js'
-import { prepareWorkspace } from '../workspace/workspace-manager.js'
+import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
 import { configureWorkspaceGitOrigins } from '../workspace/git-origin-policy.js'
 import { AcpHost } from '../acp/acp-host.js'
 import { effectiveRunInSandbox } from '../acp/runtime-launch.js'
@@ -175,7 +175,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     // Runtime adapters may discover skills only during initialization. Finish the
     // complete clone/pull + unified-skill reconciliation before the child starts.
     await host.start()
-    const sessionId = await host.newSession(cwd)
+    const sessionId = await host.newSession(cwd, [], undefined, undefined, additionalWorkspaceDirectories(agent, cwd))
 
     const send = async (text: string) => {
       const blocks: ContentBlock[] = [{ type: 'text', text }]

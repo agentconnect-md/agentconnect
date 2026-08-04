@@ -86,6 +86,39 @@ describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
   }, 15_000)
 })
 
+describe('AcpHost additional workspace directories', () => {
+  it('forwards them on new/load only when the agent advertises support', async () => {
+    const cwd = '/tmp/repo/agents/node-operator'
+    const repoRoot = '/tmp/repo'
+    const supported = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: {
+          AC_ADDITIONAL_DIRECTORIES: '1',
+          AC_EXPECT_ADDITIONAL_DIRECTORIES: JSON.stringify([repoRoot]),
+          AC_LOAD_UPDATES: '1'
+        }
+      }
+    )
+    await supported.start()
+    await supported.newSession(cwd, [], undefined, undefined, [repoRoot])
+    await supported.loadSession('persisted-session', cwd, [], undefined, undefined, [repoRoot])
+    await supported.stop()
+
+    const unsupported = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      {
+        onUpdate: () => {},
+        env: { AC_EXPECT_ADDITIONAL_DIRECTORIES: '[]' }
+      }
+    )
+    await unsupported.start()
+    await unsupported.newSession(cwd, [], undefined, undefined, [repoRoot])
+    await unsupported.stop()
+  }, 15_000)
+})
+
 describe('AcpHost session/load update filtering', () => {
   it('forwards restored title metadata while suppressing replayed conversation output', async () => {
     const updates: string[] = []

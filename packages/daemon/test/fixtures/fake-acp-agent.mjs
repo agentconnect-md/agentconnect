@@ -28,6 +28,23 @@ const permissionModeList = (process.env.AC_PERMISSION_MODES ?? '')
 const sessionPermissionModes = new Map()
 const reviewerEnabled = process.env.AC_APPROVALS_REVIEWER === '1'
 const sessionReviewers = new Map()
+const additionalDirectoriesEnabled = process.env.AC_ADDITIONAL_DIRECTORIES === '1'
+const expectedAdditionalDirectories = process.env.AC_EXPECT_ADDITIONAL_DIRECTORIES
+  ? JSON.parse(process.env.AC_EXPECT_ADDITIONAL_DIRECTORIES)
+  : undefined
+const acceptsAdditionalDirectories = (id, params) => {
+  if (expectedAdditionalDirectories === undefined) return true
+  if (JSON.stringify(params.additionalDirectories ?? []) === JSON.stringify(expectedAdditionalDirectories)) return true
+  send({
+    jsonrpc: '2.0',
+    id,
+    error: {
+      code: -32602,
+      message: `unexpected additionalDirectories: ${JSON.stringify(params.additionalDirectories)}`
+    }
+  })
+  return false
+}
 
 // Optional MCP transport capabilities advertised at initialize. `AC_MCP_CAPS`
 // (comma list) turns them on; unset ⇒ no mcpCapabilities key at all.
@@ -44,7 +61,8 @@ const agentCapabilities = () => ({
         }
       }
     : {}),
-  ...(process.env.AC_LOAD_UPDATES ? { loadSession: true } : {})
+  ...(process.env.AC_LOAD_UPDATES ? { loadSession: true } : {}),
+  ...(additionalDirectoriesEnabled ? { sessionCapabilities: { additionalDirectories: {} } } : {})
 })
 const configOptions = (sessionId) => {
   const options = []
@@ -88,6 +106,7 @@ rl.on('line', async (line) => {
   if (method === 'initialize') {
     send({ jsonrpc: '2.0', id, result: { protocolVersion: 1, agentCapabilities: agentCapabilities() } })
   } else if (method === 'session/new') {
+    if (!acceptsAdditionalDirectories(id, params)) return
     const sessionId = `s${++sessionCounter}`
     sessionModels.set(sessionId, modelList[0])
     sessionPermissionModes.set(sessionId, permissionModeList[0])
@@ -111,6 +130,7 @@ rl.on('line', async (line) => {
       sessionReviewers.set(params.sessionId, params.value)
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
   } else if (method === 'session/load') {
+    if (!acceptsAdditionalDirectories(id, params)) return
     if (process.env.AC_LOAD_PERMISSION_MODE)
       sessionPermissionModes.set(params.sessionId, process.env.AC_LOAD_PERMISSION_MODE)
     if (process.env.AC_LOAD_APPROVALS_REVIEWER)

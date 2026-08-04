@@ -645,6 +645,29 @@ export function resolvePreparedWorkspaceCwd(agent: Agent): string {
   return resolveAcpCwd(agent.workspace.path, agentDir)
 }
 
+/** Return the checkout root that encloses an already-prepared ACP cwd.
+ *
+ * ACP keeps `cwd` at the configured working subdirectory so relative paths and
+ * project instructions retain their existing meaning. Runtimes that support
+ * additional workspace directories receive this enclosing root separately,
+ * which lets repository-wide tools reach `.git` and sibling paths. */
+export function additionalWorkspaceDirectories(
+  agent: Agent,
+  cwd: string,
+  request?: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation'>
+): string[] {
+  if (agent.workspace.mode !== 'git-repo') return []
+  const expectedRoot =
+    request?.isolation === 'session' ? sessionWorktreePath(agent, request.sessionKey) : agent.workspace.path
+  const root = realpathSync(expectedRoot)
+  const canonicalCwd = realpathSync(cwd)
+  const rel = relative(root, canonicalCwd)
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+    throw new Error(`prepared workspace cwd "${cwd}" resolves outside its checkout root`)
+  }
+  return root === canonicalCwd ? [] : [root]
+}
+
 /** Resolve the checked path ACP receives, closing symlink and prefix-containment gaps. */
 function resolveAcpCwd(workspaceRoot: string, agentDir: string | undefined): string {
   const canonicalRoot = realpathSync(workspaceRoot)

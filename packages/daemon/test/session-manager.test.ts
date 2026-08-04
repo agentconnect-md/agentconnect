@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
@@ -90,6 +90,43 @@ describe('SessionManager', () => {
       sessionKey: 'slack:C1:100.2:bot-a',
       isolation: 'shared'
     })
+    store.close()
+  })
+
+  it('keeps a configured working subdirectory as cwd and adds its repository root', async () => {
+    const store = newStore()
+    const agentRoot = mkdtempSync(join(tmpdir(), 'ac-sm-git-root-'))
+    const repoRoot = join(agentRoot, 'workspace')
+    const cwd = join(repoRoot, 'agents', 'node-operator')
+    mkdirSync(join(repoRoot, '.git'), { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+    const gitAgent = {
+      ...agent,
+      dir: agentRoot,
+      runtime: 'codex',
+      workspace: {
+        mode: 'git-repo',
+        path: repoRoot,
+        gitRepo: 'https://github.com/sentioxyz/production.git',
+        gitBranch: 'main',
+        agentDir: 'agents/node-operator',
+        pullOnNewSession: false,
+        skills: []
+      }
+    } as Agent & { dir: string; env: Record<string, string> }
+    const host = fakeHost()
+    const prepareWorkspace = vi.fn(async () => realpathSync(cwd))
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => gitAgent,
+      prepareWorkspace,
+      memory
+    })
+
+    await sm.handle('bot-a', msg({ ts: '100.3', thread: '100.3', text: 'update production' }))
+
+    expect(host.newSession).toHaveBeenCalledWith(realpathSync(cwd), [], undefined, undefined, [realpathSync(repoRoot)])
     store.close()
   })
 
@@ -1110,7 +1147,7 @@ describe('SessionManager', () => {
 
     expect(sessionId).toBe('acp-1') // resumed the SAME session, not recreated
     expect(created).toBe(false) // same id, CP already knows it → no start emit
-    expect(host2.loadSession).toHaveBeenCalledWith('acp-1', expect.any(String), [], undefined, undefined)
+    expect(host2.loadSession).toHaveBeenCalledWith('acp-1', expect.any(String), [], undefined, undefined, [])
     expect(mcpServersFor).toHaveBeenCalledWith(
       expect.objectContaining({ integrationId: 'int-b', isDm: true, thread: '100.1' })
     )
@@ -1162,7 +1199,7 @@ describe('SessionManager', () => {
     expect(host2.loadSession).toHaveBeenCalledTimes(1)
     expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
     expect(host2.discardSession).toHaveBeenCalledWith('acp-1')
-    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined)
+    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [])
     store.close()
   })
 
