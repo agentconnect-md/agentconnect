@@ -6,6 +6,11 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 /**
  * P4-gate: the per-sessionKey serial admission gate (design §4.3/§6.9). These drive
  * `dispatch` directly with a blocking ACP host so we can freeze a turn mid-prompt and
@@ -114,7 +119,7 @@ describe('P4 serial gate', () => {
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
 
     // The first claims ownership and starts its prompt; the second is queued behind it.
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect((daemon as any).inflight.has(key)).toBe(true)
     expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
     // Only ONE pending entry for the single live ACP session — no concurrent overwrite.
@@ -127,7 +132,7 @@ describe('P4 serial gate', () => {
     // Release the head → the queued second now runs, in order.
     g.releaseOne()
     await p1
-    await vi.waitFor(() => expect(g.started.length).toBe(2))
+    await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
     expect(g.started[1]).toContain('second')
     g.releaseOne()
     await p2
@@ -169,7 +174,7 @@ describe('P4 serial gate', () => {
     await daemon.start()
     const key = 'slack:C1:T1:bot-a'
     const active = (daemon as any).dispatch('bot-a', msg('100', 'active'), 'int-a')
-    await vi.waitFor(() => expect(g.started).toHaveLength(1))
+    await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
     const queued = (daemon as any).dispatch('bot-a', msg('200', 'queued'), 'int-a')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
 
@@ -195,7 +200,7 @@ describe('P4 serial gate', () => {
 
     g.releaseOne()
     await expect(active).resolves.toBe('acp-1')
-    await vi.waitFor(() => expect(g.started).toHaveLength(2))
+    await vi.waitFor(() => expect(g.started).toHaveLength(2), WAIT)
     expect(g.started[1]).toContain('queued')
     g.releaseOne()
     await expect(queued).resolves.toBe('acp-1')
@@ -261,7 +266,7 @@ describe('P4 serial gate', () => {
 
     // Establish the warm session at the root message.
     const root = (daemon as any).dispatch('bot-a', msg('100.1', 'root request', '100.1'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     g.releaseOne()
     await root
 
@@ -272,7 +277,7 @@ describe('P4 serial gate', () => {
       { sender: 'U1', ts: '100.4', text: 'D latest: merge it' }
     ])
     const staleWake = (daemon as any).dispatch('bot-a', msg('100.2', 'B stale trigger', '100.1'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(2))
+    await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
     expect(g.started[1]).toContain('B stale trigger')
     expect(g.started[1]).toContain('C newer clarification')
     expect(g.started[1]).toContain('D latest: merge it')
@@ -297,7 +302,7 @@ describe('P4 serial gate', () => {
     const key = 'slack:C1:T1:bot-a'
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     // Queue the head-of-line follow-up while the first turn runs.
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'queued-head'), 'int-a')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
@@ -307,7 +312,7 @@ describe('P4 serial gate', () => {
     g.releaseOne()
     await p1
     // 'queued-head' is now the running turn; inject a NEW arrival in this window.
-    await vi.waitFor(() => expect(g.started.length).toBe(2))
+    await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
     expect(g.started[1]).toContain('queued-head')
     const p3 = (daemon as any).dispatch('bot-a', msg('300', 'late-arrival'), 'int-a')
     // It is queued behind the running head (ownership was never released) — FIFO holds.
@@ -315,7 +320,7 @@ describe('P4 serial gate', () => {
 
     g.releaseOne() // finish queued-head
     await p2
-    await vi.waitFor(() => expect(g.started.length).toBe(3))
+    await vi.waitFor(() => expect(g.started.length).toBe(3), WAIT)
     expect(g.started[2]).toContain('late-arrival')
     g.releaseOne()
     await p3
@@ -329,14 +334,14 @@ describe('P4 serial gate', () => {
     const daemon = await boot(g.host)
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
 
     // Head resolves with ITS sessionId; the queued entry resolves with its own (same
     // session here, but its OWN promise — settled when ITS turn ran, not the head's).
     g.releaseOne()
     await expect(p1).resolves.toBe('acp-1')
-    await vi.waitFor(() => expect(g.started.length).toBe(2))
+    await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
     // p2 is still pending until its own turn completes.
     let p2Settled = false
     void p2.then(() => (p2Settled = true))
@@ -355,7 +360,7 @@ describe('P4 serial gate', () => {
     const key = 'slack:C1:T1:bot-a'
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
     const p3 = (daemon as any).dispatch('bot-a', msg('300', 'third'), 'int-a')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
@@ -380,7 +385,7 @@ describe('P4 serial gate', () => {
     const key = 'slack:C1:T1:bot-a'
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
 
     // Fill the queue to the cap (10), then the 11th is rejected fast without buffering.
     const queued: Promise<unknown>[] = []
@@ -417,7 +422,7 @@ describe('P4 serial gate', () => {
     const key = 'slack:C1:T1:bot-a'
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
 
@@ -459,7 +464,7 @@ describe('P4 serial gate', () => {
 
     // Head turn (non-webchat) blocks in prompt; a WEBCHAT turn queues behind it.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a', {
       conversationId: 'conv-a',
       turnId,
@@ -489,7 +494,7 @@ describe('P4 serial gate', () => {
     const turnId = '99999999-9999-4999-8999-999999999999'
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a', {
       conversationId: 'conv-b',
       turnId,

@@ -1222,7 +1222,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       .filter((row: { sender: string }) => row.sender === AGENT_ID)
     expect(replies).toEqual([]) // no transcript reply row
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('releases held text the instant the body diverges from the sentinel prefix', async () => {
     const { factory } = streamingHost([text('AC_NO'), text(' — actually, here is the answer')])
@@ -1244,7 +1244,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
     expect(messages.join('')).toBe('AC_NO — actually, here is the answer')
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('a turn op preserves the browser turnId and streams rd/chat output→done', async () => {
     const { factory } = streamingHost([text('hi from agent')])

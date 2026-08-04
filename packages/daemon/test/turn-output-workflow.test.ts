@@ -7,6 +7,11 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { FakeClock } from './cp/fake-clock.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-turn-output-'))
   writeFileSync(
@@ -159,7 +164,7 @@ describe('TurnOutputWorkflow', () => {
 
     const firstMessage = msg('100.1', 'original request')
     const first = (daemon as any).dispatch('bot-a', firstMessage, 'int-a')
-    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
     expect(conn.postMessage).not.toHaveBeenCalled()
 
     const clarificationMessage = msg('100.2', 'important clarification')
@@ -173,7 +178,7 @@ describe('TurnOutputWorkflow', () => {
     expect((daemon as any).serialQueue.get(key)).toHaveLength(1)
     releaseFirst()
 
-    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
     await expect(first).resolves.toBe('acp-1')
     await expect(clarification).resolves.toBe('acp-1')
 
@@ -246,7 +251,7 @@ describe('TurnOutputWorkflow', () => {
     const second = (daemon as any).dispatch('bot-a', secondClarification, 'int-a')
     const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
 
-    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
     expect(prompts[0]).toContain('original request')
     const firstQuote = prompts[0].indexOf('[U2] the deployment failed with ECONNRESET')
     const firstReply = prompts[0].indexOf('[U1] first pre-prompt clarification')

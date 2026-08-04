@@ -9,6 +9,11 @@ import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-instal
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
 /** A daemon root with one DM-less agent (we attach routing + a fake conn by hand,
@@ -711,7 +716,7 @@ describe('Daemon session lifecycle (#118)', () => {
       }
     )
 
-    await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalledWith('acp-1', expect.any(Array)))
+    await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalledWith('acp-1', expect.any(Array)), WAIT)
     expect(emitCronReport).toHaveBeenCalledTimes(2)
     expect(emitCronReport.mock.calls[0]![0]).not.toHaveProperty('sessionId')
     expect(emitCronReport.mock.calls[1]![0]).toMatchObject({ sessionId: 'acp-1' })
@@ -731,7 +736,7 @@ describe('Daemon session lifecycle (#118)', () => {
     makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined())
+    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
 
     ;(daemon as any).onInbound(dm('200', '!stop'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
@@ -739,9 +744,9 @@ describe('Daemon session lifecycle (#118)', () => {
 
     // agent ignores session/cancel → after cancelBackstopMs the host is force-stopped
     clock.advance(30_000)
-    await vi.waitFor(() => expect(blocked.host.stop).toHaveBeenCalled())
+    await vi.waitFor(() => expect(blocked.host.stop).toHaveBeenCalled(), WAIT)
     expect((daemon as any).hosts.has('bot-a')).toBe(false)
-    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'))
+    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'), WAIT)
 
     blocked.release()
     await turn.catch(() => {})
@@ -756,7 +761,7 @@ describe('Daemon session lifecycle (#118)', () => {
 
     const first = (daemon as any).dispatch('bot-a', dm('100', 'first', 'T1'))
     const second = (daemon as any).dispatch('bot-a', dm('200', 'second', 'T2'))
-    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2))
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
     const queued = (daemon as any).dispatch('bot-a', dm('300', 'queued', 'T1'))
     expect((daemon as any).serialQueue.get(KEY)).toHaveLength(1)
 
@@ -795,7 +800,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const conn = makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'stream', 'T1'))
-    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined())
+    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
     const pending = pendingFor(daemon, 'acp-1')
     let releaseApply!: () => void
     pending.applyChain = new Promise<void>((resolve) => (releaseApply = resolve))
@@ -828,7 +833,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.start()
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'cold', 'T1'))
-    await vi.waitFor(() => expect(cold.host.newSession).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(cold.host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect((daemon as any).pending.size).toBe(0)
 
     writePause(root, true)
@@ -847,7 +852,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(cold.host.cancel).not.toHaveBeenCalled()
     expect((daemon as any).store.getSession(KEY)?.state).toBe('idle')
 
-    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.has('bot-a')).toBe(false), WAIT)
     await expect((daemon as any).dispatch('bot-a', dm('200', 'fresh', 'T2'))).resolves.toBe('acp-cold')
     expect(cold.host.prompt).toHaveBeenCalledTimes(1)
 
@@ -880,7 +885,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
 
     // advance past the TTL so the next sweep reaps the host + closes the session
     clock.advance(1001)
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
     expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
     expect((daemon as any).store.getSession(KEY)?.title).toBe('Final stopped title')
@@ -908,8 +913,8 @@ describe('Daemon idle sweep (#111/#118)', () => {
     clock.advance(1001)
     // The host leaves the map synchronously at the top of stopHost; the secret
     // files go away when the teardown settles — wait for that edge separately.
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
-    await vi.waitFor(() => expect(existsSync(secretsDir)).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
+    await vi.waitFor(() => expect(existsSync(secretsDir)).toBe(false), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -964,7 +969,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalled())
+    await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalled(), WAIT)
     const entry = (daemon as any).hostConfigFiles.get('bot-a')
     entry.childEnv = { KUBECONFIG_DATA: 'apiVersion: v1' }
     entry.materialized = true
@@ -1021,7 +1026,7 @@ describe('Daemon idle sweep (#111/#118)', () => {
     // Past the TTL measured from host start → now genuinely idle → reclaimed.
     clock.advance(600) // 1100ms since start > 1000ms TTL
     ;(daemon as any).sweepIdle()
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
 
     await daemon.stop()
@@ -1069,11 +1074,11 @@ describe('Daemon idle sweep — background-task lease', () => {
     // Wake fires and is delivered; the fence is held until that turn SETTLES, not until it is
     // dispatched, so wait on the count rather than on the timer set.
     clock.advance(4000)
-    await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false))
-    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'))
+    await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
+    await vi.waitFor(() => expect((daemon as any).store.getSession(KEY)?.state).toBe('idle'), WAIT)
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
     expect((daemon as any).store.getSession(KEY)?.state).toBe('closed')
 
@@ -1098,7 +1103,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -1125,10 +1130,10 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
     clock.advance(4000)
-    await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false))
+    await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -1152,7 +1157,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     // Past the ceiling (from host start) → force reclaim despite the live task.
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
-    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).hosts.has('bot-a')).toBe(false), WAIT)
     expect(host.stop).toHaveBeenCalled()
 
     await daemon.stop()
@@ -1238,7 +1243,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       expect(host.prompt).toHaveBeenCalledTimes(1) // deferred, not immediate
 
       clock.advance(4000)
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       const woken = JSON.stringify((host.prompt as any).mock.calls[1])
       expect(woken).toContain('background task finished')
       expect(woken).toContain('Sleep 30s then print the time')
@@ -1258,13 +1263,13 @@ describe('Daemon idle sweep — background-task lease', () => {
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
 
       clock.advance(4000) // re-armed, not abandoned
-      await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(1))
+      await vi.waitFor(() => expect((daemon as any).bgWakeTimers.size).toBe(1), WAIT)
       expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(1) // fence never dipped
       expect(host.prompt).toHaveBeenCalledTimes(1)
 
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
       clock.advance(4000)
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       await daemon.stop()
     }, 15_000)
 
@@ -1299,7 +1304,7 @@ describe('Daemon idle sweep — background-task lease', () => {
 
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
       clock.advance(4000)
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       await daemon.stop()
     }, 15_000)
 
@@ -1318,7 +1323,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       expect((daemon as any).agentHasLiveSdkWork('bot-a')).toBe(true)
 
       clock.advance(4000)
-      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false))
+      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
       expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(true)
       await daemon.stop()
     }, 15_000)
@@ -1348,7 +1353,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       clock.advance(4000)
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1)) // wake dispatched, stalled
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT) // wake dispatched, stalled
 
       // Past the TTL, mid-initialization: the row is still `idle` and has no Pending, so only
       // the lease fence can keep the sweep off it.
@@ -1359,8 +1364,8 @@ describe('Daemon idle sweep — background-task lease', () => {
       expect(host.stop).not.toHaveBeenCalled()
 
       releaseRecall()
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
-      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false))
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
       await daemon.stop()
     }, 15_000)
 
@@ -1397,7 +1402,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 'a' }))
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 'a' }))
       clock.advance(4000)
-      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       // The model is done even though the turn is not — exactly what the SDK reports here.
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
 
@@ -1465,7 +1470,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
       clock.advance(4000)
       const lease = (daemon as any).sdkLease.get(LEASE_KEY)
-      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false))
+      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT)
       expect(host.prompt).toHaveBeenCalledTimes(2)
       expect(lease.bgWakes).toBe(1) // a delivered wake is spent
 
@@ -1475,7 +1480,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
       ;(daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
       clock.advance(4000)
-      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false)) // fence released, no wake
+      await vi.waitFor(() => expect(wakeFenceHeld(daemon)).toBe(false), WAIT) // fence released, no wake
       expect(host.prompt).toHaveBeenCalledTimes(2)
       expect(lease.bgWakes).toBe(20) // never spends past the cap
       await daemon.stop()
@@ -1524,7 +1529,7 @@ describe('Daemon graceful shutdown drain (#109)', () => {
     makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined())
+    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
 
     let stopped = false
     const stopping = daemon.stop().then(() => (stopped = true))
@@ -1583,7 +1588,7 @@ describe('Daemon CP drain (#109)', () => {
     makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined())
+    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
 
     const draining = (daemon as any).runDrain({ scope: { kind: 'daemon' }, deadline: farFuture }, () => {})
     blocked.release() // let the turn finish so the drain completes gracefully
@@ -1616,7 +1621,7 @@ describe('Daemon CP drain (#109)', () => {
       trigger: 'mention' as const
     }
     const turn = (daemon as any).dispatch('bot-a', root, 'int-a')
-    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined())
+    await vi.waitFor(() => expect(pendingFor(daemon, 'acp-1')).toBeDefined(), WAIT)
 
     const draining = (daemon as any).runDrain({ scope: { kind: 'daemon' }, deadline: farFuture }, () => {})
     blocked.release()
@@ -1657,7 +1662,7 @@ describe('Daemon session retention GC (#485)', () => {
 
     // Past the default 7d retention window; the hourly gate inside sweepIdle opens too.
     clock.advance(8 * 24 * 3_600_000)
-    await vi.waitFor(() => expect((daemon as any).store.getSession('expired-closed')).toBeUndefined())
+    await vi.waitFor(() => expect((daemon as any).store.getSession('expired-closed')).toBeUndefined(), WAIT)
     expect((daemon as any).store.getSession('expired-idle')).toBeUndefined()
     expect((daemon as any).store.getSession('fresh-closed')).toBeDefined()
     expect((daemon as any).store.getSession('expired-prompting')).toBeDefined()
@@ -1691,7 +1696,7 @@ describe('Daemon session retention GC (#485)', () => {
     seedSession(daemon, 'expired-b', 'idle', 0)
     clock.advance(8 * 24 * 3_600_000)
     await (daemon as any).sweepSessionRetention()
-    await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce(), WAIT)
 
     // One frame per agent, carrying the ACP session ids — the only session
     // identity the CP knows.

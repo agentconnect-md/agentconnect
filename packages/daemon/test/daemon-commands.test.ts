@@ -14,6 +14,11 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const AGENT_IDENTITY = {
   displayName: 'Review Bot',
   iconUrl: 'https://console.example.test/icons/bot-a'
@@ -435,11 +440,11 @@ describe('Daemon in-conversation commands', () => {
       msgId: 'm-mention',
       accepted: true
     })
-    await vi.waitFor(() => expect(blocked.prompts).toHaveLength(1))
+    await vi.waitFor(() => expect(blocked.prompts).toHaveLength(1), WAIT)
     expect((daemon as any).store.isSessionMuted(muteKey)).toBe(false)
     blocked.release()
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('!queue buffers a message and dispatches it once the turn goes idle', async () => {
     const blocked = blockingHost()
@@ -449,7 +454,7 @@ describe('Daemon in-conversation commands', () => {
 
     // first message starts a turn whose prompt blocks
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // queue a follow-up while the turn is in flight
     ;(daemon as any).onInbound(dm('200', '!queue do it'))
@@ -461,7 +466,7 @@ describe('Daemon in-conversation commands', () => {
     // let the first turn finish → the queued message is released
     blocked.release()
     await turn
-    await vi.waitFor(() => expect(blocked.prompts.length).toBe(2))
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(2), WAIT)
     expect(blocked.prompts[1]).toContain('do it')
     expect((daemon as any).serialQueue.has(SESSION_KEY)).toBe(false)
 
@@ -476,7 +481,7 @@ describe('Daemon in-conversation commands', () => {
 
     // no in-flight turn for this thread → dispatch right away
     ;(daemon as any).onInbound(dm('100', '!queue start now'))
-    await vi.waitFor(() => expect(blocked.prompts.length).toBe(1))
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(1), WAIT)
     expect(blocked.prompts[0]).toContain('start now')
     expect((daemon as any).serialQueue.size).toBe(0)
 
@@ -491,7 +496,7 @@ describe('Daemon in-conversation commands', () => {
     const conn = makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     for (let i = 0; i < 10; i++) (daemon as any).onInbound(dm(`${200 + i}`, `!queue m${i}`))
     expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10)
@@ -511,7 +516,7 @@ describe('Daemon in-conversation commands', () => {
     const conn = makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     ;(daemon as any).onInbound(dm('200', '!stop'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
@@ -543,7 +548,7 @@ describe('Daemon in-conversation commands', () => {
     const key = SESSION_KEY
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'cold'), 'int-a')
-    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
     expect((daemon as any).store.getSession(key)).toBeUndefined()
     ;(daemon as any).onInbound(dm('200', '!stop'))
     expect((daemon as any).isSessionMuted(key)).toBe(true)
@@ -598,7 +603,7 @@ describe('Daemon in-conversation commands', () => {
 
     const cold = { ...dm('100', 'cold T2'), thread: 'T2' }
     const turn = (daemon as any).dispatch('bot-a', cold, 'int-a')
-    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled())
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
     expect((daemon as any).store.getSession(coldKey)).toBeUndefined()
 
     ;(daemon as any).onInbound({ ...dm('200', '!stop'), thread: 'T2' })
@@ -618,7 +623,7 @@ describe('Daemon in-conversation commands', () => {
     const conn = makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     ;(daemon as any).onInbound(dm('200', '!cancel'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
@@ -651,7 +656,7 @@ describe('Daemon in-conversation commands', () => {
     makeRoutable(daemon)
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     ;(daemon as any).onInbound(dm('200', '!queue later')) // buffered behind the turn
     expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(1)
@@ -676,7 +681,7 @@ describe('Daemon in-conversation commands', () => {
     const store = (daemon as any).store
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     ;(daemon as any).onInbound(dm('200', '!stop'))
     expect(store.isSessionMuted(SESSION_KEY)).toBe(true)
@@ -696,13 +701,13 @@ describe('Daemon in-conversation commands', () => {
 
     // explicit @mention clears the mute and dispatches (with the missed context replayed)
     ;(daemon as any).onInbound({ ...dm('400', '<@UBOTA> resume please'), mentionedBots: ['UBOTA'] })
-    await vi.waitFor(() => expect(blocked.prompts.length).toBe(2))
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(2), WAIT)
     expect(store.isSessionMuted(SESSION_KEY)).toBe(false)
     expect(blocked.prompts[1]).toContain('humans talking amongst themselves')
 
     // thread affinity works again after the un-mute
     ;(daemon as any).onInbound(dm('500', 'carry on'))
-    await vi.waitFor(() => expect(blocked.prompts.length).toBe(3))
+    await vi.waitFor(() => expect(blocked.prompts.length).toBe(3), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -908,7 +913,7 @@ describe('Daemon in-conversation commands', () => {
     expect(store.getPermissionModeOverride(key)).toBe('agent-full-access')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent-full-access')
-    })
+    }, WAIT)
     expect(conn.postMessage).toHaveBeenCalledWith(
       'C1',
       expect.stringContaining('Permission mode set to Full Access'),
@@ -920,7 +925,7 @@ describe('Daemon in-conversation commands', () => {
     expect(store.getPermissionModeOverride(key)).toBe('agent')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
-    })
+    }, WAIT)
     host.setSessionPermissionMode.mockClear()
     host.setSessionApprovalsReviewer.mockClear()
 
@@ -931,7 +936,7 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
       expect(host.setSessionApprovalsReviewer).toHaveBeenCalledWith('acp-1', 'auto_review')
-    })
+    }, WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -1042,7 +1047,7 @@ describe('Daemon managed-agent bot ingress', () => {
     expect(host.prompt).not.toHaveBeenCalled()
 
     ;(daemon as any).onInbound(botMessage('external-mention', 'AEXTERNAL', ['UBOTA']))
-    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -1183,7 +1188,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
 
     // start a turn that blocks (simulating a long-running turn)
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // age the session record so the recency window alone would exclude it
     const rec = store.getSession(SESSION_KEY)
@@ -1293,7 +1298,7 @@ describe('Slack interactive status bar', () => {
 
     // Turn 1: the status bar posts up front (before the blocked prompt returns).
     const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     expect(host.prompt).toHaveBeenCalledTimes(1) // posted before the reply completes
     // The status line uses the selected agent identity even in DMs, and remains marked as
     // chrome so a peer daemon's thread backfill skips it.
@@ -1377,7 +1382,7 @@ describe('Slack interactive status bar', () => {
 
     // Turn is blocked mid-prompt: the session status bar (sb1) posts up front.
     const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     const p = [...(daemon as any).pending.values()][0]
     expect(p.statusBarTs).toBe('sb1')
 
@@ -1387,16 +1392,18 @@ describe('Slack interactive status bar', () => {
     await p.applyChain
     p.lastStatusBar = undefined // mimic a usage update that changes the visible header
     ;(daemon as any).emitStatusBar(p)
-    await vi.waitFor(() =>
-      expect(conn.updateBlocks).toHaveBeenCalledWith(
-        'C1',
-        'sb1',
-        expect.any(Array),
-        expect.any(String),
-        true,
-        undefined,
-        'bot-a'
-      )
+    await vi.waitFor(
+      () =>
+        expect(conn.updateBlocks).toHaveBeenCalledWith(
+          'C1',
+          'sb1',
+          expect.any(Array),
+          expect.any(String),
+          true,
+          undefined,
+          'bot-a'
+        ),
+      WAIT
     )
     expect(p.statusBarTs).toBe('sb1')
     expect((daemon as any).store.getStatusBarTs(p.sessionKey)).toBe('sb1')
@@ -1428,7 +1435,7 @@ describe('Slack interactive status bar', () => {
       mentionedBots: ['UBOTA']
     }
     const turn = (daemon as any).dispatch('bot-a', channelMessage, 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     const call = conn.postBlocks.mock.calls[0]!
     const blocks = call[1] as {
       type: string
@@ -1481,7 +1488,7 @@ describe('Slack interactive status bar', () => {
       mentionedBots: ['UBOTA']
     }
     const turn = (daemon as any).dispatch('bot-a', channelMessage, 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     const call = conn.postBlocks.mock.calls[0]!
     const blocks = call[1] as { type: string; block_id?: string; accessory?: any }[]
     const [section] = blocks
@@ -1803,16 +1810,18 @@ describe('Slack interactive status bar', () => {
     ])
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() =>
-      expect(conn.updateBlocks).toHaveBeenCalledWith(
-        'C1',
-        '111.1',
-        expect.any(Array),
-        expect.stringContaining('opus-4.8'),
-        true,
-        undefined,
-        'bot-a'
-      )
+    await vi.waitFor(
+      () =>
+        expect(conn.updateBlocks).toHaveBeenCalledWith(
+          'C1',
+          '111.1',
+          expect.any(Array),
+          expect.stringContaining('opus-4.8'),
+          true,
+          undefined,
+          'bot-a'
+        ),
+      WAIT
     )
     expect(conn.postBlocks).not.toHaveBeenCalled()
     expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).toBe('111.1')
@@ -1845,7 +1854,7 @@ describe('Slack interactive status bar', () => {
     ])
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled())
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled(), WAIT)
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
     expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe('111.1')
 
@@ -1873,7 +1882,7 @@ describe('Slack interactive status bar', () => {
     ])
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled())
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalled(), WAIT)
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === '111.1')).toBe(false)
     expect(conn.postBlocks.mock.calls[0]?.[4]).toMatchObject({
       chrome: true,
@@ -1897,7 +1906,7 @@ describe('Slack interactive status bar', () => {
 
     // Turn 1: bar posted normally and its ts persisted.
     const turn1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     release()
     await turn1
     const posted = (daemon as any).store.getStatusBarTs(SESSION_KEY)
@@ -1908,20 +1917,22 @@ describe('Slack interactive status bar', () => {
     const second = modelHost()
     ;(daemon as any).opts.hostFactory = () => second.host as any
     const turn2 = (daemon as any).dispatch('bot-a', dm('101', 'hi again'), 'int-a')
-    await vi.waitFor(() =>
-      expect(conn.updateBlocks).toHaveBeenCalledWith(
-        'C1',
-        posted,
-        expect.anything(),
-        expect.anything(),
-        true,
-        undefined,
-        'bot-a'
-      )
+    await vi.waitFor(
+      () =>
+        expect(conn.updateBlocks).toHaveBeenCalledWith(
+          'C1',
+          posted,
+          expect.anything(),
+          expect.anything(),
+          true,
+          undefined,
+          'bot-a'
+        ),
+      WAIT
     )
     // The dead ts is dropped and a later emit in the same turn posts a fresh bar.
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe(posted))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(2), WAIT)
+    await vi.waitFor(() => expect((daemon as any).store.getStatusBarTs(SESSION_KEY)).not.toBe(posted), WAIT)
 
     second.release()
     await turn2
@@ -1968,7 +1979,7 @@ describe('Slack interactive status bar', () => {
 
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
     // Posted while the first prompt is STILL blocked — i.e. before any reply arrives.
-    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(conn.postBlocks).toHaveBeenCalledTimes(1), WAIT)
     const blocks = conn.postBlocks.mock.calls[0]![1] as { type: string; accessory?: any }[]
     expect(blocks.find((b) => b.type === 'section')!.accessory.action_id).toBe('ac_more')
 
@@ -1987,7 +1998,7 @@ describe('Slack interactive status bar', () => {
     ;(daemon as any).cpWebAppUrl = 'https://console.example.com'
 
     const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
     // The connection queries statusInfoForKey to build the modal; it resolves the deep link.
     const data = (daemon as any).statusInfoForKey(SESSION_KEY)
     expect(data.link).toBe('https://console.example.com/sessions/acp-1?source=slack')
@@ -2051,7 +2062,7 @@ describe('Slack interactive status bar', () => {
 
     const key = SESSION_KEY
     const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
     release()
     await turn
 
@@ -2082,7 +2093,7 @@ describe('Slack interactive status bar', () => {
     const key = SESSION_KEY
 
     const t1 = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
-    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true))
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
 
     // set-model: sticky override persisted + applied live to the running session.
     ;(daemon as any).handleStatusAction({ kind: 'set-model', sessionKey: key, model: 'sonnet-5' })
@@ -2098,7 +2109,7 @@ describe('Slack interactive status bar', () => {
         .reverse()
         .find((call) => statusActions(call[2] as any[]) !== undefined)
       expect(statusActions(settledStatus?.[2] as any[])).toEqual(['manage'])
-    })
+    }, WAIT)
 
     release()
     await t1

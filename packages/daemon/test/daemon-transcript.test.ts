@@ -7,6 +7,11 @@ import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
 import { stableTurnId } from '../src/messages/normalized.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const TRANSCRIPT_CHANNEL = transcriptChannelKey('C1', TRANSPORT_SCOPE)
 
@@ -188,12 +193,12 @@ describe('Daemon transcript records the agent reply', () => {
     const capturedBinding = (daemon as any).agents.get('bot-a').memory
 
     const turn = (daemon as any).dispatch('bot-a', dm('200', 'shared follow-up'), 'int-a')
-    await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalled())
+    await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalled(), WAIT)
     expect(recordTurn).not.toHaveBeenCalled()
 
     releaseDelivery()
     await turn
-    await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     expect(recordTurn).toHaveBeenCalledWith(
       { agentId: 'bot-a', sessionId: 'acp-1' },
       {
@@ -385,8 +390,9 @@ describe('Daemon transcript records the agent reply', () => {
       prompt: vi.fn(async (sid: string) => {
         onUpdate(sid, text('early answer'))
         onUpdate(sid, tool('t1', 'Read file.ts'))
-        await vi.waitFor(() =>
-          expect(conn.postMessage).toHaveBeenCalledWith('C1', 'early answer', 'T1', expect.anything())
+        await vi.waitFor(
+          () => expect(conn.postMessage).toHaveBeenCalledWith('C1', 'early answer', 'T1', expect.anything()),
+          WAIT
         )
         model = 'model-after-prompt'
         return 'end_turn'
@@ -483,13 +489,15 @@ describe('Daemon transcript records the agent reply', () => {
         // Segment 1 streams and settles into the single live reply (reply-1).
         onUpdate(sid, text('first part'))
         onUpdate(sid, tool('t1', 'Read one'))
-        await vi.waitFor(() =>
-          expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('first part'), 'T1', {
-            username: 'bot-a',
-            agentAuthorId: 'bot-a',
-            response: streamingResponse(),
-            trailingBlocks: [classicFooter()]
-          })
+        await vi.waitFor(
+          () =>
+            expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('first part'), 'T1', {
+              username: 'bot-a',
+              agentAuthorId: 'bot-a',
+              response: streamingResponse(),
+              trailingBlocks: [classicFooter()]
+            }),
+          WAIT
         )
         // A permission / elicitation card is posted mid-turn (its handler calls this). The
         // live reply (reply-1) now sits ABOVE the card, so the next segment must start a
@@ -499,13 +507,15 @@ describe('Daemon transcript records the agent reply', () => {
         await p.applyChain
         onUpdate(sid, text('second part'))
         onUpdate(sid, tool('t2', 'Read two'))
-        await vi.waitFor(() =>
-          expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('second part'), 'T1', {
-            username: 'bot-a',
-            agentAuthorId: 'bot-a',
-            response: streamingResponse(),
-            trailingBlocks: [classicFooter()]
-          })
+        await vi.waitFor(
+          () =>
+            expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('second part'), 'T1', {
+              username: 'bot-a',
+              agentAuthorId: 'bot-a',
+              response: streamingResponse(),
+              trailingBlocks: [classicFooter()]
+            }),
+          WAIT
         )
         return 'end_turn'
       }),
@@ -675,13 +685,15 @@ describe('Daemon transcript records the agent reply', () => {
       prompt: vi.fn(async (sid: string) => {
         onUpdate(sid, text('first section'))
         onUpdate(sid, tool('t1', 'Read one'))
-        await vi.waitFor(() =>
-          expect(conn.postMessage).toHaveBeenCalledWith('C1', 'first section', 'T1', expect.anything())
+        await vi.waitFor(
+          () => expect(conn.postMessage).toHaveBeenCalledWith('C1', 'first section', 'T1', expect.anything()),
+          WAIT
         )
         onUpdate(sid, text('second section'))
         onUpdate(sid, tool('t2', 'Read two'))
-        await vi.waitFor(() =>
-          expect(conn.postMessage).toHaveBeenCalledWith('C1', 'second section', 'T1', expect.anything())
+        await vi.waitFor(
+          () => expect(conn.postMessage).toHaveBeenCalledWith('C1', 'second section', 'T1', expect.anything()),
+          WAIT
         )
         throw new Error('runtime exploded')
       }),

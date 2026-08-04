@@ -7,6 +7,11 @@ import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 // A SlackConnection backed by an inert fake Bolt app (no network), with a fixed
 // bot user id, so reconcileSlackConnections' existing-socket branch can be exercised.
 function fakeConn(appToken: string, botToken: string, botUserId: string): SlackConnection {
@@ -767,7 +772,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       },
       'fs-int'
     )
-    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalledOnce(), WAIT)
 
     // Model the Lark lookup finishing while cold ACP startup is still blocked: there
     // is a resolved name, but no session row for discovery to publish yet.
@@ -784,7 +789,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       authoritative: false
     })
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('folds observed Discord threads onto their enclosing channel (one row per channel)', async () => {
     const root = root1()

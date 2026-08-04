@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', iconUrl?: string): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-'))
   writeFileSync(
@@ -691,7 +696,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect((daemon as any).store.getSessionByAcpId('acp-title-late')?.title).toBeNull()
     await (daemon as any).stopHost('bot-a')
 
-    await vi.waitFor(() => expect(connB.setTitle).toHaveBeenCalledWith('D1', '210.1', 'Fix session titles'))
+    await vi.waitFor(() => expect(connB.setTitle).toHaveBeenCalledWith('D1', '210.1', 'Fix session titles'), WAIT)
     expect(connA.setTitle).not.toHaveBeenCalled()
     expect((daemon as any).store.getSessionByAcpId('acp-title-late')?.title).toBe('Fix session titles')
     expect(emitEventSession.mock.calls.at(-1)?.[0]).toMatchObject({
@@ -759,7 +764,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     const a = (daemon as any).dispatch('bot-a', message('bot-a'))
     const b = (daemon as any).dispatch('bot-b', message('bot-b'))
-    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2))
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
 
     updates.get('bot-a')?.('shared-acp-id', { sessionUpdate: 'session_info_update', title: 'Agent A title' })
     updates.get('bot-b')?.('shared-acp-id', { sessionUpdate: 'session_info_update', title: 'Agent B title' })

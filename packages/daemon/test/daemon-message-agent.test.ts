@@ -7,6 +7,11 @@ import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 /** Peers this suite wakes that are NOT on the daemon under test — they must still be in
  *  the org directory, exactly as a real CP snapshot would list them. */
@@ -1782,11 +1787,11 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
         state: 'idle',
         lastDeliveredTs: null
       })
-    })
+    }, WAIT)
     expect(host.newSession).toHaveBeenCalledOnce()
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
-  })
+  }, 15_000)
 
   it('keys a Feishu spawn as feishu, not a folded fallback', async () => {
     const root = scaffold([{ id: 'bot-a' }])

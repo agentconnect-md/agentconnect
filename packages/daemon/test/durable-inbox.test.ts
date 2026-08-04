@@ -9,6 +9,11 @@ import { Daemon } from '../src/daemon.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 
+// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
+// cold session boot (workspace + host + session/new) can stall well past a second.
+// Give every poll in this file the same generous budget instead.
+const WAIT = { timeout: 10_000 }
+
 /**
  * §6.9 #353 durable inbox: an admitted-but-queued message is persisted to the node:sqlite
  * local store BEFORE the admission ACK and replayed FIFO-by-sessionKey on startup, so a hard
@@ -352,7 +357,7 @@ describe('daemon durable inbox', () => {
 
     // Head admitted (runs immediately) → row written before it even starts.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     // Fill the queue to the cap (10) — each queued entry persists a row.
@@ -390,7 +395,7 @@ describe('daemon durable inbox', () => {
     const daemon = await boot(root, g.host)
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect(inbox(root)).toHaveLength(1)
 
     g.releaseOne()
@@ -410,7 +415,7 @@ describe('daemon durable inbox', () => {
 
     const pA = (daemon as any).dispatch('bot-a', botA, 'int-a')
     const pB = (daemon as any).dispatch('bot-a', botB, 'int-b')
-    await vi.waitFor(() => expect(g.blockedCount()).toBe(2))
+    await vi.waitFor(() => expect(g.blockedCount()).toBe(2), WAIT)
     expect((daemon as any).evaluationTurnIdFor('bot-a', botA)).not.toBe(
       (daemon as any).evaluationTurnIdFor('bot-a', botB)
     )
@@ -437,7 +442,7 @@ describe('daemon durable inbox', () => {
     const key = 'slack:C1:T1:bot-a'
 
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
     expect(inbox(root)).toHaveLength(2)
 
@@ -492,7 +497,7 @@ describe('daemon durable inbox', () => {
 
     const daemon = await boot(root, g.host)
     // The head runs immediately; the other two queue behind it — all in FIFO enqueuedAt order.
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect(g.started[0]).toContain('first')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
     // Adopt the legacy raw ids instead of duplicating them under the new scoped identity.
@@ -501,13 +506,13 @@ describe('daemon durable inbox', () => {
     expect(inbox(root).every((row) => row.loopGuardCounted === 1)).toBe(true)
 
     g.releaseOne()
-    await vi.waitFor(() => expect(g.started.length).toBe(2))
+    await vi.waitFor(() => expect(g.started.length).toBe(2), WAIT)
     expect(g.started[1]).toContain('second')
     g.releaseOne()
-    await vi.waitFor(() => expect(g.started.length).toBe(3))
+    await vi.waitFor(() => expect(g.started.length).toBe(3), WAIT)
     expect(g.started[2]).toContain('third')
     g.releaseAll()
-    await vi.waitFor(() => expect((daemon as any).inflight.has(key)).toBe(false))
+    await vi.waitFor(() => expect((daemon as any).inflight.has(key)).toBe(false), WAIT)
     // All replayed rows removed once their turns completed.
     expect(inbox(root)).toHaveLength(0)
     await daemon.stop()
@@ -574,8 +579,8 @@ describe('daemon durable inbox', () => {
 
     const g = gatedHost()
     const daemon = await boot(root, g.host)
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0))
-    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
+    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(g.host.prompt).not.toHaveBeenCalled()
     expect(loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
     await daemon.stop()
@@ -609,8 +614,8 @@ describe('daemon durable inbox', () => {
 
     const g = gatedHost()
     const daemon = await boot(root, g.host)
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0))
-    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
+    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
+    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
     expect(g.host.prompt).not.toHaveBeenCalled()
     expect(loopGuard(root)).toMatchObject({ automaticCount: 9, reason: 'automatic_turn_burst' })
     await daemon.stop()
@@ -657,17 +662,17 @@ describe('daemon durable inbox', () => {
 
     const g = coldReplayHost()
     const daemon = await boot(root, g.host)
-    await vi.waitFor(() => expect(g.host.newSession).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(g.host.newSession).toHaveBeenCalledTimes(1), WAIT)
     // The noisy scope is purged, but the other accepted row stays durable while
     // the host-wide cancel backstop makes new admission temporarily unsafe.
     expect(inbox(root).map((row) => row.id)).toEqual([healthy.msgId])
     expect(g.started).toHaveLength(0)
 
     g.releaseCold()
-    await vi.waitFor(() => expect(g.started).toHaveLength(1))
+    await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
     expect(g.started[0]).toContain('healthy replay')
     g.releasePrompt()
-    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0))
+    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -711,7 +716,7 @@ describe('daemon durable inbox', () => {
 
     const g = coldReplayHost()
     const daemon = await boot(root, g.host)
-    await vi.waitFor(() => expect(g.host.newSession).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(g.host.newSession).toHaveBeenCalledTimes(1), WAIT)
     expect(inbox(root).map((row) => row.id)).toEqual([deferred.msgId])
 
     writePause(root, true)
@@ -721,8 +726,8 @@ describe('daemon durable inbox', () => {
     await daemon.reconcile()
 
     g.releaseCold()
-    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
-    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0))
+    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0), WAIT)
     expect(g.started).toHaveLength(0)
 
     const fresh = (daemon as any).dispatch('bot-a', {
@@ -731,7 +736,7 @@ describe('daemon durable inbox', () => {
       traceId: '200',
       text: 'fresh after unpause'
     })
-    await vi.waitFor(() => expect(g.started).toHaveLength(1))
+    await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
     g.releasePrompt()
     await expect(fresh).resolves.toBe('acp-2')
     await daemon.stop()
@@ -766,7 +771,7 @@ describe('daemon durable inbox', () => {
     // Startup stays silent: the pre-pause row was terminally discarded, not deferred.
     expect(resumedHost.host.prompt).not.toHaveBeenCalled()
     const fresh = (resumed as any).dispatch('bot-a', msg('200', 'fresh after resume'), 'int-a')
-    await vi.waitFor(() => expect(resumedHost.host.prompt).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(resumedHost.host.prompt).toHaveBeenCalledTimes(1), WAIT)
     expect(resumedHost.started[0]).toContain('fresh after resume')
     resumedHost.releaseOne()
     await expect(fresh).resolves.toBe('acp-1')
@@ -860,7 +865,7 @@ describe('daemon durable inbox', () => {
     })
 
     const head = (daemon as any).dispatch('bot-a', automatic(1), 'int-a')
-    await vi.waitFor(() => expect(g.host.prompt).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(g.host.prompt).toHaveBeenCalledTimes(1), WAIT)
     const queued: Array<Promise<unknown>> = []
     // Eight automatic admissions are allowed. The ninth consecutive one opens the
     // circuit before admission and atomically discards the seven buffered turns.
@@ -898,8 +903,8 @@ describe('daemon durable inbox', () => {
 
     g.releaseOne()
     await expect(head).resolves.toBeNull()
-    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0))
-    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0))
+    await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0), WAIT)
+    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0), WAIT)
     ;(daemon as any).onInbound(msg('11', '!resume'))
     expect(loopGuard(root)).toBeUndefined()
     await daemon.stop()
@@ -945,8 +950,8 @@ describe('daemon durable inbox', () => {
 
     const headA = (daemon as any).dispatch('bot-a', echo(1), 'int-a')
     const headB = (daemon as any).dispatch('bot-b', echo(2), 'int-b')
-    await vi.waitFor(() => expect(a.host.prompt).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(b.host.prompt).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(a.host.prompt).toHaveBeenCalledTimes(1), WAIT)
+    await vi.waitFor(() => expect(b.host.prompt).toHaveBeenCalledTimes(1), WAIT)
     const queued = [
       (daemon as any).dispatch('bot-a', echo(3), 'int-a'),
       (daemon as any).dispatch('bot-b', echo(4), 'int-b'),
@@ -967,7 +972,7 @@ describe('daemon durable inbox', () => {
     b.releaseOne()
     await expect(headA).resolves.toBeNull()
     await expect(headB).resolves.toBeNull()
-    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0))
+    await vi.waitFor(() => expect((daemon as any).safetyDrainingAgents.size).toBe(0), WAIT)
 
     // Same channel, different non-DM thread is a distinct conversation scope.
     const fresh = (daemon as any).dispatch('bot-a', {
@@ -975,7 +980,7 @@ describe('daemon durable inbox', () => {
       sender: { id: 'U1', isBot: false },
       text: 'fresh human turn'
     })
-    await vi.waitFor(() => expect(a.host.prompt).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(a.host.prompt).toHaveBeenCalledTimes(2), WAIT)
     a.releaseOne()
     await expect(fresh).resolves.toBe('acp-a')
     await daemon.stop()
@@ -988,7 +993,7 @@ describe('daemon durable inbox', () => {
 
     // Admit a message (persists a live row) and freeze its turn in prompt.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
 
     // Replay while that id is still live → it must be skipped, not re-dispatched.
@@ -1008,7 +1013,7 @@ describe('daemon durable inbox', () => {
     const daemon = await boot(root, g.host)
 
     const first = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
 
     // Simulates an ACK-cache loss/restart race: SQLite still owns the stable
     // delivery id, so INSERT OR IGNORE must also gate in-memory admission.
@@ -1117,7 +1122,7 @@ describe('daemon durable inbox', () => {
 
     // Head admitted + running (blocked in prompt); two more queued behind it. All persisted.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(started.length).toBe(1))
+    await vi.waitFor(() => expect(started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'second'), 'int-a')
     const p3 = (daemon as any).dispatch('bot-a', msg('300', 'third'), 'int-a')
     expect((daemon as any).serialQueue.get(key)).toHaveLength(2)
@@ -1156,7 +1161,7 @@ describe('daemon durable inbox', () => {
     // Head non-webchat turn runs; a webchat turn queues behind it. The webchat entry admits
     // into the gate but must NOT write a durable inbox row.
     const p1 = (daemon as any).dispatch('bot-a', msg('100', 'first'), 'int-a')
-    await vi.waitFor(() => expect(g.started.length).toBe(1))
+    await vi.waitFor(() => expect(g.started.length).toBe(1), WAIT)
     const p2 = (daemon as any).dispatch('bot-a', msg('200', 'wc'), 'int-a', {
       conversationId: 'conv-a',
       turnId,
