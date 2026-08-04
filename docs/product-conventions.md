@@ -810,7 +810,7 @@ on the primary workspace.
 
 The checkout control occupies about one quarter of the Workspace file browser
 header, opposite the current file breadcrumb. Its primary choice is named with
-the checkout's branch, never a generic "Primary checkout" label. With no available
+the main checkout's live branch, never a generic "Primary checkout" label. With no available
 session worktree it is a static branch label with no menu; otherwise it switches
 between that branch and the available worktrees. Worktree choices keep their
 Session link so changing the viewed files and opening the originating conversation

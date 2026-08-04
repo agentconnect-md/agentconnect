@@ -1633,10 +1633,10 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
-              workspacePicker={
+              renderWorkspacePicker={(primaryBranch) =>
                 da.workspace.mode === 'github' ? (
                   <WorkspaceScopePicker
-                    primaryBranch={da.workspace.branch}
+                    primaryBranch={primaryBranch ?? da.workspace.branch}
                     sessions={workspaceSessions}
                     selectedSessionId={selectedWorktreeSessionId}
                     selectedSession={selectedWorktreeSession}
