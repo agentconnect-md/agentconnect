@@ -21,7 +21,7 @@
  *    repo-scoped tokens, permission mode), never content filtering.
  */
 import type { GithubHookMetadata, HookContext, RdMsgHook } from '@agentconnect.md/protocol'
-import { githubSourceThreadUrl } from '../platforms/github/source-link.js'
+import { githubSourceThreadUrl } from './github-source-link.js'
 import type { NormalizedMessage } from './normalized.js'
 
 /** Fencing delimiters for github event bodies — exact strings, asserted by tests. */
@@ -327,7 +327,6 @@ export function hookAnchorText(msg: RdMsgHook): string {
 export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMessage {
   const { channel, thread } = splitSessionKey(msg)
   const initialSessionTitle = githubSessionTitle(msg)
-  const threadUrl = githubSourceThreadUrl(msg.context, msg.github)
   const sessionTriggerId = `hook:${msg.hookId}`
   const senderId = githubEventActor(msg) ?? sessionTriggerId
   const senderAvatarUrl = msg.context?.source === 'github' ? msg.context.senderAvatarUrl : undefined
@@ -338,7 +337,9 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
   const target = msg.target
   // With an anchoring target the fire behaves like a cron's: the message lives
   // on the target platform/channel, the pre-anchor thread is a fresh synthetic
-  // key (replaced by the real anchor ts once posted), and output is live.
+  // key (replaced by the real anchor ts once posted), and output is live. Its
+  // title link must therefore describe that target conversation; an available
+  // platform strategy derives it instead of mixing in the GitHub source URL.
   // Without one it runs headless under the affinity key.
   if (target) {
     return {
@@ -349,7 +350,6 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       platform: target.platform,
       channel: target.channel,
       thread: msg.msgId,
-      ...(threadUrl ? { threadUrl } : {}),
       sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
       sessionTriggerId,
       text: buildHookText(msg),
@@ -359,6 +359,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       trigger: 'hook'
     }
   }
+  const threadUrl = githubSourceThreadUrl(msg.context, msg.github)
   return {
     msgId: msg.msgId, // hookId:deliveryKey — unique per delivery (dedup happened upstream)
     transcriptTs,

@@ -2034,12 +2034,18 @@ describe('buildHookMessage', () => {
       expect(head).toContain('https://github.com/acme/infra/issues/42')
     })
 
-    it('attributes the message to the GitHub actor while retaining the hook trigger', () => {
+    it('attributes a headless message to the GitHub actor and retains its source link', () => {
       expect(buildHookMessage(ghFire(), 'trace-actor')).toMatchObject({
         sender: { id: 'mallory', avatarUrl: 'https://avatars.example.test/mallory.png' },
         sessionTriggerId: `hook:${HOOK_ID}`,
         threadUrl: 'https://github.com/acme/infra/issues/42'
       })
+      expect(
+        buildHookMessage(
+          ghFire({}, { target: { platform: 'slack', channel: 'C-alerts', integrationId: 'int-a' } }),
+          'trace-anchored'
+        ).threadUrl
+      ).toBeUndefined()
     })
 
     it('does not expose a source URL outside the accepted GitHub repository', () => {
