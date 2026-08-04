@@ -19,8 +19,7 @@ import { createHash } from 'node:crypto'
 import { MAX_AGENT_CALL_HOPS, WireFeishuCardActionResponse, WireFeishuCardActionValue } from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
-  RdMsgSlackAction,
-  RdMsgFeishuAction,
+  RdMsgPlatformAction,
   RcBotChannels,
   RcBotConversation,
   RcBotRevoked,
@@ -911,8 +910,12 @@ export class RelayIngressManager {
       this.deps.log.warn(`relay-ingress(${botId}): daemon ${route.daemonId} offline — session action dropped`)
       return
     }
-    const rd: RdMsgSlackAction = {
-      source: 'slack_action',
+    // §6.6 emission flip: the relay now speaks the platform_action envelope —
+    // the daemon's per-platform decoder validates the opaque payload against
+    // Slack's own wire schema (gate 2 closed: the fleet reads it since #521).
+    const rd: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'slack',
       agentId: route.agentId,
       integrationId: route.integrationId,
       sessionKey: target.sessionKey,
@@ -957,8 +960,9 @@ export class RelayIngressManager {
     const messageId = action.context?.open_message_id ?? action.open_message_id
     if (!messageId) return undefined
     const msgId = httpFeishuActionMsgId(botId, eventId, action)
-    const rd: RdMsgFeishuAction = {
-      source: 'feishu_action',
+    const rd: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'feishu',
       agentId: route.agentId,
       integrationId: route.integrationId,
       sessionKey: `feishu-action:${messageId}`,
@@ -971,8 +975,9 @@ export class RelayIngressManager {
       if (!ack.accepted) {
         this.deps.log.warn(`relay-ingress(${botId}): daemon rejected Feishu card action (${ack.reason ?? 'unknown'})`)
       }
-      // §6.6 dual-shape: prefer the generic opaque `response`; a pre-§6.6 daemon
-      // fills only the deprecated Feishu-named slot.
+      // §6.6: a fleet daemon answers a platform_action with the generic opaque
+      // `response`; the Feishu-named slot is read as a tolerance fallback until
+      // the deprecated rd/ack member retires with the legacy readers.
       const generic = WireFeishuCardActionResponse.safeParse(ack.response)
       return generic.success && ack.response !== undefined ? generic.data : ack.feishuCardAction
     } catch (err) {
@@ -1010,8 +1015,9 @@ export class RelayIngressManager {
     if (!route) return false
     const daemon = this.deps.getDaemon(route.daemonId)
     if (!daemon) return false
-    const rd: RdMsgSlackAction = {
-      source: 'slack_action',
+    const rd: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'slack',
       agentId: route.agentId,
       integrationId: route.integrationId,
       sessionKey,
