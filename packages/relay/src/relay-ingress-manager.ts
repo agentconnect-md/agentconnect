@@ -31,6 +31,7 @@ import type {
   WireFeishuCardActionEvent,
   WireNormalizedMessage,
   RcThreadAssign,
+  RcThreadParticipant,
   RcThreadLookup
 } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
@@ -105,6 +106,8 @@ export interface RelayIngressManagerDeps {
    *  `false` if the CP link was not READY and the frame was dropped, so the manager can
    *  retry it when the link recovers ({@link RelayIngressManager.flushPendingReports}). */
   reportThreadAssign: (m: RcThreadAssign) => boolean
+  /** Persist one joined participant without changing the compatibility owner. */
+  reportThreadParticipant: (m: RcThreadParticipant) => boolean
   /** Pull a thread's persisted owner from the CP on an affinity miss (→ `rc/thread-lookup`). */
   lookupThread: (m: RcThreadLookup) => Promise<import('@agentconnect.md/protocol').RcThreadLookupOk>
   /** This pod's CP-assigned relayId (stable pool identity; undefined before the
@@ -215,6 +218,7 @@ export class RelayIngressManager {
    *  {@link flushPendingReports}; without this a report lost during a CP blip would
    *  never persist and un-mentioned follow-ups on other pods would drop permanently. */
   private readonly pendingReports = new Map<string, RcThreadAssign>()
+  private readonly pendingParticipantReports = new Map<string, RcThreadParticipant>()
   /** Latest bot-level channel snapshot dropped while the CP link was down. A full
    *  snapshot supersedes any older one for the same bot. */
   private readonly pendingChannelReports = new Map<string, RcBotChannels>()
@@ -249,6 +253,41 @@ export class RelayIngressManager {
       if (this.pendingReports.size >= MAX_PENDING_REPORTS) this.pendingReports.clear()
       this.pendingReports.set(key, m)
     }
+  }
+
+  private reportParticipant(botId: string, sessionKey: string, target: RouteTarget): void {
+    const report: RcThreadParticipant = {
+      botId,
+      sessionKey,
+      agentId: target.agentId,
+      daemonId: target.daemonId
+    }
+    const key = `${botId}\u0000${sessionKey}\u0000${target.agentId}`
+    if (this.deps.reportThreadParticipant(report)) this.pendingParticipantReports.delete(key)
+    else {
+      if (this.pendingParticipantReports.size >= MAX_PENDING_REPORTS) this.pendingParticipantReports.clear()
+      this.pendingParticipantReports.set(key, report)
+    }
+  }
+
+  private reportHumanParticipant(
+    botId: string,
+    sessionKey: string,
+    channel: string,
+    primary: RouteTarget | null,
+    target: RouteTarget
+  ): void {
+    // A non-auto primary is persisted by the legacy owner report, whose CP handler
+    // also records it as a participant. Auto channels deliberately skip owner
+    // affinity, so their participant membership still needs its own durable report.
+    if (
+      primary?.agentId === target.agentId &&
+      primary.daemonId === target.daemonId &&
+      !this.router.channelAutoOwned(botId, channel)
+    ) {
+      return
+    }
+    this.reportParticipant(botId, sessionKey, target)
   }
 
   private reportChannels(m: RcBotChannels): void {
@@ -320,6 +359,10 @@ export class RelayIngressManager {
     for (const [key, m] of [...this.pendingReports]) {
       if (!this.deps.reportThreadAssign(m)) break
       this.pendingReports.delete(key)
+    }
+    for (const [key, m] of [...this.pendingParticipantReports]) {
+      if (!this.deps.reportThreadParticipant(m)) break
+      this.pendingParticipantReports.delete(key)
     }
     for (const [botId, snapshot] of [...this.pendingChannelReports]) {
       if (!this.deps.reportBotChannels(snapshot)) break
@@ -456,6 +499,11 @@ export class RelayIngressManager {
   /** `rc/assign` — durable thread affinity seed. */
   setAffinity(botId: string, sessionKey: string, tgt: RouteTarget): void {
     this.router.setAffinity(botId, sessionKey, tgt)
+  }
+
+  /** `rc/participant-assign` — durable conversation-member seed. */
+  setParticipant(botId: string, sessionKey: string, tgt: RouteTarget): void {
+    this.router.setParticipant(botId, sessionKey, tgt)
   }
 
   /**
@@ -654,7 +702,9 @@ export class RelayIngressManager {
     } else {
       const primary = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
       deliveries = this.router
-        .conversationTargets(botId, msg, primary, claim.authorAgentId)
+        .conversationTargets(botId, msg, primary, claim.authorAgentId, claim.mentionedAgentIds, (target) =>
+          this.reportParticipant(botId, sessionKeyOf(msg), target)
+        )
         .map(({ target, via }) => ({ targetAgentId: target.agentId, routeVia: via }))
       if (deliveries.length === 0) return drop('no participant admitted for this bot')
     }
@@ -759,7 +809,9 @@ export class RelayIngressManager {
     let conversationTargets =
       msg.sender.isBot && tgt
         ? [{ target: tgt, via: 'mention' as const }]
-        : this.router.conversationTargets(botId, msg, tgt)
+        : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
+            this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
+          )
     if (tgt) {
       // Report leg: first route of this thread, or the arbitrated owner changed —
       // EXCEPT for an `auto`-owned channel, where every message (incl. follow-ups)
@@ -804,23 +856,35 @@ export class RelayIngressManager {
       // Backstop leg: only a real un-mentioned threaded follow-up is worth a CP lookup.
       if (!tgt) {
         if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return
-        let target: { agentId: string; daemonId: string } | null
+        let lookup: Awaited<ReturnType<RelayIngressManagerDeps['lookupThread']>>
         try {
-          target = (await this.deps.lookupThread({ botId, sessionKey })).target
+          lookup = await this.deps.lookupThread({ botId, sessionKey })
         } catch {
           return // CP down — drop (bounded loss); a mention re-anchors the thread.
         }
-        if (!target) {
+        for (const participant of lookup.participants) {
+          const current = this.router.agentTarget(botId, participant.agentId, msg.channel)
+          if (current && current.daemonId === participant.daemonId) {
+            this.router.setParticipant(botId, sessionKey, current)
+          }
+        }
+        if (!lookup.target && lookup.participants.length === 0) {
           this.router.rememberNoAffinity(botId, sessionKey)
           return
         }
         // Seeded from the CP — do NOT report it back (it came from the CP).
-        if (!this.router.seedLookupTarget(botId, sessionKey, target)) return
-        tgt = this.router.route(botId, msg)
-        if (!tgt) return
+        if (lookup.target) {
+          if (!this.router.seedLookupTarget(botId, sessionKey, lookup.target)) return
+          tgt = this.router.route(botId, msg)
+        }
         conversationTargets = msg.sender.isBot
-          ? [{ target: tgt, via: 'mention' }]
-          : this.router.conversationTargets(botId, msg, tgt)
+          ? tgt
+            ? [{ target: tgt, via: 'mention' }]
+            : []
+          : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
+              this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
+            )
+        if (!tgt && conversationTargets.length === 0) return
       }
     }
     // A single-owner route is only the compatibility/reporting primary. Delivery is to
@@ -830,7 +894,9 @@ export class RelayIngressManager {
     if (conversationTargets.length === 0 && tgt) {
       conversationTargets = msg.sender.isBot
         ? [{ target: tgt, via: 'mention' }]
-        : this.router.conversationTargets(botId, msg, tgt)
+        : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
+            this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
+          )
       // Receive-only Feishu may intentionally hand an explicitly addressed Off event to
       // its sole gated daemon even though that target has no servable route. The daemon
       // records discovery and posts the notice; its terminal gate still prevents a turn.

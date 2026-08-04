@@ -1841,6 +1841,21 @@ model SharedThreadAgent {
   @@map("shared_thread_agent")
 }
 
+// Durable multi-agent room membership for relay-pooled HTTP bots. Unlike
+// SharedThreadAgent, this is a set and never changes the compatibility owner.
+// It is routing metadata only: no message body or transcript content is stored.
+model SharedThreadParticipant {
+  botId      String   @db.Uuid
+  sessionKey String
+  agentId    String   @db.Uuid
+  daemonId   String   @db.Uuid
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@id([botId, sessionKey, agentId])
+  @@index([botId])
+  @@map("shared_thread_participant")
+}
+
 enum IntegrationStatus {
   active
   revoked

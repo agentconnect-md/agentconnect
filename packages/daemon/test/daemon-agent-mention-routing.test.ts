@@ -433,6 +433,33 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       await daemon.stop()
     })
 
+    it('uses a target-scoped durable inbox id for every human fan-out copy', async () => {
+      const { daemon } = await boot(
+        [
+          { id: 'bot-b', trigger: 'mention' },
+          { id: 'bot-c', trigger: 'auto' }
+        ],
+        { botUserIds: { 'bot-b': 'UB' }, realDispatch: true }
+      )
+      ;(daemon as any).botUserIds['int-bot-b'] = 'UB'
+      const appendInbox = vi.spyOn((daemon as any).store, 'appendInbox')
+
+      const human = agentMessage({
+        msgId: 'slack:C1:1720000000.000260',
+        sender: { id: 'U-HUMAN', isBot: false },
+        text: '<@UB> please coordinate',
+        mentionedBots: ['UB']
+      })
+      expect(route(daemon, human, ['int-bot-b', 'int-bot-c']).kind).toBe('dispatched')
+
+      const rows = appendInbox.mock.calls.map(([row]) => row)
+      expect(new Set(rows.map((row) => row.agentId))).toEqual(new Set(['bot-b', 'bot-c']))
+      expect(new Set(rows.map((row) => row.id)).size).toBe(2)
+      expect(rows.find((row) => row.agentId === 'bot-b')?.id).toContain('#bot-b')
+      expect(rows.find((row) => row.agentId === 'bot-c')?.id).toContain('#bot-c')
+      await daemon.stop()
+    })
+
     it('does not let being in the room bypass call policy', async () => {
       // Already having a session is not consent to be called: bot-c's inbound policy
       // excludes the author, so it hears nothing even though it is in the thread.

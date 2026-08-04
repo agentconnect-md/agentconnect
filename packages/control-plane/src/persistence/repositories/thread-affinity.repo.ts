@@ -31,4 +31,22 @@ export class PgThreadAffinityStore implements ThreadAffinityStore {
     const rows = await this.db.sharedThreadAgent.findMany({ where: { botId }, orderBy: { updatedAt: 'asc' } })
     return rows.map((r) => ({ sessionKey: r.sessionKey, agentId: AgentId(r.agentId), daemonId: DaemonId(r.daemonId) }))
   }
+
+  async upsertParticipant(botId: BotId, sessionKey: string, agentId: AgentId, daemonId: DaemonId): Promise<void> {
+    await this.db.sharedThreadParticipant.upsert({
+      where: { botId_sessionKey_agentId: { botId, sessionKey, agentId } },
+      create: { botId, sessionKey, agentId, daemonId },
+      update: { daemonId }
+    })
+  }
+
+  async participants(botId: BotId, sessionKey: string): Promise<Array<{ agentId: AgentId; daemonId: DaemonId }>> {
+    const rows = await this.db.sharedThreadParticipant.findMany({ where: { botId, sessionKey } })
+    return rows.map((r) => ({ agentId: AgentId(r.agentId), daemonId: DaemonId(r.daemonId) }))
+  }
+
+  async participantsForBot(botId: BotId): Promise<Array<{ sessionKey: string; agentId: AgentId; daemonId: DaemonId }>> {
+    const rows = await this.db.sharedThreadParticipant.findMany({ where: { botId }, orderBy: { updatedAt: 'asc' } })
+    return rows.map((r) => ({ sessionKey: r.sessionKey, agentId: AgentId(r.agentId), daemonId: DaemonId(r.daemonId) }))
+  }
 }

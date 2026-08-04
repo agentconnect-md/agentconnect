@@ -28,6 +28,7 @@ import type {
   RcNoticePosted,
   RcSetChannelAgent,
   RcThreadAssign,
+  RcThreadParticipant,
   RcThreadLookup,
   RcThreadLookupOk,
   RcVerify,
@@ -81,6 +82,8 @@ export interface RelayConnDeps {
    *  broadcast the binding pool-wide (rc/assign). Fire-and-forget; a store error must
    *  not close the link. */
   onThreadAssign: (m: RcThreadAssign) => Promise<void>
+  /** Persist one joined room member without replacing affinity. */
+  onThreadParticipant: (m: RcThreadParticipant) => Promise<void>
   /** Answer a relay `rc/thread-lookup` (pull-on-miss BACKSTOP) from the persisted
    *  binding. May throw on a transient store error → the handler answers a retryable
    *  error REP without closing the shared relay link. */
@@ -176,6 +179,9 @@ export class RelayConnection implements RelayChannel {
         case 'rc/thread-assign':
           await this.handleThreadAssign(frame.payload)
           return
+        case 'rc/thread-participant':
+          await this.handleThreadParticipant(frame.payload)
+          return
         case 'rc/thread-lookup':
           await this.handleThreadLookup(frame, frame.payload)
           return
@@ -209,6 +215,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/bot-revoked' ||
           type === 'rc/notice-posted' ||
           type === 'rc/thread-assign' ||
+          type === 'rc/thread-participant' ||
           type === 'rc/thread-lookup' ||
           type === 'rc/github-installation'
         )
@@ -278,6 +285,14 @@ export class RelayConnection implements RelayChannel {
       await this.deps.onThreadAssign(m)
     } catch {
       // swallowed — affinity bookkeeping only, never worth the socket
+    }
+  }
+
+  private async handleThreadParticipant(m: RcThreadParticipant): Promise<void> {
+    try {
+      await this.deps.onThreadParticipant(m)
+    } catch {
+      // participant bookkeeping is idempotent and self-heals on the next join
     }
   }
 

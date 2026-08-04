@@ -2198,7 +2198,12 @@ export class Daemon {
     /** Extra dispatch options for the caller's delivery contract (today: `requireDurable`
      *  for a rendezvous-backed activation, whose record must not go terminal for a turn
      *  that was never durably queued). */
-    dispatchOpts?: { requireDurable?: boolean }
+    dispatchOpts?: {
+      requireDurable?: boolean
+      /** Stable target-scoped inbox id for one physical event delivered to
+       * several local agents. The provider msgId remains transcript identity. */
+      deliveryId?: string
+    }
   ): { handle: DeliveryHandle; turn: Promise<string | null> } {
     const turnId = stableTurnId(agentId, msg)
     let settleAdmission!: (admission: DeliveryAdmission) => void
@@ -6181,7 +6186,14 @@ export class Daemon {
         }
       }
     }
-    const { handle, turn } = this.evaluationDispatchHandle(result.agentId, targetMsg, result.integrationId)
+    const { handle, turn } = this.evaluationDispatchHandle(
+      result.agentId,
+      targetMsg,
+      result.integrationId,
+      undefined,
+      undefined,
+      { deliveryId: `${stableMessageId(targetMsg)}#${result.agentId}` }
+    )
     turn.catch((err) => this.log.error(`dispatch failed for agent "${result.agentId}": ${formatErr(err)}`))
     return { kind: 'dispatched', handle }
   }
@@ -6209,6 +6221,17 @@ export class Daemon {
     const thread = msg.thread
     const participants = thread ? this.sessions.threadParticipants(msg.channel, thread, msg.transportScope) : []
     const explicitlyMentioned = new Set(mentionedAgents(msg, rules, primaryAgentId))
+    // A verified final carries the exact agent ids resolved before provider
+    // splitting/echo. They are joins, not the complete delivery set: include them
+    // so a shared-bot peer with an unscoped slug route can enter the room even when
+    // provider bot-user metadata alone cannot map the mention back to that agent.
+    if (agentCall) {
+      for (const agentId of agentCall.verified.recipients) {
+        if (agentId !== primaryAgentId && agentId !== agentCall.verified.authorAgentId) {
+          explicitlyMentioned.add(agentId)
+        }
+      }
+    }
     const peers = new Set([
       ...participantAgents(msg, rules, participants, primaryAgentId),
       ...explicitlyMentioned,
@@ -6257,7 +6280,14 @@ export class Daemon {
         this.setSessionMuted(muteKey, false)
         this.log.info(`routing: agent "${agentId}" un-muted in ch=${msg.channel} (explicit @mention)`)
       }
-      const { handle, turn } = this.evaluationDispatchHandle(agentId, targetMsg, rule.integrationId)
+      const { handle, turn } = this.evaluationDispatchHandle(
+        agentId,
+        targetMsg,
+        rule.integrationId,
+        undefined,
+        undefined,
+        { deliveryId: `${stableMessageId(targetMsg)}#${agentId}` }
+      )
       turn.catch((err) => this.log.error(`thread fan-out failed for agent "${agentId}": ${formatErr(err)}`))
       outcomes.push({ kind: 'dispatched', handle })
     }
@@ -11230,6 +11260,9 @@ export class Daemon {
        * accepted ACK. Ordinary interactive dispatch keeps best-effort inbox
        * persistence for backward compatibility. */
       requireDurable?: boolean
+      /** Stable target-scoped inbox id for a physical event delivered to more
+       * than one agent. It does not replace the provider transcript identity. */
+      deliveryId?: string
       /** Startup replay deliberately adopts the row already read from SQLite. */
       adoptExistingInbox?: boolean
       /** Synchronous admission barrier: called after the durable row is owned,
@@ -11423,7 +11456,7 @@ export class Daemon {
           persistence = this.persistInbox(entry, key, {
             required: opts?.requireDurable,
             adoptExisting: opts?.adoptExistingInbox,
-            existingId: opts?.inboxReplayId
+            existingId: opts?.inboxReplayId ?? opts?.deliveryId
           })
         } catch (err) {
           settleAdmission({ accepted: false, reason: 'durability' })
@@ -11457,7 +11490,7 @@ export class Daemon {
         persistence = this.persistInbox(entry, key, {
           required: opts?.requireDurable,
           adoptExisting: opts?.adoptExistingInbox,
-          existingId: opts?.inboxReplayId
+          existingId: opts?.inboxReplayId ?? opts?.deliveryId
         })
       } catch (err) {
         settleAdmission({ accepted: false, reason: 'durability' })

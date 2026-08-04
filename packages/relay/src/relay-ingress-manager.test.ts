@@ -46,7 +46,10 @@ const deps = (over: Partial<RelayIngressManagerDeps> = {}): RelayIngressManagerD
   reportBotRevoked: vi.fn(() => true),
   selfRelayId: () => SELF_RELAY,
   reportThreadAssign: vi.fn(() => true),
-  lookupThread: vi.fn(async () => ({ botId: BOT_ID, sessionKey: '', target: null }) as RcThreadLookupOk),
+  reportThreadParticipant: vi.fn(() => true),
+  lookupThread: vi.fn(
+    async () => ({ botId: BOT_ID, sessionKey: '', target: null, participants: [] }) as RcThreadLookupOk
+  ),
   isAgentBotApp: vi.fn(() => false),
   admitsAgentCall: vi.fn(() => true),
   clock: new FakeClock(),
@@ -453,10 +456,13 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     } satisfies RcThreadAssign)
   })
 
-  it('does NOT report for an `auto`-owned channel (every message re-resolves locally)', async () => {
+  it('persists an `auto` target as a participant without creating owner affinity', async () => {
     const reportThreadAssign = vi.fn(() => true)
+    const reportThreadParticipant = vi.fn(() => true)
     const { daemon, sendMsg } = online()
-    const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: () => daemon, reportThreadAssign, reportThreadParticipant })
+    )
     const internals = manager as unknown as ManagerInternals
     internals.router.upsert(channelAutoOwned())
 
@@ -464,7 +470,14 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     await internals.forward(BOT_ID, followUp())
 
     expect(sendMsg).toHaveBeenCalledTimes(2) // both delivered via the auto rung
-    expect(reportThreadAssign).not.toHaveBeenCalled() // ...but no write amplification
+    expect(reportThreadAssign).not.toHaveBeenCalled()
+    expect(reportThreadParticipant).toHaveBeenCalledTimes(1) // join once, not per message
+    expect(reportThreadParticipant).toHaveBeenCalledWith({
+      botId: BOT_ID,
+      sessionKey: 'C123/1720000000.000100',
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID
+    })
   })
 
   it('derives explicit join and implicit participant causes per relay target', async () => {
@@ -478,7 +491,9 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       })
     )
     const internals = manager as unknown as ManagerInternals
-    const shared = channelOwned()
+    // The named primary is selected by an AUTO owner, not a mention rule. A human
+    // still addressed this bot explicitly, so that target must get mention semantics.
+    const shared = channelAutoOwned()
     shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
     shared.agents.push({
       agentId: OTHER_AGENT_ID,
@@ -831,6 +846,60 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       })
     })
 
+    it('joins a resolved peer on the production scoped-owner plus unscoped-slug route shape', async () => {
+      const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+      const manager = new RelayIngressManager(
+        deps({
+          getDaemon: (id) =>
+            id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined,
+          isAgentBotApp: vi.fn(() => true)
+        })
+      )
+      const internals = manager as unknown as ManagerInternals
+      const shared = assignment()
+      shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+      shared.agents.push({
+        agentId: OTHER_AGENT_ID,
+        name: 'Other',
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID
+      })
+      shared.routes = [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          scope: { channel: 'C123' },
+          match: { kind: 'auto' }
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'other' }
+        }
+      ]
+      internals.router.upsert(shared)
+
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [OTHER_AGENT_ID] },
+          { text: '<@opaque-other> please join', mentionedBots: ['UBOT'] }
+        )
+      )
+
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).toHaveBeenCalledTimes(1)
+      expect(second.mock.calls[0]![0]).toMatchObject({
+        agentId: OTHER_AGENT_ID,
+        trustedRouteVia: 'implicit',
+        trustedFromAgentId: AUTHOR_ID
+      })
+    })
+
     it('admits source depth 7 as delivery depth 8 and rejects 8 because the next hop is 9', async () => {
       // §10 case 15 — the boundary the whole hop transition exists to hold.
       const admitted = managerWith()
@@ -1070,7 +1139,8 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
       botId: BOT_ID,
       sessionKey: 'C123/1720000000.000100',
-      target: { agentId: AGENT_ID, daemonId: DAEMON_ID }
+      target: { agentId: AGENT_ID, daemonId: DAEMON_ID },
+      participants: [{ agentId: AGENT_ID, daemonId: DAEMON_ID }]
     }))
     const reportThreadAssign = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread, reportThreadAssign }))
@@ -1098,11 +1168,66 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled()
   })
 
+  it('restores every durable participant from CP lookup after a relay restart', async () => {
+    const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+    const daemon = (sendMsg: typeof first) => ({ sendMsg, supports: () => true }) as unknown as RelayDaemonConnection
+    const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+      botId: BOT_ID,
+      sessionKey: 'C123/1720000000.000100',
+      target: null,
+      participants: [
+        { agentId: AGENT_ID, daemonId: DAEMON_ID },
+        { agentId: OTHER_AGENT_ID, daemonId: OTHER_DAEMON_ID }
+      ]
+    }))
+    const manager = new RelayIngressManager(
+      deps({
+        lookupThread,
+        getDaemon: (id) =>
+          id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined
+      })
+    )
+    const internals = manager as unknown as ManagerInternals
+    const shared = assignment()
+    shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
+    shared.agents.push({
+      agentId: OTHER_AGENT_ID,
+      name: 'Other',
+      daemonId: OTHER_DAEMON_ID,
+      integrationId: OTHER_INTEGRATION_ID
+    })
+    shared.routes = [
+      {
+        agentId: AGENT_ID,
+        daemonId: DAEMON_ID,
+        integrationId: INTEGRATION_ID,
+        match: { kind: 'mention' }
+      },
+      {
+        agentId: OTHER_AGENT_ID,
+        daemonId: OTHER_DAEMON_ID,
+        integrationId: OTHER_INTEGRATION_ID,
+        match: { kind: 'mention' }
+      }
+    ]
+    internals.router.upsert(shared)
+
+    await internals.forward(BOT_ID, followUp())
+
+    expect(lookupThread).toHaveBeenCalledTimes(1)
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).toHaveBeenCalledTimes(1)
+    expect(first.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_ID, trustedRouteVia: 'implicit' })
+    expect(second.mock.calls[0]![0]).toMatchObject({ agentId: OTHER_AGENT_ID, trustedRouteVia: 'implicit' })
+  })
+
   it('remembers a CP miss and does not re-hit the CP for the same un-owned thread', async () => {
     const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
       botId: BOT_ID,
       sessionKey: 'C123/1720000000.000100',
-      target: null
+      target: null,
+      participants: []
     }))
     const { daemon, sendMsg } = online()
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))

@@ -555,6 +555,9 @@ The main implementation surfaces are:
 - `packages/relay/src/bot-arbitration.ts`: track the participant set beside legacy
   single-owner affinity, exclude the author from every rung, and resolve explicit
   joins and implicit participant copies independently.
+- `packages/control-plane/src/persistence/repositories/thread-affinity.repo.ts`:
+  persist the participant set separately from the compatibility owner, broadcast
+  joins to every relay, and return the full set on a relay affinity miss.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
   suppression with verified routing, trusted hop propagation, durable activation
   rendezvous records, and headless `replyToSession` dispatch.

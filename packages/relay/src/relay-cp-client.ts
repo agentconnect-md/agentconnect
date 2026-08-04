@@ -28,6 +28,7 @@ import {
   type RcBotUnassign,
   type RcRoutes,
   type RcAssign,
+  type RcParticipantAssign,
   type RcHookAssign,
   type RcHookRemove,
   type RcRunReport,
@@ -38,6 +39,7 @@ import {
   type RcBotRevoked,
   type RcNoticePosted,
   type RcThreadAssign,
+  type RcThreadParticipant,
   type RcThreadLookup,
   type RcThreadLookupOk,
   type RcCollabRoutes,
@@ -91,6 +93,7 @@ export interface RelayCpClientDeps {
   onBotUnassign?: (a: RcBotUnassign) => void
   onRoutes?: (r: RcRoutes) => void
   onAssign?: (a: RcAssign) => void
+  onParticipantAssign?: (a: RcParticipantAssign) => void
   /** Called on a CP `rc/hook-assign` EVT — upsert one compiled hook rule
    *  (webhook-triggers doc). The rule carries `hmacSecret` — NEVER log it. */
   onHookAssign?: (rule: RcHookAssign) => void
@@ -321,6 +324,16 @@ export class RelayCpClient {
     return true
   }
 
+  /** Persist one room member without touching the compatibility owner. */
+  emitThreadParticipant(m: RcThreadParticipant): boolean {
+    if (this.state !== 'READY' || !this.transport) {
+      this.deps.log.warn(`relay: deferring rc/thread-participant for ${m.botId} (link ${this.state})`)
+      return false
+    }
+    this.transport.send(JSON.stringify(buildRelayCpFrame('rc/thread-participant', m)))
+    return true
+  }
+
   /** `rc/thread-lookup` → `rc/thread-lookup/ok` — pull-on-miss BACKSTOP leg. When an
    *  un-mentioned follow-up arrives for a thread this pod holds no affinity for (missed
    *  the broadcast, or (re)started after it), pull the persisted owner rather than drop.
@@ -440,6 +453,10 @@ export class RelayCpClient {
       }
       case 'rc/assign': {
         this.deps.onAssign?.(frame.payload as RcAssign)
+        return
+      }
+      case 'rc/participant-assign': {
+        this.deps.onParticipantAssign?.(frame.payload as RcParticipantAssign)
         return
       }
       case 'rc/hook-assign': {

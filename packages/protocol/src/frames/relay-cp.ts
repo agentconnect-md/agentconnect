@@ -694,6 +694,17 @@ export const RcAssign = z.object({
 })
 export type RcAssign = z.infer<typeof RcAssign>
 
+// C→R EVT — one durable conversation member. Kept as a distinct frame from
+// `rc/assign` so an older relay can never strip a discriminator and accidentally
+// replace legacy single-owner affinity with an arbitrary participant.
+export const RcParticipantAssign = z.object({
+  botId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  agentId: z.string().uuid(),
+  daemonId: z.string().uuid()
+})
+export type RcParticipantAssign = z.infer<typeof RcParticipantAssign>
+
 // R→C EVT (fire-and-forget) — the operator picked a channel's default agent in the
 // in-Slack config modal (§10.1). The CP persists it as the channel's owner
 // (IntegrationChannel.agentId on the chosen agent's install for this bot, clearing
@@ -799,6 +810,16 @@ export const RcThreadAssign = z.object({
 })
 export type RcThreadAssign = z.infer<typeof RcThreadAssign>
 
+// R→C EVT — add one durable participant without changing affinity. A distinct
+// frame fails closed against an older CP instead of being decoded as owner assignment.
+export const RcThreadParticipant = z.object({
+  botId: z.string().uuid(),
+  sessionKey: z.string().min(1),
+  agentId: z.string().uuid(),
+  daemonId: z.string().uuid()
+})
+export type RcThreadParticipant = z.infer<typeof RcThreadParticipant>
+
 // R→C REQ → rc/thread-lookup/ok — pull-on-miss BACKSTOP leg. When an un-mentioned
 // follow-up arrives for a (channel, thread) the relay has no cached affinity for
 // (missed the broadcast, or (re)started before it), the relay asks the CP for the
@@ -814,7 +835,10 @@ export type RcThreadLookup = z.infer<typeof RcThreadLookup>
 export const RcThreadLookupOk = z.object({
   botId: z.string().uuid(),
   sessionKey: z.string().min(1),
-  target: z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() }).nullable()
+  target: z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() }).nullable(),
+  // Durable room membership is independent of the compatibility owner. Default
+  // keeps new relays able to read replies from an older CP during rollout.
+  participants: z.array(z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() })).default([])
 })
 export type RcThreadLookupOk = z.infer<typeof RcThreadLookupOk>
 
@@ -905,6 +929,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/bot-unassign': RcBotUnassign,
   'rc/routes': RcRoutes,
   'rc/assign': RcAssign,
+  'rc/participant-assign': RcParticipantAssign,
   'rc/set-channel-agent': RcSetChannelAgent,
   'rc/bot-channels': RcBotChannels,
   'rc/bot-conversation': RcBotConversation,
@@ -912,6 +937,7 @@ export const RELAY_CP_SCHEMAS = {
   'rc/bot-revoked/ok': RcBotRevokedOk,
   'rc/notice-posted': RcNoticePosted,
   'rc/thread-assign': RcThreadAssign,
+  'rc/thread-participant': RcThreadParticipant,
   'rc/thread-lookup': RcThreadLookup,
   'rc/thread-lookup/ok': RcThreadLookupOk,
   'rc/collab-routes': RcCollabRoutes,
@@ -950,6 +976,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/bot-unassign', RELAY_CP_SCHEMAS['rc/bot-unassign']),
   frameSchema('rc/routes', RELAY_CP_SCHEMAS['rc/routes']),
   frameSchema('rc/assign', RELAY_CP_SCHEMAS['rc/assign']),
+  frameSchema('rc/participant-assign', RELAY_CP_SCHEMAS['rc/participant-assign']),
   frameSchema('rc/set-channel-agent', RELAY_CP_SCHEMAS['rc/set-channel-agent']),
   frameSchema('rc/bot-channels', RELAY_CP_SCHEMAS['rc/bot-channels']),
   frameSchema('rc/bot-conversation', RELAY_CP_SCHEMAS['rc/bot-conversation']),
@@ -957,6 +984,7 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/bot-revoked/ok', RELAY_CP_SCHEMAS['rc/bot-revoked/ok']),
   frameSchema('rc/notice-posted', RELAY_CP_SCHEMAS['rc/notice-posted']),
   frameSchema('rc/thread-assign', RELAY_CP_SCHEMAS['rc/thread-assign']),
+  frameSchema('rc/thread-participant', RELAY_CP_SCHEMAS['rc/thread-participant']),
   frameSchema('rc/thread-lookup', RELAY_CP_SCHEMAS['rc/thread-lookup']),
   frameSchema('rc/thread-lookup/ok', RELAY_CP_SCHEMAS['rc/thread-lookup/ok']),
   frameSchema('rc/collab-routes', RELAY_CP_SCHEMAS['rc/collab-routes']),

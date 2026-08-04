@@ -136,6 +136,25 @@ describe('RelayCpClient', () => {
     expect(onRevoke).toHaveBeenCalledWith(DAEMON_ID)
   })
 
+  it('dispatches owner affinity and participant membership independently', async () => {
+    const onAssign = vi.fn()
+    const onParticipantAssign = vi.fn()
+    const { client, transport } = makeClient({ onAssign, onParticipantAssign })
+    await handshakeToReady(client, transport)
+    const target = {
+      botId: RELAY_ID,
+      sessionKey: 'C1/ts',
+      agentId: RELAY_ID,
+      daemonId: DAEMON_ID
+    }
+
+    transport.inject(buildRelayCpFrame('rc/assign', target))
+    transport.inject(buildRelayCpFrame('rc/participant-assign', target))
+
+    expect(onAssign).toHaveBeenCalledWith(target)
+    expect(onParticipantAssign).toHaveBeenCalledWith(target)
+  })
+
   it('dispatches purpose-separated memory connection bindings', async () => {
     const onMemoryConnectionAssign = vi.fn()
     const onMemoryConnectionUnassign = vi.fn()
@@ -187,6 +206,23 @@ describe('RelayCpClient', () => {
     await handshakeToReady(client, transport)
     expect(client.emitBotChannels(snapshot)).toBe(true)
     expect(transport.lastReq('rc/bot-channels')?.payload).toEqual(snapshot)
+  })
+
+  it('emits participant joins without overloading thread-owner reports', async () => {
+    const { client, transport } = makeClient()
+    const target = {
+      botId: RELAY_ID,
+      sessionKey: 'C1/ts',
+      agentId: RELAY_ID,
+      daemonId: DAEMON_ID
+    }
+
+    expect(client.emitThreadParticipant(target)).toBe(false)
+    await handshakeToReady(client, transport)
+    expect(client.emitThreadParticipant(target)).toBe(true)
+
+    expect(transport.lastReq('rc/thread-participant')?.payload).toEqual(target)
+    expect(transport.lastReq('rc/thread-assign')).toBeUndefined()
   })
 
   it('reconnects with backoff on a non-fatal close', async () => {

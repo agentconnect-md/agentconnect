@@ -412,8 +412,20 @@ export class BotArbitrationRouter {
   /** Durable thread affinity from `rc/assign` (survives relay restart / re-assign). */
   setAffinity(botId: string, sessionKey: string, tgt: RouteTarget): void {
     ;(this.affinity.get(botId) ?? this.affinity.set(botId, new Map()).get(botId)!).set(sessionKey, tgt)
+    this.setParticipant(botId, sessionKey, tgt)
     // A now-owned thread must leave the negative cache (a Switch-agent / late assign).
     this.noAffinity.get(botId)?.delete(sessionKey)
+  }
+
+  /** Durable conversation member from an `rc/participant-assign` projection. */
+  setParticipant(botId: string, sessionKey: string, tgt: RouteTarget): void {
+    const byConversation = this.participants.get(botId) ?? this.participants.set(botId, new Map()).get(botId)!
+    const members = byConversation.get(sessionKey) ?? new Map<string, RouteTarget>()
+    if (!byConversation.has(sessionKey)) {
+      if (byConversation.size >= MAX_PARTICIPANT_CONVERSATIONS) byConversation.clear()
+      byConversation.set(sessionKey, members)
+    }
+    members.set(tgt.agentId, tgt)
   }
 
   /** Read the current affinity for a thread WITHOUT resolving (the report leg's
@@ -552,7 +564,9 @@ export class BotArbitrationRouter {
     botId: string,
     msg: WireNormalizedMessage,
     primary?: RouteTarget | null,
-    verifiedAgentAuthor?: string
+    verifiedAgentAuthor?: string,
+    joinedAgentIds: readonly string[] = [],
+    onJoin?: (target: RouteTarget) => void
   ): ConversationTarget[] {
     const a = this.bots.get(botId)
     if (!a || a.mutedChannels?.includes(msg.channel)) return []
@@ -561,11 +575,16 @@ export class BotArbitrationRouter {
     const remembered = byConversation.get(key) ?? new Map<string, RouteTarget>()
 
     const explicitIds = new Set<string>()
-    if (a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)) {
+    const namesBot = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
+    if (namesBot) {
       for (const route of a.routes) {
         if (route.match.kind !== 'mention' || !scopeMatches(route, msg)) continue
         if (route.agentId !== verifiedAgentAuthor) explicitIds.add(route.agentId)
       }
+      // A human explicitly addressed this bot. Even when channel ownership is an
+      // `auto` rule, the compatibility primary is the named target and must receive
+      // target-specific mention semantics so it can clear its own `!stop` latch.
+      if (verifiedAgentAuthor === undefined && primary) explicitIds.add(primary.agentId)
     }
 
     const selected = new Map<string, ConversationTarget>()
@@ -581,13 +600,28 @@ export class BotArbitrationRouter {
         byConversation.set(key, remembered)
         this.participants.set(botId, byConversation)
       }
+      const previousParticipant = remembered.get(current.agentId)
       remembered.set(current.agentId, current)
+      if (
+        !previousParticipant ||
+        previousParticipant.daemonId !== current.daemonId ||
+        previousParticipant.integrationId !== current.integrationId
+      ) {
+        onJoin?.(current)
+      }
     }
 
     if (primary) add(primary, explicitIds.has(primary.agentId) ? 'mention' : 'implicit')
     for (const route of a.routes) {
       if (explicitIds.has(route.agentId)) add(target(route), 'mention')
       if (route.match.kind === 'auto' && scopeMatches(route, msg)) add(target(route), 'implicit')
+    }
+    // The verified final carries exact resolved agent ids across provider
+    // splitting/echo. They JOIN the room but never replace its existing members,
+    // and agent-authored joins remain implicit so they cannot lift a human stop.
+    for (const agentId of joinedAgentIds) {
+      const joined = this.agentTarget(botId, agentId, msg.channel)
+      if (joined) add(joined, 'implicit')
     }
     for (const participant of remembered.values()) add(participant, 'implicit')
     return [...selected.values()]
