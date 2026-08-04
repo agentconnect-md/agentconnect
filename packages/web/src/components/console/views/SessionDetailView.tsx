@@ -53,11 +53,11 @@ import {
   fetchSessionMessages,
   fetchSessionDetail,
   fetchToolBody,
-  fmtCost,
   fmtCountCompact,
   fmtDate,
   memberDisplayName,
   mergeSessionDetailUsage,
+  sessionFromDto,
   sessionFromDetailDto,
   type SessionProfileProvider,
   type SessionDetailDto,
@@ -95,6 +95,7 @@ import {
 } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
+import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
 import { SessionRail, SessionRailSlot } from '@/components/console/SessionRail'
 import {
@@ -1050,20 +1051,6 @@ export default function SessionDetailView() {
   // §5.3: the redirect carries whose perspective was linked; scroll to and
   // briefly flash that participant's first block once the merge renders.
   const focusAgentId = conversationKey ? searchParams.get('focus') : null
-  // Conversation-level usage roll-up (C3): the header sums the CURRENT member
-  // sessions rather than showing only the representative's share.
-  const conversationUsage = useMemo(() => {
-    if (!conversationKey || !conversationMembers || conversationMembers.length <= 1) return null
-    let tokens = 0
-    let cost = 0
-    let currency: string | undefined
-    for (const member of conversationMembers) {
-      tokens += member.usage?.totalTokens ?? 0
-      cost += member.usage?.costAmount ?? 0
-      currency ??= member.usage?.costCurrency ?? undefined
-    }
-    return { tokens: fmtCountCompact(tokens), cost: fmtCost(cost || undefined, currency) }
-  }, [conversationKey, conversationMembers])
   // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
   // the members' parent/child links, keep only CROSS-conversation edges, and
   // link targets as /sessions/:id — the §5.3 self-redirect forwards
@@ -1442,7 +1429,122 @@ export default function SessionDetailView() {
         }
       : sessionBase
   const agentRuntime = session?.runtime || owner?.runtime || ''
-  const runtimeMeta = acpRuntime(acpRegistry, agentRuntime)
+
+  // Header focus is presentation-only: it selects which participant owns the
+  // Workspace, Visibility, and Details affordances without changing the merged
+  // transcript or the conversation-wide composer target.
+  const headerFocusOptions = useMemo<
+    Array<SessionAgentFocusOption & { sessionId?: string; snapshot?: Session }>
+  >(() => {
+    const candidates: Array<{ agentId: string; name?: string; sessionId?: string; snapshot?: Session }> = []
+    if (conversationMembers?.length) {
+      for (const member of conversationMembers) {
+        candidates.push({
+          agentId: member.agentId,
+          sessionId: member.sessionId,
+          snapshot: sessionFromDto(member)
+        })
+      }
+    } else if (session?.participants?.length) {
+      for (const participant of session.participants) {
+        candidates.push({
+          agentId: participant.agentId,
+          name: participant.name,
+          ...(participant.agentId === session.agentId
+            ? { sessionId: session.realSessionId ?? session.id, snapshot: session }
+            : {})
+        })
+      }
+    } else if (session?.agentId) {
+      candidates.push({
+        agentId: session.agentId,
+        name: session.agentName,
+        sessionId: session.realSessionId ?? session.id,
+        snapshot: session
+      })
+    }
+
+    const seen = new Set<string>()
+    return candidates.flatMap((candidate) => {
+      if (!candidate.agentId || seen.has(candidate.agentId)) return []
+      seen.add(candidate.agentId)
+      const agent = agentById.get(candidate.agentId)
+      const label = rosterParticipantName(candidate, agent)
+      return [
+        {
+          agentId: candidate.agentId,
+          label,
+          ...(agent ? { href: orgPath(`/agents/${candidate.agentId}`) } : {}),
+          avatar: (
+            <AgentIconView
+              icon={agent?.icon}
+              runtime={agent?.runtime || candidate.snapshot?.runtime || candidate.snapshot?.model || ''}
+              size={18}
+            />
+          ),
+          ...(candidate.sessionId ? { sessionId: candidate.sessionId } : {}),
+          ...(candidate.snapshot ? { snapshot: candidate.snapshot } : {})
+        }
+      ]
+    })
+  }, [agentById, conversationMembers, orgPath, session])
+  // A client-side history change can update ?focus without remounting this view.
+  // Include that route target in the selection scope so it supersedes the last
+  // explicit menu choice, while ordinary rerenders keep the current selection.
+  const headerFocusScope = `${conversationKey ?? session?.id ?? id}?focus=${focusAgentId ?? ''}`
+  const headerFocusOptionIds = headerFocusOptions.map((option) => option.agentId).join('|')
+  const defaultHeaderFocusAgentId =
+    (focusAgentId && headerFocusOptions.some((option) => option.agentId === focusAgentId)
+      ? focusAgentId
+      : session?.agentId) ??
+    headerFocusOptions[0]?.agentId ??
+    ''
+  const [headerFocusSelection, setHeaderFocusSelection] = useState({ scope: '', agentId: '' })
+  const storedHeaderFocusValid =
+    headerFocusSelection.scope === headerFocusScope &&
+    headerFocusOptions.some((option) => option.agentId === headerFocusSelection.agentId)
+  const headerFocusAgentId = storedHeaderFocusValid ? headerFocusSelection.agentId : defaultHeaderFocusAgentId
+  useEffect(() => {
+    if (!defaultHeaderFocusAgentId) return
+    setHeaderFocusSelection((current) =>
+      current.scope === headerFocusScope && headerFocusOptionIds.split('|').includes(current.agentId)
+        ? current
+        : { scope: headerFocusScope, agentId: defaultHeaderFocusAgentId }
+    )
+  }, [defaultHeaderFocusAgentId, headerFocusOptionIds, headerFocusScope])
+  const headerFocusOption = headerFocusOptions.find((option) => option.agentId === headerFocusAgentId)
+  const headerFocusSessionId = headerFocusOption?.sessionId
+  const extraHeaderDetailId =
+    headerFocusSessionId && headerFocusSessionId !== currentSessionDetail?.id && !syntheticPlayground
+      ? headerFocusSessionId
+      : null
+  const { data: extraHeaderDetail, mutate: mutateExtraHeaderDetail } = useSWR<SessionDetailDto>(
+    consoleKeys.sessionDetail(activeOrg?.id, extraHeaderDetailId),
+    ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
+    { refreshInterval: 30_000 }
+  )
+  const focusedSessionDetail =
+    headerFocusSessionId === currentSessionDetail?.id
+      ? currentSessionDetail
+      : extraHeaderDetail?.id === headerFocusSessionId
+        ? extraHeaderDetail
+        : null
+  const focusedDetailSession = focusedSessionDetail ? sessionFromDetailDto(focusedSessionDetail) : null
+  const focusedSessionBase = headerFocusOption?.snapshot
+    ? mergeSessionDetailUsage(headerFocusOption.snapshot, focusedDetailSession)
+    : focusedDetailSession
+  const focusedAgent = headerFocusAgentId ? agentById.get(headerFocusAgentId) : undefined
+  const focusedSession = focusedSessionBase
+    ? {
+        ...focusedSessionBase,
+        agentName: focusedAgent ? agentLabel(focusedAgent) : headerFocusOption?.label,
+        model: focusedSessionBase.model ?? (focusedSessionBase.runtime ? '' : (focusedAgent?.model ?? '—')),
+        runtime: focusedSessionBase.runtime ?? focusedAgent?.runtime ?? '',
+        daemon: focusedSessionBase.daemon ?? focusedAgent?.daemon
+      }
+    : null
+  const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
+  const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
   // Other sessions for the left rail, scoped by the rail's own agent filter — see
   // lib/session-rail-filter.ts for why an untouched filter follows the route and an
@@ -2068,27 +2170,29 @@ export default function SessionDetailView() {
   }
 
   // Session visibility (session-visibility.md §4.3/§6). Rendered in the desktop
-  // header and the mobile meta strip; null when there is nothing to show (an org
-  // session the caller cannot re-classify, or a mock/legacy row).
+  // header and the mobile meta strip; null only when no persisted visibility
+  // metadata is available (for example a synthetic Playground row).
   const visibilityControl =
-    currentSessionDetail && detailId ? (
+    headerFocusSessionId && (focusedSessionDetail || focusedSession?.visibility) ? (
       <SessionVisibilityControl
-        key={detailId}
-        sessionId={detailId}
-        visibility={currentSessionDetail.visibility ?? undefined}
-        state={currentSessionDetail.visibilityState}
-        canChange={currentSessionDetail.canChangeVisibility === true}
-        externalProvider={currentSessionDetail.externalProvider}
-        externalResolution={currentSessionDetail.externalResolution}
-        feishuRegion={currentSessionDetail.feishuRegion}
+        key={headerFocusSessionId}
+        sessionId={headerFocusSessionId}
+        visibility={focusedSessionDetail?.visibility ?? focusedSession?.visibility}
+        state={focusedSessionDetail?.visibilityState}
+        canChange={focusedSessionDetail?.canChangeVisibility === true}
+        externalProvider={focusedSessionDetail?.externalProvider}
+        externalResolution={focusedSessionDetail?.externalResolution}
+        feishuRegion={focusedSessionDetail?.feishuRegion}
         // Native runtime memory has no per-session gate, so the copy must not
         // promise a memory boundary this tier cannot deliver.
-        nativeMemory={owner?.memoryProvider === 'native'}
+        nativeMemory={focusedAgent?.memoryProvider === 'native'}
         onChanged={({ visibility, state }) => {
           // Reflect the new tier locally, then re-read: the detail row also
           // carries the authoritative pending/applied state, and the lists must
           // drop (or regain) the row for other members.
-          void mutateSessionDetail(
+          const mutateFocusedDetail =
+            headerFocusSessionId === currentSessionDetail?.id ? mutateSessionDetail : mutateExtraHeaderDetail
+          void mutateFocusedDetail(
             (current) => (current ? { ...current, visibility, visibilityState: state } : current),
             { revalidate: true }
           )
@@ -2110,18 +2214,21 @@ export default function SessionDetailView() {
   const pgBusy = sessionBusy
   const pgImage = getPgImage(session.id)
   const pgQueue = getPgQueue(session.id)
-  const agentHref = session.agentId ? `/agents/${session.agentId}` : null
   const hasSessionWorktree =
-    owner?.workspace.mode === 'github' &&
-    currentSessionDetail?.workspaceIsolation === 'session' &&
-    !currentSessionDetail.contentPurgedAt
-  const workspaceHref = session.agentId
-    ? `/agents/${session.agentId}?tab=workspace${
-        hasSessionWorktree ? `&worktree=${encodeURIComponent(currentSessionDetail.id)}` : ''
-      }`
-    : null
-  const workspaceIcon = owner?.workspace.mode === 'github' ? 'git-branch' : 'folder'
-  const workspaceTitle = hasSessionWorktree ? 'Open this session’s worktree' : 'Open this agent’s workspace'
+    focusedAgent?.workspace.mode === 'github' &&
+    (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session' &&
+    !(focusedSessionDetail?.contentPurgedAt ?? focusedSession?.contentPurgedAt)
+  const workspaceHref =
+    focusedAgent && headerFocusAgentId
+      ? `/agents/${headerFocusAgentId}?tab=workspace${
+          hasSessionWorktree && headerFocusSessionId ? `&worktree=${encodeURIComponent(headerFocusSessionId)}` : ''
+        }`
+      : null
+  const workspaceIcon = focusedAgent?.workspace.mode === 'github' ? 'git-branch' : 'folder'
+  const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
+  const workspaceTitle = hasSessionWorktree
+    ? `Open ${focusedAgentLabel}’s session worktree`
+    : `Open ${focusedAgentLabel}’s workspace`
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
@@ -2512,9 +2619,13 @@ export default function SessionDetailView() {
   const owningDaemonId = session.daemon && session.daemon !== '—' ? session.daemon : owner?.daemon
   const owningDaemon =
     owningDaemonId && owningDaemonId !== '—' ? daemons.find((d) => d.daemonId === owningDaemonId) : undefined
-  const daemonName =
-    owningDaemonId && owningDaemonId !== '—'
-      ? (owningDaemon?.name ?? (owningDaemonId.length > 12 ? owningDaemonId.slice(0, 8) : owningDaemonId))
+  const focusedDaemonId =
+    focusedSession?.daemon && focusedSession.daemon !== '—' ? focusedSession.daemon : focusedAgent?.daemon
+  const focusedDaemon =
+    focusedDaemonId && focusedDaemonId !== '—' ? daemons.find((d) => d.daemonId === focusedDaemonId) : undefined
+  const focusedDaemonName =
+    focusedDaemonId && focusedDaemonId !== '—'
+      ? (focusedDaemon?.name ?? (focusedDaemonId.length > 12 ? focusedDaemonId.slice(0, 8) : focusedDaemonId))
       : ''
   // A cron-triggered session carries `user === "cron:<scheduleId>"`. When that's the
   // shown participant, render the chip as a link back to the owning schedule
@@ -2557,26 +2668,43 @@ export default function SessionDetailView() {
   // instead of it, so a partial record is never read as the whole record.
   const transcriptPartiallyPurged = !isPg && purgedMemberCount > 0 && !transcriptPurged
   const prompts = pgPrompts(session.agentId ?? '')
-  const loadedTranscriptStats = wantTranscript && visibleMsgs !== null ? activityStatsFromTranscript(visibleMsgs) : null
-  const liveActivityStats = isPg ? activityStatsFromSteps(session.steps) : activityStatsFromSteps(liveSteps)
-  const durationFirst = minTime(loadedTranscriptStats?.firstMs, liveActivityStats.firstMs)
+  // Per-agent activity must use that session's rows before mergeConversation()
+  // deduplicates shared provider/human messages onto one canonical source.
+  const focusedMessages =
+    conversationKey && headerFocusSessionId
+      ? conversationLoadedKey === conversationKey
+        ? (conversationSourcesRef.current.rows.get(headerFocusSessionId) ?? [])
+        : null
+      : visibleMsgs
+  const stepsForFocusedAgent = (steps: SessionStep[]) =>
+    headerFocusOptions.length <= 1
+      ? steps
+      : steps.filter((step) =>
+          step.agentId ? step.agentId === headerFocusAgentId : headerFocusAgentId === session.agentId
+        )
+  const focusedTranscriptStats =
+    wantTranscript && focusedMessages !== null ? activityStatsFromTranscript(focusedMessages) : null
+  const focusedLiveActivityStats = isPg
+    ? activityStatsFromSteps(stepsForFocusedAgent(session.steps))
+    : activityStatsFromSteps(stepsForFocusedAgent(liveSteps))
+  const durationFirst = minTime(focusedTranscriptStats?.firstMs, focusedLiveActivityStats.firstMs)
   const durationLast = maxTime(
-    loadedTranscriptStats?.lastMs,
-    liveActivityStats.lastMs,
-    pgBusy && durationFirst != null ? nowMs : null
+    focusedTranscriptStats?.lastMs,
+    focusedLiveActivityStats.lastMs,
+    pgBusy && headerFocusAgentId === session.agentId && durationFirst != null ? nowMs : null
   )
   const displayDuration =
     durationFirst != null && durationLast != null
       ? fmtTranscriptDuration(durationLast - durationFirst)
-      : session.duration
-  const displayToolCount = loadedTranscriptStats
-    ? fmtCountCompact(loadedTranscriptStats.toolCalls + liveActivityStats.toolCalls)
-    : liveActivityStats.toolCalls > 0 || isPg
-      ? fmtCountCompact(liveActivityStats.toolCalls)
-      : session.toolCount
+      : (focusedSession?.duration ?? '—')
+  const displayToolCount = focusedTranscriptStats
+    ? fmtCountCompact(focusedTranscriptStats.toolCalls + focusedLiveActivityStats.toolCalls)
+    : focusedLiveActivityStats.toolCalls > 0 || isPg
+      ? fmtCountCompact(focusedLiveActivityStats.toolCalls)
+      : (focusedSession?.toolCount ?? '—')
 
   // Token-usage breakdown for the detail card — only the fields the runtime reported.
-  const u = session.usage
+  const u = focusedSession?.usage
   const fmtN = (n?: number) => (n == null ? null : fmtCountCompact(n))
   const usageEntries: { label: string; value: string }[] = []
   if (u) {
@@ -2663,14 +2791,23 @@ export default function SessionDetailView() {
   // factors read this one list (see detailPanel below).
   const headerFacts: { icon: string; label: string; value: string }[] = [
     { icon: 'clock', label: 'Duration', value: displayDuration },
-    { icon: 'coins', label: 'Tokens', value: conversationUsage?.tokens ?? session.tokens },
-    { icon: 'circle-dollar-sign', label: 'Cost', value: conversationUsage?.cost ?? session.cost },
+    { icon: 'coins', label: 'Tokens', value: focusedSession?.tokens ?? '—' },
+    { icon: 'circle-dollar-sign', label: 'Cost', value: focusedSession?.cost ?? '—' },
     { icon: 'wrench', label: 'Tool calls', value: String(displayToolCount) }
   ]
-  if (daemonName) headerFacts.push({ icon: 'server', label: 'Daemon', value: daemonName })
-  if (session.runtime)
-    headerFacts.push({ icon: 'cpu', label: 'Runtime', value: runtimeLabel(session.runtime, runtimeMeta?.name) })
-  if (session.model) headerFacts.push({ icon: 'box', label: 'Model', value: modelLabel(session.model) })
+  if (focusedDaemonName) headerFacts.push({ icon: 'server', label: 'Daemon', value: focusedDaemonName })
+  if (focusedAgentRuntime)
+    headerFacts.push({
+      icon: 'cpu',
+      label: 'Runtime',
+      value: runtimeLabel(focusedAgentRuntime, focusedRuntimeMeta?.name)
+    })
+  if (focusedSession?.model ?? focusedAgent?.model)
+    headerFacts.push({
+      icon: 'box',
+      label: 'Model',
+      value: modelLabel(focusedSession?.model ?? focusedAgent?.model ?? '')
+    })
 
   // The popover's contents — one definition behind both triggers (desktop hover,
   // mobile tap), so a fact can never show up on one form factor and not the other.
@@ -2740,28 +2877,6 @@ export default function SessionDetailView() {
               {headerStatusLabel}
             </span>
           )}
-        </div>
-        {/* DESKTOP META ROW — agent · channel · participants · visibility · Details
-          popover · copy-link. The old stat/usage cards moved into the Details popover. */}
-        <div className="mt-0 mb-[10px] hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
-          {agentHref ? (
-            <Link
-              className="lnk min-w-0 flex-[0_1_auto] text-[12.5px] text-(--text-secondary)"
-              href={orgPath(agentHref)}
-            >
-              <span className="av h-[18px] w-[18px] flex-none rounded-[5px]">
-                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={18} />
-              </span>
-              <span className="truncate">{session.agentName}</span>
-            </Link>
-          ) : (
-            <span className="lnk min-w-0 flex-[0_1_auto] cursor-default text-[12.5px] text-(--text-secondary)">
-              <span className="av h-[18px] w-[18px] flex-none rounded-[5px]">
-                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={18} />
-              </span>
-              <span className="truncate">{session.agentName}</span>
-            </span>
-          )}
           <span className="inline-flex min-w-0 flex-[0_1_auto] items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
             <span className="imark h-5 w-5 flex-none rounded-xs">
               <PlatformMark platform={channelDisplay.platform} />
@@ -2780,6 +2895,15 @@ export default function SessionDetailView() {
               <span className="mono truncate text-[12px]">{channelDisplay.label}</span>
             )}
           </span>
+        </div>
+        {/* DESKTOP META ROW — focused agent · participants · workspace · visibility · Details
+          popover · copy-link. The old stat/usage cards moved into the Details popover. */}
+        <div className="mt-0 mb-[10px] hidden items-center gap-2 border-b border-(--border-subtle) pb-[7px] desktop:flex">
+          <SessionAgentFocusMenu
+            options={headerFocusOptions}
+            value={headerFocusAgentId}
+            onChange={(agentId) => setHeaderFocusSelection({ scope: headerFocusScope, agentId })}
+          />
           {headerCron ? (
             <Link
               className="lnk min-w-0 flex-[0_1_auto] font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary)"
@@ -2800,7 +2924,6 @@ export default function SessionDetailView() {
               <span className="truncate">{participantsLabel}</span>
             </span>
           )}
-          {visibilityControl}
           {workspaceHref ? (
             <Link
               className="lnk flex-none text-[12.5px] text-(--text-secondary)"
@@ -2811,6 +2934,7 @@ export default function SessionDetailView() {
               Workspace
             </Link>
           ) : null}
+          {visibilityControl}
           {/* `flex` on the wrapper: an inline-flex button in a block div sits on a text
             baseline, and the descender gap under it pushed the button off the row's
             centre line. The transparent top padding bridges the trigger/panel gap so
@@ -2858,38 +2982,20 @@ export default function SessionDetailView() {
           </div>
         )}
 
-        {/* MOBILE HEADER ROW — the desktop meta row's shape at 390px: the owning
-          agent (tap-through), visibility, and everything numeric collapsed behind
+        {/* MOBILE HEADER ROW — the desktop meta row's shape at 390px: the focused
+          agent, workspace, visibility, and everything numeric collapsed behind
           the SAME Details popover. It replaces the old 4-up stat strip and the
           daemon/runtime/model config line, both of which now live in the popover;
           three stacked bands of chrome above the transcript were the phone's whole
           first screen. Tap toggles (`tapped`) — there is no hover to lean on. */}
         <div className="relative flex items-center gap-2 border-b border-(--border-subtle) bg-(--surface-card) px-4 py-[9px] desktop:hidden">
-          {agentHref ? (
-            <Link
-              href={orgPath(agentHref)}
-              className="flex min-w-0 flex-1 items-center gap-[7px] no-underline"
-              aria-label={`Open ${session.agentName}`}
-            >
-              <span className="av h-[22px] w-[22px] flex-none rounded-md">
-                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={22} />
-              </span>
-              <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {session.agentName}
-              </span>
-              <Icon name="chevron-right" size={14} color="var(--text-tertiary)" className="flex-none" />
-            </Link>
-          ) : (
-            <span className="flex min-w-0 flex-1 items-center gap-[7px]">
-              <span className="av h-[22px] w-[22px] flex-none rounded-md">
-                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={22} />
-              </span>
-              <span className="truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
-                {session.agentName}
-              </span>
-            </span>
-          )}
-          {visibilityControl}
+          <span className="flex min-w-0 flex-1">
+            <SessionAgentFocusMenu
+              options={headerFocusOptions}
+              value={headerFocusAgentId}
+              onChange={(agentId) => setHeaderFocusSelection({ scope: headerFocusScope, agentId })}
+            />
+          </span>
           {workspaceHref ? (
             <Link
               href={orgPath(workspaceHref)}
@@ -2900,6 +3006,7 @@ export default function SessionDetailView() {
               <Icon name={workspaceIcon} size={14} />
             </Link>
           ) : null}
+          {visibilityControl}
           <button
             type="button"
             onClick={toggleDetailTap}

@@ -46,8 +46,11 @@ async function openTightenDialog(nativeMemory: boolean): Promise<string> {
     )
   })
   const everyone = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Everyone')
-  expect(everyone?.title).toBe('Visible to everyone who can view the agent')
+  expect(everyone?.title).toBe('Visible to everyone in the org')
   expect(container.textContent).not.toContain('Org')
+  await act(async () => everyone?.click())
+  expect(container.textContent).toContain('Visible only to me')
+  expect(container.textContent).toContain('Visible to everyone in the org')
   const privateButton = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('Private'))
   await act(async () => privateButton?.click())
   return document.body.textContent ?? ''
@@ -89,8 +92,45 @@ describe('SessionVisibilityControl — tighten confirmation', () => {
       )
     })
     expect(container.textContent).toContain(`${brand} members`)
-    expect(container.querySelector('span')?.title).toBe(
-      `Visible to current members of the source ${brand} conversation`
-    )
+    expect(container.querySelector('span')?.title).toBe('Visible to everyone who can access the conversation')
+  })
+
+  it.each([
+    ['slack', 'Slack members', 'Visible to everyone who can access the channel'],
+    ['github', 'GitHub members', 'Visible to everyone who can access the repo']
+  ] as const)('explains the settled %s audience on hover', async (externalProvider, label, title) => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <SessionVisibilityControl
+          sessionId="acp-1"
+          visibility="external"
+          externalProvider={externalProvider}
+          externalResolution="settled"
+          canChange={false}
+          onChanged={() => {}}
+        />
+      )
+    })
+    expect(container.textContent).toContain(label)
+    expect(container.querySelector('span')?.title).toBe(title)
+  })
+
+  it.each([
+    ['org', 'Everyone', 'Visible to everyone in the org'],
+    ['private', 'Private', 'Visible only to me']
+  ] as const)('keeps the read-only %s audience tooltip concise', async (visibility, label, title) => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <SessionVisibilityControl sessionId="acp-1" visibility={visibility} canChange={false} onChanged={() => {}} />
+      )
+    })
+    expect(container.textContent).toContain(label)
+    expect(container.querySelector('span')?.title).toBe(title)
   })
 })
