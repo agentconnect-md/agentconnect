@@ -52,6 +52,14 @@ export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
 export const SESSION_PURGE_FEATURE = 'session-purge-v1'
 
 /**
+ * CP accepts the correlated `event/session-sync` metadata snapshot. Daemons
+ * keep one latest-wins snapshot per session until the CP acknowledges the
+ * persistence commit; older CPs continue receiving best-effort `event/session`
+ * events while the durable snapshot remains queued for a later upgrade.
+ */
+export const SESSION_METADATA_ACK_FEATURE = 'session-metadata-ack-v1'
+
+/**
  * Daemon understands the `session/visibility` gate pushes + register-time
  * snapshot replay (session-visibility.md §5.1). Advertised by the daemon in
  * `RegisterReq.capabilities.features`; the CP gates all visibility pushes on

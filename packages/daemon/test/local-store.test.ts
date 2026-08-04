@@ -65,6 +65,46 @@ describe('LocalStore', () => {
     s.close()
   })
 
+  it('persists only explicitly pending session snapshots and fences stale ACKs', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-session-outbox-')), 'local.sqlite')
+    const first = new LocalStore(path)
+    first.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+
+    // Enrichment alone never turns an existing historical row into replay work.
+    expect(first.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"plan"}', false, 1)).toBeUndefined()
+    expect(first.hasPendingSessionMetadata()).toBe(false)
+
+    expect(first.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"start"}', true, 2)).toBe(1)
+    first.close()
+
+    const restored = new LocalStore(path)
+    expect(restored.nextSessionMetadataSnapshot()).toMatchObject({
+      agentId: 'bot-a',
+      sessionId: 'acp-1',
+      revision: 1,
+      snapshot: '{"phase":"start"}'
+    })
+
+    // A newer projection replaces the payload and revision. Its predecessor's
+    // delayed ACK cannot delete it.
+    expect(restored.saveSessionMetadataSnapshot('bot-a', 'acp-1', '{"phase":"end"}', false, 3)).toBe(2)
+    expect(restored.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 1)).toBe(false)
+    expect(restored.nextSessionMetadataSnapshot()).toMatchObject({ revision: 2, snapshot: '{"phase":"end"}' })
+    expect(restored.acknowledgeSessionMetadataSnapshot('bot-a', 'acp-1', 2)).toBe(true)
+    expect(restored.hasPendingSessionMetadata()).toBe(false)
+    restored.close()
+  })
+
   it('does not recursively mine dream execution sessions as dream sources', () => {
     const s = store()
     s.upsertSession({

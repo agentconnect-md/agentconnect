@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -444,6 +444,85 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(final.model).toBeUndefined()
     expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
     await daemon.stop()
+  }, 15_000)
+
+  it('persists pre-client lifecycle events and drains only the latest snapshot after restart', async () => {
+    const root = scaffold()
+    const configPath = join(root, 'config.json')
+    const config = JSON.parse(readFileSync(configPath, 'utf8'))
+    config.controlPlane = {
+      enabled: true,
+      url: 'wss://127.0.0.1:9/daemon/ws',
+      key: 'test-daemon-key'
+    }
+    writeFileSync(configPath, JSON.stringify(config))
+    const agentId = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const sessionId = 'acp-durable-1'
+    const first = new Daemon({ root, probeRuntimes: async () => [] })
+    let firstStopped = false
+    let restored: Daemon | undefined
+    try {
+      const startCpClient = vi.fn()
+      ;(first as any).startCpClient = startCpClient
+      ;(first as any).replayInbox = () => {
+        expect(startCpClient).not.toHaveBeenCalled()
+        expect((first as any).cpClient).toBeUndefined()
+        ;(first as any).store.upsertSession({
+          key: ['slack', 'C1', '100.1', agentId].join('\0'),
+          agentId,
+          platform: 'slack',
+          channel: 'C1',
+          thread: '100.1',
+          acpSessionId: sessionId,
+          state: 'idle',
+          lastDeliveredTs: null,
+          updatedAt: Date.now()
+        })
+        for (const phase of ['start', 'problem', 'end'] as const) {
+          ;(first as any).emitSessionMetadataSnapshot({
+            sessionId,
+            agentId,
+            phase,
+            platform: 'slack',
+            channel: 'C1',
+            thread: '100.1'
+          })
+        }
+      }
+      await first.start()
+      expect(startCpClient).toHaveBeenCalledTimes(1)
+
+      await first.stop()
+      firstStopped = true
+
+      restored = new Daemon({ root, probeRuntimes: async () => [] })
+      ;(restored as any).startCpClient = vi.fn()
+      await restored.start()
+      const replayed = vi.fn().mockResolvedValue('acknowledged')
+      ;(restored as any).cpClient = {
+        state: 'READY',
+        supportsServerFeature: (feature: string) => feature === 'session-metadata-ack-v1',
+        emitEventSession: vi.fn(),
+        syncEventSession: replayed,
+        stop: vi.fn()
+      }
+
+      await (restored as any).drainSessionMetadataSnapshots()
+
+      expect(replayed).toHaveBeenCalledTimes(1)
+      expect(replayed.mock.calls[0]![0]).toMatchObject({
+        sessionId,
+        agentId,
+        phase: 'end',
+        platform: 'slack',
+        channel: 'C1'
+      })
+      expect((restored as any).store.hasPendingSessionMetadata()).toBe(false)
+    } finally {
+      if (restored) await restored.stop().catch(() => undefined)
+      if (!firstStopped) await first.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
   }, 15_000)
 
   it('re-emits session metadata when a runtime session title update arrives', async () => {

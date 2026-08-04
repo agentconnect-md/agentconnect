@@ -14,6 +14,7 @@ import {
   isFrame,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
+  SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_VISIBILITY_FEATURE
 } from '@agentconnect.md/protocol'
@@ -57,6 +58,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       'gitcred-actions-v1',
       'agent-directory-org-scope-v1',
       SESSION_LIVE_TAIL_FEATURE,
+      SESSION_METADATA_ACK_FEATURE,
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE

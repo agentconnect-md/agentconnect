@@ -55,7 +55,7 @@ export interface DaemonWsDeps {
   connReg: ConnectionRegistry
   /** Persists per-session token usage from the `usage/report` EVT (dashboard telemetry). */
   sessionUsage: SessionUsageRepo
-  /** Persists session milestones from the `event/session` EVT (deep-link metadata sync). */
+  /** Persists milestones from `event/session` EVT or acknowledged sync request. */
   session: SessionRepo
   /** Resolves a webchat conversation's owning user for session-visibility ingest
    *  (session-visibility.md §4.2); absent ⇒ webchat sessions record no owner

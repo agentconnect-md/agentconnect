@@ -29,7 +29,7 @@ import { handleCronReport } from './cron-report.js'
 import { handleHookReport } from './hook-report.js'
 import { handleChannelAgents } from './channel-agents.js'
 import { handleChildSessionStatus } from './child-session-status.js'
-import { handleEventSession } from './event-session.js'
+import { handleEventSession, handleEventSessionSync } from './event-session.js'
 import { handleSessionActivity } from './event-session-activity.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
@@ -73,6 +73,7 @@ export class FrameRouter {
       'channel/agents': handleChannelAgents,
       'session/child-status': handleChildSessionStatus,
       'event/session': handleEventSession,
+      'event/session-sync': handleEventSessionSync,
       'event/session-activity': handleSessionActivity,
       'event/session-purged': handleSessionPurged,
       'gitcred/request': handleGitCredRequest,
@@ -113,6 +114,7 @@ export {
   handleChannelAgents,
   handleChildSessionStatus,
   handleEventSession,
+  handleEventSessionSync,
   handleSessionActivity,
   handleSessionPurged,
   handleWebchatMcpGrantIssue,

@@ -244,6 +244,8 @@ export const FRAME_SCHEMAS = {
   'webchat/mcp-grant/revoked': WebchatMcpGrantRevoked,
   // ── dashboard / facts ──
   'event/session': EventSession,
+  // Durable latest-wins metadata snapshot — D→C REQ, replied with `ack`.
+  'event/session-sync': EventSession,
   'event/session-activity': SessionActivity,
   // Retention-GC receipt (#485) — D→C REQ, replied with the generic `ack`.
   'event/session-purged': SessionPurged,
@@ -460,6 +462,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('webchat/mcp-grant/revoke', FRAME_SCHEMAS['webchat/mcp-grant/revoke']),
   frame('webchat/mcp-grant/revoked', FRAME_SCHEMAS['webchat/mcp-grant/revoked']),
   frame('event/session', FRAME_SCHEMAS['event/session']),
+  frame('event/session-sync', FRAME_SCHEMAS['event/session-sync']),
   frame('event/session-activity', FRAME_SCHEMAS['event/session-activity']),
   frame('event/session-purged', FRAME_SCHEMAS['event/session-purged']),
   frame('usage/report', FRAME_SCHEMAS['usage/report']),
