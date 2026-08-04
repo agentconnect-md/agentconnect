@@ -23,10 +23,18 @@ import {
   type AccountNotice
 } from '@/lib/logto-account'
 import { rememberOwnershipProof, reusableOwnershipProof } from '@/lib/ownership-proof'
-import { socialLoginProviders, type SocialLoginProvider, type SocialLoginTarget } from '@/lib/social-login-providers'
+import {
+  SOCIAL_LOGIN_CATALOG,
+  socialLoginProviders,
+  type SocialLoginProvider,
+  type SocialLoginTarget
+} from '@/lib/social-login-providers'
 
 const byTarget = (account: MySocialAccountDto, target: string): MySocialIdentityDto | undefined =>
   account.identities.find((identity) => identity.target === target)
+
+const targetName = (target: string): string =>
+  SOCIAL_LOGIN_CATALOG.find((provider) => provider.target === target)?.name ?? target
 
 /** Name the workspace the way its own members would. The `T…` id is a last
  *  resort — it is an id, not a name, and readers here manage their own accounts. */
@@ -173,7 +181,7 @@ function VerifyAccountDialog({
       }
       await onVerified(await verifyEmailCode(email, pending.verificationId, code.trim()), pending.expiresAt)
     } catch (caught) {
-      setError(accountErrorMessage(caught, { providerName: provider.name, linking: true }))
+      setError(accountErrorMessage(caught, { providerName: provider.name, operation: 'link' }))
     } finally {
       setBusy(false)
     }
@@ -276,16 +284,15 @@ export default function SocialSignInCard({
   mobile = false,
   notice,
   onNotice,
-  autoLinkTarget,
-  onAutoLinkHandled
+  autoAuthorize,
+  onAutoAuthorizeHandled
 }: {
   mobile?: boolean
   notice?: AccountNotice
   onNotice: (notice: AccountNotice) => void
-  /** Continue an explicit upstream action (currently a verified GitHub App
-   *  install) through the same state-bound link flow as the row button. */
-  autoLinkTarget?: SocialLoginTarget
-  onAutoLinkHandled?: () => void
+  /** Continue an explicit upstream action through the same state-bound provider flow as the row button. */
+  autoAuthorize?: { target: SocialLoginTarget; purpose: 'link' | 'reauthorize' }
+  onAutoAuthorizeHandled?: () => void
 }) {
   const {
     data: account,
@@ -302,7 +309,7 @@ export default function SocialSignInCard({
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
   const [pendingVerify, setPendingVerify] = useState<SocialLoginProvider>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
-  const handledAutoLink = useRef<SocialLoginTarget | undefined>(undefined)
+  const handledAutoAuthorize = useRef<string | undefined>(undefined)
   const currentAccount = error ? undefined : account
   const linkedProviderCount = currentAccount
     ? socialLoginProviders().filter((provider) => byTarget(currentAccount, provider.target)).length
@@ -316,16 +323,24 @@ export default function SocialSignInCard({
       // same sitting reuses the proof instead of asking again.
       const proof = reusableOwnershipProof()
       if (proof) {
-        void startLink(provider, proof)
+        void startAuthorization(provider, 'link', proof)
         return
       }
       setPendingVerify(provider)
       return
     }
-    void startLink(provider)
+    void startAuthorization(provider, 'link')
   }
 
-  const startLink = async (provider: SocialLoginProvider, currentVerificationRecordId?: string) => {
+  const beginReauthorize = (provider: SocialLoginProvider) => {
+    void startAuthorization(provider, 'reauthorize')
+  }
+
+  const startAuthorization = async (
+    provider: SocialLoginProvider,
+    purpose: 'link' | 'reauthorize',
+    currentVerificationRecordId?: string
+  ) => {
     setBusyProvider(provider.target)
     try {
       const state = createSocialState()
@@ -335,6 +350,8 @@ export default function SocialSignInCard({
       const redirectUri = `${window.location.origin}/auth/social/callback`
       const { authorizationUri, verificationRecordId } = await createSocialVerification(connectorId, redirectUri, state)
       const stored = writeSocialLinkFlow({
+        purpose,
+        target: provider.target,
         state,
         connectorId,
         verificationRecordId,
@@ -350,30 +367,32 @@ export default function SocialSignInCard({
       window.location.assign(authorizationUri)
     } catch (caught) {
       onNotice({
-        message: accountErrorMessage(caught, { providerName: provider.name, linking: true })
+        message: accountErrorMessage(caught, { providerName: provider.name, operation: purpose })
       })
       setBusyProvider(undefined)
     }
   }
 
   useEffect(() => {
-    // The marker is one-shot: once the parent clears it, forget it was handled so a
-    // REPEAT trigger (checklist CTA clicked again after cancelling the dialog, while
-    // already on this page) starts the flow again instead of being swallowed.
-    if (!autoLinkTarget) {
-      handledAutoLink.current = undefined
+    if (!autoAuthorize) {
+      handledAutoAuthorize.current = undefined
       return
     }
-    if (!currentAccount || handledAutoLink.current === autoLinkTarget) return
-    const provider = socialLoginProviders().find((candidate) => candidate.target === autoLinkTarget)
-    handledAutoLink.current = autoLinkTarget
-    onAutoLinkHandled?.()
+    const key = `${autoAuthorize.purpose}:${autoAuthorize.target}`
+    if (!currentAccount || handledAutoAuthorize.current === key) return
+    const provider = socialLoginProviders().find((candidate) => candidate.target === autoAuthorize.target)
+    handledAutoAuthorize.current = key
+    onAutoAuthorizeHandled?.()
     if (!provider) {
-      onNotice({ message: 'GitHub profile linking is not available on this deployment.' })
+      onNotice({
+        message: `${targetName(autoAuthorize.target)} authorization is not available on this deployment.`
+      })
       return
     }
-    if (!byTarget(currentAccount, autoLinkTarget)) beginLink(provider)
-  }, [autoLinkTarget, currentAccount, onAutoLinkHandled, onNotice])
+    const linked = byTarget(currentAccount, autoAuthorize.target)
+    if (autoAuthorize.purpose === 'reauthorize' && linked) beginReauthorize(provider)
+    else if (!linked) beginLink(provider)
+  }, [autoAuthorize, currentAccount, onAutoAuthorizeHandled, onNotice])
 
   const unlink = async (provider: SocialLoginProvider) => {
     await unlinkMySocialIdentity(provider.target)
@@ -479,16 +498,28 @@ export default function SocialSignInCard({
                 <div className="col-start-2 row-start-1 flex items-center justify-end gap-1 desktop:col-start-3">
                   {currentAccount ? (
                     details ? (
-                      canUnlink ? (
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          disabled={busyProvider !== undefined}
-                          onClick={() => setPendingUnlink(provider)}
-                        >
-                          <span className="text-(--status-error)">Unlink</span>
-                        </Button>
-                      ) : null
+                      <>
+                        {provider.target === 'lark' || provider.target === 'feishu' ? (
+                          <Button
+                            variant="secondary"
+                            size="xs"
+                            disabled={busyProvider !== undefined}
+                            onClick={() => beginReauthorize(provider)}
+                          >
+                            {busyProvider === provider.target ? 'Reconnecting…' : 'Reconnect'}
+                          </Button>
+                        ) : null}
+                        {canUnlink ? (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            disabled={busyProvider !== undefined}
+                            onClick={() => setPendingUnlink(provider)}
+                          >
+                            <span className="text-(--status-error)">Unlink</span>
+                          </Button>
+                        ) : null}
+                      </>
                     ) : (
                       <Button
                         variant="secondary"
@@ -525,7 +556,7 @@ export default function SocialSignInCard({
           onVerified={async (currentVerificationRecordId, expiresAt) => {
             setPendingVerify(undefined)
             rememberOwnershipProof(currentVerificationRecordId, expiresAt)
-            await startLink(pendingVerify, currentVerificationRecordId)
+            await startAuthorization(pendingVerify, 'link', currentVerificationRecordId)
           }}
           onClose={() => setPendingVerify(undefined)}
         />

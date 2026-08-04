@@ -2475,6 +2475,14 @@ export const ConversationDto = z.object({
   memberSessionIds: z.array(z.string())
 })
 
+/** Safe, requester-scoped explanation for a failed-closed external access check.
+ *  It intentionally excludes upstream response bodies, account ids, and tokens. */
+export const SessionAccessIssueDto = z.object({
+  provider: z.string().min(1),
+  region: z.string().min(1).optional(),
+  reason: z.enum(['authorization', 'unavailable'])
+})
+
 export const SessionListPageDto = z.object({
   /** `view=flat`: the raw session rows (the pre-grouped list shape). */
   sessions: SessionListDto.optional(),
@@ -2489,7 +2497,8 @@ export const SessionListPageDto = z.object({
   // org-wide without exposing metadata of sessions the caller cannot see.
   orgHasSessions: z.boolean().optional(),
   /** True when any provider membership decision failed closed for this page. */
-  accessSyncDegraded: z.boolean().optional()
+  accessSyncDegraded: z.boolean().optional(),
+  accessIssues: z.array(SessionAccessIssueDto).optional()
 })
 
 /** `GET /sessions/:id` — the deep-link detail view, served from CP-stored
@@ -2546,6 +2555,7 @@ export const SessionDetailDto = z.object({
    *  server-side; the console never re-derives permissions from identity. */
   canChangeVisibility: z.boolean(),
   accessSyncDegraded: z.boolean(),
+  accessIssues: z.array(SessionAccessIssueDto).optional(),
   /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md
    *  §3.1). Adopted/refreshed sessions have no live relay socket to deliver the
    *  verified roster, so the composer and header read it from here. Null for
@@ -2997,6 +3007,7 @@ export const UsageAgentDto = z.object({
 export const UsageDto = z.object({
   range: UsageRange,
   accessSyncDegraded: z.boolean().optional(),
+  accessIssues: z.array(SessionAccessIssueDto).optional(),
   totals: z.object({
     sessions: z.number(),
     totalTokens: z.number(),

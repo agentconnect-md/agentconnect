@@ -53,6 +53,7 @@ export function usageRoutes(deps: HttpDeps) {
         return {
           range: req.query.range,
           accessSyncDegraded: access.degraded,
+          accessIssues: access.accessIssues,
           totals: agg.totals,
           agents: agg.agents,
           series: agg.series

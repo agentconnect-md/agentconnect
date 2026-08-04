@@ -8,6 +8,7 @@ import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import {
   LogtoAccountError,
   accountErrorMessage,
+  renewSocialIdentityToken,
   saveSocialIdentity,
   takeSocialLinkFlow,
   verifySocialVerification
@@ -17,6 +18,7 @@ export default function SocialAccountCallback() {
   const started = useRef(false)
   const [error, setError] = useState<string>()
   const [returnTo, setReturnTo] = useState('/')
+  const [workingMessage, setWorkingMessage] = useState('Linking your sign-in account…')
 
   useEffect(() => {
     if (started.current) return
@@ -28,6 +30,7 @@ export default function SocialAccountCallback() {
       return
     }
     setReturnTo(flow.returnTo)
+    if (flow.purpose === 'reauthorize') setWorkingMessage(`Updating ${flow.providerName} authorization…`)
 
     const params = new URLSearchParams(window.location.search)
     const providerError = params.get('error')
@@ -49,10 +52,17 @@ export default function SocialAccountCallback() {
     const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
     verifySocialVerification(flow.verificationRecordId, connectorData)
       .then((verified) =>
-        saveSocialIdentity(verified, flow.currentVerificationRecordId).catch((caught: unknown) => {
-          // Only the SAVE step's refusal implicates the ownership proof; a
-          // failure verifying the provider response says nothing about it.
-          if (caught instanceof LogtoAccountError && (caught.status === 401 || caught.status === 403)) {
+        (flow.purpose === 'reauthorize' && flow.target
+          ? renewSocialIdentityToken(flow.target, verified)
+          : saveSocialIdentity(verified, flow.currentVerificationRecordId)
+        ).catch((caught: unknown) => {
+          // Only saving a new identity implicates the ownership proof; token
+          // renewal and provider verification do not consume that proof.
+          if (
+            flow.purpose !== 'reauthorize' &&
+            caught instanceof LogtoAccountError &&
+            (caught.status === 401 || caught.status === 403)
+          ) {
             forgetOwnershipProof()
           }
           throw caught
@@ -61,11 +71,15 @@ export default function SocialAccountCallback() {
       // Best-effort: the link already succeeded, so a failure here must not be
       // reported as one. It only costs a stale row until the cache expires.
       .then(() => refreshMySocialIdentities().catch(() => undefined))
-      // Straight back to Profile: the row now shows the linked account, which
-      // says it better than a banner that outlives the action.
+      // Return to the initiating Profile view after either linking or renewing.
       .then(() => window.location.replace(flow.returnTo))
       .catch((caught) => {
-        setError(accountErrorMessage(caught, { providerName: flow.providerName, linking: true }))
+        setError(
+          accountErrorMessage(caught, {
+            providerName: flow.providerName,
+            operation: flow.purpose === 'reauthorize' ? 'reauthorize' : 'link'
+          })
+        )
       })
   }, [])
 
@@ -73,7 +87,7 @@ export default function SocialAccountCallback() {
     <div className="authpage">
       <div className="m-auto flex max-w-[420px] flex-col items-center gap-[18px] px-6 text-center font-sans text-[14px] font-normal leading-[1.6] text-(--text-secondary)">
         {!error ? <Spinner size={48} /> : null}
-        <div>{error ?? 'Linking your sign-in account…'}</div>
+        <div>{error ?? workingMessage}</div>
         {error ? (
           <Button variant="secondary" onClick={() => window.location.replace(returnTo)}>
             Back to Profile

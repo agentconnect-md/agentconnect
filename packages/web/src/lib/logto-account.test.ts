@@ -43,13 +43,37 @@ describe('Logto Account API', () => {
     expect(takeSocialLinkFlow()).toBeUndefined()
   })
 
+  it('renews an existing social token set without exposing the returned provider token', async () => {
+    const fetchImpl = vi.fn(
+      async (_input: URL | RequestInfo, _init?: RequestInit) =>
+        new Response(JSON.stringify({ access_token: 'new-provider-token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchImpl)
+    const { renewSocialIdentityToken } = await import('./logto-account')
+
+    await expect(renewSocialIdentityToken('lark', 'social-verification')).resolves.toBeUndefined()
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      new URL('https://login.example.test/api/my-account/identities/lark/access-token'),
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ verificationRecordId: 'social-verification' }),
+        headers: expect.any(Headers)
+      })
+    )
+    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer opaque-account-token')
+  })
+
   it('explains identity conflicts without offering account merging', async () => {
     const { LogtoAccountError, accountErrorMessage } = await import('./logto-account')
 
     expect(
       accountErrorMessage(new LogtoAccountError('identity already linked', 409, 'SOCIAL_IDENTITY_IN_USE'), {
         providerName: 'Google',
-        linking: true
+        operation: 'link'
       })
     ).toBe('That Google account is already linked to another AgentConnect account.')
   })
@@ -61,10 +85,16 @@ describe('Logto Account API', () => {
     const { LogtoAccountError, accountErrorMessage } = await import('./logto-account')
     const unauthorized = new LogtoAccountError('unauthorized', 401)
 
-    expect(accountErrorMessage(unauthorized, { providerName: 'Google', linking: true })).toBe(
+    expect(accountErrorMessage(unauthorized, { providerName: 'Google', operation: 'link' })).toBe(
       'This sign-in session cannot change sign-in methods. Sign out, sign in again, and retry.'
     )
     // Outside linking a 401 really is a dead session.
     expect(accountErrorMessage(unauthorized)).toBe('Your sign-in session expired. Sign in again and retry.')
+    expect(
+      accountErrorMessage(new LogtoAccountError('forbidden', 403), {
+        providerName: 'Lark',
+        operation: 'reauthorize'
+      })
+    ).toBe('The Lark authorization could not be renewed. Return to Profile and try again.')
   })
 })

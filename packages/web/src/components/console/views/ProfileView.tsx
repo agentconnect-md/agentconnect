@@ -46,24 +46,28 @@ export default function ProfileView() {
   // ProfileView survives its desktop-first hydration switch to the mobile tree,
   // so it holds the card's failure notice instead of either short-lived card.
   const [socialNotice, setSocialNotice] = useState<AccountNotice>()
-  const [autoLinkGithub, setAutoLinkGithub] = useState(false)
+  const [autoAuthorize, setAutoAuthorize] = useState<
+    { target: 'github'; purpose: 'link' } | { target: 'lark' | 'feishu'; purpose: 'reauthorize' }
+  >()
 
-  // Two entrances auto-start the GitHub link flow: the GitHub Setup URL's verified
-  // installation marker (`github=installed`) and the getting-started checklist's
-  // "Link GitHub profile" step (`link=github`). Consume the marker before starting
-  // the provider round trip so cancel/reload cannot loop. Keyed on searchParams,
-  // not just mount: the checklist CTA can fire while ALREADY on this page (the
-  // drawer floats over every route), where the push changes only the query.
+  // Explicit upstream actions can auto-start a link or regional token renewal.
+  // Consume each marker before leaving for the provider so cancel/reload cannot
+  // loop. Keyed on searchParams because an action can fire while already here.
   const searchParams = useSearchParams()
   useEffect(() => {
     if (!authOn) return
     const url = new URL(window.location.href)
-    const marked = url.searchParams.get('github') === 'installed' || url.searchParams.get('link') === 'github'
-    if (!marked) return
+    const githubMarked = url.searchParams.get('github') === 'installed' || url.searchParams.get('link') === 'github'
+    const reauthorize = url.searchParams.get('reauthorize')
+    const regionalTarget = reauthorize === 'lark' || reauthorize === 'feishu' ? reauthorize : undefined
+    if (!githubMarked && !regionalTarget) return
     url.searchParams.delete('github')
     url.searchParams.delete('link')
+    url.searchParams.delete('reauthorize')
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
-    setAutoLinkGithub(true)
+    setAutoAuthorize(
+      regionalTarget ? { target: regionalTarget, purpose: 'reauthorize' } : { target: 'github', purpose: 'link' }
+    )
   }, [authOn, searchParams])
   // The signed-in user's membership — the same row the Settings page lists.
   // Matched by userId when the CP profile is known (exact), by email otherwise.
@@ -147,8 +151,8 @@ export default function ProfileView() {
               mobile
               notice={socialNotice}
               onNotice={setSocialNotice}
-              autoLinkTarget={autoLinkGithub ? 'github' : undefined}
-              onAutoLinkHandled={() => setAutoLinkGithub(false)}
+              autoAuthorize={autoAuthorize}
+              onAutoAuthorizeHandled={() => setAutoAuthorize(undefined)}
             />
           ) : null}
 
@@ -215,8 +219,8 @@ export default function ProfileView() {
         <SocialSignInCard
           notice={socialNotice}
           onNotice={setSocialNotice}
-          autoLinkTarget={autoLinkGithub ? 'github' : undefined}
-          onAutoLinkHandled={() => setAutoLinkGithub(false)}
+          autoAuthorize={autoAuthorize}
+          onAutoAuthorizeHandled={() => setAutoAuthorize(undefined)}
         />
       ) : null}
 

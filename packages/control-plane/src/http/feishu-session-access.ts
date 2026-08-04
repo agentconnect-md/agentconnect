@@ -3,6 +3,7 @@ import type { Clock } from '../domain/clock.js'
 import { BotId } from '../domain/ids.js'
 import type { FetchLike } from '../github/api.js'
 import type { BotRepo, ExternalScopeRecord } from '../persistence/ports.js'
+import type { SessionAccessIssue } from './session-access.js'
 
 const REGION_ORIGIN: Record<FeishuRegion, string> = {
   feishu: 'https://open.feishu.cn',
@@ -17,6 +18,7 @@ const SCOPE_CONCURRENCY = 6
 const TIMEOUT_MS = 5_000
 
 type Decision = 'allow' | 'deny' | 'unknown'
+type ScopeDecision = { decision: Decision; issue?: SessionAccessIssue }
 
 const DEFINITIVE_DENIALS = new Set([232006, 232009, 232010, 232011])
 
@@ -28,6 +30,7 @@ export interface FeishuSessionViewer {
 export interface FeishuSessionAccessResult {
   allowedScopes: Array<{ id: string; aclRevision: bigint }>
   degraded: boolean
+  accessIssues: SessionAccessIssue[]
 }
 
 export interface FeishuSessionAccessResolver {
@@ -52,7 +55,7 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
  * app's user token against the custom Bot app's immutable chat id. No app-scoped
  * open_id values are compared. Only bounded membership verdicts are retained. */
 export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
-  private readonly cache = new Map<string, { decision: Decision; expiresAt: number }>()
+  private readonly cache = new Map<string, { result: ScopeDecision; expiresAt: number }>()
 
   constructor(private readonly deps: { bots: BotRepo; clock: Clock; fetchImpl?: FetchLike }) {}
 
@@ -60,8 +63,8 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
     scopes: readonly ExternalScopeRecord[],
     viewer?: FeishuSessionViewer
   ): Promise<FeishuSessionAccessResult> {
-    if (scopes.length === 0) return { allowedScopes: [], degraded: false }
-    if (!viewer) return { allowedScopes: [], degraded: true }
+    if (scopes.length === 0) return { allowedScopes: [], degraded: false, accessIssues: [] }
+    if (!viewer) return { allowedScopes: [], degraded: true, accessIssues: [] }
     const tokens = new Map<FeishuRegion, Promise<string>>()
     const tokenFor = (region: FeishuRegion): Promise<string> => {
       let pending = tokens.get(region)
@@ -72,13 +75,15 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
       return pending
     }
     let degraded = false
+    const accessIssues = new Map<string, SessionAccessIssue>()
     const decisions: Array<{ scope: ExternalScopeRecord; decision: Decision }> = []
     for (let start = 0; start < scopes.length; start += SCOPES_PER_BATCH) {
       const signal = AbortSignal.timeout(TIMEOUT_MS)
       decisions.push(
         ...(await mapLimited(scopes.slice(start, start + SCOPES_PER_BATCH), SCOPE_CONCURRENCY, async (scope) => {
-          const decision = await this.resolveScope(scope, viewer, tokenFor, signal)
+          const { decision, issue } = await this.resolveScope(scope, viewer, tokenFor, signal)
           if (decision === 'unknown') degraded = true
+          if (issue) accessIssues.set(`${issue.provider}:${issue.region ?? ''}:${issue.reason}`, issue)
           return { scope, decision }
         }))
       )
@@ -87,7 +92,8 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
       allowedScopes: decisions
         .filter(({ decision }) => decision === 'allow')
         .map(({ scope }) => ({ id: scope.id, aclRevision: scope.aclRevision })),
-      degraded
+      degraded,
+      accessIssues: [...accessIssues.values()]
     }
   }
 
@@ -96,7 +102,7 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
     viewer: FeishuSessionViewer,
     tokenFor: (region: FeishuRegion) => Promise<string>,
     signal: AbortSignal
-  ): Promise<Decision> {
+  ): Promise<ScopeDecision> {
     if (
       scope.provider !== 'feishu' ||
       scope.resourceKind !== 'conversation' ||
@@ -104,7 +110,7 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
       scope.credentialKind !== 'bot' ||
       !scope.credentialId
     ) {
-      return 'deny'
+      return { decision: 'deny' }
     }
     const bot = await this.deps.bots.get(BotId(scope.credentialId)).catch(() => null)
     const region = bot?.platform === 'feishu' ? (bot.feishuRegion ?? 'feishu') : undefined
@@ -118,17 +124,17 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
       !appId ||
       scope.realmKey !== `${region}:${appId}`
     ) {
-      return 'deny'
+      return { decision: 'deny' }
     }
 
     const key = [scope.id, scope.aclRevision.toString(), bot.credentialRevision, viewer.subject].join(':')
     const cached = this.cache.get(key)
-    let decision = cached && cached.expiresAt > this.deps.clock.now() ? cached.decision : undefined
-    if (!decision) {
-      decision = await this.checkMembership(region, scope.resourceKey, tokenFor, signal)
-      this.putCache(key, decision)
+    let result = cached && cached.expiresAt > this.deps.clock.now() ? cached.result : undefined
+    if (!result) {
+      result = await this.checkMembership(region, scope.resourceKey, tokenFor, signal)
+      this.putCache(key, result)
     }
-    return decision
+    return result
   }
 
   private async checkMembership(
@@ -136,9 +142,14 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
     chatId: string,
     tokenFor: (region: FeishuRegion) => Promise<string>,
     signal: AbortSignal
-  ): Promise<Decision> {
+  ): Promise<ScopeDecision> {
+    let token: string
     try {
-      const token = await tokenFor(region)
+      token = await tokenFor(region)
+    } catch {
+      return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'authorization' } }
+    }
+    try {
       const body = await this.call<{ code?: unknown; data?: { is_in_chat?: unknown } }>(
         region,
         `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members/is_in_chat`,
@@ -146,13 +157,17 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
         signal
       )
       const code = typeof body.code === 'number' ? body.code : Number(body.code)
-      if (code !== 0) return DEFINITIVE_DENIALS.has(code) ? 'deny' : 'unknown'
-      if (body.data?.is_in_chat === true) return 'allow'
-      if (body.data?.is_in_chat === false) return 'deny'
+      if (code !== 0) {
+        return DEFINITIVE_DENIALS.has(code)
+          ? { decision: 'deny' }
+          : { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
+      }
+      if (body.data?.is_in_chat === true) return { decision: 'allow' }
+      if (body.data?.is_in_chat === false) return { decision: 'deny' }
     } catch {
-      return 'unknown'
+      return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
     }
-    return 'unknown'
+    return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
   }
 
   private async call<T>(
@@ -175,12 +190,12 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
     return body
   }
 
-  private putCache(key: string, decision: Decision): void {
+  private putCache(key: string, result: ScopeDecision): void {
     if (this.cache.size >= MAX_CACHE_ENTRIES) {
       const oldest = this.cache.keys().next().value as string | undefined
       if (oldest) this.cache.delete(oldest)
     }
-    const ttl = decision === 'allow' ? ALLOW_TTL_MS : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    this.cache.set(key, { decision, expiresAt: this.deps.clock.now() + ttl })
+    const ttl = result.decision === 'allow' ? ALLOW_TTL_MS : result.decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
+    this.cache.set(key, { result, expiresAt: this.deps.clock.now() + ttl })
   }
 }

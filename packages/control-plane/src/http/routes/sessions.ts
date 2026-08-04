@@ -606,7 +606,8 @@ export function sessionRoutes(deps: HttpDeps) {
                 : [],
             total: rows.length > 0 ? 1 : 0,
             nextCursor: null,
-            accessSyncDegraded: access.degraded
+            accessSyncDegraded: access.degraded,
+            accessIssues: access.accessIssues
           }
         }
 
@@ -619,6 +620,7 @@ export function sessionRoutes(deps: HttpDeps) {
             total: page.total,
             nextCursor,
             accessSyncDegraded: access.degraded,
+            accessIssues: access.accessIssues,
             ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
           }
         }
@@ -642,6 +644,7 @@ export function sessionRoutes(deps: HttpDeps) {
           total: page.total,
           nextCursor,
           accessSyncDegraded: access.degraded,
+          accessIssues: access.accessIssues,
           ...(orgHasSessions !== undefined ? { orgHasSessions } : {})
         }
       }
@@ -706,6 +709,14 @@ export function sessionRoutes(deps: HttpDeps) {
         const visibleChildren = children.filter((child) =>
           canViewSession(child, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
         )
+        const accessIssues = [
+          ...new Map(
+            [...access.accessIssues, ...relatedAccess.accessIssues].map((issue) => [
+              `${issue.provider}:${issue.region ?? ''}:${issue.reason}`,
+              issue
+            ])
+          ).values()
+        ]
         return {
           id: s.id,
           parentSession: parentVisible ? sessionRelation(parent) : null,
@@ -754,6 +765,7 @@ export function sessionRoutes(deps: HttpDeps) {
           visibilityState: await visibilityStateOf(deps.visibilityPush, deps.repos, [s.id]),
           canChangeVisibility: canChangeSessionVisibility(s, ctx, access.identitySet),
           accessSyncDegraded: access.degraded || relatedAccess.degraded,
+          accessIssues,
           contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,
           contentPurgedReason: s.contentPurgedReason ?? null,
           startedAt: s.startedAt.toISOString(),

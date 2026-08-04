@@ -14,6 +14,8 @@ export interface LogtoFederatedTokenResolver {
   forRequest(oidcSubject: string, accountToken: string): LogtoFederatedTokenSession
 }
 
+export type LogtoFederatedTokenStage = 'account_verification' | 'federated_token'
+
 /** Account API shares the tenant origin with Logto's `/oidc` issuer. */
 export function logtoAccountEndpointFromIssuer(issuer: string): string {
   const url = new URL(issuer)
@@ -28,15 +30,42 @@ export function logtoAccountEndpointFromIssuer(issuer: string): string {
 export class LogtoFederatedTokenError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly details: {
+      stage: LogtoFederatedTokenStage
+      status?: number
+      target?: LogtoFederatedTarget
+      code?: string
+    }
   ) {
     super(message)
     this.name = 'LogtoFederatedTokenError'
+  }
+
+  get stage(): LogtoFederatedTokenStage {
+    return this.details.stage
+  }
+
+  get status(): number | undefined {
+    return this.details.status
+  }
+
+  get target(): LogtoFederatedTarget | undefined {
+    return this.details.target
+  }
+
+  get code(): string | undefined {
+    return this.details.code
   }
 }
 
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+}
+
+async function safeUpstreamCode(response: Response): Promise<string | undefined> {
+  const value = recordOf(await response.json().catch(() => null)).code
+  const code = typeof value === 'number' ? String(value) : typeof value === 'string' ? value : undefined
+  return code && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(code) ? code : undefined
 }
 
 /**
@@ -74,21 +103,64 @@ export class LogtoFederatedTokenService implements LogtoFederatedTokenResolver {
   }
 
   private async verifyAccount(oidcSubject: string, accountToken: string): Promise<void> {
-    const response = await this.request('/api/my-account', accountToken)
-    if (!response.ok) throw new LogtoFederatedTokenError('Logto account verification failed', response.status)
+    let response: Response
+    try {
+      response = await this.request('/api/my-account', accountToken)
+    } catch {
+      throw new LogtoFederatedTokenError('Logto account verification failed', {
+        stage: 'account_verification',
+        code: 'request_failed'
+      })
+    }
+    if (!response.ok) {
+      const code = await safeUpstreamCode(response)
+      throw new LogtoFederatedTokenError('Logto account verification failed', {
+        stage: 'account_verification',
+        status: response.status,
+        ...(code ? { code } : {})
+      })
+    }
     const account = recordOf(await response.json().catch(() => null))
-    if (account.id !== oidcSubject) throw new LogtoFederatedTokenError('Logto account token subject mismatch', 403)
+    if (account.id !== oidcSubject) {
+      throw new LogtoFederatedTokenError('Logto account token subject mismatch', {
+        stage: 'account_verification',
+        status: 403,
+        code: 'subject_mismatch'
+      })
+    }
   }
 
   private async fetchAccessToken(target: LogtoFederatedTarget, accountToken: string): Promise<string> {
-    const response = await this.request(
-      `/api/my-account/identities/${encodeURIComponent(target)}/access-token`,
-      accountToken
-    )
-    if (!response.ok) throw new LogtoFederatedTokenError('Federated access token is unavailable', response.status)
+    let response: Response
+    try {
+      response = await this.request(
+        `/api/my-account/identities/${encodeURIComponent(target)}/access-token`,
+        accountToken
+      )
+    } catch {
+      throw new LogtoFederatedTokenError('Federated access token is unavailable', {
+        stage: 'federated_token',
+        target,
+        code: 'request_failed'
+      })
+    }
+    if (!response.ok) {
+      const code = await safeUpstreamCode(response)
+      throw new LogtoFederatedTokenError('Federated access token is unavailable', {
+        stage: 'federated_token',
+        target,
+        status: response.status,
+        ...(code ? { code } : {})
+      })
+    }
     const token = recordOf(await response.json().catch(() => null)).access_token
     if (typeof token !== 'string' || token.length === 0) {
-      throw new LogtoFederatedTokenError('Federated access token response is invalid', 502)
+      throw new LogtoFederatedTokenError('Federated access token response is invalid', {
+        stage: 'federated_token',
+        target,
+        status: 502,
+        code: 'invalid_response'
+      })
     }
     return token
   }
