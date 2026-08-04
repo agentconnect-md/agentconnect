@@ -14,7 +14,7 @@
  * its topology into production collaboration policy and never branches on
  * `if (evaluation)` inside policy code.
  */
-import type { ChannelAgentsOk, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
+import type { AgentAuthorshipClaim, ChannelAgentsOk, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import { IntegrationSchema, type BindRuleConfig, type Integration } from '../agents/agent-schema.js'
 import type { ChannelAgentsRequest } from '../mcp/ops.js'
 import type { VirtualPlatform, VirtualPlatformConnection } from './virtual-connections.js'
@@ -63,6 +63,10 @@ export interface EvaluationPlatformPayload {
   sender: { id: string; name?: string; isBot?: boolean; appId?: string }
   /** Bot user ids mentioned in the message (the router's mention rung input). */
   mentions?: string[]
+  /** UNTRUSTED provider authorship claim exactly as a platform normalizer
+   *  would surface it (send-message-routing-rework.md §4/§8.1) — the daemon's
+   *  ingress promotes it only after full verification. */
+  agentAuthorship?: AgentAuthorshipClaim
   isDm?: boolean
 }
 
