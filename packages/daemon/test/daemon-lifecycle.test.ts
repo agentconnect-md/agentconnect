@@ -470,7 +470,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(laterPreparationEntered).toBe(true)
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
-    expect((daemon as any).workspaceFileWrites.has('bot-a')).toBe(false)
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(false)
     await daemon.stop()
   }, 20_000)
 
@@ -1563,13 +1563,13 @@ describe('Daemon graceful shutdown drain (#109)', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(stopped).toBe(false)
     expect(close).not.toHaveBeenCalled()
-    expect((daemon as any).workspaceFileWrites.has('bot-a')).toBe(true)
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true)
 
     releaseWrite()
     await writing
     await stopping
     expect(close).toHaveBeenCalledOnce()
-    expect((daemon as any).workspaceFileWrites.has('bot-a')).toBe(false)
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(false)
   }, 15_000)
 })
 

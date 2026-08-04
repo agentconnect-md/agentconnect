@@ -74,6 +74,7 @@ function streamingHost() {
       return { stopReason: 'end_turn' }
     }),
     cancel: vi.fn(async () => {}),
+    forgetSession: vi.fn(),
     stop: vi.fn(async () => {})
   }
   const factory = (_agent: unknown, cb: (sid: string, u: unknown) => void) => {
@@ -1324,6 +1325,7 @@ describe('Daemon rd/msg hook fires', () => {
       const { factory, host } = streamingHost()
       const daemon = new Daemon({ root, hostFactory: factory })
       await daemon.start()
+      ;(daemon as any).hosts.set(AGENT_ID, host)
       const cp = fakeCpClient()
       ;(daemon as never as { cpClient: unknown }).cpClient = cp
       const agent = (daemon as any).agents.get(AGENT_ID)
@@ -1344,6 +1346,16 @@ describe('Daemon rd/msg hook fires', () => {
         updatedAt: Date.now(),
         workspaceIsolation: 'session'
       })
+
+      let releaseWorkspaceMutation!: () => void
+      let markWorkspaceMutationStarted!: () => void
+      const workspaceMutationStarted = new Promise<void>((resolve) => (markWorkspaceMutationStarted = resolve))
+      const workspaceMutationRelease = new Promise<void>((resolve) => (releaseWorkspaceMutation = resolve))
+      const blockingMutation = (daemon as any).enqueueAgentWorkspaceMutation(AGENT_ID, async () => {
+        markWorkspaceMutationStarted()
+        await workspaceMutationRelease
+      })
+      await workspaceMutationStarted
 
       const ack = await (daemon as any).handleRelayMsg(
         fire({
@@ -1369,10 +1381,25 @@ describe('Daemon rd/msg hook fires', () => {
       )
 
       expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+      await vi.waitFor(() => expect((daemon as any).workspaceDispatchFences.has(AGENT_ID)).toBe(true))
+      let admitted = false
+      const admission = (daemon as any).admitActiveDispatch(AGENT_ID, key).then((release: () => void) => {
+        admitted = true
+        return release
+      })
+      await Promise.resolve()
+      expect(admitted).toBe(false)
+      expect(existsSync(worktree)).toBe(true)
+
+      releaseWorkspaceMutation()
+      await blockingMutation
       await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1))
+      const releaseDispatch = await admission
+      releaseDispatch()
       expect(cp.hookReports[0]).toMatchObject({ status: 'success', event })
       expect(existsSync(worktree)).toBe(false)
       expect((daemon as any).store.getSession(key)).toBeTruthy()
+      expect(host.forgetSession).toHaveBeenCalledWith('acp-existing')
       expect(host.newSession).not.toHaveBeenCalled()
       expect(host.prompt).not.toHaveBeenCalled()
       await daemon.stop()

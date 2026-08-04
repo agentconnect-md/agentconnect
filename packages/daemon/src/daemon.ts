@@ -2021,7 +2021,7 @@ export class Daemon {
   // Agent detach waits these leases before archiving/closing the last connection.
   private activeDispatchesByAgent = new Map<string, Set<Promise<void>>>()
   private activeDispatchDoneByKey = new Map<string, Promise<void>>()
-  private workspaceFileWrites = new Map<string, Promise<void>>()
+  private workspaceDispatchFences = new Map<string, Promise<void>>()
   /** Whole per-agent workspace-mutation tails. Preparation (managed-cache
    * resolution, clone/pull, immutable snapshots, skill reconciliation) and CP
    * editor/Dream/Git writes share this lane, so no two authorities mutate the
@@ -4647,11 +4647,11 @@ export class Daemon {
     }
   }
 
-  private async waitForWorkspaceFileWrites(agentId: string): Promise<void> {
+  private async waitForWorkspaceDispatchFence(agentId: string): Promise<void> {
     while (true) {
-      const write = this.workspaceFileWrites.get(agentId)
-      if (!write) return
-      await write
+      const fence = this.workspaceDispatchFences.get(agentId)
+      if (!fence) return
+      await fence
     }
   }
 
@@ -4670,9 +4670,9 @@ export class Daemon {
     await this.stopSelectedTurnHosts(selected)
     await this.stopHost(agentId)
     // A dispatch admitted before the drain may still be waiting for a workspace
-    // file-write lease. Release/join that lease first, then collect the dispatch
+    // workspace-mutation fence. Release/join that fence first, then collect the dispatch
     // it registers; reversing the order leaves a late active-dispatch join gap.
-    await this.waitForWorkspaceFileWrites(agentId)
+    await this.waitForWorkspaceDispatchFence(agentId)
     while (this.activeDispatchesByAgent.get(agentId)?.size) {
       await Promise.all([...this.activeDispatchesByAgent.get(agentId)!])
     }
@@ -11745,15 +11745,30 @@ export class Daemon {
   }
 
   private async admitActiveDispatch(agentId: string, key: string): Promise<() => void> {
-    while (this.workspaceFileWrites.has(agentId)) await this.workspaceFileWrites.get(agentId)
+    while (this.workspaceDispatchFences.has(agentId)) await this.workspaceDispatchFences.get(agentId)
     return this.beginActiveDispatch(agentId, key)
   }
 
-  private async withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
+  /** Publish a turn-admission fence synchronously, then serialize the mutation
+   * with every other operation that can prepare or rewrite this agent's roots. */
+  private withWorkspaceAdmissionFence<T>(agentId: string, operation: () => Promise<T>): Promise<T> {
+    const run = this.enqueueAgentWorkspaceMutation(agentId, operation)
+    const done = run.then(
+      () => undefined,
+      () => undefined
+    )
+    this.workspaceDispatchFences.set(agentId, done)
+    void done.then(() => {
+      if (this.workspaceDispatchFences.get(agentId) === done) this.workspaceDispatchFences.delete(agentId)
+    })
+    return run
+  }
+
+  private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
     // Admission into the shared mutation tail is synchronous: a preparation or
     // second publication accepted in the next call stack can only run after this
     // complete stop+write operation, and vice versa.
-    const run = this.enqueueAgentWorkspaceMutation(agentId, async () => {
+    return this.withWorkspaceAdmissionFence(agentId, async () => {
       if (
         this.draining ||
         this.drainingAgents.has(agentId) ||
@@ -11766,15 +11781,6 @@ export class Daemon {
       await this.stopHost(agentId)
       return await write()
     })
-    const done = run.then(
-      () => undefined,
-      () => undefined
-    )
-    this.workspaceFileWrites.set(agentId, done)
-    void done.then(() => {
-      if (this.workspaceFileWrites.get(agentId) === done) this.workspaceFileWrites.delete(agentId)
-    })
-    return run
   }
 
   private holdReplyConnection(
@@ -15210,8 +15216,8 @@ export class Daemon {
   private async ensureHostAsync(agentId: string, opts: { allowAgentDrain?: boolean } = {}): Promise<AcpHost> {
     const assertStartAllowed = (): void => {
       if (this.draining) throw new Error(`host start blocked while daemon is draining (${agentId})`)
-      if (this.workspaceFileWrites.has(agentId)) {
-        throw new Error(`host start blocked while a workspace file is being written (${agentId})`)
+      if (this.workspaceDispatchFences.has(agentId)) {
+        throw new Error(`host start blocked while a workspace mutation is in progress (${agentId})`)
       }
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
@@ -16491,7 +16497,26 @@ export class Daemon {
     if (!agent || agent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
       return { outcome: 'not_applicable' }
     }
-    return removeSessionWorktree(agent, rec.key)
+    return this.withWorkspaceAdmissionFence(rec.agentId, async () => {
+      // A turn may claim the session between the optimistic check above and this
+      // queued mutation boundary. In that case it owns the worktree, so defer.
+      if (this.sessionRetentionActive(rec)) return { outcome: 'active' }
+      const currentAgent = this.agents.get(rec.agentId)
+      if (!currentAgent || currentAgent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
+        return { outcome: 'not_applicable' }
+      }
+      const result = await removeSessionWorktree(currentAgent, rec.key)
+      if ((result.outcome === 'removed' || result.outcome === 'absent') && rec.acpSessionId) {
+        // The session row intentionally survives lifecycle cleanup. Evict only
+        // this stale warm binding so the next reopened/comment turn recreates
+        // the worktree and runs session/load/new before prompting in its cwd.
+        const current = this.store.getSession(rec.key)
+        if (current?.acpSessionId === rec.acpSessionId) {
+          this.hosts.get(rec.agentId)?.forgetSession(rec.acpSessionId)
+        }
+      }
+      return result
+    })
   }
 
   private async sweepSessionRetention(): Promise<void> {
@@ -19135,11 +19160,11 @@ export class Daemon {
     // hold this identity-tracked lease. The daemon-wide gate above rejects new
     // admissions; drain every already-admitted mutation before transport/store
     // teardown so none can outlive the authority that validated its root.
-    while (this.workspaceFileWrites.size > 0) {
-      await Promise.all([...this.workspaceFileWrites.values()])
+    while (this.workspaceDispatchFences.size > 0) {
+      await Promise.all([...this.workspaceDispatchFences.values()])
     }
     // A dispatch admitted before shutdown can be parked behind one of those
-    // writes and register its active lease only after drainForShutdown's first
+    // mutations and register its active lease only after drainForShutdown's first
     // snapshot. Rejoin until the identity-tracked sets are empty.
     while (this.activeDispatchesByAgent.size > 0) {
       await Promise.all([...this.activeDispatchesByAgent.values()].flatMap((active) => [...active]))
