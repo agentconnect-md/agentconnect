@@ -6,6 +6,11 @@ import { telegramApi, type TelegramApi } from './api'
 import { TelegramWizardBody } from './Body'
 import { TelegramMark } from './mark'
 
+/** Telegram's provider-native message id: a short per-chat sequence number.
+ *  Capped at 9 digits so neither the 10-digit legacy epoch-seconds era nor a
+ *  13-digit daemon-local millisecond stamp can be mistaken for one. */
+const TELEGRAM_MESSAGE_ID = /^\d{1,9}$/
+
 export const telegramModule: WebPlatformModule<TelegramApi> = {
   platformId: 'telegram',
   Mark: TelegramMark,
@@ -29,5 +34,6 @@ export const telegramModule: WebPlatformModule<TelegramApi> = {
     roomGlyph: '',
     // `leaveChat` needs no extra permission, so a row can be left from the console.
     leave: 'conversation'
-  }
+  },
+  messageIdentity: (row) => (TELEGRAM_MESSAGE_ID.test(row.ts) ? `ts:${row.ts}` : null)
 }

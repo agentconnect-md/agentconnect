@@ -8,6 +8,11 @@ import { SlackMark } from './mark'
 import { slackSettingsFragments } from './settings'
 import { useSlackPlatformInstall } from './use-platform-install'
 
+/** Slack's provider-native message id: epoch seconds with a sub-second part
+ *  (`1754123456.000200`). Chosen so a daemon-local 13-digit `monotonicTs()`
+ *  millisecond stamp can never match it. */
+const SLACK_NATIVE_TS = /^\d+\.\d+$/
+
 export const slackModule: WebPlatformModule<SlackApi> = {
   platformId: 'slack',
   Mark: SlackMark,
@@ -49,5 +54,10 @@ export const slackModule: WebPlatformModule<SlackApi> = {
     // removing the bot IN Slack clears the row by itself — hence the footer note.
     leave: 'none',
     footerNote: 'To remove the bot from a channel, do it in Slack — this list updates by itself.'
-  }
+  },
+  messageIdentity: (row) => (SLACK_NATIVE_TS.test(row.ts) ? `ts:${row.ts}` : null),
+  // Slack rows carry the workspace's own send-time, and a page must present
+  // them in it: the daemon `seq` is ingest order, which reorders a burst that
+  // arrived out of order. Every other platform trusts `seq`.
+  transcriptOrdering: 'event-time'
 }

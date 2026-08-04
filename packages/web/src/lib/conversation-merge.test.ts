@@ -50,6 +50,24 @@ describe('duplicateIdentity', () => {
     expect(duplicateIdentity('slack', row({ kind: 'tool', ts: '1754123456.000200' }))).toBeNull()
     expect(duplicateIdentity('webchat', row({ kind: 'reasoning', postId: POST }))).toBeNull()
   })
+
+  it('dedupes nothing under a platform id no module claims', () => {
+    // The rule used to be Slack's for every unrecognized id, because Slack was
+    // the fall-through arm of the if-chain. The published module contract says
+    // the opposite — absent `messageIdentity` ⇒ never dedupe — and dedupe is
+    // the only step here that can delete a row, so the guess goes the other
+    // way now. A Slack-SHAPED ts under an unknown id is the case that changed.
+    for (const platform of ['linear', 'hook', 'github', 'playground', 'Slack', '']) {
+      expect(duplicateIdentity(platform, row({ ts: '1754123456.000200' })), platform).toBeNull()
+      expect(duplicateIdentity(platform, row({ postId: POST })), platform).toBeNull()
+    }
+    // Prototype keys are ids like any other — the registry is a Map, so they
+    // resolve to no module rather than to `Object.prototype`.
+    expect(duplicateIdentity('constructor', row({ ts: '1754123456.000200' }))).toBeNull()
+    expect(duplicateIdentity('__proto__', row({ ts: '1754123456.000200' }))).toBeNull()
+    // The registered ids keep theirs.
+    expect(duplicateIdentity('slack', row({ ts: '1754123456.000200' }))).toBe('ts:1754123456.000200')
+  })
 })
 
 describe('mergeConversation', () => {
@@ -180,6 +198,37 @@ describe('mergeConversation', () => {
     ])
     expect(merged.filter((m) => m.row.text === 'thread msg')).toHaveLength(1)
     expect(merged.map((m) => m.row.text).filter((t) => t.startsWith('a2a'))).toHaveLength(2)
+  })
+
+  it('keeps both copies when the platform id is one no module claims', () => {
+    // The blast radius of the fall-through removal, end to end: two sources of
+    // an unrecognized platform carrying the same Slack-shaped ts used to
+    // collapse into one row, and now render as two. Fail-open by design —
+    // "toward a visible duplicate, never toward data loss" (§6).
+    const platformTs = '1754123456.000200'
+    const merged = mergeConversation([
+      src(A, 'linear', [row({ sender: 'U-HUMAN', ts: platformTs, text: 'hello' })]),
+      src(B, 'linear', [row({ sender: 'U-HUMAN', ts: platformTs, text: 'hello' })])
+    ])
+    expect(merged).toHaveLength(2)
+  })
+
+  it('carries each row’s own source platform out of the merge', () => {
+    // The transcript resolves its text renderer from this key (§10), so it has
+    // to survive the interleave that mixes the sources up.
+    const merged = mergeConversation([
+      src(A, 'slack', [row({ ts: '1754123456.000100', text: 's1' }), row({ ts: '1754123458.000100', text: 's2' })]),
+      src(B, 'telegram', [
+        row({ ts: '4821', eventTimeUs: 1_754_123_457_000_000, text: 't1' }),
+        row({ ts: '4822', eventTimeUs: 1_754_123_459_000_000, text: 't2' })
+      ])
+    ])
+    expect(merged.map((m) => [m.row.text, m.sourcePlatform])).toEqual([
+      ['s1', 'slack'],
+      ['t1', 'telegram'],
+      ['s2', 'slack'],
+      ['t2', 'telegram']
+    ])
   })
 
   it('keeps the human copy from the first source when no author copy exists', () => {

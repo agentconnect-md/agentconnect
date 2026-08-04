@@ -10,6 +10,11 @@ import { discordSettingsFragments } from './settings'
  *  from the pasted token in the browser (`./invite.ts`). */
 const discordApi = {}
 
+/** Discord's provider-native message id: a snowflake, 16–20 digits (creation
+ *  ms in the top 42 bits). Long enough that a 13-digit daemon-local
+ *  millisecond stamp can never match it. */
+const DISCORD_SNOWFLAKE = /^\d{16,20}$/
+
 export const discordModule: WebPlatformModule<typeof discordApi> = {
   platformId: 'discord',
   Mark: DiscordMark,
@@ -34,5 +39,6 @@ export const discordModule: WebPlatformModule<typeof discordApi> = {
     cannotLeaveRowHint:
       'A Discord bot belongs to a server, not one channel — use Leave on the server heading above to take it out. If it is still in there, the row will come back.',
     footerNote: 'A Discord bot joins servers, not channels, so it can only leave a whole server.'
-  }
+  },
+  messageIdentity: (row) => (DISCORD_SNOWFLAKE.test(row.ts) ? `ts:${row.ts}` : null)
 }
