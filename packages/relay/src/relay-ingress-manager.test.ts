@@ -2,9 +2,8 @@ import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import type {
   RdAck,
-  RdMsgFeishuAction,
+  RdMsgPlatformAction,
   RdMsgIm,
-  RdMsgSlackAction,
   RcBotChannels,
   RcThreadAssign,
   RcThreadLookupOk,
@@ -155,7 +154,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
   })
 
   it('forwards to the exact current agent+integration with a stable redelivery msgId', () => {
-    const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
@@ -171,7 +170,8 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     const first = sendMsg.mock.calls[0]![0]
     const second = sendMsg.mock.calls[1]![0]
     expect(first).toEqual({
-      source: 'slack_action',
+      source: 'platform_action',
+      platformId: 'slack',
       agentId: AGENT_ID,
       integrationId: INTEGRATION_ID,
       sessionKey: SESSION_KEY,
@@ -184,7 +184,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
   })
 
   it('forwards a message shortcut through the current thread affinity', () => {
-    const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
@@ -206,7 +206,8 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
 
     expect(internals.forwardSessionShortcut(BOT_ID, shortcut)).toBe(true)
     expect(sendMsg).toHaveBeenCalledWith({
-      source: 'slack_action',
+      source: 'platform_action',
+      platformId: 'slack',
       agentId: AGENT_ID,
       integrationId: INTEGRATION_ID,
       sessionKey: 'C123/T1',
@@ -223,7 +224,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
   })
 
   it('forwards the tapping user, and omits it entirely when the interaction named none', () => {
-    const sendMsg = vi.fn(async (msg: RdMsgSlackAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
@@ -288,10 +289,11 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
 describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
   it('forwards to the rendered integration and returns the daemon callback response', async () => {
     const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
-    const sendMsg = vi.fn(async (msg: RdMsgFeishuAction): Promise<RdAck> => ({
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({
       msgId: msg.msgId,
       accepted: true,
-      feishuCardAction: response
+      // A fleet daemon answers a platform_action with the generic opaque slot.
+      response
     }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(
@@ -338,7 +340,8 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
 
     await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toEqual(response)
     expect(sendMsg).toHaveBeenCalledWith({
-      source: 'feishu_action',
+      source: 'platform_action',
+      platformId: 'feishu',
       agentId: AGENT_ID,
       integrationId: INTEGRATION_ID,
       sessionKey: 'feishu-action:om_card',
@@ -346,6 +349,37 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
       botId: BOT_ID,
       payload: action
     })
+  })
+
+  it('still reads the deprecated Feishu-named ack slot from a pre-flip daemon', async () => {
+    // Tolerance window: a daemon that has not yet learned to fill `response`
+    // answers through the deprecated slot; the callback must still reach Feishu.
+    const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({
+      msgId: msg.msgId,
+      accepted: true,
+      feishuCardAction: response
+    }))
+    const daemon = { sendMsg } as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
+    )
+    const internals = manager as unknown as ManagerInternals
+    internals.router.upsert({
+      botId: BOT_ID,
+      platform: 'feishu',
+      secrets: { verificationToken: 'verify-token' },
+      apiAppId: 'cli_http_app',
+      members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+      agents: [{ agentId: AGENT_ID, name: 'Agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }],
+      routes: []
+    })
+    const action: WireFeishuCardActionEvent = {
+      context: { open_message_id: 'om_card', open_chat_id: 'oc_chat' },
+      operator: { open_id: 'ou_human' },
+      action: { tag: 'overflow', option: 'cancel' }
+    }
+    await expect(internals.forwardFeishuAction(BOT_ID, action, 'evt-action')).resolves.toEqual(response)
   })
 })
 
