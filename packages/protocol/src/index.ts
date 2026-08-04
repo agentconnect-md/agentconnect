@@ -104,3 +104,7 @@ export {
 
 // ── repository-relative agent working-directory helpers ──
 export { MAX_REPO_SUBDIR_LENGTH, RepoSubdirError, normalizeRepoSubdir } from './repo-subdir.js'
+
+// ── §5 platform manifest — pre-dispatch capability table, read by every host ──
+export { DEFAULT_MANIFEST, manifestFor } from './platform-manifest.js'
+export type { MembershipEnumeration, PlatformManifest } from './platform-manifest.js'

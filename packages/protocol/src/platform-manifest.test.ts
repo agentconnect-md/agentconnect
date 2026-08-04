@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { originKindOf } from '@agentconnect.md/protocol'
-import { DEFAULT_MANIFEST, manifestFor } from '../src/platforms/manifest.js'
+import { originKindOf } from './frames/route.js'
+import { DEFAULT_MANIFEST, manifestFor } from './platform-manifest.js'
 
 /**
  * The §5 manifest's load-bearing claim is not its field values — those are
@@ -40,6 +40,17 @@ describe('platform manifest', () => {
     for (const p of ['slack', 'telegram', 'discord', 'feishu']) {
       expect(manifestFor(p).membershipEnumeration === 'authoritative').toBe(p === 'slack')
     }
+  })
+
+  it('admits bot senders on no platform but Slack — and never on an unknown id', () => {
+    // Relay arbitration reads this BEFORE any target resolves (§8): a `true`
+    // platform admits a third-party bot via explicit mention; everyone else and
+    // every unknown id stays on the drop arm the retired `!== 'slack'` encoded.
+    for (const p of ['slack', 'telegram', 'discord', 'feishu']) {
+      expect(manifestFor(p).botSenderRouting).toBe(p === 'slack')
+    }
+    expect(manifestFor('some-future-platform').botSenderRouting).toBe(false)
+    expect(DEFAULT_MANIFEST.botSenderRouting).toBe(false)
   })
 
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
