@@ -148,11 +148,11 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
         message: 'an organization needs at least one owner'
       })
     }
-    if ((err as { code?: string }).code === 'RESOURCE_OWNER_MISSING') {
+    if ((err as { code?: string }).code === 'RESOURCE_AUDIENCE_EMPTY') {
       return reply.code(409).send({
         error: 'Conflict',
         statusCode: 409,
-        message: 'Selected access requires a current organization member as resource owner'
+        message: 'Selected access requires at least one current organization member'
       })
     }
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500

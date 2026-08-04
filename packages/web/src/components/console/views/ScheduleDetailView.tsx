@@ -267,7 +267,7 @@ export default function ScheduleDetailView() {
               <span className="font-sans text-[14px] font-normal leading-normal text-(--text-tertiary)">
                 Visibility
               </span>
-              <VisibilityValue visibility={c.visibility} sharedWith={c.sharedWith} ownerUserId={c.ownerUserId} />
+              <VisibilityValue visibility={c.visibility} sharedWith={c.sharedWith} />
             </div>
           </div>
 
@@ -494,7 +494,7 @@ export default function ScheduleDetailView() {
         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           Modified by {creatorLabel(c.lastModifiedBy, me)} · {fmtDate(c.lastModifiedAt)}
         </span>
-        <VisibilityValue visibility={c.visibility} sharedWith={c.sharedWith} ownerUserId={c.ownerUserId} />
+        <VisibilityValue visibility={c.visibility} sharedWith={c.sharedWith} />
       </div>
 
       {notice && (

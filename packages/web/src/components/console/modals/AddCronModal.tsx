@@ -495,12 +495,7 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
           <span>Each run starts a fresh session for the agent — you&rsquo;ll see it under Sessions.</span>
         </div>
 
-        <VisibilityField
-          value={sharing}
-          onChange={setSharing}
-          ownerUserId={cron ? cron.ownerUserId : (me?.userId ?? null)}
-          disabled={!!cron && !cron.canManageSharing}
-        />
+        <VisibilityField value={sharing} onChange={setSharing} disabled={!!cron && !cron.canManageSharing} />
 
         {err && (
           <div className="mt-[14px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[11px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">

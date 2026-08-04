@@ -444,18 +444,10 @@ export default function DaemonDetailView() {
                 title="Edit visibility"
                 className="inline-flex cursor-pointer border-0 bg-transparent p-0"
               >
-                <VisibilityValue
-                  visibility={daemon.visibility}
-                  sharedWith={daemon.sharedWith}
-                  ownerUserId={daemon.ownerUserId}
-                />
+                <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
               </button>
             ) : (
-              <VisibilityValue
-                visibility={daemon.visibility}
-                sharedWith={daemon.sharedWith}
-                ownerUserId={daemon.ownerUserId}
-              />
+              <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
             )}
           </div>
         </div>
@@ -748,18 +740,10 @@ export default function DaemonDetailView() {
                       title="Edit visibility"
                       className="inline-flex cursor-pointer border-0 bg-transparent p-0"
                     >
-                      <VisibilityValue
-                        visibility={daemon.visibility}
-                        sharedWith={daemon.sharedWith}
-                        ownerUserId={daemon.ownerUserId}
-                      />
+                      <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
                     </button>
                   ) : (
-                    <VisibilityValue
-                      visibility={daemon.visibility}
-                      sharedWith={daemon.sharedWith}
-                      ownerUserId={daemon.ownerUserId}
-                    />
+                    <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
                   )}
                 </span>
               </div>

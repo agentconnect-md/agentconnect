@@ -175,7 +175,6 @@ export function connectorRoutes(deps: HttpDeps) {
             visibility: provider.visibility,
             sharedWith: provider.sharedWith,
             createdBy: provider.createdByUserId,
-            ownerUserId: provider.ownerUserId,
             canEdit: canEdit(provider, ctxOf(req)),
             canManageSharing: canManageSharing(provider, ctxOf(req)),
             headerNames: headers.map((h) => h.name),

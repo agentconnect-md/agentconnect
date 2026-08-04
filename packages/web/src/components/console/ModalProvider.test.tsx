@@ -16,7 +16,18 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     daemons: mocks.daemons,
-    members: [],
+    members: [
+      {
+        userId: 'user-current',
+        email: 'current@example.test',
+        name: 'Current User',
+        picture: null,
+        profilePictureUpdatedAt: null,
+        role: 'owner',
+        isCurrentUser: true,
+        joinedAt: '2026-01-01T00:00:00.000Z'
+      }
+    ],
     provisionDaemon: mocks.provisionDaemon,
     deleteDaemon: mocks.deleteDaemon,
     renameDaemon: mocks.renameDaemon,
@@ -25,8 +36,7 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 
-// The dialog reads the signed-in user (it pins them in the visibility share set);
-// the real hook fetches /me on mount, which would reach for the CP from a unit test.
+// The real hook fetches /me on mount, which would reach for the CP from a unit test.
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: null, me: null }) }))
 
 import { ModalProvider, useModal } from './ModalProvider'
@@ -136,7 +146,10 @@ describe('ModalProvider dismissal', () => {
     const done = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Done')!
     await act(async () => done.click())
     expect(mocks.renameDaemon).toHaveBeenCalledWith('dmn_live', 'edge-2')
-    expect(mocks.saveSharing).toHaveBeenCalledWith('daemons', 'dmn_live', { visibility: 'restricted', sharedWith: [] })
+    expect(mocks.saveSharing).toHaveBeenCalledWith('daemons', 'dmn_live', {
+      visibility: 'restricted',
+      sharedWith: ['user-current']
+    })
 
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
     expect(host.textContent).toContain('Saving…')

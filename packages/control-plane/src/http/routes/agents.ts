@@ -276,7 +276,6 @@ function toDto(
     // placeholder email (`<sub>@oidc.local`, when no real user is known) means a non-human
     // creator, so surface null → the console shows "—" instead.
     createdBy: a.createdBy && !isSyntheticEmail(a.createdBy.email) ? a.createdBy.userId : null,
-    ownerUserId: a.ownerUserId,
     lastModifiedAt: a.lastModifiedAt.toISOString(),
     lastModifiedBy: a.lastModifiedBy && !isSyntheticEmail(a.lastModifiedBy.email) ? a.lastModifiedBy.userId : null,
     visibility: a.visibility,
@@ -2202,9 +2201,9 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Set who can see this agent (visibility + share set). Gated exactly like a
-    // content edit on owned rows (§13.3): viewers can't, ownerless rows stay
-    // org-visible, and a collaborator who can't view a restricted agent 404s. Identities never
+    // Set who can see this agent (visibility + complete Selected audience).
+    // Gated exactly like a content edit (§13.3): viewers can't, and a
+    // collaborator who can't view a restricted agent 404s. Identities never
     // ride the wire, but the DERIVED conversation-gating flag does (§14/§9): a
     // visibility flip re-converges every integration of the agent — direct installs
     // get a fresh spec push, HTTP bots a route recompile — best-effort, with the
@@ -2216,7 +2215,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Set agent sharing',
           description:
-            'Set an owned agent’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
+            'Set an agent’s visibility (Everyone vs Selected) and complete Selected audience. Requires edit rights; Selected must retain at least one current organization member, and sharedWith is intersected with current membership.',
           operationId: 'setAgentSharing',
           params: IdParam,
           body: SetSharingBody,

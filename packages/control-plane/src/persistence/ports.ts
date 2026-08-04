@@ -75,11 +75,9 @@ export interface ViewCtx {
   role: OrgMemberRole
 }
 
-/** The visibility-bearing fields every shareable resource carries.
- *  Ownership is independent from immutable creation attribution and may move
- *  when a member leaves the organization. */
+/** The visibility-bearing fields every shareable resource carries. Selected
+ *  resources store their complete current-member audience in `sharedWith`. */
 export interface Shareable {
-  ownerUserId: string | null
   visibility: ResourceVisibility
   sharedWith: string[]
 }
@@ -169,10 +167,8 @@ export interface DaemonRecord {
   createdBy: AgentCreator | null // null for CLI/self-registered daemons (no WebUI principal)
   /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
-  /** Current resource owner used by restricted visibility. */
-  ownerUserId: string | null
   visibility: ResourceVisibility
-  sharedWith: string[] // app_user.id set; meaningful only when visibility='restricted'
+  sharedWith: string[] // complete app_user.id audience when visibility='restricted'
   lastModifiedAt: Date // last human edit (provision/rename); defaults to createdAt
   lastModifiedBy: AgentCreator | null // WebUI user who last edited it; null ⇒ never edited by a human
 }
@@ -555,11 +551,9 @@ export interface CreateAgentInput {
   workspaceRepoId?: bigint
   capabilities?: string[]
   createdByUserId?: string // WebUI principal who created it (audit); null ⇒ daemon/CLI-created
-  /** Initial resource owner; defaults to `createdByUserId` when omitted. */
-  ownerUserId?: string
   /** Initial visibility (absent ⇒ DB default 'org', visible to all org members). */
   visibility?: ResourceVisibility
-  /** Initial share set (app_user.id); only meaningful with visibility='restricted'. */
+  /** Initial complete audience (app_user.id); only meaningful with visibility='restricted'. */
   sharedWith?: string[]
   /** Initial agent-call policy (absent ⇒ the organization's default). */
   callPolicy?: AgentCallPolicy
@@ -656,10 +650,8 @@ export interface AgentRecord {
   createdBy: AgentCreator | null // null for daemon/CLI-created agents (no WebUI principal)
   /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
-  /** Current resource owner used by restricted visibility. */
-  ownerUserId: string | null
   visibility: ResourceVisibility
-  sharedWith: string[] // app_user.id set; meaningful only when visibility='restricted'
+  sharedWith: string[] // complete app_user.id audience when visibility='restricted'
   callPolicy: AgentCallPolicy
   allowedCallerAgentIds: string[] // agent.id set; meaningful only when callPolicy='selected'
   outboundPolicy: AgentCallPolicy
@@ -1705,8 +1697,6 @@ export interface UpsertCronInput {
   /** Creator (WebUI user) — stamped on CREATE only; an edit through the same
    *  upsert never reassigns it. */
   createdByUserId?: string
-  /** Initial resource owner; defaults to `createdByUserId` on create. */
-  ownerUserId?: string
   /** WebUI user performing THIS upsert → stamps the last-modified audit on both
    *  create and edit (absent under devAuth). */
   lastModifiedByUserId?: string
@@ -1733,10 +1723,8 @@ export interface CronRecord {
   createdBy: { userId: string; displayName: string | null; email: string } | null
   /** Raw immutable creator FK scalar, independent of joined `createdBy`. */
   createdByUserId: string | null
-  /** Current resource owner used by restricted visibility. */
-  ownerUserId: string | null
   visibility: ResourceVisibility
-  sharedWith: string[] // app_user.id set; meaningful only when visibility='restricted'
+  sharedWith: string[] // complete app_user.id audience when visibility='restricted'
   createdAt: Date
   /** Last human edit (create/upsert); defaults to createdAt. */
   lastModifiedAt: Date
@@ -3399,33 +3387,26 @@ export interface OrgMemberRecord {
   joinedAt: Date
 }
 
-/** The five resource kinds whose ownership transfers when a member leaves. */
-export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+/** The five resource kinds that carry a Selected member audience. */
+export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
 
 /**
  * What removing one member would do, read before the fact (resource-visibility.md
- * §8.2). The console shows it in the leave/remove confirmation so the transfer is
- * predictable rather than discovered afterwards: a restricted resource is reached
- * through its ownership arm OR an explicit share, so where the arm lands decides
- * who can still find the ones nobody else was given.
+ * §8.2). The console shows it in the leave/remove confirmation so repairing a
+ * Selected audience that would otherwise become empty is predictable.
  */
 export interface MemberRemovalPreview {
-  /** The member who inherits ownership; null when removal would be refused
-   *  (the departing member is the last owner). */
-  transferTo: OrgMemberRecord | null
-  /** Per-kind counts of the departing member's owned resources; kinds they own
-   *  nothing of are omitted. */
+  /** The member added to any Selected audience that would otherwise become
+   *  empty; null when removal would be refused (the final organization owner). */
+  replacement: OrgMemberRecord | null
+  /** Per-kind counts of restricted resources that explicitly select the
+   *  departing member; kinds with no matches are omitted. */
   resources: Array<{
-    kind: OwnedResourceKind
-    owned: number
-    /** Not org-visible: reachable only via ownership or `sharedWith`. */
-    restricted: number
-    /** The subset of `restricted` that `transferTo` alone would be able to see —
-     *  no remaining member holds a share. This, not `restricted`, is what
-     *  disappears from everyone else's console, so it is the number the dialog
-     *  warns about. Counted against CURRENT membership: a `sharedWith` id that
-     *  is no longer a member cannot see anything either. */
-    recipientOnly: number
+    kind: VisibilityResourceKind
+    selected: number
+    /** The subset whose audience has no other current member and therefore gets
+     *  `replacement` added during removal. */
+    reassigned: number
   }>
 }
 
@@ -3535,17 +3516,18 @@ export interface UserRepo {
   addMemberByEmail(orgId: string, email: string, role: OrgMemberRole): Promise<OrgMemberRecord>
 
   /**
-   * Let a member leave, or let an owner remove another member. Chooses the
-   * transfer recipient, transfers all resource ownership, and prunes share
-   * grants atomically. Rechecks membership and, when removing another member,
-   * the acting owner's role. Refuses to remove the final owner before committing.
+   * Let a member leave, or let an owner remove another member. Prunes the
+   * departing member from Selected audiences and adds a deterministic replacement
+   * only where the audience would otherwise become empty. Rechecks membership
+   * and, when removing another member, the acting owner's role. Refuses to remove
+   * the final owner before committing.
    */
   removeMember(orgId: string, userId: string, actingUserId: string): Promise<void>
 
   /**
-   * Dry-run of `removeMember` for the confirmation dialog: the same recipient
-   * rule, plus what that member currently owns. Racy by nature (nothing is
-   * locked) — advisory display only, never an authorization input.
+   * Dry-run of `removeMember` for the confirmation dialog: the same replacement
+   * rule, plus which Selected audiences include that member. Racy by nature
+   * (nothing is locked) — advisory display only, never an authorization input.
    */
   previewMemberRemoval(orgId: string, userId: string, actingUserId: string): Promise<MemberRemovalPreview>
 
@@ -3718,8 +3700,8 @@ export type McpTransport = 'http' | 'sse'
  *  Display + create-flow discriminator only — the relay/daemon wire is identical. */
 export type McpProviderKind = 'custom' | 'open_connector'
 
-/** Domain view of an `mcp_provider` row. A Shareable (owner + visibility +
- *  sharedWith), so the same OSS authorization policy as agents applies.
+/** Domain view of an `mcp_provider` row. A Shareable (visibility + complete
+ *  Selected audience), so the same OSS authorization policy as agents applies.
  *  `url` is the non-secret upstream endpoint (may appear in DTOs); the upstream auth
  *  headers live in McpProviderSecretStore, the grant keys in McpGrantRepo — NEITHER
  *  ever rides this record. */
@@ -3742,9 +3724,8 @@ export interface CreateMcpProviderInput {
   kind?: McpProviderKind // default 'custom'
   transport?: McpTransport // default 'http'
   visibility?: ResourceVisibility // default 'org'
-  sharedWith?: string[] // app_user.id set (only meaningful when visibility='restricted')
+  sharedWith?: string[] // complete app_user.id audience when visibility='restricted'
   createdByUserId?: string
-  ownerUserId?: string // defaults to createdByUserId
 }
 
 export interface UpdateMcpProviderInput {
@@ -3826,8 +3807,8 @@ export interface McpGrantRepo {
 //   Shareable, so the same visibility policy as agents/MCP.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Domain view of a `skill_source` row. Shareable (owner + visibility +
- *  sharedWith). Nothing here is secret. */
+/** Domain view of a `skill_source` row. Shareable (visibility + complete
+ *  Selected audience). Nothing here is secret. */
 export interface SkillSourceRecord extends Shareable {
   id: string
   orgId: OrgId
@@ -3853,7 +3834,6 @@ export interface CreateSkillSourceInput {
   visibility?: ResourceVisibility // default 'org'
   sharedWith?: string[]
   createdByUserId?: string
-  ownerUserId?: string // defaults to createdByUserId
 }
 
 export interface UpdateSkillSourceInput {

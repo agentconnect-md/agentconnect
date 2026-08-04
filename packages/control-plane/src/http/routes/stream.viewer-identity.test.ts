@@ -14,7 +14,7 @@ import { streamRoutes } from './stream.js'
 const ORG_ID = 'org-1'
 const SLACK_OWNER = 'slack:T024BE7LD:U0123ABCD'
 
-const agent = { id: 'agent-1', orgId: ORG_ID, ownerUserId: null, visibility: 'org', sharedWith: [] }
+const agent = { id: 'agent-1', orgId: ORG_ID, visibility: 'org', sharedWith: [] }
 const sessions: Record<string, unknown> = {
   'sess-dm': { visibility: 'private', ownerIdentity: SLACK_OWNER },
   'sess-org': { visibility: 'org', ownerIdentity: null }

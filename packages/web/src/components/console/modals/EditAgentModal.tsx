@@ -917,7 +917,6 @@ export default function EditAgentModal({
                 <VisibilityField
                   value={sharing}
                   onChange={setSharing}
-                  ownerUserId={agent.ownerUserId}
                   disabled={!agent.canManageSharing}
                   label="Team visibility"
                 />

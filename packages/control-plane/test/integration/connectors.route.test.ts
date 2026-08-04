@@ -148,7 +148,7 @@ describe('connectors routes', () => {
         authType: 'api_key',
         values: { apiKey: 'sk_x' },
         visibility: 'restricted',
-        sharedWith: []
+        sharedWith: [DEFAULT_OWNER_ID]
       }
     })
     expect(res.statusCode).toBe(201)

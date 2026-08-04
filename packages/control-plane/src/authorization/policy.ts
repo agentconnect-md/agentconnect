@@ -8,9 +8,8 @@
  *
  * Organization roles control what a visible resource may be used for:
  * viewers are read-only, while collaborators and owners may edit. A role never
- * widens visibility. Restricted resources are visible only to their current
- * ownership arm (`ownerUserId`, independent from immutable creation
- * attribution) and explicitly shared members.
+ * widens visibility. Restricted resources are visible only to the current
+ * organization members in their explicit `sharedWith` audience.
  */
 import type { SessionExternalAccessSnapshot, SessionVisibility, Shareable, ViewCtx } from '../persistence/ports.js'
 
@@ -62,11 +61,7 @@ export type AuthorizationRequest =
     }
 
 function resourceIsVisible(resource: Shareable, principal: ViewCtx): boolean {
-  return (
-    resource.ownerUserId === principal.userId ||
-    resource.visibility === 'org' ||
-    resource.sharedWith.includes(principal.userId)
-  )
+  return resource.visibility === 'org' || resource.sharedWith.includes(principal.userId)
 }
 
 function resourceIsEditable(resource: Shareable, principal: ViewCtx): boolean {
@@ -127,9 +122,7 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     case AuthorizationAction.ResourceEdit:
       return resourceIsEditable(request.resource, principal)
     case AuthorizationAction.ResourceManageSharing:
-      // Ownerless org-visible resources may still be edited, but cannot be
-      // pulled restricted: there is no identity that could later reopen them.
-      return request.resource.ownerUserId !== null && resourceIsEditable(request.resource, principal)
+      return resourceIsEditable(request.resource, principal)
     case AuthorizationAction.SessionView:
       return request.resource.externalProvider
         ? request.resource.visibility === 'private'
@@ -206,6 +199,6 @@ export function canChangeSessionVisibility(
 export function visibilityWhere(principal?: ViewCtx) {
   if (!principal) return {}
   return {
-    OR: [{ visibility: 'org' as const }, { ownerUserId: principal.userId }, { sharedWith: { has: principal.userId } }]
+    OR: [{ visibility: 'org' as const }, { sharedWith: { has: principal.userId } }]
   }
 }

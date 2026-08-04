@@ -142,12 +142,12 @@ describe('organization environment — authorization and visibility', () => {
     const otherId = await makeUser(`other-${randomUUID()}`, 'collaborator')
     await seedDaemon(prisma, DAEMON, { capabilities: CAPABLE })
     const privateAgent = randomUUID()
-    // Restricted, owned by someone else and not shared: invisible AND non-editable
+    // Restricted to someone else: invisible AND non-editable
     // to the organization owner below.
     await seedAgent(prisma, privateAgent, {
       daemonId: DAEMON,
       visibility: 'restricted',
-      ownerUserId: otherId,
+      sharedWith: [otherId],
       createdByUserId: otherId
     })
 
@@ -191,7 +191,7 @@ describe('organization environment — authorization and visibility', () => {
     await seedAgent(prisma, privateAgent, {
       daemonId: DAEMON,
       visibility: 'restricted',
-      ownerUserId: otherId,
+      sharedWith: [otherId],
       createdByUserId: otherId
     })
 
@@ -238,7 +238,7 @@ describe('organization environment — authorization and visibility', () => {
       daemonId: DAEMON,
       name: 'hidden-bot',
       visibility: 'restricted',
-      ownerUserId: otherId,
+      sharedWith: [otherId],
       createdByUserId: otherId
     })
 
@@ -776,7 +776,7 @@ describe('organization environment — review follow-ups', () => {
       daemonId: LEGACY_DAEMON,
       name: 'private-legacy-bot',
       visibility: 'restricted',
-      ownerUserId: otherId,
+      sharedWith: [otherId],
       createdByUserId: otherId
     })
 

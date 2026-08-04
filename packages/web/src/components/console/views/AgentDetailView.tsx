@@ -1104,7 +1104,7 @@ export default function AgentDetailView() {
                   Team visibility
                 </div>
                 <div className="mt-[10px]">
-                  <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} ownerUserId={da.ownerUserId} />
+                  <VisibilityValue visibility={da.visibility} sharedWith={da.sharedWith} />
                 </div>
               </div>
               <div className="border-t border-(--border-subtle) px-4 py-[14px]">

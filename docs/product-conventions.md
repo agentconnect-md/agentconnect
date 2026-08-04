@@ -21,16 +21,17 @@ actually about organization management, membership, or ownership.
 
 Every Agent, Daemon, scheduled task, MCP provider, and skill source set to
 **Selected** has at least one current organization member who can see it. The
-current resource owner is always included and cannot be removed; selected members
-only add to that audience. An empty selected-member list therefore means
-owner-only, not nobody.
+selected-member list is the complete audience: creation attribution and the
+organization Owner role do not add hidden access.
 
 The server intersects selected IDs with current organization membership and must
-reject a change to **Selected** when the resource has no current-member owner. This
-is a transaction-time invariant, not merely a disabled Console control: a stale
-page or a concurrent membership removal must not commit a resource that nobody can
-reach. Ownerless resources remain **Everyone** until an explicit ownership workflow
-assigns a current member.
+reject a change to **Selected** when no current member remains. This is a
+transaction-time invariant, not merely a disabled Console control: a stale page
+or a concurrent membership removal must not commit a resource that nobody can
+reach. The Console initially selects the current user for convenience, but they
+may be replaced after another member is selected. Removing an organization member
+prunes them from every Selected audience and adds a deterministic current
+organization owner only where the audience would otherwise become empty.
 
 This convention governs human Console access only. The independently configured
 agent-to-agent inbound and outbound policies may intentionally use **Selected**

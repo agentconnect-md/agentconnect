@@ -287,9 +287,7 @@ export function AgentSkillsCard({ agentId, canEdit }: { agentId: string; canEdit
                 // Only the registry rows carry a share set — the agent-scoped resolution
                 // deliberately omits it (seeing an agent isn't seeing the source).
                 footer={
-                  s.registry ? (
-                    <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} ownerUserId={s.ownerUserId} />
-                  ) : undefined
+                  s.registry ? <VisibilityValue visibility={s.visibility} sharedWith={s.sharedWith} /> : undefined
                 }
                 action={
                   <>

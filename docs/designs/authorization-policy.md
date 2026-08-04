@@ -60,9 +60,9 @@ The action vocabulary represents the distinct OSS policies that exist today:
 | --------------------------- | ---------------------------------- | ------------------------------------------------------------- |
 | `organization.write`        | none                               | owner or collaborator                                         |
 | `organization.manage`       | none                               | owner only                                                    |
-| `resource.view`             | visibility, ownership arm, shares  | org-visible, owned, or explicitly shared                      |
+| `resource.view`             | visibility, Selected audience      | org-visible or explicitly selected                            |
 | `resource.edit`             | shareable resource                 | visible and role is not viewer                                |
-| `resource.sharing.manage`   | shareable resource                 | same as `resource.edit`, and a current owner is required      |
+| `resource.sharing.manage`   | shareable resource                 | same as `resource.edit`                                       |
 | `session.view`              | tier, owner identity, identity set | org-visible or identity-owned                                 |
 | `session.visibility.change` | tier, owner identity, identity set | identity-owned, or an org owner while the session remains org |
 
@@ -83,7 +83,6 @@ For shareable resources:
 ```text
 visible =
   resource is organization-visible
-  OR principal is the resource ownership arm
   OR principal is explicitly shared
 
 editable = visible AND principal role is not viewer
@@ -92,13 +91,9 @@ editable = visible AND principal role is not viewer
 An organization owner therefore:
 
 - can edit any organization-visible resource;
-- can edit a restricted resource they own or that is shared with them;
+- can edit a restricted resource only when they are selected;
 - cannot discover, read, edit, or re-share another member's unshared restricted
   resource.
-
-An ownerless organization-visible resource remains editable but cannot be
-restricted or have its sharing controls changed. The sharing control does not
-double as an ownership-claim mechanism.
 
 This matches session visibility: organization-visible content follows normal
 role capabilities, while private content is not widened by role.
@@ -115,7 +110,6 @@ Human list queries apply:
 WHERE "orgId" = $orgId
   AND (
     "visibility" = 'org'
-    OR "ownerUserId" = $userId
     OR "sharedWith" @> ARRAY[$userId]
   )
 ```
@@ -129,25 +123,27 @@ The SQL projection and in-memory `resource.view` rule are colocated and covered
 by the same truth-table tests. Paginated queries must not post-filter an
 already-sized page.
 
-## 6. Ownership transfer
+## 6. Audience repair on member removal
 
-`ownerUserId` supplies the resource-ownership arm; `createdByUserId` remains
-immutable creation attribution. Removing a member transfers every owned
-visibility carrier to a selected remaining organization owner and prunes every
-share vector before deleting the membership. Any member may remove their own
-membership; removing another member requires the owner role.
+`sharedWith` is the complete audience for a restricted resource;
+`createdByUserId` remains immutable creation attribution and grants no access.
+Removing a member prunes their ID from every Selected visibility carrier before
+deleting the membership. If an audience would otherwise become empty, removal
+adds a deterministic current organization owner while keeping the resource
+Selected. Any member may remove their own membership; removing another member
+requires the Owner role.
 
 Owner demotion, removal, and invited-identity role merge first lock the
 organization `FOR NO KEY UPDATE`, then recheck the actor's membership and any
 required owner role before locking the affected memberships. This serializes
 competing last-owner transitions without conflicting with ordinary resource
-writers' parent `FOR KEY SHARE`. Removal selects its transfer recipient from an
+writers' parent `FOR KEY SHARE`. Removal selects its audience-repair member from an
 authoritative membership snapshot inside that transaction before scanning
 resources. Resource creates and sharing writes hold shared membership locks and
-recheck the actor, initial owner, and share targets inside their own
+recheck the actor and requested audience members inside their own
 resource-write transaction. A queued write therefore cannot persist a departed
-stable user ID, and a transfer recipient cannot lose owner status before the
-transfer commits.
+stable user ID, and a repair member cannot lose owner status before removal
+commits.
 
 ## 7. Verification
 

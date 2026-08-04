@@ -19,7 +19,6 @@ const SLACK_OWNER = 'slack:T024BE7LD:U0123ABCD'
 const agent = {
   id: 'agent-1',
   orgId: ORG_ID,
-  ownerUserId: null,
   visibility: 'org',
   sharedWith: []
 }

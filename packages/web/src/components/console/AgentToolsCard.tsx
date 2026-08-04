@@ -139,13 +139,7 @@ export function AgentToolsCard({
         // Who the server belongs to, same as its registry tile. A daemon-local server
         // has no registry row, so it has no access line to show.
         footer={
-          provider ? (
-            <VisibilityValue
-              visibility={provider.visibility}
-              sharedWith={provider.sharedWith}
-              ownerUserId={provider.ownerUserId}
-            />
-          ) : undefined
+          provider ? <VisibilityValue visibility={provider.visibility} sharedWith={provider.sharedWith} /> : undefined
         }
       />
     )

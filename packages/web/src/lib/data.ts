@@ -303,12 +303,10 @@ export interface Agent {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' when CLI/self-created. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** 'org' = visible to all members; 'restricted' = ownerUserId + sharedWith. */
+  /** 'org' = visible to all members; 'restricted' = the complete sharedWith audience. */
   visibility: ResourceVisibility
-  /** app_user.id set granted view when restricted. */
+  /** Complete app_user.id audience when restricted. */
   sharedWith: string[]
-  /** Current ownership arm; null for system-created/legacy ownerless rows. */
-  ownerUserId: string | null
   /** Whether the caller may change non-sharing agent settings. */
   canEdit: boolean
   /** Whether the caller may change this agent's sharing. */
@@ -1067,7 +1065,6 @@ export const AGENTS: Agent[] = (
       id: 'agentconnect',
       visibility: 'org',
       sharedWith: [],
-      ownerUserId: null,
       canEdit: true,
       canManageSharing: false,
       callPolicy: 'all',
@@ -1121,7 +1118,6 @@ export const AGENTS: Agent[] = (
       id: 'deploy',
       visibility: 'restricted',
       sharedWith: ['u_sam', 'u_ana', 'u_noah'],
-      ownerUserId: 'u_dana',
       canEdit: true,
       canManageSharing: true,
       callPolicy: 'all',
@@ -1217,7 +1213,6 @@ export const AGENTS: Agent[] = (
       id: 'review',
       visibility: 'org',
       sharedWith: [],
-      ownerUserId: 'u_sam',
       canEdit: true,
       canManageSharing: true,
       callPolicy: 'selected',
@@ -1296,7 +1291,6 @@ export const AGENTS: Agent[] = (
       id: 'oncall',
       visibility: 'restricted',
       sharedWith: ['u_sam'],
-      ownerUserId: 'u_dana',
       canEdit: true,
       canManageSharing: true,
       callPolicy: 'all',
@@ -1364,7 +1358,6 @@ export const AGENTS: Agent[] = (
       id: 'docs',
       visibility: 'org',
       sharedWith: [],
-      ownerUserId: 'u_ana',
       canEdit: true,
       canManageSharing: true,
       callPolicy: 'selected',
@@ -1862,12 +1855,10 @@ export interface DaemonRow {
   /** Last editor's userId — resolved to a name / "You" at render via creatorLabel; '' for CLI/self-registered. */
   lastModifiedBy: string
   lastModifiedAt: string
-  /** 'org' = visible to all members; 'restricted' = ownerUserId + sharedWith. */
+  /** 'org' = visible to all members; 'restricted' = the complete sharedWith audience. */
   visibility: ResourceVisibility
-  /** app_user.id set granted view when restricted. */
+  /** Complete app_user.id audience when restricted. */
   sharedWith: string[]
-  /** Current ownership arm; null for system-created/legacy ownerless rows. */
-  ownerUserId: string | null
   /** Whether the caller may change non-sharing daemon settings. */
   canEdit: boolean
   /** Whether the caller may change this daemon's sharing. */

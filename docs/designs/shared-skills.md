@@ -176,7 +176,6 @@ model SkillSource {
   visibility      ResourceVisibility @default(org)
   sharedWith      String[]           @default([])
   createdByUserId String?
-  ownerUserId     String?
   createdAt       DateTime           @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
   org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)

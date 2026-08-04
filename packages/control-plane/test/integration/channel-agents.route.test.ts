@@ -31,7 +31,7 @@ import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { isFrame, type AnyFrame, type IntegrationChannel } from '@agentconnect.md/protocol'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { AgentId } from '../../src/domain/ids.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 
@@ -312,7 +312,10 @@ describe('channel/agents — ORG-WIDE scope (no channel)', () => {
     // A `restricted` agent is a console-access decision, NOT a peer-directory one —
     // it must remain discoverable (ResourceVisibility never gates A2A).
     const hidden = await createAgent(running, DAEMON, { name: 'restricted-peer' })
-    await prisma.agent.update({ where: { id: hidden }, data: { visibility: 'restricted' } })
+    await prisma.agent.update({
+      where: { id: hidden },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
 
     const reply = await askChannelAgents(DAEMON, undefined, caller.agentId)
     expect(reply.channel).toBeUndefined() // the reply echoes the org-wide scope

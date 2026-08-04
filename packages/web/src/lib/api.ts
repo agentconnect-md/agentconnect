@@ -290,9 +290,8 @@ export interface AgentDto {
   createdBy: string | null // creator's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
   lastModifiedAt: string // ISO-8601
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for daemon/CLI-created
-  visibility: ResourceVisibility // 'org' = all members; 'restricted' = ownerUserId + sharedWith
-  sharedWith: string[] // app_user.id set (only meaningful when restricted)
-  ownerUserId: string | null // current ownership arm; null for system/legacy ownerless rows
+  visibility: ResourceVisibility // 'org' = all members; 'restricted' = the complete sharedWith audience
+  sharedWith: string[] // complete app_user.id audience when restricted
   canEdit: boolean // whether the caller may change non-sharing agent settings
   canManageSharing: boolean // whether the caller may change this resource's sharing
   callPolicy: AgentCallPolicy // which peer agents may call this agent as a sub-agent
@@ -602,7 +601,6 @@ export interface CronDto {
   lastModifiedAt: string // ISO-8601
   visibility: ResourceVisibility
   sharedWith: string[]
-  ownerUserId: string | null
   canEdit: boolean
   canManageSharing: boolean
 }
@@ -984,7 +982,6 @@ export interface DaemonViewDto {
   lastModifiedBy: string | null // editor's userId (resolved to a name / "You" in the UI); null for CLI/self-registered
   visibility: ResourceVisibility
   sharedWith: string[]
-  ownerUserId: string | null
   canEdit: boolean
   canManageSharing: boolean
   /** Whether the caller may command restart/upgrade on this daemon (org owner only). */
@@ -1073,15 +1070,12 @@ export interface MemberDto {
   joinedAt: string // ISO-8601 — when they joined THIS org
 }
 
-// What leaving / removing a member would do, shown in the confirmation dialog.
-// Ownership of everything they own moves to ONE member. A restricted resource is
-// reached through ownership OR an explicit share, so only the `recipientOnly`
-// ones — nobody else is shared with them — actually leave everyone's console.
-export type OwnedResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
+// What leaving / removing a member would do to Selected audiences.
+export type VisibilityResourceKind = 'agent' | 'daemon' | 'cron' | 'mcpProvider' | 'skillSource'
 
 export interface MemberRemovalPreviewDto {
-  transferTo: MemberDto | null // null only when there is no successor (last owner)
-  resources: { kind: OwnedResourceKind; owned: number; restricted: number; recipientOnly: number }[]
+  replacement: MemberDto | null // null only when removal is refused (final organization owner)
+  resources: { kind: VisibilityResourceKind; selected: number; reassigned: number }[]
 }
 
 export interface OrgInviteLinkDto {
@@ -1702,7 +1696,6 @@ export function agentFromDto(d: AgentDto): Agent {
     lastModifiedAt: fmtDate(d.lastModifiedAt),
     visibility: d.visibility,
     sharedWith: d.sharedWith,
-    ownerUserId: d.ownerUserId,
     canEdit: d.canEdit,
     canManageSharing: d.canManageSharing,
     callPolicy: d.callPolicy ?? 'all',
@@ -1959,7 +1952,6 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     lastModifiedAt: fmtDate(d.lastModifiedAt),
     visibility: d.visibility,
     sharedWith: d.sharedWith,
-    ownerUserId: d.ownerUserId,
     canEdit: d.canEdit,
     canManageSharing: d.canManageSharing
   }
@@ -3702,10 +3694,9 @@ export interface McpProviderDto {
   /** Open-connector service slug (e.g. "stripe") for kind='open_connector' — used to
    *  resolve the provider's catalog icon. Absent for custom providers. */
   service?: string
-  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = ownerUserId + sharedWith
-  sharedWith: string[] // app_user.id set (only meaningful when restricted)
+  visibility: ResourceVisibility // 'org' = everyone; 'restricted' = the complete sharedWith audience
+  sharedWith: string[] // complete app_user.id audience when restricted
   createdBy: string | null // immutable creator audit
-  ownerUserId: string | null // current ownership arm; null for ownerless rows
   canEdit: boolean // whether THIS caller may change non-sharing provider settings
   canManageSharing: boolean // whether THIS caller may change the provider's sharing
   url: string
@@ -3788,7 +3779,6 @@ export interface SkillSourceDto {
   visibility: ResourceVisibility
   sharedWith: string[]
   createdBy: string | null
-  ownerUserId: string | null
   canEdit: boolean
   canManageSharing: boolean
   createdAt: string // ISO-8601

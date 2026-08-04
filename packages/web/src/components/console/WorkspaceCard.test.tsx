@@ -33,7 +33,6 @@ const agent = (
   ({
     id: 'agent-a',
     name: 'deploy-bot',
-    ownerUserId: 'u-owner',
     canEdit: capabilities.canEdit ?? true,
     canManageSharing: capabilities.canManageSharing ?? true,
     workspace
@@ -78,7 +77,7 @@ describe('workspace repository authority', () => {
     expect(html).toContain('None explicitly authorized')
   })
 
-  it('keeps workspace edits available when sharing is locked for an ownerless agent', () => {
+  it('keeps workspace edits available when sharing controls are read-only', () => {
     repos.rows = []
     const html = renderToStaticMarkup(
       <WorkspaceCard agent={agent({ mode: 'scratch' }, { canEdit: true, canManageSharing: false })} />

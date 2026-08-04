@@ -1393,7 +1393,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           <section ref={sectionRef('access')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Access</div>
             <div className="flex flex-col gap-[14px]">
-              <VisibilityField value={sharing} onChange={setSharing} ownerUserId={me?.userId} label="Team visibility" />
+              <VisibilityField value={sharing} onChange={setSharing} label="Team visibility" />
               {/* Both directions, same cards as the Edit modal's Access section. */}
               <div className="fld">
                 <span className="fldlbl">Agent visibility</span>

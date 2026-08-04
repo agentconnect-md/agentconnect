@@ -247,7 +247,10 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = await install(running)
     const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
-    await prisma.agent.update({ where: { id: integration.agentId }, data: { visibility: 'restricted' } })
+    await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
 
     await report(DAEMON, id, [
       { id: 'C1', name: 'deploys' },
@@ -300,7 +303,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const put = await running.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${integration.agentId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
     })
     expect(put.statusCode).toBe(200)
     const u0 = spy.upserts[0]!.u
@@ -333,7 +336,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await running.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${integration.agentId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
     })
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
@@ -432,7 +435,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await running.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${integration.agentId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
     })
     const u0 = spy.upserts[0]!.u
     if (u0.platform !== 'slack') throw new Error('expected slack integration')
@@ -445,7 +448,10 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = await install(running)
     const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
-    await prisma.agent.update({ where: { id: integration.agentId }, data: { visibility: 'restricted' } })
+    await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
     await report(DAEMON, id, [
       { id: 'C1', name: 'deploys' },
       { id: 'D1', name: '@alice', kind: 'im' }
@@ -491,7 +497,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const put = await running.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${integration.agentId}/sharing`,
-      payload: { visibility: 'restricted', sharedWith: [] }
+      payload: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
     })
     expect(put.statusCode).toBe(200)
     expect(spy.upserts).toHaveLength(1)
@@ -859,7 +865,11 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
     const aliceIntegration = randomUUID()
     const bobIntegration = randomUUID()
     await seedAgent(prisma, alice, { daemonId: DAEMON })
-    await seedAgent(prisma, bob, { daemonId: DAEMON, visibility: 'restricted' })
+    await seedAgent(prisma, bob, {
+      daemonId: DAEMON,
+      visibility: 'restricted',
+      sharedWith: [DEFAULT_OWNER_ID]
+    })
     await prisma.bot.create({
       data: {
         id: botId,

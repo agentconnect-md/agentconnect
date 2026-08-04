@@ -175,7 +175,7 @@ describe('GET /sessions — grouped conversations', () => {
     await seedAgent(prisma, AGENT_B, {
       daemonId: DAEMON,
       visibility: 'restricted',
-      ownerUserId: stranger.id
+      sharedWith: [stranger.id]
     })
     running = buildHttpApp(prisma)
 
@@ -333,7 +333,7 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     const stranger = await prisma.user.create({
       data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
     })
-    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', ownerUserId: stranger.id })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [stranger.id] })
     running = buildHttpApp(prisma)
 
     await slackReport('sess-vis', AGENT_A, 1_000)
@@ -351,7 +351,7 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     const stranger = await prisma.user.create({
       data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
     })
-    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', ownerUserId: stranger.id })
+    await seedAgent(prisma, AGENT_B, { daemonId: DAEMON, visibility: 'restricted', sharedWith: [stranger.id] })
     running = buildHttpApp(prisma)
 
     await slackReport('sess-vis', AGENT_A, 1_000)

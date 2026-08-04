@@ -28,8 +28,8 @@ interface MemberBody {
 }
 
 interface PreviewBody {
-  transferTo: MemberBody | null
-  resources: { kind: string; owned: number; restricted: number; recipientOnly: number }[]
+  replacement: MemberBody | null
+  resources: { kind: string; selected: number; reassigned: number }[]
 }
 
 const signup = (oidcSubject: string, email: string) =>
@@ -218,14 +218,13 @@ describe('PATCH /members/:id — role changes', () => {
 })
 
 describe('DELETE /members/:id — removal', () => {
-  it('lets a collaborator leave and transfers their resources to an owner', async () => {
+  it('lets a collaborator leave, prunes their audience entry, and preserves creator audit', async () => {
     const dana = await signup('sub-dana', 'dana@acme.dev')
     await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, {
       visibility: 'restricted',
       createdByUserId: dana.userId,
-      ownerUserId: dana.userId,
       sharedWith: [DEFAULT_OWNER_ID, dana.userId]
     })
     const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
@@ -239,7 +238,7 @@ describe('DELETE /members/:id — removal', () => {
         })
       ).toBeNull()
       expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
-        ownerUserId: DEFAULT_OWNER_ID,
+        createdByUserId: dana.userId,
         sharedWith: [DEFAULT_OWNER_ID]
       })
     } finally {
@@ -247,7 +246,7 @@ describe('DELETE /members/:id — removal', () => {
     }
   })
 
-  it('hands a leaver’s resources to the longest-standing owner, not the oldest account', async () => {
+  it('repairs an emptied Selected audience with the longest-standing remaining owner', async () => {
     // `earlyJoiner` joins the org first but signed up SECOND, so its cuid sorts
     // after `lateJoiner`'s. Ranking owners by userId — what the schema forced
     // before `membership.createdAt` existed — would pick `lateJoiner`, i.e. the
@@ -263,14 +262,15 @@ describe('DELETE /members/:id — removal', () => {
     await seedAgent(prisma, agentId, {
       visibility: 'restricted',
       createdByUserId: DEFAULT_OWNER_ID,
-      ownerUserId: DEFAULT_OWNER_ID
+      sharedWith: [DEFAULT_OWNER_ID]
     })
     const { app, close } = buildHttpApp(prisma)
     try {
       const res = await app.inject({ method: 'DELETE', url: `${ORG}/members/${DEFAULT_OWNER_ID}` })
       expect(res.statusCode).toBe(204)
       expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
-        ownerUserId: earlyJoiner.userId
+        createdByUserId: DEFAULT_OWNER_ID,
+        sharedWith: [earlyJoiner.userId]
       })
     } finally {
       await close()
@@ -325,84 +325,39 @@ describe('DELETE /members/:id — removal', () => {
 })
 
 describe('GET /members/:id/removal-preview', () => {
-  it('names the successor and counts what would move, restricted subset included', async () => {
+  it('counts Selected audiences and identifies only those that need repair', async () => {
     const dana = await signup('sub-dana', 'dana@acme.dev')
-    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
-    await seedAgent(prisma, randomUUID(), { visibility: 'restricted', ownerUserId: dana.userId })
-    await seedAgent(prisma, randomUUID(), { ownerUserId: dana.userId })
-    // Owned by someone else: never counted against the departing member.
-    await seedAgent(prisma, randomUUID(), { ownerUserId: DEFAULT_OWNER_ID })
+    const bob = await signup('sub-bob', 'bob@acme.dev')
+    const stale = await signup('sub-stale', 'stale@acme.dev')
+    const repo = new PgUserRepo(prisma)
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
+    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'bob@acme.dev', 'collaborator')
+
+    // Bob remains, so this audience only needs Dana pruned.
+    await seedAgent(prisma, randomUUID(), {
+      visibility: 'restricted',
+      sharedWith: [dana.userId, bob.userId]
+    })
+    // The second id is not a current member, so this audience needs a replacement.
+    await seedAgent(prisma, randomUUID(), {
+      visibility: 'restricted',
+      sharedWith: [dana.userId, stale.userId]
+    })
+    // Everyone rows are not part of the Selected-impact count.
+    await seedAgent(prisma, randomUUID(), { visibility: 'org', sharedWith: [dana.userId] })
     const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/members/${dana.userId}/removal-preview` })
       expect(res.statusCode).toBe(200)
       const body = res.json() as PreviewBody
-      expect(body.transferTo).toMatchObject({ userId: DEFAULT_OWNER_ID, isCurrentUser: false })
-      // Kinds they own nothing of stay out of the sentence entirely.
-      expect(body.resources).toEqual([{ kind: 'agent', owned: 2, restricted: 1, recipientOnly: 1 }])
+      expect(body.replacement).toMatchObject({ userId: DEFAULT_OWNER_ID, isCurrentUser: false })
+      expect(body.resources).toEqual([{ kind: 'agent', selected: 2, reassigned: 1 }])
     } finally {
       await close()
     }
   })
 
-  it('counts a restricted resource as recipient-only ONLY when no member keeps a share', async () => {
-    // `canView` admits the ownership arm OR a share, and removal prunes only the
-    // departing id — so a resource someone else is still shared with does not
-    // become invisible, and the dialog must not claim it does.
-    const dana = await signup('sub-dana', 'dana@acme.dev')
-    const bob = await signup('sub-bob', 'bob@acme.dev')
-    const repo = new PgUserRepo(prisma)
-    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
-    await repo.addMemberByEmail(DEFAULT_ORG_ID, 'bob@acme.dev', 'collaborator')
-    const departed = await signup('sub-departed', 'departed@acme.dev')
-
-    // Still shared with Bob, a current member ⇒ restricted but NOT recipient-only.
-    await seedAgent(prisma, randomUUID(), {
-      visibility: 'restricted',
-      ownerUserId: dana.userId,
-      sharedWith: [bob.userId]
-    })
-    // Shared only with the departing owner and a stale non-member: nobody who can
-    // still reach the org holds a grant, so it does become recipient-only.
-    await seedAgent(prisma, randomUUID(), {
-      visibility: 'restricted',
-      ownerUserId: dana.userId,
-      sharedWith: [dana.userId, departed.userId]
-    })
-    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
-    try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/members/${dana.userId}/removal-preview` })
-      expect(res.statusCode).toBe(200)
-      expect((res.json() as PreviewBody).resources).toEqual([
-        { kind: 'agent', owned: 2, restricted: 2, recipientOnly: 1 }
-      ])
-    } finally {
-      await close()
-    }
-  })
-
-  it('does not count the recipient’s own share against recipient-only', async () => {
-    const dana = await signup('sub-dana', 'dana@acme.dev')
-    await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
-    // The successor is already shared in: after the transfer they are still the
-    // only one who can see it, so the warning stands.
-    await seedAgent(prisma, randomUUID(), {
-      visibility: 'restricted',
-      ownerUserId: dana.userId,
-      sharedWith: [DEFAULT_OWNER_ID]
-    })
-    const { app, close } = buildHttpApp(prisma, { DEFAULT_OWNER_ID: dana.userId })
-    try {
-      const res = await app.inject({ method: 'GET', url: `${ORG}/members/${dana.userId}/removal-preview` })
-      expect((res.json() as PreviewBody).resources).toEqual([
-        { kind: 'agent', owned: 1, restricted: 1, recipientOnly: 1 }
-      ])
-    } finally {
-      await close()
-    }
-  })
-
-  it('hands an owner-initiated removal to that owner, and reports an empty estate', async () => {
+  it('uses the acting organization owner as the repair member for an owner-initiated removal', async () => {
     const dana = await signup('sub-dana', 'dana@acme.dev')
     await new PgUserRepo(prisma).addMemberByEmail(DEFAULT_ORG_ID, 'dana@acme.dev', 'collaborator')
     const { app, close } = buildHttpApp(prisma)
@@ -410,7 +365,7 @@ describe('GET /members/:id/removal-preview', () => {
       const res = await app.inject({ method: 'GET', url: `${ORG}/members/${dana.userId}/removal-preview` })
       expect(res.statusCode).toBe(200)
       const body = res.json() as PreviewBody
-      expect(body.transferTo).toMatchObject({ userId: DEFAULT_OWNER_ID, isCurrentUser: true })
+      expect(body.replacement).toMatchObject({ userId: DEFAULT_OWNER_ID, isCurrentUser: true })
       expect(body.resources).toEqual([])
     } finally {
       await close()
@@ -422,7 +377,7 @@ describe('GET /members/:id/removal-preview', () => {
     try {
       const res = await app.inject({ method: 'GET', url: `${ORG}/members/${DEFAULT_OWNER_ID}/removal-preview` })
       expect(res.statusCode).toBe(200)
-      expect((res.json() as PreviewBody).transferTo).toBeNull()
+      expect((res.json() as PreviewBody).replacement).toBeNull()
     } finally {
       await close()
     }
@@ -453,17 +408,19 @@ describe('GET /members/:id/removal-preview', () => {
 })
 
 describe('concurrent owner transitions', () => {
-  it('allows only one of two owners to leave and transfers both resources to the survivor', async () => {
+  it('allows only one of two owners to leave and keeps Selected audiences non-empty', async () => {
     const otherOwnerId = await makeOwner('concurrent-leave')
     const firstAgentId = randomUUID()
     const secondAgentId = randomUUID()
     await seedAgent(prisma, firstAgentId, {
+      visibility: 'restricted',
       createdByUserId: DEFAULT_OWNER_ID,
-      ownerUserId: DEFAULT_OWNER_ID
+      sharedWith: [DEFAULT_OWNER_ID]
     })
     await seedAgent(prisma, secondAgentId, {
+      visibility: 'restricted',
       createdByUserId: otherOwnerId,
-      ownerUserId: otherOwnerId
+      sharedWith: [otherOwnerId]
     })
     const firstApp = buildHttpApp(prisma)
     const secondApp = buildHttpApp(prisma, { DEFAULT_OWNER_ID: otherOwnerId })
@@ -491,10 +448,10 @@ describe('concurrent owner transitions', () => {
       expect(members[0]!.role).toBe('owner')
       const resources = await prisma.agent.findMany({
         where: { id: { in: [firstAgentId, secondAgentId] } },
-        select: { ownerUserId: true }
+        select: { sharedWith: true }
       })
       expect(resources).toHaveLength(2)
-      expect(resources.every((resource) => resource.ownerUserId === members[0]!.userId)).toBe(true)
+      expect(resources.every((resource) => resource.sharedWith.includes(members[0]!.userId))).toBe(true)
     } finally {
       transitionBlocker.release()
       await Promise.allSettled([transitionBlocker.blocker, ...pending])
@@ -539,12 +496,13 @@ describe('concurrent owner transitions', () => {
     }
   })
 
-  it('keeps the transfer recipient owned when leave races with demotion', async () => {
+  it('keeps a valid Selected audience when leave races with demotion', async () => {
     const otherOwnerId = await makeOwner('leave-demote')
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, {
+      visibility: 'restricted',
       createdByUserId: DEFAULT_OWNER_ID,
-      ownerUserId: DEFAULT_OWNER_ID
+      sharedWith: [DEFAULT_OWNER_ID]
     })
     const leavingApp = buildHttpApp(prisma)
     const demotingApp = buildHttpApp(prisma, { DEFAULT_OWNER_ID: otherOwnerId })
@@ -575,7 +533,7 @@ describe('concurrent owner transitions', () => {
         select: { userId: true }
       })
       expect(owners).toHaveLength(1)
-      expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).ownerUserId).toBe(owners[0]!.userId)
+      expect((await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).sharedWith).toContain(owners[0]!.userId)
     } finally {
       transitionBlocker.release()
       await Promise.allSettled([transitionBlocker.blocker, ...pending])

@@ -123,7 +123,7 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     ).not.toBeNull()
   })
 
-  it('merges invited ownership and shares into the canonical synthetic-email user', async () => {
+  it('merges invited audience membership into the canonical synthetic-email user', async () => {
     const subject = `sub-authority-merge-${randomUUID()}`
     const email = `authority-merge-${randomUUID()}@acme.com`
     const { userId: canonicalUserId } = await repo().provisionOidcUser({ oidcSubject: subject })
@@ -138,8 +138,7 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     const authority = {
       visibility: 'restricted' as const,
       sharedWith: [invited.userId, canonicalUserId, DEFAULT_OWNER_ID],
-      createdByUserId: DEFAULT_OWNER_ID,
-      ownerUserId: invited.userId
+      createdByUserId: DEFAULT_OWNER_ID
     }
     await seedDaemon(prisma, daemonId, authority)
     await seedAgent(prisma, agentId, { ...authority, daemonId })
@@ -185,7 +184,7 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
       ).role
     ).toBe('owner')
 
-    const select = { ownerUserId: true, sharedWith: true, createdByUserId: true } as const
+    const select = { sharedWith: true, createdByUserId: true } as const
     const resources = await Promise.all([
       prisma.agent.findUniqueOrThrow({ where: { id: agentId }, select }),
       prisma.daemon.findUniqueOrThrow({ where: { id: daemonId }, select }),
@@ -195,7 +194,6 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     ])
     for (const resource of resources) {
       expect(resource).toEqual({
-        ownerUserId: canonicalUserId,
         sharedWith: [canonicalUserId, DEFAULT_OWNER_ID],
         createdByUserId: DEFAULT_OWNER_ID
       })

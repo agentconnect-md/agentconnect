@@ -117,7 +117,7 @@ export function memberRoutes(deps: HttpDeps) {
           tags: [Tag.Members],
           summary: 'Preview a leave or removal',
           description:
-            'What DELETE /members/:id would do: which member inherits the departing member’s resources, and how many they own — split into the restricted ones (reached through ownership or an explicit share) and the `recipientOnly` subset of those that no remaining member is shared with, which only the recipient would still be able to see. Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives its recipient inside the transaction.',
+            'What DELETE /members/:id would do to Selected audiences: which current member would be added only where the audience would otherwise become empty, and per-resource-kind counts for all affected and reassigned audiences. Same authorization as the removal itself. Advisory only: nothing is locked, and the removal re-derives the replacement inside the transaction.',
           operationId: 'previewMemberRemoval',
           params: IdParam,
           response: { 200: MemberRemovalPreviewDto, 403: ErrorDto, 404: ErrorDto }
@@ -127,7 +127,7 @@ export function memberRoutes(deps: HttpDeps) {
         if (denyMemberRemoval(req, reply, req.params.id)) return
         const preview = await deps.repos.user.previewMemberRemoval(req.orgCtx!.orgId, req.params.id, req.orgCtx!.userId)
         return {
-          transferTo: preview.transferTo ? toDto(preview.transferTo, req.orgCtx!.userId, deps) : null,
+          replacement: preview.replacement ? toDto(preview.replacement, req.orgCtx!.userId, deps) : null,
           resources: preview.resources
         }
       }

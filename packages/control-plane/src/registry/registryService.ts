@@ -86,7 +86,6 @@ function toView(d: DaemonRecord, profiles: RuntimeProfileRecord[]): DaemonView {
     lastModifiedAt: d.lastModifiedAt,
     lastModifiedBy: d.lastModifiedBy,
     createdByUserId: d.createdByUserId,
-    ownerUserId: d.ownerUserId,
     visibility: d.visibility,
     sharedWith: d.sharedWith
   }

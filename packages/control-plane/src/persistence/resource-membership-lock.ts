@@ -1,18 +1,18 @@
 /**
- * Serialize ownership-bearing resource writes with organization-member removal.
+ * Serialize audience-bearing resource writes with organization-member removal.
  *
  * A resource create or sharing write holds `FOR SHARE` on every membership that
- * makes the write valid (actor, initial owner, and requested share targets).
+ * makes the write valid (actor and requested audience members).
  * Member removal takes `FOR UPDATE` on the departing and recipient memberships
  * before scanning the resource tables. The conflicting row locks make either
  * commit order safe:
  *
- * - resource write first: removal waits, then transfers/prunes the committed row;
+ * - resource write first: removal waits, then repairs/prunes the committed audience;
  * - removal first: the write wakes, rechecks the membership, and fails or drops
  *   the departed ID before it can persist stale authority.
  */
 import { Prisma } from '../generated/prisma/client.js'
-import { OrgMembershipMissing, ResourceOwnerMissing } from './errors.js'
+import { OrgMembershipMissing, ResourceAudienceEmpty } from './errors.js'
 import type { ResourceVisibility } from './ports.js'
 
 export interface ResourceMembershipWrite {
@@ -20,8 +20,6 @@ export interface ResourceMembershipWrite {
   visibility: ResourceVisibility
   /** Human principal performing the write. Absent for trusted internal writes. */
   actorUserId?: string
-  /** Current owner whose membership makes this ownership-bearing write valid. */
-  ownerUserId?: string
   /** Requested share vector; undefined means this write does not set sharing. */
   sharedWith?: readonly string[]
 }
@@ -46,9 +44,8 @@ export async function lockResourceWriteMemberships(
     FOR KEY SHARE
   `)
   if (org.length === 0) throw new OrgMembershipMissing()
-  if (input.visibility === 'restricted' && !input.ownerUserId) throw new ResourceOwnerMissing()
 
-  const required = [input.actorUserId, input.ownerUserId].filter((id): id is string => id !== undefined)
+  const required = [input.actorUserId].filter((id): id is string => id !== undefined)
   const ids = [...new Set([...required, ...(input.sharedWith ?? [])])].sort()
 
   const rows =
@@ -65,23 +62,20 @@ export async function lockResourceWriteMemberships(
   const current = new Set(rows.map((row) => row.userId))
 
   // Keep a concurrent actor removal indistinguishable from a missing scoped
-  // resource. Once the actor is known-current, distinguish a stale owner on a
-  // restricted write: accepting the request after filtering its share vector
-  // could otherwise leave Selected with no current organization member able to
-  // reach the resource.
+  // resource. The audience is intersected with current membership below; a
+  // restricted write must retain at least one member after that intersection.
   if (input.actorUserId !== undefined && !current.has(input.actorUserId)) throw new OrgMembershipMissing()
-  if (input.visibility === 'restricted' && input.ownerUserId !== undefined && !current.has(input.ownerUserId)) {
-    throw new ResourceOwnerMissing()
+  if (input.sharedWith === undefined) {
+    if (input.visibility === 'restricted') throw new ResourceAudienceEmpty()
+    return {}
   }
-  if (required.some((id) => !current.has(id))) throw new OrgMembershipMissing()
-  if (input.sharedWith === undefined) return {}
 
   const seen = new Set<string>()
-  return {
-    sharedWith: input.sharedWith.filter((id) => {
-      if (!current.has(id) || seen.has(id)) return false
-      seen.add(id)
-      return true
-    })
-  }
+  const sharedWith = input.sharedWith.filter((id) => {
+    if (!current.has(id) || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+  if (input.visibility === 'restricted' && sharedWith.length === 0) throw new ResourceAudienceEmpty()
+  return { sharedWith }
 }

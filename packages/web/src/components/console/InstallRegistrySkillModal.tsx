@@ -192,7 +192,7 @@ export function InstallRegistrySkillModal({
                 on the daemon.
               </span>
             </div>
-            <VisibilityField value={sharing} onChange={setSharing} ownerUserId={me?.userId} />
+            <VisibilityField value={sharing} onChange={setSharing} />
           </div>
         ) : (
           <>

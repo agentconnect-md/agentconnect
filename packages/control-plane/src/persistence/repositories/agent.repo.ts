@@ -246,7 +246,6 @@ function toRecord(a: AgentWithUsers): AgentRecord {
       ? { userId: a.createdBy.id, displayName: a.createdBy.displayName, email: a.createdBy.email }
       : null,
     createdByUserId: a.createdByUserId,
-    ownerUserId: a.ownerUserId,
     visibility: a.visibility,
     sharedWith: a.sharedWith,
     callPolicy: a.callPolicy as AgentCallPolicy,
@@ -273,7 +272,6 @@ export class PgAgentRepo implements AgentRepo {
 
   async create(input: CreateAgentInput, opts?: AgentCreateOpts): Promise<AgentRecord> {
     const ws = input.workspace ?? { mode: 'scratch' }
-    const ownerUserId = input.ownerUserId ?? input.createdByUserId
     return this.transaction(async (tx) => {
       // Close organization deletion's no-agent-row enumeration window without
       // taking a parent-row lock in the reverse order of Hook CRUD.
@@ -312,7 +310,6 @@ export class PgAgentRepo implements AgentRepo {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
         actorUserId: input.createdByUserId,
-        ownerUserId,
         sharedWith: input.sharedWith
       })
       const a = await tx.agent.create({
@@ -368,7 +365,6 @@ export class PgAgentRepo implements AgentRepo {
           ...(input.createdByUserId
             ? { createdByUserId: input.createdByUserId, lastModifiedByUserId: input.createdByUserId }
             : {}),
-          ...(ownerUserId ? { ownerUserId } : {}),
           workspaceMode: ws.mode,
           workspaceIsolation: ws.mode === 'github' ? (ws.isolation ?? 'session') : 'shared',
           gitRepo: ws.mode === 'github' ? ws.gitRepo : null,
@@ -735,13 +731,12 @@ export class PgAgentRepo implements AgentRepo {
     return this.transaction(async (tx) => {
       const existing = await tx.agent.findUniqueOrThrow({
         where: { id: agentId },
-        select: { orgId: true, ownerUserId: true }
+        select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: existing.orgId,
         visibility: sharing.visibility,
         actorUserId: byUserId,
-        ownerUserId: existing.ownerUserId ?? undefined,
         sharedWith: sharing.sharedWith
       })
       // A sharing change is a human edit — advance the last-modified audit

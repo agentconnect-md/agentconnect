@@ -112,7 +112,7 @@ function editableAgentWhere(orgId: string, viewer: ViewCtx | undefined): Prisma.
   if (viewer.role === 'viewer') return { orgId, id: { in: [] } }
   return {
     orgId,
-    OR: [{ visibility: 'org' }, { ownerUserId: viewer.userId }, { sharedWith: { has: viewer.userId } }]
+    OR: [{ visibility: 'org' }, { sharedWith: { has: viewer.userId } }]
   }
 }
 
