@@ -105,6 +105,8 @@ export const NormalizedPlatformMessageSchema = z.object({
   sender: z.object({
     id: z.string(),
     isBot: z.boolean(),
+    /** Provider-observed public display label. Presentation only; never an identity or auth input. */
+    name: z.string().optional(),
     appId: z.string().optional(),
     /** Public provider-hosted profile image. Auth-gated file URLs must not be exposed here. */
     avatarUrl: z.string().url().optional()

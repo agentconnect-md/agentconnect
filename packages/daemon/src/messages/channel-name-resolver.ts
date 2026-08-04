@@ -105,10 +105,13 @@ export class ChannelNameResolver {
    */
   noteMessage(
     src: ChannelInfoSource,
-    msg: { channel: string; sender: { id: string; isBot: boolean }; mentionedUserIds?: string[] }
+    msg: { channel: string; sender: { id: string; isBot: boolean; name?: string }; mentionedUserIds?: string[] }
   ): void {
     void this.resolveChannel(src, msg.channel, msg.sender.id)
-    if (!msg.sender.isBot) void this.resolveUser(src, msg.sender.id)
+    if (!msg.sender.isBot) {
+      if (msg.sender.name) this.save(msg.sender.id, msg.sender.name)
+      else void this.resolveUser(src, msg.sender.id)
+    }
     for (const id of msg.mentionedUserIds ?? []) void this.resolveUser(src, id)
   }
 
