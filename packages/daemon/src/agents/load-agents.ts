@@ -10,6 +10,16 @@ const DETACHED_DIR = '.detached'
 // Agent plus loader-derived data: the directory containing agent.json.
 export type LoadedAgent = Agent & { dir: string }
 
+export interface AgentDiscoveryFailure {
+  file: string
+  error: Error
+}
+
+export interface AgentDiscoveryResult {
+  agents: { agent: LoadedAgent; dir: string }[]
+  failures: AgentDiscoveryFailure[]
+}
+
 // Parse one agent.json, then resolve workspace.path relative to the agent dir.
 function parseAgentFile(file: string): LoadedAgent {
   protectAgentJson(file)
@@ -63,6 +73,27 @@ export function discoverAgents(agentsDir: string): { agent: LoadedAgent; dir: st
       throw new Error(`invalid agent.json at ${file}: ${(err as Error).message}`)
     }
   })
+}
+
+// Daemon fleet discovery is fault-isolated: one malformed agent must not keep
+// unrelated agents offline. Callers decide how to report each failure and, on a
+// live reconcile, whether to retain the last valid configuration for that path.
+// Strict consumers (chat, evaluation, and explicit validation) continue to use
+// discoverAgents()/selectAgent() above.
+export function discoverAgentsTolerant(agentsDir: string): AgentDiscoveryResult {
+  // Keep the detached-file permission convergence identical to strict discovery.
+  protectDetachedAgentFiles(agentsDir)
+  const agents: AgentDiscoveryResult['agents'] = []
+  const failures: AgentDiscoveryFailure[] = []
+  for (const file of findAgentFiles(agentsDir)) {
+    try {
+      agents.push({ agent: parseAgentFile(file), dir: dirname(file) })
+    } catch (err) {
+      const cause = err instanceof Error ? err : new Error(String(err))
+      failures.push({ file, error: new Error(`invalid agent.json at ${file}: ${cause.message}`, { cause }) })
+    }
+  }
+  return { agents, failures }
 }
 
 // Active agents only — the daemon's multi-agent path.
