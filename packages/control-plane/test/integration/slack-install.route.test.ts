@@ -365,7 +365,7 @@ describe('slack auto-install funnel', () => {
     expect(bot?.slackAppId).toBe('A1TEST')
     expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).toBeNull()
     expect(spy.upserts).toHaveLength(1)
-    expect(spy.upserts[0]!.u).toMatchObject({ slack: { botToken: 'xoxb-from-oauth' } })
+    expect(spy.upserts[0]!.u).toMatchObject({ config: { botToken: 'xoxb-from-oauth' } })
     expect(JSON.stringify(dto)).not.toContain('xoxb-')
   })
 

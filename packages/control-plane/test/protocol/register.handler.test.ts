@@ -438,7 +438,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       integrationId: INTEG,
       agentId: AGENT,
       platform: 'telegram',
-      telegram: { botToken: '123456:AAE-xyz' }
+      config: { botToken: '123456:AAE-xyz' }
     })
     // A non-empty collaboration snapshot used to make this entire register/ok
     // invalid because DEFAULT_ORG_ID is intentionally not a UUID. The in-memory
