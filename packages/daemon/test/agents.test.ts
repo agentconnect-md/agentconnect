@@ -21,7 +21,8 @@ const slackAgent = (id: string, status = 'active') => ({
     {
       id: 'slack-main',
       platform: 'slack',
-      slack: { botToken: 'xoxb-x', appToken: 'xapp-x', bindRules: [{ channel: 'C1', match: { kind: 'mention' } }] }
+      core: { bindRules: [{ channel: 'C1', match: { kind: 'mention' } }] },
+      config: { botToken: 'xoxb-x', appToken: 'xapp-x' }
     }
   ],
   output: { mode: 'medium' }

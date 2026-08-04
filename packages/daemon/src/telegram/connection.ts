@@ -1,5 +1,6 @@
 import { Bot } from 'grammy'
 import type { Agent } from '../agents/agent-schema.js'
+import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { SlackSendQueue } from '../slack/send-queue.js'
@@ -50,7 +51,10 @@ export function consolidateTelegram(agents: Agent[]): Map<string, ConsolidatedTe
   for (const a of agents) {
     for (const int of a.integrations) {
       if (int.platform !== 'telegram') continue
-      const k = int.telegram.botToken
+      // §6.4: config validated by this platform's module schema; invalid ⇒ no poll.
+      const telegram = platformIntegrationConfig('telegram', int)
+      if (!telegram) continue
+      const k = telegram.botToken
       const g = groups.get(k) ?? { botToken: k, integrations: [] }
       g.integrations.push({ agentId: a.id, integrationId: int.id })
       groups.set(k, g)

@@ -18,7 +18,7 @@ const cliEntry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
 
 const tools = toolsForIntegrations(
-  [{ id: 'int-1', platform: 'slack', slack: { botToken: 'x', appToken: 'y', bindRules: [] } }],
+  [{ id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }],
   { sessionTitle: true }
 )
 

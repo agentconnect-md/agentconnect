@@ -2,7 +2,11 @@ import { z } from 'zod'
 import {
   AgentMemoryBinding,
   CompatibleAgentSkillEntry,
-  FeishuRegion,
+  IntegrationCoreEnvelope,
+  IntegrationDiscordConfig,
+  IntegrationFeishuConfig,
+  IntegrationSlackConfig,
+  IntegrationTelegramConfig,
   ManagedSkillEntry
 } from '@agentconnect.md/protocol'
 
@@ -21,106 +25,54 @@ export const BindRuleConfigSchema = z.object({
 })
 export type BindRuleConfig = z.infer<typeof BindRuleConfigSchema>
 
-export const SlackConfigSchema = z.object({
-  // 'direct' (default, and the shape of every pre-shared-bot agent.json): the daemon
-  // opens the Socket Mode connection itself. 'shared': the bot's inbound lives on a
-  // relay, so the daemon holds xoxb ONLY (send path) and opens no socket — routing is
-  // arbitrated in the relay and delivered pre-addressed. See shared-bot-relay.md §7.3.
-  mode: z.enum(['direct', 'shared']).default('direct'),
-  // Multi-agent opt-in (shared mode only): the bot backs many agents, so the status
-  // bar exposes an in-thread "Switch agent" control. A non-shareable shared bot routes
-  // through the relay the same way but has one agent, so the control is suppressed.
-  shareable: z.boolean().default(false),
-  botToken: z.string(),
-  appToken: z.string().optional(), // direct only (Socket Mode); absent for shared
-  appId: z.string().optional(), // public A… app id used for Slack permission-update links
-  signingSecret: z.string().optional(),
-  botUserId: z.string().optional(), // filled at connect via auth.test if absent; provided by CP for shared
-  bindRules: z.array(BindRuleConfigSchema).default([]),
-  // Channels the operator switched OFF. bindRules only ADD reach, so an ungated
-  // integration — which reaches every conversation through unscoped defaults — needs
-  // this subtractive fence to say "not here". A muted channel matches no rule of this
-  // integration: no mention, no thread continuity, no control command. A gated
-  // integration leaves it empty; its Off is the ABSENCE of a conversation-scoped rule.
-  mutedChannels: z.array(z.string()).default([]),
-  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
-  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
-  // messages get a one-time notice and DM conversations are reported to the CP.
-  gated: z.boolean().default(false)
-})
+/**
+ * Per-platform `config` payloads (§6.4): the daemon-side module schemas are the
+ * WIRE schemas (one contract, both ends import it from the protocol package)
+ * plus the daemon-local optional extras a hand-authored file may pre-seed.
+ * Routing knobs and the ingress mode are NOT here — they live in the shared
+ * `core` envelope, the only representation the daemon reads.
+ */
+export const SlackConfigSchema = IntegrationSlackConfig
 export type SlackConfig = z.infer<typeof SlackConfigSchema>
 
-export const TelegramConfigSchema = z.object({
-  botToken: z.string(), // BotFather "123456:ABC…" (single token; no app token / signing secret)
-  botUserId: z.string().optional(), // numeric bot id, filled at connect via getMe if absent
-  botUsername: z.string().optional(), // @username without the '@', for mention detection; filled via getMe
-  bindRules: z.array(BindRuleConfigSchema).default([]),
-  mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
-  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
-  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
-  // messages get a one-time notice and DM conversations are reported to the CP.
-  gated: z.boolean().default(false)
+export const TelegramConfigSchema = IntegrationTelegramConfig.extend({
+  botUserId: z.string().optional() // numeric bot id; pre-seed for mention routing before getMe resolves it
 })
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>
 
-export const DiscordConfigSchema = z.object({
-  botToken: z.string(), // Discord Gateway bot token (single token; no app token / signing secret)
-  applicationId: z.string().optional(), // public client id for the invite URL (not used to connect)
-  botUserId: z.string().optional(), // numeric bot user id, filled at connect via the ready event if absent
-  bindRules: z.array(BindRuleConfigSchema).default([]),
-  mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
-  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
-  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
-  // messages get a one-time notice and DM conversations are reported to the CP.
-  gated: z.boolean().default(false)
+export const DiscordConfigSchema = IntegrationDiscordConfig.extend({
+  botUserId: z.string().optional() // numeric bot user id; pre-seed for mention routing before `ready` resolves it
 })
 export type DiscordConfig = z.infer<typeof DiscordConfigSchema>
 
-export const FeishuConfigSchema = z.object({
-  // Direct opens the Feishu long connection. Shared is send-only: relay HTTP
-  // ingress is delivered pre-addressed while this daemon keeps provider egress.
-  mode: z.enum(['direct', 'shared']).default('direct'),
-  appId: z.string(), // cli_… app identifier (semi-public); needed for REST and direct WS
-  appSecret: z.string(), // app secret (single secret; no app token / signing secret)
-  botOpenId: z.string().optional(), // bot's own open_id for mention detection; filled at connect via bot/info if absent
-  region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn (default) vs larksuite.com
-  bindRules: z.array(BindRuleConfigSchema).default([]),
-  mutedChannels: z.array(z.string()).default([]), // Off channels — see SlackConfigSchema.mutedChannels
-  // Conversation gating (resource-visibility.md §14): fail-closed ingress — the CP
-  // ships only conversation-scoped bindRules; explicitly-addressed unrouted
-  // messages get a one-time notice and DM conversations are reported to the CP.
-  gated: z.boolean().default(false)
-})
+export const FeishuConfigSchema = IntegrationFeishuConfig
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 
-export const IntegrationSchema = z.discriminatedUnion('platform', [
-  z.object({
-    id: z.string(),
-    // CP-pushed integrations are tagged so a reconnect snapshot can prune a
-    // missed integration/remove without touching hand-authored local entries.
-    origin: z.literal('cp').optional(),
-    platform: z.literal('slack'),
-    slack: SlackConfigSchema
-  }),
-  z.object({
-    id: z.string(),
-    origin: z.literal('cp').optional(),
-    platform: z.literal('telegram'),
-    telegram: TelegramConfigSchema
-  }),
-  z.object({
-    id: z.string(),
-    origin: z.literal('cp').optional(),
-    platform: z.literal('discord'),
-    discord: DiscordConfigSchema
-  }),
-  z.object({
-    id: z.string(),
-    origin: z.literal('cp').optional(),
-    platform: z.literal('feishu'),
-    feishu: FeishuConfigSchema
-  })
-])
+/**
+ * One integration entry — §6.4 FINAL SHAPE, migrated together with the protocol
+ * `IntegrationSpec` (they are the same envelope): an OPEN `platform` id, the
+ * core routing envelope, and an opaque per-platform `config` that only the
+ * platform's own module schema understands
+ * (`platforms/integration-config.ts`). The pre-S3 nested shape — the platform
+ * id repeated as a key holding the block — is RETIRED: an old entry still
+ * parses (the nested block is an unknown key, stripped), but it carries no
+ * `config`, so every consumer skips it with a warning until it is rewritten —
+ * the file itself is never touched.
+ *
+ * `core` is defaulted (unlike the wire, where its absence is fail-closed):
+ * a hand-authored entry that omits it gets exactly the empty-rule defaults the
+ * old nested schemas defaulted to, and the config-less skip above already
+ * covers the stale-shape case loudly.
+ */
+export const IntegrationSchema = z.object({
+  id: z.string(),
+  // CP-pushed integrations are tagged so a reconnect snapshot can prune a
+  // missed integration/remove without touching hand-authored local entries.
+  origin: z.literal('cp').optional(),
+  platform: z.string().min(1),
+  core: IntegrationCoreEnvelope.default({ mode: 'direct', bindRules: [], mutedChannels: [], gated: false }),
+  config: z.unknown().optional()
+})
 export type Integration = z.infer<typeof IntegrationSchema>
 
 /** A scheduled trigger for THIS agent: every `schedule` tick, prompt the agent

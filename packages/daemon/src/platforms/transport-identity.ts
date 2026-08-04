@@ -15,23 +15,16 @@
  *    rotation, so it prefers the platform's own tenant id and falls back to a
  *    scope minted once per integration and persisted by core.
  *
- * Both read the integration's legacy disk-shape config blocks structurally —
- * the same S1b decision (#516) that froze that shape until the emission flip is
- * why these reads belong in a platform strategy and not in core.
+ * Both read the integration through the platform module's VALIDATED config
+ * (§6.4, `platforms/integration-config.ts`) — the payload is opaque `unknown`
+ * on the entry, so an unchecked structural cast would let a malformed value
+ * (say `botToken: 42`) reach `.split()` and throw from a path the connection
+ * consolidator already skipped. A payload the module schema refuses reads as
+ * "no credential", and both strategies fall back fail-closed: the transport
+ * scope isolates on the integration id, the tenant scope on the minted value.
  */
-
-interface SlackConfig {
-  slack: { mode?: string; botToken: string; appToken?: string }
-}
-interface TelegramConfig {
-  telegram: { botToken: string }
-}
-interface DiscordConfig {
-  discord: { botToken: string }
-}
-interface FeishuConfig {
-  feishu: { region: string; appId: string }
-}
+import type { Integration } from '../agents/agent-schema.js'
+import { integrationCore, platformIntegrationConfig } from './integration-config.js'
 
 /** The stable public BotFather bot-id prefix, or undefined for non-standard
  *  test/config tokens. */
@@ -40,40 +33,43 @@ function telegramBotId(botToken: string): string | undefined {
   return /^\d+$/.test(botId ?? '') ? botId : undefined
 }
 
-const CONNECTION_IDENTITY = new Map<string, (integration: unknown) => string>([
+const CONNECTION_IDENTITY = new Map<string, (integration: Integration) => string | undefined>([
   // A shared bot has no app token to key on; a socket integration keys on it.
   [
     'slack',
-    (i) => {
-      const slack = (i as SlackConfig).slack
-      return slack.mode === 'shared' ? slack.botToken : (slack.appToken ?? slack.botToken)
+    (int) => {
+      const slack = platformIntegrationConfig('slack', int)
+      if (!slack) return undefined
+      return integrationCore(int).mode === 'shared' ? slack.botToken : (slack.appToken ?? slack.botToken)
     }
   ],
   // The bot-id prefix survives a secret rotation; non-standard tokens fall back
   // to the full high-entropy credential before hashing.
   [
     'telegram',
-    (i) => {
-      const token = (i as TelegramConfig).telegram.botToken
-      return telegramBotId(token) ?? token
+    (int) => {
+      const token = platformIntegrationConfig('telegram', int)?.botToken
+      return token === undefined ? undefined : (telegramBotId(token) ?? token)
     }
   ],
-  ['discord', (i) => (i as DiscordConfig).discord.botToken],
+  ['discord', (int) => platformIntegrationConfig('discord', int)?.botToken],
   [
     'feishu',
-    (i) => {
-      const feishu = (i as FeishuConfig).feishu
-      return `${feishu.region}:${feishu.appId}`
+    (int) => {
+      const feishu = platformIntegrationConfig('feishu', int)
+      // `region` is schema-defaulted ('feishu'), so a validated payload always has it.
+      return feishu && `${feishu.region}:${feishu.appId}`
     }
   ]
 ])
 
 /** The credential string identifying `integration`'s physical connection —
  *  hashed by the caller, never persisted raw. Fail-CLOSED default: an
- *  unregistered platform identifies by integration id, so its scope never
- *  consolidates across integrations (over-isolating is safe; over-sharing a
- *  scope would merge unrelated conversations). */
-export function connectionIdentityFor(integration: { id: string; platform: string }): string {
+ *  unregistered platform — or an entry whose config payload does not validate —
+ *  identifies by integration id, so its scope never consolidates across
+ *  integrations (over-isolating is safe; over-sharing a scope would merge
+ *  unrelated conversations). */
+export function connectionIdentityFor(integration: Integration): string {
   return CONNECTION_IDENTITY.get(integration.platform)?.(integration) ?? integration.id
 }
 
@@ -86,25 +82,26 @@ export interface TenantScopeHost {
   minted(integrationId: string): string | undefined
 }
 
-const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: unknown) => string | undefined>([
+const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: Integration) => string | undefined>([
   // The workspace id from auth.test, surfaced by the live connection. A
   // not-yet-authenticated (or test-substituted) connection may not expose it —
   // fall back to the minted scope rather than throw.
-  ['slack', (host, i) => host.liveWorkspaceId((i as { id: string }).id) || host.minted((i as { id: string }).id)],
+  ['slack', (host, int) => host.liveWorkspaceId(int.id) || host.minted(int.id)],
   // The public bot id prefix survives a BotFather token rotation.
   [
     'telegram',
-    (host, i) => {
-      const botId = telegramBotId((i as TelegramConfig).telegram.botToken)
-      return botId ? `bot${botId}` : host.minted((i as { id: string }).id)
+    (host, int) => {
+      const token = platformIntegrationConfig('telegram', int)?.botToken
+      const botId = token === undefined ? undefined : telegramBotId(token)
+      return botId ? `bot${botId}` : host.minted(int.id)
     }
   ],
   // App id + region is the tenant anchor Feishu/Lark exposes to us.
   [
     'feishu',
-    (_host, i) => {
-      const feishu = (i as FeishuConfig).feishu
-      return `${feishu.region}:${feishu.appId}`
+    (host, int) => {
+      const feishu = platformIntegrationConfig('feishu', int)
+      return feishu ? `${feishu.region}:${feishu.appId}` : host.minted(int.id)
     }
   ]
 ])
@@ -113,10 +110,7 @@ const TENANT_SCOPE = new Map<string, (host: TenantScopeHost, integration: unknow
  *  construction: a platform with no durable tenant id of its own — Discord, and
  *  anything unregistered — gets the minted per-integration scope. Undefined ⇒
  *  the CP records no owner (fail closed), never a guessed one. */
-export function tenantScopeFor(
-  host: TenantScopeHost,
-  integration: { id: string; platform: string }
-): string | undefined {
+export function tenantScopeFor(host: TenantScopeHost, integration: Integration): string | undefined {
   const strategy = TENANT_SCOPE.get(integration.platform)
   return strategy ? strategy(host, integration) : host.minted(integration.id)
 }

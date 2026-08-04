@@ -23,7 +23,7 @@
  */
 import { z } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
-import type { IntegrationCoreEnvelope, IntegrationTelegramConfig } from '@agentconnect.md/protocol'
+import type { IntegrationTelegramConfig } from '@agentconnect.md/protocol'
 import type { BotSecretMaterial } from '../../persistence/ports.js'
 import type { TelegramBotVerifier } from '../../http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../http/telegram-bot-profile.js'
@@ -43,16 +43,12 @@ export type TelegramCreateCredentials = z.infer<typeof TelegramCreateCredentials
  * The §6.4 opaque `IntegrationSpec.config` payload for one Telegram
  * integration — the body of `integrationToSpec`'s telegram arm
  * (`orchestrator/placement.ts`), extracted so the live placement path and the
- * provider's projector share ONE implementation. The routing knobs are
- * deliberately DUPLICATED from the core envelope: today's daemon readers still
- * take them from the opaque config (§6.4 tolerant-reader window).
- * Token-bearing — NEVER log the result.
+ * provider's projector share ONE implementation. Platform-private material
+ * ONLY: the routing knobs ride the core ENVELOPE, never this payload (§6.4
+ * final shape). Token-bearing — NEVER log the result.
  */
-export function telegramIntegrationConfig(
-  core: IntegrationCoreEnvelope,
-  secret: Pick<BotSecretMaterial, 'botToken'>
-): IntegrationTelegramConfig {
-  return { botToken: secret.botToken, bindRules: core.bindRules, mutedChannels: core.mutedChannels, gated: core.gated }
+export function telegramIntegrationConfig(secret: Pick<BotSecretMaterial, 'botToken'>): IntegrationTelegramConfig {
+  return { botToken: secret.botToken }
 }
 
 /** The provider's injected seams — the same functions `container.ts` wires
@@ -170,8 +166,8 @@ export function createTelegramCpProvider(deps: TelegramCpProviderDeps): CpPlatfo
     // §6.4 projection: same body as the live `integrationToSpec` telegram arm
     // (both call {@link telegramIntegrationConfig}). Async by contract; Telegram
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
-    async projectIntegrationConfig(integration, bot, core, secrets) {
-      return telegramIntegrationConfig(core, secrets)
+    async projectIntegrationConfig(integration, bot, _core, secrets) {
+      return telegramIntegrationConfig(secrets)
     }
 
     // `projectBotAssign` is DELIBERATELY absent: Telegram has no HTTP callback

@@ -278,7 +278,9 @@ describe('discord projection equivalence with the live integrationToSpec path', 
       agentId: INTEGRATION.agentId,
       platform: 'discord',
       core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false },
-      config: { botToken: TOKEN_WITH_APP_ID, bindRules, mutedChannels: ['C3'], gated: false }
+      // §6.4 final shape: platform-private material ONLY — the routing knobs
+      // ride the core envelope, never the config payload.
+      config: { botToken: TOKEN_WITH_APP_ID }
     })
   })
 
@@ -287,8 +289,8 @@ describe('discord projection equivalence with the live integrationToSpec path', 
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the discord projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, channels, gated)
-      expect(spec.core!.mode).toBe('direct')
-      expect(spec.config).toEqual(discordIntegrationConfig(spec.core!, SECRET))
+      expect(spec.core.mode).toBe('direct')
+      expect(spec.config).toEqual(discordIntegrationConfig(SECRET))
       // The payload satisfies the daemon reader's wire schema (§6.4).
       expect(() => IntegrationDiscordConfig.parse(spec.config)).not.toThrow()
     })

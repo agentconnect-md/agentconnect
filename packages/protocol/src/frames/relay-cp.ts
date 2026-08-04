@@ -582,17 +582,6 @@ export const RcBotAssign = z.object({
   // the relay's built-in seed; absent (older CP) ⇒ the seed answers, and an id
   // neither classifies defaults to 'chat' (fail-closed in coordsDecision).
   originKind: z.string().min(1).optional(),
-  botUserId: z.string().optional(), // resolved by CP; for echo suppression + mention match
-  // Platform app id (Slack "A…", Feishu "cli_…") — lets the relay demux an
-  // inbound POST to this bot in O(1). Slack may omit it for a legacy manual
-  // install, in which case the relay falls back to a signing-secret scan.
-  apiAppId: z.string().optional(),
-  // Slack workspace id ("T…", == the Events API envelope `team_id`). REQUIRED for a
-  // distributed (platform-published) app: every workspace install shares one
-  // `api_app_id` AND one signing secret, so only the composite `(api_app_id,
-  // team_id)` key can demux — a signature scan would verify against every sibling
-  // install. When set, the relay demuxes this bot ONLY on the composite key.
-  teamId: z.string().optional(),
   // Install GENERATION of the credentials below — advanced by the CP every time a
   // fresh credential lands on this bot. The relay echoes it back in
   // `rc/bot-revoked` so the CP can refuse a revocation observed under a credential
@@ -600,10 +589,15 @@ export const RcBotAssign = z.object({
   // ⇒ the CP applies revocations without the revision arm of the fence.
   credentialRevision: z.number().int().nonnegative().optional(),
   secrets: RcBotSecrets,
-  // §6.7 opaque INGRESS bag, dual-emitted beside the named demux fields above
-  // (apiAppId/teamId/botUserId). Shape validation belongs to the platform module
-  // on both ends (S3); the relay ignores it during the dual-shape window and the
-  // named fields stop being emitted once the fleet reads the bag.
+  // §6.7 opaque INGRESS bag — the ONE carrier of the per-platform demux identity
+  // (Slack: apiAppId "A…" + the distributed-install teamId "T…" + botUserId;
+  // Feishu: appId "cli_…"). Shape validation belongs to the platform module on
+  // both ends (S3): the CP provider's `projectBotAssign` produces it, the
+  // relay's `toBotAssignment` / platform ingress plugin consume it. The legacy
+  // named top-level twins (`apiAppId`/`teamId`/`botUserId`) left the schema with
+  // the S3 protocol cleanup — emission stopped when the bag landed (#556) and
+  // the bag-preferring reader shipped before that (#545), so nothing deployed
+  // reads or writes them.
   ingress: z.unknown().optional(),
   members: z.array(z.object({ daemonId: z.string().uuid(), agentIds: z.array(z.string().uuid()) })),
   agents: z.array(RcAgentDirEntry).default([]), // member directory (id→name) for the config modal

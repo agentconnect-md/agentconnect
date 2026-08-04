@@ -887,12 +887,8 @@ describe('daemon durable inbox', () => {
       {
         id: 'int-a',
         platform: 'slack',
-        slack: {
-          botToken: 'b',
-          appToken: 'a',
-          botUserId: 'UBOT',
-          bindRules: [{ match: { kind: 'dm' } }]
-        }
+        core: { bindRules: [{ match: { kind: 'dm' } }] },
+        config: { botToken: 'b', appToken: 'a', botUserId: 'UBOT' }
       }
     ]
     const conn = { postMessage: vi.fn(async () => undefined), setStatus: vi.fn(async () => {}) }
@@ -927,12 +923,8 @@ describe('daemon durable inbox', () => {
         {
           id: integrationId,
           platform: 'slack',
-          slack: {
-            mode: 'direct',
-            botToken: 'b',
-            appToken: 'p',
-            bindRules: []
-          }
+          core: { mode: 'direct', bindRules: [] },
+          config: { botToken: 'b', appToken: 'p' }
         }
       ]
       ;(daemon as any).connByIntegration.set(integrationId, {

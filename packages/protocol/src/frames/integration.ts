@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { Platform } from './route.js'
 
 /**
  * Platform integration distribution (C→D) — the Slack "install" flow.
@@ -9,11 +10,11 @@ import { z } from 'zod'
  * Mode connection from the delivered config (see slack/connection.ts).
  *
  * SECURITY: `integration/upsert` and `RegisterOk.integrations[]` carry PLAINTEXT
- * platform tokens (botToken/appToken/appSecret). These payloads MUST NEVER be logged — no
- * body dump on decode error, no register/ok snapshot debug dump. The daemon
- * persists them into the owning agent's local `agent.json` (same trust boundary
- * as hand-authored agents, which already keep tokens there) so integrations
- * survive a restart with the CP down.
+ * platform tokens (botToken/appToken/appSecret). These payloads MUST NEVER be
+ * logged — no body dump on decode error, no register/ok snapshot debug dump.
+ * CP-owned integrations live only in daemon MEMORY and are re-converged on
+ * reconnect; hand-authored agents keep tokens in their own `agent.json` (the
+ * same trust boundary as the daemon process).
  *
  * `signingSecret` is intentionally absent: Socket Mode authenticates with the
  * app-level token, so the daemon never needs a signing secret.
@@ -37,95 +38,72 @@ export const IntegrationBindRule = z.object({
 export type IntegrationBindRule = z.infer<typeof IntegrationBindRule>
 
 /**
- * The Slack config a daemon receives (no signingSecret). `mode` splits the two
- * distribution paths of shared-bot-relay.md §7.3:
+ * The Slack config payload (no signingSecret). Platform-PRIVATE material only
+ * (§6.4): the ingress mode and the routing knobs (`bindRules`/`mutedChannels`/
+ * `gated`) live in the CORE ENVELOPE — this block never duplicates them. What
+ * the envelope's `mode` means for Slack (shared-bot-relay.md §7.3):
  *
- *  - `direct` (today's behaviour, the default): the daemon owns the whole bot —
- *    it opens the Socket Mode connection itself (needs `appToken`) and arbitrates
- *    inbound locally (`bindRules`). Unchanged from before shared bots existed.
+ *  - `direct`: the daemon owns the whole bot — it opens the Socket Mode
+ *    connection itself, so the payload carries `appToken`.
  *  - `shared`: the bot's INBOUND lives on a relay (§4.1), so the daemon gets
  *    xoxb ONLY — enough to SEND (`chat.postMessage`, attachment fetch). No
  *    `appToken` (credential domaining: the daemon must not be able to subscribe
- *    the event stream) and no `bindRules` (routing is arbitrated in the relay,
- *    delivered pre-addressed). `botUserId` is optional and lazily resolved by the
+ *    the event stream). `botUserId` is optional and lazily resolved by the
  *    daemon via `auth.test` (same as direct) if the sender ever needs it.
  *
- * Modeled as a flat object with a defaulted discriminator (not a
- * `discriminatedUnion`) so specs persisted before this field existed still decode
- * as `direct`. `.superRefine` enforces the one hard per-mode requirement the union
- * would otherwise give: direct needs the app-level token.
+ * The direct-mode `appToken` requirement is a cross-field rule with the
+ * envelope's `mode`, so the daemon enforces it at its wire ingest, where both
+ * are in view (`cp/cp-integration-registry.ts` `toIntegration`) — §6.4 puts
+ * per-platform payload validation at the consuming edge.
  */
-export const IntegrationSlackConfig = z
-  .object({
-    mode: z.enum(['direct', 'shared']).default('direct'),
-    botToken: z.string(), // xoxb-…  (plaintext — never log) — always present (send path)
-    appToken: z.string().optional(), // xapp-… (plaintext — never log) — direct only (Socket Mode)
-    appId: z.string().optional(), // A… public metadata — permission-update deep link (especially shared mode)
-    // Multi-agent opt-in — the bot backs MANY agents, so an in-thread "Switch agent"
-    // control is meaningful. ONLY ever true in `shared` mode (an http/relay bot); a
-    // non-shareable http bot is still `shared` for routing but has one agent, so the
-    // switch control is suppressed. Defaults false so pre-field specs (and every direct
-    // bot) decode as non-shareable.
-    shareable: z.boolean().default(false),
-    botUserId: z.string().optional(), // lazily resolved via auth.test; may be seeded by CP
-    bindRules: z.array(IntegrationBindRule).default([]), // empty for shared (relay arbitrates)
-    // Channels the operator switched OFF. bindRules can only ADD reach, so an
-    // ungated integration — whose defaults are unscoped (@-mention anywhere + DMs) —
-    // has no way to say "not here" without a subtractive fence. A muted channel
-    // matches no rule of this integration at all: no mention, no thread continuity,
-    // no control command. Channels only (a DM is never muted this way); a GATED
-    // integration leaves this empty, since its Off is already the ABSENCE of a
-    // conversation-scoped rule. Defaults empty (pre-field specs).
-    mutedChannels: z.array(z.string()).default([]),
-    // Conversation gating (resource-visibility.md §14): true ⇒ this integration is
-    // fail-closed — the CP ships only conversation-scoped bindRules (no unscoped
-    // defaults), and the daemon answers explicitly-addressed unrouted messages with
-    // a one-time notice + reports DM conversations. Derived from the owning agent's
-    // restricted visibility; carries NO identities. Defaults false (pre-field specs).
-    gated: z.boolean().default(false)
-  })
-  .superRefine((c, ctx) => {
-    if (c.mode === 'direct' && !c.appToken)
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'direct slack requires appToken', path: ['appToken'] })
-  })
+export const IntegrationSlackConfig = z.object({
+  botToken: z.string(), // xoxb-…  (plaintext — never log) — always present (send path)
+  appToken: z.string().optional(), // xapp-… (plaintext — never log) — direct only (Socket Mode)
+  appId: z.string().optional(), // A… public metadata — permission-update deep link (especially shared mode)
+  // Multi-agent opt-in — the bot backs MANY agents, so an in-thread "Switch agent"
+  // control is meaningful. ONLY ever true in `shared` mode (an http/relay bot); a
+  // non-shareable http bot is still `shared` for routing but has one agent, so the
+  // switch control is suppressed. Defaults false (every direct bot decodes as
+  // non-shareable).
+  shareable: z.boolean().default(false),
+  botUserId: z.string().optional() // lazily resolved via auth.test; may be seeded by CP
+})
 export type IntegrationSlackConfig = z.infer<typeof IntegrationSlackConfig>
 
 /**
- * The Telegram config the daemon needs to open long-polling + route (grammY).
- * Telegram has a SINGLE BotFather HTTP token — no app-level token and no signing
- * secret (long-polling authenticates every getUpdates call with the bot token).
+ * The Telegram config payload — long-polling + routing (grammY). Telegram has a
+ * SINGLE BotFather HTTP token — no app-level token and no signing secret
+ * (long-polling authenticates every getUpdates call with the bot token).
  */
 export const IntegrationTelegramConfig = z.object({
-  botToken: z.string(), // BotFather "123456:ABC…"  (plaintext — never log)
-  bindRules: z.array(IntegrationBindRule).default([]),
-  mutedChannels: z.array(z.string()).default([]), // Off channels — see IntegrationSlackConfig.mutedChannels
-  gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
+  botToken: z.string() // BotFather "123456:ABC…"  (plaintext — never log)
 })
 export type IntegrationTelegramConfig = z.infer<typeof IntegrationTelegramConfig>
 
 /**
- * The Discord config the daemon needs to open the Gateway + route (discord.js).
- * Discord authenticates the Gateway with a SINGLE bot token — no Slack-style
- * app-level token and no signing secret. `applicationId` is public metadata (the
- * client id for the OAuth2 bot-invite URL); it is not secret material.
+ * The Discord config payload — the Gateway connection (discord.js). Discord
+ * authenticates the Gateway with a SINGLE bot token — no Slack-style app-level
+ * token and no signing secret. `applicationId` is public metadata (the client
+ * id for the OAuth2 bot-invite URL); it is not secret material.
  */
 export const IntegrationDiscordConfig = z.object({
   botToken: z.string(), // Bot <token>  (plaintext — never log)
-  applicationId: z.string().optional(), // client/application id — public, for the invite URL
-  bindRules: z.array(IntegrationBindRule).default([]),
-  mutedChannels: z.array(z.string()).default([]), // Off channels — see IntegrationSlackConfig.mutedChannels
-  gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
+  applicationId: z.string().optional() // client/application id — public, for the invite URL
 })
 export type IntegrationDiscordConfig = z.infer<typeof IntegrationDiscordConfig>
 
 /**
- * The Feishu / Lark config the daemon needs to open the long-connection WebSocket
- * (`@larksuiteoapi/node-sdk` `WSClient`) + route. A Feishu self-built app
+ * The Feishu / Lark config payload — the long-connection WebSocket
+ * (`@larksuiteoapi/node-sdk` `WSClient`) + REST client. A Feishu self-built app
  * authenticates with an `appId` + `appSecret` PAIR — the SDK exchanges them for a
  * short-lived `tenant_access_token` internally (no Slack-style app-level token, no
  * signing secret). `appId` is a semi-public identifier (`cli_…`); `appSecret` is
  * plaintext secret material — NEVER log it. `botOpenId` is the bot's own open_id
  * for @-mention routing; lazily resolved by the daemon via `bot/info` if absent.
+ *
+ * The envelope's `mode` decides the transport: `direct` opens the SDK long
+ * connection on the daemon; `shared` keeps only the authenticated REST client
+ * (callbacks arrive through the relay, pre-addressed over rd/*).
  *
  * `region` selects the open-platform gateway the daemon SDK (and CP verifier)
  * talk to — `'feishu'` = mainland China (`open.feishu.cn`, the SDK default) vs
@@ -137,26 +115,18 @@ export const FeishuRegion = z.enum(['feishu', 'lark'])
 export type FeishuRegion = z.infer<typeof FeishuRegion>
 
 export const IntegrationFeishuConfig = z.object({
-  // `direct` opens the SDK long connection on the daemon. `shared` keeps only
-  // the authenticated REST client on the daemon; HTTP callbacks arrive through
-  // the relay and are delivered pre-addressed over rd/*.
-  mode: z.enum(['direct', 'shared']).default('direct'),
   appId: z.string(), // cli_… — app identifier (semi-public), needed for REST and direct WS
   appSecret: z.string(), // app secret (plaintext — never log)
   botOpenId: z.string().optional(), // bot's own open_id; lazily resolved via bot/info
-  region: FeishuRegion.default('feishu'), // open-platform gateway: feishu.cn vs larksuite.com
-  bindRules: z.array(IntegrationBindRule).default([]),
-  mutedChannels: z.array(z.string()).default([]), // Off channels — see IntegrationSlackConfig.mutedChannels
-  gated: z.boolean().default(false) // conversation gating — see IntegrationSlackConfig.gated
+  region: FeishuRegion.default('feishu') // open-platform gateway: feishu.cn vs larksuite.com
 })
 export type IntegrationFeishuConfig = z.infer<typeof IntegrationFeishuConfig>
 
 /**
  * §6.4 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
- * reads — routing, gating, ingress mode — platform-independent. Dual-shape window:
- * the CP emits this ALONGSIDE the legacy nested per-platform block (below) and the
- * daemon prefers it; once the fleet reads the envelope, legacy emission drops and
- * `config` becomes the only platform payload (validated by the platform module, S2).
+ * reads — routing, gating, ingress mode — platform-independent. This is the ONLY
+ * carrier of these knobs on the wire: the opaque per-platform `config` payload
+ * never duplicates them (the daemon reads routing exclusively from here).
  */
 export const IntegrationCoreEnvelope = z.object({
   mode: z.enum(['direct', 'shared']).default('direct'),
@@ -168,51 +138,38 @@ export type IntegrationCoreEnvelope = z.infer<typeof IntegrationCoreEnvelope>
 
 /**
  * One platform integration, owned by exactly one agent. Also the element type of
- * `RegisterOk.integrations[]` (the per-daemon reconcile set). Discriminated on
- * `platform`: the daemon opens a Slack Socket Mode connection, a Telegram
- * long-poll, a Discord Gateway, or a Feishu long-connection from whichever variant
- * is delivered.
+ * `RegisterOk.integrations[]` (the per-daemon reconcile set) and of
+ * `AgentActivate.integrations[]` (the move bundle).
  *
- * ENVELOPE-ONLY (§6.4, legacy RETIRED): each variant is `core` (routing knobs)
- * + opaque `config`, validated by the consuming platform module against its own
- * per-platform schema. The legacy nested block (`slack` / `telegram` /
- * `discord` / `feishu`) retired one release after CP emission stopped; a frame
- * from an older CP still parses (non-strict objects strip the stale key) and
- * reads through `config`, which that CP dual-emitted since §6.4 landed. A
- * variant carrying no usable `config` is rejected by the reader, not the schema
- * (tolerant-reader rule). Collapsing the union to one flat `platformId` object
- * is an S3 protocol cleanup — it changes the TYPE for every consumer.
+ * §6.4 FINAL SHAPE (S3): one flat object — identity + an OPEN `platform` id +
+ * the core envelope + an opaque per-platform `config`. Core never interprets
+ * `config`; the consuming platform module validates it against its own schema,
+ * resolved through the platform registry on the daemon
+ * (`platforms/integration-config.ts`), and the CP's platform provider is the
+ * only producer (`projectIntegrationConfig`, §9). The closed four-literal
+ * discriminated union this replaces — and the per-variant duplication of the
+ * routing knobs inside each config block — was the S1b dual-shape window;
+ * pre-release, every deployment cut over in one release, so the legacy shape
+ * has no readers or writers left.
+ *
+ *  - `platform` stays the field name (not §6.4's sketch spelling `platformId`):
+ *    every platform-bearing frame on this wire (`SessionKey`, `rc/bot-assign`,
+ *    `event/session`, …) spells it `platform`, typed by the open
+ *    `Platform = z.string()` (S1a).
+ *  - `core` is REQUIRED. Its absence was the dual-shape tolerance; defaulting
+ *    it now would silently mint a rule-less integration out of a stale writer,
+ *    so a core-less spec fails the frame instead (fail-closed and visible).
+ *  - a spec whose `config` is absent or fails the platform module's schema is
+ *    rejected by the READER (skip + warn), not the frame schema — one bad spec
+ *    must not kill the register/ok snapshot it rides in.
  */
-export const IntegrationSpec = z.discriminatedUnion('platform', [
-  z.object({
-    integrationId: z.string().uuid(),
-    agentId: z.string().uuid(),
-    platform: z.literal('slack'),
-    core: IntegrationCoreEnvelope.optional(),
-    config: z.unknown().optional()
-  }),
-  z.object({
-    integrationId: z.string().uuid(),
-    agentId: z.string().uuid(),
-    platform: z.literal('telegram'),
-    core: IntegrationCoreEnvelope.optional(),
-    config: z.unknown().optional()
-  }),
-  z.object({
-    integrationId: z.string().uuid(),
-    agentId: z.string().uuid(),
-    platform: z.literal('discord'),
-    core: IntegrationCoreEnvelope.optional(),
-    config: z.unknown().optional()
-  }),
-  z.object({
-    integrationId: z.string().uuid(),
-    agentId: z.string().uuid(),
-    platform: z.literal('feishu'),
-    core: IntegrationCoreEnvelope.optional(),
-    config: z.unknown().optional()
-  })
-])
+export const IntegrationSpec = z.object({
+  integrationId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  platform: Platform,
+  core: IntegrationCoreEnvelope,
+  config: z.unknown().optional()
+})
 export type IntegrationSpec = z.infer<typeof IntegrationSpec>
 
 /** C→D EVT — install/update an integration on the owning agent's daemon. */

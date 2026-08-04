@@ -101,12 +101,8 @@ function makeRoutable(daemon: Daemon) {
     {
       id: 'int-a',
       platform: 'slack',
-      slack: {
-        botToken: 'b',
-        appToken: 'p',
-        botUserId: 'UBOTA',
-        bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }]
-      }
+      core: { bindRules: [{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }] },
+      config: { botToken: 'b', appToken: 'p', botUserId: 'UBOTA' }
     }
   ]
   const conn = {
@@ -161,7 +157,7 @@ describe('Daemon in-conversation commands', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
-    integration.slack.bindRules = [{ match: { kind: 'mention' } }]
+    integration.core.bindRules = [{ match: { kind: 'mention' } }]
     const scope = 'slack:C-top:top-level'
     ;(daemon as any).store.tripLoopGuard(scope, 1, 'automatic_turn_burst')
     expect((daemon as any).store.listSessions()).toHaveLength(0)
@@ -995,7 +991,7 @@ describe('Daemon managed-agent bot ingress', () => {
     conn.updateBlocks = vi.fn(async () => {})
     conn.getThreadReplies = vi.fn(async () => [])
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
-    integration.slack.bindRules = [{ match: { kind: 'mention' } }, { channel: 'C1', match: { kind: 'auto' } }]
+    integration.core.bindRules = [{ match: { kind: 'mention' } }, { channel: 'C1', match: { kind: 'auto' } }]
     ;(daemon as any).cpCollab.replace({
       generation: 1,
       channels: [
@@ -1421,9 +1417,9 @@ describe('Slack interactive status bar', () => {
     await daemon.start()
     const conn = routableWithBlocks(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
-    integration.slack.mode = 'shared'
-    integration.slack.shareable = true // multi-agent ⇒ the overflow offers Switch agent
-    delete integration.slack.appToken
+    integration.core.mode = 'shared'
+    integration.config.shareable = true // multi-agent ⇒ the overflow offers Switch agent
+    delete integration.config.appToken
 
     // Use a real shared channel shape to prove status chrome uses the selected agent
     // identity just like native loading states and ordinary replies.
@@ -1476,9 +1472,9 @@ describe('Slack interactive status bar', () => {
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
     // A single-agent http bot: relay-routed (mode 'shared') but NOT shareable, so the
     // in-thread overflow must omit Switch agent (nothing to switch to).
-    integration.slack.mode = 'shared'
-    integration.slack.shareable = false
-    delete integration.slack.appToken
+    integration.core.mode = 'shared'
+    integration.config.shareable = false
+    delete integration.config.appToken
 
     const channelMessage = {
       ...dm('100', 'hi'),
@@ -1516,8 +1512,8 @@ describe('Slack interactive status bar', () => {
     await daemon.start()
     makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
-    integration.slack.mode = 'shared'
-    delete integration.slack.appToken
+    integration.core.mode = 'shared'
+    delete integration.config.appToken
     const sharedTransportScope = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
     const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
     const openStatusModal = vi.fn(async () => {})
@@ -1564,8 +1560,8 @@ describe('Slack interactive status bar', () => {
     await daemon.start()
     makeRoutable(daemon)
     const integration = (daemon as any).agents.get('bot-a').integrations[0]
-    integration.slack.mode = 'shared'
-    delete integration.slack.appToken
+    integration.core.mode = 'shared'
+    delete integration.config.appToken
 
     const sharedTransportScope = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
     const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
@@ -1739,13 +1735,8 @@ describe('Slack interactive status bar', () => {
       {
         id: 'int-a',
         platform: 'feishu',
-        feishu: {
-          mode: 'shared',
-          appId: 'cli_http_app',
-          appSecret: 'secret',
-          region: 'lark',
-          bindRules: []
-        }
+        core: { mode: 'shared', bindRules: [] },
+        config: { appId: 'cli_http_app', appSecret: 'secret', region: 'lark' }
       }
     ]
     const response = { toast: { type: 'info' as const, content: 'Cancellation requested.' } }
@@ -2037,13 +2028,8 @@ describe('Slack interactive status bar', () => {
         {
           id: 'int-lark',
           platform: 'feishu',
-          feishu: {
-            mode: 'shared',
-            appId: 'cli_lark',
-            appSecret: 'secret',
-            region: 'lark',
-            bindRules: []
-          }
+          core: { mode: 'shared', bindRules: [] },
+          config: { appId: 'cli_lark', appSecret: 'secret', region: 'lark' }
         }
       ]
     })

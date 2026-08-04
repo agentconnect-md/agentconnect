@@ -616,7 +616,8 @@ describe('Daemon interrupt safety gates', () => {
         {
           id: integrationId,
           platform: 'slack',
-          slack: { mode: 'direct', botToken: `b-${agentId}`, appToken: `p-${agentId}`, bindRules: [] }
+          core: { mode: 'direct', bindRules: [] },
+          config: { botToken: `b-${agentId}`, appToken: `p-${agentId}` }
         }
       ]
       ;(daemon as any).connByIntegration.set(integrationId, {
@@ -677,12 +678,8 @@ describe('Daemon interrupt safety gates', () => {
         {
           id: 'int-a',
           platform: 'slack',
-          slack: {
-            botToken: 'xoxb-test',
-            appToken: 'xapp-test',
-            botUserId: 'UBOTA',
-            bindRules: [{ match: { kind: 'mention' } }]
-          }
+          core: { bindRules: [{ match: { kind: 'mention' } }] },
+          config: { botToken: 'xoxb-test', appToken: 'xapp-test', botUserId: 'UBOTA' }
         }
       ]
       const conn = { postMessage: vi.fn(async () => {}), setStatus: vi.fn(async () => {}) }

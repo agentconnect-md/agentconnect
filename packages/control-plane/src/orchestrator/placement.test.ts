@@ -93,7 +93,7 @@ const channel = (
 describe('integrationToSpec bindRules', () => {
   it('defaults to mention + dm with no channels', async () => {
     const spec = await specOf(INTEGRATION, SECRET)
-    expect(slackCfg(spec).bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(spec.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
     expect(slackCfg(spec).botToken).toBe(SECRET.botToken)
   })
 
@@ -103,7 +103,7 @@ describe('integrationToSpec bindRules', () => {
       channel('C2', 'any'),
       channel('C3', 'any')
     ])
-    expect(slackCfg(spec).bindRules).toEqual([
+    expect(spec.core.bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: 'C2', match: { kind: 'auto' } },
@@ -117,7 +117,7 @@ describe('integrationToSpec bindRules', () => {
       channel('D1', 'any', 'im'),
       channel('G1', 'any', 'mpim')
     ])
-    expect(slackCfg(spec).bindRules).toEqual([
+    expect(spec.core.bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: 'C1', match: { kind: 'auto' } },
@@ -132,7 +132,7 @@ describe('integrationToSpec bindRules', () => {
     if (spec.platform !== 'telegram') throw new Error('expected telegram spec')
     expect(telegramCfg(spec).botToken).toBe('123:abc')
     expect(spec).not.toHaveProperty('slack')
-    expect(telegramCfg(spec).bindRules).toEqual([
+    expect(spec.core.bindRules).toEqual([
       { match: { kind: 'mention' } },
       { match: { kind: 'dm' } },
       { channel: '-100', match: { kind: 'auto' } }
@@ -149,8 +149,8 @@ describe('integrationToSpec conversation gating (§14)', () => {
       true
     )
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(slackCfg(spec).gated).toBe(true)
-    expect(slackCfg(spec).bindRules).toEqual([
+    expect(spec.core.gated).toBe(true)
+    expect(spec.core.bindRules).toEqual([
       { channel: 'C1', match: { kind: 'mention' } },
       { channel: 'C2', match: { kind: 'auto' } },
       { channel: 'D1', match: { kind: 'dm' } }
@@ -160,19 +160,19 @@ describe('integrationToSpec conversation gating (§14)', () => {
   it('gated with no enabled conversations ships an EMPTY rule set (fail-closed)', async () => {
     const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'off', 'im')], true)
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(slackCfg(spec).bindRules).toEqual([])
-    expect(slackCfg(spec).gated).toBe(true)
+    expect(spec.core.bindRules).toEqual([])
+    expect(spec.core.gated).toBe(true)
   })
 
   it("non-gated: an 'off' channel keeps the defaults but is muted; gated is false", async () => {
     const spec = await specOf(INTEGRATION, SECRET, [channel('C1', 'off'), channel('D1', 'any', 'im')])
     if (spec.platform !== 'slack') throw new Error('expected slack spec')
-    expect(slackCfg(spec).gated).toBe(false)
+    expect(spec.core.gated).toBe(false)
     // The defaults are unscoped, so Off cannot be expressed by withholding a rule —
     // the fence is what silences C1. The im row adds no auto rule either; DMs are
     // covered by the unscoped dm default.
-    expect(slackCfg(spec).bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
-    expect(slackCfg(spec).mutedChannels).toEqual(['C1'])
+    expect(spec.core.bindRules).toEqual([{ match: { kind: 'mention' } }, { match: { kind: 'dm' } }])
+    expect(spec.core.mutedChannels).toEqual(['C1'])
   })
 })
 
@@ -223,12 +223,16 @@ describe('integrationToSpec mutedChannels', () => {
 })
 
 /**
- * §9 projector seam: core owns the envelope and the two fail-closed fences; the
- * opaque `config` is the provider's. Both fences are unreachable in production —
- * every persistence write already passes `toDbPlatform`, and the create route
- * admits only registered platform ids — but the previous code's unrecognized-
- * platform arm silently FELL THROUGH to the slack branch, so pin that it does
- * not any more.
+ * §9 projector seam: core owns the envelope and ONE fail-closed fence — a
+ * registered provider is required; the opaque `config` is the provider's. The
+ * fence is unreachable in production — every persistence write already passes
+ * `toDbPlatform` and the create route admits only registered platform ids —
+ * but the pre-S3 code's unrecognized-platform arm silently FELL THROUGH to the
+ * slack branch, so pin that it does not any more. (The wire-side `toDbPlatform`
+ * narrowing died with the union flatten: `IntegrationSpec.platform` is open, so
+ * the session-identity and unknown ids below now hit the same provider refusal
+ * instead of the persistence fence's two messages. `toDbPlatform` itself lives
+ * on unchanged at every persistence write.)
  */
 describe('integrationToSpec platform fences (§9)', () => {
   const foreign = { ...INTEGRATION, platform: 'mastodon' }
@@ -244,17 +248,17 @@ describe('integrationToSpec platform fences (§9)', () => {
     )
   })
 
-  it('refuses an id outside the served set (the persistence fence, reused on the wire)', async () => {
+  it('refuses an id outside the served set at the provider fence', async () => {
     await expect(
       integrationToSpec(PLATFORMS, foreign, bot({ platform: 'mastodon' }), SECRET, [], false)
-    ).rejects.toThrow(/unknown platform mastodon/)
+    ).rejects.toThrow(/no control-plane platform provider registered for mastodon/)
   })
 
   it('refuses a session-identity id, which has no persisted integration at all', async () => {
     const webchat = { ...INTEGRATION, platform: 'webchat' }
     await expect(
       integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [], false)
-    ).rejects.toThrow(/session-identity platform/)
+    ).rejects.toThrow(/no control-plane platform provider registered for webchat/)
   })
 })
 

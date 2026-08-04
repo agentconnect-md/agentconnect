@@ -84,7 +84,8 @@ function makeRoutable(daemon: Daemon) {
     {
       id: 'int-a',
       platform: 'slack',
-      slack: { botToken: 'b', appToken: 'p', bindRules: [{ match: { kind: 'dm' } }] }
+      core: { bindRules: [{ match: { kind: 'dm' } }] },
+      config: { botToken: 'b', appToken: 'p' }
     }
   ]
   let n = 0

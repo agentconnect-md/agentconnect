@@ -58,12 +58,12 @@ function scaffold(
           {
             id: `int-${a.id}`,
             platform: 'slack',
-            slack: {
+            core: { bindRules: [{ match: { kind: a.trigger ?? 'auto' }, channel: 'C1' }] },
+            config: {
               botToken: distinctTokens ? `xoxb-${a.id}` : 'xoxb',
               // Socket-mode Slack keys its connection identity on the APP token, so this
               // is what actually separates two dedicated apps into two transport scopes.
-              appToken: distinctTokens ? `xapp-${a.id}` : 'xapp',
-              bindRules: [{ match: { kind: a.trigger ?? 'auto' }, channel: 'C1' }]
+              appToken: distinctTokens ? `xapp-${a.id}` : 'xapp'
             }
           }
         ],

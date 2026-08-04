@@ -533,7 +533,8 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     expect(control.upserts[0]?.spec).toMatchObject({
       platform: 'feishu',
-      config: { mode: 'shared', botOpenId: 'ou_http_bot' }
+      core: { mode: 'shared' },
+      config: { botOpenId: 'ou_http_bot' }
     })
   })
 

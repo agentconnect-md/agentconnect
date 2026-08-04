@@ -21,7 +21,8 @@ const a = (id: string): Agent =>
 const slackInt = (id: string) => ({
   id,
   platform: 'slack' as const,
-  slack: { botToken: 'xoxb', appToken: 'xapp', bindRules: [] }
+  core: { bindRules: [] },
+  config: { botToken: 'xoxb', appToken: 'xapp' }
 })
 
 const actual = (...agents: Agent[]) => new Map(agents.map((g) => [g.id, g]))

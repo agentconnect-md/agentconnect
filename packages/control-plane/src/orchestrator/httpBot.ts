@@ -56,7 +56,10 @@ export interface HttpBotLog {
 
 /** The compiled routing table for one HTTP bot (relay-agnostic). */
 interface Compiled {
-  platform: 'slack' | 'telegram' | 'discord' | 'feishu'
+  /** The bot row's own OPEN platform id (S1a `Platform` policy) — rides
+   *  `rc/bot-assign.platform` verbatim; the relay's assign handler refuses an
+   *  id it has no ingress plugin for, gracefully. */
+  platform: string
   members: { daemonId: string; agentIds: string[] }[]
   /** Member directory (id→name→daemon) for the relay's config-modal selector. */
   agents: { agentId: string; name: string; daemonId: string; integrationId: string }[]
@@ -512,7 +515,11 @@ export class HttpBotOrchestrator {
    */
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
-    if (!bot || (bot.platform !== 'slack' && bot.platform !== 'feishu') || bot.transport !== 'http') {
+    // A conversation report can only originate from relay ingress, so the gate is
+    // the same §9 signal the assign builder runs on: a platform with no
+    // `projectBotAssign` has no relay path and no relay can be reporting for it.
+    // (This retires the hand-written `slack | feishu` list that used to sit here.)
+    if (!bot || !this.platforms.get(bot.platform)?.projectBotAssign || bot.transport !== 'http') {
       this.log.warn({ botId }, 'http-bot: conversation report for a non-http/unknown IM bot — ignored')
       return
     }
@@ -890,14 +897,13 @@ export class HttpBotOrchestrator {
       .filter((k) => k.startsWith(dmPrefix))
       .map((k) => k.slice(dmPrefix.length))
     return {
-      platform:
-        bot.platform === 'slack'
-          ? 'slack'
-          : bot.platform === 'telegram'
-            ? 'telegram'
-            : bot.platform === 'discord'
-              ? 'discord'
-              : 'feishu',
+      // The row's own id, verbatim. The pre-flatten ternary narrowed it into the
+      // closed wire enum and coerced anything unrecognized to 'feishu' — with the
+      // open `Platform` (S1a) the honest value rides instead, and the relay's
+      // plugin-registry lookup is the consumer that refuses an unserved id
+      // (`relay-ingress-manager.assign`: warn + skip, never the socket). The arm
+      // stays unreachable either way: the create route admits only registered ids.
+      platform: bot.platform,
       members,
       agents,
       routes,
@@ -971,11 +977,10 @@ export class HttpBotOrchestrator {
     compiled: Compiled,
     secret: BotSecretMaterial
   ): Promise<RcBotAssign | null> {
-    // §6.7 emission flip (the last S1b dual-shape residue): the opaque ingress
-    // bag is the ONE carrier of the demux identity — the relay's bag-preferring
-    // reader shipped first (#545). The retired named top-level fields stay
-    // OPTIONAL in the wire schema so an older relay's tolerant reader is not
-    // broken by their absence; they leave the schema with the next cleanup.
+    // §6.7: the opaque ingress bag is the ONE carrier of the demux identity —
+    // the bag-preferring reader shipped first (#545), emission flipped with
+    // #556, and the S3 protocol cleanup removed the legacy named top-level
+    // fields from the wire schema outright.
     //
     // §9 projector adoption (S3): the two bags come from the platform provider,
     // so the four-way platform fork is gone — core assembles everything else on

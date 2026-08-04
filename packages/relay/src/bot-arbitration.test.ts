@@ -360,12 +360,13 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(toBotAssignment({ ...base, secrets: { botToken: 'xoxb-only' } } as never)).toBeNull()
   })
 
-  // §6.7 demux identity is dual-shape: prefer the opaque ingress bag, fall back
-  // to the named top-level fields. Wrong apiAppId/teamId misroutes inbound
-  // webhook demux, so each arm is pinned.
+  // §6.7: the opaque ingress bag is the ONE carrier of the demux identity. The
+  // legacy named top-level twins left the wire schema with the S3 cleanup —
+  // there is no fallback to pin any more, only the bag read and its fail-safe
+  // omissions. Wrong apiAppId/teamId misroutes inbound webhook demux.
   const secrets = { botToken: 'xoxb-x', signingSecret: 'sig' }
 
-  it('reads demux identity from the ingress bag alone (post-flip CP)', () => {
+  it('reads demux identity from the ingress bag', () => {
     const a = toBotAssignment({
       ...base,
       secrets,
@@ -374,7 +375,10 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(a).toMatchObject({ apiAppId: 'A9', teamId: 'T9', botUserId: 'U9' })
   })
 
-  it('falls back to the named top-level fields when no bag rides (pre-flip CP)', () => {
+  it('IGNORES the retired named top-level fields (deleted from the schema; stripped on decode)', () => {
+    // A frame hand-built with the pre-#556 named fields and no bag yields NO
+    // demux identity: the bot serves through the bounded verify-scan, exactly
+    // like a manual-paste install. Nothing deployed emits this shape.
     const a = toBotAssignment({
       ...base,
       secrets,
@@ -382,33 +386,22 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
       teamId: 'T1',
       botUserId: 'U1'
     } as never)
-    expect(a).toMatchObject({ apiAppId: 'A1', teamId: 'T1', botUserId: 'U1' })
+    expect(a && 'apiAppId' in a).toBe(false)
+    expect(a && 'teamId' in a).toBe(false)
+    expect(a && 'botUserId' in a).toBe(false)
   })
 
-  it('prefers the bag over the named fields when both ride (dual-emission window)', () => {
+  it('reads a non-string bag value per key as ABSENT — never poisoned, never guessed', () => {
+    // The bag is z.unknown() on the wire — a malformed value must not become a
+    // demux key that misroutes inbound deliveries.
     const a = toBotAssignment({
       ...base,
       secrets,
-      ingress: { apiAppId: 'A-bag', teamId: 'T-bag', botUserId: 'U-bag' },
-      apiAppId: 'A-named',
-      teamId: 'T-named',
-      botUserId: 'U-named'
+      ingress: { apiAppId: 42, teamId: null, botUserId: 'U-bag' }
     } as never)
-    expect(a).toMatchObject({ apiAppId: 'A-bag', teamId: 'T-bag', botUserId: 'U-bag' })
-  })
-
-  it('ignores non-string bag values per key, falling back to the named field', () => {
-    // The bag is z.unknown() on the wire — a malformed value must not poison the
-    // identity when a valid named fallback rides beside it.
-    const a = toBotAssignment({
-      ...base,
-      secrets,
-      ingress: { apiAppId: 42, teamId: null, botUserId: 'U-bag' },
-      apiAppId: 'A-named',
-      teamId: 'T-named',
-      botUserId: 'U-named'
-    } as never)
-    expect(a).toMatchObject({ apiAppId: 'A-named', teamId: 'T-named', botUserId: 'U-bag' })
+    expect(a).toMatchObject({ botUserId: 'U-bag' })
+    expect(a && 'apiAppId' in a).toBe(false)
+    expect(a && 'teamId' in a).toBe(false)
   })
 
   it('omits absent identity fields rather than inventing them', () => {

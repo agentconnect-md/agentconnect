@@ -46,7 +46,7 @@
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
-import type { IntegrationCoreEnvelope, IntegrationSlackConfig } from '@agentconnect.md/protocol'
+import type { IntegrationSlackConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, SlackUserConfigStore } from '../../persistence/ports.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../http/slack-identity.js'
 import type { SlackConfigApi } from '../../http/slack-config-api.js'
@@ -139,22 +139,17 @@ export const SlackCpEnvSchema = {
  * (`orchestrator/placement.ts`), extracted so the live placement path and the
  * provider's projector share ONE implementation. This daemon owns the Socket
  * Mode connection, so the app-level token rides along; a socket bot is
- * single-agent, so it is never shareable. The routing knobs are deliberately
- * DUPLICATED from the core envelope (§6.4 tolerant-reader window).
- * Token-bearing — NEVER log the result.
+ * single-agent, so it is never shareable. Platform-private material ONLY: the
+ * routing knobs (and the ingress mode) ride the core ENVELOPE, never this
+ * payload (§6.4 final shape). Token-bearing — NEVER log the result.
  */
 export function slackIntegrationConfig(
-  core: IntegrationCoreEnvelope,
   secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>
 ): IntegrationSlackConfig {
   return {
-    mode: 'direct',
     shareable: false,
     botToken: secret.botToken,
-    appToken: secret.appToken ?? '',
-    bindRules: core.bindRules,
-    mutedChannels: core.mutedChannels,
-    gated: core.gated
+    appToken: secret.appToken ?? ''
   }
 }
 
@@ -168,19 +163,14 @@ export function slackIntegrationConfig(
  * deep link). Token-bearing — NEVER log.
  */
 export function slackSharedIntegrationConfig(
-  core: IntegrationCoreEnvelope,
   secret: Pick<BotSecretMaterial, 'botToken'>,
   shareable: boolean,
   providerAppId?: string
 ): IntegrationSlackConfig {
   return {
-    mode: 'shared',
     shareable,
     botToken: secret.botToken,
-    ...(providerAppId ? { appId: providerAppId } : {}),
-    bindRules: core.bindRules,
-    mutedChannels: core.mutedChannels,
-    gated: core.gated
+    ...(providerAppId ? { appId: providerAppId } : {})
   }
 }
 
@@ -500,10 +490,10 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     // (`integrations.ts`) — the same bodies the live `integrationToSpec` /
     // `httpIntegrationToSpec` slack arms call. Async by contract; Slack
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
-    async projectIntegrationConfig(integration, bot, core, secrets) {
+    async projectIntegrationConfig(integration, bot, _core, secrets) {
       return bot.transport === 'http'
-        ? slackSharedIntegrationConfig(core, secrets, bot.shareable, bot.slackAppId ?? undefined)
-        : slackIntegrationConfig(core, secrets)
+        ? slackSharedIntegrationConfig(secrets, bot.shareable, bot.slackAppId ?? undefined)
+        : slackIntegrationConfig(secrets)
     },
 
     // §6.7 projection: same body as the live `buildAssign` slack fork (both

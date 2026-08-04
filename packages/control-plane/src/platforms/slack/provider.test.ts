@@ -460,14 +460,12 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
       agentId: INTEGRATION.agentId,
       platform: 'slack',
       core: { mode: 'direct', bindRules, mutedChannels: ['C3'], gated: false },
+      // §6.4 final shape: platform-private material ONLY — the routing knobs
+      // and the ingress mode ride the core envelope, never the config payload.
       config: {
-        mode: 'direct',
         shareable: false, // a socket bot is single-agent by construction
         botToken: 'xoxb-test-token',
-        appToken: 'xapp-1-A0TESTAPP-123-abc', // Socket Mode carries the app-level token
-        bindRules,
-        mutedChannels: ['C3'],
-        gated: false
+        appToken: 'xapp-1-A0TESTAPP-123-abc' // Socket Mode carries the app-level token
       }
     })
   })
@@ -478,8 +476,8 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the slack projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, channels, gated)
-      expect(spec.core!.mode).toBe('direct')
-      expect(spec.config).toEqual(slackIntegrationConfig(spec.core!, SOCKET_SECRET))
+      expect(spec.core.mode).toBe('direct')
+      expect(spec.config).toEqual(slackIntegrationConfig(SOCKET_SECRET))
       // The payload satisfies the daemon reader's wire schema (§6.4).
       expect(() => IntegrationSlackConfig.parse(spec.config)).not.toThrow()
     })
@@ -532,13 +530,9 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       // Ungated shared installs ship NO bindRules — the relay arbitrates.
       core: { mode: 'shared', bindRules: [], mutedChannels: ['C2'], gated: false },
       config: {
-        mode: 'shared',
         shareable: true,
         botToken: 'xoxb-test-token',
-        appId: 'A0TESTAPP',
-        bindRules: [],
-        mutedChannels: ['C2'],
-        gated: false
+        appId: 'A0TESTAPP'
       }
     })
     expect(spec.config).not.toHaveProperty('appToken')
@@ -550,9 +544,9 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       // `botUserId` are read off it by the projector instead of being forwarded
       // positionally by each call site.
       const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
-      expect(spec.core!.mode).toBe('shared')
+      expect(spec.core.mode).toBe('shared')
       expect(spec.config).toEqual(
-        slackSharedIntegrationConfig(spec.core!, HTTP_SECRET, httpBot.shareable, httpBot.slackAppId ?? undefined)
+        slackSharedIntegrationConfig(HTTP_SECRET, httpBot.shareable, httpBot.slackAppId ?? undefined)
       )
       expect(() => IntegrationSlackConfig.parse(spec.config)).not.toThrow()
     })

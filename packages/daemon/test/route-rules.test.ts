@@ -329,11 +329,8 @@ const tgAgent = (over: Partial<Agent> = {}): Agent =>
       {
         id: 'i-tg',
         platform: 'telegram',
-        telegram: {
-          botToken: '123:abc',
-          botUsername: 'mybot',
-          bindRules: [{ match: { kind: 'mention' } }, { channel: '-100', match: { kind: 'auto' } }]
-        }
+        core: { bindRules: [{ match: { kind: 'mention' } }, { channel: '-100', match: { kind: 'auto' } }] },
+        config: { botToken: '123:abc', botUsername: 'mybot' }
       }
     ],
     ...over

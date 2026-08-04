@@ -35,7 +35,7 @@
  * ONE implementation behind that projector and the equivalence tests.
  */
 import { z } from 'zod'
-import type { IntegrationCoreEnvelope, IntegrationDiscordConfig } from '@agentconnect.md/protocol'
+import type { IntegrationDiscordConfig } from '@agentconnect.md/protocol'
 import type { BotSecretMaterial } from '../../persistence/ports.js'
 import {
   discordAppIdFromBotToken,
@@ -66,11 +66,8 @@ export type DiscordCreateCredentials = z.infer<typeof DiscordCreateCredentials>
  * `applicationId` is deliberately NOT emitted — today's spec assembly never
  * ships it, and the daemon does not read it. Token-bearing — NEVER log.
  */
-export function discordIntegrationConfig(
-  core: IntegrationCoreEnvelope,
-  secret: Pick<BotSecretMaterial, 'botToken'>
-): IntegrationDiscordConfig {
-  return { botToken: secret.botToken, bindRules: core.bindRules, mutedChannels: core.mutedChannels, gated: core.gated }
+export function discordIntegrationConfig(secret: Pick<BotSecretMaterial, 'botToken'>): IntegrationDiscordConfig {
+  return { botToken: secret.botToken }
 }
 
 /** The provider's injected seams — the same functions `container.ts` wires
@@ -194,8 +191,8 @@ export function createDiscordCpProvider(deps: DiscordCpProviderDeps): CpPlatform
     // §6.4 projection: same body as the live `integrationToSpec` discord arm
     // (both call {@link discordIntegrationConfig}). Async by contract; Discord
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
-    async projectIntegrationConfig(integration, bot, core, secrets) {
-      return discordIntegrationConfig(core, secrets)
+    async projectIntegrationConfig(integration, bot, _core, secrets) {
+      return discordIntegrationConfig(secrets)
     }
 
     // `projectBotAssign` is DELIBERATELY absent: Discord has no HTTP callback

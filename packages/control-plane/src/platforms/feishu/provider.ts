@@ -40,7 +40,7 @@ import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import { FeishuRegion } from '@agentconnect.md/protocol'
-import type { IntegrationCoreEnvelope, IntegrationFeishuConfig } from '@agentconnect.md/protocol'
+import type { IntegrationFeishuConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, IntegrationRecord } from '../../persistence/ports.js'
 import type { FeishuBotVerifier } from '../../http/feishu-identity.js'
 import type { FeishuAppIconSyncer } from '../../http/feishu-app-icon.js'
@@ -117,18 +117,13 @@ export const FEISHU_REGISTRATION_TTL_MS = 10 * 60 * 1000
  * 'feishu'. Token-bearing — NEVER log the result.
  */
 export function feishuIntegrationConfig(
-  core: IntegrationCoreEnvelope,
   secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>,
   integration: Pick<IntegrationRecord, 'feishuRegion'>
 ): IntegrationFeishuConfig {
   return {
-    mode: 'direct',
     appId: secret.appToken ?? '',
     appSecret: secret.botToken,
-    region: integration.feishuRegion ?? 'feishu',
-    bindRules: core.bindRules,
-    mutedChannels: core.mutedChannels,
-    gated: core.gated
+    region: integration.feishuRegion ?? 'feishu'
   }
 }
 
@@ -142,20 +137,15 @@ export function feishuIntegrationConfig(
  * Token-bearing — NEVER log.
  */
 export function feishuSharedIntegrationConfig(
-  core: IntegrationCoreEnvelope,
   secret: Pick<BotSecretMaterial, 'botToken' | 'appToken'>,
   integration: Pick<IntegrationRecord, 'feishuRegion'>,
   botUserId?: string
 ): IntegrationFeishuConfig {
   return {
-    mode: 'shared',
     appId: secret.appToken ?? '',
     appSecret: secret.botToken,
     ...(botUserId ? { botOpenId: botUserId } : {}),
-    region: integration.feishuRegion ?? 'feishu',
-    bindRules: core.bindRules,
-    mutedChannels: core.mutedChannels,
-    gated: core.gated
+    region: integration.feishuRegion ?? 'feishu'
   }
 }
 
@@ -391,10 +381,10 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
     // (`integrations.ts`) — the same bodies the live `integrationToSpec` /
     // `httpIntegrationToSpec` feishu arms call. Async by contract; Feishu
     // maintains no additional secret store to load from. Token-bearing — NEVER log.
-    async projectIntegrationConfig(integration, bot, core, secrets) {
+    async projectIntegrationConfig(integration, bot, _core, secrets) {
       return bot.transport === 'http'
-        ? feishuSharedIntegrationConfig(core, secrets, integration, bot.botUserId ?? undefined)
-        : feishuIntegrationConfig(core, secrets, integration)
+        ? feishuSharedIntegrationConfig(secrets, integration, bot.botUserId ?? undefined)
+        : feishuIntegrationConfig(secrets, integration)
     },
 
     // §6.7 projection: same body as the live `buildAssign` feishu fork (both

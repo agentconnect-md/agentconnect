@@ -78,12 +78,11 @@ const INTEGRATION: IntegrationSpec = {
   integrationId: '66666666-6666-4666-8666-666666666666',
   agentId: 'bot-a',
   platform: 'slack',
-  // §6.4 envelope wire shape; folds back to the frozen nested DISK shape below.
+  // §6.4 final shape: envelope + platform-private config (no duplicated knobs).
   core: { mode: 'direct', bindRules: [{ match: { kind: 'mention' } }], mutedChannels: [], gated: false },
   config: {
     botToken: 'xoxb-secret-abc',
-    appToken: 'xapp-1-secret-def',
-    bindRules: [{ match: { kind: 'mention' } }]
+    appToken: 'xapp-1-secret-def'
   }
 }
 
@@ -103,11 +102,13 @@ describe('Daemon CP integration → memory-only effective config', () => {
 
     // Loaded into the live agent set (consolidate / routing / tools all read this).
     const eff = (
-      daemon as unknown as { agents: Map<string, { integrations: { id: string; slack: { botToken: string } }[] }> }
+      daemon as unknown as {
+        agents: Map<string, { integrations: { id: string; config: { botToken: string } }[] }>
+      }
     ).agents.get('bot-a')!
     expect(eff.integrations).toHaveLength(1)
     expect(eff.integrations[0]!.id).toBe(INTEGRATION.integrationId)
-    expect(eff.integrations[0]!.slack.botToken).toBe('xoxb-secret-abc')
+    expect(eff.integrations[0]!.config.botToken).toBe('xoxb-secret-abc')
 
     // A socket was opened + bound for the integration.
     const connByIntegration = (daemon as unknown as { connByIntegration: Map<string, unknown> }).connByIntegration

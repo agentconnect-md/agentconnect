@@ -128,20 +128,19 @@ export interface DeliveryHandle {
  */
 export function compileEvaluationIntegration(eff: EffectiveIntegration): Integration {
   const seed = eff.transportScope
-  const bindRules = [...(eff.bindRules ?? [])]
+  const core = { mode: 'direct', bindRules: [...(eff.bindRules ?? [])] }
   switch (eff.platform) {
     case 'slack': {
       const conn = eff.connection as { botUserId?: string; appId?: string }
       return IntegrationSchema.parse({
         id: eff.integrationId,
         platform: 'slack',
-        slack: {
-          mode: 'direct',
+        core,
+        config: {
           botToken: `xoxb-evaluation-${seed}`,
           appToken: `xapp-evaluation-${seed}`,
           ...(conn.appId !== undefined ? { appId: conn.appId } : {}),
-          ...(conn.botUserId !== undefined ? { botUserId: conn.botUserId } : {}),
-          bindRules
+          ...(conn.botUserId !== undefined ? { botUserId: conn.botUserId } : {})
         }
       })
     }
@@ -150,10 +149,10 @@ export function compileEvaluationIntegration(eff: EffectiveIntegration): Integra
       return IntegrationSchema.parse({
         id: eff.integrationId,
         platform: 'telegram',
-        telegram: {
+        core,
+        config: {
           botToken: `${numericSeed(seed)}:evaluation-${seed}`,
-          ...(conn.botUsername !== undefined ? { botUserId: conn.botUsername } : {}),
-          bindRules
+          ...(conn.botUsername !== undefined ? { botUserId: conn.botUsername } : {})
         }
       })
     }
@@ -162,10 +161,10 @@ export function compileEvaluationIntegration(eff: EffectiveIntegration): Integra
       return IntegrationSchema.parse({
         id: eff.integrationId,
         platform: 'discord',
-        discord: {
+        core,
+        config: {
           botToken: `evaluation-${seed}`,
-          ...(conn.botUserId !== undefined ? { botUserId: conn.botUserId } : {}),
-          bindRules
+          ...(conn.botUserId !== undefined ? { botUserId: conn.botUserId } : {})
         }
       })
     }

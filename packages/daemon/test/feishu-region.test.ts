@@ -16,7 +16,8 @@ function feishuAgent(id: string, appId: string, region: FeishuRegion): Agent {
       {
         id: `int-${id}`,
         platform: 'feishu',
-        feishu: { mode: 'direct', appId, appSecret: 'secret', region, bindRules: [] }
+        core: { mode: 'direct', bindRules: [] },
+        config: { appId, appSecret: 'secret', region }
       }
     ]
   } as unknown as Agent

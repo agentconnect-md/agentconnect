@@ -49,7 +49,8 @@ export function integrationRouting(int: Integration): {
   mutedChannels: string[]
   gated: boolean
 } {
-  return { staticBotUserId: configuredBotSelfId(int), ...integrationCore(int) }
+  const { bindRules, mutedChannels, gated } = integrationCore(int)
+  return { staticBotUserId: configuredBotSelfId(int), bindRules, mutedChannels, gated }
 }
 
 /**

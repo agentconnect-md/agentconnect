@@ -197,25 +197,37 @@ describe('S1a tolerant platform readers — relay↔CP wire', () => {
   })
 })
 
-describe('§6.4 IntegrationSpec dual shape', () => {
-  const base = { integrationId: INTEGRATION_ID, agentId: AGENT_ID, platform: 'telegram' as const }
-  const telegram = { botToken: '12345:AAA', bindRules: [], mutedChannels: [], gated: false }
+describe('§6.4 IntegrationSpec final shape (S3 flatten)', () => {
+  const base = { integrationId: INTEGRATION_ID, agentId: AGENT_ID, platform: 'telegram' }
+  const telegram = { botToken: '12345:AAA' }
   const core = { mode: 'direct' as const, bindRules: [], mutedChannels: [], gated: false }
 
-  it('decodes legacy-only, dual, and envelope-only variants', () => {
-    expect(IntegrationSpec.safeParse({ ...base, telegram }).success).toBe(true)
-    const dual = IntegrationSpec.safeParse({ ...base, telegram, core, config: telegram })
-    expect(dual.success).toBe(true)
-    if (dual.success && dual.data.platform === 'telegram') {
-      expect(dual.data.core?.gated).toBe(false)
-      expect(dual.data.config).toEqual(telegram)
+  it('decodes the flat envelope + opaque config, with an OPEN platform id', () => {
+    const flat = IntegrationSpec.safeParse({ ...base, core, config: telegram })
+    expect(flat.success).toBe(true)
+    if (flat.success) {
+      expect(flat.data.platform).toBe('telegram')
+      expect(flat.data.core.gated).toBe(false)
+      expect(flat.data.config).toEqual(telegram)
     }
-    // Envelope-only (post-window emission): the legacy block is absent.
-    expect(IntegrationSpec.safeParse({ ...base, core, config: telegram }).success).toBe(true)
+    // An id no deployed writer emits yet decodes too — the daemon's platform
+    // registry (not the schema) refuses the spec, per the S1a per-frame policy.
+    expect(IntegrationSpec.safeParse({ ...base, platform: UNKNOWN, core, config: {} }).success).toBe(true)
   })
 
-  it('keeps a payload-less variant decodable — rejection is the reader, not the schema', () => {
-    expect(IntegrationSpec.safeParse(base).success).toBe(true)
+  it('strips a stale legacy nested block (unknown key) instead of failing the frame', () => {
+    const r = IntegrationSpec.safeParse({ ...base, telegram, core, config: telegram })
+    expect(r.success).toBe(true)
+    if (r.success) expect('telegram' in r.data).toBe(false)
+  })
+
+  it('REQUIRES core (the retired dual-shape tolerance) but leaves config to the reader', () => {
+    // core absent ⇒ frame fails: defaulting it would mint a rule-less
+    // integration out of a stale writer, silently.
+    expect(IntegrationSpec.safeParse({ ...base, config: telegram }).success).toBe(false)
+    // config absent ⇒ frame still decodes: one unusable spec is the reader's
+    // per-item skip (+ warn), never the whole snapshot's failure.
+    expect(IntegrationSpec.safeParse({ ...base, core }).success).toBe(true)
   })
 })
 

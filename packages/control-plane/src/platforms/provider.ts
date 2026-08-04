@@ -467,19 +467,20 @@ export interface CpPlatformProvider<TCredentials = unknown> {
 
   /**
    * Project one integration into the opaque `IntegrationSpec.config` payload
-   * (§6.4) — today's per-platform arms of `integrationToSpec` /
-   * `httpIntegrationToSpec` (`orchestrator/placement.ts:253-291,325-350`),
-   * relocated behind the provider. Core keeps assembling the envelope
+   * (§6.4) — the per-platform arms of `integrationToSpec` /
+   * `httpIntegrationToSpec` (`orchestrator/placement.ts`), relocated behind
+   * the provider. Core keeps assembling the envelope
    * (`integrationId`/`agentId`/`platform`/`core`) — it owns the routing
-   * compile that produces `core` — and passes that envelope IN so the config
-   * can keep carrying the duplicated routing knobs today's daemon readers
-   * take from it. The BOT row is a required input even though the direct-mode
-   * call sites don't load it yet: the shared-mode fields ride it
-   * (`shareable`, the provider app id, `botUserId` —
-   * `orchestrator/httpBot.ts:844-873`) and `bot.transport` is the
-   * direct-vs-shared fork itself (`integrations.ts:317`). Shape validation of
-   * the produced payload lives in the same platform's DAEMON module (§6.4
-   * tolerant-reader rule), not here. Token-bearing — NEVER log.
+   * compile that produces `core` — and passes the envelope IN by contract (a
+   * platform whose payload legitimately depends on the ingress mode may read
+   * it), but the payload must NEVER duplicate the envelope's routing knobs:
+   * since the S3 flatten the daemon reads `bindRules`/`mutedChannels`/`gated`/
+   * `mode` exclusively from `core`, so a copy inside `config` would be a
+   * second representation free to disagree. The BOT row is a required input:
+   * the shared-mode fields ride it (`shareable`, the provider app id,
+   * `botUserId`) and `bot.transport` is the direct-vs-shared fork itself.
+   * Shape validation of the produced payload lives in the same platform's
+   * DAEMON module (§6.4), not here. Token-bearing — NEVER log.
    */
   projectIntegrationConfig(
     integration: IntegrationRecord,
