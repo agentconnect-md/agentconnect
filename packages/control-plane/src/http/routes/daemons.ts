@@ -12,6 +12,7 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
+import { SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
@@ -111,9 +112,6 @@ function liveStatus(view: DaemonView, liveness: DaemonLiveness, graceMs: number,
   return 'connecting' // CONNECTING / AUTHENTICATING / REGISTERING
 }
 
-// The DTO's accepted retention values — mirrors UpdateDaemonBody.sessionRetention.
-const SESSION_RETENTIONS = new Set(['never', '7d', '30d', '90d'])
-
 function toDto(
   view: DaemonView,
   liveness: DaemonLiveness,
@@ -163,12 +161,10 @@ function toDto(
     lastModifiedAt: view.lastModifiedAt.toISOString(),
     lastModifiedBy:
       view.lastModifiedBy && !isSyntheticEmail(view.lastModifiedBy.email) ? view.lastModifiedBy.userId : null,
-    // Defensive read-time normalization: the PATCH route only writes enum values,
-    // so a fallback here just keeps an unexpected stored value from failing the
-    // whole response's schema serialization.
-    sessionRetention: SESSION_RETENTIONS.has(view.sessionRetention)
-      ? (view.sessionRetention as DaemonViewDtoT['sessionRetention'])
-      : '7d',
+    // Defensive read-time normalization: the PATCH route only writes validated
+    // values, so a fallback here just keeps an unexpected stored value from
+    // failing the whole response's schema serialization.
+    sessionRetention: SESSION_RETENTION_RE.test(view.sessionRetention) ? view.sessionRetention : '7d',
     visibility: view.visibility,
     sharedWith: view.sharedWith,
     canEdit: canEdit(view, ctx),

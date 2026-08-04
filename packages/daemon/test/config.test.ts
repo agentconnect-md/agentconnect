@@ -30,20 +30,26 @@ describe('loadConfig', () => {
     expect(cfg.sessions.retention).toBe('7d') // #485 session retention defaults on
   })
 
-  it('session retention accepts the full keyword set and maps to sweep windows', () => {
+  it("session retention accepts 'never' or any '<n>d' and maps to sweep windows", () => {
     expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: 'never' } }) }).sessions.retention).toBe(
       'never'
     )
-    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '1month' } }) }).sessions.retention).toBe(
-      '1month'
-    )
-    expect(() => loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '3d' } }) })).toThrow()
+    // Any positive integer day count is a valid window.
+    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '3d' } }) }).sessions.retention).toBe('3d')
     expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '90d' } }) }).sessions.retention).toBe('90d')
+    // Legacy keywords from existing local config files normalize to day counts.
+    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '2weeks' } }) }).sessions.retention).toBe(
+      '14d'
+    )
+    expect(loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '1month' } }) }).sessions.retention).toBe(
+      '30d'
+    )
+    // Zero / non-day shapes are rejected.
+    expect(() => loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '0d' } }) })).toThrow()
+    expect(() => loadConfig({ root: tmpRoot({ version: 1, sessions: { retention: '7' } }) })).toThrow()
     expect(sessionRetentionMs('never')).toBeNull()
     expect(sessionRetentionMs('7d')).toBe(7 * 24 * 3_600_000)
-    expect(sessionRetentionMs('2weeks')).toBe(14 * 24 * 3_600_000)
-    expect(sessionRetentionMs('1month')).toBe(30 * 24 * 3_600_000)
-    // The console-facing windows (CP-set via register/ok + config/push).
+    expect(sessionRetentionMs('3d')).toBe(3 * 24 * 3_600_000)
     expect(sessionRetentionMs('30d')).toBe(30 * 24 * 3_600_000)
     expect(sessionRetentionMs('90d')).toBe(90 * 24 * 3_600_000)
   })

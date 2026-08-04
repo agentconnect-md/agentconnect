@@ -17,6 +17,7 @@ import {
   MemoryPluginHistoryEvent,
   MemoryPluginOperation,
   RESERVED_MCP_SERVER_NAME,
+  SESSION_RETENTION_RE,
   GitCloneUrlError,
   RepoSubdirError,
   SessionImageAttachment,
@@ -205,8 +206,9 @@ export const DaemonViewDto = z.object({
   lastModifiedBy: z.string().nullable(), // editor's userId (web resolves to a name / "You"); null for system rows
   /** Console-set finished-session retention window on the daemon's local store
    *  ("Expire sessions"): how long finished sessions are kept before the daemon's
-   *  retention sweep deletes them; 'never' disables the sweep. */
-  sessionRetention: z.enum(['never', '7d', '30d', '90d']),
+   *  retention sweep deletes them — 'never' disables the sweep, otherwise an
+   *  integer day count as '<n>d' (e.g. '7d'). */
+  sessionRetention: z.string().regex(SESSION_RETENTION_RE),
   // ── visibility / sharing (docs/designs/resource-visibility.md) ──
   visibility: ResourceVisibilityEnum,
   sharedWith: z.array(z.string()), // complete app_user.id audience when restricted
@@ -224,8 +226,9 @@ export const UpdateDaemonBody = z
   .object({
     name: z.string().trim().min(1).max(64).optional(),
     /** How long the daemon keeps FINISHED sessions in its local store before its
-     *  retention sweep deletes them; 'never' disables the sweep. */
-    sessionRetention: z.enum(['never', '7d', '30d', '90d']).optional()
+     *  retention sweep deletes them — 'never' disables the sweep, otherwise an
+     *  integer day count as '<n>d' (e.g. '7d'). */
+    sessionRetention: z.string().regex(SESSION_RETENTION_RE).optional()
   })
   .refine((b) => b.name !== undefined || b.sessionRetention !== undefined, {
     message: 'nothing to update'

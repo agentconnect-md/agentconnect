@@ -460,7 +460,7 @@ describe('PATCH /daemons/:id — rename', () => {
     expect((res.json() as { sessionRetention: string }).sessionRetention).toBe('never')
   })
 
-  it('400s an unknown retention window', async () => {
+  it("accepts any '<n>d' day count as a retention window", async () => {
     await seedDaemon()
     running = buildHttpApp(prisma)
     const res = await running.app.inject({
@@ -468,7 +468,21 @@ describe('PATCH /daemons/:id — rename', () => {
       url: `${ORG}/daemons/${DAEMON}`,
       payload: { sessionRetention: '3d' }
     })
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as { sessionRetention: string }).sessionRetention).toBe('3d')
+  })
+
+  it('400s a malformed retention window', async () => {
+    await seedDaemon()
+    running = buildHttpApp(prisma)
+    for (const bad of ['0d', '7', '2weeks', 'always']) {
+      const res = await running.app.inject({
+        method: 'PATCH',
+        url: `${ORG}/daemons/${DAEMON}`,
+        payload: { sessionRetention: bad }
+      })
+      expect(res.statusCode, bad).toBe(400)
+    }
   })
 })
 

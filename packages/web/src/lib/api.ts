@@ -1000,8 +1000,9 @@ export interface DaemonViewDto {
   canManageLifecycle: boolean
 }
 
-/** The console-settable "Expire sessions" windows (PATCH /daemons/:id). */
-export type DaemonSessionRetention = 'never' | '7d' | '30d' | '90d'
+/** The console-settable "Expire sessions" window (PATCH /daemons/:id):
+ *  'never' disables the sweep, otherwise an integer day count as '<n>d'. */
+export type DaemonSessionRetention = 'never' | `${number}d`
 
 /** A CP-commanded daemon restart/upgrade (cli-daemon-split.md §7). Returned by the
  *  upgrade/restart POSTs and embedded in each daemon's read model as its latest op. */

@@ -92,9 +92,17 @@ export type RelayRosterUpdate = z.infer<typeof RelayRosterUpdate>
  * store (the daemon settings' "Expire sessions" option). CP-durable; the
  * register/ok snapshot is the reconnect baseline and a `config/push` with
  * `sessions.retention` is the hot update.
+ *
+ * `'never'` disables the sweep; otherwise an integer number of days as
+ * `'<n>d'` (e.g. `'7d'`) — n ≥ 1, capped at 4 digits so a typo can't encode
+ * a multi-millennium window.
  */
-export const SessionRetentionSetting = z.enum(['never', '7d', '30d', '90d'])
-export type SessionRetentionSetting = z.infer<typeof SessionRetentionSetting>
+export const SESSION_RETENTION_RE = /^(?:never|[1-9]\d{0,3}d)$/
+export type SessionRetentionSetting = 'never' | `${number}d`
+export const SessionRetentionSetting = z.custom<SessionRetentionSetting>(
+  (v) => typeof v === 'string' && SESSION_RETENTION_RE.test(v),
+  { message: "expected 'never' or '<days>d' (e.g. '7d')" }
+)
 
 export const RegisterOk = z.object({
   routingEpoch: z.number().int(), // version of the routing table this snapshot reflects
