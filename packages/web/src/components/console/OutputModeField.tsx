@@ -1,6 +1,6 @@
 import { CompactFieldLabel } from '@/components/console/CompactFieldLabel'
 import { OutputModeHelp } from '@/components/console/OutputModeHelp'
-import { OUTPUT_MODE_OPTIONS, type OutputMode } from '@/lib/output-mode'
+import { OUTPUT_CHROME_COPY, OUTPUT_MODE_OPTIONS, type OutputMode } from '@/lib/output-mode'
 
 export function OutputModeField({
   value,
@@ -50,9 +50,7 @@ export function OutputModeField({
         <CompactFieldLabel
           label="Show footer"
           tooltipAlign="right"
-          detail={
-            showFooter ? 'Replies show the agent, runtime, model, and session links.' : 'No footer is added to replies.'
-          }
+          detail={showFooter ? OUTPUT_CHROME_COPY.footer.on : OUTPUT_CHROME_COPY.footer.off}
         />
         <div className="pillbar self-start desktop:self-end">
           <button
@@ -77,11 +75,7 @@ export function OutputModeField({
         <CompactFieldLabel
           label="Show status bar"
           tooltipAlign="right"
-          detail={
-            showStatusBar
-              ? 'Slack threads show model, context, usage, and session controls.'
-              : 'Slack session status rows are hidden.'
-          }
+          detail={showStatusBar ? OUTPUT_CHROME_COPY.statusBar.on : OUTPUT_CHROME_COPY.statusBar.off}
         />
         <div className="pillbar self-start desktop:self-end">
           <button
