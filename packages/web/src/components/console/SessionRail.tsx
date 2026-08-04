@@ -6,9 +6,10 @@
 // session to navigate to. ≥1240px (`wide:`) draws the inline column; 769–1239px
 // collapses it to a floating top-right button; ≤768px moves that trigger INTO the
 // shell's app bar (MobileActionSlot), because a fixed overlay would cover the
-// session title. Both collapsed bands open the SAME popover, and both open it on
-// click — pointer capability does not follow width, so hover is only ever an extra
-// path. The relation card in SessionDetailView still carries lineage.
+// session title. Both collapsed bands open the SAME popover from one click latch —
+// pointer capability does not follow width (a 1024px iPad sits in the middle band),
+// so there is no hover-only path anywhere. The relation card in SessionDetailView
+// still carries lineage.
 //
 // The COLUMN, though, is unconditional above `wide` (SessionRailSlot). The
 // detail body is centred in whatever horizontal space the rail leaves it, so any
@@ -494,12 +495,15 @@ export function SessionRail({
           {body}
         </div>
       </div>
-      {/* 769–1239px: the rail collapses to a floating top-right button. A CLICK
-          latches the panel open (`listOpen`) and hover/focus opens it too — this band
-          is not mouse-only, so hover cannot be the sole path (a 1024px iPad has no
-          hover, and Safari does not focus a button on tap). The pt-[6px] spacer keeps
-          the hover area contiguous between button and panel. */}
-      <div className="group fixed top-[10px] right-[14px] z-50 hidden desktop:max-wide:block">
+      {/* 769–1239px: the rail collapses to a floating top-right button, opened by a
+          CLICK. There is deliberately no CSS hover/focus reveal left here. This band
+          is not mouse-only — a 1024px iPad has no hover and Safari does not focus a
+          button on tap — so hover cannot be the opening path; and keeping it as a
+          SECOND path made the state incoherent: closing the latch left the button
+          still hovered/focused, so `group-hover:block` re-showed a panel whose
+          trigger now read `aria-expanded="false"`, and the click looked ineffective.
+          One latch drives both the panel and `aria-expanded`, in every band. */}
+      <div className="fixed top-[10px] right-[14px] z-50 hidden desktop:max-wide:block">
         <button
           type="button"
           aria-label="Sessions list"
@@ -512,20 +516,13 @@ export function SessionRail({
         >
           <Icon name="panel-right" size={16} />
         </button>
-        {/* Two complete literals rather than toggling `hidden`/`block` (STYLE.md §8):
-            the latched state must not depend on which display utility Tailwind emits
-            last. Closed still carries the hover/focus reveal. */}
-        <div
-          className={
-            listOpen
-              ? 'absolute top-full right-0 block w-[264px] pt-[6px]'
-              : 'absolute top-full right-0 hidden w-[264px] pt-[6px] group-focus-within:block group-hover:block'
-          }
-        >
-          <div className="flex max-h-[75vh] flex-col rounded-lg border border-(--border-default) bg-(--surface-card) p-[10px] shadow-(--shadow-lg)">
-            {body}
+        {listOpen && (
+          <div className="absolute top-full right-0 w-[264px] pt-[6px]">
+            <div className="flex max-h-[75vh] flex-col rounded-lg border border-(--border-default) bg-(--surface-card) p-[10px] shadow-(--shadow-lg)">
+              {body}
+            </div>
           </div>
-        </div>
+        )}
       </div>
       {/* ≤768px: the same list, dropped under the app bar by its shell-owned button.
           The trigger lives in `.mtop` rather than floating over the page, so it
