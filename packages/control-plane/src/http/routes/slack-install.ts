@@ -30,7 +30,7 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { buildInstallManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
-import { CONFIG_ACCESS_TTL_MS } from '../slack-user-config.js'
+import { CONFIG_ACCESS_TTL_MS, configUsable } from '../slack-user-config.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
@@ -462,10 +462,17 @@ export function slackConfigRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
       // Durable = a refresh token is stored (the pair auto-rotates). Usable now = durable
       // or the access-only token is still fresh; a lapsed access-only token forces re-entry.
       const durable = !!row?.refreshToken
-      // The credential half of "auto-install is offerable" comes from the §9
-      // facet (one authority for the stored token); the deployment half — a
-      // configured public callback origin — stays here, which is what knows it.
-      const credentialUsable = (await slack.toolingCredentials?.usableNow(orgId, userId, now)) ?? false
+      // The credential half of "auto-install is offerable" is `configUsable` — the
+      // SAME pure predicate the §9 facet's `usableNow` applies, so this surface and
+      // the flows that call the facet cannot disagree about the rule. It is applied
+      // to the row already in hand rather than through `usableNow`, which would
+      // re-read it: this route IS the credential surface (§9 puts the store's
+      // entry/rotation/status routes on `installRoutes`, and the facet is what the
+      // platform's OTHER flows call back into), so a second round-trip would buy
+      // nothing and would split one response across two snapshots of one row.
+      // The deployment half — a configured public callback origin — stays here,
+      // which is what knows it.
+      const credentialUsable = configUsable(row, now)
       // HTTP mode is offerable here: a public relay origin is configured AND ≥1 relay
       // is connected to receive the Events API POSTs.
       const relayAvailable = !!relayPublicUrl && deps.httpBot.hasConnectedRelay()

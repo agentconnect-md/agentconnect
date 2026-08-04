@@ -1034,7 +1034,13 @@ export function buildContainer(
     verifyBot: verifySlackBot,
     verifyAppToken: verifySlackAppToken,
     ...(slackPlatformApp ? { platformApp: slackPlatformApp } : {}),
-    toolingCredentials: createSlackToolingCredentials(httpDeps)
+    // Named arguments, NOT `httpDeps`: the bundle no longer carries a Slack API
+    // client, and passing it here type-checked while making every production
+    // resolution `unreachable`.
+    toolingCredentials: createSlackToolingCredentials({
+      configApi: slackConfigApi,
+      store: repos.slackUserConfig
+    })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: verifyTelegramBot }
   const feishuSeams: FeishuRouteSeams = {

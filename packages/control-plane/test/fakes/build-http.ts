@@ -437,9 +437,19 @@ export function buildHttpApp(
   // (that IS the feature flag, so they must be set before the app is built), while
   // the manifest-refresh handler reads `configApi` per REQUEST — which is what it
   // did when it was core code reading `deps.slackConfigApi`.
+  //
+  // ANTI-DRIFT (learned the hard way in review): this harness once handed the
+  // tooling facet an API client the container had stopped passing, so every suite
+  // was green against a composition production did not have. Both roots now call
+  // {@link createSlackToolingCredentials} with the SAME two named arguments, and
+  // the API client here comes from ONE source shared with `slackSeams.configApi`
+  // — the harness cannot give the facet a client the routes do not see. The
+  // container graph itself is exercised in
+  // `test/integration/slack-tooling-credentials.route.test.ts`.
+  const slackConfigApiSeam = () => platformStubs.slackConfigApi
   const slackSeams: SlackRouteSeams = {
     get configApi() {
-      return platformStubs.slackConfigApi
+      return slackConfigApiSeam()
     },
     get platformApp() {
       return platformStubs.slackPlatformApp
@@ -449,10 +459,10 @@ export function buildHttpApp(
     verifyAppToken: async (token) =>
       platformStubs.verifySlackAppToken ? platformStubs.verifySlackAppToken(token) : ('unreachable' as const),
     toolingCredentials: createSlackToolingCredentials({
-      get slackConfigApi() {
-        return platformStubs.slackConfigApi
+      get configApi() {
+        return slackConfigApiSeam()
       },
-      repos: { slackUserConfig: slackUserConfigStore }
+      store: slackUserConfigStore
     })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: (token) => platformStubs.verifyTelegramBot(token) }

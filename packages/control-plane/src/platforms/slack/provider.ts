@@ -19,9 +19,12 @@
  *    provider construction stays one-directional (a provider never reaches back
  *    for a route factory), which is what keeps the create route free to fold
  *    this provider's credential block into its body schema;
- *  - `providerToolingCredentials` → `resolveUserConfigAccessToken` /
- *    `configUsable` (`http/slack-user-config.ts`), the same resolution the
- *    funnel start and the Settings→Bots refresh flow call;
+ *  - `providerToolingCredentials` → {@link createSlackToolingCredentials}, over
+ *    `resolveUserConfigAccessToken` / `configUsable`
+ *    (`http/slack-user-config.ts`). The composition root builds ONE facet and
+ *    injects the same instance here AND into the routes that call back into it
+ *    (the funnel start, the config status projection, the Settings→Bots
+ *    refresh), so none of them can drift on which store answers;
  *  - the wire projections → {@link slackIntegrationConfig} /
  *    {@link slackSharedIntegrationConfig} / {@link slackBotAssignBags}, called
  *    by BOTH the live paths (`orchestrator/placement.ts`,
@@ -44,8 +47,9 @@ import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationCoreEnvelope, IntegrationSlackConfig } from '@agentconnect.md/protocol'
-import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
+import type { BotRecord, BotSecretMaterial, SlackUserConfigStore } from '../../persistence/ports.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../http/slack-identity.js'
+import type { SlackConfigApi } from '../../http/slack-config-api.js'
 import { configUsable, resolveUserConfigAccessToken, type SlackUserConfigDeps } from '../../http/slack-user-config.js'
 import type {
   CpConfigValidation,
@@ -282,13 +286,34 @@ export interface SlackCpProviderDeps {
  *    only the credential question; deployment-level terms (the funnel's public
  *    callback origin, the relay pool) stay with the status route, which is what
  *    knows them.
+ *
+ * THE ARGUMENT IS EXPLICIT, NOT A BUNDLE, on purpose. `SlackUserConfigDeps` —
+ * what `resolveUserConfigAccessToken` takes — declares `slackConfigApi` OPTIONAL,
+ * so the route dep bundle satisfied it structurally, and kept satisfying it after
+ * the §9 DI collapse deleted that member: the compiler stayed silent while every
+ * production resolution silently became `unreachable`. Requiring a NAMED store
+ * here makes that mistake unrepresentable — no bundle in this codebase has a
+ * `store` member to donate — and forces the API client to be passed by name.
  */
-export function createSlackToolingCredentials(userConfigs: SlackUserConfigDeps): CpProviderToolingCredentials {
+export function createSlackToolingCredentials(seams: {
+  /** Slack App-management + OAuth calls (the rotate). Absent ⇒ the funnel is off
+   *  and every resolution is `unreachable`, which is the pre-existing meaning —
+   *  but it must now be an explicit choice, not an omission. Read per call so a
+   *  late-bound composition (the test harness) can swap it. */
+  readonly configApi?: SlackConfigApi
+  /** The `SlackUserConfig` store this facet is the sole authority over. */
+  readonly store: SlackUserConfigStore
+}): CpProviderToolingCredentials {
+  const userConfigs: SlackUserConfigDeps = {
+    get slackConfigApi() {
+      return seams.configApi
+    },
+    repos: { slackUserConfig: seams.store }
+  }
   return {
     model: 'SlackUserConfig',
     resolveAccessToken: (orgId, userId, now) => resolveUserConfigAccessToken(userConfigs, orgId, userId, now),
-    usableNow: async (orgId, userId, now) =>
-      configUsable(await userConfigs.repos.slackUserConfig.get(orgId, userId), now)
+    usableNow: async (orgId, userId, now) => configUsable(await seams.store.get(orgId, userId), now)
   }
 }
 

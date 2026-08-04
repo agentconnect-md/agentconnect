@@ -31,6 +31,12 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { buildApp, type App } from '../../src/app.js'
+import { AppConfigSchema } from '../../src/config/env.js'
+import { MemorySecretsProvider } from '../../src/secrets/providers/memory.js'
+import { systemClock } from '../../src/domain/clock.js'
+import { PgSlackUserConfigStore } from '../../src/persistence/index.js'
+import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import type {
   SlackConfigApi,
   SlackAppCreateResult,
@@ -47,9 +53,12 @@ const DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 const HOUR = 60 * 60 * 1000
 
 let running: HttpApp | undefined
+let runningApp: App | undefined
 afterEach(async () => {
   await running?.close()
   running = undefined
+  await runningApp?.shutdown()
+  runningApp = undefined
 })
 
 /** Records every call so a test can prove which resolution was taken (a rotate
@@ -300,7 +309,7 @@ describe('providerToolingCredentials — the Settings→Bots manifest refresh', 
 })
 
 describe('providerToolingCredentials — the config status projection', () => {
-  it('reports autoAvailable from the facet, and drops it the moment the store row goes', async () => {
+  it('reports autoAvailable from the shared configUsable rule, and drops it the moment the store row goes', async () => {
     const { app } = withFunnel()
     await storeConfig(app, {
       accessToken: 'xoxe.xoxp-fresh',
@@ -332,9 +341,10 @@ describe('providerToolingCredentials — the config status projection', () => {
     expect(res.json()).toMatchObject({ configured: true, durable: false, autoAvailable: false })
   })
 
-  it('keeps the deployment term out of the facet: no PUBLIC_CP_URL ⇒ no auto-install', async () => {
-    // The funnel's public callback origin is core's knowledge, not the credential
-    // store's — `usableNow` answers only "is the token usable".
+  it('keeps the deployment term separate from the credential: no PUBLIC_CP_URL ⇒ no auto-install', async () => {
+    // The funnel's public callback origin is the deployment's knowledge, not the
+    // credential store's — `configUsable` (and the facet's `usableNow` over it)
+    // answers only "is the token usable".
     const api = new CountingConfigApi()
     const app = buildHttpApp(prisma, undefined, undefined, undefined, { slackConfigApi: api })
     running = app
@@ -389,5 +399,91 @@ describe('the §9 DI collapse keeps its read-through seam', () => {
     expect((await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })).json()).toMatchObject({
       authorization: 'invalid'
     })
+  })
+})
+
+describe('the PRODUCTION composition wires a working facet', () => {
+  /**
+   * REGRESSION (caught in review, not by any focused test). The facet used to be
+   * built from the route dep bundle, whose `slackConfigApi` member this same unit
+   * deleted. `SlackUserConfigDeps` declares that member OPTIONAL, so the bundle
+   * kept satisfying the parameter type: the compiler stayed silent, every focused
+   * suite stayed green (the harness composes the facet from its own stubs), and
+   * every PRODUCTION resolution silently became `unreachable` — quick-install 502
+   * on a perfectly good stored token, refresh degraded to `unknown`, stale
+   * credentials unable to rotate.
+   *
+   * So this builds the app through `buildApp` — the REAL `buildContainer` graph,
+   * the one `src/index.ts` boots — and reads the facet through it. `container.test.ts`
+   * exists for the same reason ("every other test hand-builds `HttpDeps` … so a
+   * variable forgotten here reads as unset in production while every focused test
+   * still passes").
+   */
+  function realApp() {
+    const app = buildApp({
+      prisma,
+      config: AppConfigSchema.parse({
+        DATABASE_URL: 'postgresql://composition/ignored', // prisma is injected
+        API_KEY_PEPPER: 'composition-api-key-pepper-0123456789',
+        SECRETS_PROVIDER: 'memory',
+        PUBLIC_CP_URL: 'https://cp.example.test'
+      }),
+      clock: systemClock,
+      secretsProvider: new MemorySecretsProvider(),
+      secretCipher: new PlaintextSecretCipher()
+    })
+    runningApp = app
+    return app
+  }
+
+  it('resolves a MISSING credential as not_configured, not unreachable', async () => {
+    // The two outcomes are indistinguishable to a caller that only checks `ok`,
+    // and identical in effect here — but the route maps them to different
+    // statuses, so the status IS the probe, and it costs no Slack round-trip:
+    // both short-circuit before `apps.manifest.create`.
+    //   • wired correctly ⇒ `not_configured` ⇒ 409 + "you haven't stored…"
+    //   • API client missing ⇒ `unreachable`  ⇒ 502 "could not reach Slack"
+    const app = realApp()
+    await seedDaemon(prisma, 'd3d3d3d3-dddd-4ddd-8ddd-dddddddddddd', {
+      capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: 'd3d3d3d3-dddd-4ddd-8ddd-dddddddddddd' })
+
+    const res = await app.http.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, name: 'composition-probe' }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json().message).toContain('haven’t stored your Slack App Configuration token')
+  })
+
+  it('reads the credential the production store holds', async () => {
+    // Same graph, now with a row: the resolution gets past the store and reaches
+    // the Slack call, which the stub-free production client cannot complete
+    // offline — a 4xx/5xx either way, but NOT the 409 above. That transition is
+    // the proof the facet is reading the real store, with no network assertion.
+    const app = realApp()
+    await seedDaemon(prisma, 'd4d4d4d4-dddd-4ddd-8ddd-dddddddddddd', {
+      capabilities: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: 'd4d4d4d4-dddd-4ddd-8ddd-dddddddddddd' })
+    await new PgSlackUserConfigStore(prisma, new PlaintextSecretCipher()).put(OrgId(DEFAULT_ORG_ID), DEFAULT_OWNER_ID, {
+      accessToken: 'xoxe.xoxp-production',
+      refreshToken: null,
+      accessExpiresAt: new Date(Date.now() + HOUR)
+    })
+
+    const res = await app.http.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app`,
+      payload: { agentId, name: 'composition-probe' }
+    })
+
+    expect(res.statusCode).not.toBe(409)
+    expect(res.json().message ?? '').not.toContain('haven’t stored')
   })
 })
