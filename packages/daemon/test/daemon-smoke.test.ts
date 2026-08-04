@@ -339,7 +339,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('emits session metadata snapshots on create and turn completion', async () => {
+  it('emits session metadata snapshots on create, completion, and reconnect replay', async () => {
     const root = scaffold()
     const fakeHost = {
       __started: true,
@@ -443,6 +443,19 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(final).toMatchObject({ sessionId: 'acp-sess-1', phase: 'end', status: 'idle', observedModel: null })
     expect(final.model).toBeUndefined()
     expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
+
+    // Repair a CP row whose whole turn happened before the control client was
+    // READY. The replay is rebuilt from SQLite; no future user turn is needed.
+    emitEventSession.mockClear()
+    ;(daemon as any).replaySessionMetadataSnapshots()
+    expect(emitEventSession).toHaveBeenCalledTimes(1)
+    expect(emitEventSession.mock.calls[0]![0]).toMatchObject({
+      sessionId: 'acp-sess-1',
+      phase: 'end',
+      status: 'idle',
+      sourceBindingKind: 'local',
+      observedModel: null
+    })
     await daemon.stop()
   }, 15_000)
 

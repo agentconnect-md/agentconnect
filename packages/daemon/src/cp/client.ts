@@ -538,8 +538,10 @@ export class CpClient {
    * EVT, fire-and-forget, latest-wins per `sessionId`). This is what lets the CP
    * store session metadata so a deep-link detail page (…/sessions/:id) resolves
    * even when the daemon is offline. Metadata only — never the message stream
-   * (that stays daemon-local, §1/§12). No-op unless READY/DRAINING; a dropped
-   * `start` is re-covered by the next milestone (the CP upsert is latest-wins).
+   * (that stays daemon-local, §1/§12). No-op unless READY/DRAINING; the next
+   * milestone normally re-covers a drop, and the daemon replays its durable
+   * latest snapshots after each register for sessions that finished entirely
+   * while this client was unavailable.
    */
   emitEventSession(event: EventSession): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return

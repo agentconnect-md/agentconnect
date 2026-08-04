@@ -13711,10 +13711,15 @@ export class Daemon {
     runtime?: string
     model?: string | null
     permissionMode?: string
+    /** Reconnect replay uses the durable activity time rather than making an
+     * old missing session look newer than a replacement session. */
+    at?: number
+    /** Avoid re-projecting the full session list for every reconnect row. */
+    projection?: SessionListItem
   }): void {
     if (!this.cpClient) return
-    const now = new Date(this.clock.now()).toISOString()
-    const row = this.sessionListProjection(input.sessionId, input.agentId)
+    const now = new Date(input.at ?? this.clock.now()).toISOString()
+    const row = input.projection ?? this.sessionListProjection(input.sessionId, input.agentId)
     const key = row?.sessionKey
     const event: EventSession = {
       sessionId: input.sessionId,
@@ -13813,6 +13818,49 @@ export class Daemon {
       this.cpClient.emitEventSession(event)
     } catch (err) {
       this.log.debug(`event/session emit failed (session ${input.sessionId}): ${(err as Error).message}`)
+    }
+  }
+
+  /**
+   * Re-converge CP metadata from the daemon's durable session store after each
+   * register. Relay ingress remains local-first while the control client is
+   * CONNECTING/REGISTERING, so a whole turn can finish while every live
+   * milestone is a deliberate no-op. Without this replay its deep link stays a
+   * protected 404 forever.
+   */
+  private replaySessionMetadataSnapshots(): void {
+    const stored = this.store.listSessions()
+    if (stored.length === 0) return
+
+    const projections = createSessionReader(this.store, (session) => this.sessionThreadUrl(session)).list({}).sessions
+    const projectionBySession = new Map(
+      projections.map((session) => [`${session.agentId}\0${session.sessionId}`, session] as const)
+    )
+
+    // Replay oldest-first. A missing row uses its durable activity time as
+    // startedAt, so the CP's webchat current-session fence still selects the
+    // newest local session even when frame handlers complete out of order.
+    for (const session of stored.reverse()) {
+      const sessionId = session.acpSessionId
+      if (!sessionId) continue
+      const phase: EventSession['phase'] =
+        session.state === 'prompting' || session.state === 'cancelling' || session.state === 'resuming'
+          ? 'start'
+          : session.lastTurnOutcome === 'failed'
+            ? 'problem'
+            : session.lastTurnOutcome === 'done' || session.state === 'closed'
+              ? 'end'
+              : 'plan'
+      this.emitSessionMetadataSnapshot({
+        sessionId,
+        agentId: session.agentId,
+        phase,
+        platform: session.platform as SessionKey['platform'],
+        channel: session.channel,
+        thread: session.thread,
+        at: session.updatedAt,
+        projection: projectionBySession.get(`${session.agentId}\0${sessionId}`)
+      })
     }
   }
 
@@ -18755,15 +18803,15 @@ export class Daemon {
       // Daemon-configured MCP servers, derived from the effective def set (no
       // probing), riding the same facts frame with replace-on-register semantics.
       mcpServerFacts: (): FactsMcpServer[] => this.mcpServerFactsFromDefs(),
-      // On (re)connect, probe runtimes in the background and push refreshed profiles,
-      // and re-assert each integration's cached channel-membership snapshot (the CP
-      // may have missed emits while we were disconnected; latest-wins upsert).
+      // On (re)connect, probe runtimes in the background and re-assert the
+      // daemon-owned snapshots the CP may have missed while disconnected.
       onReady: () => {
         void this.probeRuntimesAndEmit()
         void this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
         )
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
+        this.replaySessionMetadataSnapshots()
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
         this.replayChannelSnapshots()
