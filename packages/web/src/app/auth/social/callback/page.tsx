@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui'
 import { Spinner } from '@/components/marks'
-import { refreshMySocialIdentities } from '@/lib/api'
+import { linkMySocialIdentity, refreshMySocialIdentities } from '@/lib/api'
 import { forgetOwnershipProof } from '@/lib/ownership-proof'
 import {
   LogtoAccountError,
@@ -47,10 +47,24 @@ export default function SocialAccountCallback() {
       return
     }
 
+    const providerResponse = Object.fromEntries(params.entries())
+
+    // `direct`: the CP owns both legs, so hand it the provider's response and
+    // let it finish. Nothing here needs an ownership proof.
+    if (flow.mode === 'direct') {
+      linkMySocialIdentity(flow.connectorId, providerResponse)
+        .then(() => refreshMySocialIdentities().catch(() => undefined))
+        .then(() => window.location.replace(flow.returnTo))
+        .catch((caught) => {
+          setError(accountErrorMessage(caught, { providerName: flow.providerName, operation: 'link' }))
+        })
+      return
+    }
+
     // Logto exchanges the provider code against the exact URI it authorized
     // with, so echo it back alongside the provider's own response params.
-    const connectorData = { ...Object.fromEntries(params.entries()), redirectUri: flow.redirectUri }
-    verifySocialVerification(flow.verificationRecordId, connectorData)
+    const connectorData = { ...providerResponse, redirectUri: flow.redirectUri! }
+    verifySocialVerification(flow.verificationRecordId!, connectorData)
       .then((verified) =>
         (flow.purpose === 'reauthorize' && flow.target
           ? renewSocialIdentityToken(flow.target, verified)

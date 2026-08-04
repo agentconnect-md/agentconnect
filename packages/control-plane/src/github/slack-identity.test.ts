@@ -401,3 +401,66 @@ describe('LogtoIdentityService cache freshness after an external link', () => {
     expect(calls.user).toBe(2)
   })
 })
+
+describe('LogtoIdentityService.socialAuthorizationFor', () => {
+  /** Logto with a connector per target; `sessionBound` ones fail to build a URI
+   *  exactly as Slack's does (the connector calls setSession, Logto 500s). */
+  function fakeConnectors(sessionBound: string[]) {
+    const calls = { authorize: 0 }
+    const fetchImpl: FetchImpl = async (url, init) => {
+      if (url.endsWith('/oidc/token')) return Response.json({ access_token: 'tok', expires_in: 3600 })
+      const target = /target=([a-z]+)/.exec(url)?.[1]
+      if (target) return Response.json([{ id: `${target}-connector`, target, type: 'Social' }])
+      if (url.endsWith('/authorization-uri')) {
+        calls.authorize++
+        const connector = /connectors\/([a-z]+)-connector/.exec(url)?.[1] ?? ''
+        if (sessionBound.includes(connector)) return new Response('boom', { status: 500 })
+        return Response.json({ redirectTo: `https://${connector}.example.test/authorize` })
+      }
+      void init
+      return Response.json({})
+    }
+    return { fetchImpl, calls }
+  }
+
+  it('drives a session-free connector server-side, sparing the user a code', async () => {
+    const { fetchImpl } = fakeConnectors([])
+    const svc = svcOf(fetchImpl)
+    await expect(svc.socialAuthorizationFor('google', 'https://app.example.test/cb', 's')).resolves.toEqual({
+      mode: 'direct',
+      connectorId: 'google-connector',
+      authorizationUri: 'https://google.example.test/authorize'
+    })
+  })
+
+  it('falls back to the browser for a connector Logto cannot build a URI for', async () => {
+    // The failure is NOT surfaced as one: Slack is still linkable, just the
+    // other way. Reporting an error here is what the 502 bug used to do.
+    const { fetchImpl } = fakeConnectors(['slack'])
+    const svc = svcOf(fetchImpl)
+    await expect(svc.socialAuthorizationFor('slack', 'https://app.example.test/cb', 's')).resolves.toEqual({
+      mode: 'verified',
+      connectorId: 'slack-connector'
+    })
+  })
+
+  it('remembers that a connector needs the browser, instead of probing per click', async () => {
+    const { fetchImpl, calls } = fakeConnectors(['slack'])
+    const svc = svcOf(fetchImpl)
+
+    await svc.socialAuthorizationFor('slack', 'https://app.example.test/cb', 's')
+    await svc.socialAuthorizationFor('slack', 'https://app.example.test/cb', 's')
+    expect(calls.authorize).toBe(1)
+  })
+
+  it('keeps re-asking for a connector that works, so its URI is never stale', async () => {
+    // `direct` is not cached as a shortcut: each link needs its OWN state and
+    // redirect in the URI, so the round trip is the point, not overhead.
+    const { fetchImpl, calls } = fakeConnectors([])
+    const svc = svcOf(fetchImpl)
+
+    await svc.socialAuthorizationFor('google', 'https://app.example.test/cb', 's1')
+    await svc.socialAuthorizationFor('google', 'https://app.example.test/cb', 's2')
+    expect(calls.authorize).toBe(2)
+  })
+})

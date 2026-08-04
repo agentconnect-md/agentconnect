@@ -7,12 +7,18 @@ export interface SocialLinkFlow {
   target?: string
   state: string
   connectorId: string
+  /**
+   * Which side completes this link. `direct` means the CP does, on the
+   * Management API, where no ownership proof is required — so the fields below
+   * are absent. Flows written before this existed are `verified`.
+   */
+  mode?: 'direct' | 'verified'
   /** The Account API verification this flow is completing. The provider's
    *  response is only meaningful against the record that started it. */
-  verificationRecordId: string
+  verificationRecordId?: string
   /** Echoed back on verify: Logto exchanges the code against the SAME URI it
    *  authorized with, and the connectors that keep it in session need it too. */
-  redirectUri: string
+  redirectUri?: string
   /** Proof that the caller owns this account, collected BEFORE leaving for the
    *  provider — on return the identity is saved immediately, with no UI left to
    *  ask. Absent when the account has no security verification method. */
@@ -194,8 +200,11 @@ export function takeSocialLinkFlow(): SocialLinkFlow | undefined {
     if (
       typeof flow.state !== 'string' ||
       typeof flow.connectorId !== 'string' ||
-      typeof flow.verificationRecordId !== 'string' ||
-      typeof flow.redirectUri !== 'string' ||
+      (flow.mode !== undefined && flow.mode !== 'direct' && flow.mode !== 'verified') ||
+      // The Account API fields are the verified path's, and only it can finish
+      // without them being real.
+      (flow.mode !== 'direct' &&
+        (typeof flow.verificationRecordId !== 'string' || typeof flow.redirectUri !== 'string')) ||
       (flow.currentVerificationRecordId !== undefined && typeof flow.currentVerificationRecordId !== 'string') ||
       (flow.purpose !== undefined && flow.purpose !== 'link' && flow.purpose !== 'reauthorize') ||
       (flow.target !== undefined && typeof flow.target !== 'string') ||

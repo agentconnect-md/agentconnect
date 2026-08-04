@@ -3486,6 +3486,24 @@ export function resolveMySocialConnectorId(target: SocialLoginTarget): Promise<{
   return apiGet(`/me/social-identities/connectors/${encodeURIComponent(target)}`)
 }
 
+/** How this provider must be linked, decided by the CP asking Logto — never by
+ *  the console keeping a list of which connectors need a session. */
+export type MySocialAuthorizationDto =
+  { mode: 'direct'; connectorId: string; authorizationUri: string } | { mode: 'verified'; connectorId: string }
+
+export function createMySocialIdentityAuthorization(
+  target: SocialLoginTarget,
+  state: string
+): Promise<MySocialAuthorizationDto> {
+  return apiPost('/me/social-identities/authorization-uri', { target, state })
+}
+
+/** Complete a `direct` link server-side. No ownership proof: the CP's own
+ *  credential is the authority on this path. */
+export async function linkMySocialIdentity(connectorId: string, connectorData: Record<string, string>): Promise<void> {
+  await apiPost('/me/social-identities', { connectorId, connectorData })
+}
+
 export async function unlinkMySocialIdentity(target: string): Promise<void> {
   await apiDelete(`/me/social-identities/${encodeURIComponent(target)}`)
 }

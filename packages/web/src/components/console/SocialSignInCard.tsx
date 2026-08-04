@@ -7,6 +7,7 @@ import { SocialLoginMark } from '@/components/marks'
 import { initialsFrom } from '@/lib/auth'
 import {
   fetchMySocialAccount,
+  createMySocialIdentityAuthorization,
   resolveMySocialConnectorId,
   unlinkMySocialIdentity,
   type MySocialAccountDto,
@@ -20,6 +21,7 @@ import {
   requestEmailVerification,
   verifyEmailCode,
   writeSocialLinkFlow,
+  type SocialLinkFlow,
   type AccountNotice
 } from '@/lib/logto-account'
 import { rememberOwnershipProof, reusableOwnershipProof } from '@/lib/ownership-proof'
@@ -307,7 +309,7 @@ export default function SocialSignInCard({
     shouldRetryOnError: false
   })
   const [pendingUnlink, setPendingUnlink] = useState<SocialLoginProvider>()
-  const [pendingVerify, setPendingVerify] = useState<SocialLoginProvider>()
+  const [pendingVerify, setPendingVerify] = useState<{ provider: SocialLoginProvider; connectorId: string }>()
   const [busyProvider, setBusyProvider] = useState<SocialLoginProvider['target']>()
   const handledAutoAuthorize = useRef<string | undefined>(undefined)
   const currentAccount = error ? undefined : account
@@ -315,56 +317,88 @@ export default function SocialSignInCard({
     ? socialLoginProviders().filter((provider) => byTarget(currentAccount, provider.target)).length
     : 0
 
-  // Logto refuses an identity change the caller has not re-proven, so accounts
-  // with a security verification method take the code detour first.
-  const beginLink = (provider: SocialLoginProvider) => {
-    if (currentAccount?.hasSecurityVerificationMethod) {
-      // One code covers every link in its window, so a second provider in the
-      // same sitting reuses the proof instead of asking again.
-      const proof = reusableOwnershipProof()
-      if (proof) {
-        void startAuthorization(provider, 'link', proof)
+  /**
+   * Ask the CP how this provider links, then follow the answer.
+   *
+   * Only the `verified` path needs an ownership code, and which providers those
+   * are is not knowable here — Logto's own published list omitted Slack. So the
+   * console keeps no list: it does what the CP reports.
+   */
+  const beginLink = async (provider: SocialLoginProvider) => {
+    setBusyProvider(provider.target)
+    try {
+      const state = createSocialState()
+      const authorization = await createMySocialIdentityAuthorization(provider.target, state)
+      if (authorization.mode === 'direct') {
+        // The CP finishes this one, so there is nothing to prove and no code.
+        redirectToProvider(provider, authorization.authorizationUri, {
+          purpose: 'link',
+          target: provider.target,
+          state,
+          connectorId: authorization.connectorId,
+          mode: 'direct'
+        })
         return
       }
-      setPendingVerify(provider)
-      return
+      const proof = currentAccount?.hasSecurityVerificationMethod ? reusableOwnershipProof() : undefined
+      if (currentAccount?.hasSecurityVerificationMethod && !proof) {
+        setPendingVerify({ provider, connectorId: authorization.connectorId })
+        setBusyProvider(undefined)
+        return
+      }
+      await startAuthorization(provider, 'link', authorization.connectorId, proof)
+    } catch (caught) {
+      onNotice({ message: accountErrorMessage(caught, { providerName: provider.name, operation: 'link' }) })
+      setBusyProvider(undefined)
     }
-    void startAuthorization(provider, 'link')
+  }
+
+  /** Park what the callback will need, then leave for the provider. */
+  const redirectToProvider = (
+    provider: SocialLoginProvider,
+    authorizationUri: string,
+    flow: Omit<SocialLinkFlow, 'providerName' | 'returnTo' | 'createdAt'>
+  ) => {
+    const stored = writeSocialLinkFlow({
+      ...flow,
+      providerName: provider.name,
+      returnTo: `${window.location.pathname}${window.location.search}`,
+      createdAt: Date.now()
+    })
+    if (!stored) {
+      throw new LogtoAccountError('This browser blocked the temporary account-linking state.', 0)
+    }
+    window.location.assign(authorizationUri)
   }
 
   const beginReauthorize = (provider: SocialLoginProvider) => {
     void startAuthorization(provider, 'reauthorize')
   }
 
+  /** The browser-driven half: Logto's Account API is the side with a connector
+   *  session, so this is the only way a session-bound provider can be linked. */
   const startAuthorization = async (
     provider: SocialLoginProvider,
     purpose: 'link' | 'reauthorize',
+    knownConnectorId?: string,
     currentVerificationRecordId?: string
   ) => {
     setBusyProvider(provider.target)
     try {
       const state = createSocialState()
-      // Two hops on purpose: only the CP can name the connector, and only the
-      // browser can authorize it (the Account API is the side with a session).
-      const { connectorId } = await resolveMySocialConnectorId(provider.target)
+      const connectorId = knownConnectorId ?? (await resolveMySocialConnectorId(provider.target)).connectorId
       const redirectUri = `${window.location.origin}/auth/social/callback`
       const { authorizationUri, verificationRecordId } = await createSocialVerification(connectorId, redirectUri, state)
-      const stored = writeSocialLinkFlow({
+      redirectToProvider(provider, authorizationUri, {
         purpose,
         target: provider.target,
         state,
         connectorId,
+        mode: 'verified',
         verificationRecordId,
         redirectUri,
-        ...(currentVerificationRecordId ? { currentVerificationRecordId } : {}),
-        providerName: provider.name,
-        returnTo: `${window.location.pathname}${window.location.search}`,
-        createdAt: Date.now()
+        ...(currentVerificationRecordId ? { currentVerificationRecordId } : {})
       })
-      if (!stored) {
-        throw new LogtoAccountError('This browser blocked the temporary account-linking state.', 0)
-      }
-      window.location.assign(authorizationUri)
     } catch (caught) {
       onNotice({
         message: accountErrorMessage(caught, { providerName: provider.name, operation: purpose })
@@ -391,7 +425,7 @@ export default function SocialSignInCard({
     }
     const linked = byTarget(currentAccount, autoAuthorize.target)
     if (autoAuthorize.purpose === 'reauthorize' && linked) beginReauthorize(provider)
-    else if (!linked) beginLink(provider)
+    else if (!linked) void beginLink(provider)
   }, [autoAuthorize, currentAccount, onAutoAuthorizeHandled, onNotice])
 
   const unlink = async (provider: SocialLoginProvider) => {
@@ -525,7 +559,7 @@ export default function SocialSignInCard({
                         variant="secondary"
                         size="xs"
                         disabled={busyProvider !== undefined}
-                        onClick={() => beginLink(provider)}
+                        onClick={() => void beginLink(provider)}
                       >
                         <Icon name="link" size={14} />
                         {busyProvider === provider.target ? 'Linking…' : 'Link'}
@@ -550,13 +584,18 @@ export default function SocialSignInCard({
 
       {pendingVerify ? (
         <VerifyAccountDialog
-          key={pendingVerify.target}
-          provider={pendingVerify}
+          key={pendingVerify.provider.target}
+          provider={pendingVerify.provider}
           email={currentAccount?.primaryEmail}
           onVerified={async (currentVerificationRecordId, expiresAt) => {
             setPendingVerify(undefined)
             rememberOwnershipProof(currentVerificationRecordId, expiresAt)
-            await startAuthorization(pendingVerify, 'link', currentVerificationRecordId)
+            await startAuthorization(
+              pendingVerify.provider,
+              'link',
+              pendingVerify.connectorId,
+              currentVerificationRecordId
+            )
           }}
           onClose={() => setPendingVerify(undefined)}
         />
