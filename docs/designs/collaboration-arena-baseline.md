@@ -347,6 +347,26 @@ the capability lands.
 - **Delay, duplication and failure variants** (§14 step 7) are not implemented.
   The arena currently measures the happy transport path plus the protections.
 
+Two known fidelity gaps in the harness, both currently harmless but worth naming
+before a future game depends on them:
+
+- **The echo's reconstructed claim omits `addressedAnyone`.** Production uses
+  that bit to distinguish "named nobody" from "named only a human or third-party
+  app," typically when the mention occurred in an earlier split section that is
+  no longer visible in the final one. `VirtualResponseMetadata` has no such
+  field, so the echo cannot preserve it. No current game produces that shape —
+  the counting games never split a response around a human mention — but a
+  routing game that did would see the eval daemon treat an addressed response as
+  unaddressed.
+- **Evaluation `listAgents` scopes an omitted request to the current channel.**
+  The daemon's `ChannelAgentsRequest` documents `currentChannel` as trusted
+  session context, not a scope request; an omitted `channel` means an org-wide
+  listing. The evaluation directory falls back to `currentChannel`, so an
+  org-wide call would come back conversation-scoped (and carrying `mention`
+  tokens production would omit). No current game issues `listAgents({})`, so
+  nothing measured here depends on it; a game that needs org-wide discovery must
+  fix the scoping and add omitted-vs-explicit coverage together.
+
 ## 7. Measured versus inferred
 
 Stated explicitly, since several claims above are structural rather than observed:
