@@ -265,9 +265,9 @@ host to run sandboxed.
   credentials through the configured `SecretCipher`; the stored representation
   depends on the runtime-configured cipher. It sends assigned values to
   daemons or relays through `integration/*` control frames over encrypted
-  transport. A daemon persists assigned integration configuration in its local,
-  secret-bearing `agent.json` so established integrations can recover while the
-  Control Plane is unavailable. Credential values must never be logged. The
+  transport. A daemon holds assigned integration configuration in memory and
+  re-converges it after reconnect; CP credentials are never written to
+  `agent.json`. Credential values must never be logged. The
   protocol separately reserves lease-based `secrets/*` frames for
   secret-manager references.
 - **Least privilege**: a daemon receives credentials only for the workspaces and platforms for which it is responsible.

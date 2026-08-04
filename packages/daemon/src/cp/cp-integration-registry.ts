@@ -1,55 +1,58 @@
-/**
- * `CpIntegrationRegistry` — applies CP-owned platform integrations onto the
- * daemon's on-disk `agent.json` files, which are the SINGLE SOURCE OF TRUTH
- * (same model as CpAgentRegistry). The CP pushes deltas over
- * `integration/upsert` / `integration/remove` and the full per-daemon set over
- * the `register/ok` reconcile roster; this writes each straight to the owning
- * agent's `integrations[]` (upsert by integrationId). Nothing is held in memory,
- * so integrations — and their Slack tokens — survive a daemon restart with the
- * CP down: `daemon.start()` opens Socket Mode connections from disk alone.
- *
- * Tokens on disk share the daemon's trust boundary (hand-authored agents already
- * keep Slack tokens in agent.json). They still MUST NEVER be logged.
- *
- * `converge` upserts every roster entry. Reconnect pruning is explicit through
- * `register/ok.drop.integrations`, after ownership-aware CP reconciliation.
- *
- * Every mutation fires `onChange` so the daemon re-reconciles (re-loads agents
- * from disk; diffAgents flags the `integrations` dimension, which re-opens/binds
- * the Slack sockets).
- */
+/** CP platform integrations live only in daemon memory and are re-converged on reconnect. */
 import type { IntegrationSpec } from '@agentconnect.md/protocol'
-import { writeIntegrationSpec, removeIntegration, type WriteIntegrationDeps } from '../agents/write-integration.js'
+import type { Integration } from '../agents/agent-schema.js'
+import { toIntegration, type WriteIntegrationDeps } from '../agents/write-integration.js'
+
+interface Entry {
+  agentId: string
+  integration: Integration
+}
 
 export class CpIntegrationRegistry {
+  private readonly entries = new Map<string, Entry>()
+
   constructor(
-    private readonly agentsDir: string,
+    _agentsDir: string,
     private readonly deps: WriteIntegrationDeps,
     private readonly onChange: () => void
   ) {}
 
-  /** Add or replace one integration on the owning agent's disk file (integration/upsert EVT). */
   upsert(spec: IntegrationSpec): void {
-    writeIntegrationSpec(this.agentsDir, spec, this.deps)
+    const integration = toIntegration(spec)
+    if (!integration) {
+      this.deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — ignored`)
+      return
+    }
+    this.entries.set(spec.integrationId, { agentId: spec.agentId, integration })
     this.onChange()
   }
 
-  /** Splice one integration out of whichever agent.json holds it (integration/remove EVT). */
   remove(integrationId: string): void {
-    removeIntegration(this.agentsDir, integrationId)
-    this.onChange()
+    if (this.entries.delete(integrationId)) this.onChange()
   }
 
-  /**
-   * Apply the register/ok reconcile roster: upsert EACH entry and NOTHING else.
-   * The caller applies the separately-authorized drop list first; roster
-   * absence alone is never enough to prune a hand-authored local integration.
-   */
   converge(specs: IntegrationSpec[]): void {
-    // Tolerate a snapshot without the field (older CP / hand-built) — treat as empty.
     for (const spec of specs ?? []) {
-      writeIntegrationSpec(this.agentsDir, spec, this.deps)
+      const integration = toIntegration(spec)
+      if (integration) this.entries.set(spec.integrationId, { agentId: spec.agentId, integration })
+      else this.deps.warn?.(`cp: integration ${spec.integrationId} carried no usable platform payload — ignored`)
     }
     this.onChange()
+  }
+
+  forAgent(agentId: string): Integration[] {
+    return [...this.entries.values()].filter((entry) => entry.agentId === agentId).map((entry) => entry.integration)
+  }
+
+  retainForAgent(agentId: string, desiredIds: ReadonlySet<string>): boolean {
+    let changed = false
+    for (const [id, entry] of this.entries) {
+      if (entry.agentId === agentId && !desiredIds.has(id)) {
+        this.entries.delete(id)
+        changed = true
+      }
+    }
+    if (changed) this.onChange()
+    return changed
   }
 }

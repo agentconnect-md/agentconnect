@@ -1,11 +1,10 @@
 /**
  * CP runtime env. The Control Plane owns the editable agent spec (prompt, model,
  * reasoning/execution knobs, env, workspace) and ships it over `agent/upsert` +
- * the `register/ok` reconcile roster. As of the agent.json-is-authoritative
- * change, those specs are written straight to disk (see agents/write-agent.ts),
- * so there is no in-memory overlay — the daemon reads the on-disk `agent.json`.
+ * the `register/ok` reconcile roster. Those specs remain in daemon memory and
+ * are combined with separately pushed integrations/crons in `effectiveAgents`.
  *
- * What remains here is the mapping from an agent's fields to the `AGENTCONNECT_*`
+ * This module maps the effective agent fields to the `AGENTCONNECT_*`
  * environment the daemon surfaces to the ACP child.
  */
 import type { Agent } from './agent-schema.js'

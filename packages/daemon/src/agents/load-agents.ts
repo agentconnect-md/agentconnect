@@ -6,6 +6,7 @@ import { protectAgentJson } from './agent-json-file.js'
 const IGNORED_DIRS = new Set(['node_modules', '.git'])
 const MAX_DEPTH = 4
 const DETACHED_DIR = '.detached'
+const CP_AGENT_ROOT_MARKER = '.cp-agent-id'
 
 // Agent plus loader-derived data: the directory containing agent.json.
 export type LoadedAgent = Agent & { dir: string }
@@ -42,6 +43,9 @@ export function findAgentFiles(dir: string, depth = 0): string[] {
   } catch {
     return []
   }
+  // A CP-managed data root intentionally has no agent.json. Treat it as a leaf
+  // so a checkout beneath workspace/ cannot masquerade as a local user agent.
+  if (entries.some((e) => e.isFile() && e.name === CP_AGENT_ROOT_MARKER)) return []
   if (entries.some((e) => e.isFile() && e.name === 'agent.json')) {
     return [join(dir, 'agent.json')]
   }
