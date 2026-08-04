@@ -808,7 +808,9 @@ Workspace link immediately before Details. For an unpurged session-scoped GitHub
 checkout, it opens that session's worktree; for a shared GitHub checkout or Scratch,
 it opens the Agent's primary workspace. Its git or folder icon reflects that source.
 A session worktree is browse-only in the console: file editing and pull remain actions
-on the primary workspace.
+on the primary workspace. When a selected session's worktree has been cleaned up, the
+browser says that it will be recreated from the repository when the agent next works in
+that session; it must not present the missing worktree as a new workspace with no files.
 
 The checkout control occupies about one quarter of the Workspace file browser
 header, opposite the current file breadcrumb. Its primary choice is named with

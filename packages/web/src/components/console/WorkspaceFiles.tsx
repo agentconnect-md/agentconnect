@@ -817,7 +817,13 @@ export function WorkspaceFiles({
         )}
 
         {!editor && root && !root.loading && !root.err && !root.exists && (
-          <EmptyNote text="The workspace has no files yet — the agent creates them as it works." />
+          <EmptyNote
+            text={
+              sessionId
+                ? "This session's workspace has been cleaned up — it will be recreated from the repository when the agent next works in this session."
+                : 'The workspace has no files yet — the agent creates them as it works.'
+            }
+          />
         )}
 
         {root?.entries && root.exists && root.entries.length === 0 && !editor && (

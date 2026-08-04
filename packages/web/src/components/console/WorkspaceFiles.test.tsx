@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const mobile = vi.hoisted(() => ({ value: false }))
 const workspace = vi.hoisted(() => ({
+  exists: true,
   entries: [] as Array<{
     name: string
     type: 'file' | 'dir'
@@ -44,7 +45,7 @@ vi.mock('@/lib/api', () => ({
   fetchWorkspaceFiles: vi.fn((_agentId: string, opts: { path: string }) =>
     Promise.resolve({
       entries: opts.path ? (workspace.listings[opts.path] ?? []) : workspace.entries,
-      exists: true,
+      exists: workspace.exists,
       nextCursor: null
     })
   ),
@@ -101,6 +102,7 @@ afterEach(async () => {
   container = undefined
   root = undefined
   mobile.value = false
+  workspace.exists = true
   workspace.entries = []
   workspace.listings = {}
   vi.mocked(deleteWorkspaceFile).mockClear()
@@ -254,6 +256,29 @@ it('scopes file and git reads to the selected session worktree', async () => {
   expect(fetchWorkspaceFiles).toHaveBeenCalledWith('agent-a', { path: '', sessionId: 'session-a' })
   expect(fetchWorkspaceGitStatus).toHaveBeenCalledWith('agent-a', 'session-a')
   expect(container?.textContent).not.toContain('Add file')
+})
+
+it('explains when a selected session workspace has been cleaned up', async () => {
+  workspace.exists = false
+  container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  await act(async () => {
+    root?.render(
+      <WorkspaceFiles
+        agentId="agent-a"
+        sessionId="session-a"
+        workdir="/workspace"
+        canEdit={false}
+        renderHeader={() => null}
+      />
+    )
+    await Promise.resolve()
+  })
+
+  expect(container.textContent).toContain("This session's workspace has been cleaned up")
+  expect(container.textContent).toContain('it will be recreated from the repository')
+  expect(container.textContent).not.toContain('The workspace has no files yet')
 })
 
 it('keeps an inline new-file draft across the desktop-to-mobile breakpoint', async () => {
