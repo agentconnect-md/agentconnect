@@ -116,6 +116,24 @@ it('uses configured edit access even before runtime Git status loads', () => {
   expect(html).toContain('Add file')
 })
 
+it('places the checkout selector in the file browser header', () => {
+  const html = renderToStaticMarkup(
+    <WorkspaceFiles
+      agentId="agent-a"
+      workdir="/workspace"
+      canEdit={false}
+      workspacePicker={<span data-testid="workspace-picker">Checkout</span>}
+      renderHeader={() => <div data-testid="source-card">Source</div>}
+    />
+  )
+  const host = document.createElement('div')
+  host.innerHTML = html
+  const picker = host.querySelector('[data-testid="workspace-picker"]')
+
+  expect(picker?.closest('.cardhead')).not.toBeNull()
+  expect(picker?.closest('.card')?.querySelector('[data-testid="source-card"]')).toBeNull()
+})
+
 // The workspace editor lives in the card this browser renders, so a replacement
 // has to remount the instance — otherwise the previous tree/preview/git state
 // survives underneath a refreshed source card (and GitHub → scratch turns the

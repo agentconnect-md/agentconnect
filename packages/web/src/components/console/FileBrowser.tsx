@@ -93,12 +93,12 @@ export function FileBrowserShell({
   children: ReactNode
 }) {
   return (
-    <div className="card overflow-hidden max-desktop:rounded-lg">
+    <div className="card relative max-desktop:rounded-lg">
       <div className="cardhead min-h-[41px] min-w-0 justify-between py-[6px]">
         <div className="cardtitle min-w-0 flex-1">{title}</div>
         {headerEnd}
       </div>
-      {children}
+      <div className="overflow-hidden rounded-b-[inherit]">{children}</div>
     </div>
   )
 }

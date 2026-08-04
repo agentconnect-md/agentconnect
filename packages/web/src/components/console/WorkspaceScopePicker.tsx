@@ -119,10 +119,9 @@ export function WorkspaceScopePicker({
 
   return (
     <div
-      className={`relative flex flex-wrap items-center gap-[10px] border-b border-(--border-subtle) px-4 py-[9px] ${open ? 'z-30' : ''}`}
+      className={`relative w-[min(640px,58vw)] min-w-0 flex-none max-desktop:w-[min(210px,56vw)] ${open ? 'z-30' : ''}`}
     >
-      <span className="eyebrow flex-none text-[10.5px]">Viewing</span>
-      <div className="relative min-w-0 flex-[1_1_360px]">
+      <div className="relative min-w-0">
         <div
           className={`flex h-8 min-w-0 items-center overflow-hidden rounded-md border bg-(--surface-card) ${
             open
