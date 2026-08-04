@@ -68,6 +68,11 @@
   --plum-900: #241531;
   --plum-950: #1b0f25;
 
+  /* Cool accents that carry no status meaning — agent transcript tones
+     (lib/agent-tone.ts) need hues nobody reads as warning/error. */
+  --teal-500: #0f9c93;
+  --indigo-500: #5457d6;
+
   /* Semantic status hues */
   --green-500: #15a661;
   --green-50: #e9f9f0;
@@ -262,6 +267,10 @@
   --red-50: rgba(239, 107, 107, 0.16);
   --blue-500: #6a97f5;
   --blue-50: rgba(106, 151, 245, 0.16);
+
+  /* Agent tones — lifted like the other hues so a 15% mix stays legible on dark. */
+  --teal-500: #35c7ba;
+  --indigo-500: #8b8df0;
 
   /* IM platform soft accents re-tuned for dark chips */
   --slack-soft: rgba(163, 92, 168, 0.22);

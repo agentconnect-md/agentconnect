@@ -130,8 +130,11 @@ type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 // strength fails contrast on the light surface.
 // SELF_BUBBLE is the reader's own, deliberately neutral, tail corner mirrored.
 // Full literal strings so Tailwind's scanner sees them (STYLE.md §8).
+// The 35px right inset is the user side's mark column (26px avatar + 9px gap): it
+// stops a long agent bubble short of where the reader's own avatar sits, so the two
+// columns of bubbles share one right edge instead of the bot side running under it.
 const AGENT_BUBBLE =
-  'w-fit max-w-full rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-tint),var(--surface-card))]'
+  'w-fit max-w-[calc(100%-35px)] rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-tint),var(--surface-card))]'
 const AGENT_NAME =
   'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_62%,var(--text-primary))]'
 const SELF_BUBBLE =
@@ -3062,7 +3065,7 @@ export default function SessionDetailView() {
                       <div
                         key={`${session.id}:${ti}`}
                         ref={ti === focusTurnIndex ? focusRef : undefined}
-                        className={`flex items-start gap-[9px] rounded-md transition-colors duration-700 ${
+                        className={`flex items-start gap-[10px] rounded-md transition-colors duration-700 ${
                           ti === focusTurnIndex && focusFlash ? 'bg-(--surface-active)' : ''
                         }`}
                       >
@@ -3211,13 +3214,12 @@ export default function SessionDetailView() {
                           .filter((agent): agent is Agent => agent !== undefined)
                       : []
                   const rows = busyAgents.length > 0 ? busyAgents : [owner]
+                  // 26px mark + 9px gap, same geometry as an agent turn's row, so the
+                  // dots start on the same left edge as that agent's bubbles above.
                   return rows.map((agent, i) => (
-                    <div
-                      key={agent?.id ?? i}
-                      className="flex items-center gap-[10px] desktop:mt-[14px] desktop:gap-[11px]"
-                    >
-                      <span className="av h-[30px] w-[30px] flex-none rounded-md">
-                        <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={30} />
+                    <div key={agent?.id ?? i} className="flex items-center gap-[9px] desktop:mt-[14px]">
+                      <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                        <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
                       </span>
                       <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
                         <span className="tdot" />
@@ -3394,6 +3396,10 @@ export default function SessionDetailView() {
                             </span>
                           )
                         })}
+                      {/* h-7 w-7 like every other control on this row (and the Home composer's
+                        twin), so the dashed circle shares their 28px box instead of floating
+                        inside it. A lucide glyph, not a text "+": a text plus centres on its
+                        line box, which left it a hair low. */}
                       {isPg && addAgentOptions.length > 0 && (
                         <ComposerMenu
                           title="Add agents"
@@ -3402,9 +3408,9 @@ export default function SessionDetailView() {
                           iconOnly
                           open={composerMenuOpen === 'addAgent'}
                           align="left"
-                          triggerClassName="inline-flex h-[22px] w-[22px] flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans text-[13px] leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                          triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                           tooltips={false}
-                          leading={<span aria-hidden>+</span>}
+                          leading={<Icon name="plus" size={14} />}
                           onOpenChange={(open) => {
                             setAttachMenuOpen(false)
                             setComposerMenuOpen(open ? 'addAgent' : null)
