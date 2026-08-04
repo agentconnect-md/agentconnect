@@ -33,6 +33,7 @@ import { getUser, isAuthConfigured, logout } from '@/lib/auth'
 import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { applyTheme, clearThemeAttr, getStoredTheme, type Theme } from '@/lib/theme'
+import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
 
 interface NavItem {
   href: string
@@ -77,7 +78,6 @@ const MORE_ROWS: NavItem[] = [
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
 // Home is a top-level surface (the default landing), not a push screen.
 const LIST_ROUTES = ['/home', '/agents', '/sessions', '/crons', '/daemons']
-const SESSION_FILTER_KEYS = ['agent', 'integration', 'channel', 'trigger']
 const CONSOLE_SWR_CONFIG = {
   dedupingInterval: 2_000,
   focusThrottleInterval: 5_000,
@@ -168,13 +168,7 @@ function resolveHelpLinks(): typeof HELP_LINK_DEFAULTS {
 }
 
 function sessionFilterSearch(search: string): string {
-  const current = new URLSearchParams(search)
-  const next = new URLSearchParams()
-  for (const key of SESSION_FILTER_KEYS) {
-    const value = current.get(key)
-    if (value && value !== 'all') next.set(key, value)
-  }
-  const qs = next.toString()
+  const qs = sessionListSearchParams(new URLSearchParams(search)).toString()
   return qs ? `?${qs}` : ''
 }
 
@@ -637,7 +631,8 @@ function ShellChrome({ children }: { children: ReactNode }) {
   const isSessionDetail = seg[0] === 'sessions' && seg.length === 2
   const copyLink = () => {
     try {
-      void navigator.clipboard?.writeText?.(window.location.origin + orgPath(barePath))?.catch?.(() => {})
+      const suffix = isFlatSessionView(searchParams) ? '?view=flat' : ''
+      void navigator.clipboard?.writeText?.(window.location.origin + orgPath(`${barePath}${suffix}`))?.catch?.(() => {})
     } catch {
       /* noop */
     }

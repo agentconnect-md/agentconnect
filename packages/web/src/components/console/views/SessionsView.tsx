@@ -30,6 +30,7 @@ import {
 import { useConsoleData } from '@/lib/data-context'
 import { useSessionFacets } from '@/lib/use-session-facets'
 import { useSessionList } from '@/lib/use-session-list'
+import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
@@ -39,7 +40,6 @@ import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
 type FilterKey = 'agent' | 'integration' | 'channel' | 'trigger'
-const FILTER_KEYS: FilterKey[] = ['agent', 'integration', 'channel', 'trigger']
 const DEMO_AGENT_IDS = new Set(AGENTS.map((agent) => agent.id))
 
 // Avatar initials for a person trigger — strip a leading @, then first letters of
@@ -129,6 +129,7 @@ export default function SessionsView() {
   const fInt = params.get('integration') ?? 'all'
   const fChannel = params.get('channel') ?? 'all'
   const fTrigger = params.get('trigger') ?? 'all'
+  const flatView = isFlatSessionView(params)
   const fGithubRepoId = githubRepoIdFromSessionTriggerFilter(fTrigger)
   const sessionFilters = {
     ...(fAgent !== 'all' ? { agentId: fAgent } : {}),
@@ -140,7 +141,7 @@ export default function SessionsView() {
         : {}),
     ...(fGithubRepoId ? { githubRepoId: fGithubRepoId } : fTrigger !== 'all' ? { triggeredBy: fTrigger } : {})
   } satisfies SessionListFilters
-  const sessionList = useSessionList(activeOrg?.id, sessionFilters, { grouped: true })
+  const sessionList = useSessionList(activeOrg?.id, sessionFilters, { grouped: !flatView })
   const { data: sessionFacets = baseSessionFacets } = useSessionFacets(activeOrg?.id, sessionFilters, baseSessionFacets)
   const demoSessions = useMemo(
     () => (MOCK_MODE ? allSessions.filter((session) => DEMO_AGENT_IDS.has(session.agentId ?? '')) : []),
@@ -188,18 +189,14 @@ export default function SessionsView() {
       .map(({ s }) => s)
   }, [filteredServerSessions, localSessions])
   const filterQuery = useMemo(() => {
-    const next = new URLSearchParams()
-    for (const key of FILTER_KEYS) {
-      const value = params.get(key)
-      if (value && value !== 'all') next.set(key, value)
-    }
-    return next.toString()
+    return sessionListSearchParams(params).toString()
   }, [params])
   const sessionHref = useCallback(
     (session: Session) => {
       // A multi-participant conversation row links to the merged page — the only
-      // surfaced view for it (merged-conversation-view.md §5.3).
-      if (isMergedConversationRow(session)) {
+      // default view for it (merged-conversation-view.md §5.3). The explicit flat
+      // list keeps the member session addressable instead.
+      if (!flatView && isMergedConversationRow(session)) {
         return orgPath(`/conversations/${encodeURIComponent(session.conversationKey!)}`)
       }
       const id = canonicalSessionId(session)
@@ -209,7 +206,7 @@ export default function SessionsView() {
       const suffix = query.size ? `?${query.toString()}` : ''
       return orgPath(`/sessions/${id}${suffix}`)
     },
-    [filterQuery, orgPath]
+    [filterQuery, flatView, orgPath]
   )
 
   const setFilter = useCallback(

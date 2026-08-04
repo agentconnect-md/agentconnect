@@ -82,8 +82,7 @@ interface RailRow {
   title: string
   tooltip: string
   /** Where the row goes. A multi-participant row is a CONVERSATION, and the merged
-   *  page is its only surfaced view (merged-conversation-view.md §5.3) — linking to
-   *  the member session instead would just bounce through the redirect. */
+   *  page is its default surfaced view (merged-conversation-view.md §5.3). */
   href: string
   /** The id this row's pin toggle writes: the member already pinned when there is
    *  one, so unpinning releases the pin that is actually claiming the row. */
@@ -125,6 +124,7 @@ export function SessionRail({
   onAgentIdsChange,
   family,
   conversation = false,
+  flatView = false,
   childOriginById,
   onSelect
 }: {
@@ -145,12 +145,15 @@ export function SessionRail({
   /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels the
    *  related tree and groups delegations by their waking member. */
   conversation?: boolean
+  /** Keep raw session rows and links instead of collapsing into conversations. */
+  flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
 }) {
   const { orgPath, activeOrg } = useOrgs()
+  const flatSearch = flatView ? '?view=flat' : ''
   // Schedule-triggered rows show the schedule's name, so the rail needs the crons
   // list — resolve it here instead of threading another display-only callback.
   // `agents` backs the filter chips and their picker.
@@ -310,7 +313,7 @@ export function SessionRail({
   const sessionRow = (s: Session): RailRow => {
     const channel = sessionChannelDisplay(s, cronName)
     const id = canonicalSessionId(s)
-    const merged = isMergedConversationRow(s)
+    const merged = !flatView && isMergedConversationRow(s)
     return {
       // The SESSION id: it is what `current` is matched against and what a fresh
       // pin records. Pin LOOKUP goes through every member (see sessionPinIds).
@@ -320,7 +323,7 @@ export function SessionRail({
       tooltip: `${s.title}\n${s.time} · ${channel.label}`,
       href: merged
         ? orgPath(`/conversations/${encodeURIComponent(s.conversationKey!)}`)
-        : orgPath(`/sessions/${encodeURIComponent(id)}`),
+        : orgPath(`/sessions/${encodeURIComponent(id)}${flatSearch}`),
       pinId: rowPin(s).id,
       session: s
     }
@@ -332,7 +335,7 @@ export function SessionRail({
       platform: relation.platform,
       title,
       tooltip: title,
-      href: orgPath(`/sessions/${encodeURIComponent(relation.id)}`),
+      href: orgPath(`/sessions/${encodeURIComponent(relation.id)}${flatSearch}`),
       pinId: relation.id
     }
   }
@@ -405,6 +408,11 @@ export function SessionRail({
     )
   }
 
+  const allSessionsQuery = new URLSearchParams()
+  if (flatView) allSessionsQuery.set('view', 'flat')
+  if (agentIds.length === 1) allSessionsQuery.set('agent', agentIds[0]!)
+  const allSessionsHref = orgPath(`/sessions${allSessionsQuery.size ? `?${allSessionsQuery}` : ''}`)
+
   // One list, two containers: the ≥wide inline right column, and the 769–1239px
   // floating button whose hover/focus popover shows the same list. Duplicating
   // the rendered rows is cheap; duplicating the data plumbing would not be.
@@ -417,10 +425,7 @@ export function SessionRail({
           shared-conversation filter is dropped rather than silently narrowed. */}
       <div className="mb-[9px] flex flex-none items-center justify-between gap-2 px-[9px]">
         <span className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Sessions</span>
-        <Link
-          className="lnk font-sans text-[12px] font-medium leading-normal"
-          href={orgPath(agentIds.length === 1 ? `/sessions?agent=${encodeURIComponent(agentIds[0]!)}` : '/sessions')}
-        >
+        <Link className="lnk font-sans text-[12px] font-medium leading-normal" href={allSessionsHref}>
           All sessions
           <Icon name="arrow-right" size={12} />
         </Link>

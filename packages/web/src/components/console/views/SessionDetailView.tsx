@@ -105,6 +105,7 @@ import {
   type RailAgentFilter
 } from '@/lib/session-rail-filter'
 import { useSessionList } from '@/lib/use-session-list'
+import { isFlatSessionView } from '@/lib/session-list-view'
 import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
 import {
   sessionEffortAfterModelChange,
@@ -842,18 +843,20 @@ function SessionRelationLink({
   relation,
   agent,
   orgPath,
+  flatView = false,
   bordered = false
 }: {
   relation: SessionRelationDto
   agent?: Agent
   orgPath: (path: string) => string
+  flatView?: boolean
   bordered?: boolean
 }) {
   const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
   const agentName = agent ? agentLabel(agent) : relation.agentId
   return (
     <Link
-      href={orgPath(`/sessions/${encodeURIComponent(relation.id)}`)}
+      href={orgPath(`/sessions/${encodeURIComponent(relation.id)}${flatView ? '?view=flat' : ''}`)}
       title={title}
       className={`lnk flex min-w-0 items-center gap-2 py-[10px] no-underline ${
         bordered ? 'border-t border-(--border-subtle)' : ''
@@ -885,6 +888,7 @@ function MobileSessionFamilyLinks({
   agentById,
   orgPath,
   conversation = false,
+  flatView = false,
   childOriginById
 }: {
   parent: SessionRelationDto | null
@@ -895,6 +899,7 @@ function MobileSessionFamilyLinks({
   /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels
    *  the sections and groups delegations by their waking member. */
   conversation?: boolean
+  flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
 }) {
@@ -910,7 +915,12 @@ function MobileSessionFamilyLinks({
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
             {conversation ? 'Parent conversation' : 'Parent session'}
           </span>
-          <SessionRelationLink relation={parent} agent={agentById.get(parent.agentId)} orgPath={orgPath} />
+          <SessionRelationLink
+            relation={parent}
+            agent={agentById.get(parent.agentId)}
+            orgPath={orgPath}
+            flatView={flatView}
+          />
         </div>
       )}
       {siblings.length > 0 && (
@@ -929,6 +939,7 @@ function MobileSessionFamilyLinks({
                 relation={sibling}
                 agent={agentById.get(sibling.agentId)}
                 orgPath={orgPath}
+                flatView={flatView}
                 bordered={index > 0}
               />
             ))}
@@ -963,6 +974,7 @@ function MobileSessionFamilyLinks({
                     relation={child}
                     agent={agentById.get(child.agentId)}
                     orgPath={orgPath}
+                    flatView={flatView}
                     bordered={index > 0 && !newGroup}
                   />
                 </div>
@@ -1002,6 +1014,7 @@ export default function SessionDetailView() {
   const { activeOrg, orgPath } = useOrgs()
   const router = useRouter()
   const searchParams = useSearchParams()
+  const flatView = isFlatSessionView(searchParams)
   const { id: routeId, key: conversationKeyParam } = useParams<{ id?: string; key?: string }>()
   // Merged conversation mode (merged-conversation-view.md §5.3): /conversations/:key
   // resolves the roster through the bounded key-addressed resolver; the
@@ -1391,21 +1404,23 @@ export default function SessionDetailView() {
   // conversation mode); a hit redirects to the merged page (§5.3), carrying
   // whose perspective was linked as ?focus.
   const selfKey = useMemo(() => {
-    if (conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') return null
+    if (flatView || conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') {
+      return null
+    }
     return encodeConversationKey({
       platform: currentSessionDetail.platform ?? 'slack',
       tenantScope: currentSessionDetail.tenantScope ?? null,
       channel: currentSessionDetail.channel,
       thread: currentSessionDetail.thread
     })
-  }, [conversationKey, currentSessionDetail])
+  }, [flatView, conversationKey, currentSessionDetail])
   const { data: selfConversation } = useSWR(
     selfKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, selfKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
     { revalidateOnFocus: false }
   )
   const selfConversationRedirect =
-    selfKey && selfConversation && selfConversation.sessions.length > 1
+    !flatView && selfKey && selfConversation && selfConversation.sessions.length > 1
       ? orgPath(`/conversations/${encodeURIComponent(selfKey)}?focus=${currentSessionDetail?.agentId ?? ''}`)
       : null
   useEffect(() => {
@@ -1464,17 +1479,15 @@ export default function SessionDetailView() {
   // (no session, and the reader has not touched it), so the org key stays null and
   // no page is fetched to be thrown away.
   //
-  // GROUPED, because the filter is conversation-shaped: the flat view returns one
-  // row per member session, so the moment the filter names a whole roster a thread
-  // two agents worked in listed itself once per agent. One row per conversation is
-  // also what the rail was always showing — that only happened to be true while
-  // the filter named a single agent.
+  // The ordinary detail rail is conversation-shaped. An explicit flat route keeps
+  // the same raw-session mode so navigating the rail cannot silently return to the
+  // grouped list or hide superseded sessions again.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
   const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
     MOCK_MODE || !railQuery ? null : activeOrg?.id,
     railQuery ?? {},
-    { grouped: true }
+    { grouped: !flatView }
   )
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
@@ -1521,7 +1534,7 @@ export default function SessionDetailView() {
     // A multi-participant conversation's canonical URL is the merged page —
     // refresh must land where the live Playground already looks merged
     // (merged-conversation-view.md §5.3). channelId is the conversation id.
-    const conversationId = (session?.participants?.length ?? 0) > 1 ? session?.channelId : undefined
+    const conversationId = !flatView && (session?.participants?.length ?? 0) > 1 ? session?.channelId : undefined
     if (conversationId) {
       // ADDRESS BAR ONLY (Next shallow history update): a router.replace to
       // /conversations/:key would remount into persisted conversation mode
@@ -1540,6 +1553,7 @@ export default function SessionDetailView() {
     })
   }, [
     id,
+    flatView,
     orgPath,
     router,
     session?.platform,
@@ -2194,7 +2208,8 @@ export default function SessionDetailView() {
   const onCopyLink = () => {
     try {
       const canonicalId = session.realSessionId ?? session.id
-      const link = window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}`)
+      const link =
+        window.location.origin + orgPath(`/sessions/${encodeURIComponent(canonicalId)}${flatView ? '?view=flat' : ''}`)
       void navigator.clipboard?.writeText(link)?.catch?.(() => {})
     } catch {
       /* noop */
@@ -2912,6 +2927,7 @@ export default function SessionDetailView() {
             agentById={agentById}
             orgPath={orgPath}
             conversation
+            flatView={flatView}
             childOriginById={conversationLineage?.childOriginById}
           />
         ) : (
@@ -2922,6 +2938,7 @@ export default function SessionDetailView() {
               children={currentSessionDetail.childSessions}
               agentById={agentById}
               orgPath={orgPath}
+              flatView={flatView}
             />
           )
         )}
@@ -3631,6 +3648,7 @@ export default function SessionDetailView() {
         onAgentIdsChange={setRailAgentIds}
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
         conversation={conversationMode}
+        flatView={flatView}
         childOriginById={conversationLineage?.childOriginById}
         onSelect={setRouteSession}
       />

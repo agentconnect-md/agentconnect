@@ -174,7 +174,8 @@ C1.
 
 `GET /sessions` returns **conversations by default**; `?view=flat` returns
 today's raw session rows. The console passes the same parameter through (a
-list-mode switch, defaulting to grouped). This deliberately changes the
+URL-addressable diagnostic mode, defaulting to grouped) and keeps it on links
+from the flat list into a raw session. This deliberately changes the
 default response shape of a public REST operation — accepted by product
 decision: console and CP ship on the same train, external consumers pin
 `view=flat`, and the OpenAPI doc describes both shapes on the operation.
@@ -247,17 +248,19 @@ grouped list and the merged page both hold to it (§7).
 
 ### 5.3 Routes and cross-links
 
-- `/conversations/:key` — the merged page, and **the only surfaced page for a
-  multi-participant conversation**.
-- Sessions list rows link here when `participants.length > 1`, to the
+- `/conversations/:key` — the default surfaced page for a multi-participant
+  conversation.
+- Grouped Sessions list rows link here when `participants.length > 1`, to the
   per-agent session page otherwise (for a single-agent session that page IS
-  the conversation page — no change for the common case).
+  the conversation page — no change for the common case). `view=flat` rows
+  always link to their raw `/sessions/:id?view=flat` page.
 - Existing `/sessions/:id` deep links (GitHub check footers, shared URLs,
   crumbs) whose session belongs to a multi-participant conversation
   **redirect** to `/conversations/:key?focus=<agentId>` — the focus preserves
   "whose perspective was linked" as scroll/highlight rather than as a
-  different page. Per-agent pages for such conversations are reachable only
-  as this redirect; nothing links to them (product decision).
+  different page. The explicit `/sessions/:id?view=flat` diagnostic route
+  suppresses that redirect and keeps `view=flat` through the session rail,
+  lineage links, list back-navigation, and copied links.
 - Participant chips link to the agent's page (`/agents/:id`); session-level
   lineage navigation lifts to the conversation level (§9).
 - Webchat Playground adoption: a live multi-agent playground session reopened
@@ -501,8 +504,8 @@ how divergence starts.
 
 1. **Grouped list replaces the flat list as the default.** `GET /sessions`
    returns conversations; `view=flat` (a UI parameter passed through to the
-   CP) returns raw session rows. Accepted as a deliberate change to the
-   operation's default response shape.
+   CP and preserved on raw session links) returns raw session rows. Accepted
+   as a deliberate change to the operation's default response shape.
 2. **Pagination is emit-at-max — still no aggregate query.** A scanned row
    yields its conversation only when it is the conversation's newest member
    row under the full `(lastActivityAt, startedAt, id)` total order AND the
