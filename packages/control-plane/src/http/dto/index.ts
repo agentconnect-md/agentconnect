@@ -31,6 +31,8 @@ import {
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
 import { TelegramCreateCredentials } from '../../platforms/telegram/provider.js'
 import { DiscordCreateCredentials } from '../../platforms/discord/provider.js'
+import { SlackCreateCredentials, refineSlackCreateBody } from '../../platforms/slack/provider.js'
+import { FeishuCreateCredentials, refineFeishuCreateBody } from '../../platforms/feishu/provider.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
 /** 'org' = visible to every org member (default); 'restricted' = the current
@@ -725,14 +727,9 @@ export const CreateIntegrationBody = z
     transport: z.enum(['socket', 'http']).optional(),
     /** Register a new Slack bot from its tokens. Socket transport needs the
      *  app-level token (Socket Mode); http transport needs the signing secret
-     *  (Events API request verification). */
-    slack: z
-      .object({
-        botToken: z.string().min(1),
-        appToken: z.string().min(1).optional(),
-        signingSecret: z.string().min(1).optional()
-      })
-      .optional(),
+     *  (Events API request verification — enforced in the superRefine below).
+     *  Schema relocated to the platform provider (§9 `credentialBodySchema`). */
+    slack: SlackCreateCredentials.optional(),
     /** Register a new Telegram bot from its BotFather token (single token).
      *  Schema relocated to the platform provider (§9 `credentialBodySchema`) —
      *  one implementation for the live route and the registry. */
@@ -743,16 +740,9 @@ export const CreateIntegrationBody = z
     discord: DiscordCreateCredentials.optional(),
     /** Register a new Feishu / Lark self-built app from its appId + appSecret pair.
      *  `region` picks the open-platform gateway (feishu.cn vs larksuite.com); it
-     *  defaults to international Lark for new create requests. */
-    feishu: z
-      .object({
-        appId: z.string().min(1),
-        appSecret: z.string().min(1),
-        region: FeishuRegion.default('lark'),
-        verificationToken: z.string().min(1).optional(),
-        encryptKey: z.string().min(1).optional()
-      })
-      .optional()
+     *  defaults to international Lark for new create requests.
+     *  Schema relocated to the platform provider (§9 `credentialBodySchema`). */
+    feishu: FeishuCreateCredentials.optional()
   })
   .superRefine((b, ctx) => {
     // The credential object for the chosen platform (else reuse an existing bot).
@@ -780,19 +770,16 @@ export const CreateIntegrationBody = z
     // erroring: the console hides the toggle for socket, and `installNewSlackBot`
     // coerces it off for a non-http bot (so a socket bot can never become shareable).
     // No validation needed here.
-    // Per-transport Slack credential requirements (only when registering a NEW bot).
+    // Per-transport credential requirements (only when registering a NEW bot) —
+    // the providers' §9 `refineCreateBody` bodies, called here so the live DTO
+    // and the registry share ONE implementation (an omitted transport is the
+    // create route's socket default).
+    const addIssue = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message })
     if (b.platform === 'slack' && b.botId === undefined && b.slack) {
-      if (b.transport === 'http') {
-        if (!b.slack.signingSecret)
-          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'http transport requires slack.signingSecret' })
-      } else if (!b.slack.appToken) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'socket transport requires slack.appToken' })
-      }
+      refineSlackCreateBody({ credentials: b.slack, transport: b.transport ?? 'socket' }, addIssue)
     }
-    if (b.platform === 'feishu' && b.botId === undefined && b.feishu && b.transport === 'http') {
-      if (!b.feishu.verificationToken) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'http transport requires feishu.verificationToken' })
-      }
+    if (b.platform === 'feishu' && b.botId === undefined && b.feishu) {
+      refineFeishuCreateBody({ credentials: b.feishu, transport: b.transport ?? 'socket' }, addIssue)
     }
   })
 

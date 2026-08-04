@@ -392,21 +392,31 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /**
    * Project one HTTP bot's credentials + demux identity into the two opaque
    * bags of `rc/bot-assign` (§6.7) — today's per-platform forks inside
-   * `buildAssign` (`orchestrator/httpBot.ts:897-905` the ingress bag:
+   * `buildAssign` (`orchestrator/httpBot.ts` the ingress bag:
    * Feishu's app id from `secret.appToken` vs Slack's `bot.slackAppId`, the
-   * distributed-install `teamId`, `botUserId`; `:909-915` the secrets bag:
+   * distributed-install `teamId`, `botUserId`; and the secrets bag:
    * Feishu `verificationToken`/`encryptKey` vs Slack
    * `botToken`/`signingSecret`). Everything else on the frame stays core-
    * assembled: the compiled routing table, member directory, gating fences,
-   * and `credentialRevision` (`:877-927`) — and the four-way platform ternary
-   * at `:820-828` disappears entirely under an open `PlatformId` (audit
+   * and `credentialRevision` — and the four-way platform ternary
+   * disappears entirely under an open `PlatformId` (audit
    * ambiguous row 6). Returned as `Record<string, unknown>` (not `unknown`)
    * so the product assigns to the frame's open-reader members
    * (`RcBotSecrets`' record arm / `ingress: z.unknown()`) without a cast;
    * the RELAY platform module validates the shapes (§6.7). Token-bearing —
    * NEVER log.
+   *
+   * OPTIONAL (S3 erratum): a platform without an HTTP/relay transport simply
+   * does not declare the member. Telegram and Discord keep their daemon-owned
+   * long-lived connections — the create route refuses `transport: 'http'` for
+   * them (`integrations.ts:392-400`), so no such bot row can carry the http
+   * transport and core's assign builder never sees one. Modeling that as a
+   * required member forced the first two providers into throwing refusal
+   * stubs; absence is the honest signal, and core's adoption code treats a
+   * missing member as "this platform has no relay path" (the completeness gate
+   * above never even fires — there is nothing to assign).
    */
-  projectBotAssign(
+  projectBotAssign?(
     bot: BotRecord,
     secrets: BotSecretMaterial
   ): Promise<{ secrets: Record<string, unknown>; ingress: Record<string, unknown> }>

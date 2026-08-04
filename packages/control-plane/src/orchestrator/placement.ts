@@ -64,6 +64,8 @@ import type {
 import { isDirectConversationKind } from '../persistence/ports.js'
 import { telegramIntegrationConfig } from '../platforms/telegram/provider.js'
 import { discordIntegrationConfig } from '../platforms/discord/provider.js'
+import { slackIntegrationConfig, slackSharedIntegrationConfig } from '../platforms/slack/provider.js'
+import { feishuIntegrationConfig, feishuSharedIntegrationConfig } from '../platforms/feishu/provider.js'
 import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 import type { DaemonId } from '../domain/ids.js'
@@ -268,15 +270,8 @@ export function integrationToSpec(
     // Feishu authenticates the WSClient with an appId + appSecret pair, stored in the
     // two-slot bot_secret: botToken = appSecret (the secret), appToken = appId. The
     // region (feishu.cn vs larksuite.com) rides on the integration row; NULL ⇒ 'feishu'.
-    const feishu = {
-      mode: 'direct' as const,
-      appId: secret.appToken ?? '',
-      appSecret: secret.botToken,
-      region: i.feishuRegion ?? 'feishu',
-      bindRules,
-      mutedChannels,
-      gated
-    }
+    // §9 shared projection body — see the telegram arm above.
+    const feishu = feishuIntegrationConfig(core, secret, i)
     return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', core, config: feishu }
   }
   // 'direct' (transport==='socket') — this daemon owns the Socket Mode connection.
@@ -284,15 +279,8 @@ export function integrationToSpec(
   // is assembled by the HTTP-bot path, which reads the bot's `transport`; this mapper
   // is always direct. A socket bot is single-agent, so it is never shareable. Slack
   // always stores an app-level token (Socket Mode).
-  const slack = {
-    mode: 'direct' as const,
-    shareable: false,
-    botToken: secret.botToken,
-    appToken: secret.appToken ?? '',
-    bindRules,
-    mutedChannels,
-    gated
-  }
+  // §9 shared projection body — see the telegram arm above.
+  const slack = slackIntegrationConfig(core, secret)
   return { integrationId: i.id, agentId: i.agentId, platform: 'slack', core, config: slack }
 }
 
@@ -328,30 +316,16 @@ export function httpIntegrationToSpec(
     gated
   }
   if (i.platform === 'feishu') {
-    const feishu = {
-      mode: 'shared' as const,
-      appId: secret.appToken ?? '',
-      appSecret: secret.botToken,
-      ...(botUserId ? { botOpenId: botUserId } : {}),
-      region: i.feishuRegion ?? 'feishu',
-      bindRules: httpCore.bindRules,
-      mutedChannels: httpCore.mutedChannels,
-      gated
-    }
+    // §9 shared projection body — the same function the platform provider's
+    // `projectIntegrationConfig` calls (S3; provider adoption replaces this arm).
+    const feishu = feishuSharedIntegrationConfig(httpCore, secret, i, botUserId)
     return { integrationId: i.id, agentId: i.agentId, platform: 'feishu', core: httpCore, config: feishu }
   }
   // `shareable` gates the daemon's in-thread "Switch agent" control: an HTTP bot
   // routes through the relay either way, but only a multi-agent (shareable) bot has
   // something to switch to.
-  const slack = {
-    mode: 'shared' as const,
-    shareable,
-    botToken: secret.botToken,
-    ...(providerAppId ? { appId: providerAppId } : {}),
-    bindRules: httpCore.bindRules,
-    mutedChannels: httpCore.mutedChannels,
-    gated
-  }
+  // §9 shared projection body — see the feishu arm above.
+  const slack = slackSharedIntegrationConfig(httpCore, secret, shareable, providerAppId)
   return { integrationId: i.id, agentId: i.agentId, platform: 'slack', core: httpCore, config: slack }
 }
 

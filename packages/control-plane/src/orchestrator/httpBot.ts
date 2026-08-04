@@ -44,6 +44,8 @@ import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { isDirectConversationKind } from '../persistence/ports.js'
 import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import { slackBotAssignBags } from '../platforms/slack/provider.js'
+import { feishuBotAssignBags } from '../platforms/feishu/provider.js'
 import { AgentId, BotId, DaemonId } from '../domain/ids.js'
 
 export interface HttpBotLog {
@@ -875,44 +877,31 @@ export class HttpBotOrchestrator {
   /** Assemble the `rc/bot-assign` frame (credentials + attributed routing table).
    *  Secret — NEVER log the result. */
   private buildAssign(bot: BotRecord, compiled: Compiled, secret: BotSecretMaterial): RcBotAssign {
+    // §6.7 emission flip (the last S1b dual-shape residue): the opaque ingress
+    // bag is the ONE carrier of the demux identity — the relay's bag-preferring
+    // reader shipped first (#545). The retired named top-level fields stay
+    // OPTIONAL in the wire schema so an older relay's tolerant reader is not
+    // broken by their absence; they leave the schema with the next cleanup.
+    //
+    // §9 shared projection bodies (S3): the same functions the Slack/Feishu
+    // platform providers' `projectBotAssign` return — one implementation for
+    // the live frame and the provider seam (each helper documents its bag
+    // fields). Telegram/Discord bots never carry the http transport (the
+    // create route refuses it), so the slack-shaped arm is the effective
+    // default, exactly as the previous inline ternaries fell through.
+    const { secrets, ingress } =
+      bot.platform === 'feishu' ? feishuBotAssignBags(bot, secret) : slackBotAssignBags(bot, secret)
     return {
       botId: bot.id,
       platform: compiled.platform,
       // §6.1: a bot assignment is always a CHAT platform; carried so an older
       // relay can classify an id a newer CP introduces.
       originKind: 'chat',
-      // §6.7 emission flip (the last S1b dual-shape residue): the opaque ingress
-      // bag is the ONE carrier of the demux identity — the relay's bag-preferring
-      // reader shipped first (#545). The retired named top-level fields stay
-      // OPTIONAL in the wire schema so an older relay's tolerant reader is not
-      // broken by their absence; they leave the schema with the next cleanup.
-      //   apiAppId — Slack "A…" (== Events API api_app_id) or the Feishu app id;
-      //     O(1) inbound demux. Absent on a manual-paste http bot (no xapp to
-      //     parse); the relay verify-scans instead.
-      //   teamId — workspace "T…", present only for a distributed (platform)
-      //     app's install, where the composite (api_app_id, team_id) is the ONLY
-      //     safe demux (all sibling installs share the app id AND the signing
-      //     secret).
-      //   botUserId — persisted at OAuth exchange; spares an auth.test round-trip.
-      ingress: {
-        ...(bot.platform === 'feishu' && secret.appToken
-          ? { apiAppId: secret.appToken }
-          : bot.slackAppId
-            ? { apiAppId: bot.slackAppId }
-            : {}),
-        ...(bot.teamId ? { teamId: bot.teamId } : {}),
-        ...(bot.botUserId ? { botUserId: bot.botUserId } : {})
-      },
+      ingress,
       // Generation of the credentials below — echoed back on `rc/bot-revoked` so a
       // revocation observed under a REPLACED credential cannot kill this one.
       credentialRevision: bot.credentialRevision,
-      secrets:
-        bot.platform === 'feishu'
-          ? {
-              verificationToken: secret.verificationToken ?? '',
-              ...(secret.encryptKey ? { encryptKey: secret.encryptKey } : {})
-            }
-          : { botToken: secret.botToken, signingSecret: secret.signingSecret ?? '' },
+      secrets,
       members: compiled.members,
       agents: compiled.agents,
       routes: compiled.routes,

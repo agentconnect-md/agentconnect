@@ -168,6 +168,11 @@ import type { CpPlatformRegistry } from './platforms/provider.js'
 import { buildCpPlatformRegistry } from './platforms/registry.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
+import { createSlackCpProvider } from './platforms/slack/provider.js'
+import { createFeishuCpProvider, FEISHU_REGISTRATION_TTL_MS } from './platforms/feishu/provider.js'
+import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
+import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
+import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
@@ -189,9 +194,10 @@ export interface Container {
   relayGateway(app: FastifyInstance): WebSocketServer
   /** The single-tenant anchors the devAuth stub injects. */
   readonly defaults: { orgId: string; ownerId: string }
-  /** §9 platform-provider registry (S3) — Telegram + Discord today. Composed
-   *  here so the graph is whole; the route / spec-assembly / config call
-   *  sites adopt it in follow-up PRs (nothing consumes it yet). */
+  /** §9 platform-provider registry (S3) — all four platforms (Telegram,
+   *  Discord, Slack, Feishu). Composed here so the graph is whole; the route /
+   *  spec-assembly / config / background-lifecycle call sites adopt it in
+   *  follow-up PRs (nothing consumes it yet). */
   readonly platforms: CpPlatformRegistry
   /** The process readiness gate — the bootstrap flips it at SIGTERM (`/readyz`). */
   readonly readiness: Readiness
@@ -774,22 +780,7 @@ export function buildContainer(
   // platform providers below — one closure per platform, not two.
   const syncTelegramBotIcon = createTelegramBotIconSyncer(iconStore)
   const syncDiscordBotProfile = createDiscordBotProfileSyncer(iconStore)
-
-  // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
-  // instances, constructed with the SAME verify/sync functions the route deps
-  // receive (one implementation; the providers add no second code path).
-  // Nothing consumes the registry yet beyond construction — the create route,
-  // spec assembly, and rc/bot-assign adopt it in follow-up PRs, and the
-  // Slack / Feishu providers (funnel routes, reapers, env schemas) land with
-  // their own moves.
-  const platforms = buildCpPlatformRegistry([
-    createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
-    createDiscordCpProvider({
-      verifyBot: verifyDiscordBot,
-      ensureMessageContentIntent: ensureDiscordMessageContentIntent,
-      syncBotProfile: syncDiscordBotProfile
-    })
-  ])
+  const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
   const httpDeps: HttpDeps = {
     clock,
@@ -881,7 +872,7 @@ export function buildContainer(
     syncDiscordBotProfile,
     verifyFeishuBot,
     configureFeishuHttpApp,
-    syncFeishuAppIcon: createFeishuAppIconSyncer(iconStore),
+    syncFeishuAppIcon,
     feishuAppRegistration: new FeishuAppRegistrationService(repos.feishuAppRegistration),
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
@@ -975,10 +966,12 @@ export function buildContainer(
 
   // Device code/App Secret are encrypted but deliberately short-lived. Retain
   // a terminal status briefly for the browser, then clear the durable row.
+  // (The TTL constant lives with the Feishu provider — one implementation with
+  // its §9 `pendingInstalls` declaration.)
   const feishuRegistrationReaper = new SlackInstallReaper(
     repos.feishuAppRegistration,
     clock,
-    { ttlMs: 10 * 60 * 1000, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
+    { ttlMs: FEISHU_REGISTRATION_TTL_MS, intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000 },
     http.log,
     'feishu-registration'
   )
@@ -1034,6 +1027,52 @@ export function buildContainer(
     { intervalMs: 15 * 60 * 1000 },
     http.log
   )
+
+  // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
+  // instances — all four platforms — constructed with the SAME verify/sync
+  // functions, route-dep bundle, funnel stores, and background-loop instances
+  // the live paths use (one implementation; the providers add no second code
+  // path). The Slack/Feishu funnel plugins are handed in PRE-BOUND to
+  // `httpDeps` — the very factories `server.ts` mounts — because the route
+  // modules consume the create-DTO module, which imports the providers'
+  // credential blocks (importing the factories from the provider modules would
+  // close a runtime import cycle). Nothing consumes the registry yet beyond
+  // construction — the create route, spec assembly, rc/bot-assign, route
+  // mounting, `loadConfig`'s schema fold, and `startBackground()` adopt it in
+  // follow-up PRs.
+  const platforms = buildCpPlatformRegistry([
+    createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
+    createDiscordCpProvider({
+      verifyBot: verifyDiscordBot,
+      ensureMessageContentIntent: ensureDiscordMessageContentIntent,
+      syncBotProfile: syncDiscordBotProfile
+    }),
+    createSlackCpProvider({
+      verifyBot: verifySlackBot,
+      verifyAppToken: verifySlackAppToken,
+      funnelRoutes: {
+        org: [slackInstallRoutes(httpDeps), slackPlatformInstallRoutes(httpDeps), slackConfigRoutes(httpDeps)],
+        publicCallback: [slackOauthCallbackRoutes(httpDeps), slackPlatformCallbackRoutes(httpDeps)]
+      },
+      userConfigs: httpDeps,
+      pendingInstalls: {
+        installs: repos.slackInstall,
+        platformInstalls: repos.slackPlatformInstall,
+        ttlMs: config.SLACK_INSTALL_TTL_SEC * 1000,
+        intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
+      },
+      identityReconciler: slackBotIdentityReconciler
+    }),
+    createFeishuCpProvider({
+      verifyBot: verifyFeishuBot,
+      funnelRoutes: { org: [feishuRegistrationRoutes(httpDeps)], publicCallback: [] },
+      syncAppIcon: syncFeishuAppIcon,
+      pendingInstalls: {
+        registrations: repos.feishuAppRegistration,
+        intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
+      }
+    })
+  ])
 
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
