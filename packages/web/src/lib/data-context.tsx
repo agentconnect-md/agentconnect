@@ -166,6 +166,8 @@ interface ConsoleData {
   ) => Promise<ReconnectConnectorConnectionResult>
   /** Org members; also feeds creatorLabel's userId→name directory for "Created by" rows. Empty until loaded. */
   members: MemberDto[]
+  /** Whether the member directory has returned successfully at least once. */
+  membersLoaded: boolean
   /** Forget a free bot (record + stored tokens; the CP 409s while installed), then re-pull. */
   deleteBot: (id: string) => Promise<void>
   /** Last-24h usage rollup (GET /usage?range=d1); null until loaded / on failure. */
@@ -791,7 +793,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     MOCK_MODE ? () => Promise.resolve({ enabled: true }) : ([, orgId]) => fetchConnectorsConfig(orgId as string)
   )
   const {
-    data: fetchedMembers = [],
+    data: fetchedMembers,
     isLoading: membersIsLoading,
     mutate: mutateMembers
   } = useSWR<MemberDto[]>(MOCK_MODE ? null : consoleKeys.members(orgKey), ([, orgId]) => fetchMembers(orgId as string))
@@ -930,7 +932,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     }
   }, [orgLoading, activeOrg?.id, drainSessionRefreshes])
 
-  const members = MOCK_MODE ? MOCK_MEMBERS : fetchedMembers
+  const members = MOCK_MODE ? MOCK_MEMBERS : (fetchedMembers ?? [])
+  const membersLoaded = MOCK_MODE || fetchedMembers !== undefined
   const usage24h = usage24hData ?? null
   useEffect(() => {
     setMemberDirectory(members)
@@ -1450,6 +1453,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createConnectorConnection,
       reconnectConnectorConnection,
       members,
+      membersLoaded,
       usage24h,
       getAgent,
       getSessions,
@@ -1518,6 +1522,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       createConnectorConnection,
       reconnectConnectorConnection,
       members,
+      membersLoaded,
       usage24h,
       getAgent,
       getSessions,
