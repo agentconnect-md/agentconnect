@@ -155,20 +155,22 @@ describe('quota counting referee — leaderless turn-taking with a real endgame 
 })
 
 describe('quota counting end to end — scripted hosts over the real daemon', () => {
-  it('bot-authored relays are SUPPRESSED like production Slack: the room stalls and the report says why', async () => {
+  it('a finalized bare number CONTINUES the conversation (PR #549) until continuations hit human-bound sessions', async () => {
     const result = await runQuotaCounting({
       seed: 5,
       agents: ['agent-a', 'agent-b', 'agent-c', 'agent-d'],
       quotaPerAgent: 2,
-      artifactDir: join(scratch(), 'suppressed'),
+      artifactDir: join(scratch(), 'echo-routed'),
       timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
-    // In production Slack a managed agent bot's post never wakes another agent
-    // (anti bot-loop ingress suppression), so without a human or referee
-    // cadence the count only advances as far as the INITIAL broadcast wave
-    // carries it via in-flight turn refreshes — then the room stalls. That is
-    // a VALID observed outcome with the remaining quota on record.
+    // Measured behavior on current main: the referee's start broadcast admits
+    // every member once; each delivered post fans back as the production echo.
+    // Streaming copies are suppressed (final events only); finalized copies
+    // verify and take the ordinary arbitration ladder, ADMITTING every other
+    // member's connection — but an admitted continuation into a session the
+    // HUMAN opened cancels at source binding (`session_source_mismatch`), so
+    // the room advances one ring pass and stalls with quota on record.
     expect(result.status).toBe('passed')
     expect(result.verdict.terminalReason).toBe('stalled')
     const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
@@ -181,19 +183,24 @@ describe('quota counting end to end — scripted hosts over the real daemon', ()
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
-    // One referee message, one ingress wave; every relay delivery came back
-    // rejected 'suppressed' under the poster's REAL managed bot identity.
+    // One referee message, one ingress wave.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
-    const relays = worldEvents.filter((event) => event.type === 'peer.relay')
-    expect(relays.length).toBeGreaterThanOrEqual(1)
-    for (const relay of relays) expect(String(relay.botUserId)).toMatch(/^UB[0-9A-F]+$/)
-    const outcomes = worldEvents.filter((event) => event.type === 'peer.relay.outcome')
-    expect(outcomes.length).toBe(relays.length)
-    for (const outcome of outcomes) {
-      for (const entry of outcome.outcomes as { admitted: boolean; reason?: string }[]) {
-        expect(entry).toMatchObject({ admitted: false, reason: 'suppressed' })
-      }
-    }
+    const outcomes = worldEvents.filter((event) => event.type === 'platform.echo.outcome')
+    const streaming = outcomes.filter((event) => !String(event.messageId).endsWith(':final'))
+    const finalized = outcomes.filter((event) => String(event.messageId).endsWith(':final'))
+    expect(streaming.length).toBeGreaterThan(0)
+    for (const outcome of streaming) expect(outcome).toMatchObject({ admitted: false, reason: 'suppressed' })
+    expect(finalized.length).toBeGreaterThan(0)
+    for (const outcome of finalized) expect(outcome).toMatchObject({ admitted: true })
+    // What terminated the exchange TODAY: source-binding cancellation, not the
+    // hop cap and not the quota endgame.
+    const events = readFileSync(result.paths.events, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    expect(
+      events.some((event) => event.type === 'turn.cancelled' && event.data?.reason === 'session_source_mismatch')
+    ).toBe(true)
   }, 150_000)
 })

@@ -300,10 +300,11 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
   // external-origin lineage, so RE-ENTERING the human-bound thread session is
   // cancelled with `session_source_mismatch` at the audience binding — the
   // second edge admits and then never runs a turn. This stays expected-fail
-  // until that lineage gap is closed; the expected sequence below encodes
-  // exactly-once per finalized response for the full chain.
+  // until that lineage gap is closed (tracked in issue #583); the expected
+  // sequence below encodes exactly-once per finalized response for the full
+  // chain.
   it.fails(
-    'an A->B->A ordinary-mention chain advances one hop per edge until the cap [pending #503 design test #16 — blocked on session_source_mismatch]',
+    'an A->B->A ordinary-mention chain advances one hop per edge until the cap [pending #503 design test #16 — blocked on session_source_mismatch, issue #583]',
     async () => {
       fixture = await RoutingFixture.start({
         agents: ['agent1', 'agent2'],

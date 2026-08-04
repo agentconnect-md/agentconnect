@@ -89,7 +89,7 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(gameResult.metrics.collisions).toBeGreaterThan(0)
   }, 120_000)
 
-  it('peer-driven variant: bot-authored relays are SUPPRESSED like production Slack, and the room stalls', async () => {
+  it('peer-driven variant: a finalized bare-number post CONTINUES the conversation (PR #549) until agent continuations hit human-bound sessions', async () => {
     const artifactDir = join(scratch(), 'peer-run')
     const result = await runSameRoomCounting({
       seed: 11,
@@ -99,11 +99,20 @@ describe('collaboration game runner — same-room counting with scripted hosts',
       timeoutMs: 120_000
     })
     expect(result.error).toBeUndefined()
-    // A stalled room is a VALID observed outcome: in production Slack an
-    // agent's post never wakes another agent (managed-bot ingress suppression,
-    // anti bot-loop), so without a human or referee cadence the count only
-    // advances as far as the INITIAL broadcast wave carries it — turns that
-    // were already in flight absorb earlier posts via the turn-final refresh.
+    // The measured behavior on current main (#503 + #549):
+    //  1. The referee's start broadcast admits every member once; ONE wave.
+    //  2. Each delivered agent post fans back as the production echo. The
+    //     STREAMING copy is suppressed (final events only); the FINALIZED copy
+    //     carries the daemon-stamped claim, verifies, and — naming nobody —
+    //     takes the ordinary arbitration ladder, which ADMITS every other
+    //     member's connection (dedicated-bot fan-out).
+    //  3. While a member's initial human-sourced turn is still queued, the
+    //     echo coalesces into it, so the count advances one clean ring pass.
+    //  4. Once a member's initial turn has completed, the echo-driven
+    //     activation dispatches into its HUMAN-BOUND session with agent-call
+    //     metadata that carries no external origin, and the turn cancels with
+    //     `session_source_mismatch` — the chain stalls long before the hop cap
+    //     (`MAX_AGENT_CALL_HOPS`) that #549 names as the ordinary terminator.
     expect(result.status).toBe('passed')
     expect(result.verdict.terminalReason).toBe('stalled')
     const acceptedPrefix = result.verdict.outcome.acceptedPrefix as number
@@ -122,30 +131,64 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     // The referee spoke exactly once, and there was exactly ONE ingress wave.
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
-    // Relays went out under the REAL managed bot identities...
-    const relays = worldEvents.filter((event) => event.type === 'peer.relay')
-    expect(relays.length).toBeGreaterThanOrEqual(1)
-    for (const relay of relays) {
-      expect(String(relay.text)).toMatch(/^-?\d+$/)
-      expect(String(relay.botUserId)).toMatch(/^UB[0-9A-F]+$/)
+    // Echoes went out under the REAL managed bot identities with the §4 claim.
+    const echoes = worldEvents.filter((event) => event.type === 'platform.echo')
+    expect(echoes.length).toBeGreaterThanOrEqual(2)
+    const outcomes = worldEvents.filter((event) => event.type === 'platform.echo.outcome')
+    const streaming = outcomes.filter((event) => !String(event.messageId).endsWith(':final'))
+    const finalized = outcomes.filter((event) => String(event.messageId).endsWith(':final'))
+    // Final events only: the streaming copy never routes.
+    expect(streaming.length).toBeGreaterThan(0)
+    for (const outcome of streaming) expect(outcome).toMatchObject({ admitted: false, reason: 'suppressed' })
+    // #549: a finalized post naming NOBODY is admitted on every other member's
+    // connection — one agent message wakes every other agent (fan-out).
+    expect(finalized.length).toBeGreaterThan(0)
+    for (const outcome of finalized) expect(outcome).toMatchObject({ admitted: true })
+    const memberCount = 4
+    const byMessage = new Map<string, number>()
+    for (const outcome of finalized) {
+      byMessage.set(String(outcome.messageId), (byMessage.get(String(outcome.messageId)) ?? 0) + 1)
     }
-    // ...and every single delivery came back rejected 'suppressed' — the
-    // trace explains WHY the game stalls (§4.1: a managed agent bot's post is
-    // never an activation path).
-    const outcomes = worldEvents.filter((event) => event.type === 'peer.relay.outcome')
-    expect(outcomes.length).toBe(relays.length)
-    for (const outcome of outcomes) {
-      const entries = outcome.outcomes as { admitted: boolean; reason?: string }[]
-      expect(entries.length).toBeGreaterThan(0)
-      for (const entry of entries) expect(entry).toMatchObject({ admitted: false, reason: 'suppressed' })
-    }
-    // The accepted values are a clean 1..n prefix (whatever the initial wave
-    // absorbed), never a duplicated or skipped slot.
+    for (const admissions of byMessage.values()) expect(admissions).toBe(memberCount - 1)
+    // The accepted values are a clean 1..n prefix — one ring pass.
     const accepted = worldEvents.filter((event) => event.type === 'count.candidate' && event.accepted)
     expect(accepted.map((event) => event.value)).toEqual(
       Array.from({ length: acceptedPrefix }, (_, index) => index + 1)
     )
+    // What actually terminated the exchange TODAY: admitted continuations into
+    // human-bound sessions cancel at source binding. Not the hop cap.
+    const events = readFileSync(result.paths.events, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+    const cancelled = events.filter(
+      (event) => event.type === 'turn.cancelled' && event.data?.reason === 'session_source_mismatch'
+    )
+    expect(cancelled.length).toBeGreaterThan(0)
+    expect(worldEvents.some((event) => JSON.stringify(event).includes('hop_limit'))).toBe(false)
   }, 180_000)
+
+  // Pending: flips green when an implicit/mention agent continuation can re-enter
+  // a session a human opened (activation carries no external-origin lineage, so
+  // `bindSessionSource` rejects with `session_source_mismatch`). Tracked in
+  // issue #583; also pinned as design test #16 in routing-acceptance.test.ts.
+  it.fails(
+    'peer-driven counting COMPLETES the target once agent continuations can re-enter human-bound sessions [issue #583]',
+    async () => {
+      const artifactDir = join(scratch(), 'peer-complete')
+      const result = await runSameRoomCounting({
+        seed: 13,
+        target: 6,
+        artifactDir,
+        variant: 'peer-driven',
+        timeoutMs: 120_000
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.verdict.terminalReason).toBe('completed')
+      expect(result.verdict.outcome).toMatchObject({ completed: true, acceptedPrefix: 6 })
+    },
+    180_000
+  )
 
   it('a slow in-flight turn REGENERATES when a peer post lands mid-turn, and posts the NEXT number', async () => {
     // Production timing, deterministically: agent-a answers instantly, agent-b
