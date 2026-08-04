@@ -1,6 +1,5 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
-import type { LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
 import {
   getFeishuRegistration,
   startFeishuRegistration,
@@ -8,8 +7,9 @@ import {
   type FeishuRegistrationStatusDto
 } from '@/lib/api'
 
-/** §5 `regions` vocabulary for this platform's two clouds. */
-export type FeishuRegion = LarkFeishuTarget
+/** §5 `regions` vocabulary for this platform's two clouds — see `./region.ts`,
+ *  which owns the axis and every value derived from it. */
+export type { FeishuRegion } from './region'
 
 /**
  * The Feishu module's own CP client surface ({@link WebPlatformModule.apiBindings}).

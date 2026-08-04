@@ -6,7 +6,7 @@ import {
   SLACK_BOT_EVENTS,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   PLATFORM_APP_DESCRIPTION
-} from './slack-manifest'
+} from './manifest'
 
 // The manual manifest must request exactly what the CP's auto-install manifest does, or
 // an app a user creates by hand is short a permission the daemon needs. The two lists

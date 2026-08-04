@@ -206,7 +206,13 @@ export function slackAppOAuthUrl(appId: string): string {
   return `https://api.slack.com/apps/${appId}/oauth`
 }
 
-/** Deep link to an app's settings home (Basic Information) — for managing the app. */
-export function slackAppSettingsUrl(appId: string): string {
-  return `https://api.slack.com/apps/${appId}`
+/**
+ * Deep link to an app's settings home (Basic Information) — for managing the
+ * app. Without an app id (a bot installed before the id was recorded) this lands
+ * on the app INDEX, which is still the right place to finish the job: that is
+ * the delete dialog's long-standing fallback, and the settings row simply never
+ * renders the link without an id.
+ */
+export function slackAppSettingsUrl(appId?: string | null): string {
+  return appId ? `https://api.slack.com/apps/${encodeURIComponent(appId)}` : 'https://api.slack.com/apps'
 }

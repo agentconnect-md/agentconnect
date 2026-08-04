@@ -26,6 +26,7 @@ import {
 import { platformRegistry } from '@/components/console/platforms/registry'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
+import { platformLabel } from '@/lib/platform-labels'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -94,24 +95,18 @@ export type FeishuRegion = LarkFeishuTarget
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
-// The picker's display names. §5's `displayName` is manifest data shared with
-// the daemon/relay/CP, deliberately NOT a web-module member (contract D2), so
-// the chassis keeps the label projection OVER the registry's id set — the
-// registry stays the single authority for WHICH platforms exist and in what
-// order.
-const BOT_PLATFORM_LABEL: Record<string, string> = {
-  slack: 'Slack',
-  telegram: 'Telegram',
-  discord: 'Discord',
-  feishu: 'Lark / Feishu'
-}
-
 // Bot platforms are gated on the owning daemon's advertised adapters; the agent
 // page's empty-integrations tiles filter this same list so a tile can never
 // promise a platform this modal would refuse.
+//
+// The tile labels are the console's one display-name table
+// (`lib/platform-labels.ts`) projected OVER the registry's id set: §5's
+// `displayName` is manifest data shared with the daemon/relay/CP, deliberately
+// NOT a web-module member (contract D2), while the registry stays the single
+// authority for WHICH platforms exist and in what order.
 export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = platformRegistry
   .ids()
-  .map((id) => ({ key: id as BotPlatform, label: BOT_PLATFORM_LABEL[id] ?? id }))
+  .map((id) => ({ key: id as BotPlatform, label: platformLabel(id)?.picker ?? id }))
 
 export const PLATFORMS: { key: Platform; label: string }[] = [
   ...BOT_PLATFORMS,

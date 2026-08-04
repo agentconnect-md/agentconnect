@@ -14,7 +14,9 @@
 // is unavailable (pop-up blocked → window.open returns null, or a browser quirk).
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, getSlackPlatformInstall, startSlackPlatformInstall } from '@/lib/api'
+import { ApiError } from '@/lib/api'
+import type { WebInstallPoll } from '../contract'
+import { slackApi } from './api'
 
 // Why a platform install round trip ended without connecting, keyed by the install
 // row's `failureReason`. Mirrors AddIntegrationModal's PLATFORM_INSTALL_FAILURES.
@@ -27,16 +29,8 @@ const FAILURES: Record<string, string> = {
   error: 'Slack could not complete the install. Please try again.'
 }
 
-export interface SlackPlatformInstall {
-  phase: 'idle' | 'authorizing'
-  err: string | null
-  start: () => Promise<void>
-  /** Abandon an in-flight authorize (e.g. the user closed the popup) and return to idle. */
-  cancel: () => void
-}
-
 /** `onCompleted` fires once the install reaches `completed` (refresh lists / close the surface). */
-export function useSlackPlatformInstall(agentId: string, onCompleted: () => void): SlackPlatformInstall {
+export function useSlackPlatformInstall(agentId: string, onCompleted: () => void): WebInstallPoll {
   const [phase, setPhase] = useState<'idle' | 'authorizing'>('idle')
   const [err, setErr] = useState<string | null>(null)
   const [installId, setInstallId] = useState<string | null>(null)
@@ -61,7 +55,7 @@ export function useSlackPlatformInstall(agentId: string, onCompleted: () => void
     busy.current = true
     setErr(null)
     try {
-      const r = await startSlackPlatformInstall({ agentId })
+      const r = await slackApi.startPlatformInstall({ agentId })
       setInstallId(r.id)
       popup.current = window.open(r.installUrl, '_blank', 'width=680,height=760')
       setPhase('authorizing')
@@ -87,7 +81,7 @@ export function useSlackPlatformInstall(agentId: string, onCompleted: () => void
     // pending — used to decide whether a closed popup means "done" or "abandoned".
     const check = async (whenPending?: () => void) => {
       try {
-        const s = await getSlackPlatformInstall(installId)
+        const s = await slackApi.getPlatformInstall(installId)
         if (!alive) return
         if (s.status === 'pending') return whenPending?.()
         if (s.status === 'completed') {
