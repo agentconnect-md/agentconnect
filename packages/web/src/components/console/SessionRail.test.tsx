@@ -64,7 +64,8 @@ function railMarkup({
   sessions = [],
   total = 0,
   family = NO_FAMILY,
-  filterTouched = false
+  filterTouched = false,
+  flatView = false
 }: {
   sessions?: Session[]
   total?: number
@@ -74,6 +75,7 @@ function railMarkup({
     childSessions: SessionRelationDto[]
   }
   filterTouched?: boolean
+  flatView?: boolean
 } = {}) {
   return renderToStaticMarkup(
     <SessionRail
@@ -84,6 +86,7 @@ function railMarkup({
       filterTouched={filterTouched}
       onAgentIdsChange={() => {}}
       family={family}
+      flatView={flatView}
       onSelect={() => {}}
     />
   )
@@ -142,5 +145,12 @@ describe('SessionRail column', () => {
     expect(slot).toContain(COLUMN)
     expect(slot).toContain(WIDE_ONLY)
     expect(railMarkup({ sessions: [session('a'), session('b')], total: 2 })).toContain(COLUMN)
+  })
+
+  it('keeps flat mode on session and list links', () => {
+    const markup = railMarkup({ sessions: [session('a'), session('b')], total: 2, flatView: true })
+
+    expect(markup).toContain('href="/sessions/a?view=flat"')
+    expect(markup).toContain('href="/sessions?view=flat&amp;agent=agent-1"')
   })
 })
