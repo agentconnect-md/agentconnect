@@ -62,6 +62,8 @@ import type {
   MemoryPluginInstallationRepo
 } from '../persistence/ports.js'
 import { isDirectConversationKind } from '../persistence/ports.js'
+import { telegramIntegrationConfig } from '../platforms/telegram/provider.js'
+import { discordIntegrationConfig } from '../platforms/discord/provider.js'
 import { mcpProxyDef, relayHttpOrigin } from './mcpProvider.js'
 import { memoryConnectionSpec, stdioMemoryConnectionSpec } from './memoryConnection.js'
 import type { DaemonId } from '../domain/ids.js'
@@ -251,12 +253,15 @@ export function integrationToSpec(
   // legacy readers retire.
   const core = { mode: 'direct' as const, bindRules, mutedChannels, gated }
   if (i.platform === 'telegram') {
-    const telegram = { botToken: secret.botToken, bindRules, mutedChannels, gated }
+    // §9 shared projection body — the same function the platform provider's
+    // `projectIntegrationConfig` calls (S3; provider adoption replaces this arm).
+    const telegram = telegramIntegrationConfig(core, secret)
     return { integrationId: i.id, agentId: i.agentId, platform: 'telegram', core, config: telegram }
   }
   if (i.platform === 'discord') {
     // Discord authenticates the Gateway with the single bot token (no appToken).
-    const discord = { botToken: secret.botToken, bindRules, mutedChannels, gated }
+    // §9 shared projection body — see the telegram arm above.
+    const discord = discordIntegrationConfig(core, secret)
     return { integrationId: i.id, agentId: i.agentId, platform: 'discord', core, config: discord }
   }
   if (i.platform === 'feishu') {

@@ -164,6 +164,10 @@ import { searchSkillRegistry } from './http/skills-registry.js'
 import { createTelegramBotIconSyncer } from './http/telegram-bot-profile.js'
 import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/discord-identity.js'
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
+import type { CpPlatformRegistry } from './platforms/provider.js'
+import { buildCpPlatformRegistry } from './platforms/registry.js'
+import { createTelegramCpProvider } from './platforms/telegram/provider.js'
+import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
@@ -185,6 +189,10 @@ export interface Container {
   relayGateway(app: FastifyInstance): WebSocketServer
   /** The single-tenant anchors the devAuth stub injects. */
   readonly defaults: { orgId: string; ownerId: string }
+  /** §9 platform-provider registry (S3) — Telegram + Discord today. Composed
+   *  here so the graph is whole; the route / spec-assembly / config call
+   *  sites adopt it in follow-up PRs (nothing consumes it yet). */
+  readonly platforms: CpPlatformRegistry
   /** The process readiness gate — the bootstrap flips it at SIGTERM (`/readyz`). */
   readonly readiness: Readiness
   /** Live webchat preset entitlement + one-time assertion minting. Transport
@@ -762,6 +770,27 @@ export function buildContainer(
     ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {})
   })
 
+  // Built once and shared between the route deps (the live paths) and the
+  // platform providers below — one closure per platform, not two.
+  const syncTelegramBotIcon = createTelegramBotIconSyncer(iconStore)
+  const syncDiscordBotProfile = createDiscordBotProfileSyncer(iconStore)
+
+  // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
+  // instances, constructed with the SAME verify/sync functions the route deps
+  // receive (one implementation; the providers add no second code path).
+  // Nothing consumes the registry yet beyond construction — the create route,
+  // spec assembly, and rc/bot-assign adopt it in follow-up PRs, and the
+  // Slack / Feishu providers (funnel routes, reapers, env schemas) land with
+  // their own moves.
+  const platforms = buildCpPlatformRegistry([
+    createTelegramCpProvider({ verifyBot: verifyTelegramBot, syncBotIcon: syncTelegramBotIcon }),
+    createDiscordCpProvider({
+      verifyBot: verifyDiscordBot,
+      ensureMessageContentIntent: ensureDiscordMessageContentIntent,
+      syncBotProfile: syncDiscordBotProfile
+    })
+  ])
+
   const httpDeps: HttpDeps = {
     clock,
     repos: {
@@ -846,10 +875,10 @@ export function buildContainer(
     slackConfigApi,
     searchSkillRegistry,
     verifyTelegramBot,
-    syncTelegramBotIcon: createTelegramBotIconSyncer(iconStore),
+    syncTelegramBotIcon,
     verifyDiscordBot,
     ensureDiscordMessageContentIntent,
-    syncDiscordBotProfile: createDiscordBotProfileSyncer(iconStore),
+    syncDiscordBotProfile,
     verifyFeishuBot,
     configureFeishuHttpApp,
     syncFeishuAppIcon: createFeishuAppIconSyncer(iconStore),
@@ -1320,6 +1349,7 @@ export function buildContainer(
     wsGateway: (app: FastifyInstance) => createDaemonWsServer(app, wsDeps),
     relayGateway: (app: FastifyInstance) => createRelayWsServer(app, relayWsDeps),
     defaults: { orgId: DEFAULT_ORG_ID, ownerId: DEFAULT_OWNER_ID },
+    platforms,
     readiness,
     webchatRemoteMcp,
     remoteGrantAuth,

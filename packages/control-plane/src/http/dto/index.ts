@@ -29,6 +29,8 @@ import {
   normalizeRepoSubdir
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
+import { TelegramCreateCredentials } from '../../platforms/telegram/provider.js'
+import { DiscordCreateCredentials } from '../../platforms/discord/provider.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
 /** 'org' = visible to every org member (default); 'restricted' = the current
@@ -731,20 +733,14 @@ export const CreateIntegrationBody = z
         signingSecret: z.string().min(1).optional()
       })
       .optional(),
-    /** Register a new Telegram bot from its BotFather token (single token). */
-    telegram: z
-      .object({
-        botToken: z.string().min(1)
-      })
-      .optional(),
+    /** Register a new Telegram bot from its BotFather token (single token).
+     *  Schema relocated to the platform provider (§9 `credentialBodySchema`) —
+     *  one implementation for the live route and the registry. */
+    telegram: TelegramCreateCredentials.optional(),
     /** Register a new Discord bot from its Gateway bot token (single token). The
-     *  optional applicationId is the public client id for the invite URL. */
-    discord: z
-      .object({
-        botToken: z.string().min(1),
-        applicationId: z.string().min(1).optional()
-      })
-      .optional(),
+     *  optional applicationId is the public client id for the invite URL.
+     *  Schema relocated to the platform provider (§9 `credentialBodySchema`). */
+    discord: DiscordCreateCredentials.optional(),
     /** Register a new Feishu / Lark self-built app from its appId + appSecret pair.
      *  `region` picks the open-platform gateway (feishu.cn vs larksuite.com); it
      *  defaults to international Lark for new create requests. */
