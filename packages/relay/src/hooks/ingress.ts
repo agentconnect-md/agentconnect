@@ -26,7 +26,6 @@ import {
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1,
-  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   type RcHookAssign,
   type RcRunReport,
   type RdMsgHook
@@ -58,17 +57,17 @@ export interface HookIngressDeps {
   log: Logger
 }
 
-function githubThreadWorktreeCleanupCapability(msg: RdMsgHook): string | undefined {
+function requiresGithubThreadWorktreeCleanup(msg: RdMsgHook): boolean {
   if (msg.event === 'pull_request:merged' && msg.github?.subjectKind === 'pull_request') {
-    return RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1
+    return true
   }
   if (msg.event === 'issues:closed' && msg.github?.subjectKind === 'issue') {
-    return RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1
+    return true
   }
   if (msg.event === 'issues:deleted' && msg.github?.subjectKind === 'issue') {
-    return RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2
+    return true
   }
-  return undefined
+  return false
 }
 
 /** The relay-computed session-affinity key (design decision 7; webhook kind). */
@@ -194,8 +193,7 @@ export async function dispatchHookFire(
       // These event names are relay-authored maintenance commands. An older
       // daemon would run them as model prompts, so fail closed until the target
       // explicitly advertises maintenance-only handling.
-      const cleanupCapability = githubThreadWorktreeCleanupCapability(dispatchMsg)
-      if (cleanupCapability && !conn.supports(cleanupCapability)) {
+      if (requiresGithubThreadWorktreeCleanup(dispatchMsg) && !conn.supports(RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1)) {
         deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
         resolve()
         return

@@ -6,7 +6,6 @@ import {
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1,
-  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   type RcGithubCommentAuthz,
   type RcGithubInstallation,
   type RcGithubRerequest,
@@ -168,7 +167,6 @@ interface Harness {
   ack: RdAck | (() => Promise<RdAck>)
   offline: boolean
   cleanupSupported: boolean
-  cleanupV2Supported: boolean
   onlineDaemons: Set<string>
 }
 
@@ -190,7 +188,6 @@ function makeHarness(authzCapacity = 20): Harness {
     ack: { msgId: 'x', accepted: true },
     offline: false,
     cleanupSupported: true,
-    cleanupV2Supported: true,
     onlineDaemons: new Set([DAEMON])
   }
   const app = Fastify()
@@ -203,7 +200,6 @@ function makeHarness(authzCapacity = 20): Harness {
         return {
           supports: (capability: string) => {
             if (capability === RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1) return h.cleanupSupported === true
-            if (capability === RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2) return h.cleanupV2Supported === true
             return true
           },
           sendMsg: async (msg: RdMsg) => {
@@ -1189,31 +1185,21 @@ describe('github ingress', () => {
       expect(h.authzRequests).toHaveLength(0)
     })
 
-    it('does not send lifecycle cleanup to an older daemon that could start a model turn', async () => {
-      h.table.upsert(rule({}, { events: [] }))
-      h.cleanupSupported = false
+    it.each(['closed', 'deleted'] as const)(
+      'does not send issue %s cleanup to a daemon without the lifecycle cleanup capability',
+      async (action) => {
+        h.table.upsert(rule({}, { events: [] }))
+        h.cleanupSupported = false
 
-      expect((await post('issues', issuesPayload({ action: 'closed' }))).statusCode).toBe(202)
-      await flush()
+        expect((await post('issues', issuesPayload({ action }))).statusCode).toBe(202)
+        await flush()
 
-      expect(h.sent).toHaveLength(0)
-      expect(h.reports).toContainEqual(
-        expect.objectContaining({ event: 'issues:closed', status: 'failed', reason: 'rejected:unsupported' })
-      )
-    })
-
-    it('does not send issue deletion cleanup to a v1-only daemon', async () => {
-      h.table.upsert(rule({}, { events: [] }))
-      h.cleanupV2Supported = false
-
-      expect((await post('issues', issuesPayload({ action: 'deleted' }))).statusCode).toBe(202)
-      await flush()
-
-      expect(h.sent).toHaveLength(0)
-      expect(h.reports).toContainEqual(
-        expect.objectContaining({ event: 'issues:deleted', status: 'failed', reason: 'rejected:unsupported' })
-      )
-    })
+        expect(h.sent).toHaveLength(0)
+        expect(h.reports).toContainEqual(
+          expect.objectContaining({ event: `issues:${action}`, status: 'failed', reason: 'rejected:unsupported' })
+        )
+      }
+    )
 
     it('silently ignores issue metadata edits/reopen and unmerged PR close/reopen noise', async () => {
       h.table.upsert(rule({}, { events: ['issues:*', 'pull_request:*'] }))
