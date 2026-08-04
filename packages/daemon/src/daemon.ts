@@ -196,7 +196,8 @@ import {
   removeSessionWorktree,
   sessionWorktreePath,
   sessionWorktreeRoot,
-  type PrepareSessionWorkspaceRequest
+  type PrepareSessionWorkspaceRequest,
+  type SessionWorktreeRemoval
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import {
@@ -1059,6 +1060,23 @@ interface HookDispatchContext {
   reviewReportAttemptId?: string
   reviewReportResult?: HookReviewResult
 }
+
+type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed'
+
+/** Relay-authored lifecycle events that remove the isolated checkout without
+ * opening a model turn. Pair the normalized event with trusted subject metadata
+ * so an old or malformed frame cannot turn an ordinary hook into maintenance. */
+function githubThreadWorktreeCleanup(
+  hook: Pick<HookDispatchContext, 'event' | 'github'> | undefined
+): GithubThreadWorktreeCleanup | undefined {
+  if (hook?.event === 'pull_request:merged' && hook.github?.subjectKind === 'pull_request') {
+    return 'pull_request_merged'
+  }
+  if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
+  return undefined
+}
+
+type SessionWorktreeCleanupResult = SessionWorktreeRemoval | { outcome: 'active' } | { outcome: 'not_applicable' }
 
 /** An ordinary comment is safe only when no formal attempt exists, or when the
  * latest/current attempt has a correlated, definite no-effect result. Any
@@ -9102,15 +9120,16 @@ export class Daemon {
    * the durable-inbox admission barrier; the model turn itself remains async.
    */
   private async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
+    const cleanup = githubThreadWorktreeCleanup(msg)
     if (!this.agents.has(msg.agentId)) {
       this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
     }
-    if (this.paused(msg.agentId)) {
+    if (!cleanup && this.paused(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'paused' }
     }
-    if (this.safetyDrainingAgents.has(msg.agentId)) {
+    if (!cleanup && this.safetyDrainingAgents.has(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is stopping an interrupted turn — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
     }
@@ -9136,7 +9155,10 @@ export class Daemon {
    * without one the fire runs headless.
    */
   private async onHookFire(msg: RdMsgHook): Promise<{ accepted: boolean; reason?: string }> {
-    const nmsg = buildHookMessage(msg, randomUUID())
+    const cleanup = githubThreadWorktreeCleanup(msg)
+    // A lifecycle cleanup always addresses the stable GitHub thread session,
+    // never an optional IM anchor configured for ordinary hook output.
+    const nmsg = buildHookMessage(cleanup ? { ...msg, target: undefined } : msg, randomUUID())
     // The in-memory ACK cache closes same-process retransmits. This durable
     // probe closes the restart window *before* anchorTrigger posts externally:
     // a retained live row will replay, and a terminal row is already complete.
@@ -9154,6 +9176,23 @@ export class Daemon {
       ...(msg.event ? { event: msg.event } : {}),
       ...(snapshot ? { snapshot } : {}),
       ...(msg.github ? { github: msg.github } : {})
+    }
+    if (cleanup) {
+      const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
+      const entry: QueueEntry = {
+        agentId: msg.agentId,
+        msg: nmsg,
+        initAbort: new AbortController(),
+        hookContext,
+        resolve: () => {},
+        reject: () => {}
+      }
+      // Keep the maintenance receipt outside the session's own inbox key so
+      // retention's active-session predicate does not mistake this cleanup
+      // obligation for a pending model turn.
+      const persistence = this.persistInbox(entry, `maintenance:${key}`, { required: true })
+      if (persistence !== 'existing') void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, entry)
+      return { accepted: true }
     }
     // P3 outbound: github fires on a NUMBERED thread publish their completed reply as
     // one comment (always on — design; push fires have no thread and stay silent).
@@ -9246,6 +9285,46 @@ export class Daemon {
       return { accepted: false, reason: admission.reason ?? 'durability' }
     }
     return { accepted: true }
+  }
+
+  private async completeGithubThreadWorktreeCleanup(
+    hook: HookDispatchContext,
+    key: string,
+    cleanup: GithubThreadWorktreeCleanup,
+    owner: HookCompletionOwner
+  ): Promise<void> {
+    try {
+      // A merge/close can race the last review turn. Let that exact dispatch
+      // settle before applying the same safety checks used by retention.
+      await this.activeDispatchDoneByKey.get(key)?.catch(() => undefined)
+      const rec = this.store.getSession(key)
+      if (!rec) {
+        this.log.info(`github lifecycle: ${cleanup} has no session worktree for ${key}`)
+        this.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_no_session' }, owner)
+        return
+      }
+      const result = await this.cleanupSessionWorktree(rec)
+      if (result.outcome === 'failed') {
+        this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${result.error})`)
+        this.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
+        return
+      }
+      if (result.outcome === 'retained') {
+        this.log.info(`github lifecycle: ${cleanup} retained worktree for ${key} (${result.reason})`)
+        this.emitHookCompletion(hook, 'success', { reason: `worktree_cleanup_retained_${result.reason}` }, owner)
+        return
+      }
+      if (result.outcome === 'active') {
+        this.log.info(`github lifecycle: ${cleanup} deferred worktree cleanup for active session ${key}`)
+        this.emitHookCompletion(hook, 'success', { reason: 'worktree_cleanup_deferred_active' }, owner)
+        return
+      }
+      this.log.info(`github lifecycle: ${cleanup} worktree cleanup ${result.outcome} for ${key}`)
+      this.emitHookCompletion(hook, 'success', undefined, owner)
+    } catch (err) {
+      this.log.warn(`github lifecycle: ${cleanup} worktree cleanup failed for ${key} (${formatErr(err)})`)
+      this.emitHookCompletion(hook, 'failed', { reason: 'worktree_cleanup_failed' }, owner)
+    }
   }
 
   private githubFormalReviewEnabled(entry: QueueEntry): boolean {
@@ -16403,6 +16482,18 @@ export class Daemon {
     )
   }
 
+  /** The one safe per-session worktree deletion path shared by age retention
+   * and GitHub thread lifecycle cleanup. It deliberately preserves the current
+   * dirty/untracked and unique-commit protections in removeSessionWorktree(). */
+  private async cleanupSessionWorktree(rec: SessionRecord): Promise<SessionWorktreeCleanupResult> {
+    if (this.sessionRetentionActive(rec)) return { outcome: 'active' }
+    const agent = this.agents.get(rec.agentId)
+    if (!agent || agent.workspace.mode !== 'git-repo' || rec.workspaceIsolation === 'shared') {
+      return { outcome: 'not_applicable' }
+    }
+    return removeSessionWorktree(agent, rec.key)
+  }
+
   private async sweepSessionRetention(): Promise<void> {
     const windowMs = sessionRetentionMs(this.cfg.sessions.retention)
     if (windowMs === null) return
@@ -16423,30 +16514,24 @@ export class Daemon {
       let failed = 0
       for (const rec of expired) {
         if (this.draining) return
-        if (this.sessionRetentionActive(rec)) {
+        const res = await this.cleanupSessionWorktree(rec)
+        if (res.outcome === 'active') {
           active += 1
           continue
         }
-        const agent = this.agents.get(rec.agentId)
-        // Only a git-repo agent whose session pinned (or may have pinned — legacy
-        // NULL) Worktree isolation can own a worktree. A missing agent was removed
-        // together with its whole directory, worktrees included.
-        if (agent && agent.workspace.mode === 'git-repo' && rec.workspaceIsolation !== 'shared') {
-          const res = await removeSessionWorktree(agent, rec.key)
-          if (res.outcome === 'retained') {
-            retained += 1
-            this.log.info(
-              `retention: keeping session ${rec.key} — worktree has ${
-                res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
-              } (delete or push them to release it)`
-            )
-            continue
-          }
-          if (res.outcome === 'failed') {
-            failed += 1
-            this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
-            continue
-          }
+        if (res.outcome === 'retained') {
+          retained += 1
+          this.log.info(
+            `retention: keeping session ${rec.key} — worktree has ${
+              res.reason === 'dirty' ? 'uncommitted/untracked changes' : 'commits not on any remote'
+            } (delete or push them to release it)`
+          )
+          continue
+        }
+        if (res.outcome === 'failed') {
+          failed += 1
+          this.log.warn(`retention: keeping session ${rec.key} — worktree cleanup failed (${res.error})`)
+          continue
         }
         // Re-check synchronously after the git awaits: a message admitted mid-cleanup
         // owns the serial gate now, and deleting the row underneath its turn would
@@ -17238,6 +17323,7 @@ export class Daemon {
     }
     if (rows.length === 0) return
     let replayed = 0
+    let replayedMaintenance = 0
     const purgedPausedAgents = new Set<string>()
     const purgedLoopScopes = new Set<string>()
     for (const row of rows) {
@@ -17269,6 +17355,15 @@ export class Daemon {
         // completion target. Do not silently replay it as a generic turn.
         this.log.warn(`durable inbox: tombstoning legacy hook row ${row.id} without trusted context`)
         this.store.removeInbox(row.id)
+        continue
+      }
+      const cleanup = githubThreadWorktreeCleanup(hookContext)
+      if (hookContext && cleanup) {
+        const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, row.agentId, msg.transportScope)
+        const owner: HookCompletionOwner = { inboxId: row.id }
+        this.liveInboxIds.add(row.id)
+        void this.completeGithubThreadWorktreeCleanup(hookContext, key, cleanup, owner)
+        replayedMaintenance += 1
         continue
       }
       // A paused agent is an explicit operator stop, not a temporary startup
@@ -17336,6 +17431,9 @@ export class Daemon {
       replayed++
     }
     if (replayed) this.log.info(`durable inbox: replayed ${replayed} admitted message(s) through the serial gate`)
+    if (replayedMaintenance) {
+      this.log.info(`durable inbox: replayed ${replayedMaintenance} GitHub worktree cleanup(s)`)
+    }
   }
 
   /** Re-assert retained metadata-only hook completions whenever the CP socket

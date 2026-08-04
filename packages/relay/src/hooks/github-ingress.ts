@@ -129,6 +129,7 @@ interface GithubSubject {
   head?: { sha?: string; repo?: { full_name?: string } | null }
   base?: { sha?: string; repo?: { full_name?: string } | null }
   merge_commit_sha?: string | null
+  merged?: boolean
   draft?: boolean
   /** Present on the `issue` object when an `issue_comment` belongs to a PR. */
   pull_request?: unknown
@@ -162,6 +163,17 @@ const EXTERNAL_PR_REVISION_EVENTS = new Set([
   'pull_request:ready_for_review',
   'pull_request:converted_to_draft'
 ])
+
+/** Lifecycle deliveries that close a GitHub thread's daemon-owned workspace.
+ * PR `closed` is cleanup only when GitHub also proves it was merged; an
+ * unmerged PR may still be reopened and keeps its session worktree. */
+function githubThreadWorktreeCleanupEvent(event: string, payload: GithubPayload): string | undefined {
+  if (event === 'issues' && payload.action === 'closed') return 'issues:closed'
+  if (event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.merged === true) {
+    return 'pull_request:merged'
+  }
+  return undefined
+}
 
 /** A no-match failed a static rule gate; trusted is immediately dispatchable;
  *  needs-authz passed every static gate but needs live maintainer authorization. */
@@ -756,10 +768,11 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const thread = subject?.number !== undefined ? String(subject.number) : event === 'push' ? payload.ref : undefined
       if (rules.length === 0 || thread === undefined) return reply.code(202).send({ deliveryKey })
 
+      const cleanupEvent = githubThreadWorktreeCleanupEvent(event, payload)
       const ctx: GithubMatchCtx = {
         event,
         // Action-less events (push) stay bare — they only ever match `family:*`.
-        eventAction: payload.action ? `${event}:${payload.action}` : event,
+        eventAction: cleanupEvent ?? (payload.action ? `${event}:${payload.action}` : event),
         installationId: payload.installation?.id !== undefined ? String(payload.installation.id) : undefined,
         labels: (subject?.labels ?? []).map((l) => l.name ?? '').filter(Boolean),
         senderType: payload.sender?.type,
@@ -796,7 +809,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         // Post-match per-hook budget: a drop is a skip + metadata log, never a 429
         // (GitHub treats non-2xx as a dead delivery) and never a run row (a storm
         // must not flood hook_run).
-        if (!deps.limiter.allow(rule.hookId)) {
+        if (!cleanupEvent && !deps.limiter.allow(rule.hookId)) {
           deps.log.info(`github ingress: rate-limited ${rule.hookId}:${deliveryKey} (${ctx.eventAction})`)
           return
         }
@@ -815,7 +828,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           context,
           ...(rule.target ? { target: rule.target } : {})
         }
-        if (pullRequestNeedsMaintainer(ctx, prAuthorCanWrite)) {
+        if (!cleanupEvent && pullRequestNeedsMaintainer(ctx, prAuthorCanWrite)) {
           // No third-party-authored PR lifecycle payload reaches the daemon.
           // Revision events still create a durable, actionable informational
           // Check so a maintainer can request the first review explicitly.
@@ -835,6 +848,24 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
           msg
         )
         deps.log.info(`github ingress: queued ${rule.hookId}:${deliveryKey} (${ctx.eventAction} ${msg.sessionKey})`)
+      }
+
+      if (cleanupEvent) {
+        // Lifecycle cleanup is repository maintenance, not a model-trigger
+        // subscription. Fan it out to every currently assigned hook that the
+        // signed installation is allowed to address; the daemon no-ops when
+        // that hook never created a session for this thread.
+        for (const rule of rules) {
+          if (
+            rule.kind === 'github' &&
+            rule.github &&
+            ctx.installationId &&
+            rule.github.installationIds.includes(ctx.installationId)
+          ) {
+            dispatchRule(rule)
+          }
+        }
+        return reply.code(202).send({ deliveryKey })
       }
 
       const currentAuthorizedRule = (
