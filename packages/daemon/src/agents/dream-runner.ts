@@ -44,9 +44,7 @@ import {
   parseDreamProposal,
   storeDigest,
   type DreamProposal,
-  type DreamTranscriptSource,
-  type TrustedOrganizationKnowledgeTarget,
-  type TrustedOrganizationSkillTarget
+  type DreamTranscriptSource
 } from './memory-dreamer.js'
 import { publishAcceptedDreamSkill } from '../skills/dream-skills.js'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
@@ -183,13 +181,6 @@ export interface DreamRunnerDeps {
   /** Metadata-only lifecycle tap. Observer failures are contained by the
    *  runner and can never change the job outcome. */
   onEvent?(event: DreamLifecycleEvent): void
-  /** Existing org knowledge/skill targets the dream may propose an "update" to.
-   * The dreamer discovers these on demand through its read-only tools; these
-   * fetches provide the daemon-side allow-list that validates a proposed update's
-   * id/revision. Failure is non-fatal (empty ⇒ only "create" proposals survive).
-   * Ordinary agent turns never call these seams. */
-  listOrganizationKnowledge?(agentId: string): Promise<TrustedOrganizationKnowledgeTarget[]>
-  listOrganizationSkills?(agentId: string): Promise<TrustedOrganizationSkillTarget[]>
   /** Best-effort inventory convergence after completion/review. */
   onOrganizationSuggestions?(): void | Promise<void>
   /** Fence a warm runtime after a new accepted local source becomes active. */
@@ -466,27 +457,11 @@ export class DreamRunner {
       }
 
       // The dreamer discovers existing org knowledge/skills on demand via its
-      // read-only tools (findKnowledge / listKnowledge / listOrgSkills); they are
-      // no longer pre-stuffed into the prompt. We still fetch the current targets
-      // here — but only to build the daemon-side allow-list that validates a
-      // proposed "update"'s id/revision. Best-effort: an empty list means only
-      // "create" proposals survive validation.
-      const knowledgeTargets =
-        (await this.deps.listOrganizationKnowledge?.(agentId).catch((err) => {
-          this.deps.log.warn(
-            `dream ${dreamId}: organization knowledge targets unavailable (${err instanceof Error ? err.name : 'unknown'})`
-          )
-          return []
-        })) ?? []
-      const skillTargets = mineSkills
-        ? ((await this.deps.listOrganizationSkills?.(agentId).catch((err) => {
-            this.deps.log.warn(
-              `dream ${dreamId}: organization skill targets unavailable (${err instanceof Error ? err.name : 'unknown'})`
-            )
-            return []
-          })) ?? [])
-        : []
-
+      // read-only tools (findKnowledge / listKnowledge / listOrgSkills) and
+      // proposes an update against any id it finds. The daemon only validates the
+      // proposal structurally (well-formed targetId + revision); whether that
+      // target exists and is current is the CP's authority when the owner accepts
+      // (updateKnowledge = getKnowledge + optimistic revision fence).
       const prompt = buildDreamExplorationPrompt({
         sessionIds: materializedSessionIds,
         mineSkills,
@@ -520,9 +495,7 @@ export class DreamRunner {
       // model invented can't be used to justify a recommendation (design §7).
       const proposal = parseDreamProposal(
         output,
-        sources.map((s) => s.sessionId),
-        knowledgeTargets,
-        skillTargets
+        sources.map((s) => s.sessionId)
       )
       if (!proposal) {
         this.finish(agentId, dreamId, {

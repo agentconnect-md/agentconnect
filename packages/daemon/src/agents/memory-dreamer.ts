@@ -314,12 +314,7 @@ function parseDreamJson(text: string): unknown | undefined {
  * bad topic names, oversized bodies, duplicate paths, and index entries are
  * filtered the same way the distiller filters memories.
  */
-export function parseDreamProposal(
-  text: string,
-  minedSessionIds: readonly string[] = [],
-  trustedOrganizationKnowledge: readonly TrustedOrganizationKnowledgeTarget[] = [],
-  trustedOrganizationSkills: readonly TrustedOrganizationSkillTarget[] = []
-): DreamProposal | null {
+export function parseDreamProposal(text: string, minedSessionIds: readonly string[] = []): DreamProposal | null {
   const value = parseDreamJson(text)
   if (value === undefined) return null
   const envelope = value as Record<string, unknown>
@@ -365,12 +360,8 @@ export function parseDreamProposal(
     files,
     index: index + '\n',
     skills: parseDreamSkills(envelope.agentSkills ?? envelope.skills, minedSessionIds),
-    organizationKnowledge: parseOrganizationKnowledge(
-      envelope.organizationKnowledge,
-      minedSessionIds,
-      trustedOrganizationKnowledge
-    ),
-    organizationSkills: parseOrganizationSkills(envelope.organizationSkills, minedSessionIds, trustedOrganizationSkills)
+    organizationKnowledge: parseOrganizationKnowledge(envelope.organizationKnowledge, minedSessionIds),
+    organizationSkills: parseOrganizationSkills(envelope.organizationSkills, minedSessionIds)
   }
 }
 
@@ -500,11 +491,9 @@ function skillManifest(files: readonly SkillBundleTextFile[]): { name: string; d
 
 export function parseOrganizationKnowledge(
   value: unknown,
-  minedSessionIds: readonly string[],
-  trustedTargets: readonly TrustedOrganizationKnowledgeTarget[] = []
+  minedSessionIds: readonly string[]
 ): DreamOrganizationKnowledgeProposal[] {
   if (!Array.isArray(value)) return []
-  const allowedUpdates = new Set(trustedTargets.map((target) => `${target.id.toLowerCase()}:${target.revision}`))
   const proposals: DreamOrganizationKnowledgeProposal[] = []
   for (const entry of value) {
     const row = recordOf(entry)
@@ -527,13 +516,18 @@ export function parseOrganizationKnowledge(
     ) {
       continue
     }
+    // Structural validation only: a well-formed targetId (UUID) + positive
+    // revision. Whether that id/revision actually exists and is current is the
+    // CP's authority when the owner accepts the suggestion (updateKnowledge does
+    // getKnowledge + optimistic revision fencing), so the dreamer proposes an
+    // update against any id it discovered through its tools without the daemon
+    // pre-fetching a bounded allow-list (which silently dropped valid updates).
     if (
       operation === 'update' &&
       (typeof row.targetId !== 'string' ||
         !UUID_RE.test(row.targetId) ||
         !Number.isInteger(row.targetRevision) ||
-        Number(row.targetRevision) <= 0 ||
-        !allowedUpdates.has(`${row.targetId.toLowerCase()}:${Number(row.targetRevision)}`))
+        Number(row.targetRevision) <= 0)
     ) {
       continue
     }
@@ -566,13 +560,9 @@ export function parseOrganizationKnowledge(
 
 export function parseOrganizationSkills(
   value: unknown,
-  minedSessionIds: readonly string[],
-  trustedTargets: readonly TrustedOrganizationSkillTarget[] = []
+  minedSessionIds: readonly string[]
 ): DreamOrganizationSkillProposal[] {
   if (!Array.isArray(value)) return []
-  const allowedUpdates = new Map<string, string>(
-    trustedTargets.map((target) => [`${target.id.toLowerCase()}:${target.revision}`, target.name] as const)
-  )
   const proposals: DreamOrganizationSkillProposal[] = []
   for (const entry of value) {
     const row = recordOf(entry)
@@ -598,8 +588,7 @@ export function parseOrganizationSkills(
           !UUID_RE.test(row.targetId) ||
           !Number.isInteger(row.targetRevision) ||
           Number(row.targetRevision) <= 0 ||
-          !updateKey ||
-          allowedUpdates.get(updateKey) !== title)) ||
+          !updateKey)) ||
       Buffer.byteLength(
         JSON.stringify({
           kind: 'skill',

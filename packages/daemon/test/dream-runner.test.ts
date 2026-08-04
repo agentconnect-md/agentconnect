@@ -96,8 +96,6 @@ async function setup(opts: {
   cancelGraceMs?: number
   extractionResult?: DreamExtractionResult
   onEvent?: (event: DreamLifecycleEvent) => void
-  listOrganizationKnowledge?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['listOrganizationKnowledge']>
-  listOrganizationSkills?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['listOrganizationSkills']>
   onOrganizationSuggestions?: () => void | Promise<void>
   withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
@@ -119,8 +117,6 @@ async function setup(opts: {
       return { output }
     },
     ...(opts.onEvent ? { onEvent: opts.onEvent } : {}),
-    ...(opts.listOrganizationKnowledge ? { listOrganizationKnowledge: opts.listOrganizationKnowledge } : {}),
-    ...(opts.listOrganizationSkills ? { listOrganizationSkills: opts.listOrganizationSkills } : {}),
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
     ...(opts.withSkillAcceptance ? { withSkillAcceptance: opts.withSkillAcceptance } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
@@ -1275,45 +1271,40 @@ describe('DreamRunner organization suggestions', () => {
     expect(convergenceKicks).toBeGreaterThanOrEqual(2)
   })
 
-  it('uses only CP-returned id/revision pairs as update authority and fails open without CP context', async () => {
-    const targetId = '33333333-3333-4333-8333-333333333333'
-    const updateOutput = JSON.stringify({
-      agentMemory: { index: '# Memory', files: [] },
-      agentSkills: [],
-      organizationKnowledge: [
-        {
-          operation: 'update',
-          targetId,
-          targetRevision: 4,
-          title: 'Release policy',
-          content: '# Release\nRequire two approvals.',
-          sessionIds: ['sess-1']
-        }
-      ],
-      organizationSkills: []
-    })
-    const trusted = await setup({
-      extract: async () => updateOutput,
-      listOrganizationKnowledge: async () => [{ id: targetId, revision: 4 }]
-    })
-    const trustedStart = await trusted.runner.start('a1', { trigger: 'manual' })
-    expect((await settle(trusted.store, trustedStart.dreamId)).organizationSuggestions?.[0]).toMatchObject({
+  it('stages a structurally-valid org-knowledge update; the CP is the authority on the target at accept', async () => {
+    const output = (targetId: string) =>
+      JSON.stringify({
+        agentMemory: { index: '# Memory', files: [] },
+        agentSkills: [],
+        organizationKnowledge: [
+          {
+            operation: 'update',
+            targetId,
+            targetRevision: 4,
+            title: 'Release policy',
+            content: '# Release\nRequire two approvals.',
+            sessionIds: ['sess-1']
+          }
+        ],
+        organizationSkills: []
+      })
+    // A well-formed update is staged with no daemon-side allow-list — the dreamer
+    // discovered the id through its tools, and the owner-accept path (CP) is the
+    // authority on whether that id/revision actually exists.
+    const ok = await setup({ extract: async () => output('33333333-3333-4333-8333-333333333333') })
+    const okStart = await ok.runner.start('a1', { trigger: 'manual' })
+    expect((await settle(ok.store, okStart.dreamId)).organizationSuggestions?.[0]).toMatchObject({
       operation: 'update',
-      targetId,
+      targetId: '33333333-3333-4333-8333-333333333333',
       targetRevision: 4
     })
-
-    const offline = await setup({
-      extract: async () => updateOutput,
-      listOrganizationKnowledge: async () => {
-        throw new Error('offline')
-      }
-    })
-    const offlineStart = await offline.runner.start('a1', { trigger: 'manual' })
-    expect((await settle(offline.store, offlineStart.dreamId)).organizationSuggestions).toBeUndefined()
+    // A malformed target (not a UUID) is dropped by the structural check.
+    const bad = await setup({ extract: async () => output('not-a-uuid') })
+    const badStart = await bad.runner.start('a1', { trigger: 'manual' })
+    expect((await settle(bad.store, badStart.dreamId)).organizationSuggestions).toBeUndefined()
   })
 
-  it('stages a managed-skill update only against the exact AgentSpec target', async () => {
+  it('stages a structurally-valid managed-skill update and points the model at the listOrgSkills tool', async () => {
     const targetId = '44444444-4444-4444-8444-444444444444'
     const updateOutput = JSON.stringify({
       agentMemory: { index: '# Memory', files: [] },
@@ -1338,8 +1329,7 @@ describe('DreamRunner organization suggestions', () => {
     })
     const trusted = await setup({
       policy: { enabled: true, mineSkills: true },
-      extract: async () => updateOutput,
-      listOrganizationSkills: async () => [{ id: targetId, name: 'release-service', revision: 2 }]
+      extract: async () => updateOutput
     })
     trusted.store.sources.push({ sessionId: 'sess-2', channel: 'C2', thread: 'T2' })
     const started = await trusted.runner.start('a1', { trigger: 'manual' })
@@ -1353,15 +1343,6 @@ describe('DreamRunner organization suggestions', () => {
     // Existing skills are discovered via the tool, not pre-stuffed; the prompt
     // points the model at it.
     expect(trusted.prompts[0]?.prompt).toContain('listOrgSkills')
-
-    const unfenced = await setup({
-      policy: { enabled: true, mineSkills: true },
-      extract: async () => updateOutput,
-      listOrganizationSkills: async () => []
-    })
-    unfenced.store.sources.push({ sessionId: 'sess-2', channel: 'C2', thread: 'T2' })
-    const unfencedStart = await unfenced.runner.start('a1', { trigger: 'manual' })
-    expect((await settle(unfenced.store, unfencedStart.dreamId)).organizationSuggestions).toBeUndefined()
   })
 })
 

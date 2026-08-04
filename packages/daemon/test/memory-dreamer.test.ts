@@ -217,7 +217,7 @@ describe('structured organization proposals', () => {
   const skillMd = (name = 'release-service') =>
     `---\nname: ${name}\ndescription: Release a service safely\n---\n\n# Release\n`
 
-  it('parses grounded knowledge creates and only exact trusted update fences', () => {
+  it('parses grounded knowledge creates and structurally-valid updates, dropping malformed targets', () => {
     const proposal = parseDreamProposal(
       JSON.stringify({
         ...base,
@@ -240,18 +240,20 @@ describe('structured organization proposals', () => {
             sessionIds: ['sess-2']
           },
           {
+            // Malformed target: not a UUID → dropped by the structural check
+            // (existence/currency is the CP's authority at accept, not a
+            // daemon-side allow-list).
             operation: 'update',
-            targetId: TARGET,
+            targetId: 'not-a-uuid',
             targetRevision: 2,
-            title: 'Stale update',
+            title: 'Bad target',
             content: 'must be dropped',
             sessionIds: ['sess-1']
           }
         ],
         organizationSkills: []
       }),
-      ['sess-1', 'sess-2'],
-      [{ id: TARGET, revision: 3 }]
+      ['sess-1', 'sess-2']
     )
 
     expect(proposal?.organizationKnowledge).toHaveLength(2)
@@ -347,24 +349,21 @@ describe('structured organization proposals', () => {
     ])
   })
 
-  it('accepts only exact trusted id/name/revision fences for organization skill updates', () => {
+  it('stages structurally-valid organization skill updates, dropping malformed targets', () => {
     const target = '22222222-2222-4222-8222-222222222222'
-    const update = (revision: number, name = 'release-service') => ({
+    const update = (revision: number, targetId = target, name = 'release-service') => ({
       operation: 'update',
-      targetId: target,
+      targetId,
       targetRevision: revision,
       name,
       files: [{ path: 'SKILL.md', content: skillMd(name) }],
       sessionIds: ['sess-1', 'sess-2']
     })
 
-    expect(
-      parseOrganizationSkills(
-        [update(4), update(3), update(4, 'renamed-service')],
-        ['sess-1', 'sess-2'],
-        [{ id: target, name: 'release-service', revision: 4 }]
-      )
-    ).toEqual([
+    // A well-formed update (UUID + positive revision + manifest name == proposed
+    // name) is staged; whether the target exists/matches is the CP's authority at
+    // accept, not a daemon-side allow-list.
+    expect(parseOrganizationSkills([update(4)], ['sess-1', 'sess-2'])).toEqual([
       {
         operation: 'update',
         targetId: target,
@@ -375,7 +374,10 @@ describe('structured organization proposals', () => {
         sessionIds: ['sess-1', 'sess-2']
       }
     ])
-    expect(parseOrganizationSkills([update(4)], ['sess-1', 'sess-2'])).toEqual([])
+    // Structurally malformed targets are dropped: a non-UUID targetId, or a
+    // non-positive revision.
+    expect(parseOrganizationSkills([update(4, 'not-a-uuid')], ['sess-1', 'sess-2'])).toEqual([])
+    expect(parseOrganizationSkills([update(0)], ['sess-1', 'sess-2'])).toEqual([])
   })
 
   it('drops the whole skill candidate for traversal, case collisions, malformed base64, or size overflow', () => {

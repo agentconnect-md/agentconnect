@@ -5693,18 +5693,6 @@ export class Daemon {
       store: this.store,
       extract: (agentId, systemPrompt, prompt, signal, context) =>
         this.runDreamExtraction(agentId, systemPrompt, prompt, signal, context),
-      listOrganizationKnowledge: async (agentId) => {
-        const client = this.cpClient
-        if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return []
-        const reply = await client.knowledgeList({ requesterAgentId: agentId, limit: 20, maxBytes: 8192 })
-        return reply.items.map(({ id, revision }) => ({ id, revision }))
-      },
-      listOrganizationSkills: async (agentId) => {
-        const client = this.cpClient
-        if (!client || !client.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE)) return []
-        const reply = await client.orgSkills({ requesterAgentId: agentId, limit: 50 })
-        return reply.items.map(({ id, name, revision }) => ({ id, name, revision }))
-      },
       onOrganizationSuggestions: () =>
         this.syncOrganizationSuggestions().catch((err) =>
           this.log.warn(`cp: organization suggestion sync failed (${err instanceof Error ? err.name : 'unknown'})`)
