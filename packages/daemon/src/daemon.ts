@@ -287,6 +287,7 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
+  EventSession as EventSessionSchema,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
@@ -13716,6 +13717,9 @@ export class Daemon {
     at?: number
     /** Avoid re-projecting the full session list for every reconnect row. */
     projection?: SessionListItem
+    /** A pre-snapshot legacy row can safely replay identity/classification, but
+     * must not reconstruct historical status or execution config. */
+    durableOnly?: boolean
   }): void {
     if (!this.cpClient) return
     const now = new Date(input.at ?? this.clock.now()).toISOString()
@@ -13777,8 +13781,7 @@ export class Daemon {
     if (row?.threadUrl !== undefined) event.threadUrl = row.threadUrl
     // Effective execution config: the session's sticky overrides (console/⚙-modal
     // in-session switches) win over the agent's configured values; absent ⇒ the
-    // runtime's own default. Snapshotted here so the CP records what this session
-    // actually ran with — the agent's config can change later without rewriting history.
+    // runtime's own default. The exact result is persisted below for reconnect.
     const agent = this.agents.get(input.agentId)
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
@@ -13813,53 +13816,92 @@ export class Daemon {
     else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
+    if (input.durableOnly) {
+      for (const field of [
+        'status',
+        'runtime',
+        'model',
+        'observedModel',
+        'effort',
+        'fastMode',
+        'permissionMode',
+        'outputMode',
+        'workspaceIsolation'
+      ] as const) {
+        delete event[field]
+      }
+    }
 
     try {
-      this.cpClient.emitEventSession(event)
+      this.store.setEventSessionSnapshot(input.agentId, input.sessionId, JSON.stringify(event))
+    } catch (err) {
+      this.log.debug(`event/session snapshot persist failed (session ${input.sessionId}): ${(err as Error).message}`)
+    }
+
+    try {
+      this.cpClient?.emitEventSession(event)
     } catch (err) {
       this.log.debug(`event/session emit failed (session ${input.sessionId}): ${(err as Error).message}`)
     }
   }
 
   /**
-   * Re-converge CP metadata from the daemon's durable session store after each
-   * register. Relay ingress remains local-first while the control client is
-   * CONNECTING/REGISTERING, so a whole turn can finish while every live
-   * milestone is a deliberate no-op. Without this replay its deep link stays a
-   * protected 404 forever.
+   * Re-converge the exact latest metadata milestone after each register. Relay
+   * ingress remains local-first while the control client is unavailable, so a
+   * whole turn can otherwise finish without creating its CP row.
+   *
+   * Rows from an older daemon have no snapshot. Their fallback deliberately
+   * carries only durable identity/classification fields: reconstructing status
+   * or execution config from today's agent would rewrite history.
    */
   private replaySessionMetadataSnapshots(): void {
     const stored = this.store.listSessions()
     if (stored.length === 0) return
 
-    const projections = createSessionReader(this.store, (session) => this.sessionThreadUrl(session)).list({}).sessions
-    const projectionBySession = new Map(
-      projections.map((session) => [`${session.agentId}\0${session.sessionId}`, session] as const)
-    )
+    const replay = stored.map((session) => {
+      if (!session.eventSessionSnapshot) return { session }
+      try {
+        const parsed = EventSessionSchema.safeParse(JSON.parse(session.eventSessionSnapshot))
+        if (
+          parsed.success &&
+          parsed.data.agentId === session.agentId &&
+          parsed.data.sessionId === session.acpSessionId
+        ) {
+          return { session, event: parsed.data }
+        }
+      } catch {
+        // Corrupt/legacy local state falls through to the safe minimal snapshot.
+      }
+      return { session }
+    })
+    const needsFallback = replay.some((entry) => entry.event === undefined)
+    const projectionBySession = needsFallback
+      ? new Map(
+          createSessionReader(this.store, (session) => this.sessionThreadUrl(session))
+            .list({})
+            .sessions.map((session) => [`${session.agentId}\0${session.sessionId}`, session] as const)
+        )
+      : undefined
 
-    // Replay oldest-first. A missing row uses its durable activity time as
-    // startedAt, so the CP's webchat current-session fence still selects the
-    // newest local session even when frame handlers complete out of order.
-    for (const session of stored.reverse()) {
+    // Replay oldest-first so a legacy missing row's durable activity timestamp
+    // preserves the webchat current-session ordering.
+    for (const { session, event } of replay.reverse()) {
       const sessionId = session.acpSessionId
       if (!sessionId) continue
-      const phase: EventSession['phase'] =
-        session.state === 'prompting' || session.state === 'cancelling' || session.state === 'resuming'
-          ? 'start'
-          : session.lastTurnOutcome === 'failed'
-            ? 'problem'
-            : session.lastTurnOutcome === 'done' || session.state === 'closed'
-              ? 'end'
-              : 'plan'
+      if (event) {
+        this.cpClient?.emitEventSession(event)
+        continue
+      }
       this.emitSessionMetadataSnapshot({
         sessionId,
         agentId: session.agentId,
-        phase,
+        phase: 'plan',
         platform: session.platform as SessionKey['platform'],
         channel: session.channel,
         thread: session.thread,
         at: session.updatedAt,
-        projection: projectionBySession.get(`${session.agentId}\0${sessionId}`)
+        projection: projectionBySession?.get(`${session.agentId}\0${sessionId}`),
+        durableOnly: true
       })
     }
   }

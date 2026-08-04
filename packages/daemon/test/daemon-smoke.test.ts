@@ -10,8 +10,14 @@ import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-ser
 // cold session boot (workspace + host + session/new) can stall well past a second.
 // Give every poll in this file the same generous budget instead.
 const WAIT = { timeout: 10_000 }
+const DREAM_AGENT = '11111111-1111-4111-8111-111111111111'
 
-function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', iconUrl?: string): string {
+function scaffold(
+  displayName?: string,
+  memoryProvider?: 'none' | 'managed',
+  iconUrl?: string,
+  agentId = 'bot-a'
+): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -24,13 +30,13 @@ function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', ico
       runtimes: { claude: { command: 'node', args: ['unused'] } }
     })
   )
-  const adir = join(root, 'agents', 'bot-a')
+  const adir = join(root, 'agents', agentId)
   mkdirSync(adir, { recursive: true })
   writeFileSync(
     join(adir, 'agent.json'),
     JSON.stringify({
-      id: 'bot-a',
-      name: 'bot-a',
+      id: agentId,
+      name: agentId,
       ...(displayName !== undefined ? { displayName } : {}),
       ...(iconUrl !== undefined ? { iconUrl } : {}),
       status: 'active',
@@ -339,7 +345,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('emits session metadata snapshots on create, completion, and reconnect replay', async () => {
+  it('emits session metadata snapshots on create, completion, and safe legacy replay', async () => {
     const root = scaffold()
     const fakeHost = {
       __started: true,
@@ -444,19 +450,92 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(final.model).toBeUndefined()
     expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
 
-    // Repair a CP row whose whole turn happened before the control client was
-    // READY. The replay is rebuilt from SQLite; no future user turn is needed.
+    // Simulate a row written by an older daemon. Its safe fallback can repair
+    // identity/access, but must not invent historical status or runtime config.
+    ;(daemon as any).store.setEventSessionSnapshot('bot-a', 'acp-sess-1', '')
     emitEventSession.mockClear()
     ;(daemon as any).replaySessionMetadataSnapshots()
     expect(emitEventSession).toHaveBeenCalledTimes(1)
-    expect(emitEventSession.mock.calls[0]![0]).toMatchObject({
+    const legacyReplay = emitEventSession.mock.calls[0]![0]
+    expect(legacyReplay).toMatchObject({
       sessionId: 'acp-sess-1',
-      phase: 'end',
-      status: 'idle',
-      sourceBindingKind: 'local',
-      observedModel: null
+      phase: 'plan',
+      sourceBindingKind: 'local'
     })
+    expect(legacyReplay.status).toBeUndefined()
+    expect(legacyReplay.runtime).toBeUndefined()
+    expect(legacyReplay.observedModel).toBeUndefined()
+    expect(legacyReplay.permissionMode).toBeUndefined()
+    expect(legacyReplay.outputMode).toBeUndefined()
     await daemon.stop()
+  }, 15_000)
+
+  it('replays exact persisted dream terminal metadata after a daemon restart', async () => {
+    const root = scaffold(undefined, 'managed', undefined, DREAM_AGENT)
+    const first = new Daemon({ root, probeRuntimes: async () => [] })
+    let firstStopped = false
+    let restored: Daemon | undefined
+    try {
+      await first.start()
+      const initialEmit = vi.fn()
+      ;(first as any).cpClient = { emitEventSession: initialEmit, stop: vi.fn() }
+      ;(first as any).store.upsertSession({
+        key: `dream:memory:dream-1:${DREAM_AGENT}`,
+        agentId: DREAM_AGENT,
+        platform: 'dream',
+        channel: 'memory',
+        thread: 'dream-1',
+        acpSessionId: 'dream-session-1',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: 1_785_849_600_000,
+        triggeredBy: 'manual',
+        memoryProvider: 'managed'
+      })
+      ;(first as any).emitSessionMetadataSnapshot({
+        sessionId: 'dream-session-1',
+        agentId: DREAM_AGENT,
+        phase: 'problem',
+        platform: 'dream',
+        channel: 'memory',
+        thread: 'dream-1',
+        status: 'canceled',
+        runtime: 'claude',
+        model: null,
+        permissionMode: 'read-only'
+      })
+      expect(initialEmit).toHaveBeenCalledTimes(1)
+
+      await first.stop()
+      firstStopped = true
+      restored = new Daemon({ root, probeRuntimes: async () => [] })
+      await restored.start()
+      // Current config deliberately differs from the historical dream snapshot.
+      const currentAgent = (restored as any).agents.get(DREAM_AGENT)
+      currentAgent.runtime = 'changed-runtime'
+      currentAgent.permissionMode = 'default'
+      currentAgent.output.mode = 'high'
+      const replayed = vi.fn()
+      ;(restored as any).cpClient = { emitEventSession: replayed, stop: vi.fn() }
+      ;(restored as any).replaySessionMetadataSnapshots()
+
+      expect(replayed).toHaveBeenCalledTimes(1)
+      expect(replayed.mock.calls[0]![0]).toMatchObject({
+        sessionId: 'dream-session-1',
+        agentId: DREAM_AGENT,
+        phase: 'problem',
+        platform: 'dream',
+        status: 'canceled',
+        runtime: 'claude',
+        observedModel: null,
+        permissionMode: 'read-only',
+        outputMode: 'medium'
+      })
+    } finally {
+      if (restored) await restored.stop().catch(() => undefined)
+      if (!firstStopped) await first.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
   }, 15_000)
 
   it('re-emits session metadata when a runtime session title update arrives', async () => {
