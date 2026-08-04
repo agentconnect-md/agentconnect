@@ -73,6 +73,16 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
   /** Apply one renderer action to the platform. Core has already decided the
    *  action is allowed to publish (suppression re-check) and serialized it. */
   apply(turn: TTurn, action: TAction): Promise<void>
+  /** Turn teardown when output is SUPPRESSED (loop protection, shutdown): stop
+   *  any platform streaming entity mid-flight (Feishu cancels its CardKit
+   *  stream). Reached via {@link TurnOutputRegistry.exact} — a surface only
+   *  runs its own teardown, never a fallback's. */
+  onSuppress?(turn: TTurn): void
+  /** Terminal turn settlement, after the apply chain drains: platform cleanup
+   *  that the ordinary final action may have bypassed on failure/suppression
+   *  (Slack retries stale footer removals). Exact-lookup only, like
+   *  {@link onSuppress}. */
+  onSettle?(turn: TTurn): Promise<void>
 }
 
 /**
@@ -131,5 +141,12 @@ export class TurnOutputRegistry<TTurn, TAction, TConv, TMessage> {
    *  origin is not a chat platform with one of its own. */
   for(platform: string): TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
     return this.surfaces.get(platform) ?? this.core
+  }
+
+  /** The surface REGISTERED for `platform`, with no core fallback. Teardown
+   *  hooks route through this: webchat / hook / dream render through the core
+   *  surface, but they must not inherit its platform's teardown. */
+  exact(platform: string): TurnOutputSurface<TTurn, TAction, TConv, TMessage> | undefined {
+    return this.surfaces.get(platform)
   }
 }

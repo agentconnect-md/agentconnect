@@ -149,6 +149,7 @@ import {
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
 import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from './platforms/transport-identity.js'
 import { conversationAudienceFor } from './platforms/session-audience.js'
+import { turnChromeFor } from './platforms/turn-chrome.js'
 import { CommandChromeRegistry, type SelectKind } from './platforms/command-chrome.js'
 import { slackCommandChrome } from './platforms/slack/command-chrome.js'
 import {
@@ -635,7 +636,7 @@ export function noneSuppressedApprovalSurface(
   mode: string,
   turn: { platform: string; webchat?: unknown; headless?: boolean }
 ): boolean {
-  return mode === 'none' && turn.platform === 'slack' && !turn.webchat && !turn.headless
+  return mode === 'none' && turnChromeFor(turn.platform).chatInputCards === true && !turn.webchat && !turn.headless
 }
 
 function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
@@ -1656,7 +1657,19 @@ export class Daemon {
         platform: 'slack',
         createConverger: (ctx) => new OutputConverger(ctx.mode as never),
         initialTurnState: (): SlackTurnState => ({}),
-        apply: (p, action) => this.applySlackAction(p, action as SlackAction)
+        apply: (p, action) => this.applySlackAction(p, action as SlackAction),
+        // Terminal settlement: retry stale footer removals the final attribution
+        // action may have bypassed on failure/suppression.
+        onSettle: async (p) => {
+          if (p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
+            await clearStaleSlackReplyFootersExternal(
+              { debug: (message) => this.log.debug(message) },
+              p.conn as SlackConnection,
+              p,
+              turnState<SlackTurnState>(p)
+            )
+          }
+        }
       })
       registry.register({
         platform: 'telegram',
@@ -1681,7 +1694,13 @@ export class Daemon {
         platform: 'feishu',
         createConverger: (ctx) => new FeishuConverger(ctx.mode as never),
         initialTurnState: (): FeishuTurnState => ({}),
-        apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction)
+        apply: (p, action) => this.applyFeishuAction(p, action as FeishuAction),
+        // Suppression teardown: stop the stream timer and cancel the CardKit
+        // entity mid-flight (loop protection, shutdown).
+        onSuppress: (p) => {
+          this.clearFeishuStream(p)
+          this.enqueueApply(p, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
+        }
       })
       return registry
     })()
@@ -9062,7 +9081,11 @@ export class Daemon {
     pending: Pending,
     providerCheckpoint?: string
   ): (() => Promise<ThreadContextSnapshot>) | undefined {
-    if (pending.platform !== 'slack') return undefined
+    // Capability-gated on the Layer-1 read port: only connections with a thread
+    // history adapter (`getThreadReplies` — Slack today) contribute a provider
+    // snapshot. NOTE for the second adapter: the checkpoint below is minted in
+    // Slack's ts format; when another platform implements the port, checkpoint
+    // minting moves into it.
     const conn = this.replyConnFor(pending.agentId, pending.integrationId) as Partial<SlackConnection> | undefined
     if (typeof conn?.getThreadReplies !== 'function') return undefined
     return async () => {
@@ -9889,7 +9912,7 @@ export class Daemon {
       const slack = ctx.replyConn as Partial<SlackConnection>
       if (ctx.statusThread && typeof slack.setStatus === 'function')
         void slack.setStatus(ctx.channel, ctx.statusThread, '')
-      if (ctx.platform === 'slack')
+      if (turnChromeFor(ctx.platform).chromeMarkedNotices)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
           ...(slackPostOptions(ctx) ?? {}),
           chrome: true
@@ -11396,7 +11419,7 @@ export class Daemon {
       // sections then include it in their initial chat.postMessage, where Slack's
       // unfurl controls are supported; onFinal normally observes the same footer and
       // becomes a no-op instead of introducing URLs later through chat.update.
-      if (showFooter && p.platform === 'slack') {
+      if (showFooter && turnChromeFor(p.platform).attributionFooter) {
         const attribution = buildAttributionBlocks(currentAttributionInfo())
         p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
       }
@@ -11767,7 +11790,7 @@ export class Daemon {
         // A runtime may only publish its final session-scoped model during prompt.
         // Refresh before enqueueing the final body so any not-yet-sent section is born
         // with the final metadata; an already-sent section is updated in place below.
-        if (showFooter && p.platform === 'slack' && finalAttributionInfo) {
+        if (showFooter && turnChromeFor(p.platform).attributionFooter && finalAttributionInfo) {
           const attribution = buildAttributionBlocks(finalAttributionInfo)
           p.attribution = { blocks: attribution.blocks, key: JSON.stringify(attribution.blocks) }
         }
@@ -11932,17 +11955,11 @@ export class Daemon {
       // allow this one terminal chrome update; ordinary queued output remains blocked.
       this.settleStatusBar(p)
       await p.applyChain.catch(() => {})
-      // Success normally retries stale footer removals through the final attribution
-      // action. Failure/suppression can bypass that action, so give any retained rows
-      // the same terminal retry before releasing the Slack transport.
-      if (p.platform === 'slack' && p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
-        await clearStaleSlackReplyFootersExternal(
-          { debug: (message) => this.log.debug(message) },
-          p.conn as SlackConnection,
-          p,
-          turnState<SlackTurnState>(p)
-        )
-      }
+      // Platform turn settlement (§7.3 teardown hook): cleanup the ordinary final
+      // action may have bypassed on failure/suppression — Slack retries stale
+      // footer removals. Exact lookup: a webchat/hook turn rendering through the
+      // core surface must not inherit its platform's teardown.
+      await this.turnSurfaces.exact(p.platform)?.onSettle?.(p)
       // The reply transport is no longer used after the final apply chain / failure
       // notice. Release before local metadata cleanup so even a cleanup exception
       // cannot strand the connection lease forever.
@@ -12090,10 +12107,9 @@ export class Daemon {
       this.settleStatusBar(live)
       live.outputSuppressed ??= reason
       this.clearIdle(live)
-      this.clearFeishuStream(live)
-      if (live.platform === 'feishu') {
-        this.enqueueApply(live, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
-      }
+      // Platform suppression teardown (§7.3): Feishu stops its stream timer and
+      // cancels the CardKit entity. Exact lookup — no core fallback.
+      this.turnSurfaces.exact(live.platform)?.onSuppress?.(live)
       this.showActivity(live.conn, live.channel, live.statusThread, '')
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
@@ -12687,7 +12703,7 @@ export class Daemon {
   private settleStatusBar(p: Pending): void {
     const emitted = p.lastStatusBar !== undefined
     p.statusCancellable = false
-    if (p.platform === 'slack' && emitted) this.emitStatusBar(p, true)
+    if (turnChromeFor(p.platform).statusSurface === 'turn-bar' && emitted) this.emitStatusBar(p, true)
   }
 
   /** Emit/refresh the session's status bar (model / context / tokens / cost). Called at
@@ -12700,7 +12716,8 @@ export class Daemon {
    *  applyAction (no connection), which is fine. */
   private emitStatusBar(p: Pending, allowWhenSuppressed = false): void {
     if (p.outputSuppressed && !allowWhenSuppressed) return
-    if (p.platform === 'slack' && !p.showStatusBar) {
+    const statusSurface = turnChromeFor(p.platform).statusSurface
+    if (statusSurface === 'turn-bar' && !p.showStatusBar) {
       const key = 'status-bar:hidden'
       if (key === p.lastStatusBar) return
       p.lastStatusBar = key
@@ -12708,7 +12725,7 @@ export class Daemon {
       return
     }
     const info = this.buildStatusInfo(p)
-    const key = JSON.stringify([info, p.platform === 'slack' ? p.statusCancellable : null])
+    const key = JSON.stringify([info, statusSurface === 'turn-bar' ? p.statusCancellable : null])
     if (key === p.lastStatusBar) return // unchanged since the last emit — no-op
     if (p.webchat) {
       // Webchat: skip a truly-empty frame (nothing for the web bar to show); the model /
@@ -12722,13 +12739,12 @@ export class Daemon {
         index: wc.index++,
         status: info
       })
-    } else if (p.platform === 'telegram' || p.platform === 'discord' || p.platform === 'feishu') {
-      // Telegram/Discord/Feishu have no per-turn status bar — session state is queried on
-      // demand via `/status` (handleCommand). Record the dedup key so the shared bookkeeping
-      // stays consistent, but emit nothing.
-      // These four literals are class (c) `status-bar renderer` per the S0 audit, NOT a
-      // manifest capability: they are read from `Pending`, i.e. after the turn and its
-      // output surface exist. They retire with the chrome/status-bar strategy extraction.
+    } else if (statusSurface === 'on-demand') {
+      // A declared on-demand platform (Telegram/Discord/Feishu) has no per-turn
+      // status bar — session state is queried via `/status` (handleCommand).
+      // Record the dedup key so the shared bookkeeping stays consistent, but emit
+      // nothing. The absent declaration (webchat handled above; hook/dream/
+      // headless) falls through to the legacy default arm below.
       p.lastStatusBar = key
     } else {
       // Slack: ensure/refresh the status bar from turn START unconditionally — it must be
@@ -12812,8 +12828,9 @@ export class Daemon {
    * A single timer survives token bursts, so at most one CardKit write is queued per
    * interval while still flushing the newest full snapshot when it fires. */
   private armFeishuStream(p: Pending): void {
+    // The FeishuConverger instanceof IS the platform gate — only Feishu turns
+    // carry one, so a platform literal here would be redundant with it.
     if (
-      p.platform !== 'feishu' ||
       turnState<FeishuTurnState>(p).streamTimer ||
       !(p.conv instanceof FeishuConverger) ||
       !p.conv.hasStreamingUpdate()
@@ -13453,7 +13470,7 @@ export class Daemon {
     }
     const chatApprovalEnabled =
       this.agents.get(agentId)?.allowRuntimeChangesInChat === true &&
-      p.platform === 'slack' &&
+      turnChromeFor(p.platform).chatInputCards === true &&
       p.conn instanceof SlackConnection &&
       !p.approvalSurfaceSuppressed &&
       params.options.length > 0
@@ -13509,7 +13526,7 @@ export class Daemon {
     if (isApproval) {
       const chatApprovalEnabled =
         this.agents.get(agentId)?.allowRuntimeChangesInChat === true &&
-        p.platform === 'slack' &&
+        turnChromeFor(p.platform).chatInputCards === true &&
         p.conn instanceof SlackConnection &&
         !p.approvalSurfaceSuppressed
       if (!chatApprovalEnabled) return await this.awaitEditorElicitation(agentId, sessionId, params, p)
@@ -13517,7 +13534,7 @@ export class Daemon {
     // A `none` Slack turn has no generic human-input card to answer this request.
     if (p.approvalSurfaceSuppressed) return { action: 'cancel' }
     const conn = p.conn
-    if (p.platform !== 'slack' || !(conn instanceof SlackConnection)) return undefined
+    if (!turnChromeFor(p.platform).chatInputCards || !(conn instanceof SlackConnection)) return undefined
     const target = elicitTarget(params)
     if (!target) return undefined
     const requestId = isApproval ? randomUUID() : `elicit-${++this.elicitSeq}`
@@ -13759,7 +13776,7 @@ export class Daemon {
       if (p.webchat) {
         this.emitWebchatUpdate(p, { sessionUpdate: 'session_info_update', title: req.title })
       }
-      if (p.platform === 'slack' && p.isDm && p.conn) {
+      if (turnChromeFor(p.platform).dmSessionTitle && p.isDm && p.conn) {
         this.enqueueApply(p, { kind: 'set-title', text: req.title })
         await p.applyChain
         return
@@ -13896,7 +13913,7 @@ export class Daemon {
         // the runtime's title verbatim (apart from surrounding whitespace); do not
         // invent one from the first-message fallback used by the console session list.
         const slackTitle = typeof update.title === 'string' ? update.title.trim() : ''
-        if (p?.platform === 'slack' && p.isDm && slackTitle) {
+        if (p && turnChromeFor(p.platform).dmSessionTitle && p.isDm && slackTitle) {
           this.enqueueApply(p, { kind: 'set-title', text: slackTitle })
         } else if (!p && slackTitle) {
           const binding = this.sessionDeliveryBindings.get(rec.key)
@@ -14732,7 +14749,8 @@ export class Daemon {
     // `app_mention` payload omits channel_type — so a conversation that reached us
     // only through a mention is classified here rather than guessed from the id. One
     // lookup per conversation: the resolved row short-circuits the next call above.
-    if (kind !== 'channel' || msg.platform !== 'slack') return
+    // (The instanceof gate above already proves this is a real Slack connection.)
+    if (kind !== 'channel') return
     void conn
       .getChannelInfo(channel)
       .then((info) => {
@@ -15995,10 +16013,7 @@ export class Daemon {
         for (const p of this.pending.values()) {
           p.outputSuppressed ??= 'shutdown'
           this.clearIdle(p)
-          this.clearFeishuStream(p)
-          if (p.platform === 'feishu') {
-            this.enqueueApply(p, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
-          }
+          this.turnSurfaces.exact(p.platform)?.onSuppress?.(p)
           this.releaseElicits(p.agentId, p.acpSessionId)
           this.releaseChatPermissions(p.agentId, p.acpSessionId)
           this.releaseEditorPermissions(p.agentId, p.acpSessionId)
@@ -16957,21 +16972,21 @@ export class Daemon {
                 .catch(() => undefined)
             )?.isIm ?? false
           if (isDmTarget) msg = { ...msg, isDm: true }
-          let ts: string | undefined
-          if (msg.platform === 'slack') {
-            const agent = this.agents.get(agentId)
-            const options = agent
-              ? slackAgentPostOptions({
-                  platform: msg.platform,
-                  agentId,
-                  agentName: agent.displayName?.trim() || agent.name,
-                  ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
-                })
-              : undefined
-            ts = await (conn as SlackConnection).postMessage(target.channel, anchorText, undefined, options)
-          } else {
-            ts = await conn.postMessage(target.channel, anchorText)
-          }
+          // slackAgentPostOptions guards on the platform internally: a non-Slack
+          // target (or an unresolved agent) yields undefined and the anchor posts
+          // plain, which is exactly the old else arm.
+          const agent = this.agents.get(agentId)
+          const options = agent
+            ? slackAgentPostOptions({
+                platform: msg.platform,
+                agentId,
+                agentName: agent.displayName?.trim() || agent.name,
+                ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
+              })
+            : undefined
+          const ts = options
+            ? await (conn as SlackConnection).postMessage(target.channel, anchorText, undefined, options)
+            : await conn.postMessage(target.channel, anchorText)
           // The posted anchor is both the thread root and the authoritative
           // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
           // §6.8: the SESSION key must follow the platform's own conversation model
