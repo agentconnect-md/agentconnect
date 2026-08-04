@@ -168,7 +168,9 @@ const EXTERNAL_PR_REVISION_EVENTS = new Set([
  * PR `closed` is cleanup only when GitHub also proves it was merged; an
  * unmerged PR may still be reopened and keeps its session worktree. */
 function githubThreadWorktreeCleanupEvent(event: string, payload: GithubPayload): string | undefined {
-  if (event === 'issues' && payload.action === 'closed') return 'issues:closed'
+  if (event === 'issues' && (payload.action === 'closed' || payload.action === 'deleted')) {
+    return `issues:${payload.action}`
+  }
   if (event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.merged === true) {
     return 'pull_request:merged'
   }
@@ -233,6 +235,10 @@ export function githubMentionCandidates(rules: RcHookAssign[], body: string | un
  */
 export function githubRuleVerdict(rule: RcHookAssign, ctx: GithubMatchCtx): GithubRuleVerdict {
   if (rule.kind !== 'github' || !rule.github) return 'no-match'
+  // Deletion payloads describe removed content, never new work. Issue deletion
+  // is handled separately as maintenance cleanup; comment/review-comment
+  // deletion remains a silent no-op even for explicit legacy wildcards.
+  if (ctx.eventAction === `${ctx.event}:deleted`) return 'no-match'
   // Lifecycle and edited actions are not new agent turns. Keep these as hard
   // vetoes so both family wildcards and explicit legacy subscriptions stay
   // silent, including PR base-branch retargets.

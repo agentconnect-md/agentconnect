@@ -204,9 +204,12 @@ comments because GitHub sends both through `issue_comment`.
 The matcher always rejects `sender.type === "Bot"` to prevent self-reply loops
 and agent-to-agent mention loops.
 
-Closed, reopened, and edited issue or pull-request lifecycle events do not
-start turns. A diff-line review comment may match a shared
-`issue_comment` subscription or an explicit
+Closed, deleted, reopened, and edited issue or pull-request lifecycle events do
+not start turns. Signed issue-close, issue-delete, and merged-pull-request
+deliveries instead fan out as maintenance-only requests that apply the daemon's
+safe session-worktree cleanup without deleting session metadata or transcripts.
+Deleted issue comments and review comments are silent no-ops. A diff-line review
+comment may match a shared `issue_comment` subscription or an explicit
 `pull_request_review_comment` subscription.
 
 ### Summon and Maintainer Gates

@@ -5,7 +5,7 @@ import { FakeClock } from '@agentconnect.md/connection'
 import {
   GITHUB_REQUEST_REVIEW_ACTION,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
-  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1,
+  RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   type RcGithubCommentAuthz,
   type RcGithubInstallation,
   type RcGithubRerequest,
@@ -198,8 +198,10 @@ function makeHarness(authzCapacity = 20): Harness {
       get: (daemonId: string) => {
         if (h.offline || !h.onlineDaemons.has(daemonId)) return undefined
         return {
-          supports: (capability: string) =>
-            capability !== RD_GITHUB_THREAD_WORKTREE_CLEANUP_V1 || h.cleanupSupported === true,
+          supports: (capability: string) => {
+            if (capability === RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2) return h.cleanupSupported === true
+            return true
+          },
           sendMsg: async (msg: RdMsg) => {
             h.sent.push(msg)
             h.dispatches.push({ daemonId, msg })
@@ -1132,7 +1134,7 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(1)
     })
 
-    it('dispatches issue close and merged PR as workspace-cleanup lifecycle fires', async () => {
+    it('dispatches issue close/delete and merged PR as workspace-cleanup lifecycle fires', async () => {
       h.table.upsert(rule({}, { events: [] }))
       const merged = pullPayload({ action: 'closed' })
       ;(merged.pull_request as Record<string, unknown>).merged = true
@@ -1146,6 +1148,13 @@ describe('github ingress', () => {
       ).toBe(202)
       expect(
         (
+          await post('issues', issuesPayload({ action: 'deleted' }), {
+            headers: { 'x-github-delivery': 'issue-deleted' }
+          })
+        ).statusCode
+      ).toBe(202)
+      expect(
+        (
           await post('pull_request', merged, {
             headers: { 'x-github-delivery': 'pr-merged' }
           })
@@ -1154,7 +1163,7 @@ describe('github ingress', () => {
 
       await flush()
       const hooks = h.sent.filter((msg) => msg.source === 'hook')
-      expect(hooks).toHaveLength(2)
+      expect(hooks).toHaveLength(3)
       expect(hooks[0]).toMatchObject({
         sessionKey: 'acme/infra#42',
         event: 'issues:closed',
@@ -1162,6 +1171,12 @@ describe('github ingress', () => {
         context: { event: 'issues', action: 'closed' }
       })
       expect(hooks[1]).toMatchObject({
+        sessionKey: 'acme/infra#42',
+        event: 'issues:deleted',
+        github: { subjectKind: 'issue' },
+        context: { event: 'issues', action: 'deleted' }
+      })
+      expect(hooks[2]).toMatchObject({
         sessionKey: 'acme/infra#77',
         event: 'pull_request:merged',
         github: { subjectKind: 'pull_request', pullNumber: 77 },
@@ -1170,18 +1185,21 @@ describe('github ingress', () => {
       expect(h.authzRequests).toHaveLength(0)
     })
 
-    it('does not send lifecycle cleanup to an older daemon that could start a model turn', async () => {
-      h.table.upsert(rule({}, { events: [] }))
-      h.cleanupSupported = false
+    it.each(['closed', 'deleted'] as const)(
+      'does not send issue %s cleanup to a daemon without the lifecycle cleanup capability',
+      async (action) => {
+        h.table.upsert(rule({}, { events: [] }))
+        h.cleanupSupported = false
 
-      expect((await post('issues', issuesPayload({ action: 'closed' }))).statusCode).toBe(202)
-      await flush()
+        expect((await post('issues', issuesPayload({ action }))).statusCode).toBe(202)
+        await flush()
 
-      expect(h.sent).toHaveLength(0)
-      expect(h.reports).toContainEqual(
-        expect.objectContaining({ event: 'issues:closed', status: 'failed', reason: 'rejected:unsupported' })
-      )
-    })
+        expect(h.sent).toHaveLength(0)
+        expect(h.reports).toContainEqual(
+          expect.objectContaining({ event: `issues:${action}`, status: 'failed', reason: 'rejected:unsupported' })
+        )
+      }
+    )
 
     it('silently ignores issue metadata edits/reopen and unmerged PR close/reopen noise', async () => {
       h.table.upsert(rule({}, { events: ['issues:*', 'pull_request:*'] }))
@@ -1449,7 +1467,7 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(0)
     })
 
-    it('authorizes deleted comment content as its author rather than the action sender', async () => {
+    it('rejects deleted comment content before live authorization', async () => {
       h.table.upsert(rule({}, { events: ['issue_comment:*'], appSlug: 'example-app' }))
       h.authzResult = (request) => request.senderLogin === 'maintainer'
 
@@ -1467,7 +1485,7 @@ describe('github ingress', () => {
       )
       await flush()
 
-      expect(h.authzRequests).toEqual([expect.objectContaining({ senderLogin: 'external-commenter' })])
+      expect(h.authzRequests).toHaveLength(0)
       expect(h.sent).toHaveLength(0)
     })
 
@@ -2198,11 +2216,15 @@ describe('githubRuleVerdict (pure predicate)', () => {
 
   it.each([
     ['issues', 'issues:closed'],
+    ['issues', 'issues:deleted'],
     ['issues', 'issues:edited'],
     ['issues', 'issues:reopened'],
     ['pull_request', 'pull_request:closed'],
+    ['pull_request', 'pull_request:deleted'],
     ['pull_request', 'pull_request:edited'],
-    ['pull_request', 'pull_request:reopened']
+    ['pull_request', 'pull_request:reopened'],
+    ['issue_comment', 'issue_comment:deleted'],
+    ['pull_request_review_comment', 'pull_request_review_comment:deleted']
   ])('hard-vetoes silent %s action even for an explicit legacy subscription', (event, eventAction) => {
     expect(matches(rule({}, { events: [eventAction] }), { ...ctx, event, eventAction })).toBe(false)
   })
