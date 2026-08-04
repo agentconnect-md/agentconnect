@@ -51,6 +51,7 @@ function slackDmSession() {
     permissionMode: null,
     outputMode: null,
     daemonId: null,
+    workspaceIsolation: null,
     activityState: 'idle',
     orgId: ORG_ID,
     visibility: 'private',
