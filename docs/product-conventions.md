@@ -783,9 +783,18 @@ Playground may override `Worktree` before its first turn without changing the Ag
 automatic triggers use the Agent setting.
 
 The Workspace tab lets an authorized viewer switch between the primary checkout
-and the stable worktree of any visible, unpurged session. Session details link back to that
-session-scoped Workspace view. A session worktree is browse-only in the console:
-file editing and pull remain actions on the primary workspace.
+and the stable worktree of any visible, unpurged session. Session details place a
+Workspace link immediately before Details. For an unpurged session-scoped GitHub
+checkout, it opens that session's worktree; for a shared GitHub checkout or Scratch,
+it opens the Agent's primary workspace. Its git or folder icon reflects that source.
+A session worktree is browse-only in the console: file editing and pull remain actions
+on the primary workspace.
+
+The checkout selector and workspace source form one context card. Its `Viewing`
+row names the primary checkout or session worktree currently shown; the `Source`
+row directly beneath it names the repository or scratch workspace that provides
+those files. Worktree choices keep their Session link in the selector so changing
+the viewed files and opening the originating conversation remain distinct actions.
 
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes
