@@ -52,11 +52,11 @@ export const RELAY_DAEMON_WS_PATH = '/rd/ws'
  * (send-message-routing-rework.md §8.4). Unknown strings are ignored, so a newer
  * daemon may advertise capabilities an older relay has never heard of.
  *
- * `headless-agent-delivery-v1`: this daemon supports session-only automatic output
- * for a parent-session reply — it resumes the parent with `headless: true`, emitting
- * no ordinary IM body, typing indicator, status message/bar, footer, permission card,
- * or completion notification for that turn. Without it, a required-headless reply must
- * FAIL (retryable/unsupported) instead of leaking the parent's ordinary response to IM.
+ * `headless-agent-delivery-v1`: this daemon understands the `session-reply` delivery
+ * kind — it dispatches the reply into the parent session named by `lineageReplyTo`
+ * (which §7 then resumes as an ordinary turn) instead of keying by coordinates. Without
+ * it, such a reply must FAIL (retryable/unsupported) rather than land in the wrong
+ * session. The name is historical: the kind once also required muting the parent turn.
  */
 export const RD_HEADLESS_AGENT_DELIVERY_V1 = 'headless-agent-delivery-v1'
 
@@ -430,17 +430,18 @@ export type RdAck = z.infer<typeof RdAck>
  *  - `wake` — the ordinary postless `toAgent` call. The woken child is headless in the
  *    existing sense: nothing is posted to any channel on its behalf.
  *  - `session-reply` — a `sendMessage({sessionId})` injection into the caller's
- *    authorized parent session (§7). REQUIRED-HEADLESS: the target must resume the
- *    parent with `headless: true`, so the resumed turn emits no ordinary IM body,
- *    typing indicator, status message/bar, footer, permission card, or completion
- *    notification. This is NOT a turn-wide egress prohibition — the resumed parent may
- *    still make an explicit visible `sendMessage`, which is a new intentional outbound
- *    action rather than an IM copy of the session reply.
+ *    authorized parent session (§7). The target dispatches it into the named
+ *    `lineageReplyTo` session instead of keying by coordinates. What stays invisible is
+ *    the REPORT: no component publishes the injected body to a platform. The resumed
+ *    parent then runs an ORDINARY turn and may answer in its own thread — muting it hid
+ *    delegated outcomes from the humans watching that thread whenever the child had
+ *    answered elsewhere or nowhere.
  *
- * A relay MUST NOT forward `session-reply` to a daemon that has not advertised
- * {@link RD_HEADLESS_AGENT_DELIVERY_V1}; it returns `unsupported` instead of silently
- * degrading the parent's ordinary response into visible IM output (§8.4). Absent ⇒
- * `wake`, which is what every older daemon means.
+ * A relay still MUST NOT forward `session-reply` to a daemon that has not advertised
+ * {@link RD_HEADLESS_AGENT_DELIVERY_V1}, and returns `unsupported` (§8.4). That gate is
+ * now a LEGACY fence, kept because such a daemon predates the delivery kind entirely;
+ * it no longer guards a silence requirement. Absent ⇒ `wake`, which is what every older
+ * daemon means.
  */
 export const RdAgentMsgDeliveryKind = z.enum(['wake', 'session-reply'])
 export type RdAgentMsgDeliveryKind = z.infer<typeof RdAgentMsgDeliveryKind>
@@ -524,7 +525,8 @@ export const RdAgentMsg = z.object({
   // opens only on CP confirmation. Optional — old daemons omit it.
   parentPrivate: z.boolean().optional(),
   // send-message-routing-rework.md §8.3. Absent ⇒ `wake` (what every older daemon
-  // means). `session-reply` is REQUIRED-HEADLESS — see {@link RdAgentMsgDeliveryKind}.
+  // means). `session-reply` dispatches into `lineageReplyTo` — see
+  // {@link RdAgentMsgDeliveryKind}.
   deliveryKind: RdAgentMsgDeliveryKind.optional()
 })
 export type RdAgentMsg = z.infer<typeof RdAgentMsg>
@@ -623,8 +625,8 @@ export const RdAgentMsgFwd = z.object({
   parentPrivate: z.boolean().optional(),
   // Forwarded verbatim from RdAgentMsg (§8.3). The relay does not merely pass this
   // through: for `session-reply` it first checks the TARGET daemon advertised
-  // `headless-agent-delivery-v1` at hello, and refuses with `unsupported` when it did
-  // not — a required-headless reply must never be downgraded into a visible response.
+  // `headless-agent-delivery-v1` at hello, and refuses with `unsupported` when it did not
+  // — a legacy fence against a daemon that predates this delivery kind altogether.
   deliveryKind: RdAgentMsgDeliveryKind.optional()
 })
 export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
@@ -633,10 +635,10 @@ export type RdAgentMsgFwd = z.infer<typeof RdAgentMsgFwd>
  *  TARGET daemon durably admits/enqueues the turn (P4-gate) — NOT after the model turn.
  *  `reason` is only set when `delivered:false`. */
 // `unsupported` is the §8.4 refusal: the delivery required a capability the target
-// daemon has not advertised (today, required-headless session replies). It is
-// deliberately distinct from `offline` — the target IS reachable, it is simply too old
-// to honor this delivery kind, so the caller learns the reply was refused rather than
-// having it silently degraded into visible IM output.
+// daemon has not advertised (today, `session-reply`). It is deliberately distinct from
+// `offline` — the target IS reachable, it is simply too old to honor this delivery kind,
+// so the caller learns the reply was refused rather than having it land in the wrong
+// session.
 export const RdAgentMsgReason = z.enum([
   'busy',
   'offline',

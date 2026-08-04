@@ -34,9 +34,9 @@ Two implementation notes, recorded where they will be looked for:
    routing ladder's decision, and whether to answer is the reader's.
 3. Keep `sendMessage` for postless agent calls, direct messages, channel-root
    posts, and parent-session replies.
-4. Make a parent-session reply session-only by default: its injected input and
-   ordinary resumed output do not go to IM, while an explicit visible
-   `sendMessage` remains an intentional, separately authorized outbound action.
+4. Make a parent-session reply an injection: the report itself is never published
+   to IM, while the parent it resumes runs an ordinary turn and may answer in its
+   own conversation.
 5. Preserve directional agent-call policy, loop protection, transcript
    consistency, and exactly-once activation.
 
@@ -430,34 +430,41 @@ The injected message is:
 { type: system, from: <child-agent> }: <message>
 ```
 
-The target parent session is resumed with `headless: true`. For this delivery
-kind, headless controls the automatic reply sink and delivery chrome:
+What must stay invisible is the REPORT, not the parent's turn. The child's body
+is injected into the parent session — recorded in its transcript, never
+published to a platform by any component, on either the local or the
+cross-daemon path. That is structural, not a flag: nothing in the daemon
+publishes inbound delivery content.
+
+The parent session is therefore resumed as an ORDINARY turn:
 
 - the parent agent processes the new input;
 - inbound content and resulting agent work are recorded in the session
   transcript;
-- no ordinary IM body, typing indicator, status message, status bar, footer,
-  permission card, or completion notification is emitted for that turn;
+- the turn keeps its ordinary reply sink and delivery chrome, so an answer the
+  parent writes lands in the parent's own conversation — where the humans who
+  delegated the work are waiting;
 - correlation, hop count, orchestration report recording, memory behavior, and
   the per-session serial gate remain unchanged.
 
-An explicit visible `sendMessage` from the resumed parent remains allowed and
-uses its normal authorization and delivery semantics. It is a new intentional
-outbound action, not an IM copy of the session reply. Postless `toAgent` and
-`sessionId` targets also remain available. Consequently, `headless: true` is not
-a turn-wide egress prohibition and the system promises zero IM gateway calls
-only when the agent does not explicitly choose a visible target.
+An earlier revision resumed the parent with `headless: true` to prevent a second
+copy of an answer the child had already delivered. That trade only holds when
+the child answered in the SAME conversation the parent would speak in. When the
+child answered somewhere else (its own channel-root thread) or nowhere at all (a
+postless child), muting the parent meant the delegated outcome reached nobody:
+the parent processed the report and answered into a dropped connection. The
+duplicate-copy concern is editorial and belongs to the standing "do not restate
+what the thread already shows" guidance, not to a transport-level mute.
 
-The current implementation already injects the child body rather than posting
-it directly, but the resumed parent turn still owns an ordinary IM reply
-connection. The new design removes that connection for this turn; it does not
-add a separate `sendMessage` egress gate.
+Postless `toAgent` deliveries keep their own headless stamp (§3.1) — a postless
+child has no visible conversation of its own by construction.
 
-Cross-daemon session replies carry a required-headless delivery flag. A relay
-must not forward such a reply to a daemon that has not advertised support for
-session-only automatic output; it returns an unsupported/retryable verdict
-instead of silently degrading the ordinary parent response to visible IM
-output.
+Cross-daemon session replies behave identically: the target dispatches them into
+the named parent session and resumes it as an ordinary turn. The relay still
+refuses to forward the kind to a daemon that has not advertised
+`headless-agent-delivery-v1`, because such a daemon predates the delivery kind
+entirely and would key the reply by coordinates instead of session id; that
+refusal is a compatibility fence, no longer a silence requirement.
 
 ## 8. Protocol and data changes
 
@@ -480,17 +487,18 @@ that frame value again.
 
 ### 8.3 Cross-daemon agent message
 
-Add a delivery kind or required-headless flag to `rd/agentmsg` and
-`rd/agentmsg/fwd`. The target stamps the resulting normalized message
-`headless: true` for postless calls and session replies. For session replies the
-flag suppresses automatic platform output but does not disable explicit visible
-tool sends.
+Add a delivery kind to `rd/agentmsg` and `rd/agentmsg/fwd`. The target stamps the
+resulting normalized message `headless: true` for postless calls. A
+`session-reply` is dispatched into the session named by `lineageReplyTo` and
+resumes it as an ordinary turn (§7); the injected report is never published
+regardless of the stamp.
 
 ### 8.4 Relay capability negotiation
 
-Add relay-daemon hello capabilities, including
-`headless-agent-delivery-v1`. Required-headless deliveries fail rather than
-becoming visible when the target daemon is too old.
+Add relay-daemon hello capabilities, including `headless-agent-delivery-v1`. A
+`session-reply` fails rather than being forwarded to a target daemon too old to
+advertise it — that daemon predates the delivery kind and would key the reply by
+coordinates instead of dispatching it into the named parent session.
 
 ### 8.5 Agent discovery
 
@@ -561,7 +569,7 @@ The main implementation surfaces are:
   joins to every relay, and return the full set on a relay affinity miss.
 - `packages/daemon/src/daemon.ts`: replace direct and relayed managed-agent
   suppression with verified routing, trusted hop propagation, durable activation
-  rendezvous records, and headless `replyToSession` dispatch.
+  rendezvous records, and parent-session `replyToSession` dispatch.
 - `packages/daemon/src/state-store.ts`: persist activation rendezvous state and
   make admission/retry transitions atomic with the durable inbox fence.
 - `packages/daemon/src/router/routing-table.ts`: admit verified agent traffic to
@@ -609,14 +617,16 @@ At minimum, cover:
 12. Splitting never cuts a dedicated mention or separates a shared bot mention
     from its agent slug; concatenating the physical sections preserves the exact
     logical response.
-13. Local and cross-daemon parent-session replies update the target session and
-    make no implicit IM gateway calls. An explicit visible `sendMessage` remains
-    allowed and is tested as a separate intentional action.
-14. A required-headless cross-daemon reply refuses an old target daemon instead
-    of leaking the ordinary parent response to IM.
-15. Direct and relay mention routing both admit source depth `7` as target depth
-    `8`, reject source depth `8` because the next hop is `9`, and reject invalid
-    or missing depth instead of resetting it to zero.
+13. Local and cross-daemon parent-session replies update the target session
+    without publishing the injected report, and resume the parent as an ordinary
+    turn whose own answer reaches the parent's conversation.
+14. A cross-daemon `session-reply` refuses a target daemon that never advertised
+    `headless-agent-delivery-v1` instead of letting it key the reply by
+    coordinates.
+15. Direct and relay mention routing both admit source depth `MAX_AGENT_CALL_HOPS
+    - 1`as target depth`MAX_AGENT_CALL_HOPS`, reject source depth
+`MAX_AGENT_CALL_HOPS` because the next hop overflows, and reject invalid or
+      missing depth instead of resetting it to zero.
 16. An A -> B -> A ordinary-mention chain installs and re-stamps monotonically
     increasing trusted depths, stops at the shared cap, and preserves its depth
     across queue replay/restart.
@@ -634,5 +644,5 @@ At minimum, cover:
    current-design documents to make this proposal authoritative.
 
 During a mixed-version rollout, older components may continue suppressing an
-agent-authored platform event, but no component may downgrade a required-headless
-session reply into an ordinary visible response.
+agent-authored platform event, and no component may deliver a `session-reply` to
+a daemon that cannot dispatch it into the named parent session.

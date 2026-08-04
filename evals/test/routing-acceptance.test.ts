@@ -19,8 +19,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { RoutingFixture, type RoutingScriptContext } from './routing-fixture.js'
 
-/** Mirrors the daemon's MAX_AGENT_CALL_HOPS (packages/daemon/src/daemon.ts). */
-const MAX_AGENT_CALL_HOPS = 8
+// The one shared cap every enforcement point reads — imported rather than mirrored so
+// this suite cannot pin a stale number after the budget is retuned.
+import { MAX_AGENT_CALL_HOPS } from '../../packages/protocol/src/consts.js'
 
 let fixture: RoutingFixture | undefined
 

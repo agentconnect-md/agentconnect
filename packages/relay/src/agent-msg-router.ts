@@ -151,16 +151,16 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
     const conn = deps.daemons()?.get(target.daemonId)
     if (!conn) return nak(msg.deliveryId, 'offline')
 
-    // (f0) send-message-routing-rework.md §8.4 — capability gate for a REQUIRED-HEADLESS
-    // delivery. A `session-reply` must resume the parent SILENTLY (§7); a daemon too old
-    // to do that would instead publish the parent's whole ordinary response into its
-    // channel. That is precisely the behavior the design removes, so the reply is REFUSED
-    // — `unsupported`, distinct from `offline` because the target is reachable and the
-    // caller can act on the difference — rather than silently degraded.
+    // (f0) send-message-routing-rework.md §8.4 — capability gate for `session-reply`. A
+    // daemon that never advertised this predates the delivery kind entirely: it would key
+    // the reply by coordinates instead of dispatching into the named parent session. The
+    // reply is REFUSED — `unsupported`, distinct from `offline` because the target is
+    // reachable and the caller can act on the difference. (The gate was introduced when
+    // this kind ALSO required muting the resumed parent turn, which §7 no longer asks for.)
     if (msg.deliveryKind === 'session-reply' && !conn.supports(RD_HEADLESS_AGENT_DELIVERY_V1)) {
       deps.log.warn(
         `relay: rd/agentmsg refused — daemon ${target.daemonId} does not support ${RD_HEADLESS_AGENT_DELIVERY_V1}; ` +
-          `a session reply must not be downgraded to visible IM output`
+          `it cannot dispatch a reply into the named parent session`
       )
       return nak(msg.deliveryId, 'unsupported')
     }
@@ -200,9 +200,9 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
         // session-visibility.md §5.1 privacy hint — again the caller's own fact
         // about its own lineage, forwarded verbatim. The relay stores nothing.
         ...(msg.parentPrivate !== undefined ? { parentPrivate: msg.parentPrivate } : {}),
-        // §8.3: forwarded so the TARGET applies the same required-headless contract the
-        // same-daemon path applies locally. The capability check above already ran, so a
-        // target receiving `session-reply` is known to be able to honor it.
+        // §8.3: forwarded so the TARGET treats the delivery exactly as the same-daemon path
+        // does — dispatch into the named parent session. The capability check above already
+        // ran, so a target receiving `session-reply` is known to understand it.
         ...(msg.deliveryKind !== undefined ? { deliveryKind: msg.deliveryKind } : {})
       })
     } catch (err) {

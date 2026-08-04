@@ -130,16 +130,21 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
       'to that agent with nothing posted anywhere; channel root ' +
       '(`{"toAgent":"<id>","channel":"<C>","message":"..."}`) also posts one visible message at the channel root, ' +
       '@-mentions the peer in it, and anchors the peer to that post. To reach an agent in the thread you are ' +
-      'ALREADY in, do not use this tool — @-mention it in your ordinary reply instead.',
+      'ALREADY in, do not use this tool — @-mention it in your ordinary reply instead. Either form takes ' +
+      '`needsReply` (see `toAgent`), and you need it whenever you expect an answer back: the peer answers in ITS ' +
+      'OWN conversation, so without `needsReply` nothing comes back to you.',
     ...obj(
       {
         toAgent: {
           description:
-            'The peer to wake. Either the bare AgentConnect agent id, or an object ' +
-            '`{"agentId":"<agent id>","needsReply":true}` when you need the peer to report back to you. Use ' +
-            '`needsReply` for delegated work you will wait on: the peer’s session is opened with a standing ' +
-            'instruction to reply into YOUR session when it finishes or fails, and you can poll it meanwhile with ' +
-            '`viewSessionStatus` on the returned `childSessionId`.',
+            'The peer to wake. Use the BARE agent id only for fire-and-forget work whose outcome you never need; ' +
+            'use `{"agentId":"<agent id>","needsReply":true}` whenever you expect anything back. Set `needsReply` ' +
+            'if your `message` asks a question or requests a result, if you were asked to relay the peer’s answer ' +
+            'to someone, or if you intend to act on the outcome — "reply to me", "tell me", "check X and report" ' +
+            'all qualify. A woken peer answers inside ITS OWN conversation, so without `needsReply` its answer ' +
+            'never reaches you or the humans waiting in yours, and you are not even told that it failed. With it, ' +
+            'the peer’s session carries a standing instruction to reply into YOUR session when it finishes or ' +
+            'fails, and you can poll it meanwhile with `viewSessionStatus` on the returned `childSessionId`.',
           oneOf: [
             {
               type: 'string',
@@ -163,8 +168,10 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
                   needsReply: {
                     type: 'boolean',
                     description:
-                      'When true, the woken session is told to report back into this session (done or failed) when ' +
-                      'it completes. Defaults to false — a plain fire-and-forget wake.'
+                      'Set true whenever you expect an answer, a result, or a completion signal: the woken session ' +
+                      'is told to report back into this session (done or failed) when it completes. Defaults to ' +
+                      'false, which is fire-and-forget — the peer’s answer stays in its own conversation and you ' +
+                      'learn nothing, not even that it failed.'
                   }
                 },
                 ['agentId']
@@ -280,8 +287,10 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless wake: nothing is posted anywhere.\n' +
         '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
         'visible message at that channel’s ROOT, @-mentions the peer in it, and anchors the peer to that post.\n' +
-        '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` to have the peer report back ' +
-        'when it finishes or fails; pass the returned `childSessionId` to `viewSessionStatus` to check on it.\n' +
+        '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` WHENEVER you expect an answer ' +
+        'back — your message asks a question or requests a result, or someone asked you to relay the peer’s answer. ' +
+        'The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Pass the ' +
+        'returned `childSessionId` to `viewSessionStatus` to check on it.\n' +
         '- toUser — reach human users (Slack only for now):\n' +
         '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
         '  • channel root: `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}` — ' +

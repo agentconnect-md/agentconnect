@@ -19,8 +19,15 @@
  * could drift, and a relay that allowed one more hop than the daemon would let a relayed
  * chain outlive the budget an internal chain gets — a loop-safety hole that no single
  * package's tests would catch.
+ *
+ * The value is a runaway-loop backstop, not a conversation-length policy: a healthy
+ * exchange terminates because the agents are done, and every extra hop only costs one
+ * more turn. It was raised from 8 to 20 because 8 cut ordinary human-started relay games
+ * short (a thread rooted in one human message affords exactly this many agent→agent
+ * edges), while 20 is still far below anything a real collaboration needs and keeps a
+ * genuine A↔B ping-pong bounded within seconds.
  */
-export const MAX_AGENT_CALL_HOPS = 8
+export const MAX_AGENT_CALL_HOPS = 20
 
 /** The daemon↔CP WebSocket subprotocol negotiated on `ClientTransport.dial`. */
 export const CP_SUBPROTOCOL = 'agentconnect.v1'

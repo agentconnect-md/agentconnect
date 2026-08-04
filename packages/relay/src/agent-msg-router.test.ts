@@ -7,7 +7,7 @@ import type {
   RdAgentMsgFwd,
   RdAgentMsgAck
 } from '@agentconnect.md/protocol'
-import { RD_HEADLESS_AGENT_DELIVERY_V1 } from '@agentconnect.md/protocol'
+import { MAX_AGENT_CALL_HOPS, RD_HEADLESS_AGENT_DELIVERY_V1 } from '@agentconnect.md/protocol'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
 import type { RelayDaemonServer } from './relay-daemon-server.js'
@@ -146,9 +146,9 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0].integrationId).toBe(INT)
   })
 
-  it('forwards a required-headless session reply to a capable daemon', async () => {
+  it('forwards a session reply to a capable daemon', async () => {
     // send-message-routing-rework.md §8.3: the delivery KIND rides through so the target
-    // resumes the parent silently, exactly as the same-daemon path does.
+    // dispatches into the named parent session, exactly as the same-daemon path does.
     const router = new CollaborationRouter()
     router.replace(snap())
     const forwards: RdAgentMsgFwd[] = []
@@ -163,11 +163,11 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0].deliveryKind).toBe('session-reply')
   })
 
-  it('REFUSES a required-headless session reply to a daemon that cannot run it silently', async () => {
-    // §8.4 / §10 case 14. The failure mode this prevents is not a lost message but a
-    // LEAKED one: an old target would resume the parent with an ordinary IM connection
-    // and republish its entire response into the parent's channel. `unsupported` is
-    // deliberately distinct from `offline` — the daemon is reachable, just too old.
+  it('REFUSES a session reply to a daemon that does not understand the kind', async () => {
+    // §8.4 / §10 case 14. The failure mode this prevents is a MISROUTED reply: a target
+    // predating the kind ignores `lineageReplyTo` and keys the delivery by coordinates,
+    // minting a different session. `unsupported` is deliberately distinct from `offline` —
+    // the daemon is reachable, just too old.
     const router = new CollaborationRouter()
     router.replace(snap())
     const forwards: RdAgentMsgFwd[] = []
@@ -183,8 +183,8 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
   })
 
   it('still forwards an ordinary wake to a daemon advertising nothing', async () => {
-    // Only the required-headless kind is gated; a plain postless wake has always been
-    // safe against an older target, so the capability must not become a general fence.
+    // Only `session-reply` is gated; a plain postless wake has always been safe against
+    // an older target, so the capability must not become a general fence.
     const router = new CollaborationRouter()
     router.replace(snap())
     const forwards: RdAgentMsgFwd[] = []
@@ -924,7 +924,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
       log: noopLog
     })
-    const ack = await route(D1, baseMsg({ hopCount: 8, deliveryId: 'd-hop' }))
+    const ack = await route(D1, baseMsg({ hopCount: MAX_AGENT_CALL_HOPS, deliveryId: 'd-hop' }))
     expect(ack.delivered).toBe(false)
     expect(ack.reason).toBe('hop_limit')
     expect(forwards).toHaveLength(0)

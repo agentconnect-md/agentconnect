@@ -7699,6 +7699,11 @@ export class Daemon {
         origin.transportScope
       )
       if (origin.transportScope && !replyIntegrationId) return record(nak('not_found'))
+      // §7: a lineage reply IS the cross-daemon parent-session reply, so it behaves exactly
+      // like `replyToSession`'s local branch — no `headless` stamp. The injected report is
+      // transcript-only (nothing here publishes it) and the resumed parent runs an ordinary
+      // turn that can answer in its own thread. A parent living on another daemon must not
+      // differ from a local one, so neither branch stamps it.
       const reply: NormalizedMessage = {
         msgId: `agentcall:${origin.channel}:${msg.deliveryId}`,
         traceId: msg.deliveryId,
@@ -7713,14 +7718,12 @@ export class Daemon {
         text: msg.text,
         mentionedBots:
           replyIntegrationId && this.botUserIds[replyIntegrationId] ? [this.botUserIds[replyIntegrationId]!] : [],
-        isDm: false,
-        // send-message-routing-rework.md §7/§8.3: a lineage reply IS the cross-daemon
-        // parent-session reply, so it carries the same session-only contract as the local
-        // branch of `replyToSession`. This branch returns before the wake path below, so
-        // the stamp has to be here too — without it a parent that happens to live on
-        // another daemon would republish its whole ordinary response into its channel,
-        // which is the downgrade §8.4 exists to make impossible.
-        ...(msg.deliveryKind === 'session-reply' ? { headless: true } : {})
+        isDm: false
+        // §7: a lineage reply IS the cross-daemon parent-session reply, so it behaves like
+        // the local branch of `replyToSession` — the injected report is transcript-only
+        // (nothing here publishes it), and the resumed parent runs an ORDINARY turn that
+        // can answer in its own thread. A parent living on another daemon must not differ
+        // from a local one, so neither branch stamps `headless` any more.
       }
       void this.dispatch(msg.toAgentId, reply, replyIntegrationId, undefined, callMeta).catch((err) =>
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
@@ -7784,6 +7787,9 @@ export class Daemon {
         rowUpdatedAtAtAdmission: this.store.getSession(childSessionId)?.updatedAt ?? null
       })
     }
+    // No `headless` stamp for a `session-reply` reaching this path either (§7): the report it
+    // carries is transcript-only whatever the stamp says, and muting the resumed parent's own
+    // answer only hid delegated results from the humans in its thread.
     const normalized: NormalizedMessage = {
       msgId: childMsgId,
       traceId: msg.deliveryId,
@@ -7802,12 +7808,7 @@ export class Daemon {
       // A `toAgent`+`channel` wake was preceded by a visible post the SOURCE daemon made; carry
       // its real ts so this turn's transcript row collapses onto the post we fetch from the
       // shared thread (`conversations.replies`) instead of duplicating at the delivery id.
-      ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {}),
-      // §8.3: a `session-reply` is required-headless on the TARGET too — same contract as
-      // the same-daemon path in `replyToSession`, so a parent that happens to live on
-      // another daemon behaves identically. The relay has already refused to forward this
-      // kind to a daemon that cannot honor it (§8.4), so reaching here means we can.
-      ...(msg.deliveryKind === 'session-reply' ? { headless: true } : {})
+      ...(msg.transcriptTs !== undefined ? { transcriptTs: msg.transcriptTs } : {})
     }
 
     // send-message-routing-rework.md §3.2: the target daemon owns the rendezvous for a
@@ -8376,6 +8377,19 @@ export class Daemon {
         return { delivered: false, targetSession: local.key, reason: 'not_found' }
       }
       const resolved = this.resolveCpAgent(originOwner, originPlatform)
+      // §7: what stays invisible is the REPORT ITSELF — the child's body is injected into the
+      // parent session's transcript and is never published to the platform (this function
+      // makes no gateway call at all). That is structural, not a flag: nothing in the daemon
+      // publishes inbound delivery content.
+      //
+      // So the message below carries NO `headless` stamp and the resumed parent runs an
+      // ORDINARY turn, keeping its reply connection. Stamping it used to silence that turn,
+      // which only ever cost visibility: the humans watching the parent's own thread saw
+      // nothing at all — not even that the delegated work had come back — whenever the child
+      // had answered somewhere else (its own channel-root thread) or nowhere (a postless
+      // child). The original worry, a second copy of an answer the child already delivered
+      // into the SAME conversation, is editorial: the standing "don't restate" guidance owns
+      // it, and it is not worth muting every report-back to prevent.
       const normalized: NormalizedMessage = {
         msgId: `agentcall:${local.channel}:${deliveryId}`,
         traceId: deliveryId,
@@ -8398,22 +8412,7 @@ export class Daemon {
           : resolved?.botUserId
             ? [resolved.botUserId]
             : [],
-        isDm: false,
-        // send-message-routing-rework.md §7 — a parent-session reply is SESSION-ONLY by
-        // default. The parent still processes the input and records the work, but this
-        // turn emits no ordinary IM body, typing indicator, status message/bar, footer,
-        // permission card, or completion notification.
-        //
-        // Previously the resumed parent owned an ordinary IM reply connection, so relaying
-        // an answer upward also republished it into the parent's channel — a second copy
-        // of something the child had usually already delivered. Removing the connection is
-        // what makes the reply an injection rather than a broadcast.
-        //
-        // NOT a turn-wide egress prohibition: an explicit visible `sendMessage` from the
-        // resumed parent resolves its gateway from the daemon's integrations, not from
-        // this connection, so it remains available as a separately authorized, intentional
-        // outbound action (§7).
-        headless: true
+        isDm: false
       }
       void this.dispatch(originOwner, normalized, integrationId, undefined, callMeta).catch((err) =>
         this.log.error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
@@ -8456,11 +8455,10 @@ export class Daemon {
         // coordinate would otherwise be substituted and the reply would mint a
         // different synthetic session).
         lineageReplyTo: req.sessionId,
-        // send-message-routing-rework.md §7/§8.4: mark the delivery REQUIRED-HEADLESS so a
-        // relay refuses to hand it to a daemon too old to run the parent turn silently.
-        // Failing the reply is correct here and silently degrading is not: the alternative
-        // publishes the parent's whole ordinary response into its channel, which is
-        // exactly what §7 removes.
+        // send-message-routing-rework.md §7/§8.4: mark the delivery kind so the target
+        // dispatches into `lineageReplyTo`, and so a relay refuses to hand it to a daemon
+        // too old to understand it. Failing the reply is correct there: such a daemon would
+        // key it by coordinates and mint a different session instead.
         deliveryKind: 'session-reply'
       }
     )
@@ -8834,10 +8832,12 @@ export class Daemon {
       /** §5.3 lineage reply: the EXISTING target session (acpSessionId) this delivery
        *  replies into — the target dispatches into it instead of coordinate keying. */
       lineageReplyTo?: string
-      /** send-message-routing-rework.md §8.3. `session-reply` is REQUIRED-HEADLESS: the
-       *  relay refuses to forward it to a daemon that has not advertised
-       *  `headless-agent-delivery-v1` rather than letting the resumed parent's ordinary
-       *  response leak to IM. Absent ⇒ `wake`, an ordinary postless call. */
+      /** send-message-routing-rework.md §8.3. Marks the delivery as a parent-session reply
+       *  so the target dispatches it into `lineageReplyTo` instead of coordinate keying.
+       *  The relay still refuses to forward this kind to a daemon that has not advertised
+       *  `headless-agent-delivery-v1`; that gate is now a LEGACY fence — the resumed parent
+       *  runs an ordinary turn on every current daemon (§7). Absent ⇒ `wake`, an ordinary
+       *  postless call. */
       deliveryKind?: RdAgentMsgDeliveryKind
     }
   ): Promise<MessageAgentResult> {
