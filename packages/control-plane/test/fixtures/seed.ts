@@ -97,6 +97,7 @@ export async function seedSessionMeta(
     channel?: string
     parentSessionId?: string
     lastActivityAt?: Date
+    model?: string
   } = {}
 ): Promise<string> {
   await prisma.sessionMeta.create({
@@ -111,7 +112,8 @@ export async function seedSessionMeta(
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.ownerIdentity ? { ownerIdentity: opts.ownerIdentity } : {}),
       ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),
-      ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {})
+      ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
+      ...(opts.model ? { model: opts.model } : {})
     }
   })
   return id

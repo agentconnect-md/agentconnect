@@ -1238,23 +1238,28 @@ model SessionUsage {
   @@map("session_usage")
 }
 
-// SessionSpend — spend timeline backing every range-scoped cost rollup: the
-// /usage spend-over-time chart AND the Total-spend / per-agent cards.
+// SessionSpend — cumulative usage timeline backing range-scoped spend and the
+// durable per-model breakdown.
 //
 // session_usage is a latest-wins lifetime snapshot, so it can't answer "how much
 // was spent inside this window": a long-lived session collapses its entire cost
 // into its newest report. This table records the session's CUMULATIVE cost at each
-// report time; readers derive per-window / per-bucket spend by DIFFING consecutive
-// cumulatives (see PgSessionUsageRepo.aggregate). Storing cumulative (not a delta)
-// makes writes a plain idempotent upsert on (agentId, sessionId, at) — a duplicate
-// or out-of-order delivery just re-asserts the same value, so replays and
-// concurrent reports never double-count, and a downward correction is a lower
-// cumulative that the diff reflects as negative spend in its bucket.
+// report time together with the model observed for that interval. Readers derive
+// token/cost deltas by diffing consecutive cumulatives and attribute each delta to
+// this row's model. Storing cumulatives keeps writes idempotent on
+// (agentId, sessionId, at); null model is an observed or legacy unknown.
 model SessionSpend {
-  agentId        String   @db.Uuid
-  sessionId      String // ACP session id (echo of the snapshot row)
-  at             DateTime @db.Timestamptz(6) // the report's lastActivityAt — the bucket time
-  cumulativeCost Float // session's cumulative cost as of `at`; window spend = diff of consecutive cumulatives
+  agentId                     String   @db.Uuid
+  sessionId                   String // ACP session id (echo of the snapshot row)
+  at                          DateTime @db.Timestamptz(6) // the report's lastActivityAt — the bucket time
+  model                       String?
+  cumulativeTotalTokens       Int      @default(0)
+  cumulativeInputTokens       Int      @default(0)
+  cumulativeOutputTokens      Int      @default(0)
+  cumulativeThoughtTokens     Int      @default(0)
+  cumulativeCachedReadTokens  Int      @default(0)
+  cumulativeCachedWriteTokens Int      @default(0)
+  cumulativeCost              Float // session's cumulative cost as of `at`; window spend = diff of consecutive cumulatives
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 

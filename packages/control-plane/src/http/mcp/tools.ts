@@ -222,7 +222,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   },
   {
     name: 'getUsage',
-    description: 'Token/cost usage aggregates over a time window, totals plus per-agent breakdown.',
+    description: 'Token/cost usage aggregates over a time window, totals plus agent and model breakdowns.',
     schema: z
       .object({
         range: z.enum(['d1', 'd7', 'd30', 'd90']).optional().describe('Window: 1/7/30/90 days (default d7)')

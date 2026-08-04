@@ -197,6 +197,12 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     const moved = await repo.get(SessionId(SESSION))
     expect(moved?.model).toBe('sonnet')
     expect(moved?.fastMode).toBe(false)
+
+    // Explicit observed unknown clears the named model. A later legacy refresh
+    // that omits model still preserves that null rather than reviving config.
+    await repo.recordMilestone(ev('end', { model: null }))
+    await repo.recordMilestone(ev('end'))
+    expect((await repo.get(SessionId(SESSION)))?.model).toBeNull()
   })
 
   it('advances phase on subsequent milestones (upsert on sessionId)', async () => {

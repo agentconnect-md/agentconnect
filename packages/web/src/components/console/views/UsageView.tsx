@@ -4,9 +4,9 @@ import { useState } from 'react'
 import useSWR from 'swr'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { fetchUsage, fmtCost, fmtCountCompact as fmtCompact, type UsageRange } from '@/lib/api'
-import { agentLabel, runtimeLabel } from '@/lib/data'
+import { agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { AgentIconView, Spinner } from '@/components/marks'
+import { AgentIconView, ModelMark, Spinner } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -30,14 +30,14 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 const USAGE_REFRESH_MS = 30_000
 
-// How the by-agent table is rolled up. `agent` is the raw per-agent breakdown
-// (rows tap through to the agent); `runtime` sums agents sharing a runtime —
-// grouped rows are inert. Both roll up the same per-agent aggregate client-side,
-// so adding a dimension is just another case here.
-type GroupBy = 'agent' | 'runtime'
+// How the usage table is broken down. Runtime is derived from the per-agent
+// aggregate; model comes from the server's per-session execution snapshots so
+// changing an Agent's current default cannot rewrite historical usage.
+type GroupBy = 'agent' | 'runtime' | 'model'
 const GROUPS: { key: GroupBy; label: string }[] = [
   { key: 'agent', label: 'By agent' },
-  { key: 'runtime', label: 'By runtime' }
+  { key: 'runtime', label: 'By runtime' },
+  { key: 'model', label: 'By model' }
 ]
 
 // Buckets are aligned to the viewer's local day/hour (the CP flooring uses the
@@ -106,28 +106,42 @@ export default function UsageView() {
     }
   })
 
-  // Roll up to the selected grouping. `agent` is the raw list; `runtime` sums agents
-  // sharing a runtime and drops the per-agent icon/nav (`navId` absent) so grouped
-  // rows are inert and show the runtime glyph.
+  // Roll up to the selected grouping. Grouped rows omit `navId`, so only raw
+  // Agent rows navigate. Model rows arrive pre-aggregated from session metadata.
   type Entry = {
     key: string
+    kind: GroupBy
     navId?: string
     name: string
     icon?: (typeof enriched)[number]['icon']
     runtime: string
+    model: string
     totalTokens: number
     sessions: number
     costAmount: number
   }
   let entries: Entry[]
-  if (groupBy === 'runtime') {
+  if (groupBy === 'model') {
+    entries = (data?.models ?? []).map((m) => ({
+      key: `model:${m.model ?? ''}`,
+      kind: 'model',
+      name: modelLabel(m.model ?? ''),
+      runtime: '',
+      model: m.model ?? '',
+      totalTokens: m.totalTokens,
+      sessions: m.sessions,
+      costAmount: m.costAmount
+    }))
+  } else if (groupBy === 'runtime') {
     const byRuntime = new Map<string, Entry>()
     for (const e of enriched) {
       const rt = e.runtime || 'unknown'
       const g = byRuntime.get(rt) ?? {
         key: `runtime:${rt}`,
+        kind: 'runtime',
         name: runtimeLabel(rt),
         runtime: rt,
+        model: '',
         totalTokens: 0,
         sessions: 0,
         costAmount: 0
@@ -139,7 +153,7 @@ export default function UsageView() {
     }
     entries = [...byRuntime.values()].sort((a, b) => b.totalTokens - a.totalTokens)
   } else {
-    entries = enriched.map((e) => ({ ...e, key: e.agentId, navId: e.agentId }))
+    entries = enriched.map((e) => ({ ...e, key: e.agentId, kind: 'agent', navId: e.agentId, model: '' }))
   }
 
   // Two bar geometries from one map: `pct` is the desktop share (percent of the
@@ -148,10 +162,12 @@ export default function UsageView() {
   const maxTok = Math.max(...entries.map((e) => e.totalTokens), 1)
   const rows = entries.map((e) => ({
     key: e.key,
+    kind: e.kind,
     navId: e.navId,
     name: e.name,
     icon: e.icon,
     runtime: e.runtime,
+    model: e.model,
     sessions: e.sessions.toLocaleString('en-US'),
     tokens: fmtCompact(e.totalTokens),
     spend: fmtCost(e.costAmount, currency),
@@ -316,12 +332,12 @@ export default function UsageView() {
           )
         })()}
 
-      {/* By-agent card. `card` supplies the desktop chrome; the mobile design is
+      {/* Usage-breakdown card. `card` supplies the desktop chrome; the mobile design is
           the same surface with a 12px radius, side margins and corner clipping
           (the utilities out-layer the `.card:has(.row)` overflow-x hack). */}
       <div className="card max-desktop:mx-4 max-desktop:overflow-hidden max-desktop:rounded-lg">
         {/* Group-by toolbar (both form factors): switch the rollup dimension. */}
-        <div className="flex items-center justify-between gap-3 border-b border-(--border-subtle) px-4 py-3 desktop:px-[18px] desktop:py-[10px]">
+        <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 desktop:px-[18px] desktop:py-[10px]">
           <div className="pillbar">
             {GROUPS.map((g) => (
               <button key={g.key} className={groupBy === g.key ? 'pill on' : 'pill'} onClick={() => setGroupBy(g.key)}>
@@ -329,14 +345,11 @@ export default function UsageView() {
               </button>
             ))}
           </div>
-          <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary) desktop:hidden">
-            tokens share
-          </span>
         </div>
 
         {/* Desktop table header */}
         <div className={`row h hidden desktop:grid ${GRID}`}>
-          <span>{groupBy === 'runtime' ? 'Runtime' : 'Agent'}</span>
+          <span>{groupBy === 'agent' ? 'Agent' : groupBy === 'runtime' ? 'Runtime' : 'Model'}</span>
           <span className="text-right">Sessions</span>
           <span className="text-right">Tokens</span>
           <span className="text-right">Spend</span>
@@ -362,7 +375,7 @@ export default function UsageView() {
         )}
 
         {/* Mobile stacked rows: max-normalized bar. Per-agent rows tap through to
-            the agent detail; grouped (type) rows are inert (no navId). */}
+            the agent detail; grouped rows are inert (no navId). */}
         {data &&
           rows.map((r, i) => (
             <button
@@ -374,7 +387,11 @@ export default function UsageView() {
             >
               <span className="flex w-full items-center gap-[10px]">
                 <span className="flex h-6 w-6 flex-none items-center justify-center overflow-hidden rounded-sm">
-                  <AgentIconView icon={r.icon} runtime={r.runtime} size={24} />
+                  {r.kind === 'model' ? (
+                    <ModelMark model={r.model} fallbackRuntime={r.runtime} />
+                  ) : (
+                    <AgentIconView icon={r.icon} runtime={r.runtime} size={24} />
+                  )}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">
                   {r.name}
@@ -401,7 +418,11 @@ export default function UsageView() {
             <div key={r.key} className={`row hidden desktop:grid ${GRID}`}>
               <div className="flex items-center gap-[10px]">
                 <span className="av h-7 w-7 rounded-[7px]">
-                  <AgentIconView icon={r.icon} runtime={r.runtime} size={28} />
+                  {r.kind === 'model' ? (
+                    <ModelMark model={r.model} fallbackRuntime={r.runtime} />
+                  ) : (
+                    <AgentIconView icon={r.icon} runtime={r.runtime} size={28} />
+                  )}
                 </span>
                 <span className="font-sans text-[13px] font-semibold leading-normal">{r.name}</span>
               </div>

@@ -3,7 +3,7 @@
  *
  * `GET /usage?range=d1|d7|d30|d90` sums the persisted per-session token usage (the
  * `SessionUsage` store fed by the daemon's `usage/report` EVT) over the selected
- * time window, grouped by agent, plus workspace totals. Unlike `/sessions` (a
+ * time window, grouped by agent and effective model, plus workspace totals. Unlike `/sessions` (a
  * live fan-out to daemons), this reads the CP's own historical store — so it
  * survives TTL-closed sessions and daemon restarts. Org-scoped to the single-
  * tenant default org (as with `/agents`).
@@ -31,7 +31,7 @@ export function usageRoutes(deps: HttpDeps) {
           tags: [Tag.Usage],
           summary: 'Get token usage',
           description:
-            'Sums the persisted per-session token usage over the selected time window, grouped by agent, plus workspace totals.',
+            'Sums persisted per-session token usage over the selected time window, with agent and effective-model breakdowns plus workspace totals.',
           operationId: 'getUsage',
           querystring: UsageQueryDto,
           response: { 200: UsageDto }
@@ -56,6 +56,7 @@ export function usageRoutes(deps: HttpDeps) {
           accessIssues: access.accessIssues,
           totals: agg.totals,
           agents: agg.agents,
+          models: agg.models,
           series: agg.series
         }
       }

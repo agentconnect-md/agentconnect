@@ -125,6 +125,10 @@ export const EventSession = z.object({
   // NOT echoed here — the CP stamps it from the authenticated WS connection.
   runtime: z.string().optional(),
   model: z.string().optional(),
+  // Runtime observation for this milestone. `null` means the runtime exposed
+  // only an opaque/default model; absent is a legacy/config-only snapshot. New
+  // readers prioritize this over `model`, while old readers safely ignore it.
+  observedModel: z.string().nullable().optional(),
   effort: z.string().optional(), // reasoning effort level (runtime-owned vocabulary)
   fastMode: z.boolean().optional(),
   // Effective session permission preset. Usually the runtime-owned mode; Codex Auto
@@ -199,6 +203,9 @@ export const UsageReport = z.object({
   agentId: z.string().uuid(),
   platform: z.string().optional(), // denormalized sessionKey echo for dashboard filters
   channel: z.string().optional(),
+  // The model observed for the usage delta ending at this cumulative snapshot.
+  // `null` is an explicit runtime-owned default/unknown; absent is an old daemon.
+  observedModel: z.string().nullable().optional(),
   lastActivityAt: z.string(), // ISO ts of the session's last activity
   usage: SessionUsage
 })

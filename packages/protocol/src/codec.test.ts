@@ -1276,6 +1276,7 @@ describe('event/session sessionKey (session-metadata sync)', () => {
         channelName: 'deploys',
         triggeredByName: 'Dana Reyes',
         threadUrl: 'https://slack.example/archives/C123/pT9',
+        observedModel: null,
         ts: '2026-07-05T00:00:00.000Z'
       })
     )
@@ -1288,6 +1289,7 @@ describe('event/session sessionKey (session-metadata sync)', () => {
     expect(r.frame.payload.thread).toBe('T9')
     expect(r.frame.payload.title).toBe('Roll out api@1.4.2')
     expect(r.frame.payload.status).toBe('prompting')
+    expect(r.frame.payload.observedModel).toBeNull()
     expect(r.frame.payload.lastActivityAt).toBe('2026-07-05T00:00:01.000Z')
     expect(r.frame.payload.triggeredBy).toBe('U-DANA')
     expect(r.frame.payload.channelName).toBe('deploys')

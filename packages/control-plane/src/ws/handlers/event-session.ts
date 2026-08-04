@@ -177,7 +177,7 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
       ...(p.triggeredByName !== undefined ? { triggeredByName: p.triggeredByName } : {}),
       ...(p.threadUrl !== undefined ? { threadUrl: p.threadUrl } : {}),
       ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
-      ...(p.model !== undefined ? { model: p.model } : {}),
+      ...(p.observedModel !== undefined ? { model: p.observedModel } : p.model !== undefined ? { model: p.model } : {}),
       ...(p.effort !== undefined ? { effort: p.effort } : {}),
       ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
       ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),

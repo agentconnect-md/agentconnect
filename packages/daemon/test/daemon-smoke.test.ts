@@ -346,7 +346,17 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       start: vi.fn(async () => {}),
       newSession: vi.fn(async () => 'acp-sess-1'),
       hasSession: (id: string) => id === 'acp-sess-1',
-      prompt: vi.fn(async () => 'end_turn'),
+      modelOptions: vi.fn(() => ({ current: 'claude-sonnet-4-5', models: ['claude-sonnet-4-5'] })),
+      prompt: vi
+        .fn()
+        .mockResolvedValueOnce({
+          stopReason: 'end_turn',
+          usage: { totalTokens: 100, inputTokens: 80, outputTokens: 20 }
+        })
+        .mockResolvedValueOnce({
+          stopReason: 'end_turn',
+          usage: { totalTokens: 200, inputTokens: 160, outputTokens: 40 }
+        }),
       cancel: vi.fn(),
       stop: vi.fn()
     }
@@ -354,7 +364,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.start()
     // Inject a fake CP client so the fire-and-forget emit is observable (no real WS).
     const emitEventSession = vi.fn()
-    ;(daemon as any).cpClient = { emitEventSession, emitUsageReport: vi.fn(), stop: vi.fn() }
+    const emitUsageReport = vi.fn()
+    ;(daemon as any).cpClient = { emitEventSession, emitUsageReport, stop: vi.fn() }
 
     const mk = (ts: string, text: string) => ({
       msgId: `slack:C1:${ts}`,
@@ -370,6 +381,11 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
 
     await (daemon as any).dispatch('bot-a', mk('100.1', 'first'))
+    // The configured model is deliberately rejected by the runtime selector on
+    // the warm turn. The end snapshot/report must clear to observed unknown,
+    // never fabricate this configured value or retain the prior named model.
+    ;(daemon as any).agents.get('bot-a').runtimeOverrides = { model: 'configured-but-rejected' }
+    fakeHost.modelOptions.mockReturnValue({ current: 'default', models: ['default'] })
     // Second (warm) turn on the SAME session re-emits a start snapshot too: the
     // CP-stored state is the only active-turn signal a console watching a platform
     // session has, and the end snapshot fires only after the row resets to idle —
@@ -401,8 +417,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       // guessing from the legacy-compatible session key.
       sourceBindingKind: 'local',
       // Execution-config snapshot: the agent's runtime + schema-defaulted
-      // permission/output modes; no explicit model/effort/fast configured ⇒
-      // those fields are omitted (runtime default), never fabricated.
+      // permission/output modes. The actual runtime-selected model is not known
+      // until the host is ready, so the start snapshot leaves it absent.
       runtime: 'claude',
       permissionMode: 'default',
       outputMode: 'medium'
@@ -414,8 +430,19 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(typeof start.lastActivityAt).toBe('string')
     expect(typeof start.ts).toBe('string')
     expect(start.launchId).toBeUndefined() // Slack/Discord path — no CP launch fence
+    const firstFinal = emitEventSession.mock.calls[1]![0]
+    expect(firstFinal).toMatchObject({
+      sessionId: 'acp-sess-1',
+      phase: 'end',
+      status: 'idle',
+      title: 'first',
+      model: 'claude-sonnet-4-5',
+      observedModel: 'claude-sonnet-4-5'
+    })
     const final = emitEventSession.mock.calls[3]![0]
-    expect(final).toMatchObject({ sessionId: 'acp-sess-1', phase: 'end', status: 'idle', title: 'first' })
+    expect(final).toMatchObject({ sessionId: 'acp-sess-1', phase: 'end', status: 'idle', observedModel: null })
+    expect(final.model).toBeUndefined()
+    expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
     await daemon.stop()
   }, 15_000)
 
