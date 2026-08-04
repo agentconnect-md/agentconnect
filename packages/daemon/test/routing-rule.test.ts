@@ -4,9 +4,11 @@ import {
   resolveCpRule,
   resolveAgentIntegration,
   conversationAdmitted,
+  integrationRouting,
   type CpRule
 } from '../src/router/routing-rule.js'
-import type { Agent } from '../src/agents/agent-schema.js'
+import { configuredBotSelfId, integrationConfig, integrationCore } from '../src/platforms/integration-config.js'
+import type { Agent, Integration } from '../src/agents/agent-schema.js'
 
 function agent(over: Partial<Agent> = {}): Agent {
   return {
@@ -32,6 +34,84 @@ function agent(over: Partial<Agent> = {}): Agent {
     ...over
   } as Agent
 }
+
+describe('integrationRouting (§6.4 core-envelope read)', () => {
+  const bindRules = [{ channel: 'C1', match: { kind: 'mention' as const } }]
+  // One row per platform, each with the SAME core knobs but its own config block
+  // and its own name for the bot's id. The expected values are today's, read from
+  // the four arms this replaced.
+  const cases: { int: Integration; selfId: string }[] = [
+    {
+      int: {
+        id: 'i-slack',
+        platform: 'slack',
+        slack: { botToken: 'x', botUserId: 'U-SLACK', bindRules, mutedChannels: ['C9'], gated: true } as any
+      },
+      selfId: 'U-SLACK'
+    },
+    {
+      int: {
+        id: 'i-tg',
+        platform: 'telegram',
+        telegram: { botToken: 'x', botUserId: 'U-TG', bindRules, mutedChannels: ['C9'], gated: true } as any
+      },
+      selfId: 'U-TG'
+    },
+    {
+      int: {
+        id: 'i-dc',
+        platform: 'discord',
+        discord: { botToken: 'x', botUserId: 'U-DC', bindRules, mutedChannels: ['C9'], gated: true } as any
+      },
+      selfId: 'U-DC'
+    },
+    {
+      int: {
+        id: 'i-fs',
+        platform: 'feishu',
+        // Feishu's bot id is an open_id under a DIFFERENT field name — the one
+        // knob §6.4 deliberately leaves out of the core envelope.
+        feishu: {
+          appId: 'cli_x',
+          appSecret: 's',
+          botOpenId: 'OU-FS',
+          bindRules,
+          mutedChannels: ['C9'],
+          gated: true
+        } as any
+      },
+      selfId: 'OU-FS'
+    }
+  ]
+
+  it('extracts identical core knobs from every platform config block', () => {
+    for (const { int, selfId } of cases) {
+      expect(integrationRouting(int)).toEqual({
+        staticBotUserId: selfId,
+        bindRules,
+        mutedChannels: ['C9'],
+        gated: true
+      })
+      // The envelope read and the self-id strategy are separable: core owns one,
+      // the platform owns the other.
+      expect(integrationCore(int)).toEqual({ bindRules, mutedChannels: ['C9'], gated: true })
+      expect(configuredBotSelfId(int)).toBe(selfId)
+      expect(integrationConfig(int)).toBe((int as unknown as Record<string, unknown>)[int.platform])
+    }
+  })
+
+  it('normalizes an absent mutedChannels to empty and an unset bot id to undefined', () => {
+    // A hand-assembled integration (fixture / partial spec) never carried the
+    // post-hoc `mutedChannels` field; absent means "nothing muted".
+    const int = { id: 'i', platform: 'slack', slack: { botToken: 'x', bindRules: [] } } as unknown as Integration
+    expect(integrationRouting(int)).toEqual({
+      staticBotUserId: undefined,
+      bindRules: [],
+      mutedChannels: [],
+      gated: undefined
+    })
+  })
+})
 
 describe('rulesFromAgent', () => {
   it('derives one resolved RoutingRule per bindRule with the resolved botUserId', () => {

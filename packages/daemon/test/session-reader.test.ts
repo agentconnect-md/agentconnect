@@ -731,6 +731,38 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('tails in mutation order where message ids are opaque, in event order where they are not', () => {
+    // Same two rows, observed newest-first, on two platforms. Mutation order and
+    // display order can only diverge where the ids carry a native order — which is
+    // exactly what platforms/message-ordering.ts answers.
+    const tailFor = (platform: string): string[] => {
+      const s = store()
+      seedHistorySession(s, { platform, channel: 'chat-1', thread: 'T1' })
+      const reader = createSessionReader(s)
+      const initial = reader.history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+      for (const [ts, text] of [
+        ['101', 'observed first'],
+        ['100', 'older, backfilled after']
+      ]) {
+        s.appendTranscript({
+          channel: 'chat-1',
+          thread: 'T1',
+          ts: ts!,
+          sender: 'user-1',
+          recipient: AGENT,
+          kind: 'text',
+          text: text!
+        })
+      }
+      const tail = reader.history({ agentId: AGENT, sessionId: 'acp-1', after: initial.liveCursor!, limit: 50 })
+      s.close()
+      return tail.messages.map((m) => m.text)
+    }
+
+    expect(tailFor('telegram')).toEqual(['observed first', 'older, backfilled after'])
+    expect(tailFor('slack')).toEqual(['older, backfilled after', 'observed first'])
+  })
+
   it('repairs chronological reads from a pre-upgrade transcript table', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-reader-order-mig-')), 'local.sqlite')
     const legacy = new DatabaseSync(path)

@@ -27,6 +27,7 @@ import { transcriptChannelKey, type LocalStore, type TranscriptEventCursor } fro
 import { legacyGithubEventActor } from '../messages/hook-message.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { slackThreadUrl } from '../slack/permalink.js'
+import { hasNativeMessageOrder } from '../platforms/message-ordering.js'
 
 /** Encoded-payload ceiling, leaving headroom under MAX_FRAME_BYTES for the
  *  envelope (id/ts/type/corr + fencing ext, well under 4 KiB). */
@@ -36,8 +37,9 @@ const REPLY_BUDGET = MAX_FRAME_BYTES - 4096
  *  valid-JSON preview + `bodyTruncated`; the full body is fetched via `toolBody`. */
 const PREVIEW_CAP = 32 * 1024
 
-/** New chronological Slack-history cursor. Numeric cursors remain the legacy
- * insertion-seq format so an in-flight page load survives a daemon upgrade. */
+/** New chronological history cursor, used by platforms whose message ids carry a
+ * native order. Numeric cursors remain the legacy insertion-seq format so an
+ * in-flight page load survives a daemon upgrade. */
 const EVENT_CURSOR_PREFIX = 'event-v1:'
 
 function encodeEventCursor(cursor: TranscriptEventCursor): string {
@@ -238,15 +240,17 @@ export function createSessionReader(
       const afterRevision = tailing ? Number(req.after) : null
       if (afterRevision !== null && (!Number.isSafeInteger(afterRevision) || afterRevision < 0))
         throw new Error('invalid transcript revision')
-      // Slack can append an older platform row during warm-thread backfill, so its
-      // authoritative history pages by normalized event time + seq tie-breaker. A
-      // plain numeric cursor came from a pre-upgrade daemon: finish that page walk in
-      // legacy seq order to avoid mixing cursor domains mid-request.
+      // A platform whose ids order natively can append an OLDER row during warm-thread
+      // backfill (Slack's, today — see platforms/message-ordering.ts), so its
+      // authoritative history pages by normalized event time + seq tie-breaker. Where
+      // ids are opaque, insertion seq IS the only order there is and stays the page
+      // walk. A plain numeric cursor came from a pre-upgrade daemon: finish that page
+      // walk in legacy seq order to avoid mixing cursor domains mid-request.
+      const nativeOrder = hasNativeMessageOrder(rec.platform)
       const eventCursor = decodeEventCursor(req.cursor)
       const numericCursor = req.cursor !== undefined ? Number(req.cursor) : Number.NaN
       const legacyBefore = Number.isSafeInteger(numericCursor) ? numericCursor : null
-      const chronologicalSlack =
-        rec.platform === 'slack' && (req.cursor === undefined || eventCursor !== null || legacyBefore === null)
+      const chronological = nativeOrder && (req.cursor === undefined || eventCursor !== null || legacyBefore === null)
       const transcriptChannel = transcriptChannelKey(rec.channel, rec.transportScope)
       // Scope to what THIS agent's session received + produced, not the whole shared
       // (channel, thread) thread — an agent-called session only ever saw the message handed
@@ -254,7 +258,7 @@ export function createSessionReader(
       const page =
         afterRevision !== null
           ? store.transcriptTailForAgent(transcriptChannel, rec.thread, rec.agentId, afterRevision, req.limit)
-          : chronologicalSlack
+          : chronological
             ? store.transcriptPageForAgentByEventTime(
                 transcriptChannel,
                 rec.thread,
@@ -345,12 +349,13 @@ export function createSessionReader(
           liveMore && lastMutationRow
             ? lastMutationRow.revision
             : (page as ReturnType<LocalStore['transcriptTailForAgent']>).cursor
-        // Mutation order and display order differ when a Slack warm-thread backfill
-        // inserts an older platform message. Return a chronological page while the
-        // revision cursor above remains anchored to mutation order.
+        // Mutation order and display order differ when a warm-thread backfill inserts
+        // an older platform message — possible only where message ids order natively.
+        // Return a chronological page while the revision cursor above remains anchored
+        // to mutation order.
         const rowBySeq = new Map(rows.map((row) => [row.seq, row]))
         kept.sort((a, b) => {
-          if (rec.platform !== 'slack') return a.seq - b.seq
+          if (!nativeOrder) return a.seq - b.seq
           const ar = rowBySeq.get(a.seq)
           const br = rowBySeq.get(b.seq)
           return (ar?.eventTimeUs ?? 0) - (br?.eventTimeUs ?? 0) || a.seq - b.seq
@@ -394,7 +399,7 @@ export function createSessionReader(
         ...(hasOlder && oldestKept
           ? {
               nextCursor:
-                chronologicalSlack && oldestRow
+                chronological && oldestRow
                   ? encodeEventCursor({ eventTimeUs: oldestRow.eventTimeUs, seq: oldestRow.seq })
                   : String(oldestKept.seq)
             }

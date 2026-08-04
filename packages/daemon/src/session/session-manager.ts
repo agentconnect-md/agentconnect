@@ -11,6 +11,7 @@ import type { AcpHost } from '../acp/acp-host.js'
 import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
+import { messageOrderingFor } from '../platforms/message-ordering.js'
 import { buildAttachmentBlocks, attachmentMention, transcriptImageAttachments } from './attachment-block.js'
 import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
 
@@ -48,26 +49,13 @@ export type MemoryRecallLifecycleEvent =
 // so a long-quiet thread / large backfilled history can't blow up the prompt.
 const MAX_REPLAY_ENTRIES = 50
 
-/** Slack's canonical timestamp is decimal seconds with microsecond precision. Keep
- * comparison string-safe (Number cannot represent every microsecond at today's epoch). */
-function slackTsMicros(ts: string): bigint | null {
-  const m = /^(\d+)\.(\d{1,6})$/.exec(ts)
-  if (!m) return null
-  return BigInt(m[1]!) * 1_000_000n + BigInt(m[2]!.padEnd(6, '0'))
-}
-
-function compareSlackTs(a: string, b: string): number {
-  const am = slackTsMicros(a)
-  const bm = slackTsMicros(b)
-  // Legacy synthetic coordinates (notably pre-fix anchored cron UUIDs) sort
-  // before real Slack timestamps. A real follow-up must never look older than
-  // the synthetic cursor that created its thread.
-  if (am === null && bm === null) return a.localeCompare(b)
-  if (am === null) return -1
-  if (bm === null) return 1
-  return am < bm ? -1 : am > bm ? 1 : 0
-}
-
+/** Mint a Slack message id for a wall-clock instant. This is NOT part of the
+ * message-ordering strategy: its only callers are the warm-thread provider
+ * snapshot's cutoff and the daemon's final-fence checkpoint, both of which are
+ * `threadBackfill` — the Layer-1 read port — and both of which exist solely
+ * because Slack is the only platform with a thread-history adapter today. It
+ * moves into that port when the second adapter lands (audit row
+ * session-manager.ts:951), not with `cursorOrdering`. */
 export function slackTsForWallClock(ms: number): string {
   const whole = Math.floor(ms / 1_000)
   return `${whole}.${String(Math.floor(ms % 1_000) * 1_000).padStart(6, '0')}`
@@ -942,14 +930,17 @@ export class SessionManager {
       return { sessionId: rec.acpSessionId!, blocks: [], created, initializedOnly: true }
     }
 
-    // Older anchored cron/hook turns persisted their synthetic UUID as the Slack
-    // read cursor. Start one bounded catch-up from scratch instead of passing that
-    // non-timestamp through the Slack ordering/dedup path; this turn replaces it
-    // with the newest canonical timestamp below.
+    // This platform's message-ordering strategy (platforms/message-ordering.ts).
+    // `undefined` — every platform but Slack today — means the ids are OPAQUE:
+    // nothing below re-sorts them, no two are compared, and the read cursor simply
+    // advances to the trigger. That is the fail-closed arm and today's behaviour.
+    const ordering = messageOrderingFor(msg.platform)
+    // Older anchored cron/hook turns persisted their synthetic UUID as the read
+    // cursor. Start one bounded catch-up from scratch instead of passing an id the
+    // platform never issued through its ordering/dedup path; this turn replaces it
+    // with the newest canonical id below.
     const markerBefore =
-      msg.platform === 'slack' && rec.lastDeliveredTs !== null && slackTsMicros(rec.lastDeliveredTs) === null
-        ? null
-        : rec.lastDeliveredTs
+      rec.lastDeliveredTs !== null && ordering?.coordinate(rec.lastDeliveredTs) === null ? null : rec.lastDeliveredTs
     const firstPromptAfterOwnRootInitialization = markerBefore === null && rec.triggeredBy === agentId
     // §8.4/§8.5 authoritative warm-thread snapshot (#649): Socket Mode is the
     // low-latency trigger, not an ordered/complete unread source. Slack may deliver a
@@ -964,16 +955,23 @@ export class SessionManager {
       msg.platform === 'slack' && thread !== ts && this.deps.fetchThreadHistory
         ? slackTsForWallClock(Date.now())
         : undefined
+    // Is this id inside the turn's stable window? Provider history and locally
+    // recorded rows share one test: an id the platform issued must land at or
+    // before the wall-clock cutoff, while a synthetic / legacy coordinate — which
+    // cannot be compared with a wall-clock marker at all — is always kept, so it
+    // stays usable in tests and recovery. No cutoff (or no native ordering) means
+    // no window to fall outside of.
+    const withinSnapshot = (id: string): boolean =>
+      snapshotCutoffTs === undefined || ordering === undefined || ordering.withinCutoff(id, snapshotCutoffTs)
     if (snapshotCutoffTs !== undefined) {
       const history = await abortable(
         () => this.deps.fetchThreadHistory!(agentId, msg.channel, thread, snapshotCutoffTs, markerBefore),
         signal
       )
       for (const h of history) {
-        // Platform history has canonical decimal Slack timestamps. Keep synthetic /
-        // locally-recorded legacy coordinates usable in tests and recovery; a
-        // non-canonical value cannot be compared safely with a wall-clock cutoff.
-        if (slackTsMicros(h.ts) !== null && compareSlackTs(h.ts, snapshotCutoffTs) > 0) continue
+        // Provider history carries canonical platform ids; anything the provider
+        // issued after the cutoff belongs to the next turn.
+        if (!withinSnapshot(h.ts)) continue
         // Skip the agent's OWN messages: they're already recorded at the send boundary and
         // are always self-filtered from the model (participantGap below). Re-recording them
         // here is redundant — and in `minimal` mode it produces a DUPLICATE transcript row,
@@ -1005,15 +1003,11 @@ export class SessionManager {
     {
       const gap = this.deps.store
         .transcriptSince(transcriptChannel, thread, markerBefore)
-        .filter(
-          (e) =>
-            snapshotCutoffTs === undefined ||
-            slackTsMicros(e.ts) === null ||
-            compareSlackTs(e.ts, snapshotCutoffTs) <= 0
-        )
-      // SQLite's text order puts UUID-like legacy coordinates after decimal Slack
-      // timestamps. Keep those old rows as context, but before the real timeline.
-      if (msg.platform === 'slack') gap.sort((a, b) => compareSlackTs(a.ts, b.ts))
+        .filter((e) => withinSnapshot(e.ts))
+      // SQLite's text order puts UUID-like legacy coordinates after real platform
+      // ids. Keep those old rows as context, but before the real timeline — which
+      // only a platform whose ids carry a native order can express.
+      if (ordering !== undefined) gap.sort((a, b) => ordering.compare(a.ts, b.ts))
       // A session initialized from this agent's own channel-root post has never run a model
       // turn. Replay that one root exactly once, alongside the first real reply, so the new ACP
       // session understands what the thread is about. Ordinary own-authored rows stay filtered:
@@ -1047,21 +1041,25 @@ export class SessionManager {
       // Own authored rows are not repeated to the model, but they ARE first-class events
       // in the shared log and therefore may advance this agent's read cursor once the
       // surrounding stable window is consumed.
+      // With no native ordering there is no "newest row" to reason about, so the
+      // cursor advances to the trigger itself — the pre-seam non-Slack rule.
       const deliveredThrough =
-        msg.platform === 'slack'
-          ? slackTsMicros(ts) !== null
-            ? (gap.filter((e) => slackTsMicros(e.ts) !== null).at(-1)?.ts ?? markerBefore)
+        ordering !== undefined
+          ? ordering.coordinate(ts) !== null
+            ? (gap.filter((e) => ordering.coordinate(e.ts) !== null).at(-1)?.ts ?? markerBefore)
             : (participantGap.at(-1)?.ts ?? markerBefore)
           : ts
       const triggerWasAlreadyDelivered =
-        markerBefore !== null && msg.platform === 'slack' && compareSlackTs(ts, markerBefore) <= 0
+        markerBefore !== null && ordering !== undefined && ordering.compare(ts, markerBefore) <= 0
 
       // A stale Socket Mode event may be the wake-up signal even though the snapshot
       // contains newer instructions. In that case the old `context + current` shape is
       // actively wrong: it puts the obsolete trigger last. Deliver one chronological
       // unread batch so the newest human instruction is last and therefore salient.
+      // Only a natively ordered platform can tell "newer" from "older" at all; the
+      // rest keep the plain in-order shape below.
       const hasMessageAfterTrigger =
-        msg.platform === 'slack' && participantGap.some((e) => compareSlackTs(e.ts, ts) > 0)
+        ordering !== undefined && participantGap.some((e) => ordering.compare(e.ts, ts) > 0)
       if (hasMessageAfterTrigger || triggerWasAlreadyDelivered) {
         const { context, elided } = boundedReplay(participantGap)
         if (context.length === 0) {
