@@ -14,22 +14,24 @@ name: Build & Push Images
 # on its channel would ship a behaviorally identical image under a new tag —
 # creating redundant downstream workflow work. scripts/component-versions.sh
 # computes, per component, the most recent same-channel tag (rc walks rc tags,
-# stable walks stable tags) that actually changed it. Changed components build
-# concurrently on separate GitHub-hosted runners. `docker-bake.hcl` remains the
-# source of truth for each target's Dockerfile, args, labels, contexts, tags, and
-# platform; the prepare job renders it into the dynamic matrix consumed by
-# Docker's official build-push action. Unchanged components skip the build and
-# instead get this release's tag as an ALIAS of their effective image (same
-# manifest digest), so `<comp>:<version>` exists for every component at every
-# release regardless.
+# stable walks stable tags) that actually changed it. The prepare job verifies
+# that each unchanged component's effective image exists; a missing source is
+# rebuilt at the current release instead of poisoning later aliases. Required
+# components build concurrently on separate GitHub-hosted runners.
+# `docker-bake.hcl` remains the source of truth for each target's Dockerfile,
+# args, labels, contexts, tags, and platform. Unchanged components with a valid
+# source skip the build and instead get this release's tag as an ALIAS of their
+# effective image (same manifest digest), so `<comp>:<version>` exists for every
+# component at every release regardless.
 #
 # After pushing, mints a short-lived GitHub App token for the configured
 # workflow repository and fires an `images-pushed` repository_dispatch
 # (payload `{version, sha, components: {controlPlane, web, relay, mem0,
 # mem0Backend}}` — the per-component tags the downstream workflow should
-# consume; `== version` exactly for the components this release changed). It
-# reports artifact facts, not an instruction — what happens next is the workflow
-# repository's concern and is documented there.
+# consume; `== version` for components built by this release, whether changed or
+# recovered from a missing source image). It reports artifact facts, not an
+# instruction — what happens next is the workflow repository's concern and is
+# documented there.
 
 on:
   workflow_call:
@@ -53,16 +55,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
       latest: ${{ steps.meta.outputs.latest }}
       matrix: ${{ steps.build-matrix.outputs.matrix }}
       has_builds: ${{ steps.build-matrix.outputs.has_builds }}
-      controlPlane: ${{ steps.components.outputs.controlPlane }}
-      web: ${{ steps.components.outputs.web }}
-      relay: ${{ steps.components.outputs.relay }}
-      mem0: ${{ steps.components.outputs.mem0 }}
-      mem0Backend: ${{ steps.components.outputs.mem0Backend }}
+      controlPlane: ${{ steps.build-matrix.outputs.controlPlane }}
+      web: ${{ steps.build-matrix.outputs.web }}
+      relay: ${{ steps.build-matrix.outputs.relay }}
+      mem0: ${{ steps.build-matrix.outputs.mem0 }}
+      mem0Backend: ${{ steps.build-matrix.outputs.mem0Backend }}
     steps:
       # Reusable calls receive the tag semantic-release just published. Manual
       # runs still derive it from the selected ref and reject branch refs, which
@@ -109,6 +112,13 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: bash scripts/component-versions.sh "$VERSION" | tee -a "$GITHUB_OUTPUT"
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Buildx
         id: buildx
         continue-on-error: true
@@ -118,11 +128,12 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
-      # Render the existing Bake definition so image-specific configuration
-      # stays centralized there even though each target builds in its own job.
-      # The non-empty fallback keeps strategy.matrix valid when all components
-      # are unchanged; has_builds prevents that sentinel from allocating a runner.
-      - name: Select changed image matrix
+      # Effective versions derived from Git are candidates until their manifests
+      # resolve in GHCR. If a prior release failed before pushing one, rebuild the
+      # unchanged inputs at this release and report the current version downstream.
+      # The non-empty fallback keeps strategy.matrix valid when no builds are
+      # required; has_builds prevents that sentinel from allocating a runner.
+      - name: Select required image builds
         id: build-matrix
         shell: bash
         env:
@@ -145,12 +156,31 @@ jobs:
               '$current + [$target]')"
           }
 
-          [ "$CP_EFFECTIVE" = "$VERSION" ] && add_changed control-plane
-          [ "$RELAY_EFFECTIVE" = "$VERSION" ] && add_changed relay
-          [ "$WEB_EFFECTIVE" = "$VERSION" ] && add_changed web
-          [ "$MEM0_EFFECTIVE" = "$VERSION" ] && add_changed mem0
-          [ "$MEM0_BACKEND_EFFECTIVE" = "$VERSION" ] && add_changed mem0-backend
+          resolve_effective() {
+            local output="$1" image="$2" target="$3" effective="$4" source_ref
+            if [ "$effective" != "$VERSION" ]; then
+              source_ref="${REGISTRY}/${OWNER}/${image}:${effective}"
+              if docker buildx imagetools inspect "$source_ref" >/dev/null 2>&1; then
+                echo "${image} unchanged since ${effective} — source image found"
+              else
+                echo "::warning::${source_ref} is unavailable; rebuilding ${image}:${VERSION}"
+                effective="$VERSION"
+              fi
+            fi
+            echo "${output}=${effective}" >> "$GITHUB_OUTPUT"
+            if [ "$effective" = "$VERSION" ]; then
+              add_changed "$target"
+            fi
+          }
 
+          resolve_effective controlPlane control-plane control-plane "$CP_EFFECTIVE"
+          resolve_effective web web web "$WEB_EFFECTIVE"
+          resolve_effective relay relay relay "$RELAY_EFFECTIVE"
+          resolve_effective mem0 memory-plugin-mem0 mem0 "$MEM0_EFFECTIVE"
+          resolve_effective mem0Backend mem0-server mem0-backend "$MEM0_BACKEND_EFFECTIVE"
+
+          # Render the existing Bake definition so image-specific configuration
+          # stays centralized even though each target builds in its own job.
           bake_config="${RUNNER_TEMP}/agentconnect-image-bake.json"
           docker buildx bake --print > "$bake_config"
           matrix="$(jq -c --argjson targets "$changed" '
@@ -300,9 +330,8 @@ jobs:
       # full syncs, rollbacks) resolves for every component at every release
       # tag, while the per-component tags in the dispatch payload remain the
       # restart-avoiding references. On stable releases the alias also moves
-      # `:latest`, keeping parity with the built components. Fails loudly if
-      # the effective image is missing (e.g. that earlier build run died
-      # before pushing) — re-run the build at the effective tag first.
+      # `:latest`, keeping parity with the built components. The prepare job has
+      # already promoted unavailable effective images to this release's build.
       #
       # Baked build fingerprints (web's VERSION/GIT_SHA/BUILD_TIME → the
       # profile-page fingerprint) are intrinsic to the image and therefore stay
@@ -373,8 +402,9 @@ jobs:
           repositories: ${{ steps.workflow-repository.outputs.name }}
 
       # `components` carries each component's effective tag on this channel
-      # (== version exactly for the components this release changed). Workflows
-      # that pin per-component tags can consume the independent values;
+      # (== version for components built because they changed or their source
+      # image was unavailable). Workflows that pin per-component tags can
+      # consume the independent values;
       # consumers without per-component support can keep using `version` because
       # the alias step above guarantees every component resolves at it.
       - name: Notify workflow repository of pushed images
