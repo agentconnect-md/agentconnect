@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from 'react'
@@ -64,6 +65,7 @@ import {
   type ToolBody
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
+import { agentToneColor } from '@/lib/agent-tone'
 import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
@@ -112,6 +114,27 @@ import {
 } from '@/lib/session-runtime-controls'
 
 type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
+
+// Transcript speech bubbles. Utilities, not globals.css classes (STYLE.md §12) —
+// only the theme-dependent numbers live as tokens (`--bubble-*`, defined in both
+// theme blocks), so nothing here has to branch on the theme.
+//
+// AGENT_BUBBLE is tinted with the SPEAKING agent's accent (`--agent-accent`, set per
+// turn from lib/agent-tone.ts): the accent is mixed INTO the live surface rather than
+// used as a background, which is what lets one hex read correctly in both themes and
+// makes a new hue cost one array entry instead of a second colour table. The `var()`
+// fallback matters — an invalid var() inside color-mix drops the whole declaration,
+// so a turn with no accent gets a brand-tinted bubble, never an invisible one.
+// AGENT_NAME pulls that accent 62% toward the text colour: gold or green at full
+// strength fails contrast on the light surface.
+// SELF_BUBBLE is the reader's own, deliberately neutral, tail corner mirrored.
+// Full literal strings so Tailwind's scanner sees them (STYLE.md §8).
+const AGENT_BUBBLE =
+  'w-fit max-w-full rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-tint),var(--surface-card))]'
+const AGENT_NAME =
+  'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_62%,var(--text-primary))]'
+const SELF_BUBBLE =
+  'max-w-full rounded-[12px_12px_4px_12px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'
 
 // Design composer selectors (session composer, mirrors HomeView): the model is a
 // "pill" with a leading mark, effort/permission are plain chips. Full literal
@@ -691,6 +714,13 @@ type SessionParticipant = {
   isCron: boolean
 }
 
+/** Whether a user turn prints a sender line above its bubble — it does only when the
+ *  sender is not you (a platform user or a schedule). Shared with the avatar's
+ *  alignment, which follows the label when there is one and the bubble when not. */
+function showsSenderLabel(turn: { isCron: boolean; sp: { handle: string } }): boolean {
+  return turn.isCron || turn.sp.handle !== '@you'
+}
+
 function ParticipantAvatar({
   agent,
   avatarUrl,
@@ -698,7 +728,8 @@ function ParticipantAvatar({
   platformMark,
   sp,
   isCron,
-  showNameTitle = true
+  showNameTitle = true,
+  className = ''
 }: {
   agent: Agent | null
   avatarUrl?: string | null
@@ -707,12 +738,14 @@ function ParticipantAvatar({
   sp: ReturnType<typeof speaker>
   isCron: boolean
   showNameTitle?: boolean
+  /** Caller-side box tweaks — today only the transcript's vertical nudge. */
+  className?: string
 }) {
   return (
     <span
       className={`av flex h-[26px] w-[26px] flex-none items-center justify-center overflow-hidden rounded-md font-sans text-[9.5px] font-semibold leading-normal ${
         !agent && !isCron ? 'bg-transparent' : ''
-      }`}
+      } ${className}`}
       title={showNameTitle ? sp.name : undefined}
       aria-hidden={showNameTitle ? undefined : true}
     >
@@ -2918,7 +2951,7 @@ export default function SessionDetailView() {
                   // sits above the bubble only when it isn't you (platform user / cron).
                   <div key={`${session.id}:${ti}`} className="flex items-start justify-end gap-[9px]">
                     <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
-                      {(turn.isCron || turn.sp.handle !== '@you') && (
+                      {showsSenderLabel(turn) && (
                         <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
                           {turn.isCron && turn.cronId ? (
                             <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
@@ -2930,7 +2963,7 @@ export default function SessionDetailView() {
                           {turn.time && <span className="mono">{turn.time}</span>}
                         </span>
                       )}
-                      <div className="max-w-full rounded-[12px_12px_4px_12px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)">
+                      <div className={SELF_BUBBLE}>
                         {turn.image && (
                           <img
                             src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
@@ -2948,6 +2981,12 @@ export default function SessionDetailView() {
                       platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
                       sp={turn.sp}
                       isCron={turn.isCron}
+                      // Optically centre the 26px mark on the bubble's FIRST LINE, not
+                      // on the bubble's top edge: 9px of padding plus half of a 21px
+                      // line puts that centre 19.5px down, while a top-aligned mark
+                      // centres at 13px — the 6px it looked too high by. A labelled row
+                      // keeps the mark level with its label instead, like the bot side.
+                      className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
                     />
                   </div>
                 ) : (
@@ -2967,6 +3006,10 @@ export default function SessionDetailView() {
                     // predicate lives (and is tested) in session-work.ts.
                     const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
                     const openWork = workPanelOpen(workOverride.get(ti), streaming)
+                    // Keyed by agent id where there is one so the colour survives a
+                    // rename; a mock/playground row without an id falls back to the
+                    // display name, which is stable for as long as the row is.
+                    const turnTone = agentToneColor(turn.agentId || turn.agentName)
                     return (
                       <div
                         key={`${session.id}:${ti}`}
@@ -2985,17 +3028,22 @@ export default function SessionDetailView() {
                             size={26}
                           />
                         </span>
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
                           <div className="mb-[5px] flex items-center gap-[7px]">
-                            <span className="font-sans text-[13px] font-semibold leading-normal">{turn.agentName}</span>
+                            <span className={AGENT_NAME}>{turn.agentName}</span>
                             {turn.time && (
                               <span className="mono ml-auto shrink-0 whitespace-nowrap text-[11px] text-(--text-tertiary)">
                                 {turn.time}
                               </span>
                             )}
                           </div>
+                          {/* One bubble PER text step, not one around the set: each step is
+                            its own delivered message (a turn that answers in two chunks
+                            arrives as two), so bubbling them together would merge messages
+                            the platform kept apart. `w-fit` keeps a short reply from
+                            drawing a full-width card. */}
                           {textSteps.map((st, si) => (
-                            <div key={si} className={si > 0 ? 'mt-2' : ''}>
+                            <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
                               {st.image && (
                                 <img
                                   src={`data:${st.image.mimeType};base64,${st.image.data}`}
@@ -3004,7 +3052,7 @@ export default function SessionDetailView() {
                                 />
                               )}
                               {st.text && (
-                                <div className="font-sans text-[13.5px] leading-[1.6] whitespace-pre-wrap text-(--text-primary)">
+                                <div className="whitespace-pre-wrap">
                                   <MessageText text={st.text} />
                                 </div>
                               )}
@@ -3035,7 +3083,12 @@ export default function SessionDetailView() {
                                         si > 0 ? 'border-t border-(--border-subtle)' : ''
                                       }`}
                                     >
-                                      <div className="flex w-[52px] flex-none items-center gap-[6px] pt-[1px]">
+                                      {/* min-h matches the text column's FIRST LINE box
+                                        (13px × 1.5), so centring inside it puts the dot
+                                        and lane label on that line's centre line. The
+                                        old `pt-[1px]` guessed at the same thing against
+                                        a 15px-tall mono box and read a few px high. */}
+                                      <div className="flex min-h-[20px] w-[52px] flex-none items-center gap-[6px]">
                                         <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
                                         <span
                                           className="mono text-[10px] font-semibold tracking-[.02em]"
