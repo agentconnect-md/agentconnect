@@ -141,6 +141,7 @@ import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
 import { sessionLinkSourceFor } from './platforms/link-source.js'
+import { offersReadPort } from './platforms/read-ports.js'
 import {
   observedChannelsFor,
   registerObservedChannels,
@@ -9907,11 +9908,15 @@ export class Daemon {
   ): (() => Promise<ThreadContextSnapshot>) | undefined {
     // Capability-gated on the Layer-1 read port: only connections with a thread
     // history adapter (`getThreadReplies` — Slack today) contribute a provider
-    // snapshot. NOTE for the second adapter: the checkpoint below is minted in
-    // Slack's ts format; when another platform implements the port, checkpoint
-    // minting moves into it.
-    const conn = this.replyConnFor(pending.agentId, pending.integrationId) as Partial<SlackConnection> | undefined
-    if (typeof conn?.getThreadReplies !== 'function') return undefined
+    // snapshot. The gate asks the port by name through `offersReadPort`, so it no
+    // longer needs a `Partial<SlackConnection>` cast to state "this looks Slack
+    // enough" — the cast WAS the platform branch (audit blind spot 3).
+    // NOTE for the second adapter: the checkpoint below is minted in Slack's ts
+    // format; when another platform implements the port, checkpoint minting moves
+    // into it.
+    if (!offersReadPort(this.replyConnFor(pending.agentId, pending.integrationId), 'getThreadReplies')) {
+      return undefined
+    }
     return async () => {
       const checkpoint = slackTsForWallClock(this.clock.now())
       const readState = { truncated: false }

@@ -14,6 +14,28 @@ const telegramInt: Integration = {
   telegram: { botToken: '123456:ABC', bindRules: [] }
 }
 
+// Connected platforms that declare NO credentialed-attachment read port — the
+// arm the file-tool matrix below would never exercise with Slack/Telegram alone.
+const discordInt: Integration = {
+  id: 'int-3',
+  platform: 'discord',
+  discord: { botToken: 'dc', bindRules: [], mutedChannels: [], gated: false }
+}
+
+const feishuInt: Integration = {
+  id: 'int-4',
+  platform: 'feishu',
+  feishu: {
+    mode: 'direct',
+    appId: 'cli_x',
+    appSecret: 's',
+    region: 'feishu',
+    bindRules: [],
+    mutedChannels: [],
+    gated: false
+  }
+}
+
 describe('toolsForIntegrations', () => {
   const sendTool = (ints: Integration[]) => toolsForIntegrations(ints).find((t) => t.name === 'sendMessage')
   type ObjectSchema = {
@@ -90,6 +112,39 @@ describe('toolsForIntegrations', () => {
     expect(names.filter((n) => n === 'sendMessage')).toHaveLength(1)
     expect(sendPlatformEnum([slackInt, telegramInt])).toEqual(['slack', 'telegram'])
     expect(names.filter((n) => n === 'getCurrentChannel')).toHaveLength(1)
+  })
+
+  /**
+   * The credentialed-attachment tools are injected because the platform DECLARES
+   * the Layer-1 read port (`platforms/read-ports.ts`), not because this file knows
+   * the words "slack" and "telegram". The matrix below is the behavioral contract
+   * that survived that change: same tools, same names, same order, for every
+   * combination of connected platforms.
+   */
+  it('injects each platform’s credentialed file tool for exactly the platforms that declare one', () => {
+    const fileTools = (ints: Integration[]) =>
+      toolsForIntegrations(ints)
+        .map((t) => t.name)
+        .filter((n) => n.startsWith('read') && n.endsWith('File'))
+
+    expect(fileTools([])).toEqual([])
+    expect(fileTools([slackInt])).toEqual(['readSlackFile'])
+    expect(fileTools([telegramInt])).toEqual(['readTelegramFile'])
+    expect(fileTools([slackInt, telegramInt])).toEqual(['readSlackFile', 'readTelegramFile'])
+    // Registry order, not integration order — a stored-the-other-way-round agent
+    // must not see its tool list reshuffle.
+    expect(fileTools([telegramInt, slackInt])).toEqual(['readSlackFile', 'readTelegramFile'])
+    // A connected platform that declares no such port contributes no tool, alone…
+    expect(fileTools([discordInt])).toEqual([])
+    expect(fileTools([feishuInt])).toEqual([])
+    // …and does not suppress the ones that do.
+    expect(fileTools([discordInt, slackInt, feishuInt])).toEqual(['readSlackFile'])
+    // Two bots on the same platform still yield ONE tool (the `seen` dedupe).
+    expect(fileTools([slackInt, { ...slackInt, id: 'int-1b' }])).toEqual(['readSlackFile'])
+    // The platform read helpers are unaffected — they were never port-gated.
+    expect(toolsForIntegrations([discordInt]).map((t) => t.name)).toEqual(
+      expect.arrayContaining(['getCurrentChannel', 'listChannels'])
+    )
   })
 
   it('exposes NO `thread` property in any send branch, on any integration set', () => {

@@ -2,6 +2,7 @@ import type { Integration } from '../agents/agent-schema.js'
 import type { MemoryPluginOperation } from '@agentconnect.md/protocol'
 import type { JSONValue } from '@modelcontextprotocol/server'
 import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
+import { allAttachmentReadTools, attachmentReadToolsFor } from '../platforms/read-ports.js'
 
 /**
  * A tool descriptor in MCP's `tools/list` shape: a name, a human/model-facing
@@ -314,8 +315,9 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
  * (so an agent handling a Telegram chat can discover Slack channel/user ids to
  * cross-post to). `platform` defaults to the current conversation's platform.
  * The enum is narrowed at build time to the agent's own platforms. Sending is
- * handled separately by {@link buildSendMessageTool}; per-platform file
- * downloads by {@link SLACK_FILE_TOOLS}/{@link TELEGRAM_FILE_TOOLS}.
+ * handled separately by {@link buildSendMessageTool}; per-platform credentialed
+ * file downloads by whichever platforms declare that read port
+ * ({@link attachmentReadToolsFor}).
  */
 function buildReadTools(platforms: string[]): ToolDescriptor[] {
   const platform = {
@@ -395,44 +397,6 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
     }
   ]
 }
-
-/** Slack file-read helper, injected when an agent has a Slack integration. */
-const SLACK_FILE_TOOLS: ToolDescriptor[] = [
-  {
-    name: 'readSlackFile',
-    description:
-      'Fetch the contents of a file shared in Slack, using the bot credentials. You do NOT have direct network access ' +
-      "to Slack's private file URLs (they require the bot token) — use this tool instead of curl/fetch. Pass the file's " +
-      '`url` (the `url_private` / `uri` from a shared attachment or resource link). Images are returned as viewable image ' +
-      'content; text files as text. Supply `mimeType` when known for correct handling.',
-    inputSchema: obj(
-      {
-        url: { type: 'string', description: "The file's url_private (or url_private_download) / resource-link uri." },
-        mimeType: { type: 'string', description: 'Optional MIME type hint, e.g. image/png or text/plain.' }
-      },
-      ['url']
-    )
-  }
-]
-
-/** Telegram file-read helper, injected when an agent has a Telegram integration. */
-const TELEGRAM_FILE_TOOLS: ToolDescriptor[] = [
-  {
-    name: 'readTelegramFile',
-    description:
-      'Fetch the contents of a file shared in Telegram, using the bot credentials. You do NOT have direct network ' +
-      "access to Telegram's file storage — use this tool instead of curl/fetch. Pass the file's `url` (the `file_id` " +
-      'from a shared attachment or the `uri` of a resource link). Images are returned as viewable image content; text ' +
-      'files as text. Supply `mimeType` when known for correct handling.',
-    inputSchema: obj(
-      {
-        url: { type: 'string', description: "The shared file's Telegram file_id (or resource-link uri)." },
-        mimeType: { type: 'string', description: 'Optional MIME type hint, e.g. image/png or text/plain.' }
-      },
-      ['url']
-    )
-  }
-]
 
 /**
  * The agent's long-term memory tools — available to EVERY agent regardless of
@@ -799,8 +763,10 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       ...buildReadTools([]),
-      ...SLACK_FILE_TOOLS,
-      ...TELEGRAM_FILE_TOOLS,
+      // Every platform's credentialed attachment tool, whatever this agent has:
+      // the auto-allow set is about NAMES, and a name a platform can inject must
+      // be listed even for an agent that will never see it.
+      ...allAttachmentReadTools(),
       ...MEMORY_TOOLS,
       ...KNOWLEDGE_TOOLS,
       ...Object.values(EXTERNAL_MEMORY_TOOLS),
@@ -815,7 +781,8 @@ export const ALL_TOOL_NAMES = [
  * always present; the session-title fallback is opt-in for whitelisted runtimes,
  * and platform tools are gated by the agent's integrations. The channel/user
  * read helpers are platform-neutral (one set, routed by a `platform` argument);
- * only the per-platform file-read tools are gated per platform.
+ * only the per-platform file-read tools are gated per platform — and that gate
+ * is a declared Layer-1 read port, not a platform name.
  */
 export function toolsForIntegrations(
   integrations: Integration[],
@@ -848,7 +815,11 @@ export function toolsForIntegrations(
   if (platforms.length > 0) {
     add(buildReadTools(platforms))
   }
-  if (integrations.some((i) => i.platform === 'slack')) add(SLACK_FILE_TOOLS)
-  if (integrations.some((i) => i.platform === 'telegram')) add(TELEGRAM_FILE_TOOLS)
+  // Per-platform CREDENTIALED attachment reads. A platform contributes its own
+  // descriptor by declaring the read port (`platforms/read-ports.ts`); core does
+  // not know which platforms have one, or what they are called. Registry order,
+  // not integration order, so an agent's tool list does not reshuffle because its
+  // integrations happened to be stored the other way round.
+  add(attachmentReadToolsFor(platforms))
   return tools
 }
