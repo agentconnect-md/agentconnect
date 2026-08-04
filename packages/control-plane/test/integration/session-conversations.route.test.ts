@@ -511,7 +511,7 @@ describe('GET /sessions — retention-purge mark on conversation members (#485)'
     const res = await running.app.inject({
       method: 'GET',
       url: `${ORG}/sessions?conversationKey=${encodeURIComponent(
-        encodeConversationKey({ platform: 'slack', tenantScope: 'TEAM-1', channel: 'C-OPS', thread: 'T-1' })
+        encodeConversationKey({ platform: 'slack', tenantScope: 'TEAM-1', channel: 'C-OPS', thread: 'T-1' })!
       )}`
     })
     expect(res.statusCode).toBe(200)
