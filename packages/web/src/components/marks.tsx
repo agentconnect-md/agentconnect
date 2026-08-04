@@ -126,7 +126,19 @@ export function ModelMark({
  * `size` is the tile's pixel size (used to scale the glyph). Distinct from
  * <AgentMark>, which stays the pure runtime mark for the runtime-select fields.
  */
-export function AgentIconView({ icon, runtime, size }: { icon?: AgentIcon | null; runtime: string; size: number }) {
+export function AgentIconView({
+  icon,
+  runtime,
+  size,
+  keepImagePlate
+}: {
+  icon?: AgentIcon | null
+  runtime: string
+  size: number
+  /** Keep the white plate under an uploaded image on dark. Org tiles opt in: their
+   * logos are usually dark-on-transparent, so plateless leaves an empty tile. */
+  keepImagePlate?: boolean
+}) {
   if (icon?.kind === 'glyph') {
     if (icon.glyph === 'agentconnect') {
       // The brand diamond (the built-in preset agents' fixed identity) — the
@@ -157,7 +169,7 @@ export function AgentIconView({ icon, runtime, size }: { icon?: AgentIcon | null
         src={icon.url}
         alt=""
         data-agent-icon-image="true"
-        className="rounded-[inherit] bg-white object-cover [html[data-theme='dark']_&]:bg-transparent"
+        className={`rounded-[inherit] bg-white object-cover ${keepImagePlate ? '' : "[html[data-theme='dark']_&]:bg-transparent"}`}
         style={{ width: '100%', height: '100%' }}
       />
     )
@@ -191,7 +203,11 @@ export function OrgIconView({
       className={`flex flex-none items-center justify-center overflow-hidden font-sans font-semibold leading-normal text-white ${className}`}
       style={{ width: size, height: size, background: renderable ? undefined : fallbackColor }}
     >
-      {renderable ? <AgentIconView icon={resolved} runtime="" size={size} /> : label.charAt(0).toUpperCase()}
+      {renderable ? (
+        <AgentIconView icon={resolved} runtime="" size={size} keepImagePlate />
+      ) : (
+        label.charAt(0).toUpperCase()
+      )}
     </span>
   )
 }

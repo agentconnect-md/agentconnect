@@ -554,9 +554,9 @@ export default function HomeView() {
                     open={menu === 'add'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans text-[14px] leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
+                    triggerClassName="inline-flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                     tooltips={false}
-                    leading={<span aria-hidden>+</span>}
+                    leading={<Icon name="plus" size={14} />}
                     onOpenChange={(o) => setMenu(o ? 'add' : null)}
                     onChange={(v) => setMemberIds((cur) => (cur.includes(v) ? cur : [...cur, v]))}
                   />

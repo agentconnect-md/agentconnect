@@ -9,14 +9,16 @@
 // themes. Nothing here may return a ready-made background, or dark mode would need
 // a second table.
 
-/** Design-system hues, spaced far enough apart to be told apart at a 7% tint. */
+/** Design-system hues, spaced far enough apart to be told apart at a 7% tint.
+ * Deliberately no warm hues: gold and coral tinted a bubble into something that
+ * read as a warning/error banner rather than as an agent's colour. */
 const AGENT_TONES = [
   'var(--magenta-500)',
   'var(--purple-500)',
+  'var(--indigo-500)',
   'var(--blue-500)',
-  'var(--green-500)',
-  'var(--gold-500)',
-  'var(--coral-500)'
+  'var(--teal-500)',
+  'var(--green-500)'
 ] as const
 
 /**

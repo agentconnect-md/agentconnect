@@ -76,6 +76,9 @@ describe('icon views', () => {
 
     expect(uploaded).toContain('src="https://cdn.example.test/org.webp"')
     expect(uploaded).not.toContain('>A<')
+    // Org logos keep their white plate on dark — otherwise the tile is just its ring.
+    expect(uploaded).toContain('bg-white')
+    expect(uploaded).not.toContain('bg-transparent')
     expect(legacy).toContain('background:#0f7a48')
     expect(legacy).toContain('>A<')
   })
