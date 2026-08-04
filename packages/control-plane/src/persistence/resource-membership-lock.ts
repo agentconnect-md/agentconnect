@@ -64,6 +64,15 @@ export async function lockResourceWriteMemberships(
         `)
   const current = new Set(rows.map((row) => row.userId))
 
+  // Keep a concurrent actor removal indistinguishable from a missing scoped
+  // resource. Once the actor is known-current, distinguish a stale owner on a
+  // restricted write: accepting the request after filtering its share vector
+  // could otherwise leave Selected with no current organization member able to
+  // reach the resource.
+  if (input.actorUserId !== undefined && !current.has(input.actorUserId)) throw new OrgMembershipMissing()
+  if (input.visibility === 'restricted' && input.ownerUserId !== undefined && !current.has(input.ownerUserId)) {
+    throw new ResourceOwnerMissing()
+  }
   if (required.some((id) => !current.has(id))) throw new OrgMembershipMissing()
   if (input.sharedWith === undefined) return {}
 

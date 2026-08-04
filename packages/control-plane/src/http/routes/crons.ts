@@ -465,7 +465,7 @@ export function cronRoutes(deps: HttpDeps) {
           tags: [Tag.Crons],
           summary: 'Set cron sharing',
           description:
-            'Set an owned cron’s visibility (org-wide vs restricted) and share set. Requires edit rights on the cron; ownerless crons stay org-visible, and sharedWith is intersected with current org members.',
+            'Set an owned cron’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
           operationId: 'setCronSharing',
           params: IdParam,
           body: SetSharingBody,

@@ -360,7 +360,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Set daemon sharing',
           description:
-            'Set an owned daemon’s visibility (org-wide vs restricted) and share set. Requires edit rights on the daemon; ownerless daemons stay org-visible, and sharedWith is intersected with current org members.',
+            'Set an owned daemon’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
           operationId: 'setDaemonSharing',
           params: IdParam,
           body: SetSharingBody,

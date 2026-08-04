@@ -152,7 +152,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       return reply.code(409).send({
         error: 'Conflict',
         statusCode: 409,
-        message: 'ownerless resource cannot be restricted'
+        message: 'Selected access requires a current organization member as resource owner'
       })
     }
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500

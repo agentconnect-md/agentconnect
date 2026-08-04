@@ -167,6 +167,36 @@ describe('agent sharing endpoint (canManageSharing === canEdit for owned rows, Â
     expect(res.statusCode).toBe(200)
     expect((res.json() as { sharedWith: string[] }).sharedWith).toEqual([member])
   })
+
+  it('rejects Selected when a stale owner and cleared shares would leave no current viewer', async () => {
+    const staleOwner = await makeUser('empty-audience-owner', 'collaborator')
+    const editor = await makeUser('empty-audience-editor', 'collaborator')
+    const R = randomUUID()
+    await seedAgent(prisma, R, {
+      visibility: 'restricted',
+      ownerUserId: staleOwner,
+      sharedWith: [editor]
+    })
+    // Recreate a bypassed member-removal state. The shared editor can still read
+    // and request a sharing change, but clearing the last live arm must not commit.
+    await prisma.membership.delete({ where: { orgId_userId: { orgId: DEFAULT_ORG_ID, userId: staleOwner } } })
+
+    const res = await appAs(editor).app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${R}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({
+      message: 'Selected access requires a current organization member as resource owner'
+    })
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: R } })).toMatchObject({
+      visibility: 'restricted',
+      ownerUserId: staleOwner,
+      sharedWith: [editor]
+    })
+  })
 })
 
 describe('mcp provider visibility â€” list, get, sharing, enable-gate', () => {

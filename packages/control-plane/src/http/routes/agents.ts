@@ -2175,7 +2175,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Set agent sharing',
           description:
-            'Set an owned agent’s visibility (org-wide vs restricted) and share set. Requires edit rights on the agent; ownerless agents stay org-visible, and sharedWith is intersected with current org members.',
+            'Set an owned agent’s visibility (Everyone vs Selected) and share set. Requires edit rights; Selected always includes a current-member owner, and sharedWith is intersected with current organization members.',
           operationId: 'setAgentSharing',
           params: IdParam,
           body: SetSharingBody,
