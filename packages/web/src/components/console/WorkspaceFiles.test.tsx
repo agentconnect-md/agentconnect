@@ -132,6 +132,7 @@ it('places the checkout selector in the file browser header', () => {
 
   expect(picker?.closest('.cardhead')).not.toBeNull()
   expect(picker?.closest('.card')?.querySelector('[data-testid="source-card"]')).toBeNull()
+  expect(picker?.parentElement?.className).toContain('w-1/4')
 })
 
 // The workspace editor lives in the card this browser renders, so a replacement

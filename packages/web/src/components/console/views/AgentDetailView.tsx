@@ -416,7 +416,6 @@ export default function AgentDetailView() {
   const mockWorkspaceHeader: WorkspaceHeaderInfo =
     ws.mode === 'github'
       ? {
-          branch: ws.branch,
           status: workspaceStatus(ws),
           ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
           repoUrl: ws.repoUrl ?? `https://github.com/${ws.repo}`
@@ -1635,12 +1634,9 @@ export default function AgentDetailView() {
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
               workspacePicker={
-                da.workspace.mode === 'github' &&
-                (da.workspace.worktree === true ||
-                  selectedWorktreeSessionId !== null ||
-                  workspaceSessionsNextCursor !== null ||
-                  workspaceSessions.some((session) => session.workspaceIsolation === 'session')) ? (
+                da.workspace.mode === 'github' ? (
                   <WorkspaceScopePicker
+                    primaryBranch={da.workspace.branch}
                     sessions={workspaceSessions}
                     selectedSessionId={selectedWorktreeSessionId}
                     selectedSession={selectedWorktreeSession}

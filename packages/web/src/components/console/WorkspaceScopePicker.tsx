@@ -29,6 +29,7 @@ export function worktreeIdentity(
 }
 
 export function WorkspaceScopePicker({
+  primaryBranch,
   sessions,
   selectedSessionId,
   selectedSession,
@@ -39,6 +40,7 @@ export function WorkspaceScopePicker({
   onLoadMore,
   orgPath
 }: {
+  primaryBranch: string
   sessions: Session[]
   selectedSessionId: string | null
   selectedSession?: Session
@@ -64,6 +66,8 @@ export function WorkspaceScopePicker({
       ? [selectedWorktree, ...worktrees]
       : worktrees
   const selectedIdentity = selectedSessionId ? worktreeIdentity(selectedWorktree, selectedSessionId) : undefined
+  const primaryBranchLabel = primaryBranch.trim() || 'HEAD'
+  const canChooseCheckout = selectedSessionId !== null || menuWorktrees.length > 0
 
   useEffect(() => {
     if (!open) return
@@ -118,59 +122,63 @@ export function WorkspaceScopePicker({
   const sessionHref = (sessionId: string) => orgPath(`/sessions/${encodeURIComponent(sessionId)}`)
 
   return (
-    <div
-      className={`relative w-[min(640px,58vw)] min-w-0 flex-none max-desktop:w-[min(210px,56vw)] ${open ? 'z-30' : ''}`}
-    >
+    <div className={`relative w-full min-w-0 ${open ? 'z-30' : ''}`}>
       <div className="relative min-w-0">
         <div
           className={`flex h-8 min-w-0 items-center overflow-hidden rounded-md border bg-(--surface-card) ${
-            open
-              ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
-              : 'border-(--border-subtle) hover:border-(--border-strong) hover:bg-(--surface-hover) focus-within:border-(--border-focus) focus-within:ring-[3px] focus-within:ring-(--brand-ring)'
+            !canChooseCheckout
+              ? 'border-(--border-subtle)'
+              : open
+                ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
+                : 'border-(--border-subtle) hover:border-(--border-strong) hover:bg-(--surface-hover) focus-within:border-(--border-focus) focus-within:ring-[3px] focus-within:ring-(--brand-ring)'
           }`}
         >
-          <button
-            ref={triggerRef}
-            type="button"
-            className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent px-2 text-left text-(--text-primary) outline-none"
-            aria-label={`Workspace checkout: ${selectedIdentity?.fullTitle ?? 'Primary checkout'}`}
-            aria-haspopup="menu"
-            aria-expanded={open}
-            aria-controls={open ? menuId : undefined}
-            onClick={() => setOpen((current) => !current)}
-            onKeyDown={openFromKeyboard}
-          >
-            <Icon
-              name={selectedSessionId ? 'git-branch' : 'folder-git-2'}
-              size={14}
-              className="flex-none text-(--text-tertiary)"
-            />
-            {selectedIdentity ? (
-              <span className="flex min-w-0 flex-1 items-baseline gap-2" title={selectedIdentity.fullTitle}>
-                {selectedIdentity.context ? (
-                  <span className="flex-none font-sans text-[12.5px] font-semibold leading-normal">
-                    {selectedIdentity.context}
-                  </span>
-                ) : null}
-                {selectedIdentity.title ? (
-                  <span
-                    className={`truncate font-sans text-[12.5px] leading-normal ${
-                      selectedIdentity.context
-                        ? 'font-normal text-(--text-secondary)'
-                        : 'font-medium text-(--text-primary)'
-                    }`}
-                  >
-                    {selectedIdentity.title}
-                  </span>
-                ) : null}
+          {canChooseCheckout ? (
+            <button
+              ref={triggerRef}
+              type="button"
+              className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 border-0 bg-transparent px-2 text-left text-(--text-primary) outline-none"
+              aria-label={`Workspace checkout: ${selectedIdentity?.fullTitle ?? primaryBranchLabel}`}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              aria-controls={open ? menuId : undefined}
+              onClick={() => setOpen((current) => !current)}
+              onKeyDown={openFromKeyboard}
+            >
+              <Icon name="git-branch" size={14} className="flex-none text-(--text-tertiary)" />
+              {selectedIdentity ? (
+                <span className="flex min-w-0 flex-1 items-baseline gap-2" title={selectedIdentity.fullTitle}>
+                  {selectedIdentity.context ? (
+                    <span className="flex-none font-sans text-[12.5px] font-semibold leading-normal">
+                      {selectedIdentity.context}
+                    </span>
+                  ) : null}
+                  {selectedIdentity.title ? (
+                    <span
+                      className={`truncate font-sans text-[12.5px] leading-normal ${
+                        selectedIdentity.context
+                          ? 'font-normal text-(--text-secondary)'
+                          : 'font-medium text-(--text-primary)'
+                      }`}
+                    >
+                      {selectedIdentity.title}
+                    </span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">
+                  {primaryBranchLabel}
+                </span>
+              )}
+            </button>
+          ) : (
+            <div className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-(--text-primary)">
+              <Icon name="git-branch" size={14} className="flex-none text-(--text-tertiary)" />
+              <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">
+                {primaryBranchLabel}
               </span>
-            ) : (
-              <>
-                <span className="truncate font-sans text-[12.5px] font-semibold leading-normal">Primary checkout</span>
-                <span className="mono ml-auto flex-none text-[11px] text-(--text-tertiary)">HEAD</span>
-              </>
-            )}
-          </button>
+            </div>
+          )}
 
           {selectedSessionId ? (
             <Link
@@ -185,22 +193,24 @@ export function WorkspaceScopePicker({
             </Link>
           ) : null}
 
-          <button
-            type="button"
-            className="flex h-full w-9 flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) outline-none hover:bg-(--surface-hover) hover:text-(--text-primary)"
-            aria-label={open ? 'Close workspace checkout menu' : 'Open workspace checkout menu'}
-            aria-haspopup="menu"
-            aria-expanded={open}
-            aria-controls={open ? menuId : undefined}
-            title={open ? 'Close checkout menu' : 'Choose checkout'}
-            onClick={() => setOpen((current) => !current)}
-            onKeyDown={openFromKeyboard}
-          >
-            <Icon name="chevron-down" size={14} className={open ? 'rotate-180' : ''} />
-          </button>
+          {canChooseCheckout ? (
+            <button
+              type="button"
+              className="flex h-full w-9 flex-none cursor-pointer items-center justify-center border-0 border-l border-(--border-subtle) bg-transparent text-(--text-tertiary) outline-none hover:bg-(--surface-hover) hover:text-(--text-primary)"
+              aria-label={open ? 'Close workspace checkout menu' : 'Open workspace checkout menu'}
+              aria-haspopup="menu"
+              aria-expanded={open}
+              aria-controls={open ? menuId : undefined}
+              title={open ? 'Close checkout menu' : 'Choose checkout'}
+              onClick={() => setOpen((current) => !current)}
+              onKeyDown={openFromKeyboard}
+            >
+              <Icon name="chevron-down" size={14} className={open ? 'rotate-180' : ''} />
+            </button>
+          ) : null}
         </div>
 
-        {open ? (
+        {canChooseCheckout && open ? (
           <>
             <span className="fixed inset-0 z-20" aria-hidden onClick={() => setOpen(false)} />
             <div
@@ -221,9 +231,10 @@ export function WorkspaceScopePicker({
                 }`}
                 onClick={() => pick(null)}
               >
-                <Icon name={selectedSessionId === null ? 'check' : 'folder-git-2'} size={15} className="flex-none" />
-                <span className="flex-1 font-semibold">Primary checkout</span>
-                <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">HEAD</span>
+                <Icon name={selectedSessionId === null ? 'check' : 'git-branch'} size={15} className="flex-none" />
+                <span className="min-w-0 flex-1 truncate font-semibold" title={primaryBranchLabel}>
+                  {primaryBranchLabel}
+                </span>
               </button>
 
               <div className="border-t border-(--border-subtle)">

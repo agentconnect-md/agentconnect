@@ -808,11 +808,14 @@ it opens the Agent's primary workspace. Its git or folder icon reflects that sou
 A session worktree is browse-only in the console: file editing and pull remain actions
 on the primary workspace.
 
-The checkout selector sits at the right of the Workspace file browser header,
-opposite the current file breadcrumb. The Source card remains directly above the
-browser and names the repository or scratch workspace that provides those files.
-Worktree choices keep their Session link in the selector so changing the viewed
-files and opening the originating conversation remain distinct actions.
+The checkout control occupies about one quarter of the Workspace file browser
+header, opposite the current file breadcrumb. Its primary choice is named with
+the checkout's branch, never a generic "Primary checkout" label. With no available
+session worktree it is a static branch label with no menu; otherwise it switches
+between that branch and the available worktrees. Worktree choices keep their
+Session link so changing the viewed files and opening the originating conversation
+remain distinct actions. The Source card remains directly above the browser and
+names only the repository or scratch workspace; it does not repeat the branch.
 
 Workspace changes are cold edits: active work is drained and existing cached
 credentials are cleared before the new definition becomes active. Any edit that removes

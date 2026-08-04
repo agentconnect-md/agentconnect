@@ -677,7 +677,6 @@ export function WorkspaceFiles({
   // status/commit/pull half of the card empty.
   const remote = git ? parseRemote(git.repo) : null
   const header: WorkspaceHeaderInfo = {
-    branch: git?.branch ?? null,
     status: git
       ? git.clean
         ? { dot: 'var(--status-online)', bg: 'var(--status-online-soft)', text: '#0f7a48', label: 'clean' }
@@ -732,7 +731,13 @@ export function WorkspaceFiles({
               }
             />
           ) : (
-            <div className="flex min-w-0 flex-none items-center gap-2">
+            <div
+              className={
+                workspacePicker
+                  ? 'flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]'
+                  : 'flex min-w-0 flex-none items-center gap-2'
+              }
+            >
               {workspacePicker}
               {deleteDraft ? (
                 <>

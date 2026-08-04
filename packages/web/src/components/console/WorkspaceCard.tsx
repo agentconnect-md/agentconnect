@@ -6,7 +6,7 @@
 //
 // One compact card, two rows:
 //   1. Source — a segment that owns workspace conversion (scratch ⇄ GitHub),
-//      then the workspace identity (mark, repo/title, branch, status) and, on
+//      then the workspace identity (mark, repo/title, status) and, on
 //      the right, the HEAD commit plus the pull / view-on-remote / edit actions.
 //      Everything after the segment is supplied by the caller as
 //      `WorkspaceHeaderInfo` — live git state from <WorkspaceFiles> for real
@@ -48,13 +48,11 @@ export const REPO_ACCESS_BADGE: Record<RepoAccess, string> = {
 
 /**
  * The live half of the Source row. The card itself only knows the agent's
- * configured workspace; branch/status/commit and the pull action come from
+ * configured workspace; status/commit and the pull action come from
  * whoever holds the daemon read model (<WorkspaceFiles>) or, for demo agents,
  * straight from the mock workspace.
  */
 export interface WorkspaceHeaderInfo {
-  /** Branch chip. Omit to fall back to the agent's configured branch. */
-  branch?: string | null
   status?: WorkspaceStatusInfo | null
   /** HEAD summary, rendered `sha · time` with `title` as its tooltip. */
   commit?: { sha: string; time: string; title?: string } | null
@@ -127,7 +125,6 @@ export function WorkspaceCard({
   const repos = reposData ?? []
   const loadError = reposData === undefined && reposError
   const canEdit = agent.canEdit
-  const branch = header?.branch ?? (ws.mode === 'github' ? ws.branch : null)
   // A manual checkout has no App installation to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.
   const workspaceAccess =
@@ -196,12 +193,6 @@ export function WorkspaceCard({
         <span className="mono min-w-0 truncate text-[13px] font-semibold text-(--text-primary)">
           {ws.mode === 'github' ? ws.repo : 'Scratch workspace'}
         </span>
-        {isGithub && branch && (
-          <span className="scope inline-flex flex-none items-center gap-1">
-            <Icon name="git-branch" size={12} />
-            {branch}
-          </span>
-        )}
         {/* Effective workspace access stays visible next to the repository
             (product-conventions.md §Workspace navigation and repository access) —
             it is the blast radius of everything the agent pushes. */}

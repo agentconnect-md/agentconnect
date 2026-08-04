@@ -66,6 +66,7 @@ describe('WorkspaceScopePicker', () => {
     await act(async () =>
       root?.render(
         <WorkspaceScopePicker
+          primaryBranch="release/2026-08"
           sessions={[
             session({}),
             session({ id: 'session-568', title: 'PR #568: bind the conversation audience', time: '3:10 PM' }),
@@ -92,7 +93,8 @@ describe('WorkspaceScopePicker', () => {
     await act(async () => trigger.click())
 
     const menu = container.querySelector<HTMLElement>('[role="menu"]')!
-    expect(menu.textContent).toContain('Primary checkout')
+    expect(menu.textContent).toContain('release/2026-08')
+    expect(menu.textContent).not.toContain('Primary checkout')
     expect(menu.textContent).toContain('Worktrees·2')
     expect(menu.textContent).toContain('PR #568')
     expect(menu.textContent).toContain('3:10 PM')
@@ -112,5 +114,30 @@ describe('WorkspaceScopePicker', () => {
     await act(async () => loadOlder.click())
     expect(onLoadMore).toHaveBeenCalledOnce()
     expect(onChange).toHaveBeenCalledOnce()
+  })
+
+  it('shows the branch without a menu when no worktrees are available', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () =>
+      root?.render(
+        <WorkspaceScopePicker
+          primaryBranch="main"
+          sessions={[]}
+          selectedSessionId={null}
+          loading={false}
+          hasMore={false}
+          loadingMore={false}
+          onChange={vi.fn()}
+          onLoadMore={vi.fn()}
+          orgPath={(path) => `/agentconnect${path}`}
+        />
+      )
+    )
+
+    expect(container.textContent).toContain('main')
+    expect(container.querySelector('[aria-haspopup="menu"]')).toBeNull()
+    expect(container.querySelector('button')).toBeNull()
   })
 })
