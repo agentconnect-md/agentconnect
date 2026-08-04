@@ -106,8 +106,13 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
   const busyRef = useRef(false)
 
   // `funnel`: null = still checking, true = this deployment supports auto-install
-  // (public callback), false = manual. Any probe error ⇒ fall back to manual.
-  const funnel: boolean | null = probe.failed ? false : (probe.config?.funnelEnabled ?? null)
+  // (public callback), false = manual. An answer WINS over a later error: the
+  // monolith read this endpoint once per open and never re-read, so a funnel it
+  // had already learned could not be retracted. The shared probe is SWR and does
+  // revalidate (remount, reconnect), and a transient failure there must not swap
+  // a working config-token flow for the manual manifest flow. Only a probe with
+  // no answer at all falls back to manual.
+  const funnel: boolean | null = probe.config ? probe.config.funnelEnabled : probe.failed ? false : null
   const autoUsable = autoUsableOverride ?? probe.config?.autoAvailable ?? false
   // The DEPLOYMENT probe for the platform-published app; whether THIS agent may
   // use it is `builtinAppOffered`.
@@ -234,6 +239,12 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
         accessToken: cfgAccess.trim(),
         ...(refreshTrim ? { refreshToken: refreshTrim } : {})
       })
+      // Publishing the fresh status is how the deployment relay capability (and the
+      // manifest/transport rules reading it) learn what the save just changed. It also
+      // carries `autoAvailable: true` the instant the token is stored, so pin the local
+      // override to the PRE-save answer first — otherwise applying it flips this pane to
+      // the auto flow mid-request, before the app the next comment is about exists.
+      setAutoUsableOverride(autoUsable)
       probe.apply(s)
       // Create the app BEFORE flipping to the auto flow: this is where Slack first
       // validates the config token (access-only tokens aren't validated on save). Keeping
