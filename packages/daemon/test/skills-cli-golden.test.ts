@@ -103,6 +103,40 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
     })
   })
 
+  it('fails closed instead of letting the CLI pick between two directories sharing a frontmatter name', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-skills-cli-golden-'))
+    roots.push(root)
+    const source = join(root, 'shared-source')
+    await mkdir(join(source, 'skills/alpha'), { recursive: true })
+    await mkdir(join(source, 'skills/beta'), { recursive: true })
+    await writeFile(join(source, 'skills/alpha/SKILL.md'), '---\nname: Shared\ndescription: first\n---\n# alpha\n')
+    await writeFile(join(source, 'skills/beta/SKILL.md'), '---\nname: Shared\ndescription: second\n---\n# beta\n')
+    const cwd = join(root, 'workspace')
+    await mkdir(cwd)
+
+    const result = await installSkills(
+      {
+        id: 'agent-shared',
+        runtime: 'claude',
+        skills: [{ name: 'shared', source: 'acme/shared', githubRepoId: '42', skills: ['beta'] }]
+      },
+      cwd,
+      {
+        stateDir: join(root, 'trusted-state'),
+        acquireGit: async () => ({ sourceDir: source, resolvedCommit: 'e'.repeat(40) })
+      }
+    )
+
+    // The pinned CLI would select "Shared" by discovery order and install
+    // alpha's content under the same leaf beta would produce — a silent
+    // wrong-skill install. The resolver must refuse before the CLI runs.
+    expect(result.errors[0]?.error).toMatch(/does not uniquely identify one skill/)
+    expect(result.installed).toEqual([])
+    await expect(readFile(join(cwd, '.claude/skills/shared/SKILL.md'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
   it('uses that same local-source CLI path after Git acquisition and publishes only receipt-derived bundles', async () => {
     const { root, source } = await fixture()
     const cwd = join(root, 'workspace')

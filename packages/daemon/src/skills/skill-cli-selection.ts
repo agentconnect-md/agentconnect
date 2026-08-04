@@ -22,10 +22,10 @@ import { promises as fsp } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { parseSkillManifest } from './local-skill-inventory.js'
 
-// Frontmatter and the short prompt body live at the head of SKILL.md; reading
-// more cannot change the parsed name and only inflates work on an oversized
-// manifest. Slash references beyond this window are not resolved.
-const MAX_MANIFEST_HEAD_BYTES = 64 * 1024
+// Aligned with Git snapshot per-file admission (GIT_SOURCE_SNAPSHOT_LIMITS
+// .maxFileBytes) so every SKILL.md the snapshot admitted — and the CLI's own
+// full-file parser will read — is parsed in full here too.
+const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 const MAX_LISTED_AVAILABLE = 32
 // Matches the wire-level cap on explicit selections per source.
 const MAX_RESOLVED_SELECTIONS = 64
@@ -70,10 +70,12 @@ export interface ResolvedSkillSelections {
 }
 
 interface SelectionCandidate {
+  /** Snapshot-relative SKILL.md path — the candidate's identity. */
+  path: string
   name: string
   leaf: string
   directoryLeaf?: string
-  /** Prompt body (head-bounded, frontmatter stripped) for slash references. */
+  /** Prompt body (frontmatter stripped) for slash references. */
   body: string
 }
 
@@ -84,7 +86,10 @@ interface SelectionCandidate {
  * (what the console's source scan offers); the matched set is then closed
  * over same-source slash references. Throws when a selection matches nothing,
  * a selection or reference matches more than one distinct skill name, two
- * selections collide, or a resolved name cannot ride the CLI argv safely.
+ * selections collide, a resolved name cannot ride the CLI argv safely, or the
+ * resolved frontmatter name does not uniquely (case-insensitively) identify
+ * one skill in the source — the CLI selects by that name alone, so a shared
+ * name could install a sibling skill while still producing the expected leaf.
  */
 export async function resolveSkillSelections(
   sourceName: string,
@@ -97,15 +102,16 @@ export async function resolveSkillSelections(
   const candidates: SelectionCandidate[] = []
   for (const file of files) {
     if (file.path !== 'SKILL.md' && !file.path.endsWith('/SKILL.md')) continue
-    const head = await readHead(join(snapshotDir, ...file.path.split('/')), MAX_MANIFEST_HEAD_BYTES)
-    const name = parseSkillManifest(head).name
+    const text = await readHead(join(snapshotDir, ...file.path.split('/')), MAX_MANIFEST_BYTES)
+    const name = parseSkillManifest(text).name
     if (!name) continue // the CLI refuses to install a nameless skill
     const directory = dirname(file.path)
     candidates.push({
+      path: file.path,
       name,
       leaf: skillInstallLeaf(name),
       ...(directory === '.' ? {} : { directoryLeaf: skillInstallLeaf(basename(directory)) }),
-      body: head.replace(FRONTMATTER, '')
+      body: text.replace(FRONTMATTER, '')
     })
   }
 
@@ -122,6 +128,19 @@ export async function resolveSkillSelections(
     }
     if (!isSafeCliSelection(candidate.name)) {
       throw new Error(`skill ${label} in source "${sourceName}" has a name the skills CLI cannot select safely`)
+    }
+    // The emitted `-s` value must uniquely identify this candidate: the CLI
+    // matches frontmatter names case-insensitively and de-duplicates exact
+    // names by discovery order, so a shared name can silently install a
+    // SIBLING skill while producing the expected leaf. Fail closed instead.
+    const sharingName = candidates.filter(
+      (other) => other.path !== candidate.path && other.name.toLowerCase() === candidate.name.toLowerCase()
+    )
+    if (sharingName.length > 0) {
+      throw new Error(
+        `skill ${label} in source "${sourceName}" resolves to CLI name "${candidate.name}", ` +
+          `which does not uniquely identify one skill (also declared by ${sharingName[0]!.path})`
+      )
     }
     selectionByName.set(candidate.name, label)
     cliSelections.push(candidate.name)

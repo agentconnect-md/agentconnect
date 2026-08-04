@@ -185,6 +185,45 @@ describe('resolveSkillSelections', () => {
     })
   })
 
+  it('rejects a directory alias whose frontmatter name is shared by a sibling skill', async () => {
+    // The CLI selects by frontmatter name alone (case-insensitively, exact
+    // names de-duplicated by discovery order): emitting `-s Shared` here could
+    // install alpha while the user selected beta, with the identical leaf
+    // keeping the receipt check green.
+    const { dir, files } = await snapshot({
+      'skills/alpha/SKILL.md': 'Shared',
+      'skills/beta/SKILL.md': 'Shared'
+    })
+    await expect(resolveSkillSelections('src', dir, files, ['beta'])).rejects.toThrow(
+      /"beta".*"Shared".*does not uniquely identify one skill.*skills\/alpha\/SKILL\.md/
+    )
+  })
+
+  it('rejects a leaf selection and a slash reference resolving to a case-folded shared name', async () => {
+    const caseOnly = await snapshot({
+      'skills/alpha/SKILL.md': 'Shared',
+      'skills/beta/SKILL.md': 'SHARED'
+    })
+    await expect(resolveSkillSelections('src', caseOnly.dir, caseOnly.files, ['shared'])).rejects.toThrow(
+      /matches more than one skill/
+    )
+    const viaAlias = await snapshot({
+      'skills/alpha/SKILL.md': 'Shared',
+      'skills/beta/SKILL.md': 'SHARED'
+    })
+    await expect(resolveSkillSelections('src', viaAlias.dir, viaAlias.files, ['beta'])).rejects.toThrow(
+      /does not uniquely identify one skill/
+    )
+    const viaReference = await snapshot({
+      'skills/entry/SKILL.md': { name: 'entry', body: 'Run `/beta`.\n' },
+      'skills/alpha/SKILL.md': 'Shared',
+      'skills/beta/SKILL.md': 'SHARED'
+    })
+    await expect(resolveSkillSelections('src', viaReference.dir, viaReference.files, ['entry'])).rejects.toThrow(
+      /does not uniquely identify one skill/
+    )
+  })
+
   it('fails closed when a reference is ambiguous in the source', async () => {
     const { dir, files } = await snapshot({
       'skills/grill-me/SKILL.md': { name: 'grill-me', body: 'Run `/grilling`.\n' },
