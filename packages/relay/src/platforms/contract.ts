@@ -46,13 +46,20 @@
  * (`credentialRevision`), and event-identity dedup STORAGE — the plugin mints
  * the dedup id (it derives from parsed action semantics); core owns the table.
  */
-import type { RcBotChannels, RcThreadAssign, RdAck, RdMsg } from '@agentconnect.md/protocol'
+import type { RcBotChannels, RdAck, RdMsgPlatformAction, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import type { BotAssignment, RouteTarget } from '../bot-arbitration.js'
 
 /** Demux hints a plugin extracts from one raw inbound callback BEFORE
  *  verification — the only pre-verify parse core performs on a plugin's behalf.
  *  Both fields are the PLATFORM'S vocabulary mapped onto §5's identity axes
- *  (Slack: `api_app_id` / `team_id`; Feishu: body `app_id`, tenantless). */
+ *  (Slack: `api_app_id` / `team_id`; Feishu: body `app_id`, tenantless).
+ *
+ *  The identity SCOPE is per-ASSIGNMENT, not per-platform: one Slack bot may be
+ *  tenant-scoped (a distributed app's install carries a tenant id — composite
+ *  index only, assign-derived, never learned) while a legacy sibling is
+ *  app-only (learnable from the first verified delivery). Core derives the
+ *  scope from the assignment's ingress identity; a plugin never declares a
+ *  blanket rule that would misfile the other shape. */
 export interface DemuxHints {
   appId?: string
   tenantId?: string
@@ -78,43 +85,67 @@ export interface RelayBotIngress {
  * and every report rides core's pending queues + fencing.
  */
 export interface RelayIngressHost {
-  /** Forward one normalized inbound message through bot arbitration to the
-   *  owning daemon. */
-  forward(botId: string, message: RdMsg): void
+  /** Forward one NORMALIZED inbound message. Core owns arbitration: it resolves
+   *  the owning agent/daemon and constructs the pre-addressed `rd/msg` — the
+   *  plugin supplies conversation content, never target identity. The promise
+   *  is the delivery attempt's completion (drop counting rides it). */
+  forward(botId: string, message: WireNormalizedMessage): Promise<void>
   /** Forward one platform interaction as a §6.6 platform_action and return the
-   *  daemon's ack — the sync-response race (see the module doc) awaits this. */
-  forwardAction(msg: RdMsg): Promise<RdAck>
+   *  daemon's ack — the sync-response race (see the module doc) awaits this.
+   *  `msgId` is the DEDUP IDENTITY, and the plugin mints it (it derives from
+   *  parsed action semantics); core owns the dedup table on the daemon side. */
+  forwardAction(msg: RdMsgPlatformAction): Promise<RdAck>
   /** Report the bot's channel-membership snapshot (queued while the CP link is
    *  down; a newer snapshot supersedes). */
   reportChannels(snapshot: RcBotChannels): void
   /** Report a platform-side revocation, echoing the assignment's credential
    *  generation so the CP's fence can refuse a stale report. */
   reportRevoked(reason: string, eventAtMs?: number): void
-  /** Durable thread affinity (the 3-leg dance's first leg stays core). */
-  reportThreadAssign(report: RcThreadAssign): void
   /** Arbitration reads — never the router object itself. */
   directory: {
     agents(botId: string): { agentId: string; name: string }[]
     channelOwner(botId: string, channelId: string): string | undefined
     targetForAgentId(botId: string, agentId: string): RouteTarget | undefined
   }
-  /** Persist + broadcast an explicit channel-owner change (Switch agent). */
+  /** Persist an explicit channel default-agent change (the config modal's
+   *  durable, CP-broadcast side; no local routing effect of its own). */
   setChannelAgent(botId: string, channelId: string, agentId: string): void
+  /** Make an inline Switch-agent selection effective for the thread NOW, then
+   *  durably: core applies local channel ownership AND thread affinity before
+   *  any report leaves the pod — the guarantee un-mentioned follow-ups in the
+   *  same thread route to the new agent immediately — and then persists via the
+   *  CP (the 3-leg thread-affinity dance stays core). */
+  selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
   clock: { now(): number }
   log: { info(m: string): void; warn(m: string): void; debug(m: string): void }
+}
+
+/** What handling one verified delivery produces. `syncResponse`, when present,
+ *  is the body the HTTP route must return on THIS request's 200 — the two known
+ *  shapes are a challenge echo (Feishu `url_verification`) and an interaction
+ *  result raced against the platform's response window (Feishu toast, Slack
+ *  `block_suggestion` options). Everything asynchronous — normalized messages,
+ *  reports — already left through {@link RelayIngressHost} by the time this
+ *  returns. */
+export interface HandledDelivery {
+  syncResponse?: unknown
 }
 
 /**
  * One platform's relay ingress plugin — stateless, per-platform, registered
  * once. Adding a platform registers one of these; no manager fork grows.
+ *
+ * @typeParam TIngest   The per-bot instance this plugin builds.
+ * @typeParam TVerified The plugin's OWN verified-delivery type — the typed
+ *                      product of authentication (Feishu's decrypted
+ *                      challenge/event/card-action union; Slack's raw body +
+ *                      parsed envelope). Opaque to core: it flows from
+ *                      {@link verify} into {@link handle} and is never read
+ *                      between them.
  */
-export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = RelayBotIngress> {
+export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = RelayBotIngress, TVerified = unknown> {
   /** Platform id (§6.1 vocabulary). Never parsed. */
   readonly platformId: string
-  /** §5 identity axes: how one bot is identified for inbound demux — whether
-   *  the app-only index may be LEARNED from verified traffic (`'app'`) or the
-   *  composite index is the only safe demux (`'tenant'`). */
-  readonly identityScope: 'app' | 'tenant'
   /**
    * Validate the assignment's secrets / ingress identity and build the bot's
    * ingest instance. `undefined` = incomplete assignment (log-and-skip; the CP
@@ -126,15 +157,27 @@ export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = Re
   /** Pre-verify demux hints from one raw callback (see {@link DemuxHints}). */
   extractDemuxHints(rawBody: Buffer, body: unknown, headers: Record<string, string | string[] | undefined>): DemuxHints
   /**
-   * Authenticate one inbound delivery against a candidate ingest. Core drives
-   * the lookup ladder (declared-index fast paths, then the bounded scan the
-   * platform's identityScope permits) and calls this per candidate; the plugin
-   * owns the cryptography (HMAC window, AES decrypt, token compare).
+   * Authenticate one inbound delivery against a candidate ingest and return the
+   * TYPED verified product, or `undefined` for a candidate that does not own
+   * it. Core drives the lookup ladder (assignment-derived index fast paths,
+   * then the bounded scan the assignment's identity scope permits) and calls
+   * this per candidate; the plugin owns the cryptography (HMAC window, AES
+   * decrypt, token compare) — and hands back the DECRYPTED result exactly once,
+   * so handling never re-derives it.
    */
   verify(
     ingest: TIngest,
     rawBody: Buffer,
     body: unknown,
     headers: Record<string, string | string[] | undefined>
-  ): boolean
+  ): TVerified | undefined
+  /**
+   * Handle one verified delivery: decode events into normalized messages and
+   * interactions, emit them through the host, and produce the synchronous HTTP
+   * body when the platform demands one on this request's 200. The plugin owns
+   * its response deadline (it races {@link RelayIngressHost.forwardAction}
+   * against the platform's window on the host clock, degrading to an ack-only
+   * body on timeout); core owns only the route's outer hard cap.
+   */
+  handle(ingest: TIngest, verified: TVerified): Promise<HandledDelivery>
 }
