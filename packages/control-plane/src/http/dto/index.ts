@@ -526,7 +526,7 @@ export const CreateAgentBody = z.object({
   reasoningEffort: z.string().min(1).optional(),
   outputMode: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(), // platform output verbosity ('none' = session-only)
   showFooter: z.boolean().optional(), // attribution/session footer (absent ⇒ default true)
-  showStatusBar: z.boolean().optional(), // persistent Slack session status row (absent ⇒ default true)
+  showStatusBar: z.boolean().optional(), // persistent Slack session status row (absent ⇒ default false)
   fastMode: z.boolean().optional(), // runtime fast mode toggle
   permissionMode: z.string().min(1).optional(), // runtime permission/approval mode
   approvalsReviewer: ApprovalsReviewer.optional(), // who reviews eligible Codex approval requests

@@ -192,8 +192,8 @@ export default function EditAgentModal({
         initialOutputMode.current = nextOutputMode
         setShowFooter(dto.showFooter ?? true)
         initialShowFooter.current = dto.showFooter ?? true
-        setShowStatusBar(dto.showStatusBar ?? true)
-        initialShowStatusBar.current = dto.showStatusBar ?? true
+        setShowStatusBar(dto.showStatusBar ?? false)
+        initialShowStatusBar.current = dto.showStatusBar ?? false
         setFastMode(dto.fastMode ?? false)
         initialFastMode.current = dto.fastMode ?? false
         setPermissionMode(dto.permissionMode ?? permissionModeDefault(dto.runtime ?? ''))

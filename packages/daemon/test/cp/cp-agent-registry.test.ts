@@ -114,7 +114,7 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
 
     const agent = reg.agents()[0]!
     expect(agent.runtimeOverrides?.model).toBeUndefined()
-    expect(agent.output).toEqual({ mode: 'high', showFooter: false, showStatusBar: true })
+    expect(agent.output).toEqual({ mode: 'high', showFooter: false, showStatusBar: false })
     expect(agent.allowedCallerAgentIds).toEqual([A2])
     expect(existsSync(join(agent.dir, 'agent.json'))).toBe(false)
   })

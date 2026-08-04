@@ -1266,8 +1266,9 @@ describe('Slack interactive status bar', () => {
     return { host, release: () => release() }
   }
 
-  /** Routable bot-a with a fake connection that captures Block Kit posts/edits. */
+  /** Routable bot-a with its status bar enabled and a fake connection that captures Block Kit posts/edits. */
   function routableWithBlocks(daemon: Daemon) {
+    ;(daemon as any).agents.get('bot-a').output.showStatusBar = true
     makeRoutable(daemon)
     let n = 0
     const conn = {
