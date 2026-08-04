@@ -904,6 +904,23 @@ interface CallMeta {
    * no dependence on the inbox row still existing by the time the sweep runs.
    */
   activationKey?: string
+  /**
+   * This delivery was OBSERVED on the platform, in the very conversation it targets — an
+   * agent's ordinary reply or channel-root mention — rather than being a postless
+   * `toAgent` call.
+   *
+   * It decides whether the woken turn may bind the conversation's external audience.
+   * A postless child must not: its coordinates are derived from the caller's session and
+   * the model influences the target, so binding one would let model input claim a shared
+   * conversation. A platform-observed delivery has the OPPOSITE property — its channel
+   * and thread come from the provider event itself, exactly like a human message in that
+   * thread — so it must bind, or it can never wake an agent that already holds an
+   * externally-bound session there, which is every agent already talking in the thread.
+   *
+   * Persisted with the inbox row alongside the rest of CallMeta, so a replayed turn makes
+   * the same classification it would have made live.
+   */
+  platformOrigin?: true
   /** A self-authored channel-root post initializes its new session but is not a model turn.
    *  Persisted with the inbox row so crash replay cannot accidentally activate the model. */
   initializeOnly?: boolean
@@ -5960,6 +5977,10 @@ export class Daemon {
     }
     const callMeta: CallMeta = {
       callFrom: verified.authorAgentId,
+      // Observed on the platform, in this very conversation — so the woken turn binds the
+      // same audience a human message in this thread would. Without it the target's
+      // existing Slack-bound session rejects the wake as a cross-source turn.
+      platformOrigin: true,
       // §4.1 step 3/5: install the computed depth as trusted active-turn metadata. Every
       // ordinary platform response this target produces stamps it as the NEXT event's
       // source depth, so an A → B → A chain advances by one per hop and stops at the cap
@@ -6966,6 +6987,9 @@ export class Daemon {
     }
     const callMeta: CallMeta = {
       callFrom: authorAgentId,
+      // See the direct path: a relayed platform observation is still a platform event in
+      // this conversation, not a postless call.
+      platformOrigin: true,
       hopCount: deliveryHopCount,
       deliveryId: msg.msgId,
       activationKey: key
@@ -15260,7 +15284,8 @@ export class Daemon {
     hookContext: HookDispatchContext | undefined
   ): 'unchanged' | 'mismatch' | 'unavailable' {
     const direct =
-      this.githubExternalSource(hookContext) ?? this.conversationExternalSource(agentId, msg, callMeta !== undefined)
+      this.githubExternalSource(hookContext) ??
+      this.conversationExternalSource(agentId, msg, callMeta !== undefined && callMeta.platformOrigin !== true)
     // A CONVERSATION audience is only bindable when fully attributed (realm +
     // integration); a repository audience (GitHub) has its own completeness rule.
     // Keyed on the resource kind, so a new platform's audience gets the same

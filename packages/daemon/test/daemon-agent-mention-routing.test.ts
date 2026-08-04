@@ -224,6 +224,57 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     await daemon.stop()
   })
 
+  it('binds the conversation audience, so it can wake an agent already talking in the thread', async () => {
+    // The production failure this pins: every agent already in the thread holds a
+    // Slack-BOUND session there, and an agent-authored activation carries CallMeta. The
+    // session-source gate reads CallMeta as "postless A2A child", which has no
+    // conversation audience by design — so the wake was cancelled as a cross-source turn
+    // and the exchange died after one round with only a WARN in the log.
+    //
+    // A postless child must indeed not bind: its coordinates come from the caller's
+    // session and the model picks the target. A platform-observed delivery is the
+    // opposite — its channel and thread come from the provider event, exactly like a
+    // human message in that thread.
+    const { daemon } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
+    // A live connection supplies the workspace id the conversation audience keys on; the
+    // realm is what makes the tuple complete enough to bind at all.
+    ;(daemon as any).connByIntegration.set('int-bot-b', { workspaceId: () => 'T-TEST' })
+    const msg = agentMessage()
+    msg.transportScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
+
+    // The audience this very message resolves to for the target…
+    const audience = (daemon as any).conversationExternalSource('bot-b', msg, false)
+    expect(audience).toMatchObject({
+      externalProvider: 'slack',
+      externalResourceKind: 'conversation',
+      externalRealmKey: 'T-TEST',
+      externalIntegrationId: 'int-bot-b'
+    })
+
+    // …and a session already bound to it, which is what the human's mention created.
+    const key = sessionKey('slack', 'C1', '1720000000.000100', 'bot-b', msg.transportScope)
+    ;(daemon as any).store.upsertSession({
+      key,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '1720000000.000100',
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    ;(daemon as any).store.setSessionClassification(key, { sourceBindingKind: 'external', ...audience })
+
+    const platformWake = { callFrom: 'bot-a', platformOrigin: true, hopCount: 1, deliveryId: 'd-1' }
+    expect((daemon as any).bindSessionSource('bot-b', key, msg, platformWake, undefined)).toBe('unchanged')
+
+    // A postless call with no inherited lineage keeps failing closed against the same row.
+    const postlessWake = { callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-2' }
+    expect((daemon as any).bindSessionSource('bot-b', key, msg, postlessWake, undefined)).toBe('mismatch')
+    await daemon.stop()
+  })
+
   it('does not let an agent issue control commands', async () => {
     // §6: `!stop` from an agent must not act on a running turn. Command interception sits
     // BELOW the agent branch, so agent text can never reach it.
