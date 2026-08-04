@@ -154,6 +154,65 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(await readFile(join(cwd, '.runtime/skills/shared/SKILL.md'), 'utf8')).toContain('# dream')
   })
 
+  it('resolves a canonical Git selection to the display-style frontmatter name the CLI matches (#371)', async () => {
+    // Issue #371 shape: the wire selection is the canonical directory name,
+    // but the CLI matches -s against the SKILL.md frontmatter name and derives
+    // the install leaf from it.
+    const gitRoot = join(sources, 'grill')
+    await mkdir(join(gitRoot, 'skills/grill-me'), { recursive: true })
+    await writeFile(join(gitRoot, 'skills/grill-me/SKILL.md'), skillBody('Grill Me', 'grill me'))
+    const calls: SkillsCliInvocation[] = []
+    const runCli = async (input: SkillsCliInvocation): Promise<SkillsCliInvocationResult> => {
+      calls.push(input)
+      // Emulate the pinned CLI: install under the sanitized frontmatter name.
+      const leaf = input.skills[0]!.toLowerCase().replace(/[\s_]+/g, '-')
+      const bundleDir = join(input.cellDir, '.runtime', 'skills', leaf)
+      await mkdir(bundleDir, { recursive: true })
+      const body = await readFile(join(input.sourceDir, 'skills/grill-me/SKILL.md'), 'utf8')
+      await writeFile(join(bundleDir, 'SKILL.md'), body)
+      return {
+        bundles: [{ relativeRoot: `.runtime/skills/${leaf}`, sourceDir: bundleDir }],
+        stdoutDigest: digest('ok'),
+        stderrDigest: digest('')
+      }
+    }
+
+    const result = await installSkills(
+      {
+        id: 'a1',
+        runtime: 'claude',
+        skills: [{ name: 'grill', source: 'acme/grill', githubRepoId: '42', skills: ['grill-me'] }]
+      },
+      cwd,
+      { stateDir, acquireGit: async () => ({ sourceDir: gitRoot, resolvedCommit: 'a'.repeat(40) }), runCli }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(calls.map((call) => call.skills)).toEqual([['Grill Me']])
+    expect(result.installed).toContain('.runtime/skills/grill-me')
+    expect(await readFile(join(cwd, '.runtime/skills/grill-me/SKILL.md'), 'utf8')).toContain('# grill me')
+  })
+
+  it('fails the transaction with the available names when a Git selection matches nothing', async () => {
+    const gitRoot = join(sources, 'grill-missing')
+    await mkdir(join(gitRoot, 'skills/grill-me'), { recursive: true })
+    await writeFile(join(gitRoot, 'skills/grill-me/SKILL.md'), skillBody('Grill Me', 'grill me'))
+    const cli = fakeCli(() => '.runtime')
+
+    const result = await installSkills(
+      {
+        id: 'a1',
+        runtime: 'claude',
+        skills: [{ name: 'grill', source: 'acme/grill', githubRepoId: '42', skills: ['barbecue'] }]
+      },
+      cwd,
+      { stateDir, acquireGit: async () => ({ sourceDir: gitRoot, resolvedCommit: 'a'.repeat(40) }), runCli: cli.run }
+    )
+
+    expect(result.errors[0]?.error).toMatch(/"barbecue" was not found in source "grill" \(available: grill-me\)/)
+    expect(cli.calls).toHaveLength(0)
+  })
+
   it('omits invalid historical Git sources and still installs their valid sibling', async () => {
     const validDir = await writeSkill(sources, 'valid', 'valid')
     const cli = fakeCli(() => '.runtime')
@@ -235,13 +294,16 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
   }, 120_000)
 
   it('uses the unchanged fast path for duplicate repo/ref acquisition identities', async () => {
-    const gitDir = await writeSkill(sources, 'repo', 'git')
+    // Real subDir acquisition hands the CLI the subdirectory content, so each
+    // entry's snapshot must actually contain its selected skill.
+    const oneDir = await writeSkill(join(sources, 'catalog'), 'one', 'git')
+    const twoDir = await writeSkill(join(sources, 'catalog'), 'two', 'git')
     const cli = fakeCli(() => '.runtime')
     const commit = 'a'.repeat(40)
     const requestedRefs: Array<string | undefined> = []
-    const acquireGit = async (entry: { ref?: string }) => {
+    const acquireGit = async (entry: { ref?: string; subDir?: string }) => {
       requestedRefs.push(entry.ref)
-      return { sourceDir: gitDir, resolvedCommit: entry.ref ?? commit }
+      return { sourceDir: entry.subDir === 'catalog/one' ? oneDir : twoDir, resolvedCommit: entry.ref ?? commit }
     }
     const skills = [
       { name: 'one', source: 'acme/skills', githubRepoId: '42', subDir: 'catalog/one', skills: ['one'] },

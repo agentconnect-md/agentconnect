@@ -30,12 +30,17 @@ import {
   SkillLedgerSafetyError,
   type SkillFileReceipt
 } from './skill-install-ledger.js'
+import { resolveSkillSelections } from './skill-cli-selection.js'
 import { acquireGitSkillSource, resolveBoundedGitSkillSource } from './skill-git-source.js'
 import { snapshotLocalSkillSource } from './skill-source-snapshot.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell, type SkillsCliCellResult } from './skills-cli-cell.js'
 
 export const SKILLS_CLI_SPEC = `skills@${PINNED_SKILLS_CLI_VERSION}`
-const INSTALLER_SCHEMA = 2
+// v3: selection resolution + slash-reference dependency expansion change the
+// materialized bundle set for unchanged wire inputs; the bump invalidates
+// ready v2 fingerprints so every workspace reconciles once under the new
+// semantics instead of retaining pre-expansion alias-only installs.
+const INSTALLER_SCHEMA = 3
 const LEGACY_MARKER_BYTES = 64 * 1024
 const LEGACY_MARKERS = ['skills-install.json', 'dream-skills-install.json'] as const
 const LEGACY_OWNED = /^(?:\.claude\/skills|\.agents\/skills)\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
@@ -149,7 +154,11 @@ interface PreparedSource {
   key: string
   name: string
   sourceDir: string
+  /** `-s` values for the CLI: the SKILL.md frontmatter names it matches. */
   skills: string[]
+  /** Exact CLI-derived leaf directory names `skills` must produce (empty ⇒
+   * install everything the source exposes, any leaves). */
+  expectedLeaves: string[]
   contentDigest: string
 }
 
@@ -238,6 +247,7 @@ async function installSkillsLocked(
         name: source.name,
         sourceDir: destination,
         skills: [source.name],
+        expectedLeaves: [source.name],
         contentDigest: snapshot.sha256
       })
     }
@@ -321,19 +331,21 @@ async function installSkillsLocked(
         limits: GIT_SOURCE_SNAPSHOT_LIMITS
       })
       accountInput(snapshot.fileCount, snapshot.totalBytes)
-      // One source invocation may carry all selected skills. We independently
-      // require the exact selected leaf-name set below, so a CLI that returns
-      // success after installing only a valid subset still fails the transaction.
-      const selections = [entry.skills]
-      for (const skills of selections) {
-        prepared.push({
-          key: `git:${index}:${definitionDigest}:${resolvedCommit}${skills.length > 0 ? `:${fingerprint(skills)}` : ''}`,
-          name: entry.name,
-          sourceDir: destination,
-          skills,
-          contentDigest: snapshot.sha256
-        })
-      }
+      // The CLI matches `-s` values against SKILL.md frontmatter names but the
+      // wire carries canonical leaf names, so resolve each selection against
+      // the snapshot first (#371). One source invocation carries all selected
+      // skills; we independently require the exact resolved leaf-name set
+      // below, so a CLI that returns success after installing only a valid
+      // subset still fails the transaction.
+      const selection = await resolveSkillSelections(entry.name, destination, snapshot.files, entry.skills)
+      prepared.push({
+        key: `git:${index}:${definitionDigest}:${resolvedCommit}${entry.skills.length > 0 ? `:${fingerprint(entry.skills)}` : ''}`,
+        name: entry.name,
+        sourceDir: destination,
+        skills: selection.cliSelections,
+        expectedLeaves: selection.expectedLeaves,
+        contentDigest: snapshot.sha256
+      })
     }
     prepared.push(...localPrepared)
     const nextGitResolutions = currentGitResolutions(
@@ -360,8 +372,8 @@ async function installSkillsLocked(
         if (invocation.bundles.length === 0) {
           throw new Error(`skills CLI produced no bundles for ${source.name}`)
         }
-        if (source.skills.length > 0) {
-          const expected = [...source.skills].sort()
+        if (source.expectedLeaves.length > 0) {
+          const expected = [...source.expectedLeaves].sort()
           const actual = invocation.bundles.map((bundle) => bundle.relativeRoot.split('/').at(-1) ?? '').sort()
           if (JSON.stringify(actual) !== JSON.stringify(expected)) {
             throw new Error(`skills CLI output did not exactly match selection for ${source.name}`)

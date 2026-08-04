@@ -260,7 +260,7 @@ export async function stageSkillsCliCell(options: StageSkillsCliCellOptions): Pr
   const sourceSnapshot = canonicalSnapshotPath(options.sourceSnapshot)
   assertSafeToken(options.agentId, 'agent id')
   const selectedSkills = options.selectedSkills ?? []
-  for (const skill of selectedSkills) assertCanonicalSelection(skill)
+  for (const skill of selectedSkills) assertSafeSelection(skill)
 
   const cli = (options.resolveCli ?? resolvePinnedSkillsCli)()
   if (cli.version !== PINNED_SKILLS_CLI_VERSION) {
@@ -632,11 +632,14 @@ function assertSafeToken(value: string, label: string): void {
   }
 }
 
-function assertCanonicalSelection(value: string): void {
-  // skills@1.5.21 lowercases install leaves and trims terminal dots/hyphens.
-  // Accept only its fixed points so an API selection and the audited output
-  // receipt can be compared exactly without aliases or collision surprises.
-  if (!/^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9_])?$/.test(value)) {
+function assertSafeSelection(value: string): void {
+  // A selection is matched by the CLI against SKILL.md frontmatter names
+  // (case-insensitively), which need not be canonical leaf names — the
+  // installer resolves wire-canonical selections to those names first
+  // (skill-cli-selection.ts) and compares the audited output receipt against
+  // the resolved leaf set itself. This boundary only refuses values that
+  // could be parsed as options or garble the argv.
+  if (value.length === 0 || value.length > 255 || value.startsWith('-') || !/^[\x20-\x7e]+$/.test(value)) {
     throw new SkillsCliCellError('invalid selected skill')
   }
 }
