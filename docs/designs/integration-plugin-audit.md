@@ -1656,3 +1656,490 @@ Chain: `register.ts:23 platforms: z.array(Platform)` → unknown id fails the `r
 `protocol/src/frames/agent.ts:255-374 AgentSpec` is a **flat `z.object`, not a union**, no platform discriminator. The actual duplicated closed union is `protocol/src/frames/integration.ts:161 IntegrationSpec` ↔ `daemon/src/agents/agent-schema.ts:96 IntegrationSchema` (`z.discriminatedUnion('platform', [slack@102, telegram@108, discord@114, feishu@120])`), with a _third_ copy of the four-value enum at `daemon/src/agents/agent-schema.ts:142`. The protocol-side coupling to `AgentSpec` is indirect: `agent.ts:434 AgentActivate.integrations: z.array(IntegrationSpec)`. §6.4 should name `IntegrationSpec`/`IntegrationSchema`, not `AgentSpec`.
 
 **Also refuted as written:** §6.8's `CronDef.targetPlatform` / `HookDef.targetPlatform` do not exist in `packages/protocol/src` — `targetPlatform` appears only in `packages/web` (`lib/api.ts:577,600` typed `'slack' | 'telegram'` — narrower still than the wire) and CP DTOs. The protocol-side equivalent is the single `CronTarget.platform` at `cron.ts:20`, reused by `relay-daemon.ts:321` (hook) and `relay-cp.ts:255` (hook assign), so §6.8 is one protocol edit with three consumers, not two separate defs.
+
+---
+
+## 10. S3 exit reconciliation (2026-08-05)
+
+S3's exit criteria (design §13): _each host's registry is the single platform-set
+authority; `AddIntegrationModal` is chassis + fragments._ This section is the
+reconciliation, in the shape §9 established for S2.
+
+**Pinned at `origin/main` = `c4d7969ea45a367fbef8e21649fe800788547645`.** Every
+`file:line` below was read at that commit; nothing here is copied from a PR body.
+Where a PR body records a judgment call, this section states whether the code
+agrees (§10.5). There is no in-flight sibling work — the pinned tree is the
+finished S3 state, protocol flatten included.
+
+**What S3 shipped**, verified merged (one GraphQL batch over the 26 numbers):
+relay #560 #562 #563 #569 #571 #575 #579 #581 · daemon #589 #596 · CP #565 #574
+#580 #592 #603 #605 #618 · web #573 #591 #604 #614 #616 · protocol flatten #634 ·
+docs #597 #621 #627. Structure at the pin: `platforms/contract.ts` +
+`platforms/registry.ts` + per-id directories in relay; `platforms/provider.ts` +
+`registry.ts` + `env.ts` + `lifecycle.ts` + `sharing.ts` + four provider dirs in
+the CP; `components/console/platforms/` with `contract.ts`, `registry.ts`,
+`marks.ts`, `publish.ts` and four module dirs in web; the §5 manifest promoted to
+`packages/protocol/src/platform-manifest.ts`.
+
+### 10.1 Exit-criteria verdicts
+
+| criterion                                     | host          | verdict                 | exceptions (all in §10.6)                                               |
+| --------------------------------------------- | ------------- | ----------------------- | ----------------------------------------------------------------------- |
+| registry is the single platform-set authority | relay         | **met with exceptions** | F2 teardown, F3 demux-forget, F4 shutdown, F5 route mounting            |
+| registry is the single platform-set authority | control plane | **met with exceptions** | F8 `DB_PLATFORMS`, F10 cron/hook set ×4, F11 waitlist ×2, F13 D6 switch |
+| registry is the single platform-set authority | web           | **met with exceptions** | F14 `BOT_PLATFORM_TABS`, F15 `BotPlatform` union                        |
+| registry is the single platform-set authority | daemon        | **met with exceptions** | F16 capability list, F17 observed-platform loop                         |
+| `AddIntegrationModal` is chassis + fragments  | web           | **met**                 | two region carve-outs, each with the reason written in code             |
+
+**Why "met with exceptions" and not "not met".** On every host the _dispatch_
+path — the one the refactor exists to flatten — now reads the registry, and the
+exceptions are set enumerations on adjacent paths. Concretely, per host:
+
+- **relay.** `assign()` resolves `ingressPlugins.get(a.platform)` and refuses an
+  unregistered id with warn-and-skip (`relay-ingress-manager.ts:415-419`);
+  `handleInbound()` takes the plugin, pool and demux index from the same entry
+  (`:505-507`) and drives one verify ladder (`:509-535`) where two hand-written
+  resolvers used to sit. `ingestFor()` finds a bot's ingest through its
+  _assignment's_ platform entry (`:580-584`), retiring "which map the bot lives
+  in" as the platform test. What is **not** registry-driven is teardown
+  (`stopIngest` at `:586-593` names `slackPool`/`feishuPool` directly), the dual
+  `slackDemux.forget`/`feishuDemux.forget` in `assign` (`:408-409`) and
+  `unassign` (`:470-471`), `stopAll`'s union of the two named pools
+  (`:570-571`), and route mounting (`index.ts:198-199`).
+- **control plane.** `POST /integrations`' body is composed from the registry:
+  `platform: z.enum(ids)`, one `credentialBodySchema` block per provider, the
+  mismatched-block guard as a loop over `platforms.ids()`, and per-transport
+  rules delegated to `refineCreateBody`
+  (`http/dto/create-integration-body.ts:43-110`). Route mounting is
+  `deps.platforms.all().flatMap((p) => p.installRoutes(scope))`
+  (`http/server.ts:84-85`); reapers and background loops come from the
+  providers' declarations (`container.ts:1124-1125`); wire projection goes
+  through `projectIntegrationConfig` / `projectBotAssign`
+  (`orchestrator/placement.ts:319-329`, `orchestrator/httpBot.ts:989`). The
+  exceptions are the persisted-set fence list, the cron/hook target vocabulary,
+  the waitlist intake list, and the D6 identity switch.
+- **web.** `BOT_PLATFORMS` is `platformRegistry.ids()` mapped through
+  `platformLabel` (`AddIntegrationModal.tsx:107-109`); the active wizard body is
+  `platformRegistry.get(platform)?.wizard` (`:362`); channel-list semantics are
+  a total registry lookup with a documented default
+  (`platforms/registry.ts:34-49`); the transcript renderer is keyed by
+  `platformId` and every `MessageText` call site now passes one
+  (`views/SessionDetailView.tsx:3149`, `:3220`, `:3270`).
+- **daemon.** S3's daemon scope was only #589/#596, and both landed: message
+  ordering is a platform strategy (`platforms/message-ordering.ts`), routing
+  knobs are an envelope read, and the MCP tool surface reads Layer-1 capability
+  ports. Each daemon dispatch table is a single registration point
+  (`daemon.ts:1795-1798` command chrome, `:1802-1850` turn surfaces,
+  `platforms/integration-config.ts:37-42` config schemas).
+
+**The chassis criterion, verified against the current modal.**
+`AddIntegrationModal.tsx` is **1 678 lines** (design §3 measured ~3 800). The
+four wizard bodies are gone from it; what remains platform-shaped is exactly two
+region carve-outs, and both state their reason in code: `:363-366`
+(`platform === 'feishu' ? feishuRegion : undefined`, "§5 `regions` is manifest
+data the web module deliberately does not carry (contract D2), so the chassis
+keeps the one platform with regional clouds") and `:882-890` (the
+`LarkFeishuSwitcher` in the tile row, same axis, plus a `regionLocked` fence).
+**Judgment: accept.** `regions` is manifest scope by §5, web has no manifest
+consumer, and inventing a web-only `regions` member would create the second
+authority the contract's D2 note exists to prevent. The remaining literals in
+the file are the initial-platform default (`:196`) and the closed `BotPlatform`
+type the registry-derived list is cast into (`:92` — F15).
+
+### 10.2 Survivor table — all six packages
+
+Classes: **(i)** legitimate per-platform module code; **(ii)** documented host
+projection with a written reason; **(iii)** residue that should have died — a
+finding. Reconciliation is by **cluster**, each naming the appendix rows it
+subsumes (the S2 §9.2 precedent); it is not 798 individual re-reads, and this
+section says so rather than implying otherwise.
+
+| #   | cluster                                                                                                  | where                                                                                                                                                                                                            | class    | note                                                                                                                                                                                |
+| --- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | relay Slack + Feishu ingress plugins, ingests, routes                                                    | `relay/src/platforms/{slack,feishu}/**`                                                                                                                                                                          | (i)      | subsumes Appendix B rows 744-749, 755-764, 770-775, 781-790 (transport bodies, moved by #571)                                                                                       |
+| 2   | relay `IngressPool` / `DemuxIndex` + plugin entries                                                      | `platforms/registry.ts`, `relay-ingress-manager.ts:142-173`                                                                                                                                                      | (i)      | replaces B 199/200/207/211/212 (parallel maps) and B 350-385 (assign fork)                                                                                                          |
+| 3   | relay `slack-event-dedup.ts`                                                                             | `relay/src/slack-event-dedup.ts`                                                                                                                                                                                 | (ii)     | Slack-named, platform-agnostic table; core owns dedup storage per §8.1's split                                                                                                      |
+| 4   | relay teardown / forget / shutdown / route mounting                                                      | `relay-ingress-manager.ts:408,409,470,471,570,571,586-593`; `index.ts:198-199`                                                                                                                                   | (iii)    | **F2–F5**                                                                                                                                                                           |
+| 5   | relay stale comments (retired `resolveVerified`, "until the route files migrate")                        | `relay-ingress-manager.ts:130-134,146-148`                                                                                                                                                                       | (iii)    | **F6, F7**                                                                                                                                                                          |
+| 6   | CP four providers + their platform-named helpers under `http/`, `config/`                                | `platforms/{slack,telegram,discord,feishu}/`, `http/slack-*.ts`, `http/feishu-*.ts`, …                                                                                                                           | (i)      | imported only by providers, the two Slack funnel route files, `platform-route-seams.ts`, `container.ts`                                                                             |
+| 7   | CP `platforms/env.ts` `CP_PLATFORM_ENV_SCHEMAS`                                                          | `platforms/env.ts:26-29`                                                                                                                                                                                         | (ii)     | second list, but the cycle reason is written (`loadConfig` precedes `buildContainer`) **and** `env.test.ts` pins it against the providers — the exemplar of a legitimate projection |
+| 8   | CP session-audience provider axis (`slack`/`github`/`feishu`, three registrations)                       | `http/session-access.ts`, `http/routes/sessions.ts:355,387,439`, `dto/index.ts:2517`                                                                                                                             | (ii)     | design §9 explicitly gives these "audit homes, not new slots"; `github` is not a platform module                                                                                    |
+| 9   | CP legacy-NULL and origin-kind SQL (`COALESCE(platform,'slack')`, `webchat`/`hook`/`dream` fences)       | `session.repo.ts`, `persistence/platform.ts:19-26`, `routes/sessions.ts:47-48`                                                                                                                                   | (ii)     | Appendix C §1.10 rows: origin-kind and legacy-row handling, class (d) by construction                                                                                               |
+| 10  | CP persisted-set fence list, cron/hook vocabulary, waitlist, `leaveGranularity` gate, D6 identity switch | `persistence/platform.ts:26`; `dto/index.ts:2037,2084,2161,1809`; `mcp/tools.ts:367`; `routes/hooks.ts:287,292`; `registry/waitlistService.ts:21`; `routes/integrations.ts:1011,1018`; `integration.repo.ts:102` | (iii)    | **F8, F10–F13**                                                                                                                                                                     |
+| 11  | CP hand-reads of the shipped manifest field                                                              | `routes/integrations.ts:653-654`; `orchestrator/httpBot.ts:462`                                                                                                                                                  | (iii)    | **F9** — CP imports `manifestFor` zero times                                                                                                                                        |
+| 12  | web four modules + `marks.ts` + `platform-labels.ts`                                                     | `components/console/platforms/**`, `lib/platform-labels.ts`                                                                                                                                                      | (i)/(ii) | labels are host-owned with a written reason and a registry drift test (`platform-set.test.tsx`)                                                                                     |
+| 13  | web `BOT_PLATFORM_TABS`, `BotPlatform` union                                                             | `views/SettingsView.tsx:363-369`; `AddIntegrationModal.tsx:92`                                                                                                                                                   | (iii)    | **F14, F15**                                                                                                                                                                        |
+| 14  | web Slack-wizard CSS in the host stylesheet                                                              | `app/globals.css` (`.cfgtok*`, `.cfg-scroll`, `.cfg-click-a/b`)                                                                                                                                                  | (iii)    | **F18** (low) — cannot move under D1; the missing part is the ownership note                                                                                                        |
+| 15  | web identity-provider (social login) axis                                                                | `lib/social-login-providers.ts`, `SocialLoginButtons.tsx`, `marks.tsx` `SocialLoginMark`                                                                                                                         | (ii)     | Logto connector axis whose ids merely coincide with platform ids; Appendix D ambiguous row 8                                                                                        |
+| 16  | daemon platform dirs + twelve strategy files + per-platform pools/turn surfaces                          | `daemon/src/platforms/**`; `daemon.ts:1776-1850`                                                                                                                                                                 | (i)      | Appendix A class-(a)/(c) rows; the four conn maps and `slackRetryTimers` remain §9.2's file-move set                                                                                |
+| 17  | daemon §9.2's eleven reclassified comparison sites                                                       | `daemon.ts:7486-7533` (Slack action), `:7596` (Feishu action), `:13660-13671`, `:14989-14990`                                                                                                                    | (i)      | unchanged by S3; each reached only through a platform-specific entry point                                                                                                          |
+| 18  | daemon Slack-only agent-authorship / compound-mention / collab-close cluster                             | `daemon.ts:5803,5807,5842,5852,6018,6079,13015`                                                                                                                                                                  | (iii)    | **F19** — seven core sites; §9.2's eleven-site table listed only `isAgentBotMessage` (`:5807`)                                                                                      |
+| 19  | daemon capability list + observed-platform loop                                                          | `daemon.ts:18740`, `:4106`                                                                                                                                                                                       | (iii)    | **F16, F17**                                                                                                                                                                        |
+| 20  | daemon literal NUL bytes in a composite key                                                              | `daemon.ts:16759`                                                                                                                                                                                                | (iii)    | **F1** — defeats `rg`-based verification of the file the S2 criterion names                                                                                                         |
+| 21  | protocol flattened `IntegrationSpec` + open `Platform` + manifest                                        | `frames/integration.ts:131-177`, `frames/route.ts:64`, `platform-manifest.ts`                                                                                                                                    | (i)      | Appendix E rows 1538-1546 retired by #634; rows 1513-1520 (enum copies) retired in S1a/S1b                                                                                          |
+| 22  | protocol `RcBotSecrets` typed union, `rc/bot-revoked.reason`                                             | `frames/relay-cp.ts` secrets union, revocation reason enum                                                                                                                                                       | (ii)     | #634 left both with written reasons; §10.5 accepts the first, qualifies the second                                                                                                  |
+| 23  | `packages/message` per-platform normalizers                                                              | `message/src/{slack,telegram,discord,feishu}-message*.ts`, `slack-mention-address.ts`                                                                                                                            | (i)      | Appendix E `module-file` rows; still the de-facto registry seam via `index.ts` barrels                                                                                              |
+
+**Counts by class:** 23 clusters — **(i) 9**, **(ii) 7**, **(iii) 7** (clusters
+4, 5, 10, 11, 13, 14 and 18–20 collapse into the seven residue groups the
+findings list enumerates as F1–F19).
+
+### 10.3 Appendix reconciliation — dispositions
+
+| appendix rows                                                                          | disposition                                                                                      |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| B 350/351/355/360/365/369/385 (assign fork)                                            | **retired-by-#569** — one `ingressPlugins.get()` + `plugin.buildIngest`                          |
+| B 199/200/207/211/212 (parallel ingest + demux maps)                                   | **retired-by-#562/#563** — `IngressPool` + `DemuxIndex`                                          |
+| B 376/382/518 (`identityScope` demux decisions)                                        | **retired-by-#562** — `indexAssign`/`learn`/`resolve` derive scope from the assignment           |
+| B 494/531/540/543 (`resolveVerified` / `resolveFeishuVerified`)                        | **retired-by-#575** — one `handleInbound` ladder                                                 |
+| B 599 (echo-suppression guard)                                                         | **moved-to-capability** — `isAgentBotMessage` reads `msg.sender.appId` + a platform-keyed index  |
+| B 126 (Slack-only bot-mention admission)                                               | **retired-by-#581** — `manifestFor(msg.platform).botSenderRouting` (`bot-arbitration.ts:151`)    |
+| B 404/405 (thread-root msgId surgery)                                                  | **retired-by-#581** — `isThreadRootMessage(msg)` from `@agentconnect.md/message`                 |
+| B 665/769/773/732 (Feishu egress forks, nameless DM rows)                              | **retired-by-#579** — `ingestFor(botId)?.egress` facet reads (`:829`, `:937`, `:974-982`)        |
+| B 22/23 (closed platform + secrets unions)                                             | **retired** — `platform: string` (`bot-arbitration.ts:31`); secrets read through the plugin      |
+| B 69/224 (`PERSISTED_IM_PLATFORMS`)                                                    | **retired-by-§6.1** — `originKindOf` + snapshot/learned kinds, default `'chat'` ⇒ reject         |
+| B 214/215 (per-platform route registration)                                            | **survived — no reason written** ⇒ F5                                                            |
+| B 168/183/194/130 (dedup-id minters)                                                   | **moved-to-module**, but the core re-export shim outlived its stated cause ⇒ F7                  |
+| B 874 (test's `['telegram','discord','feishu']` fail-closed matrix)                    | **retired** — the constant it tracked is gone                                                    |
+| C 698/712-744/748/763/773/781 (create-DTO union)                                       | **retired-by-#592** — `buildCreateIntegrationBody`                                               |
+| C 1017/1018 (`server.ts` route mounting by name)                                       | **retired-by-#605** — `installRoutes(scope)` over `platforms.all()`                              |
+| C slackInstallReaper.ts:45, container.ts:914/970 (reapers, reconciler wiring)          | **retired-by-#605** — `pendingInstalls` + `backgroundLoops` declarations                         |
+| C 247/255/264/276/286/328/338/348 (`placement.ts` spec branches)                       | **retired-by-#603** — `projectIntegrationConfig`; `projectSpec` passes `i.platform` verbatim     |
+| C 822/883/891/898 (`httpBot.ts` assign ternaries)                                      | **retired-by-#603/#634** — `projectBotAssign`; no `'feishu'` coercion left                       |
+| C env.ts:114/121, container.ts:477/478, config/feishu-platform.ts:21                   | **moved-to-module** — provider `envSchema`, folded via `platforms/env.ts` (class (ii))           |
+| C deps.ts:292-364, container.ts:819-842 (twelve platform-named dep slots)              | **retired-by-#618** — the registry answers what core asks                                        |
+| C 1119 (MCP `listSessions` enum omitting `feishu`)                                     | **fixed** — `mcp/tools.ts:204` now includes it (S0 §5 defect closed)                             |
+| C 815 (`needsSuppression`) and C 398 (authoritative snapshot gate)                     | **survived — duplicates a shipped manifest field** ⇒ F9                                          |
+| C 1172/1179 (`leaveGranularity` gate)                                                  | **survived — no reason written** ⇒ F12                                                           |
+| C 2040/2087/2165, mcp 365, hooks 287 (cron/hook vocabulary)                            | **survived** — #634 deferred to sibling PRs absent from the record ⇒ F10                         |
+| C 1809, waitlistService.ts:21                                                          | **survived — no reason written** ⇒ F11 (Appendix C ambiguous row 3 predicted the drift)          |
+| C prisma `enum Platform` + the six enum-carrying columns                               | **retired in S1b** — columns are `String`; `toDbPlatform` is the application fence (§11 landed)  |
+| D 207/217/227-228/232-241/252-253/284-288/666/789/790 (channel semantics)              | **retired-by-#604** — `channelListSemantics`; the file now holds zero platform code branches     |
+| D 70/2791/2852/2897 (`MessageText`, §14 defect #3)                                     | **retired-by-#614** — renderer registry keyed by `platformId`, all three call sites pass it      |
+| D 94-105, 171-196, 260-293, 636-760, 764-864, 872-973, 2989-3367, 3368-3439, 3476-3699 | **moved-to-module-by-#591** — wizard bodies are module fragments                                 |
+| D marks.tsx:248-259 (substring dispatch)                                               | **retired-by-#604** — `platforms/marks.ts` lookup + module `Mark`, pinned by `platform-set.test` |
+| D data.ts:1892-1904 (`platName`, `return 'Slack'` fold)                                | **retired-by-#604/#616** — one `lib/platform-labels.ts` Map, total lookup, no Slack fallback     |
+| D globals.css:79-81/242-244 (`--slack`/`--telegram`/`--discord`)                       | **retired-by-#616** — dead vars deleted                                                          |
+| D globals.css cfgtok/cfg-scroll/cfg-click cluster                                      | **survived — no ownership note** ⇒ F18                                                           |
+| D AddCronModal.tsx:73-77/141 (§14 defect #2 coercion)                                  | **fixed** — `platform: string` (`:78`), `platform: i.platform // no coercion` (`:144`)           |
+| D 364-370/374-377 (`BOT_PLATFORM_TABS`)                                                | **survived — not registry-derived, not drift-tested** ⇒ F14                                      |
+| D 85-86 (`BotPlatform` closed union)                                                   | **survived** — #634 deferred it ⇒ F15                                                            |
+| D SettingsView.tsx:216 ("GitHub session access" copy defect, S0 §5)                    | **fixed** — the provider copy table now covers all three providers                               |
+| A 3727 (observed-platform rebuild loop)                                                | **survived — duplicates `membershipEnumeration`** ⇒ F17                                          |
+| A 17587 (`platforms: [...4]` capability list)                                          | **survived — hand copy beside four registries** ⇒ F16                                            |
+| A 585/586 (`agent-schema.ts` closed union + cron enum)                                 | **retired-by-#634** — flat envelope; `CONFIG_SCHEMAS` registry with `Object.hasOwn` guard        |
+| A 587 (`write-integration.ts`)                                                         | **deleted-by-#634** — dead since #599                                                            |
+| A 574/576/577/578/579, cp/session-reader 249/353 (`cursorOrdering`)                    | **moved-to-module-by-#589** — `platforms/message-ordering.ts`                                    |
+| A 590/591/594/595 (MCP DM + file-read platform gates)                                  | **moved-to-capability-by-#596** — Layer-1 read-port probes                                       |
+| A 582 (`routing-rule.ts` per-platform knob extraction)                                 | **retired-by-#589/#634** — `core` envelope read                                                  |
+| A 7597 + 12 call sites (`narrowPlatform`)                                              | **deleted in S1a** — only historical comments remain (4 across daemon + relay)                   |
+| E 1513-1520, 1532, 1556, 1570 (enum copies)                                            | **retired** — `Platform = z.string().min(1)` (`route.ts:64`)                                     |
+| E 1538-1546 (spec union + per-variant knob duplication)                                | **retired-by-#634** — `IntegrationCoreEnvelope` is the sole carrier                              |
+| E 1571/1572 (`rc/bot-assign` named `apiAppId`/`teamId`)                                | **retired-by-#634** — `ingress: z.unknown().optional()`; only a comment records the removal      |
+| E 1573 (`RcBotSecrets`), 1574 (`rc/bot-revoked.reason`)                                | **survived-with-reason** (#634) — §10.5 accepts the first, qualifies the second                  |
+
+### 10.4 Blind-spot sweep — searches that found nothing
+
+Coverage is proved by the empty results, not asserted. All runs use
+`rg --text` / `grep -a` (see the trap below). Scope is non-test source unless
+stated.
+
+| pattern                                                                     | scope                                      | result                                                                                                                                         |
+| --------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'(slack\|telegram\|discord\|feishu)' *(===\|!==)` (reversed literal-first) | all six packages' `src`                    | **0 files**                                                                                                                                    |
+| `switch *\([a-zA-Z_.?]*[Pp]latform`                                         | all six packages' `src`                    | 3 files — 2 are eval test doubles (A 603, A 1926), 1 is F13                                                                                    |
+| `--slack` / `--telegram` / `--discord` / `--feishu` / `slackHintBlink`      | `packages/web/src` (incl. CSS)             | **0 files** (retired by #616)                                                                                                                  |
+| `slackTsMicros` / `compareSlackTs`                                          | `packages/daemon/src` minus `platforms/`   | **0 files** (only `platforms/message-ordering.ts`)                                                                                             |
+| `telegramTopicId` / `telegramThreadRoot` / `discordTopLevel`                | daemon, relay, CP `src` minus `platforms/` | **0 files** (only `platforms/discord/thread-promotion.ts`)                                                                                     |
+| `narrowPlatform` as a callable                                              | daemon, relay `src`                        | **0 definitions, 0 call sites** (4 historical comments)                                                                                        |
+| `instanceof (Slack\|Telegram\|Discord\|Feishu)(Connection\|Converger)`      | `packages/daemon/src` minus `platforms/`   | 14 sites, all in `daemon.ts` — §9.2's sanctioned duck-type gates                                                                               |
+| `manifestFor`                                                               | CP `src`, web `src`                        | **0 files** — the fact behind F9                                                                                                               |
+| platform-named files outside a `platforms/<id>/` directory                  | all six packages' `src`                    | 20+ files; every CP one is imported only by its provider, the two Slack funnel routes, `platform-route-seams.ts` or `container.ts` (cluster 6) |
+| Slack failure map / install-poll duplication ("keep the two in sync")       | `packages/web/src`                         | both copies now inside `platforms/slack/` (`Body.tsx`, `use-platform-install.ts`)                                                              |
+| duplicated daemon-caps platform gate                                        | `packages/web/src`                         | 2 call sites (`AddIntegrationModal.tsx:351`, `AgentDetailView.tsx:449`) — both filter the registry-derived list, no literal set                |
+
+**The NUL-byte trap has MOVED, and it now hides the file the S2 criterion
+names.** `packages/web/src/components/console/views/SessionDetailView.tsx` is
+clean at this pin (`file` reports UTF-8 text), so §6 item 8's example is
+historical. The NUL bytes are now in **`packages/daemon/src/daemon.ts:16759`** —
+two _literal_ NUL characters used as separators inside a composite-key template
+(`` `${row.agentId}<NUL>${row.reason}<NUL>${row.purgedAt}` ``, byte offset
+≈835 510). Demonstrated at this pin: `rg -n "row.reason"
+packages/daemon/src/daemon.ts` prints only
+`binary file matches (found "\0" byte around offset 835510)` and suppresses every
+line, while macOS `grep -n` still prints them (its binary sample window misses
+the deep offset). Any `rg`-based check of "zero platform conditionals remain in
+`daemon.ts`" therefore returns nothing and **reads as a pass**. This is F1; §6
+item 8 should be re-pointed at `daemon.ts`.
+
+### 10.5 Documentation-truth check
+
+**§5.2 (shipped manifest) — accurate.**
+`packages/protocol/src/platform-manifest.ts` carries exactly the three claimed
+fields (`membershipEnumeration`, `botSenderRouting`, `dmChannelPattern?`), plus
+`DEFAULT_MANIFEST` as the conservative arm and a `Map`-backed total
+`manifestFor` (`:65-91`). The "rule has teeth" story is in the module doc, and
+the status-bar rejection is recorded there. The one thing §5.2 does not say,
+which the code now shows: the manifest has **two consumer hosts, not four** —
+daemon (`daemon.ts`, four reads) and relay (`bot-arbitration.ts:151`). The CP and
+web read zero fields, which is what makes F9 and F17 possible.
+
+**§8.1 (relay contract as shipped) — accurate in all ten bullets**, each verified
+against `packages/relay/src/platforms/contract.ts`: per-platform stateless plugin
+with `buildIngest`/`extractDemuxHints`/`verify`/`handle` (`:209-257`);
+`RelayBotIngress` owning `start?`/`stop`/`egress?` (`:73-95`); `verify` returning
+`TVerified | undefined` (`:231-239`); the documented pre-candidate challenge
+exception (`:248-255`); `handle` → `HandledDelivery { syncResponse? }`
+(`:193-195`); `forward(botId, WireNormalizedMessage)` (`:109`) with
+`forwardAction(msg, route)` (`:117`); the three directory trust models
+(`:146`/`:151`/`:154`); `canDeliver(route)` (`:172`); `reportRevoked` carrying the
+observing assignment's revision (`:121-127`, produced at
+`platforms/slack/ingress-plugin.ts:209`); `egress = { notice, lookupUserName }`
+(`:89-94`); plugin-minted dedup identity over a core-owned table (`:162-166`). No
+correction needed. Worth adding for the next implementer: the shipped contract
+has **no route-registration member**, which is why relay route mounting stayed
+hand written (F5) while the CP's equivalent moved.
+
+**§14 (defects fixed en route) — all seven verified fixed.** #1 `narrowPlatform`
+deleted (no definition, no call sites). #2 cron anchor coercion gone
+(`AddCronModal.tsx:78` open `platform: string`, `:144` "no coercion"; the
+`HEADLESS` Slack sentinel survives with its reason written at `:81-82`). #3
+renderer registry keyed by `platformId` with all three call sites passing it. #4
+revocation fenced with the observing assignment's revision
+(`platforms/slack/ingress-plugin.ts:209`). #5 `canDeliver` before consuming a
+one-shot trigger (`platforms/slack/ingress-plugin.ts:142`). #6 positive
+`type === 'event_callback'` discrimination
+(`platforms/slack/ingress-plugin.ts:237`). #7 the named ingress fields are
+deleted outright, so the reader and the emitter can no longer disagree.
+
+**§6.4 vs the flattened `IntegrationSpec` (#634) — matches, with the two errata
+#634 recorded in its PR body instead of the doc.** Verified: one flat object with
+`integrationId`, `agentId`, `platform`, required `core`, optional opaque `config`
+(`frames/integration.ts:166-172`); `IntegrationCoreEnvelope` documented as the
+_only_ carrier of `mode`/`bindRules`/`mutedChannels`/`gated` (`:125-136`) and no
+per-platform config block re-declares them (`:59-124`);
+`Platform = z.string().min(1)` (`route.ts:64`); the daemon at-rest twin flat with
+a registry-resolved config schema (`agents/agent-schema.ts:67-75`,
+`platforms/integration-config.ts:37-42,77-82`, including the `Object.hasOwn`
+guard); `write-integration.ts` deleted. Folding the errata in here rather than
+rewriting §6.4:
+
+1. **The shipped field name is `platform`, not the sketch's `platformId`** —
+   every platform-bearing frame on this wire spells it `platform`, so renaming
+   would be a second wire break with no semantic content. §6.4's code block
+   should be read with that substitution.
+2. **§6.4's "the protocol `AgentSpec` union migrates together" names the wrong
+   type** — the daemon-side twin is `IntegrationSchema`
+   (`daemon/src/agents/agent-schema.ts`), exactly as Appendix E already recorded;
+   `AgentSpec` is a flat object whose only coupling is
+   `AgentActivate.integrations`.
+3. Additionally, **§6.4's legacy-emission shim never shipped and is now
+   unreachable**: #634 cut over in one release under the stated pre-release
+   premise, so the nested shape has no readers or writers. §6.4's sentence about
+   keeping old daemons on the nested shape until the fleet gate describes a plan
+   that was deliberately abandoned, not the code.
+
+**#634's own judgment calls — agreed, with one qualification.** The
+`PERSISTED_IM_PLATFORMS` claim is correct and was verified independently here:
+both twins are already registry-driven, branching on origin kind
+(`relay/src/collaboration-router.ts:229-247`, default `'chat'` ⇒ fail-closed
+reject) with no hand list left, so a `persistsPlacements` manifest field would be
+a flag nobody reads — the right call under §5.2's earned-field rule. Keeping
+`RcBotSecrets`' typed-prefix union is likewise sound: its typed members still do
+frame-level validation and the open fallback keeps the set open.
+**Qualification on `rc/bot-revoked.reason`:** "closed because both values are
+live Slack lifecycle semantics on a frame only Slack produces today" is true at
+this pin, but the frame is platform-generic and the host signature already widens
+the value to `string` (`RelayIngressHost.reportRevoked(botId, reason: string,
+…)`) before core narrows it back with a cast
+(`relay-ingress-manager.ts:199`). That cast is where a second platform's
+revocation vocabulary will fail silently rather than loudly; it deserves a
+comment at minimum. **Disagreement on scope, not judgment:** deferring the
+CP-DTO and web closed lists to "sibling CP/web residue PRs" was reasonable for
+#634, but no such PR is in the merged S3 record, so those lists are what keep two
+hosts at _met-with-exceptions_ (F10, F11, F15).
+
+**CLAUDE.md's platform-modules section — accurate.** All four contract paths and
+names check out: daemon three-facet adapter (`platforms/contract.ts` +
+`turn-output.ts` + `read-ports.ts`), relay `platforms/contract.ts`
+`RelayPlatformIngressPlugin`, CP `platforms/provider.ts` `CpPlatformProvider`,
+web `components/console/platforms/contract.ts` `WebPlatformModule`; per-host
+`registry.ts` files all exist; the manifest path
+(`packages/protocol/src/platform-manifest.ts`) is right; the GitHub/GitLab and
+webchat carve-outs match the code (`relay/src/hooks/`,
+`control-plane/src/github/`, `daemon/src/platforms/github/` implementing only the
+turn-output surface). Two small imprecisions, neither worth a doc edit on its
+own: the CP row says "both wire projectors" when `projectBotAssign` is
+**optional** by design (#580; `provider.ts:519`, and `httpBot.ts:964` calls the
+optionality a "§9 erratum"), and the web row lists `Mark` as a module facet
+without noting that the host also keeps a parallel `platforms/marks.ts` lookup so
+label and mark reads do not pull the wizard into every route (both are pinned
+equal by `platform-set.test.tsx`).
+
+### 10.6 Findings
+
+Code defects and unearned survivors. **None of these were fixed** — this is a
+docs-only reconciliation.
+
+1. **`packages/daemon/src/daemon.ts:16759` — literal NUL bytes make `rg` suppress
+   every match in the file.** Two raw NUL characters are used as separators in a
+   composite-key template. `rg` reports only `binary file matches` (offset
+   ≈835 510) and prints no lines, so an `rg`-based "zero platform conditionals in
+   `daemon.ts`" check — the S2 exit criterion's own subject, and a routine S3
+   regression check — silently reads as a pass. _Disposition:_ write the
+   separators as `\0` escapes (or use a non-NUL separator); re-point §6 item 8 at
+   this file.
+2. **`packages/relay/src/relay-ingress-manager.ts:586-593` — teardown is not
+   registry-driven.** `stopIngest` names `slackPool` and `feishuPool` directly,
+   so a third platform's ingest is never stopped or dropped: the pool entry leaks
+   and a rebuild on re-assign would run beside the stale instance.
+   _Disposition:_ iterate `ingressPlugins.values()`; the per-platform "nothing to
+   stop, only to drop" comment becomes `RelayBotIngress.stop()`'s own business.
+3. **`packages/relay/src/relay-ingress-manager.ts:408-409, 470-471` — demux
+   forget is a hand list.** `assign` and `unassign` call `slackDemux.forget` +
+   `feishuDemux.forget` unconditionally. A third platform's assign-derived
+   entries would survive its unassign, and a stale composite entry is precisely
+   the cross-tenant delivery hazard `DemuxIndex` was built to prevent.
+   _Disposition:_ forget through the registry entry (or all entries) rather than
+   two names.
+4. **`packages/relay/src/relay-ingress-manager.ts:570-571` — `stopAll` unions two
+   named pools**, so a third platform's ingests are never closed at relay
+   shutdown. _Disposition:_ same fix as F2/F3.
+5. **`packages/relay/src/index.ts:198-199` — HTTP ingress routes are mounted by
+   name.** `registerSlackHttpIngress` / `registerFeishuHttpIngress` are called
+   explicitly because `RelayPlatformIngressPlugin` has no route-registration
+   member — the "route mounting by name" blind spot (§6 item 12), which the CP
+   closed in #605 via `installRoutes(scope)`. _Disposition:_ add a route facet to
+   the relay contract, or accept it and write the reason down.
+6. **`packages/relay/src/relay-ingress-manager.ts:146-148` — stale rationale.**
+   The comment justifies keeping the typed per-platform pools "for the typed read
+   sites (`resolveVerified` pair)"; that pair was deleted in #575. The comment
+   now defends the very fields F2–F4 should remove. _Disposition:_ delete with
+   F2.
+7. **`packages/relay/src/relay-ingress-manager.ts:130-134` — stale re-export
+   shim.** The three dedup-id minters are re-exported from core "until the route
+   files migrate"; the route files migrated in #571, and the only importer left
+   is `relay-ingress-manager.test.ts`. _Disposition:_ point the test at the
+   plugins and drop the shim.
+8. **`packages/control-plane/src/persistence/platform.ts:26` — `DB_PLATFORMS` is
+   a self-declared residue.** The four-id list's own doc comment says "The
+   platform registry replaces this list when providers land (S3)." The providers
+   landed. `toDbPlatform` should stay as the persistence fence; the _list_ it
+   consults should be `platforms.ids()`. _Disposition:_ thread the registry in,
+   keep the throw.
+9. **`packages/control-plane/src/http/routes/integrations.ts:653-654` (and
+   `orchestrator/httpBot.ts:462`) — CP hand-lists a shipped manifest field.**
+   `needsSuppression = p === 'telegram' || 'discord' || 'feishu'` is exactly
+   `manifestFor(p).membershipEnumeration === 'observed'`, and the snapshot gate
+   is its `'authoritative'` twin. The CP imports `manifestFor` zero times, so the
+   one fact two other hosts read declaratively is re-spelled here. This is the D2
+   rule — core reads a capability, not a platform name — violated in the host
+   that never adopted the manifest. _Disposition:_ read the manifest.
+10. **CP cron/hook target vocabulary is hand-copied four times.**
+    `http/dto/index.ts:2037` (`export const Platform = z.enum([...4])`) with the
+    `.default('slack')` uses at `:2084`/`:2161`, `http/mcp/tools.ts:367`, and the
+    inline unions at `http/routes/hooks.ts:287,292`. #634's body defers these to
+    sibling CP/web residue PRs, and no such PR is in the merged record.
+    _Disposition:_ derive from `platforms.ids()`; the `'slack'` default is an
+    envelope legacy value per §6.8, not a capability.
+11. **CP waitlist platform set is hand-copied twice.**
+    `http/dto/index.ts:1809` and `registry/waitlistService.ts:21` both spell
+    `['slack','telegram','discord']` — now three ids where the registry has four,
+    the exact drift Appendix C ambiguous row 3 predicted. _Disposition:_ decide
+    explicitly whether marketing intake tracks the registry, and write it down
+    either way.
+12. **`packages/control-plane/src/http/routes/integrations.ts:1011,1018` —
+    `leaveGranularity` gate survived with no written reason.** A pre-dispatch
+    request-validation branch on `platform === 'discord'` remains in a core route
+    while the same axis is a documented web-module facet
+    (`WebChannelListSemantics.leave`). _Disposition:_ either earn a manifest
+    field (it is a genuine pre-dispatch read) or move the gate behind the
+    provider — but not silence.
+13. **`packages/control-plane/src/persistence/repositories/integration.repo.ts:102`
+    — the D6 identity dual-write is a four-arm `switch (input.platform)` in core
+    persistence.** Deciding which columns carry a bot's demux identity (and which
+    write the tenantless sentinel) is per-platform knowledge sitting in a shared
+    repo — the shape §12's "if you find yourself editing a `switch` in core, the
+    seam is missing a member" names. _Disposition:_ a provider
+    identity-projection member beside `secretShape`/`buildNewBotInstall`.
+14. **`packages/web/src/components/console/views/SettingsView.tsx:363-369` —
+    `BOT_PLATFORM_TABS` is a hand-written platform×region table.** Five rows with
+    their own labels and nouns, not derived from `platformRegistry`, and **not**
+    covered by `platform-set.test.tsx` (which pins only marks and labels), so it
+    can drift silently. It also re-spells names `lib/platform-labels.ts` already
+    owns. Adding a platform requires editing it. _Disposition:_ derive rows from
+    the registry (region expansion stays a chassis concern per §10.1) and extend
+    the drift test.
+15. **`packages/web/src/components/console/modals/AddIntegrationModal.tsx:92` —
+    `BotPlatform` closed type union.** The registry-derived tile list is cast
+    into it (`id as BotPlatform`, `:109`), so the type asserts a closed set the
+    runtime no longer has (blind spot §6 item 10). _Disposition:_ widen to
+    `string` at the boundary, or generate the union from the registry.
+16. **`packages/daemon/src/daemon.ts:18740` — the CP-registration capability list
+    is a hand copy.** `platforms: ['slack','telegram','discord','feishu']` is the
+    value the CP's pre-install gate and the console's tile gating consume,
+    sitting beside four in-file registries that already know the true set. A
+    platform registered in the daemon but forgotten here is silently
+    uninstallable. _Disposition:_ derive from the daemon's platform registries.
+17. **`packages/daemon/src/daemon.ts:4106` — observed-platform loop duplicates a
+    manifest read.** `for (const platform of ['telegram','discord','feishu'])` in
+    `refreshObservedChannels` restates `membershipEnumeration === 'observed'`,
+    which the _same file_ reads through `manifestFor` elsewhere. Two spellings of
+    one fact, one of them a hand list. _Disposition:_ filter the registry's ids
+    by the manifest.
+18. **`packages/web/src/app/globals.css` (≈2944-3100) — Slack-wizard-only CSS in
+    the host stylesheet with no ownership note.** `.cfgtok`, `.cfgtok-pop`,
+    `.cfg-scroll`, `.cfg-click-a/b` are consumed exclusively by
+    `platforms/slack/{Body,previews}.tsx`. It _cannot_ move under D1 (Tailwind v4
+    `@source` scanning is the stated hazard), so this is a low-severity
+    documentation gap rather than a relocation. _Disposition:_ add the
+    module-ownership comment; do not move the rules.
+19. **`packages/daemon/src/daemon.ts:5803, 5807, 5842, 5852, 6018, 6079, 13015` —
+    seven Slack-only core branches that §9.2's eleven-site table did not list.**
+    The agent-authorship verification, compound-mention address extraction and
+    collaboration close-response paths each gate on `platform === 'slack'` (or
+    pass `'slack'` as a literal directory key) in shared daemon code. They
+    predate the S2 exit doc (`git log -L` attributes them to #503, an ancestor of
+    #543), so this is an **incompleteness in the S2 reconciliation**, not an S3
+    regression — but they are live, they are core, and they are the branch class
+    the refactor exists to delete. _Disposition:_ classify under D2 (the
+    bot-authorship cluster looks like `botSenderRouting` plus a mention-directory
+    capability) and either move behind the Slack ingress module or earn a
+    manifest read; at minimum, amend §9.2's survivor table so the count is
+    honest.
+
+### 10.7 Evidence commands
+
+Everything above is reproducible at the pinned SHA. Sweeps use `--text`/`-a`
+without exception (F1).
+
+```bash
+git checkout c4d7969ea45a367fbef8e21649fe800788547645
+pnpm install
+pnpm --filter @agentconnect.md/protocol build
+pnpm --filter @agentconnect.md/message build
+pnpm --filter @agentconnect.md/control-plane prisma:generate
+
+# the NUL trap, demonstrated
+rg -n "row.reason" packages/daemon/src/daemon.ts    # binary file matches — no lines
+grep -an "row.reason" packages/daemon/src/daemon.ts # prints them
+grep -rlP '\x00' packages/*/src                     # -> packages/daemon/src/daemon.ts
+
+# survivor sweeps (per host)
+rg -n --text "'slack'|'telegram'|'discord'|'feishu'" packages/relay/src -g '!platforms/**' -g '!*.test.ts'
+rg -n --text "'slack'|'telegram'|'discord'|'feishu'" packages/control-plane/src -g '!platforms/**' -g '!*.test.ts' -g '!generated/**'
+rg -c --text "'slack'|'telegram'|'discord'|'feishu'|Slack|Telegram|Discord|Feishu|Lark" packages/web/src -g '!**/platforms/**' -g '!*.test.*'
+grep -an "'slack'\|'telegram'\|'discord'\|'feishu'" packages/daemon/src/daemon.ts
+
+# zero-result patterns (§10.4)
+rg -l --text "'(slack|telegram|discord|feishu)' *(===|!==)" packages/*/src
+rg -l --text -- "--slack|--telegram|--discord|--feishu|slackHintBlink" packages/web/src
+rg -l --text "slackTsMicros|compareSlackTs" packages/daemon/src -g '!platforms/**'
+rg -l --text "manifestFor" packages/control-plane/src packages/web/src
+
+# read-only test evidence at this pin
+pnpm --filter @agentconnect.md/protocol test           # 17 files / 280 passed
+pnpm --filter @agentconnect.md/relay test              # 24 files / 429 passed
+pnpm --filter @agentconnect.md/web test                # 110 files / 858 passed
+pnpm --filter @agentconnect.md/control-plane test:unit # 129 files / 1217 passed
+```
