@@ -8,7 +8,13 @@ import {
   offersDirectMessages,
   platformLabel
 } from '../platforms/read-ports.js'
-import type { ChannelAgentsReq, ChannelAgentsOk, KnowledgeSearchOk, OrgSkillsOk, Platform } from '@agentconnect.md/protocol'
+import type {
+  ChannelAgentsReq,
+  ChannelAgentsOk,
+  KnowledgeSearchOk,
+  OrgSkillsOk,
+  Platform
+} from '@agentconnect.md/protocol'
 import { randomUUID } from 'node:crypto'
 import { MemoryPathError, MemoryTooLargeError } from '../agents/memory.js'
 import type {
