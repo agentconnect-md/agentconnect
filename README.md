@@ -68,6 +68,10 @@ A small daemon runs the agents in the environment you operate. One console lets
 your team configure the fleet, connect channels and triggers, control access,
 and follow the work they are allowed to see.
 
+<p align="center">
+  <img src="docs/assets/console-agents.gif" alt="AgentConnect console: the Agents view listing deployed agents, their integrations, status, and 24-hour message counts" width="880" />
+</p>
+
 ## Why AgentConnect?
 
 AI agents are taking on work across the team, but most still live in individual
