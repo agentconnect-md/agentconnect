@@ -57,6 +57,59 @@ describe('isBuiltinSystemTool — auto-approve the daemon’s own MCP tools', ()
     expect(isBuiltinSystemTool(req({ title: 'mcp__othersrv__sendMessage' }))).toBe(false)
   })
 
+  // ── evaluation tools registered on the RESERVED server (collaboration-arena §6) ──
+  // These exist ONLY when an in-process evaluation environment is configured. The
+  // widening must be exactly that: same reserved server, names this daemon itself
+  // registered, and nothing else.
+  const arenaTools = new Set(['vote', 'kill', 'inspect', 'protect'])
+
+  it('auto-approves an evaluation tool this daemon registered on the reserved server', () => {
+    expect(isBuiltinSystemTool(req({ title: 'mcp__agentconnect__vote' }), undefined, arenaTools)).toBe(true)
+    expect(isBuiltinSystemTool(req({ kind: 'mcp__agentconnect__protect' }), undefined, arenaTools)).toBe(true)
+    expect(isBuiltinSystemTool(req({ toolCallId: 'mcp__agentconnect__inspect-7' }), undefined, arenaTools)).toBe(true)
+    expect(isBuiltinSystemTool(req({ title: 'mcp.agentconnect.kill' }), undefined, arenaTools)).toBe(true)
+  })
+
+  it('does NOT auto-approve the same evaluation name on a NON-reserved MCP server', () => {
+    // The scoping invariant: a name only ever matches under `agentconnect`.
+    expect(isBuiltinSystemTool(req({ title: 'mcp__othersrv__vote' }), undefined, arenaTools)).toBe(false)
+    expect(isBuiltinSystemTool(req({ title: 'mcp.othersrv.kill' }), undefined, arenaTools)).toBe(false)
+    expect(isBuiltinSystemTool(req({ kind: 'mcp__evil__protect' }), undefined, arenaTools)).toBe(false)
+  })
+
+  it('does NOT auto-approve an evaluation name this daemon did not register', () => {
+    expect(isBuiltinSystemTool(req({ title: 'mcp__agentconnect__vote' }), undefined, new Set())).toBe(false)
+    expect(isBuiltinSystemTool(req({ title: 'mcp__agentconnect__vote' }))).toBe(false)
+    expect(isBuiltinSystemTool(req({ title: 'mcp__agentconnect__somethingElse' }), undefined, arenaTools)).toBe(false)
+  })
+
+  it('production is unchanged: with no evaluation registry the verdicts are identical', () => {
+    for (const title of ['mcp__agentconnect__vote', 'Bash', 'mcp__othersrv__sendMessage', 'mcp__agentconnect__kill']) {
+      expect(isBuiltinSystemTool(req({ title }))).toBe(isBuiltinSystemTool(req({ title }), undefined, new Set()))
+    }
+    // …and every product tool still auto-approves with an empty extra set.
+    for (const name of ALL_TOOL_NAMES) {
+      expect(isBuiltinSystemTool(req({ title: `mcp__agentconnect__${name}` }), undefined, new Set())).toBe(true)
+    }
+  })
+
+  it('the tool-call correlation path applies the same reserved-server scoping', () => {
+    const call = (fields: Record<string, unknown>) => ({ sessionUpdate: 'tool_call', ...fields })
+    expect(isBuiltinSystemToolCall(call({ title: 'mcp__agentconnect__vote' }), arenaTools)).toBe(true)
+    expect(isBuiltinSystemToolCall(call({ title: 'mcp__othersrv__vote' }), arenaTools)).toBe(false)
+    expect(isBuiltinSystemToolCall(call({ title: 'mcp__agentconnect__vote' }))).toBe(false)
+    // Structured identity stays authoritative and server-scoped.
+    expect(isBuiltinSystemToolCall(call({ rawInput: { server: 'agentconnect', tool: 'vote' } }), arenaTools)).toBe(true)
+    expect(isBuiltinSystemToolCall(call({ rawInput: { server: 'othersrv', tool: 'vote' } }), arenaTools)).toBe(false)
+    // A misleading display title must not override a foreign structured server.
+    expect(
+      isBuiltinSystemToolCall(
+        call({ title: 'mcp__agentconnect__vote', rawInput: { server: 'othersrv', tool: 'vote' } }),
+        arenaTools
+      )
+    ).toBe(false)
+  })
+
   it('fail-safe: an unknown/friendly title or missing toolCall falls through to the card', () => {
     expect(isBuiltinSystemTool(req({ title: 'Message another agent' }))).toBe(false)
     expect(isBuiltinSystemTool(req({}))).toBe(false)

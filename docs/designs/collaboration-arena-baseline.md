@@ -180,7 +180,7 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 15 files, 107 tests
+pnpm eval:collab:contracts # 15 files, 109 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
@@ -207,20 +207,20 @@ Full gate, measured on this branch:
 | ------------------------------------------------------ | ------- |
 | `evals/test/routing-acceptance.test.ts`                | 8       |
 | `evals/test/game-runner.test.ts`                       | 5       |
-| `evals/test/werewolf.test.ts`                          | 11      |
+| `evals/test/werewolf.test.ts`                          | 12      |
 | `evals/test/quota-counting.test.ts`                    | 8       |
 | `evals/test/cross-room-counting.test.ts`               | 6       |
 | `evals/test/counting.test.ts`                          | 11      |
 | `evals/test/world-authorization.test.ts`               | 10      |
 | `evals/test/collaboration-game-provider.test.ts`       | 9       |
 | `evals/test/game-result-assertion.test.ts`             | 7       |
-| `evals/test/game-subject.test.ts`                      | 10      |
+| `evals/test/game-subject.test.ts`                      | 11      |
 | `evals/test/connection-surface.test.ts`                | 5       |
 | `evals/test/topology.test.ts`                          | 5       |
 | `evals/test/virtual-connections.test.ts`               | 4       |
 | `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
 | `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
-| **Total**                                              | **107** |
+| **Total**                                              | **109** |
 
 **0 expected-fail.** Every pin is an ordinary assertion.
 
@@ -236,6 +236,10 @@ before a single wave is injected (`preflightRealSubject` in
   corrupted `npx` cache produces exactly that, and the symptom without the check
   is a game that admits every wave, produces zero agent effects, and burns its
   whole deadline before writing an empty world.
+- **The template must use `permissionMode: default`.** A non-prompting mode
+  (`dontAsk`) makes the runtime deny every AgentConnect tool locally, before the
+  daemon ever sees a permission request, so no game action can land (§5.1).
+  `auto` stalls on the runtime's classifier.
 - **`AGENTCONNECT_DAEMON_ENTRY` must point at the built daemon bundle.** A real
   runtime reaches every AgentConnect tool through a `mcp-bridge` subprocess
   spawned from the daemon CLI; driving the arena from source makes
@@ -255,10 +259,11 @@ export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
 
 ### 5.1 Sequential Werewolf, real local Claude Code
 
-Measured on this branch with real local Claude Code over ACP
+These are the **discussion-only** runs, measured before the permission blocker
+below was fixed: real local Claude Code over ACP
 (`npx -y @agentclientprotocol/claude-agent-acp@0.64.0`, model pinned to sonnet,
-`permissionMode: dontAsk`, memory off, from-scratch workspace). Five players, one
-round, five trials. Real subjects get **observed reliability, never a
+`permissionMode: dontAsk`, memory off, from-scratch workspace), five players, one
+round, five trials. §5.2 has the full games. Real subjects get **observed reliability, never a
 reproducible single score** (§8.1), so all five trials are reported.
 
 | Trial | Seed | Order | Spoke | Outcome          | Out-of-order | Gated wakes | Latches |
@@ -303,22 +308,112 @@ this environment"_ — and searched their own runtime's deferred tool list for
 fault; the run was `passed` with `acceptedActions: 0`. That is precisely the class
 of silent real-subject failure the preflight now refuses to let happen.
 
-**The §6 tools are visible to a real runtime but not auto-approved.** With the
-bridge entry corrected, the tools appear correctly as
-`mcp__agentconnect__vote` / `…__inspect` / `…__protect`, and the models reach for
-them. The calls are then refused by the runtime's own permission layer
-(`permissionMode: dontAsk` — "don't prompt, deny if not pre-approved"), and the
-models report that verbatim in the room. The daemon does auto-allow its own MCP
-tools without a card (`isBuiltinSystemTool`), but that set is built from the
-static product tool list (`ALL_TOOL_NAMES`), so a game's §6 tools are not in it
-and fall through to the interactive policy — which has no surface in a headless
-arena run. `permissionMode: auto` does not help: the run stalls on the
-classifier. **Consequence for the numbers above: the real-model measurement
-covers the sequential DISCUSSION only.** Every structured-action count
-(`votesCast`, `kills`, `inspections`, `protections`) is 0 in a real-subject run
-and those figures come from the scripted gate.
+**Why no real game could reach a winner, and what fixed it.** With the bridge
+entry corrected the tools appear correctly as `mcp__agentconnect__vote` /
+`…__inspect` / `…__protect`, and the models reach for them — then every call
+failed, so there was no lynch, no night kill, and no win condition
+(`acceptedActions: 0` in every trial).
 
-### 5.2 Peer-driven counting (historical)
+The mechanism, measured rather than assumed — and it is **not** the daemon's
+auto-allow set, which an earlier revision of this document wrongly blamed:
+
+- The daemon records **zero `permission.*` events** for an entire real run. The
+  ACP `session/request_permission` is never sent, so `isBuiltinSystemTool` is
+  never consulted at all.
+- Claude Code denies **locally, inside the runtime**, 24–31 times per run:
+  _"Permission to use `mcp__agentconnect__protect` has been denied because Claude
+  Code is running in don't ask mode."_ `dontAsk` means "do not prompt, DENY if
+  not pre-approved".
+
+Three subject-side pre-approvals were tried and all failed: workspace
+`.claude/settings.json` + `settings.local.json` (both rule shapes) are written
+and survive the run but are **not honored**; relocating the user tier with
+`CLAUDE_CONFIG_DIR` takes the runtime's authentication with it (`infra_error`,
+zero peer wakes); `permissionMode: auto` stalls on the classifier.
+
+So a headless real subject must run in `permissionMode: **default**`, where the
+request does reach the daemon — and the daemon must then be willing to approve a
+game's own tools without a card, because a headless run has no card surface (its
+fallback is to hold the request, which is what made `auto` hang).
+
+That is the one **daemon** change this work required
+(`isBuiltinSystemTool` / `isBuiltinSystemToolCall`): the auto-allow set is no
+longer the hardcoded product list but _the tools this daemon actually registered
+on its own reserved `agentconnect` MCP server for that session_. The scoping is
+the whole point and is pinned by tests:
+
+- the extra names come from `evaluation.environment.tools`, injected in-process
+  at Daemon construction — no wire, agent, peer, CP or config path can add one;
+- that registry is **empty in production**, so behavior there is unchanged;
+- a name only matches under the reserved `agentconnect` prefix, so the same name
+  on any other MCP server still gets its card (negative test);
+- startup already rejects an evaluation tool that shadows or duplicates a product
+  tool, and the runtime's dangerous built-ins (Bash/Edit/…) are not in the set.
+
+### 5.2 Full real-model games, played to a winner
+
+Once the permission blocker above was removed (`permissionMode: default` plus the
+daemon's reserved-server auto-allow), real Claude Code plays the **whole** game:
+night → sequential day discussion → structured vote → resolution, repeating
+until a faction wins. Same runtime and model as §5.1.
+
+| Trial | Players | Seed | Winner         | Rounds | Actions (vote/kill/inspect/protect) | Order completion | Leaks |
+| ----- | ------- | ---- | -------------- | ------ | ----------------------------------- | ---------------- | ----- |
+| 1     | 5       | 81   | **village**    | 2      | 14 (9 / 1 / 2 / 2)                  | 2 of 2 days      | 0     |
+| 2     | 5       | 91   | **werewolves** | 1      | 3 (0 / 1 / 1 / 1)                   | no day reached   | 0     |
+| 3     | 5       | 92   | **werewolves** | 2      | 14 (8 / 2 / 2 / 2)                  | 2 of 2 days      | 0     |
+| 4     | 7       | 101  | **werewolves** | 3      | 16 (10 / 3 / 1 / 2)                 | 2 of 2 days      | 0     |
+| 5     | 7       | 102  | **werewolves** | 2      | 11 (6 / 2 / 1 / 2)                  | 1 of 1 day       | 0     |
+
+All five trials reached `terminalReason: completed` with a real win condition
+satisfied by the survivors, and **zero** canary leaks, zero unauthorized effects,
+zero wrong-room messages, zero gated peer wakes and zero loop-guard latches.
+Across every day of every game the speaking order was completed **in order**:
+`speechesDelivered == speakingTurnsOwed`, `outOfOrderSpeeches: 0`,
+`speakersNeverReached: 0`. Nothing stalled.
+
+Village won 1 of 5 — a small sample, and not something to read as a balance
+result.
+
+**Seven players is where the day phase carries the game.** Trial 4 ran the full
+three-round arc: night 1 killed the seer; day 1's six-player order completed and
+lynched `player-2`, a **werewolf**; night 2 killed a villager; day 2's four-player
+order completed and lynched the doctor; night 3's kill left one wolf against one
+villager, and the **werewolves won** on `livingWolves >= livingOthers`. Ten
+speeches, ten owed, **zero out-of-order**, both days `order_complete`, 96
+admitted automatic turns with **zero** gated.
+
+**A five-player table can end before any discussion.** Trial 2 is not a failure:
+with 2 wolves and 3 villagers, one successful night-1 kill makes it 2-vs-2 and
+the werewolves win by the ordinary condition (`livingWolves >= livingOthers`)
+before a day ever opens. That is why `daysOpened: 0` there, and why seven players
+is the size at which the day phase reliably matters.
+
+Trial 1 is the fullest example, and the game reads like Werewolf:
+
+- **Night 1** — doctor protects itself, seer inspects `player-1`, the two wolves
+  coordinate in the den (`"Wolf pack check-in: I'll go with player-1 as tonight's
+target"` → `"Agreement confirmed … calling the kill"`) and kill `player-1`.
+  The doctor's save lands: nobody dies.
+- **Day 1** — all five speak once, in the announced order, no out-of-order
+  speeches. Vote: `player-2` lynched, revealed a **werewolf**.
+- **Night 2** — seer inspects `player-5` and learns it is a wolf; the surviving
+  wolf's kill never resolves.
+- **Day 2** — all four speak in order; the seer, now holding the read, votes
+  `player-5`, joined by the doctor and the villager. `player-5` lynched, revealed
+  the second **werewolf** → **village wins**, both wolves lynched.
+
+The private information really did travel the private channels: the seer's result
+arrives as a referee DM (`"Got it — player-5 is a werewolf"` in its own DM, never
+in the room), the wolves coordinate only in the den, and the canary assertions
+confirm no private content reached the public room.
+
+**The per-round budget reset carries the game across rounds.** Trial 1 spent 52
+admitted automatic turns and trial 3 spent 48 — far past the 8-per-window budget
+— with **zero** gated wakes, because each round's referee `DAY`/`VOTE` broadcast
+is a trusted human turn that resets the automatic counter (§6.5).
+
+### 5.3 Peer-driven counting (historical)
 
 > **Provenance — read before quoting these.** These numbers were measured on
 > **`main` @ 87d36bc** with real local Claude Code over ACP (model sonnet). They
@@ -330,7 +425,7 @@ and those figures come from the scripted gate.
 > quality** figures (entropy, duplicates, regenerations) as the durable signal
 > and the **depth** figures as historical.
 >
-> Everything in §2, §3, §4, §5.1 and §6 **was** measured on the current branch.
+> Everything in §2, §3, §4, §5.1, §5.2 and §6 **was** measured on the current branch.
 
 Both runs use the peer-driven variant: one human-sourced start message, then a
 silent referee.
@@ -593,7 +688,7 @@ Stated explicitly, since several claims above are structural rather than observe
 
 | Claim                                                       | Basis                                                                                                                                             |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The 107 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
+| The 109 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
 | The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                                                         |
 | Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                                                         |
 | Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                                                          |
@@ -612,6 +707,13 @@ Stated explicitly, since several claims above are structural rather than observe
 | Real Claude Code speaks strictly in order when it speaks    | **Measured**, this branch — 0 out-of-order speeches across 5 trials (§5.1)                                                                        |
 | ...but carries the order to the end in only 3 of 5 trials   | **Measured**, this branch (§5.1); both stalls had 0 gated wakes and 0 latches, so no protection was involved                                      |
 | A real subject with a bad MCP bridge entry loses ALL tools  | **Measured**, this branch (§5.1 trial B) — now refused by the preflight                                                                           |
+| Real Claude Code plays Werewolf to a winner, multi-round    | **Measured**, this branch (§5.2) — 4 games, 4 winners, 1–3 rounds, 0 leaks                                                                        |
+| A 5-player table can end at night 1 with no day at all      | **Measured** (§5.2 trial 2) — 2 wolves vs 3 others, one kill makes it 2-vs-2                                                                      |
+| The per-round budget reset carries a multi-round game       | **Measured** — 48–96 admitted automatic turns per game, 0 gated                                                                                   |
+| A real subject's tool calls were denied INSIDE the runtime  | **Measured** — the denial text names `don't ask mode`, and the daemon logs zero `permission.*` events for the whole run                           |
+| ...so the daemon's auto-allow set was never the blocker     | **Measured** — an earlier revision of this document claimed it was; the request never reaches the daemon at all                                   |
+| Workspace `.claude/settings.json` pre-approval is ignored   | **Measured** — files written and confirmed surviving the run, tools still denied                                                                  |
+| `CLAUDE_CONFIG_DIR` relocation breaks the runtime's auth    | **Measured** — `infra_error`, 0 peer wakes, 32s collapse                                                                                          |
 | Real-model 2 × 20 → 10, entropy 1.0                         | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                                                             |
 | Real-model 4 × 8 → 8/8, entropy 0.70                        | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                                                     |
 | The same real-model run would now stop at 16 edges          | **Inferred** from the scripted chain result; no real-model run has been done since #628                                                           |
