@@ -976,6 +976,31 @@ function SessionDetailFrame({ children, withRail = true }: { children: ReactNode
   )
 }
 
+function sessionUnavailableReasons(providerName: string | undefined, profileLinked: boolean | undefined): string[] {
+  if (!providerName) {
+    return ['The session doesn’t exist or has been removed.', 'The Agent isn’t shared with you.']
+  }
+  if (profileLinked === false) {
+    return [
+      'The session doesn’t exist or has been removed.',
+      `Your ${providerName} profile isn’t linked.`,
+      'The Agent’s Team visibility doesn’t include you.'
+    ]
+  }
+  if (profileLinked === true) {
+    return [
+      'The session doesn’t exist or has been removed.',
+      `Your linked ${providerName} profile belongs to a different workspace.`,
+      'The Agent’s Team visibility doesn’t include you.'
+    ]
+  }
+  return [
+    'The session doesn’t exist or has been removed.',
+    `Your ${providerName} profile isn’t linked or belongs to a different workspace.`,
+    'The Agent’s Team visibility doesn’t include you.'
+  ]
+}
+
 export default function SessionDetailView() {
   const acpRegistry = useAcpRegistry()
   const { activeOrg, orgPath } = useOrgs()
@@ -1314,11 +1339,14 @@ export default function SessionDetailView() {
   )
   const profileLinkCandidate =
     sessionDetailError instanceof ApiError && sessionDetailError.status === 404 && profileIdentityProvider !== undefined
-  const showProfileLink =
+  const profileIdentityReady =
     profileLinkCandidate &&
     !profileIdentityLoading &&
     profileIdentityError === undefined &&
-    profileIdentity?.linked === false
+    profileIdentity !== undefined
+  const profileLinked = profileIdentityReady ? profileIdentity.linked : undefined
+  const profileNeedsLink = profileLinked === false
+  const unavailableReasons = sessionUnavailableReasons(profileLinkProviderName, profileLinked)
   // SWR normally clears data when its key changes. Keep the id check explicit
   // because this view now persists across route ids and must never merge a
   // retained previous snapshot into the newly selected rail row.
@@ -2061,16 +2089,30 @@ export default function SessionDetailView() {
         <NotFound
           icon="message-square-off"
           kind="SESSION"
-          title="Session not found"
-          pre="No session "
+          title="Session unavailable"
+          pre="Session "
           chip={id}
-          post=" in this organization. It may have expired or been deleted."
+          post={
+            <>
+              <span className="desktop:whitespace-nowrap"> isn’t available to you.</span>
+              <div className="mx-auto mt-3 w-fit max-w-full text-left">
+                <div className="font-medium text-(--text-primary)">Possible reasons:</div>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {unavailableReasons.map((reason) => (
+                    <li key={reason} className="desktop:whitespace-nowrap">
+                      {reason}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          }
           actionLabel="Back to sessions"
           actionHref={orgPath('/sessions')}
           secondaryAction={
-            showProfileLink && profileLinkProviderName && profileLinkProvider
+            profileIdentityReady && profileLinkProviderName && profileLinkProvider
               ? {
-                  label: `Link ${profileLinkProviderName} profile`,
+                  label: `${profileNeedsLink ? 'Link' : 'Review'} ${profileLinkProviderName} profile`,
                   href: orgPath('/profile#sign-in-methods'),
                   icon: <SocialLoginMark target={profileLinkProvider} size={15} />
                 }

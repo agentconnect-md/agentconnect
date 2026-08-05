@@ -69,7 +69,7 @@ export function NotFound({
         404 · {kind}
       </div>
       <div className="mt-[5px] font-sans text-[15px] font-semibold leading-normal text-(--text-primary)">{title}</div>
-      <div className="mt-[6px] max-w-[420px] font-sans text-[13px] font-normal leading-[1.6] text-(--text-secondary)">
+      <div className="mt-[6px] max-w-[620px] font-sans text-[13px] font-normal leading-[1.6] text-(--text-secondary)">
         {pre}
         {chip !== undefined && (
           <span className="mono mx-[2px] rounded-xs border border-(--border-subtle) bg-(--surface-sunken) px-[6px] py-px text-[12px] text-(--text-primary)">
