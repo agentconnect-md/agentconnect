@@ -978,26 +978,26 @@ function SessionDetailFrame({ children, withRail = true }: { children: ReactNode
 
 function sessionUnavailableReasons(providerName: string | undefined, profileLinked: boolean | undefined): string[] {
   if (!providerName) {
-    return ['The session no longer exists.', 'The Agent isn’t shared with you.']
+    return ['The session doesn’t exist or has been removed.', 'The Agent isn’t shared with you.']
   }
   if (profileLinked === false) {
     return [
+      'The session doesn’t exist or has been removed.',
       `Your ${providerName} profile isn’t linked.`,
-      'The Agent’s Team visibility doesn’t include you.',
-      'The session no longer exists.'
+      'The Agent’s Team visibility doesn’t include you.'
     ]
   }
   if (profileLinked === true) {
     return [
+      'The session doesn’t exist or has been removed.',
       `Your linked ${providerName} profile belongs to a different workspace.`,
-      'The Agent’s Team visibility doesn’t include you.',
-      'The session no longer exists.'
+      'The Agent’s Team visibility doesn’t include you.'
     ]
   }
   return [
+    'The session doesn’t exist or has been removed.',
     `Your ${providerName} profile isn’t linked or belongs to a different workspace.`,
-    'The Agent’s Team visibility doesn’t include you.',
-    'The session no longer exists.'
+    'The Agent’s Team visibility doesn’t include you.'
   ]
 }
 
@@ -2094,12 +2094,14 @@ export default function SessionDetailView() {
           chip={id}
           post={
             <>
-              <span> isn’t available to you.</span>
-              <div className="mx-auto mt-3 max-w-[360px] text-left">
+              <span className="desktop:whitespace-nowrap"> isn’t available to you.</span>
+              <div className="mx-auto mt-3 w-fit max-w-full text-left">
                 <div className="font-medium text-(--text-primary)">Possible reasons:</div>
                 <ul className="mt-1 list-disc space-y-1 pl-5">
                   {unavailableReasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
+                    <li key={reason} className="desktop:whitespace-nowrap">
+                      {reason}
+                    </li>
                   ))}
                 </ul>
               </div>
