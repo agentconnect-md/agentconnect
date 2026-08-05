@@ -34,7 +34,10 @@ const silent = { info() {}, warn() {} }
 
 class FakeStore implements DreamStorePort {
   dreams = new Map<string, DreamInfo>()
-  sources: { sessionId: string; channel: string; thread: string }[] = [
+  // `updatedAt` is optional in fixtures; dreamSessionSources defaults it to "now"
+  // so a source without an explicit time reads as recent (newer than any dream
+  // created earlier in a test). Auto-window tests set it explicitly.
+  sources: { sessionId: string; channel: string; thread: string; updatedAt?: number }[] = [
     { sessionId: 'sess-1', channel: 'C1', thread: 'T1' }
   ]
   rows: { sender: string; text: string }[] = [{ sender: 'user-1', text: 'please use tabs' }]
@@ -70,8 +73,9 @@ class FakeStore implements DreamStorePort {
   supersededDreams(): DreamInfo[] {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
-  dreamSessionSources(): { sessionId: string; channel: string; thread: string }[] {
-    return this.sources
+  dreamSessionSources(): { sessionId: string; channel: string; thread: string; updatedAt: number }[] {
+    const now = Date.now()
+    return this.sources.map((s) => ({ ...s, updatedAt: s.updatedAt ?? now }))
   }
   toolRows: { sender: string; text: string; kind?: string }[] = []
   dreamTranscriptText(
@@ -141,8 +145,10 @@ async function settle(store: FakeStore, dreamId: string): Promise<DreamInfo> {
 }
 
 describe('DreamRunner pipeline', () => {
-  it('hasNewSessionsSinceLastDream: only new session ids past the last successful dream count', async () => {
+  it('auto window: only sessions active since the last successful dream count (else skip)', async () => {
     const { store, runner } = await setup({})
+    const dreamAt = '2026-01-02T00:00:00.000Z'
+    const cutoff = Date.parse(dreamAt)
     const dream = (status: DreamInfo['status'], sessionIds: string[], dreamId: string): DreamInfo => ({
       dreamId,
       agentId: 'a1',
@@ -150,34 +156,28 @@ describe('DreamRunner pipeline', () => {
       trigger: 'schedule',
       sessionIds,
       snapshotDigest: 'sha256:x',
-      createdAt: new Date().toISOString()
+      createdAt: dreamAt
     })
 
-    // Never dreamed → the first scheduled run always proceeds.
-    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1' }]
+    // Never dreamed → the first scheduled run always proceeds (no baseline).
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 1000 }]
     expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
 
-    // Last successful dream already mined the only current session → skip.
+    // Last successful dream at `dreamAt`; the only session predates it → skip.
     store.insertDream(dream('completed', ['sess-1'], 'd1'))
     expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
 
-    // A brand-new session appears → run.
+    // A session with activity AFTER the last dream → run.
     store.sources = [
-      { sessionId: 'sess-2', channel: 'C2', thread: 'T2' },
-      { sessionId: 'sess-1', channel: 'C1', thread: 'T1' }
+      { sessionId: 'sess-2', channel: 'C2', thread: 'T2', updatedAt: cutoff + 1000 },
+      { sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 1000 }
     ]
     expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
 
-    // An adopted dream that already saw both sessions → skip again. (Clear first:
-    // the fake's listDreams is insertion-ordered, so a single baseline keeps the
-    // "most recent successful" unambiguous — the real store orders by createdAt.)
+    // Only a FAILED dream exists → no successful baseline → mine everything (run).
     store.dreams.clear()
-    store.insertDream(dream('adopted', ['sess-1', 'sess-2'], 'd2'))
-    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
-
-    // Only a FAILED dream covers the current sessions → no successful baseline → run (retry).
-    store.dreams.clear()
-    store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd3'))
+    store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd2'))
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 5000 }]
     expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
   })
 

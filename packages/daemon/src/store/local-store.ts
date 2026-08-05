@@ -2736,10 +2736,10 @@ export class LocalStore {
   dreamSessionSources(
     agentId: string,
     limit: number
-  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[] {
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[] {
     const rows = this.db
       .prepare(
-        `SELECT acpSessionId AS sessionId, channel, thread, transportScope FROM sessions
+        `SELECT acpSessionId AS sessionId, channel, thread, transportScope, updatedAt FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
@@ -2748,6 +2748,7 @@ export class LocalStore {
       channel: string
       thread: string
       transportScope: string | null
+      updatedAt: number
     }[]
     return rows.map(({ transportScope, ...row }) => (transportScope ? { ...row, transportScope } : row))
   }

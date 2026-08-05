@@ -211,9 +211,16 @@ interface DreamRecord {
 
 1. **Snapshot.** Copy `<agent-root>/memory/` (excluding `.history`) into
    `memory-dreams/<dreamId>/input/`; record `snapshotDigest`.
-2. **Gather signal.** Pull the last `sessionWindow` sessions' transcripts for
-   this agent from the daemon store. Every session the agent itself participated
-   in is mined — channel, DM, webchat, external (GitHub), A2A, and launched alike;
+2. **Gather signal.** Pull the relevant sessions' transcripts for this agent from
+   the daemon store. The window is sized **automatically** (no operator config):
+   the sessions with activity since the last successful dream — each one's
+   `updatedAt` is newer than that dream's start — capped at 100; the first dream
+   (no baseline) takes the current corpus up to the cap. A scheduled tick with no
+   such session is skipped (nothing new to consolidate). An explicit
+   `sessionWindow` (a per-run manual override, or a legacy configured policy
+   value) instead pins a fixed newest-N window. Every session the agent itself
+   participated in is eligible — channel, DM, webchat, external (GitHub), A2A, and
+   launched alike;
    the per-turn capture-visibility gate is deliberately **not** applied here (see
    session-visibility.md §5.1 dream-path carve-out). Peer isolation stays with the
    source: sourcing is `agentId`-scoped and each transcript returns only the rows

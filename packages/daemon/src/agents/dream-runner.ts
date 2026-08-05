@@ -119,7 +119,7 @@ export interface DreamStorePort {
   dreamSessionSources(
     agentId: string,
     limit: number
-  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[]
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
   /** Chronological text rows of one session thread, scoped to the agent. */
   dreamTranscriptText(
     channel: string,
@@ -198,13 +198,15 @@ export interface DreamRunnerDeps {
   onStaged?(agentId: string, dreamId: string): void | Promise<void>
 }
 
-const DEFAULT_SESSION_WINDOW = 20
 const TRANSCRIPT_ROWS_PER_SESSION = 200
-// How far back to scan an agent's dreams for the last SUCCESSFUL one when
-// deciding whether a scheduled dream has new sessions to mine. Generous enough
-// that a run of failed dreams after a success never hides the baseline; if it is
-// somehow exceeded the check fails open (the scheduled dream runs).
+// How far back to scan an agent's dreams for the last SUCCESSFUL one when sizing
+// the automatic session window. Generous enough that a run of failed dreams
+// after a success never hides the baseline.
 const LAST_SUCCESSFUL_DREAM_SCAN = 50
+// Safety cap on the automatic window: the dream self-sizes to "sessions with
+// activity since the last successful dream" (no operator config), but a first
+// dream — or a long-idle agent — must not mine an unbounded corpus.
+const MAX_AUTO_SESSION_WINDOW = 100
 const DREAMS_DIRNAME = 'memory-dreams'
 const BACKUPS_DIRNAME = 'memory-backups'
 /** Staged file names are the validator's own outputs; anything else is a violation. */
@@ -347,14 +349,37 @@ export class DreamRunner {
    * already consolidated that session's thread — which matches "no new sessions".
    */
   hasNewSessionsSinceLastDream(agentId: string): boolean {
-    const sessionWindow = this.deps.dreamingPolicyFor(agentId)?.sessionWindow ?? DEFAULT_SESSION_WINDOW
-    const currentIds = this.deps.store.dreamSessionSources(agentId, sessionWindow).map((s) => s.sessionId)
-    const lastSuccessful = this.deps.store
+    return this.selectSessionSources(agentId).length > 0
+  }
+
+  /** The most recent dream that successfully mined its sessions (completed or
+   *  adopted) — the baseline the automatic window measures "new activity" from. */
+  private lastSuccessfulDream(agentId: string): DreamInfo | undefined {
+    return this.deps.store
       .listDreams(agentId, LAST_SUCCESSFUL_DREAM_SCAN)
       .find((d) => d.status === 'completed' || d.status === 'adopted')
-    if (!lastSuccessful) return true
-    const mined = new Set(lastSuccessful.sessionIds)
-    return currentIds.some((id) => !mined.has(id))
+  }
+
+  /**
+   * The sessions a dream should mine, chosen AUTOMATICALLY — no operator config.
+   * Default: every session with activity since the last successful dream (its
+   * `updatedAt` is newer than that dream's start), capped at
+   * {@link MAX_AUTO_SESSION_WINDOW}. The first dream (no baseline) mines the
+   * current corpus up to the cap. An explicit `sessionWindow` (a per-run manual
+   * override, or a legacy configured policy value) still pins a fixed newest-N
+   * window instead.
+   */
+  private selectSessionSources(
+    agentId: string,
+    explicitWindow?: number
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[] {
+    if (explicitWindow !== undefined) return this.deps.store.dreamSessionSources(agentId, explicitWindow)
+    const recent = this.deps.store.dreamSessionSources(agentId, MAX_AUTO_SESSION_WINDOW)
+    const lastSuccessful = this.lastSuccessfulDream(agentId)
+    if (!lastSuccessful) return recent
+    const cutoff = Date.parse(lastSuccessful.createdAt)
+    if (!Number.isFinite(cutoff)) return recent
+    return recent.filter((s) => s.updatedAt > cutoff)
   }
 
   async start(
@@ -379,7 +404,10 @@ export class DreamRunner {
       if (this.active.has(agentId)) {
         throw new DreamStateError('a dream is already in flight for this agent')
       }
-      const sessionWindow = opts.sessionWindow ?? policy.sessionWindow ?? DEFAULT_SESSION_WINDOW
+      // An explicit sessionWindow (per-run manual override, or a legacy configured
+      // policy value) pins a fixed newest-N window; otherwise the window is chosen
+      // AUTOMATICALLY (sessions active since the last successful dream, capped).
+      const explicitWindow = opts.sessionWindow ?? policy.sessionWindow
       const instructions = opts.instructions ?? policy.instructions
       // A dream distills EVERY session this agent participated in — channel, DM,
       // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
@@ -392,7 +420,7 @@ export class DreamRunner {
       // now handled by the dream policy prompt: it must not surface a person's
       // private/personal conversation as shared organization knowledge
       // (session-visibility.md §5.1, #36 follow-up).
-      const sources = this.deps.store.dreamSessionSources(agentId, sessionWindow)
+      const sources = this.selectSessionSources(agentId, explicitWindow)
 
       // Snapshot the live store — the digest is the adoption fence. Taken under
       // the shared memory-dir lock so it cannot tear against a concurrent
