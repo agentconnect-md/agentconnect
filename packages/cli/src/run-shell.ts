@@ -1,5 +1,7 @@
 import { RESERVED_RESTART_CODE } from '@agentconnect.md/protocol'
 import { exitAsChild, resolveDaemonEntry, spawnDaemon, type ChildResult } from './delegate.js'
+import { repairDaemonBundleModes } from './install.js'
+import { versionDir } from './paths.js'
 import { runRecoveryFlow, shouldOfferRecovery } from './run-recovery.js'
 import { spawnDaemonViaLoginShell } from './service-spawn.js'
 import { versionInstall } from './version-commands.js'
@@ -10,9 +12,9 @@ import { currentVersion, readMeta } from './version-store.js'
  * through here): if no daemon version is active yet — a fresh host where the user
  * ran `run`/`login` without a prior `agentconnect install` — pull the channel's
  * latest and activate it, so the daemon starts out of the box instead of erroring
- * with "no active daemon". Two short-circuits: an already-active `current`, and
- * dev mode (`AGENTCONNECT_DAEMON_ENTRY` points the CLI at an in-repo entry,
- * bypassing the version store entirely).
+ * with "no active daemon". An already-active `current` only needs its known
+ * native payload modes self-healed; dev mode (`AGENTCONNECT_DAEMON_ENTRY` points
+ * the CLI at an in-repo entry) bypasses the version store entirely.
  *
  * Channel resolution is delegated to `versionInstall`, which reads `readMeta` — a
  * stored channel preference wins, else the CLI-derived default (`defaultChannel`).
@@ -24,7 +26,11 @@ import { currentVersion, readMeta } from './version-store.js'
  */
 export async function ensureDaemonInstalled(root: string): Promise<void> {
   if (process.env.AGENTCONNECT_DAEMON_ENTRY) return
-  if (currentVersion(root)) return
+  const current = currentVersion(root)
+  if (current) {
+    repairDaemonBundleModes(versionDir(root, current))
+    return
+  }
   console.error(`agentconnect: no daemon installed — installing the latest ${readMeta(root).channel} version…`)
   await versionInstall(root, {})
 }

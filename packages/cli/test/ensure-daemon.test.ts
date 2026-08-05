@@ -14,12 +14,18 @@ vi.mock('../src/version-store.js', () => ({
   readMeta: (root: string) => readMeta(root)
 }))
 
+const repairDaemonBundleModes = vi.fn()
+vi.mock('../src/install.js', () => ({
+  repairDaemonBundleModes: (root: string) => repairDaemonBundleModes(root)
+}))
+
 const { ensureDaemonInstalled } = await import('../src/run-shell.js')
 
 const ENTRY = 'AGENTCONNECT_DAEMON_ENTRY'
 
 beforeEach(() => {
   versionInstall.mockClear()
+  repairDaemonBundleModes.mockClear()
   currentVersion.mockReset().mockReturnValue(null)
   delete process.env[ENTRY]
 })
@@ -39,6 +45,7 @@ describe('ensureDaemonInstalled', () => {
     currentVersion.mockReturnValue('1.2.3')
     await ensureDaemonInstalled('/root')
     expect(versionInstall).not.toHaveBeenCalled()
+    expect(repairDaemonBundleModes).toHaveBeenCalledWith('/root/versions/1.2.3')
   })
 
   it('skips in dev mode (AGENTCONNECT_DAEMON_ENTRY set)', async () => {
