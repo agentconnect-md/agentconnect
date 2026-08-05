@@ -337,9 +337,19 @@ async function probeRuntime(
         /* already reaped */
       }
     }
+    // Escalation is only ever safe while the leader is alive, because that is
+    // what keeps the pgid ours. Once it exits, the pending SIGKILL MUST be
+    // cancelled: an empty pgid can be recycled, and a late `kill(-pid)` would
+    // land on an unrelated process group. `AcpHost.stop()` cancels for the same
+    // reason and never signals a pgid whose ownership it cannot still prove.
+    let escalation: NodeJS.Timeout | undefined
     // Sweep group survivors the moment the leader exits, while its pgid provably
     // cannot have been recycled (a pgid stays reserved while any member lives).
     child.once('exit', () => {
+      if (escalation) {
+        clearTimeout(escalation)
+        escalation = undefined
+      }
       if (child.pid !== undefined && process.platform !== 'win32') {
         try {
           process.kill(-child.pid, 'SIGKILL')
@@ -355,10 +365,13 @@ async function probeRuntime(
       settled = true
       clearTimeout(timer)
       // Graceful first, then escalate — a wrapper that traps SIGTERM must not be
-      // able to keep the probe's adapter alive past the run.
+      // able to keep the probe's adapter alive past the run. If the child exits
+      // in the meantime, the exit listener above cancels this.
       killTree('SIGTERM')
-      const escalation = setTimeout(() => killTree('SIGKILL'), 2_000)
-      escalation.unref?.()
+      if (child.exitCode === null && child.signalCode === null) {
+        escalation = setTimeout(() => killTree('SIGKILL'), 2_000)
+        escalation.unref?.()
+      }
       if (error) reject(error)
       else resolve()
     }
