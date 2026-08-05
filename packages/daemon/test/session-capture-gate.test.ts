@@ -49,7 +49,7 @@ describe('capture gate — local state', () => {
     expect(store.isCaptureExcluded('acp-early')).toBe(false)
   })
 
-  it('keeps a locally bound external session isolated despite an older org ack', () => {
+  it('lets an external (Slack/Feishu channel) session capture, following the gate not a hard deny', () => {
     const store = newStore()
     store.upsertSession({
       key: 'slack:C1:T1:bot-a',
@@ -81,7 +81,13 @@ describe('capture gate — local state', () => {
       sourceBindingKind: 'external'
     })
 
+    // External is no longer a hard deny: an org-confirmed external session captures.
+    expect(store.isCaptureExcluded('acp-external')).toBe(false)
+    // A private push still excludes it, proving it follows the gate.
+    expect(store.applyCpCaptureGate('acp-external', true, 2)).toBe('applied')
     expect(store.isCaptureExcluded('acp-external')).toBe(true)
+    // Source-binding integrity is unchanged: the first-bound realm/resource wins;
+    // only the optional integration id is backfilled.
     expect(store.getSessionClassification('bot-a', 'acp-external')).toMatchObject({
       externalRealmKey: 'W1',
       externalResourceKey: 'C1',

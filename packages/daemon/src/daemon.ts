@@ -12386,8 +12386,7 @@ export class Daemon {
               : callMeta !== undefined ||
                 msg.isDm ||
                 msg.platform === 'webchat' ||
-                this.pendingLaunchCorrelation.has(agentId) ||
-                this.conversationExternalSource(agentId, msg, callMeta !== undefined) !== undefined),
+                this.pendingLaunchCorrelation.has(agentId)),
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(webchat?.worktree !== undefined
             ? { workspaceIsolation: webchat.worktree ? ('session' as const) : ('shared' as const) }
@@ -16044,13 +16043,12 @@ export class Daemon {
       sourceBindingKind: externalSource ? 'external' : 'local',
       ...(externalSource ?? {})
     })
+    // An external-source binding (Slack/Feishu channel) no longer marks the
+    // session private for memory — such channels behave like any other channel
+    // (session-visibility.md §5.1). DM / webchat / A2A / launch-correlated turns
+    // stay private.
     const locallyPrivate =
-      !isEvaluation &&
-      (isA2aChild ||
-        msg.isDm ||
-        msg.platform === 'webchat' ||
-        launchCorrelationId !== undefined ||
-        externalSource !== undefined)
+      !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
     this.store.setLocalCaptureGate(acpSessionId, locallyPrivate)
   }
 
@@ -18605,7 +18603,11 @@ export class Daemon {
       // capture gate. Ordering is by the CP's durable revision, so retransmits
       // and out-of-order delivery are safe.
       applySessionVisibility: (p: SessionVisibilityPush): 'applied' | 'superseded' =>
-        this.store.applyCpCaptureGate(p.sessionId, p.sharedMemoryExcluded ?? p.visibility !== 'org', p.visibilityRev)
+        this.store.applyCpCaptureGate(
+          p.sessionId,
+          p.sharedMemoryExcluded ?? p.visibility === 'private',
+          p.visibilityRev
+        )
     }
   }
 
