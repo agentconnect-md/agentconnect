@@ -103,6 +103,7 @@ async function setup(opts: {
   onOrganizationSuggestions?: () => void | Promise<void>
   withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
+  now?: () => Date
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -124,6 +125,7 @@ async function setup(opts: {
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
     ...(opts.withSkillAcceptance ? { withSkillAcceptance: opts.withSkillAcceptance } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
     log: silent
   })
   return { dir, store, runner, prompts }
@@ -179,6 +181,27 @@ describe('DreamRunner pipeline', () => {
     store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd2'))
     store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 5000 }]
     expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+  })
+
+  it('stamps the dream baseline before selecting sources (no cutoff-race drop)', async () => {
+    // Regression: the dream's createdAt is the cutoff the NEXT automatic dream
+    // filters on (updatedAt > cutoff). If it were stamped AFTER the source query,
+    // a session that became active between the query and the stamp would be in
+    // neither this dream (query already ran) nor any future one (its updatedAt <
+    // the new baseline) — a permanent drop. Capturing it first keeps the baseline
+    // <= the query time, so such a session is still selectable next time.
+    let clock = 1_000
+    let queriedAt: number | undefined
+    const { store, runner } = await setup({ now: () => new Date(clock++) })
+    const realQuery = store.dreamSessionSources.bind(store)
+    store.dreamSessionSources = ((agentId: string, limit: number) => {
+      queriedAt = clock // the monotonic clock value at the moment sources are read
+      return realQuery(agentId, limit)
+    }) as typeof store.dreamSessionSources
+
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    expect(queriedAt).toBeDefined()
+    expect(Date.parse(started.createdAt)).toBeLessThan(queriedAt!)
   })
 
   it('stages a validated proposal without touching the live store', async () => {

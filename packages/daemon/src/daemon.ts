@@ -18729,11 +18729,11 @@ export class Daemon {
       this.log.info(`scheduled dream skipped for agent "${agentId}": ${DREAM_MODEL_READABLE_CREDENTIALS_REASON}`)
       return
     }
-    // Nothing to consolidate if no new session has appeared since the last
+    // Nothing to consolidate if no session has had activity since the last
     // successful dream — re-dreaming an unchanged corpus just burns a host + model
     // tokens to re-derive the same proposal. A manual dream bypasses this.
     if (!this.dreamRunner().hasNewSessionsSinceLastDream(agentId)) {
-      this.log.info(`scheduled dream skipped for agent "${agentId}": no new sessions since the last dream`)
+      this.log.info(`scheduled dream skipped for agent "${agentId}": no session activity since the last dream`)
       return
     }
     void this.dreamRunner()

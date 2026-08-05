@@ -337,16 +337,19 @@ export class DreamRunner {
    *  is already in flight. Returns immediately with the `pending` record; the
    *  pipeline runs asynchronously (poll via get/list, as the console does). */
   /**
-   * Whether a scheduled dream would mine at least one session the last
-   * SUCCESSFUL dream (completed or adopted) did not. Scheduled dreams consult
-   * this to skip re-dreaming an unchanged corpus — running a fresh host + burning
-   * model tokens to re-derive the same proposal is pure waste. Returns true when
-   * the agent has never completed a dream (so the first scheduled run always
-   * proceeds). Manual dreams never call this: an explicit request always runs.
+   * Whether a scheduled dream would mine at least one session with activity the
+   * last SUCCESSFUL dream (completed or adopted) did not consolidate. Scheduled
+   * dreams consult this to skip re-dreaming an unchanged corpus — running a fresh
+   * host + burning model tokens to re-derive the same proposal is pure waste.
+   * Returns true when the agent has never completed a dream (so the first
+   * scheduled run always proceeds). Manual dreams never call this: an explicit
+   * request always runs.
    *
-   * "New" is by session id: a brand-new session the last dream never saw. New
-   * *messages* inside an already-mined session don't re-trigger — the last dream
-   * already consolidated that session's thread — which matches "no new sessions".
+   * "New" is by activity, not just session identity: a session counts when its
+   * `updatedAt` is newer than the last successful dream's baseline — so a
+   * brand-new session AND fresh messages in an already-mined session both
+   * re-trigger (new messages bump `updatedAt`). This mirrors the automatic window
+   * in {@link selectSessionSources}: true iff that selection is non-empty.
    */
   hasNewSessionsSinceLastDream(agentId: string): boolean {
     return this.selectSessionSources(agentId).length > 0
@@ -368,6 +371,14 @@ export class DreamRunner {
    * current corpus up to the cap. An explicit `sessionWindow` (a per-run manual
    * override, or a legacy configured policy value) still pins a fixed newest-N
    * window instead.
+   *
+   * The cap is an intentional bound, not a paging cursor: it takes the newest N
+   * active sessions by `updatedAt`. If more than N sessions changed since the last
+   * dream (a large backlog in one interval), the oldest of that changed set are
+   * not consolidated in this run, and because the baseline advances they are not
+   * revisited later either. N=100 is a deliberately large corpus; consolidating an
+   * unbounded backlog in a single host/prompt is the worse failure. Scheduled
+   * dreams run often enough that this bound is not normally reached.
    */
   private selectSessionSources(
     agentId: string,
@@ -409,6 +420,17 @@ export class DreamRunner {
       // AUTOMATICALLY (sessions active since the last successful dream, capped).
       const explicitWindow = opts.sessionWindow ?? policy.sessionWindow
       const instructions = opts.instructions ?? policy.instructions
+      // Capture this dream's baseline watermark BEFORE selecting sources. This
+      // timestamp becomes the dream's `createdAt`, which the NEXT automatic dream
+      // uses as its cutoff (`updatedAt > cutoff`). If it were stamped after the
+      // source query instead, a session whose `updatedAt` fell between the query
+      // and the stamp would be in neither this dream (query already ran) nor any
+      // future one (its `updatedAt` < the new baseline) — a permanent drop. Taken
+      // first, the baseline is <= the query time, so the worst case is a thin band
+      // of sessions mined twice (safe), never a gap. better-sqlite3 is synchronous
+      // and single-threaded, so no session write can interleave between here and
+      // the query below.
+      const createdAt = this.nowIso()
       // A dream distills EVERY session this agent participated in — channel, DM,
       // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
       // apply the per-turn capture-visibility gate here: an agent's own transcript
@@ -439,7 +461,7 @@ export class DreamRunner {
         snapshotDigest: storeDigest(files),
         snapshotWrites: writes,
         ...(instructions ? { instructions } : {}),
-        createdAt: this.nowIso()
+        createdAt
       }
       this.deps.store.insertDream(dream)
       this.emitLifecycle({ type: 'memory.dream.started', dream })
