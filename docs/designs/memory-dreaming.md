@@ -391,15 +391,27 @@ acceptance described above remains unchanged.
 Distillation and dreaming are two layers of one background-memory system —
 per-turn additive capture and periodic reconstructive consolidation. The
 constraints are deliberately coupled: distillation may write to the live store
-unreviewed _because_ it is additive-only and rides a trusted channel; dreaming
-may rewrite and delete because its output is staged, validated, reversible, and
-either reviewed or covered by the user's auto-accept policy. Neither subsumes
-the other: capture keeps facts available in near-real-time; dreaming compacts
-what capture accumulates and catches cross-session patterns capture cannot see.
-On runtimes where distillation is unavailable (no trusted
-system-prompt channel — Codex today), dreaming's transcript mining is the
-only automatic capture path, which is why the dream pipeline mines transcripts
-directly rather than assuming distillation output exists.
+unreviewed because it is additive-only; dreaming may rewrite and delete because
+its output is staged, validated, reversible, and either reviewed or covered by
+the user's auto-accept policy. Neither subsumes the other: capture keeps facts
+available in near-real-time; dreaming compacts what capture accumulates and
+catches cross-session patterns capture cannot see.
+
+Like dreaming, distillation runs on **every** harness (#653). The extraction is
+hard-gated on a verified read-only/plan permission mode (attacker-controlled turn
+text must never drive the runtime's native tools); the trusted system-prompt
+channel is observed, not required — the policy rides `_meta.systemPrompt` when the
+runtime has one, otherwise it is prepended inline to the turn, so runtimes without
+that channel (Codex, OpenCode) distill too instead of silently no-op'ing.
+
+> **Residual risk (owner-accepted P2, tracked in #658).** Unlike a dream,
+> distillation writes to shared live memory **unreviewed** and runs on the agent's
+> **warm host** (full tool credentials), not a dedicated `excludeAgentToolCredentials`
+> host. On the untrusted-channel (inline-policy) path the policy and the turn share
+> user-message priority, so a prompt injection could write poisoned facts, or read a
+> warm-host credential and re-encode it into a "memory" (read-only blocks writes, not
+> reads). #658 will give that path the dream's credential-isolated host; the
+> trusted-channel path is unchanged.
 
 Concrete unification points:
 

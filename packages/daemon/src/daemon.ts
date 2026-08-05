@@ -5237,6 +5237,13 @@ export class Daemon {
     //   `_meta.systemPrompt` the policy rides it; otherwise it is prepended inline
     //   to the user prompt. Runtimes without an ACP system-prompt channel (Codex /
     //   OpenCode) therefore distill too, instead of silently failing (#653).
+    //
+    // RESIDUAL (owner-accepted P2, #658): unlike a dream, distillation writes to
+    // shared live memory UNREVIEWED and runs on the WARM host (full tool
+    // credentials). On the inline path a prompt injection could write poisoned
+    // facts or read+re-encode a warm-host credential (read-only blocks writes, not
+    // reads). #658 will move the untrusted-channel path onto a dedicated
+    // excludeAgentToolCredentials host; the trusted-channel path is unchanged.
     const trusted = host.usesMetaSystemPrompt()
     let sessionId = this.memoryExtractionSessions.get(agentId)
     if (!sessionId || !host.hasSession(sessionId)) {
