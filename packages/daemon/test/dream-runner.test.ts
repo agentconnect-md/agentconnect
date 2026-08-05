@@ -34,7 +34,10 @@ const silent = { info() {}, warn() {} }
 
 class FakeStore implements DreamStorePort {
   dreams = new Map<string, DreamInfo>()
-  sources: { sessionId: string; channel: string; thread: string }[] = [
+  // `updatedAt` is optional in fixtures; dreamSessionSources defaults it to "now"
+  // so a source without an explicit time reads as recent (newer than any dream
+  // created earlier in a test). Auto-window tests set it explicitly.
+  sources: { sessionId: string; channel: string; thread: string; updatedAt?: number }[] = [
     { sessionId: 'sess-1', channel: 'C1', thread: 'T1' }
   ]
   rows: { sender: string; text: string }[] = [{ sender: 'user-1', text: 'please use tabs' }]
@@ -70,8 +73,9 @@ class FakeStore implements DreamStorePort {
   supersededDreams(): DreamInfo[] {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
-  dreamSessionSources(): { sessionId: string; channel: string; thread: string }[] {
-    return this.sources
+  dreamSessionSources(): { sessionId: string; channel: string; thread: string; updatedAt: number }[] {
+    const now = Date.now()
+    return this.sources.map((s) => ({ ...s, updatedAt: s.updatedAt ?? now }))
   }
   toolRows: { sender: string; text: string; kind?: string }[] = []
   dreamTranscriptText(
@@ -99,6 +103,7 @@ async function setup(opts: {
   onOrganizationSuggestions?: () => void | Promise<void>
   withSkillAcceptance?: (agentId: string, publish: () => Promise<void>) => Promise<void>
   operationPolicy?: NonNullable<ConstructorParameters<typeof DreamRunner>[0]['operationPolicy']>
+  now?: () => Date
 }) {
   const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
   ensureMemory(dir, 'bot')
@@ -120,6 +125,7 @@ async function setup(opts: {
     ...(opts.onOrganizationSuggestions ? { onOrganizationSuggestions: opts.onOrganizationSuggestions } : {}),
     ...(opts.withSkillAcceptance ? { withSkillAcceptance: opts.withSkillAcceptance } : {}),
     ...(opts.cancelGraceMs !== undefined ? { cancelGraceMs: opts.cancelGraceMs } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
     log: silent
   })
   return { dir, store, runner, prompts }
@@ -141,6 +147,70 @@ async function settle(store: FakeStore, dreamId: string): Promise<DreamInfo> {
 }
 
 describe('DreamRunner pipeline', () => {
+  it('auto window: only sessions active since the last successful dream count (else skip)', async () => {
+    const { store, runner } = await setup({})
+    const dreamAt = '2026-01-02T00:00:00.000Z'
+    const cutoff = Date.parse(dreamAt)
+    const dream = (status: DreamInfo['status'], sessionIds: string[], dreamId: string): DreamInfo => ({
+      dreamId,
+      agentId: 'a1',
+      status,
+      trigger: 'schedule',
+      sessionIds,
+      snapshotDigest: 'sha256:x',
+      createdAt: dreamAt
+    })
+
+    // Never dreamed → the first scheduled run always proceeds (no baseline).
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 1000 }]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+
+    // Last successful dream at `dreamAt`; the only session predates it → skip.
+    store.insertDream(dream('completed', ['sess-1'], 'd1'))
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
+
+    // Millisecond boundary: a session whose updatedAt EQUALS the baseline (e.g.
+    // written in the same ms as the dream's createdAt, after the source query)
+    // counts as new. The comparison is inclusive (>=) so this is re-mined once
+    // rather than dropped forever — "duplicates possible, gaps never".
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff }]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+
+    // A session with activity AFTER the last dream → run.
+    store.sources = [
+      { sessionId: 'sess-2', channel: 'C2', thread: 'T2', updatedAt: cutoff + 1000 },
+      { sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 1000 }
+    ]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+
+    // Only a FAILED dream exists → no successful baseline → mine everything (run).
+    store.dreams.clear()
+    store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd2'))
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff - 5000 }]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+  })
+
+  it('stamps the dream baseline before selecting sources (no cutoff-race drop)', async () => {
+    // Regression: the dream's createdAt is the cutoff the NEXT automatic dream
+    // filters on (updatedAt > cutoff). If it were stamped AFTER the source query,
+    // a session that became active between the query and the stamp would be in
+    // neither this dream (query already ran) nor any future one (its updatedAt <
+    // the new baseline) — a permanent drop. Capturing it first keeps the baseline
+    // <= the query time, so such a session is still selectable next time.
+    let clock = 1_000
+    let queriedAt: number | undefined
+    const { store, runner } = await setup({ now: () => new Date(clock++) })
+    const realQuery = store.dreamSessionSources.bind(store)
+    store.dreamSessionSources = ((agentId: string, limit: number) => {
+      queriedAt = clock // the monotonic clock value at the moment sources are read
+      return realQuery(agentId, limit)
+    }) as typeof store.dreamSessionSources
+
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    expect(queriedAt).toBeDefined()
+    expect(Date.parse(started.createdAt)).toBeLessThan(queriedAt!)
+  })
+
   it('stages a validated proposal without touching the live store', async () => {
     const { dir, store, runner, prompts } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })

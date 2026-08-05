@@ -50,7 +50,10 @@ export type MemoryCapturePolicy = z.infer<typeof MemoryCapturePolicy>
 export const MemoryDreamingPolicy = z
   .object({
     enabled: z.boolean(),
-    /** How many recent sessions to mine (default 20). */
+    /** Optional override pinning a fixed newest-N session window to mine. When
+     *  absent (the norm), the daemon sizes the window automatically — every
+     *  session active since the last successful dream, capped at 100 — so this
+     *  normally needs no configuration. */
     sessionWindow: z.number().int().min(1).max(100).optional(),
     /** Cron expression for scheduled dreams (same syntax as agent crons). A tick
      *  that lands while a dream is already in flight is skipped, not queued. */

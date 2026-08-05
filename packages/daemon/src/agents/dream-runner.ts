@@ -119,7 +119,7 @@ export interface DreamStorePort {
   dreamSessionSources(
     agentId: string,
     limit: number
-  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null }[]
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[]
   /** Chronological text rows of one session thread, scoped to the agent. */
   dreamTranscriptText(
     channel: string,
@@ -198,8 +198,15 @@ export interface DreamRunnerDeps {
   onStaged?(agentId: string, dreamId: string): void | Promise<void>
 }
 
-const DEFAULT_SESSION_WINDOW = 20
 const TRANSCRIPT_ROWS_PER_SESSION = 200
+// How far back to scan an agent's dreams for the last SUCCESSFUL one when sizing
+// the automatic session window. Generous enough that a run of failed dreams
+// after a success never hides the baseline.
+const LAST_SUCCESSFUL_DREAM_SCAN = 50
+// Safety cap on the automatic window: the dream self-sizes to "sessions with
+// activity since the last successful dream" (no operator config), but a first
+// dream — or a long-idle agent — must not mine an unbounded corpus.
+const MAX_AUTO_SESSION_WINDOW = 100
 const DREAMS_DIRNAME = 'memory-dreams'
 const BACKUPS_DIRNAME = 'memory-backups'
 /** Staged file names are the validator's own outputs; anything else is a violation. */
@@ -329,6 +336,73 @@ export class DreamRunner {
   /** Start a dream. Rejects when dreaming is not enabled for the agent or one
    *  is already in flight. Returns immediately with the `pending` record; the
    *  pipeline runs asynchronously (poll via get/list, as the console does). */
+  /**
+   * Whether a scheduled dream would mine at least one session with activity the
+   * last SUCCESSFUL dream (completed or adopted) did not consolidate. Scheduled
+   * dreams consult this to skip re-dreaming an unchanged corpus — running a fresh
+   * host + burning model tokens to re-derive the same proposal is pure waste.
+   * When the agent has never completed a dream there is no baseline, so any
+   * session at all makes this true; an agent with no sessions yet has nothing to
+   * consolidate and skips even its first scheduled run. Manual dreams never call
+   * this: an explicit request always runs.
+   *
+   * "New" is by activity, not just session identity: a session counts when its
+   * `updatedAt` is at or after the last successful dream's baseline — so a
+   * brand-new session AND fresh messages in an already-mined session both
+   * re-trigger (new messages bump `updatedAt`). This mirrors the automatic window
+   * in {@link selectSessionSources}: true iff that selection is non-empty.
+   */
+  hasNewSessionsSinceLastDream(agentId: string): boolean {
+    return this.selectSessionSources(agentId).length > 0
+  }
+
+  /** The most recent dream that successfully mined its sessions (completed or
+   *  adopted) — the baseline the automatic window measures "new activity" from. */
+  private lastSuccessfulDream(agentId: string): DreamInfo | undefined {
+    return this.deps.store
+      .listDreams(agentId, LAST_SUCCESSFUL_DREAM_SCAN)
+      .find((d) => d.status === 'completed' || d.status === 'adopted')
+  }
+
+  /**
+   * The sessions a dream should mine, chosen AUTOMATICALLY — no operator config.
+   * Default: every session with activity since the last successful dream (its
+   * `updatedAt` is at or after that dream's baseline), capped at
+   * {@link MAX_AUTO_SESSION_WINDOW}. The first dream (no baseline) mines the
+   * current corpus up to the cap. An explicit `sessionWindow` (a per-run manual
+   * override, or a legacy configured policy value) still pins a fixed newest-N
+   * window instead.
+   *
+   * The comparison is inclusive (`>=`) on purpose. Both the baseline and
+   * `updatedAt` have millisecond resolution, so a session written just after the
+   * source query but in the same millisecond as the baseline has
+   * `updatedAt === cutoff`; a strict `>` would drop it from this dream (query
+   * already ran) and every later one — a permanent gap. `>=` instead re-mines the
+   * boundary sessions once (a harmless duplicate the pipeline already tolerates)
+   * and self-heals: the next dream's baseline moves past them. The invariant is
+   * "duplicates possible, gaps never".
+   *
+   * The cap is an intentional bound, not a paging cursor: it takes the newest N
+   * active sessions by `updatedAt`. If more than N sessions changed since the last
+   * dream (a large backlog in one interval), the oldest of that changed set are
+   * not consolidated in this run, and because the baseline advances they are not
+   * revisited later either. N=100 is a deliberately large corpus; consolidating an
+   * unbounded backlog in a single host/prompt is the worse failure. Scheduled
+   * dreams run often enough that this bound is not normally reached.
+   */
+  private selectSessionSources(
+    agentId: string,
+    explicitWindow?: number
+  ): { sessionId: string; channel: string; thread: string; transportScope?: string | null; updatedAt: number }[] {
+    if (explicitWindow !== undefined) return this.deps.store.dreamSessionSources(agentId, explicitWindow)
+    const recent = this.deps.store.dreamSessionSources(agentId, MAX_AUTO_SESSION_WINDOW)
+    const lastSuccessful = this.lastSuccessfulDream(agentId)
+    if (!lastSuccessful) return recent
+    const cutoff = Date.parse(lastSuccessful.createdAt)
+    if (!Number.isFinite(cutoff)) return recent
+    return recent.filter((s) => s.updatedAt >= cutoff)
+  }
+
   async start(
     agentId: string,
     opts: { trigger: DreamTrigger; sessionWindow?: number; instructions?: string }
@@ -351,8 +425,22 @@ export class DreamRunner {
       if (this.active.has(agentId)) {
         throw new DreamStateError('a dream is already in flight for this agent')
       }
-      const sessionWindow = opts.sessionWindow ?? policy.sessionWindow ?? DEFAULT_SESSION_WINDOW
+      // An explicit sessionWindow (per-run manual override, or a legacy configured
+      // policy value) pins a fixed newest-N window; otherwise the window is chosen
+      // AUTOMATICALLY (sessions active since the last successful dream, capped).
+      const explicitWindow = opts.sessionWindow ?? policy.sessionWindow
       const instructions = opts.instructions ?? policy.instructions
+      // Capture this dream's baseline watermark BEFORE selecting sources. This
+      // timestamp becomes the dream's `createdAt`, which the NEXT automatic dream
+      // uses as its cutoff (`updatedAt > cutoff`). If it were stamped after the
+      // source query instead, a session whose `updatedAt` fell between the query
+      // and the stamp would be in neither this dream (query already ran) nor any
+      // future one (its `updatedAt` < the new baseline) — a permanent drop. Taken
+      // first, the baseline is <= the query time, so the worst case is a thin band
+      // of sessions mined twice (safe), never a gap. better-sqlite3 is synchronous
+      // and single-threaded, so no session write can interleave between here and
+      // the query below.
+      const createdAt = this.nowIso()
       // A dream distills EVERY session this agent participated in — channel, DM,
       // webchat, external (GitHub), A2A, or launched alike. We deliberately do NOT
       // apply the per-turn capture-visibility gate here: an agent's own transcript
@@ -364,7 +452,7 @@ export class DreamRunner {
       // now handled by the dream policy prompt: it must not surface a person's
       // private/personal conversation as shared organization knowledge
       // (session-visibility.md §5.1, #36 follow-up).
-      const sources = this.deps.store.dreamSessionSources(agentId, sessionWindow)
+      const sources = this.selectSessionSources(agentId, explicitWindow)
 
       // Snapshot the live store — the digest is the adoption fence. Taken under
       // the shared memory-dir lock so it cannot tear against a concurrent
@@ -383,7 +471,7 @@ export class DreamRunner {
         snapshotDigest: storeDigest(files),
         snapshotWrites: writes,
         ...(instructions ? { instructions } : {}),
-        createdAt: this.nowIso()
+        createdAt
       }
       this.deps.store.insertDream(dream)
       this.emitLifecycle({ type: 'memory.dream.started', dream })

@@ -130,7 +130,9 @@ describe('LocalStore', () => {
       updatedAt: 2
     })
 
-    expect(s.dreamSessionSources('bot-a', 20)).toEqual([{ sessionId: 'source-session', channel: 'C1', thread: 'T1' }])
+    expect(s.dreamSessionSources('bot-a', 20)).toEqual([
+      { sessionId: 'source-session', channel: 'C1', thread: 'T1', updatedAt: 1 }
+    ])
     s.close()
   })
 
