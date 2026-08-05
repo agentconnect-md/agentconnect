@@ -2954,8 +2954,9 @@ export class Daemon {
       // same source `messageAgent` uses) rather than snapshotted onto the session — a
       // session outlives the turn whose depth this is.
       currentHopCount: (ctx) =>
-        this.activeTurnCallMeta.get(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
-          ?.hopCount ?? 0,
+        this.activeTurnCallMeta.get(
+          sessionKey(ctx.platform, ctx.sessionChannel, ctx.thread, ctx.agentId, ctx.transportScope)
+        )?.hopCount ?? 0,
       mentionAddressFor: ({ agentId, platform, channel }) => {
         const orgId = this.cpCollab.orgForAgent(agentId)
         // The RAW platform (S1a removed the narrowing fold): snapshot channel rows are
@@ -3066,7 +3067,7 @@ export class Daemon {
       // ACP session to its exact channel/thread/delivery integration.
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
-      mcpServersFor: ({ agent, platform, channel, parentChannel, thread, integrationId, transportScope, isDm }) => {
+      mcpServersFor: ({ agent, platform, channel, sessionChannel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
           collaboration: this.evaluationProfile.collaboration === 'configured',
@@ -3101,7 +3102,7 @@ export class Daemon {
             ...(transportScope ? { transportScope } : {}),
             isDm,
             channel,
-            ...(parentChannel !== undefined ? { parentChannel } : {}),
+            sessionChannel,
             thread,
             tools,
             // Full integration set so sendPlatformMessage can route to ANY connected
@@ -5321,14 +5322,14 @@ export class Daemon {
   private toolTurnRunnable(ctx: {
     agentId: string
     platform: string
-    channel: string
+    sessionChannel: string
     thread: string
     transportScope?: string
   }): boolean {
     if (this.paused(ctx.agentId)) return false
     if (ctx.platform === 'dream') return true
     const active = this.activeGateEntries.get(
-      sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+      sessionKey(ctx.platform, ctx.sessionChannel, ctx.thread, ctx.agentId, ctx.transportScope)
     )
     // A transient safety drain only gates NEW admissions while an interrupted
     // turn unwinds; it must not break MCP tools in an already-running turn.
@@ -5482,6 +5483,7 @@ export class Daemon {
       platform: 'dream',
       isDm: false,
       channel: 'memory',
+      sessionChannel: 'memory',
       thread: context.dreamId,
       tools: KNOWLEDGE_TOOLS
     })
@@ -16070,11 +16072,11 @@ export class Daemon {
   private acpSessionIdForToolCall(ctx: {
     agentId: string
     platform: string
-    channel: string
+    sessionChannel: string
     thread: string
     transportScope?: string
   }): string | undefined {
-    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const key = sessionKey(ctx.platform, ctx.sessionChannel, ctx.thread, ctx.agentId, ctx.transportScope)
     return this.store.getSession(key)?.acpSessionId ?? undefined
   }
 

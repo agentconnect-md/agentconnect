@@ -294,9 +294,10 @@ export class SessionManager {
       mcpServersFor?: (ctx: {
         agent: Agent
         platform: string
+        /** Channel root exposed to the agent and accepted by visible sends. */
         channel: string
-        /** Enclosing channel when `channel` is itself a child conversation. */
-        parentChannel?: string
+        /** Exact platform channel coordinate used to key the current session. */
+        sessionChannel: string
         thread: string
         integrationId?: string
         transportScope?: string
@@ -726,7 +727,8 @@ export class SessionManager {
     // it can be absent for a brand-new channel until resolution catches up — then the id
     // line alone stands. Stored bare for a group/channel, `@name` for a DM (same value
     // the console labels with), surfaced as-is.
-    const channelName = this.deps.store.getDisplayNames([msg.channel]).get(msg.channel)
+    const channel = msg.parentChannel ?? msg.channel
+    const channelName = this.deps.store.getDisplayNames([channel]).get(channel)
     // Key NAMES (never values) of the agent's write-only secrets. The values are merged
     // into the child process env (agents/agent-env.ts) so the agent's commands can USE
     // them; this notice is what distinguishes them from plain env vars in the agent's
@@ -764,13 +766,7 @@ export class SessionManager {
       ...(slackSelfId
         ? [`- Slack identity: bot user <@${slackSelfId}> is YOU — a message mentioning this ID is addressed to you`]
         : []),
-      `- Channel: ${msg.channel}`,
-      ...(msg.parentChannel
-        ? [
-            `- Enclosing channel: ${msg.parentChannel} — use this ID, not the current thread ID, for ` +
-              '`sendMessage` channel-root sends'
-          ]
-        : []),
+      `- Channel: ${channel}`,
       ...(channelName ? [`- Channel name: ${channelName}`] : []),
       // session-concept §2.3: standing locator lines. `Thread` is this session's thread
       // segment; `Session` is its own stable id (only once minted — a brand-new session
@@ -911,8 +907,8 @@ export class SessionManager {
         this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
-          channel: msg.channel,
-          ...(msg.parentChannel !== undefined ? { parentChannel: msg.parentChannel } : {}),
+          channel,
+          sessionChannel: msg.channel,
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
@@ -978,8 +974,8 @@ export class SessionManager {
         this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
-          channel: msg.channel,
-          ...(msg.parentChannel !== undefined ? { parentChannel: msg.parentChannel } : {}),
+          channel,
+          sessionChannel: msg.channel,
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),

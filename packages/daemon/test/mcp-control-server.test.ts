@@ -41,6 +41,7 @@ const ctx = (over: Partial<SessionContext> = {}): SessionContext => ({
   integrationId: 'int-1',
   isDm: false,
   channel: 'C1',
+  sessionChannel: 'C1',
   thread: '1.1',
   tools,
   ...over

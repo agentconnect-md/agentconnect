@@ -244,6 +244,7 @@ describe('Daemon interrupt safety gates', () => {
         platform: 'slack',
         isDm: false,
         channel: 'C2',
+        sessionChannel: 'C2',
         thread: 'T2',
         tools: []
       }

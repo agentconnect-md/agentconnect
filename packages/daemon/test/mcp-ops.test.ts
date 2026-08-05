@@ -17,6 +17,7 @@ const ctx: SessionContext = {
   integrationId: 'int-1',
   isDm: false,
   channel: 'C_CURRENT',
+  sessionChannel: 'C_CURRENT',
   thread: '111.1',
   tools: toolsForIntegrations([
     { id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }
@@ -254,6 +255,7 @@ describe('executeTool: sendMessage (channel post)', () => {
         platform: 'telegram',
         integrationId: 'int-tg',
         channel: '-100123',
+        sessionChannel: '-100123',
         thread: 'tg:100',
         integrations: [{ id: 'int-tg', platform: 'telegram' }]
       }
@@ -594,26 +596,27 @@ describe('executeTool: sendMessage (channel post)', () => {
 })
 
 describe('executeTool: read tools', () => {
-  it('getCurrentChannel returns the bound channel + thread', async () => {
+  it('getCurrentChannel returns the root channel + thread', async () => {
     const { deps: d } = deps(fakeGateway())
     const res = (await executeTool(ctx, 'getCurrentChannel', {}, d)) as Record<string, unknown>
     expect(res).toMatchObject({ channel: 'C_CURRENT', thread: '111.1', name: 'general' })
   })
 
-  it('getCurrentChannel exposes the trusted enclosing channel for a child thread', async () => {
-    const { deps: d } = deps(fakeGateway())
+  it('getCurrentChannel keeps the root channel when the session is bound to a child thread', async () => {
+    const gw = fakeGateway()
+    const { deps: d } = deps(gw)
     const res = (await executeTool(
-      { ...ctx, platform: 'discord', channel: 'T_CURRENT', parentChannel: 'C_PARENT', thread: 'T_CURRENT' },
+      { ...ctx, platform: 'discord', channel: 'C_PARENT', sessionChannel: 'T_CURRENT', thread: 'T_CURRENT' },
       'getCurrentChannel',
       {},
       d
     )) as Record<string, unknown>
     expect(res).toMatchObject({
-      channel: 'T_CURRENT',
+      channel: 'C_PARENT',
       thread: 'T_CURRENT',
-      parentChannel: 'C_PARENT',
       name: 'general'
     })
+    expect(gw.getChannelInfo).toHaveBeenCalledWith('C_PARENT')
   })
 
   it('listChannelMembers defaults to the current channel', async () => {
@@ -952,26 +955,36 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     })
   })
 
-  it('rejects the current child thread as a channel root and directs the caller to its trusted parent', async () => {
+  it('rejects the current thread as a channel root and directs the caller to Channel', async () => {
     const { deps: d, calls, gw } = wakeDeps()
     const threadCtx: SessionContext = {
       ...ctx,
       platform: 'discord',
-      channel: 'T_CURRENT',
-      parentChannel: 'C_PARENT',
+      channel: 'C_PARENT',
+      sessionChannel: 'T_CURRENT',
       thread: 'T_CURRENT',
       integrations: [{ id: 'int-1', platform: 'discord' }]
     }
 
     await expect(
       executeTool(threadCtx, 'sendMessage', { toAgent: 'peer-1', channel: 'T_CURRENT', message: 'over to you' }, d)
-    ).rejects.toThrow('channel "T_CURRENT" is the current thread, not a channel root. Use parent channel "C_PARENT"')
+    ).rejects.toThrow('channel "T_CURRENT" is the current thread, not a channel root. Use Channel "C_PARENT"')
     expect(gw.postMessage).not.toHaveBeenCalled()
     expect(calls).toEqual([])
 
+    await executeTool(threadCtx, 'sendMessage', { toAgent: 'peer-1', message: 'private handoff' }, d)
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(calls[0]).toMatchObject({
+      callerChannel: 'T_CURRENT',
+      callerThread: 'T_CURRENT',
+      channel: 'T_CURRENT',
+      thread: 'T_CURRENT',
+      postless: true
+    })
+
     await executeTool(threadCtx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_PARENT', message: 'over to you' }, d)
     expect(gw.postMessage).toHaveBeenCalledWith('C_PARENT', 'over to you', undefined, pairedAuthorIdentity)
-    expect(calls[0]).toMatchObject({ channel: 'C_PARENT', thread: 'C_PARENT', toAgentId: 'peer-1' })
+    expect(calls[1]).toMatchObject({ channel: 'C_PARENT', thread: 'C_PARENT', toAgentId: 'peer-1' })
   })
 
   it('channel + toAgent (no thread) posts a ROOT message and lands the peer in that post’s thread', async () => {

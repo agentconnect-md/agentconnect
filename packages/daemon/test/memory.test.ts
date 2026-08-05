@@ -588,6 +588,7 @@ describe('memory MCP tools (executeTool)', () => {
     integrationId: 'int-x',
     isDm: false,
     channel: 'C1',
+    sessionChannel: 'C1',
     thread: 'T1',
     tools: []
   }

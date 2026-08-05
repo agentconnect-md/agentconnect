@@ -128,12 +128,22 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       // A dream never populates activeGateEntries (it runs off the chat-turn
       // queue), so without the carve-out its read-only tools would be gated shut.
       expect(
-        (daemon as any).toolTurnRunnable({ agentId: 'bot-a', platform: 'dream', channel: 'memory', thread: 'drm-1' })
+        (daemon as any).toolTurnRunnable({
+          agentId: 'bot-a',
+          platform: 'dream',
+          sessionChannel: 'memory',
+          thread: 'drm-1'
+        })
       ).toBe(true)
       // An ordinary session with no admitted turn still fails closed — a
       // session-static MCP token must not outlive its turn.
       expect(
-        (daemon as any).toolTurnRunnable({ agentId: 'bot-a', platform: 'slack', channel: 'C1', thread: 'T1' })
+        (daemon as any).toolTurnRunnable({
+          agentId: 'bot-a',
+          platform: 'slack',
+          sessionChannel: 'C1',
+          thread: 'T1'
+        })
       ).toBe(false)
     } finally {
       await daemon.stop().catch(() => undefined)

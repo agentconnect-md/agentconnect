@@ -590,6 +590,7 @@ describe('SessionManager', () => {
         agent: codexAgent,
         platform: 'slack',
         channel: 'C1',
+        sessionChannel: 'C1',
         thread: '100.1',
         integrationId: 'int-b',
         isDm: true
@@ -668,12 +669,10 @@ describe('SessionManager', () => {
     expect(metaArg).toContain('- Name: matrixtest')
     expect(metaArg).toContain('- ID: bot-a')
     expect(metaArg).toContain('- Source: discord')
-    expect(metaArg).toContain('- Channel: T42')
-    expect(metaArg).toContain(
-      '- Enclosing channel: C42 — use this ID, not the current thread ID, for `sendMessage` channel-root sends'
-    )
+    expect(metaArg).toContain('- Channel: C42')
+    expect(metaArg).not.toContain('- Enclosing channel:')
     expect(metaArg).toContain('be helpful')
-    // No resolved display name for T42 → the channel-name line is omitted.
+    // No resolved display name for C42 → the channel-name line is omitted.
     expect(metaArg).not.toContain('- Channel name:')
     // session-concept §2.3 standing locators: Thread is always rendered; Session is
     // absent on a brand-new session's FIRST turn (its acpSessionId is minted AFTER this
@@ -682,7 +681,7 @@ describe('SessionManager', () => {
     expect(metaArg).not.toContain('- Session:')
     expect(metaArg).not.toContain('- Parent session:')
     expect(mcpServersFor).toHaveBeenCalledWith(
-      expect.objectContaining({ platform: 'discord', channel: 'T42', parentChannel: 'C42', thread: 'T42' })
+      expect.objectContaining({ platform: 'discord', channel: 'C42', sessionChannel: 'T42', thread: 'T42' })
     )
     store.close()
   })

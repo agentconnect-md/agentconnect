@@ -15,6 +15,7 @@ const ctx = (): SessionContext => ({
   agentId: 'bot-a',
   platform: 'slack',
   channel: 'C1',
+  sessionChannel: 'C1',
   thread: 'T1',
   isDm: true,
   tools: []

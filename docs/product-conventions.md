@@ -227,10 +227,11 @@ visible in-thread form** — every visible send lands at the channel **root**:
   `platform`) — publishes a visible message at the channel root without waking an agent
   or addressing a human, as in case 2a / case 3.
 
-When the current conversation is itself a child thread (for example, a Discord thread),
-the agent context and `getCurrentChannel` expose its trusted `parentChannel`. An explicit
-channel-root form must use that parent id. Passing the current thread id as `channel` is
-rejected with an actionable error naming the parent; it is never silently redirected.
+`Channel` in the agent context and `getCurrentChannel.channel` always identify the root
+destination accepted by visible `sendMessage` forms. When the current conversation is a
+child thread (for example, a Discord thread), `Thread` / `getCurrentChannel.thread`
+identifies that child only as context. Passing it as `channel` is rejected with an
+actionable error naming `Channel`; it is never silently redirected.
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
 reason (capability disabled, invalid target id, a postless self-call, hop limit, or a local target that

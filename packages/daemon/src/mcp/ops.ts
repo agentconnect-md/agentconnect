@@ -108,10 +108,11 @@ export interface SessionContext {
   /** Whether the trusted source conversation is a direct message. Slack native
    *  thread titles are valid only for app-DM sessions. */
   isDm: boolean
+  /** Channel root exposed to the agent and accepted by visible send forms. */
   channel: string
-  /** Trusted enclosing channel when `channel` is itself a child conversation
-   *  (for example a Discord thread). Never supplied by the model. */
-  parentChannel?: string
+  /** Exact platform channel coordinate used to key this session. This differs
+   *  from `channel` when a platform models the current thread as a channel. */
+  sessionChannel: string
   thread: string
   tools: ToolDescriptor[]
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
@@ -154,7 +155,7 @@ export interface MessageAgentReq {
   callerIntegrationId?: string
   /** Trusted physical-bot scope of the caller session. */
   callerTransportScope?: string
-  /** Trusted caller session coords (== the caller's {@link SessionContext} channel/thread).
+  /** Trusted caller session coords (== the caller's {@link SessionContext} sessionChannel/thread).
    *  Never a tool input. The daemon uses these + `callerAgentId` to recompute the caller's
    *  logical sessionKey and resolve the CURRENT turn's trusted call metadata (§6.7), so a
    *  nested `messageAgent` can auto-inherit hop/origin (all calls) and correlationId (replies
@@ -674,7 +675,7 @@ export async function executeTool(
       ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
       ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       isDm: ctx.isDm,
-      channel: ctx.channel,
+      channel: ctx.sessionChannel,
       thread: ctx.thread,
       title
     })
@@ -819,7 +820,7 @@ export async function executeTool(
       ...(channel !== undefined ? { channel } : {}),
       // Trusted coordinates, not a scope request — see ChannelAgentsRequest (they carry the
       // old-CP fallback channel and identify THIS turn for a daemon-fixed discovery scope).
-      currentChannel: ctx.channel,
+      currentChannel: ctx.sessionChannel,
       currentThread: ctx.thread,
       ...(ctx.transportScope !== undefined ? { currentTransportScope: ctx.transportScope } : {}),
       requesterAgentId: ctx.agentId
@@ -923,7 +924,7 @@ export async function executeTool(
         callerAgentId: ctx.agentId,
         platform: ctx.platform,
         ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
-        callerChannel: ctx.channel,
+        callerChannel: ctx.sessionChannel,
         callerThread: ctx.thread,
         sessionId,
         text: message,
@@ -966,15 +967,12 @@ export async function executeTool(
     if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
       throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
     }
-    // A Discord thread is itself the live delivery channel, so its id appears as
-    // `ctx.channel`. It is not, however, the enclosing channel ROOT that an explicit
-    // `sendMessage(..., channel)` targets. Silently replacing it with the parent would
-    // send the model's message somewhere other than it asked; failing with the trusted
-    // parent id lets it repair the call without weakening unknown-channel failures.
-    if (channel !== undefined && ctx.parentChannel !== undefined && channel === ctx.channel) {
+    // `Channel` is always the root destination. `Thread` is context only and cannot be
+    // smuggled into a visible send through the string-valued `channel` argument.
+    if (channel !== undefined && channel === ctx.thread && channel !== ctx.channel) {
       throw new Error(
         `sendMessage: channel ${JSON.stringify(channel)} is the current thread, not a channel root. ` +
-          `Use parent channel ${JSON.stringify(ctx.parentChannel)} for a channel-root send. To speak in the current ` +
+          `Use Channel ${JSON.stringify(ctx.channel)} for a channel-root send. To speak in the current ` +
           'thread, write an ordinary reply instead; for a postless agent call, omit `channel`.'
       )
     }
@@ -989,11 +987,11 @@ export async function executeTool(
             platform: ctx.platform,
             ...(ctx.integrationId !== undefined ? { callerIntegrationId: ctx.integrationId } : {}),
             ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
-            callerChannel: ctx.channel,
+            callerChannel: ctx.sessionChannel,
             callerThread: ctx.thread,
             toAgentId: toAgent,
             text: message,
-            channel: channel ?? ctx.channel,
+            channel: channel ?? ctx.sessionChannel,
             ...(needsReply ? { needsReply: true } : {}),
             // §3.1: no `channel` ⇒ the postless form, whose child is headless.
             ...(channel === undefined ? { postless: true } : {})
@@ -1147,7 +1145,7 @@ export async function executeTool(
           text: body,
           originPlatform: ctx.platform,
           ...(ctx.transportScope !== undefined ? { originTransportScope: ctx.transportScope } : {}),
-          originChannel: ctx.channel,
+          originChannel: ctx.sessionChannel,
           originThread: ctx.thread
         })
         // A root post is a legitimate way to open a new topic, so this is never blocked — but
@@ -1169,7 +1167,7 @@ export async function executeTool(
                 callerAgentId: ctx.agentId,
                 platform: ctx.platform,
                 ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
-                callerChannel: ctx.channel,
+                callerChannel: ctx.sessionChannel,
                 callerThread: ctx.thread,
                 targetPlatform: wantPlatform,
                 targetChannel: postChannel,
@@ -1245,7 +1243,7 @@ export async function executeTool(
     const status = await deps.viewSessionStatus({
       callerAgentId: ctx.agentId,
       platform: ctx.platform,
-      callerChannel: ctx.channel,
+      callerChannel: ctx.sessionChannel,
       callerThread: ctx.thread,
       ...(ctx.transportScope !== undefined ? { callerTransportScope: ctx.transportScope } : {}),
       sessionId
@@ -1282,7 +1280,7 @@ export async function executeTool(
     return await deps.startOrchestration({
       mainAgentId: ctx.agentId,
       platform: ctx.platform,
-      channel: ctx.channel,
+      channel: ctx.sessionChannel,
       thread: ctx.thread,
       ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
       ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
@@ -1297,7 +1295,7 @@ export async function executeTool(
     const req: OrchestrationOwnerReq = {
       mainAgentId: ctx.agentId,
       platform: ctx.platform,
-      channel: ctx.channel,
+      channel: ctx.sessionChannel,
       thread: ctx.thread,
       ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       orchestrationId
@@ -1324,7 +1322,7 @@ export async function executeTool(
     return deps.submitGithubReview({
       agentId: ctx.agentId,
       platform: ctx.platform,
-      channel: ctx.channel,
+      channel: ctx.sessionChannel,
       thread: ctx.thread,
       ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
       event,
@@ -1436,7 +1434,6 @@ export async function executeTool(
       return {
         channel: ctx.channel,
         thread: ctx.thread,
-        ...(ctx.parentChannel !== undefined ? { parentChannel: ctx.parentChannel } : {}),
         name: info?.name ?? null,
         isIm: info?.isIm ?? null
       }
