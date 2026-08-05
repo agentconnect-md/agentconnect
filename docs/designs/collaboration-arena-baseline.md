@@ -435,7 +435,7 @@ admitted automatic turns and trial 3 spent 48 — far past the 8-per-window budg
 — with **zero** gated wakes, because each round's referee `DAY`/`VOTE` broadcast
 is a trusted human turn that resets the automatic counter (§6.5).
 
-### 5.4 Natural-language actions, and the 60-second window
+### 5.3 Natural-language actions, and the 60-second window
 
 Actions became messages (§3.3). That doubles what a day costs the public room —
 the discussion AND the votes now travel it — so the automatic-turn budget was
@@ -501,15 +501,16 @@ day and could be dangerous later — I'd suggest we kill player-4. Any objection
 carries.
 
 What did **not** go cleanly, stated plainly, because it is the honest limit here:
-both trials left votes on the table (`silentActors: 3` and `incompleteVotes: 1`
-in each; 3 and 2 votes cast of 6 eligible). Trial 2's day-1 speaking order also
-stalled at 3 of 6 speakers. **None of that was a protection** — zero gated wakes
-and zero latches in both runs — so it is model behavior: players finish the
-discussion and then simply never say a vote. Sequential order quality is
-reliable _when players speak_ (0 out-of-order across both trials); whether every
-player speaks at all is not.
+trials 1 and 2 left votes uncast (3 and 2 of 6 eligible; `silentActors: 3` in
+each), while trial 3 collected all six. Trial 2's day-1 speaking order also
+stalled at 3 of 6 speakers, where trials 1 and 3 completed every order. **None
+of that was a protection** — zero gated wakes and zero latches in all three runs
+— so it is model behavior: players finish the discussion and then sometimes
+never say a vote. Sequential order quality is excellent _when players speak_
+(**0 out-of-order across all three trials**); whether every player speaks at all
+is the softer signal.
 
-### 5.3 Peer-driven counting (historical)
+### 5.4 Peer-driven counting (historical)
 
 > **Provenance — read before quoting these.** These numbers were measured on
 > **`main` @ 87d36bc** with real local Claude Code over ACP (model sonnet). They
@@ -521,7 +522,7 @@ player speaks at all is not.
 > quality** figures (entropy, duplicates, regenerations) as the durable signal
 > and the **depth** figures as historical.
 >
-> Everything in §2, §3, §4, §5.1, §5.2 and §6 **was** measured on the current branch.
+> Everything in §2, §3, §4, §5.1–§5.3 and §6 **was** measured on the current branch.
 
 Both runs use the peer-driven variant: one human-sourced start message, then a
 silent referee.
@@ -812,7 +813,7 @@ Stated explicitly, since several claims above are structural rather than observe
 | Real agents state actions clearly enough to parse           | **Measured** — `unparseableActions: 0` in both real 7p trials                                                                                     |
 | The wolves actually negotiate in the den                    | **Measured** — proposal → rationale → "any objections?" → agreement, with the redundant confirmations deduped                                     |
 | Scripted 7p collapses inside ONE 60s loop-guard window      | **Measured**, this branch — every circuit latches at `admitted: 8`                                                                                |
-| ...and that is scripted SPEED, not the design               | **Measured** — real 7p rounds span 90 s and 128 s, the window rolls, and both trials complete with 0 gated                                        |
+| ...and that is scripted SPEED, not the design               | **Measured** — real 7p rounds span 90–128 s, the window rolls, and all 3 trials complete with 0 gated                                             |
 | Real games still leave votes uncast                         | **Measured** — 3 and 2 votes of 6 eligible, with 0 gated and 0 latches, so model behavior not protection                                          |
 | ...so the daemon's auto-allow set was never the blocker     | **Measured** — an earlier revision of this document claimed it was; the request never reaches the daemon at all                                   |
 | Workspace `.claude/settings.json` pre-approval is ignored   | **Measured** — files written and confirmed surviving the run, tools still denied                                                                  |
