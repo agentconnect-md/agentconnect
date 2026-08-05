@@ -400,6 +400,56 @@ export interface LogtoGithubConnectorCredentials {
   clientSecret: string
 }
 
+export interface LocalAuthLogtoBootstrap {
+  issuer: string
+  services: {
+    web: string
+    controlPlane: string
+    relay: string
+  }
+  managementAppId?: string
+  managementAppSecret?: string
+}
+
+/** Fill the localhost Logto defaults without replacing existing provider state. */
+export function localAuthLogtoPut(
+  current: DeploymentConfigAdmin,
+  bootstrap: LocalAuthLogtoBootstrap
+): DeploymentConfigPut {
+  const existing = current.values.logto
+  const managementAppId = bootstrap.managementAppId ?? existing?.managementAppId
+  if (!managementAppId) throw new Error('Logto Management API application id is required')
+  const endpoint = new URL(bootstrap.issuer).origin
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      publicUrls: {
+        ...current.values.publicUrls,
+        web: current.values.publicUrls.web ?? bootstrap.services.web,
+        controlPlane: current.values.publicUrls.controlPlane ?? bootstrap.services.controlPlane,
+        relay: current.values.publicUrls.relay ?? bootstrap.services.relay
+      },
+      logto: {
+        managementEndpoint: existing?.managementEndpoint ?? endpoint,
+        managementAppId,
+        managementResource: existing?.managementResource ?? 'https://default.logto.app/api',
+        browser:
+          existing?.browser ??
+          ({
+            endpoint,
+            applicationName: 'AgentConnect',
+            apiResource: null,
+            socialProviders: ['github']
+          } as const),
+        githubConnector: existing?.githubConnector ?? null
+      }
+    },
+    ...(bootstrap.managementAppSecret
+      ? { secrets: { 'logto.managementAppSecret': bootstrap.managementAppSecret } }
+      : {})
+  })
+}
+
 export function logtoGithubConnectorPut(
   current: DeploymentConfigAdmin,
   credentials: LogtoGithubConnectorCredentials

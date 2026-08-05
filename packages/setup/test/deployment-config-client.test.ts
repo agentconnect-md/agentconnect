@@ -6,6 +6,7 @@ import {
   DEPLOYMENT_SECRET_KEYS,
   DeploymentConfigPutSchema,
   githubDeploymentPut,
+  localAuthLogtoPut,
   logtoGithubConnectorPut,
   readDeploymentConfigPut,
   slackDeploymentPut,
@@ -315,6 +316,46 @@ describe('provider desired-state merges', () => {
       clientId: 'login-client'
     })
     expect(put.secrets).toEqual({ 'logto.githubConnectorClientSecret': 'login-secret' })
+  })
+
+  it('builds the first local-auth Logto document without replacing other deployment state', () => {
+    const current = admin({
+      values: {
+        ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+        features: { presetAgentsEnabled: false, waitlistMode: true }
+      }
+    })
+
+    const put = localAuthLogtoPut(current, {
+      issuer: 'http://login.agentconnect.localhost:3001/oidc',
+      services: {
+        web: 'http://localhost:3000',
+        controlPlane: 'http://localhost:8080',
+        relay: 'http://localhost:8090'
+      },
+      managementAppId: 'management-app',
+      managementAppSecret: 'management-secret'
+    })
+
+    expect(put.values.publicUrls).toMatchObject({
+      web: 'http://localhost:3000',
+      controlPlane: 'http://localhost:8080',
+      relay: 'http://localhost:8090'
+    })
+    expect(put.values.features).toEqual(current.values.features)
+    expect(put.values.logto).toEqual({
+      managementEndpoint: 'http://login.agentconnect.localhost:3001',
+      managementAppId: 'management-app',
+      managementResource: 'https://default.logto.app/api',
+      browser: {
+        endpoint: 'http://login.agentconnect.localhost:3001',
+        applicationName: 'AgentConnect',
+        apiResource: null,
+        socialProviders: ['github']
+      },
+      githubConnector: null
+    })
+    expect(put.secrets).toEqual({ 'logto.managementAppSecret': 'management-secret' })
   })
 
   it('merges Slack metadata and credentials without replacing GitHub state', () => {

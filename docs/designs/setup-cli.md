@@ -149,8 +149,8 @@ setup init local-auth
   -> start Postgres and the optional Logto Compose overlay
   -> create the initial Logto administrator
   -> create a bootstrap Logto Management API credential
-  -> start temporary Tenant Admin and save the deployment document
-  -> setup create logto
+  -> start temporary Tenant Admin
+  -> setup create logto with the bootstrap M2M credential
   -> setup check logto and claim ADMIN
   -> stop Tenant Admin and start the complete stack
   -> setup check deployment

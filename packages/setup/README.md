@@ -54,65 +54,28 @@ M2M application with the `all` permission for resource
 `https://default.logto.app/api`. A tenant cannot authorize its own first
 Management API client.
 
-Start the temporary Tenant Admin and save those values in the DB-backed
-deployment document. Its bootstrap flow lets the first local operator claim the
-shared Logto `ADMIN` role. That self-claim closes for the configured issuer and
-browser app; grant later operators the same role in Logto. Subsequent Tenant
-Admin writes require it.
+Start the temporary Tenant Admin. Its bootstrap flow lets the first local
+operator claim the shared Logto `ADMIN` role. That self-claim closes for the
+configured issuer and browser app; grant later operators the same role in
+Logto. Subsequent Tenant Admin writes require it.
 
 ```bash
 docker compose -f compose.yaml -f compose.logto.yaml --profile admin up -d tenant-admin
 ```
 
-Paste the `values` object below into Tenant Admin's
-Desired configuration editor and enter the M2M secret in its write-only
-`logto.managementAppSecret` field. For CLI automation, the complete document
-below can be saved as `deployment-config.json`, but it contains a plaintext
-secret: create it with mode `0600`, keep it out of Git, and delete it immediately
-after apply. The SPA app id is intentionally both the browser app id and token
-audience in this minimal profile.
-
-```json
-{
-  "values": {
-    "publicUrls": {
-      "controlPlane": "http://localhost:8080",
-      "relay": "http://localhost:8090",
-      "web": "http://localhost:3000",
-      "mcp": null
-    },
-    "auth": { "mode": "none" },
-    "github": null,
-    "slack": null,
-    "logto": {
-      "managementEndpoint": "http://login.agentconnect.localhost:3001",
-      "managementAppId": "<LOGTO_M2M_APP_ID>",
-      "managementResource": "https://default.logto.app/api",
-      "browser": {
-        "endpoint": "http://login.agentconnect.localhost:3001",
-        "applicationName": "AgentConnect",
-        "apiResource": null,
-        "socialProviders": ["github"]
-      },
-      "githubConnector": null
-    },
-    "features": {
-      "presetAgentsEnabled": true,
-      "waitlistMode": false
-    }
-  },
-  "secrets": {
-    "logto.managementAppSecret": "<LOGTO_M2M_APP_SECRET>"
-  }
-}
-```
-
-Apply it:
+Run the one-shot bootstrap with the M2M credential. `create logto` synthesizes
+the localhost deployment document and seals the secret directly into Postgres;
+it never writes a plaintext config file:
 
 ```bash
-npx -y @agentconnect.md/setup config apply --file deployment-config.json
-npx -y @agentconnect.md/setup create logto
+LOGTO_M2M_APP_ID='<LOGTO_M2M_APP_ID>' \
+  LOGTO_M2M_APP_SECRET='<LOGTO_M2M_APP_SECRET>' \
+  npx -y @agentconnect.md/setup create logto
 ```
+
+In an interactive terminal, omit either environment variable and setup prompts
+for it; the secret prompt does not echo input. Non-interactive automation must
+provide both variables.
 
 `create logto` creates or adopts the AgentConnect SPA, sets the Web and Tenant
 Admin redirects/CORS origins, creates the GitHub social connector, enables the

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { createInterface } from 'node:readline/promises'
+import { Writable } from 'node:stream'
 import { Command } from 'commander'
 import { serveTenantAdmin } from './admin/server.js'
 import { checkDeployment } from './check.js'
@@ -7,6 +9,7 @@ import {
   applyDeploymentConfig,
   DEFAULT_TENANT_ADMIN_URL,
   githubDeploymentPut,
+  localAuthLogtoPut,
   logtoGithubConnectorPut,
   readDeploymentConfigPut,
   slackDeploymentPut,
@@ -43,6 +46,42 @@ const program = new Command()
   .version(SETUP_VERSION)
   .option('-c, --config <path>', 'setup config path', DEFAULT_CONFIG_PATH)
   .option('--admin-url <url>', 'temporary tenant-admin server origin', DEFAULT_TENANT_ADMIN_URL)
+
+const LOGTO_M2M_APP_ID_ENV = 'LOGTO_M2M_APP_ID'
+const LOGTO_M2M_APP_SECRET_ENV = 'LOGTO_M2M_APP_SECRET'
+
+async function promptValue(label: string, hidden = false): Promise<string> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new Error(`set ${hidden ? LOGTO_M2M_APP_SECRET_ENV : LOGTO_M2M_APP_ID_ENV} in non-interactive mode`)
+  }
+  let muted = false
+  const output = new Writable({
+    write(chunk, encoding, callback) {
+      if (!muted) process.stderr.write(chunk, encoding)
+      callback()
+    }
+  })
+  const readline = createInterface({ input: process.stdin, output, terminal: true })
+  try {
+    if (!hidden) return (await readline.question(label)).trim()
+    process.stderr.write(label)
+    muted = true
+    const value = (await readline.question('')).trim()
+    muted = false
+    process.stderr.write('\n')
+    return value
+  } finally {
+    muted = false
+    readline.close()
+  }
+}
+
+async function localLogtoCredentials(): Promise<{ appId: string; appSecret: string }> {
+  const appId = process.env[LOGTO_M2M_APP_ID_ENV]?.trim() || (await promptValue('Logto M2M App ID: '))
+  const appSecret = process.env[LOGTO_M2M_APP_SECRET_ENV]?.trim() || (await promptValue('Logto M2M App Secret: ', true))
+  if (!appId || !appSecret) throw new Error('Logto M2M App ID and App Secret are required')
+  return { appId, appSecret }
+}
 
 function parsePort(value: string): number {
   const port = Number(value)
@@ -90,7 +129,7 @@ program
         console.log(
           'Then start temporary admin: docker compose -f compose.yaml -f compose.logto.yaml --profile admin up -d tenant-admin'
         )
-        console.log('Save the README deployment document, then run `create logto` and `check logto`.')
+        console.log('Set LOGTO_M2M_APP_ID and LOGTO_M2M_APP_SECRET, then run `create logto` and `check logto`.')
         console.log('Finally stop tenant-admin, restart the stack, and run `check deployment`.')
         return
       }
@@ -201,9 +240,35 @@ create
   .option('--name <name>', 'login-only GitHub App name', 'AgentConnect Login')
   .option('--github-org <login>', 'create the login GitHub App under this GitHub organization')
   .option('--format <format>', 'table or json', 'table')
+  .addHelpText(
+    'after',
+    `\nLocal first run: set ${LOGTO_M2M_APP_ID_ENV} and ${LOGTO_M2M_APP_SECRET_ENV}, or run interactively to be prompted.`
+  )
   .action(async (options: { name: string; githubOrg?: string; format: string }) => {
     const format = parseOutputFormat(options.format)
     const admin = tenantAdminClient()
+    let current = await admin.get()
+    const managementSecretConfigured = current.secrets.some(
+      (secret) => secret.key === 'logto.managementAppSecret' && secret.configured
+    )
+    if (!current.values.logto?.browser || !managementSecretConfigured) {
+      const localAuth = await loadSetupConfig(program.opts().config)
+      if (localAuth.mode !== 'local-auth') {
+        throw new Error('automatic Logto bootstrap requires a local-auth setup profile')
+      }
+      const credentials = current.values.logto && managementSecretConfigured ? undefined : await localLogtoCredentials()
+      current = await admin.put(
+        localAuthLogtoPut(current, {
+          issuer: localAuth.auth.issuer,
+          services: localAuth.services,
+          ...(credentials ? { managementAppId: credentials.appId, managementAppSecret: credentials.appSecret } : {})
+        }),
+        current.revision
+      )
+      const message = `Saved local-auth Logto bootstrap configuration at revision ${current.revision}.`
+      if (format === 'json') console.error(message)
+      else console.log(message)
+    }
     let githubApp: { id: string; slug: string; settingsUrl: string } | null = null
     let result: LogtoReconcileResult
     try {
