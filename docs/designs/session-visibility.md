@@ -598,9 +598,10 @@ learned from it"); silence is not an option.
 - Session links emitted into Slack, Feishu/Lark, and GitHub carry a non-authoritative provider
   hint. When such a deep link still resolves to the generic 404 page, the Console
   uses the viewer's own profile status to offer `Link <provider> profile` when
-  unlinked or `Review <provider> profile` when linked. The unavailable-state copy
-  explains that the session may no longer exist, the required profile may be absent
-  or linked to another workspace, or the owning Agent may not be shared with the viewer.
+  unlinked or `Review <provider> profile` when linked. The unavailable state lists
+  those possible reasons explicitly: the session may no longer exist, the required
+  profile may be absent or linked to another workspace, or the owning Agent may not
+  be shared with the viewer.
   Unsupported providers and ordinary/handwritten URLs get no provider action. The
   hint is intentionally forgeable and never consulted for authorization, so none
   of this guidance can confirm whether the session exists; the protected session

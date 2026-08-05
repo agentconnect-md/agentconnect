@@ -976,17 +976,29 @@ function SessionDetailFrame({ children, withRail = true }: { children: ReactNode
   )
 }
 
-function sessionUnavailableMessage(providerName: string | undefined, profileLinked: boolean | undefined): string {
+function sessionUnavailableReasons(providerName: string | undefined, profileLinked: boolean | undefined): string[] {
   if (!providerName) {
-    return ` isn’t available to you. It may no longer exist or belong to an agent that isn’t shared with you.`
+    return ['The session no longer exists.', 'The Agent isn’t shared with you.']
   }
   if (profileLinked === false) {
-    return ` isn’t available to you. Your ${providerName} profile isn’t linked. Link it and try again; the session may also no longer exist or its agent may not be shared with you.`
+    return [
+      `Your ${providerName} profile isn’t linked.`,
+      'The Agent’s Team visibility doesn’t include you.',
+      'The session no longer exists.'
+    ]
   }
   if (profileLinked === true) {
-    return ` isn’t available to you. Your ${providerName} profile is linked; check that it matches the workspace, then ask an organization owner to check the agent’s Team visibility. The session may also no longer exist.`
+    return [
+      `Your linked ${providerName} profile belongs to a different workspace.`,
+      'The Agent’s Team visibility doesn’t include you.',
+      'The session no longer exists.'
+    ]
   }
-  return ` isn’t available to you. It may no longer exist, require a linked ${providerName} profile, or belong to an agent that isn’t shared with you.`
+  return [
+    `Your ${providerName} profile isn’t linked or belongs to a different workspace.`,
+    'The Agent’s Team visibility doesn’t include you.',
+    'The session no longer exists.'
+  ]
 }
 
 export default function SessionDetailView() {
@@ -1334,7 +1346,7 @@ export default function SessionDetailView() {
     profileIdentity !== undefined
   const profileLinked = profileIdentityReady ? profileIdentity.linked : undefined
   const profileNeedsLink = profileLinked === false
-  const sessionUnavailablePost = sessionUnavailableMessage(profileLinkProviderName, profileLinked)
+  const unavailableReasons = sessionUnavailableReasons(profileLinkProviderName, profileLinked)
   // SWR normally clears data when its key changes. Keep the id check explicit
   // because this view now persists across route ids and must never merge a
   // retained previous snapshot into the newly selected rail row.
@@ -2080,7 +2092,19 @@ export default function SessionDetailView() {
           title="Session unavailable"
           pre="Session "
           chip={id}
-          post={sessionUnavailablePost}
+          post={
+            <>
+              <span> isn’t available to you.</span>
+              <div className="mx-auto mt-3 max-w-[360px] text-left">
+                <div className="font-medium text-(--text-primary)">Possible reasons:</div>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {unavailableReasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          }
           actionLabel="Back to sessions"
           actionHref={orgPath('/sessions')}
           secondaryAction={
