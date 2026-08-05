@@ -2009,6 +2009,49 @@ describe('SessionManager — collaboration preamble', () => {
     }
   })
 
+  it('marks every trusted direct agent call as addressed to the current agent', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({ ts: '100.1', source: 'agent', sender: { id: 'bot-b', isBot: true }, text: 'From bot-b: hello' }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { directAgentCall: true }
+    )
+
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('trusted direct agent call addressed to you')
+      }),
+      { type: 'text', text: 'From bot-b: hello' }
+    ])
+    store.close()
+  })
+
+  it('does not mark a synthetic agent-source wake as a direct agent call', async () => {
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        source: 'agent',
+        sender: { id: 'background-task:task-1', isBot: true },
+        text: '[background task finished] task-1'
+      })
+    )
+
+    expect(blocks).toEqual([{ type: 'text', text: '[background task finished] task-1' }])
+    store.close()
+  })
+
   it('marks a raw platform self-mention as explicitly addressed to this agent', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any

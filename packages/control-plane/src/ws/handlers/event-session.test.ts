@@ -175,6 +175,36 @@ describe('handleEventSession', () => {
     )
   })
 
+  it('inherits an A2A webchat child without treating its synthetic channel as a conversation UUID', async () => {
+    const recordMilestone = vi
+      .fn()
+      .mockResolvedValue(recorded({ parentSessionId: 'parent-session', visibilitySource: 'inherited_pending' }))
+    const findOwner = vi.fn().mockRejectedValue(new Error('must not query a synthetic A2A channel'))
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      webchatConversation: { findOwner },
+      events: { publish: vi.fn() }
+    })
+    const frame = eventSessionFrame()
+    Object.assign(frame.payload as Record<string, unknown>, {
+      platform: 'webchat',
+      channel: `a2a:${AGENT_ID}`,
+      parentSessionId: 'parent-session'
+    })
+
+    await handleEventSession(frame, { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(findOwner).not.toHaveBeenCalled()
+    expect(recordMilestone).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSessionId: 'parent-session',
+        platform: 'webchat',
+        channel: `a2a:${AGENT_ID}`,
+        classification: { inherit: true }
+      })
+    )
+  })
+
   it('binds a Slack audience only after validating its integration and workspace', async () => {
     const recordMilestone = vi.fn().mockResolvedValue(recorded())
     const deps = scopedDeps({

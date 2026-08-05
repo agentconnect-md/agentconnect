@@ -19,7 +19,12 @@ import {
   hydrateTranscriptImage,
   transcriptImageAttachments
 } from './attachment-block.js'
-import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
+import {
+  DIRECT_AGENT_CALL_REMINDER,
+  EXPLICIT_MENTION_REMINDER,
+  NO_RESPONSE_RULE,
+  NO_RESPONSE_REMINDER
+} from './no-response.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
  * and recalled record bodies deliberately stay out of this observer contract. */
@@ -378,6 +383,10 @@ export class SessionManager {
      *  It is already recorded in the transcript and must not become a model activation. */
     options: {
       initializeOnly?: boolean
+      /** True only when the daemon attached trusted CallMeta for this turn.
+       * `source: agent` alone is insufficient: background-task and orchestration
+       * wakes deliberately use that source without being direct agent calls. */
+      directAgentCall?: boolean
       /** Trusted daemon-owned host override for a conversation-isolated webchat
        * cell. Never derived from model/session input. */
       host?: AcpHost
@@ -1187,7 +1196,7 @@ export class SessionManager {
         // trigger in the same `[sender] text` shape as thread context — otherwise the agent has
         // no idea WHO is speaking and must guess from ambient account context. Synthetic
         // (cron/hook) triggers stay bare, and an agent delivery already names its caller in the
-        // forwarded text (`@caller: …` from prepareAgentDelivery).
+        // forwarded text (`From <caller>: …` from prepareAgentDelivery).
         blocks.push({ type: 'text', text: msg.source === 'user' ? `[${msg.sender.id}] ${msg.text}` : msg.text })
         contextEventTs = [...context.map((entry) => entry.ts), ts]
       }
@@ -1332,6 +1341,12 @@ export class SessionManager {
       // carries the full rule (the `created` branch / Claude's system-prompt append), so this
       // fires only on later turns. Placed first, ahead of the catch-up context + message.
       promptPrelude.push({ type: 'text', text: NO_RESPONSE_REMINDER })
+    }
+    // A trusted direct agent call is addressed to this agent regardless of names
+    // or quoted mentions in its body. State that routing fact per turn so the
+    // generic no-response rule cannot mistake the caller label for an addressee.
+    if (options.directAgentCall === true) {
+      promptPrelude.push({ type: 'text', text: DIRECT_AGENT_CALL_REMINDER })
     }
     // The router has already matched the raw platform token against THIS integration's
     // resolved bot identity. Preserve that trusted fact for the model: an opaque Slack

@@ -32,7 +32,12 @@ import { runForReportingAgent } from './reporting-agent.js'
  */
 async function classifyMilestone(p: EventSession, agentId: AgentId, deps: DaemonWsDeps) {
   const webchatOwnerUserId =
-    p.platform === 'webchat' && p.channel
+    // An A2A child uses a daemon-minted `a2a:<caller>` channel even when the
+    // parent transport is webchat. Its audience comes exclusively from the
+    // parent lineage, so treating that synthetic coordinate as a CP-minted
+    // webchat UUID both adds no authority and can make the UUID-backed lookup
+    // reject the whole durable metadata snapshot.
+    !p.parentSessionId && p.platform === 'webchat' && p.channel
       ? ((await deps.webchatConversation?.findOwner(p.channel, agentId)) ?? null)
       : null
   const launchOwnerUserId = p.launchCorrelationId
