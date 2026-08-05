@@ -36,6 +36,12 @@ const RELAY_WS_PATH = '/api/v1/relays/ws'
 
 async function main(): Promise<void> {
   const config = loadConfig()
+  // Env is a rolling-compatibility fallback for an older CP or a deployment
+  // that has not adopted DB-backed settings. A new CP replaces it exactly once
+  // through rc/auth/ok; later reconnects never hot-reload this process.
+  const deploymentConfig: { githubWebhookSecret?: string } = {
+    ...(config.GITHUB_APP_WEBHOOK_SECRET ? { githubWebhookSecret: config.GITHUB_APP_WEBHOOK_SECRET } : {})
+  }
 
   // Build the server first so the CP client can log through its pino instance. The
   // health probes and the CP-revoke callback read the client / rd server through a
@@ -102,6 +108,9 @@ async function main(): Promise<void> {
     connect: () => ClientTransport.dial(wsOrigin, { subprotocol: RELAY_CP_SUBPROTOCOL, path: RELAY_WS_PATH }),
     log,
     onRegistered: (id) => log.info(`relay: registered with CP as ${id}`),
+    onDeploymentConfig: (snapshot) => {
+      deploymentConfig.githubWebhookSecret = snapshot.githubWebhookSecret
+    },
     // Link (re)became READY — re-emit thread-assign reports and channel snapshots
     // dropped while it was down.
     onReady: () => {
@@ -217,27 +226,22 @@ async function main(): Promise<void> {
     log
   })
 
-  // GitHub App ingress (POST /webhooks/github) — registered ONLY when the
-  // webhook secret is configured; unset ⇒ the whole endpoint answers 404
-  // (webhook-triggers doc, decision 13).
-  if (config.GITHUB_APP_WEBHOOK_SECRET) {
-    // Live Issue/PR actor checks cost at least two GitHub calls. Keep their
-    // repository-wide upstream budget separate from per-hook run capacity.
-    const githubAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
-    registerGithubIngress(server, {
-      table: hookTable,
-      daemons: () => held.rdServer,
-      report: (r) => client.emitRunReport(r),
-      doorbell: (poke) => client.emitGithubInstallation(poke),
-      authorizeComment: (request) => client.authorizeGithubComment(request),
-      authorizeRerequest: (request) => client.authorizeGithubRerequest(request),
-      authzLimiter: githubAuthzLimiter,
-      limiter,
-      clock: systemClock,
-      log,
-      webhookSecret: config.GITHUB_APP_WEBHOOK_SECRET
-    })
-  }
+  // Live Issue/PR actor checks cost at least two GitHub calls. Keep their
+  // repository-wide upstream budget separate from per-hook run capacity.
+  const githubAuthzLimiter = new HookRateLimiter(systemClock, { capacity: 10, refillPerSec: 0.25 })
+  registerGithubIngress(server, {
+    table: hookTable,
+    daemons: () => held.rdServer,
+    report: (r) => client.emitRunReport(r),
+    doorbell: (poke) => client.emitGithubInstallation(poke),
+    authorizeComment: (request) => client.authorizeGithubComment(request),
+    authorizeRerequest: (request) => client.authorizeGithubRerequest(request),
+    authzLimiter: githubAuthzLimiter,
+    limiter,
+    clock: systemClock,
+    log,
+    webhookSecret: () => deploymentConfig.githubWebhookSecret
+  })
 
   // MCP reverse proxy (ALL /mcp/:providerId) — resolves a grant to its upstream, SSRF-guards
   // + IP-pins the operator-supplied upstream, swaps the bearer for the real headers, streams

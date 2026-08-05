@@ -49,7 +49,49 @@ const KEYS = [
   'POSTHOG_HOST'
 ] as const
 
-function resolve(): Record<string, string> {
+interface RuntimeConfigResponse {
+  schemaVersion: '1'
+  revision: number | null
+  config: null | {
+    apiUrl: string | null
+    relayUrl: string | null
+    webUrl: string | null
+    mcpUrl: string | null
+    auth: null | {
+      endpoint: string
+      issuer: string
+      appId: string
+      apiResource: string | null
+      socialProviders: string[]
+    }
+  }
+}
+
+let deploymentEnv: Promise<Record<string, string> | null> | undefined
+
+async function loadDeploymentEnv(): Promise<Record<string, string> | null> {
+  const base = process.env.CP_INTERNAL_URL
+  if (!base) return null
+  const url = new URL('runtime-config', base.endsWith('/') ? base : `${base}/`)
+  const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(5_000) })
+  if (!response.ok) throw new Error(`runtime config returned HTTP ${response.status}`)
+  const body = (await response.json()) as RuntimeConfigResponse
+  if (body.schemaVersion !== '1' || body.config === null) return null
+
+  const env: Record<string, string> = {}
+  if (body.config.apiUrl) env.CP_URL = body.config.apiUrl
+  if (body.config.relayUrl) env.RELAY_URL = body.config.relayUrl
+  if (body.config.mcpUrl) env.MCP_URL = body.config.mcpUrl
+  if (body.config.auth) {
+    env.LOGTO_ENDPOINT = body.config.auth.endpoint
+    env.LOGTO_APP_ID = body.config.auth.appId
+    if (body.config.auth.apiResource) env.LOGTO_API_RESOURCE = body.config.auth.apiResource
+    env.SOCIAL_PROVIDERS = body.config.auth.socialProviders.join(',')
+  }
+  return env
+}
+
+async function resolve(): Promise<Record<string, string>> {
   const env: Record<string, string> = {}
   for (const k of KEYS) {
     const v = process.env[k] ?? process.env[`NEXT_PUBLIC_${k}`] ?? ''
@@ -59,12 +101,37 @@ function resolve(): Record<string, string> {
   // for shared local env files while keeping the Web runtime key parallel to CP_URL.
   const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
   if (relayUrl) env.RELAY_URL = relayUrl
+
+  // The internal URL is deployment topology and therefore remains a bootstrap
+  // env value. The public settings themselves come from the CP's immutable
+  // startup snapshot. Cache the first attempt (including absence or failure)
+  // for this Web process so configuration never hot-reloads between requests;
+  // a restart applies it.
+  if (process.env.CP_INTERNAL_URL) {
+    deploymentEnv ??= loadDeploymentEnv().catch(() => null)
+    const persisted = await deploymentEnv
+    if (persisted) {
+      for (const key of [
+        'LOGTO_ENDPOINT',
+        'LOGTO_APP_ID',
+        'LOGTO_API_RESOURCE',
+        'SOCIAL_PROVIDERS',
+        'CP_URL',
+        'RELAY_URL',
+        'MCP_URL'
+      ]) {
+        delete env[key]
+      }
+      Object.assign(env, persisted)
+    }
+  }
   return env
 }
 
 /** Inline <script> that publishes the runtime public config to the browser. */
-export function PublicEnvScript() {
-  // JSON.stringify guards against breaking out of the script context.
-  const json = JSON.stringify(resolve())
+export async function PublicEnvScript() {
+  // Escape `<` as well as JSON syntax so a deployment-controlled value cannot
+  // terminate the inline script with a literal `</script>` sequence.
+  const json = JSON.stringify(await resolve()).replaceAll('<', '\\u003c')
   return <script dangerouslySetInnerHTML={{ __html: `window.__AC_ENV=${json}` }} />
 }

@@ -71,6 +71,8 @@ web_modules/
 .env.*
 !.env.example
 compose.env
+# Temporary setup apply document may contain write-only provider secrets.
+deployment-config.json
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

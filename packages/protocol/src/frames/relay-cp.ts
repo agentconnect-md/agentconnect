@@ -43,9 +43,20 @@ export const RcAuth = z.object({
 export type RcAuth = z.infer<typeof RcAuth>
 
 // C→R REP (corr = rc/auth id). Rejection is a `error` REP + close, not a reply.
+// `deploymentConfig` is the immutable startup snapshot for this relay process.
+// It is carried on the already-authenticated control connection so the relay
+// stays DB-less. A deployment change is deliberately restart-driven: callers
+// consume only the first snapshot they receive in one process lifetime.
+export const RcDeploymentConfig = z.object({
+  revision: z.number().int().nonnegative(),
+  githubWebhookSecret: z.string().min(1).optional()
+})
+export type RcDeploymentConfig = z.infer<typeof RcDeploymentConfig>
+
 export const RcAuthOk = z.object({
   heartbeatSec: z.number().int(), // cadence the relay must emit rc/heartbeat at
-  serverTime: z.string().datetime()
+  serverTime: z.string().datetime(),
+  deploymentConfig: RcDeploymentConfig.optional()
 })
 export type RcAuthOk = z.infer<typeof RcAuthOk>
 

@@ -76,6 +76,16 @@ export default {
           'sh scripts/publish-cli-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
       }
     ],
+    [
+      // Publish the self-contained Tenant Admin package independently so a
+      // deployment-only change does not force a daemon or host-CLI release.
+      '@semantic-release/exec',
+      {
+        prepareCmd: 'sh scripts/publish-setup-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version}" prepare',
+        publishCmd:
+          'sh scripts/publish-setup-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
+      }
+    ],
     // Expose the published tag to release.yaml so image publication can run
     // next in the same workflow, and add the version + notes to the job summary.
     // Write through Node's file API so commit-derived notes are never evaluated

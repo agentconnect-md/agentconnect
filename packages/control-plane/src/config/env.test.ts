@@ -1,5 +1,34 @@
 import { describe, it, expect } from 'vitest'
-import { corsWebOrigin, resolveWebAppUrl } from './env.js'
+import { corsWebOrigin, loadBootstrapConfig, loadConfig, resolveWebAppUrl } from './env.js'
+
+describe('loadBootstrapConfig', () => {
+  it('does not parse DB-owned runtime fields before the deployment row can be read', () => {
+    expect(
+      loadBootstrapConfig({
+        DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+        OIDC_ISSUER: 'not-a-url',
+        GITHUB_APP_ID: 'not-a-number',
+        WAITLIST_MODE: 'not-a-boolean'
+      })
+    ).toMatchObject({
+      DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+      SECRET_CIPHER: 'none'
+    })
+  })
+})
+
+describe('loadConfig', () => {
+  it('derives canonical Logto topology from the documented trailing-slash endpoint', () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+      API_KEY_PEPPER: 'a'.repeat(32),
+      LOGTO_ENDPOINT: 'https://tenant.example.com/'
+    })
+
+    expect(config.OIDC_ISSUER).toBe('https://tenant.example.com/oidc')
+    expect(config.LOGTO_MGMT_ENDPOINT).toBe('https://tenant.example.com')
+  })
+})
 
 describe('corsWebOrigin', () => {
   it('returns a single concrete origin verbatim', () => {

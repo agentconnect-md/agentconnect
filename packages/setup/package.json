@@ -1,0 +1,57 @@
+{
+  "name": "@agentconnect.md/setup",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect self-hosted Tenant Admin server",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentconnect-md/agentconnect.git",
+    "directory": "packages/setup"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown && node scripts/assert-self-contained.mjs",
+    "clean": "rm -rf dist",
+    "dev": "tsx watch --conditions=development src/index.ts",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@agentconnect.md/control-plane": "workspace:*",
+    "fastify": "^5.10.0",
+    "jose": "^6.2.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "json": "^11.0.0",
+    "tsdown": "^0.22.14",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "keywords": [
+    "agentconnect",
+    "self-hosting",
+    "tenant-admin"
+  ],
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

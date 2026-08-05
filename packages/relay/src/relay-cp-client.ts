@@ -17,6 +17,7 @@ import {
   decodeRelayCpFrame,
   type RelayCpFrame,
   type RcAuthOk,
+  type RcDeploymentConfig,
   type RcRegistered,
   type RcVerify,
   type RcVerifyResult,
@@ -112,6 +113,9 @@ export interface RelayCpClientDeps {
   onMemoryConnectionUnassign?: (a: RcMemoryConnectionUnassign) => void
   /** Called once the relay reaches READY on each (re)connect. */
   onReady?: () => void
+  /** First authenticated deployment snapshot in this process. Later reconnects
+   *  deliberately do not hot-reload it; an operator restart applies changes. */
+  onDeploymentConfig?: (config: RcDeploymentConfig) => void
 }
 
 export class RelayCpClient {
@@ -123,6 +127,7 @@ export class RelayCpClient {
   private readonly backoff: Backoff
   private stopped = false
   private fatal = false // AUTH_FAILED — never auto-retry
+  private deploymentConfigDecided = false
   private reconnectTimer?: TimerHandle
   private heartbeatTimer?: TimerHandle
   private heartbeatMs = 0
@@ -391,6 +396,10 @@ export class RelayCpClient {
       buildRelayCpFrame('rc/auth', { method: this.deps.auth.method, credential: this.deps.auth.credential })
     )
     const ok = authOk.payload as RcAuthOk
+    if (!this.deploymentConfigDecided) {
+      this.deploymentConfigDecided = true
+      if (ok.deploymentConfig) this.deps.onDeploymentConfig?.(ok.deploymentConfig)
+    }
 
     // ── register (upsert by name → relayId; re-sent every reconnect) ──
     this.state = 'REGISTERING'

@@ -91,6 +91,7 @@ function build(
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
+    deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
   } = {}
@@ -128,6 +129,7 @@ function build(
     auth,
     relays,
     clock,
+    ...(over.deploymentConfig ? { deploymentConfig: over.deploymentConfig } : {}),
     onRegistered,
     onRunReport,
     onSetChannelAgent: vi.fn(async () => {}),
@@ -337,12 +339,13 @@ describe('webchat verification remote-MCP gate', () => {
 
 describe('RelayConnection FSM', () => {
   it('runs rc/auth → rc/register → READY and upserts the relay row', async () => {
-    const { conn, transport, upsertByName, onRegistered } = build()
+    const deploymentConfig = { revision: 4, githubWebhookSecret: 'ghw_secret' }
+    const { conn, transport, upsertByName, onRegistered } = build({ deploymentConfig })
 
     transport.feed('rc/auth', { method: 'token', credential: RELAY_TOKEN })
     await Promise.resolve()
     const authOk = transport.lastRep('rc/auth/ok')!
-    expect(authOk.payload).toMatchObject({ heartbeatSec: 15 })
+    expect(authOk.payload).toMatchObject({ heartbeatSec: 15, deploymentConfig })
 
     transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test' })
     await Promise.resolve()

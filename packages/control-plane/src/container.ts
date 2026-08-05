@@ -132,6 +132,7 @@ import type { SecretsProvider } from './secrets/providers/provider.js'
 import { makeSecretsProvider } from './secrets/providers/memory.js'
 import { SecretsBrokerService } from './secrets/secretsBroker.js'
 import { makeSecretCipher, type SecretCipher } from './secrets/cipher.js'
+import type { DeploymentConfigRuntime } from './persistence/deployment-config.js'
 
 import { ConnectionRegistry } from './ws/registry.js'
 import { RelayRegistry } from './ws/relay-registry.js'
@@ -238,6 +239,8 @@ export interface ContainerOpts {
   /** The at-rest transform every persisted secret VALUE passes through. Absent ⇒
    *  selected from `config.SECRET_CIPHER` (none → identity, vault-transit → Vault). */
   secretCipher?: SecretCipher
+  /** Immutable DB-backed desired state loaded by the process bootstrap. */
+  deploymentConfig?: DeploymentConfigRuntime
 }
 
 /**
@@ -548,7 +551,7 @@ export function buildContainer(
     repos.hookSecret,
     repos.agent,
     relayControl,
-    repos.githubInstallation,
+    githubAppCfg ? repos.githubInstallation : undefined,
     githubAppCfg?.slug
   )
 
@@ -810,6 +813,27 @@ export function buildContainer(
   const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
   const httpDeps: HttpDeps = {
+    runtimeConfig: opts.deploymentConfig
+      ? {
+          deploymentRevision: opts.deploymentConfig.revision,
+          publicRuntimeConfig: {
+            apiUrl: config.PUBLIC_CP_URL ? `${config.PUBLIC_CP_URL.replace(/\/$/, '')}/api/v1` : null,
+            relayUrl: config.PUBLIC_RELAY_URL ?? null,
+            webUrl: config.PUBLIC_WEB_URL ?? null,
+            mcpUrl: config.PUBLIC_MCP_URL ?? null,
+            auth:
+              opts.deploymentConfig.values.auth.mode === 'oidc' && config.OIDC_ISSUER
+                ? {
+                    endpoint: new URL(config.OIDC_ISSUER).origin,
+                    issuer: config.OIDC_ISSUER,
+                    appId: opts.deploymentConfig.values.auth.browserClient.appId,
+                    apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
+                    socialProviders: opts.deploymentConfig.values.auth.socialProviders
+                  }
+                : null
+          }
+        }
+      : {},
     clock,
     // The same late-bound façade the orchestrators above hold (see its
     // definition): the providers below are constructed WITH `httpDeps` — their
@@ -1183,6 +1207,16 @@ export function buildContainer(
     relays: repos.relay,
     relayReg,
     clock,
+    ...(opts.deploymentConfig
+      ? {
+          deploymentConfig: {
+            revision: opts.deploymentConfig.revision,
+            ...(opts.deploymentConfig.values.github && opts.deploymentConfig.secrets['github.webhookSecret']
+              ? { githubWebhookSecret: opts.deploymentConfig.secrets['github.webhookSecret'] }
+              : {})
+          }
+        }
+      : {}),
     // rc/verify(webchat-token): validate the token, then re-resolve the agent's CURRENT
     // placement (agent.daemonId + connReg READY) — placement can move between mint + dial.
     verifyWebchatToken: createWebchatTokenVerifier({

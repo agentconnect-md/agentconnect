@@ -63,12 +63,25 @@ class FakeTransport implements Transport {
 }
 
 /** Drive a client from start() through to READY against `transport`. */
-async function handshakeToReady(client: RelayCpClient, transport: FakeTransport, heartbeatSec = 15): Promise<void> {
+async function handshakeToReady(
+  client: RelayCpClient,
+  transport: FakeTransport,
+  heartbeatSec = 15,
+  deploymentConfig?: { revision: number; githubWebhookSecret?: string }
+): Promise<void> {
   client.start()
   await flush()
   const auth = transport.lastReq('rc/auth')!
   transport.inject(
-    buildRelayCpFrame('rc/auth/ok', { heartbeatSec, serverTime: '2026-07-07T00:00:00.000Z' }, { corr: auth.id })
+    buildRelayCpFrame(
+      'rc/auth/ok',
+      {
+        heartbeatSec,
+        serverTime: '2026-07-07T00:00:00.000Z',
+        ...(deploymentConfig ? { deploymentConfig } : {})
+      },
+      { corr: auth.id }
+    )
   )
   await flush()
   const reg = transport.lastReq('rc/register')!
@@ -115,6 +128,73 @@ describe('RelayCpClient', () => {
     expect(client.isReady()).toBe(true)
     expect(onRegistered).toHaveBeenCalledWith(RELAY_ID)
     expect(onReady).toHaveBeenCalledOnce()
+  })
+
+  it('applies the authenticated deployment snapshot during startup', async () => {
+    const onDeploymentConfig = vi.fn()
+    const { client, transport } = makeClient({ onDeploymentConfig })
+    const snapshot = { revision: 8, githubWebhookSecret: 'ghw_secret' }
+    await handshakeToReady(client, transport, 15, snapshot)
+    expect(onDeploymentConfig).toHaveBeenCalledOnce()
+    expect(onDeploymentConfig).toHaveBeenCalledWith(snapshot)
+  })
+
+  it('freezes an absent startup snapshot until the relay process restarts', async () => {
+    const clock = new FakeClock()
+    const transports: FakeTransport[] = []
+    const onDeploymentConfig = vi.fn()
+    const client = new RelayCpClient({
+      auth: { method: 'token', credential: TOKEN },
+      name: 'relay-0',
+      daemonUrl: 'wss://relay-0.example',
+      heartbeatDefaultMs: 15_000,
+      clock,
+      connect: async () => {
+        const transport = new FakeTransport()
+        transports.push(transport)
+        return transport
+      },
+      log: silentLog,
+      jitter: () => 0,
+      onDeploymentConfig
+    })
+
+    client.start()
+    await flush()
+    const first = transports[0]!
+    const firstAuth = first.lastReq('rc/auth')!
+    first.inject(
+      buildRelayCpFrame(
+        'rc/auth/ok',
+        { heartbeatSec: 15, serverTime: new Date(0).toISOString() },
+        { corr: firstAuth.id }
+      )
+    )
+    await flush()
+    const firstRegister = first.lastReq('rc/register')!
+    first.inject(buildRelayCpFrame('rc/registered', { relayId: RELAY_ID }, { corr: firstRegister.id }))
+    await flush()
+
+    first.simulateClose(1012)
+    clock.advance(1_000)
+    await flush()
+    const second = transports[1]!
+    const secondAuth = second.lastReq('rc/auth')!
+    second.inject(
+      buildRelayCpFrame(
+        'rc/auth/ok',
+        {
+          heartbeatSec: 15,
+          serverTime: new Date(0).toISOString(),
+          deploymentConfig: { revision: 9, githubWebhookSecret: 'must-not-hot-reload' }
+        },
+        { corr: secondAuth.id }
+      )
+    )
+    await flush()
+
+    expect(onDeploymentConfig).not.toHaveBeenCalled()
+    await client.stop()
   })
 
   it('emits rc/heartbeat at the CP-dictated cadence', async () => {

@@ -26,6 +26,40 @@ datasource db {
   // (`datasource.url`). v7 deprecates a `url` here, so it is intentionally omitted.
 }
 
+// Deployment-wide operator configuration. There is exactly one row (`id = 1`),
+// enforced by the migration. `values` is a versioned, application-validated
+// JSON document; secret values live in the side table and never join ordinary
+// configuration reads.
+model DeploymentConfig {
+  id              Int      @id
+  schemaVersion   Int
+  values          Json     @db.JsonB
+  revision        Int      @default(1)
+  adminClaimedFor String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+
+  secrets DeploymentSecret[]
+
+  @@map("deployment_config")
+}
+
+model DeploymentSecret {
+  deploymentConfigId Int
+  key                String
+  value              String
+  // Stable, truncated digest of the plaintext for redacted operator status.
+  // It is never used for authentication.
+  fingerprint        String
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(6)
+
+  deploymentConfig DeploymentConfig @relation(fields: [deploymentConfigId], references: [id], onDelete: Cascade)
+
+  @@id([deploymentConfigId, key])
+  @@map("deployment_secret")
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // §3.2 Tenancy axis — Org / User / Membership (C2/C4 WebUI authz)
 // ───────────────────────────────────────────────────────────────────────────

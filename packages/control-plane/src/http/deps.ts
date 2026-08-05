@@ -80,6 +80,7 @@ import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
 import type { SessionAccessPlugin } from './session-access-plugin.js'
+import type { RuntimeConfigRouteDeps } from './routes/runtime-config.js'
 
 export interface HttpServerConfig extends HumanAuthConfig {
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
@@ -122,6 +123,8 @@ export interface HttpServerConfig extends HumanAuthConfig {
 }
 
 export interface HttpDeps {
+  /** Secret-free startup snapshot served to the prebuilt browser image. */
+  runtimeConfig: RuntimeConfigRouteDeps
   /** Shared process clock: delegated MCP execution uses the same timer seam as its reaper. */
   clock: Clock
   repos: {

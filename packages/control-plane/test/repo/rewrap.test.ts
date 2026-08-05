@@ -38,6 +38,23 @@ const BOT = 'b071b071-2222-4222-8222-b071b071b071'
 const MEM_CONNECTION = 'ec111e11-3333-4333-8333-ec111e11ec11'
 
 async function seedAllSecretTables(): Promise<void> {
+  await prisma.deploymentConfig.create({
+    data: {
+      id: 1,
+      schemaVersion: 1,
+      values: {
+        auth: { mode: 'none' },
+        github: null,
+        slack: null,
+        logto: null,
+        features: { presetAgentsEnabled: true }
+      }
+    }
+  })
+  await prisma.deploymentSecret.create({
+    data: { deploymentConfigId: 1, key: 'github.clientSecret', value: 'deployment-plain', fingerprint: 'fp' }
+  })
+
   await seedAgent(prisma, AGENT)
   await prisma.agentSecret.create({ data: { agentId: AGENT, key: 'API_KEY', value: 'sk-agent' } })
 
@@ -111,6 +128,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(stats.map((s) => s.table).sort()).toEqual([
       'agent_secret',
       'bot_secret',
+      'deployment_secret',
       'external_memory_connection_secret',
       'external_memory_grant',
       'hook_secret',
@@ -132,6 +150,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect(bot.botToken).toBe('sealed:xoxb-plain')
     expect(bot.appToken).toBe('sealed:xapp-plain')
     expect(bot.signingSecret).toBeNull()
+    expect((await prisma.deploymentSecret.findFirstOrThrow()).value).toBe('sealed:deployment-plain')
     const agentRow = await prisma.agentSecret.findFirstOrThrow({ where: { agentId: AGENT } })
     expect(agentRow.value).toBe('sealed:sk-agent')
     const hook = await prisma.hookSecret.findFirstOrThrow()

@@ -8,6 +8,22 @@
 import { z } from 'zod'
 import { composeCpPlatformEnv } from '../platforms/env.js'
 
+const SecureOriginSchema = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    const url = new URL(value)
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    const loopback =
+      hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+    if (url.protocol !== 'https:' && !loopback) {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
+    }
+    if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+      ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
+    }
+  })
+
 /** The env keys CORE owns. Platform keys are folded in below — this object is
  *  never exported: `AppConfigSchema` is the only schema, and it is the two
  *  halves together. */
@@ -60,7 +76,7 @@ const CoreConfigShape = {
   // ONLINE: open() passes existing plaintext rows through unchanged and the
   // next write re-seals them (lazy migration, no backfill required).
   SECRET_CIPHER: z.enum(['none', 'vault-transit']).default('none'),
-  VAULT_ADDR: z.string().url().optional(), // Vault origin, e.g. https://vault.example.com:8200
+  VAULT_ADDR: SecureOriginSchema.optional(), // Vault origin, e.g. https://vault.example.com:8200
   VAULT_TRANSIT_KEY: z.string().default('agentconnect-cp'), // transit key name
   VAULT_TRANSIT_MOUNT: z.string().default('transit'), // transit engine mount path
   VAULT_NAMESPACE: z.string().optional(), // Vault Enterprise namespace (sent as X-Vault-Namespace)
@@ -197,9 +213,14 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>
 
-/** Cross-field checks the flat schema can't express — fail-fast at boot, before
- *  the first secret write could silently land plaintext next to sealed rows. */
-const AppConfigChecked = AppConfigSchema.superRefine((config, ctx) => {
+interface SecretCipherEnv {
+  SECRET_CIPHER: 'none' | 'vault-transit'
+  VAULT_ADDR?: string
+  VAULT_TOKEN?: string
+  VAULT_JWT_ROLE?: string
+}
+
+function validateSecretCipher(config: SecretCipherEnv, ctx: z.RefinementCtx): void {
   if (config.SECRET_CIPHER !== 'vault-transit') return
   if (!config.VAULT_ADDR) {
     ctx.addIssue({
@@ -216,10 +237,44 @@ const AppConfigChecked = AppConfigSchema.superRefine((config, ctx) => {
       message: 'SECRET_CIPHER=vault-transit requires exactly one of VAULT_TOKEN or VAULT_JWT_ROLE'
     })
   }
-})
+}
+
+/** Cross-field checks the flat schema can't express — fail-fast at boot, before
+ *  the first secret write could silently land plaintext next to sealed rows. */
+const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
+
+const BootstrapConfigSchema = z
+  .object({
+    DATABASE_URL: CoreConfigShape.DATABASE_URL,
+    SECRET_CIPHER: CoreConfigShape.SECRET_CIPHER,
+    VAULT_ADDR: CoreConfigShape.VAULT_ADDR,
+    VAULT_TRANSIT_KEY: CoreConfigShape.VAULT_TRANSIT_KEY,
+    VAULT_TRANSIT_MOUNT: CoreConfigShape.VAULT_TRANSIT_MOUNT,
+    VAULT_NAMESPACE: CoreConfigShape.VAULT_NAMESPACE,
+    VAULT_TOKEN: CoreConfigShape.VAULT_TOKEN,
+    VAULT_JWT_ROLE: CoreConfigShape.VAULT_JWT_ROLE,
+    VAULT_JWT_PATH: CoreConfigShape.VAULT_JWT_PATH,
+    VAULT_AUTH_MOUNT: CoreConfigShape.VAULT_AUTH_MOUNT
+  })
+  .superRefine(validateSecretCipher)
+
+export type BootstrapConfig = z.infer<typeof BootstrapConfigSchema>
+
+/** Parse only roots needed before the DB-backed deployment row can be read. */
+export function loadBootstrapConfig(env: NodeJS.ProcessEnv = process.env): BootstrapConfig {
+  return BootstrapConfigSchema.parse(env)
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  return AppConfigChecked.parse(env)
+  const logtoEndpoint = env.LOGTO_ENDPOINT?.trim()
+  if (!logtoEndpoint) return AppConfigChecked.parse(env)
+
+  const logtoOrigin = new URL(SecureOriginSchema.parse(logtoEndpoint)).origin
+  return AppConfigChecked.parse({
+    ...env,
+    OIDC_ISSUER: env.OIDC_ISSUER?.trim() || `${logtoOrigin}/oidc`,
+    LOGTO_MGMT_ENDPOINT: env.LOGTO_MGMT_ENDPOINT?.trim() || logtoOrigin
+  })
 }
 
 /** The first concrete browser origin in a CORS_ORIGIN value, or undefined when it names

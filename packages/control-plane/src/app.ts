@@ -22,6 +22,7 @@ import { type AppConfig, loadConfig } from './config/env.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import type { SecretsProvider } from './secrets/providers/provider.js'
 import type { SecretCipher } from './secrets/cipher.js'
+import type { DeploymentConfigRuntime } from './persistence/deployment-config.js'
 import type { FetchLike } from './github/api.js'
 import { makeSecretsProvider } from './secrets/providers/memory.js'
 import { buildContainer } from './container.js'
@@ -39,6 +40,9 @@ export interface BuildAppDeps {
   /** The at-rest transform every persisted secret VALUE passes through. Absent ⇒
    *  selected from `config.SECRET_CIPHER` (none → identity, vault-transit → Vault). */
   secretCipher?: SecretCipher
+  /** Immutable deployment snapshot loaded before composition. It is used for
+   *  authenticated startup projection to DB-less peers, never hot-reloaded. */
+  deploymentConfig?: DeploymentConfigRuntime
   /** Fastify server options for the HTTP edge (e.g. `{ logger: true }`). */
   fastify?: FastifyServerOptions
   /** GitHub REST fetch override — integration tests stub the API without network. */
@@ -128,7 +132,8 @@ export function buildApp(deps: BuildAppDeps): App {
     ...(deps.githubFetch ? { githubFetch: deps.githubFetch } : {}),
     ...(deps.daemonReleaseFetch ? { daemonReleaseFetch: deps.daemonReleaseFetch } : {}),
     ...(deps.connectorsFetch ? { connectorsFetch: deps.connectorsFetch } : {}),
-    ...(deps.secretCipher ? { secretCipher: deps.secretCipher } : {})
+    ...(deps.secretCipher ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.deploymentConfig ? { deploymentConfig: deps.deploymentConfig } : {})
   })
 
   let wss: WebSocketServer | undefined

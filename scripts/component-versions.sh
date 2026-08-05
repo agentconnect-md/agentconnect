@@ -19,6 +19,7 @@
 #   relay=vC
 #   mem0=vD
 #   mem0Backend=vE
+#   setup=vF
 # Requires the full tag list and history (CI: actions/checkout fetch-depth: 0);
 # an unknown tag fails loudly rather than guessing.
 set -euo pipefail
@@ -47,7 +48,8 @@ esac
 # .npmrc), the build-context filter (.dockerignore), and the shared tsconfig
 # every package build extends.
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
-CP_PATHS="packages/control-plane packages/protocol $COMMON"
+CP_PATHS="packages/control-plane packages/setup packages/protocol $COMMON"
+SETUP_PATHS="$CP_PATHS"
 WEB_PATHS="packages/web $COMMON"
 RELAY_PATHS="packages/relay packages/message packages/protocol packages/connection $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
@@ -100,3 +102,4 @@ printf 'web=%s\n' "$(effective "$WEB_PATHS")"
 printf 'relay=%s\n' "$(effective "$RELAY_PATHS")"
 printf 'mem0=%s\n' "$(effective "$MEM0_PATHS")"
 printf 'mem0Backend=%s\n' "$(effective "$MEM0_BACKEND_PATHS")"
+printf 'setup=%s\n' "$(effective "$SETUP_PATHS")"

@@ -146,6 +146,7 @@ jobs:
           RELAY_EFFECTIVE: ${{ steps.components.outputs.relay }}
           MEM0_EFFECTIVE: ${{ steps.components.outputs.mem0 }}
           MEM0_BACKEND_EFFECTIVE: ${{ steps.components.outputs.mem0Backend }}
+          SETUP_VERSION: ${{ steps.components.outputs.setup }}
         run: |
           set -euo pipefail
           changed='[]'
