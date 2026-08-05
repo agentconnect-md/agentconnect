@@ -109,7 +109,6 @@ import {
   type MintedKeyDto,
   type SessionFacets
 } from '@/lib/api'
-import { SESSION_FACET_REFRESH_MS } from '@/lib/use-session-facets'
 
 interface ConsoleData {
   agents: Agent[]
@@ -125,8 +124,8 @@ interface ConsoleData {
   sessionActivityVersionById: Record<string, number>
   /** Advances on every SSE (re)connect so views close any disconnect gap. */
   sessionStreamGeneration: number
-  /** Re-fetch every session list/facet page — used after a mutation that can
-   *  change which sessions a caller may see (e.g. a visibility change). */
+  /** Re-fetch cached Session reads — used after a mutation that can change
+   *  which sessions a caller may see (e.g. a visibility change). */
   revalidateSessionLists: () => Promise<unknown>
   crons: CronDto[]
   integrations: IntegrationRow[]
@@ -235,8 +234,8 @@ interface ConsoleData {
   /** Command a daemon to install `version` + relaunch onto it; returns the opened op. */
   upgradeDaemon: (daemonId: string, version: string) => Promise<DaemonLifecycleOpDto>
   refresh: () => void
-  /** Revalidate ONLY the session lists — for after an action known to mint a session
-   *  (e.g. a Playground send), without re-pulling every console read model. */
+  /** Revalidate only Session-derived reads — for after an action known to mint
+   *  a session, without re-pulling every console read model. */
   refreshSessions: () => void
   /** Revalidate ONLY the daemon fleet and resolve once the fresh list is committed —
    *  for flows that must observe the post-refresh fleet before acting (e.g. the
@@ -259,7 +258,6 @@ const Ctx = createContext<ConsoleData | null>(null)
 const SESSION_EVENT_REFRESH_DEBOUNCE_MS = 500
 const DAEMON_REFRESH_MS = 15_000
 const RESOURCE_REFRESH_MS = 30_000
-const USAGE_REFRESH_MS = 30_000
 const EMPTY_SESSION_FACETS: SessionFacets = { agentIds: [], integrations: [], channels: [], triggers: [] }
 function settleInBackground(...tasks: Promise<unknown>[]): void {
   void Promise.allSettled(tasks)
@@ -794,10 +792,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     data: usage24hData,
     isLoading: usage24hIsLoading,
     mutate: mutateUsage24h
-  } = useSWR<UsageDto>(
-    consoleKeys.usage(orgKey, 'd1'),
-    ([, orgId, , range]) => fetchUsage(range as UsageRange, orgId as string),
-    { refreshInterval: USAGE_REFRESH_MS }
+  } = useSWR<UsageDto>(consoleKeys.usage(orgKey, 'd1'), ([, orgId, , range]) =>
+    fetchUsage(range as UsageRange, orgId as string)
   )
 
   const {
@@ -813,10 +809,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     data: sessionFacets = EMPTY_SESSION_FACETS,
     error: sessionFacetsError,
     isLoading: sessionFacetsIsLoading
-  } = useSWR<SessionFacets>(
-    consoleKeys.sessionFacets(orgKey, '', '', '', '', '', ''),
-    ([, orgId]) => fetchSessionFacets(orgId as string),
-    { refreshInterval: SESSION_FACET_REFRESH_MS }
+  } = useSWR<SessionFacets>(consoleKeys.sessionFacets(orgKey, '', '', '', '', '', ''), ([, orgId]) =>
+    fetchSessionFacets(orgId as string)
   )
 
   const revalidateSessionLists = useCallback(() => {
@@ -824,9 +818,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     return mutateCache(
       (key) =>
         Array.isArray(key) &&
-        key[0] === 'console' &&
-        key[1] === orgKey &&
-        (key[2] === 'sessions' || key[2] === 'session-facets')
+        ((key[0] === 'console' &&
+          key[1] === orgKey &&
+          (key[2] === 'sessions' || key[2] === 'session-facets' || key[2] === 'session-detail')) ||
+          (key[0] === 'conversation-by-key' && key[1] === orgKey))
     )
   }, [mutateCache, orgKey])
 

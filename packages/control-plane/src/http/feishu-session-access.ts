@@ -15,16 +15,22 @@ const REGION_ORIGIN: Record<FeishuRegion, string> = {
   feishu: 'https://open.feishu.cn',
   lark: 'https://open.larksuite.com'
 }
-const ALLOW_TTL_MS = 120_000
+const MEMBER_LIST_TTL_MS = 120_000
 const DENY_TTL_MS = 30_000
 const UNKNOWN_TTL_MS = 5_000
+const QUOTA_RETRY_MS = 60 * 60_000
 const MAX_CACHE_ENTRIES = 10_000
 const SCOPES_PER_BATCH = 200
 const SCOPE_CONCURRENCY = 6
 const TIMEOUT_MS = 5_000
+const QUOTA_EXHAUSTED_CODE = 99991403
 
 type Decision = 'allow' | 'deny' | 'unknown'
 type ScopeDecision = { decision: Decision; issue?: SessionAccessIssue }
+type MembershipResult =
+  | { status: 'members'; unionIds: ReadonlySet<string> }
+  | { status: 'deny' }
+  | { status: 'unknown'; issue: SessionAccessIssue }
 
 const DEFINITIVE_DENIALS = new Set([232006, 232009, 232010, 232011])
 
@@ -47,7 +53,9 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
  * No request-bound user token is fetched or retained. */
 export class FeishuSessionAccessService implements SessionAccessPlugin {
   readonly provider = 'feishu'
-  private readonly cache = new Map<string, { result: ScopeDecision; expiresAt: number }>()
+  private readonly membershipCache = new Map<string, { result: MembershipResult; expiresAt: number }>()
+  private readonly pendingMembership = new Map<string, Promise<MembershipResult>>()
+  private readonly quotaBlockedUntil = new Map<string, number>()
 
   constructor(
     private readonly deps: {
@@ -161,32 +169,69 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
     if (unionIds.length === 0) {
       return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'authorization' } }
     }
-    const key = [scope.id, scope.aclRevision.toString(), bot.credentialRevision, ...unionIds].join(':')
-    const cached = this.cache.get(key)
-    let result = cached && cached.expiresAt > this.deps.clock.now() ? cached.result : undefined
-    if (!result) {
-      result = await this.checkMembership(region, scope.resourceKey, bot, unionIds, tokenFor, signal)
-      this.putCache(key, result)
+    const membership = await this.membershipFor(
+      [bot.id, bot.credentialRevision, scope.resourceKey].join(':'),
+      `${scope.orgId}:${region}`,
+      region,
+      scope.resourceKey,
+      bot,
+      tokenFor,
+      signal
+    )
+    if (membership.status === 'members') {
+      return { decision: unionIds.some((unionId) => membership.unionIds.has(unionId)) ? 'allow' : 'deny' }
     }
-    return result
+    if (membership.status === 'deny') return { decision: 'deny' }
+    return { decision: 'unknown', issue: membership.issue }
   }
 
-  private async checkMembership(
+  private membershipFor(
+    key: string,
+    quotaKey: string,
     region: FeishuRegion,
     chatId: string,
     bot: BotRecord,
-    unionIds: readonly string[],
     tokenFor: (bot: BotRecord, signal: AbortSignal) => Promise<string>,
     signal: AbortSignal
-  ): Promise<ScopeDecision> {
+  ): Promise<MembershipResult> {
+    const now = this.deps.clock.now()
+    const cached = this.membershipCache.get(key)
+    if (cached && cached.expiresAt > now) return Promise.resolve(cached.result)
+    if ((this.quotaBlockedUntil.get(quotaKey) ?? 0) > now) {
+      return Promise.resolve({
+        status: 'unknown',
+        issue: { provider: 'feishu', region, reason: 'quota' }
+      })
+    }
+    const existing = this.pendingMembership.get(key)
+    if (existing) return existing
+
+    const pending = this.listMembers(region, chatId, bot, tokenFor, signal, quotaKey)
+      .then((result) => {
+        if (!(result.status === 'unknown' && result.issue.reason === 'quota')) this.putMembershipCache(key, result)
+        return result
+      })
+      .finally(() => this.pendingMembership.delete(key))
+    this.pendingMembership.set(key, pending)
+    return pending
+  }
+
+  private async listMembers(
+    region: FeishuRegion,
+    chatId: string,
+    bot: BotRecord,
+    tokenFor: (bot: BotRecord, signal: AbortSignal) => Promise<string>,
+    signal: AbortSignal,
+    quotaKey: string
+  ): Promise<MembershipResult> {
     let token: string
     try {
       token = await tokenFor(bot, signal)
     } catch {
-      return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
+      return { status: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
     }
     try {
-      const wanted = new Set(unionIds)
+      const unionIds = new Set<string>()
       const seenPageTokens = new Set<string>()
       let pageToken: string | undefined
       for (;;) {
@@ -202,23 +247,27 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
         }>(region, `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members?${query}`, token, signal)
         const code = typeof body.code === 'number' ? body.code : Number(body.code)
         if (code !== 0) {
+          if (code === QUOTA_EXHAUSTED_CODE) {
+            this.quotaBlockedUntil.set(quotaKey, this.deps.clock.now() + QUOTA_RETRY_MS)
+            return { status: 'unknown', issue: { provider: 'feishu', region, reason: 'quota' } }
+          }
           return DEFINITIVE_DENIALS.has(code)
-            ? { decision: 'deny' }
-            : { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
+            ? { status: 'deny' }
+            : { status: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
         }
-        if (body.data?.items?.some((item) => typeof item.member_id === 'string' && wanted.has(item.member_id))) {
-          return { decision: 'allow' }
+        for (const item of body.data?.items ?? []) {
+          if (typeof item.member_id === 'string') unionIds.add(item.member_id)
         }
-        if (body.data?.has_more !== true) return { decision: 'deny' }
+        if (body.data?.has_more !== true) return { status: 'members', unionIds }
         const next = typeof body.data.page_token === 'string' ? body.data.page_token : undefined
         if (!next || seenPageTokens.has(next)) {
-          return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
+          return { status: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
         }
         seenPageTokens.add(next)
         pageToken = next
       }
     } catch {
-      return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
+      return { status: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
     }
   }
 
@@ -259,16 +308,19 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       signal
     })
     const body = (await response.json()) as T
-    if (!response.ok) throw new Error(`Feishu request failed: ${response.status}`)
+    if (!response.ok && (typeof body !== 'object' || body === null || !('code' in body))) {
+      throw new Error(`Feishu request failed: ${response.status}`)
+    }
     return body
   }
 
-  private putCache(key: string, result: ScopeDecision): void {
-    if (this.cache.size >= MAX_CACHE_ENTRIES) {
-      const oldest = this.cache.keys().next().value as string | undefined
-      if (oldest) this.cache.delete(oldest)
+  private putMembershipCache(key: string, result: MembershipResult): void {
+    if (this.membershipCache.size >= MAX_CACHE_ENTRIES) {
+      const oldest = this.membershipCache.keys().next().value as string | undefined
+      if (oldest) this.membershipCache.delete(oldest)
     }
-    const ttl = result.decision === 'allow' ? ALLOW_TTL_MS : result.decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    this.cache.set(key, { result, expiresAt: this.deps.clock.now() + ttl })
+    const ttl =
+      result.status === 'members' ? MEMBER_LIST_TTL_MS : result.status === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
+    this.membershipCache.set(key, { result, expiresAt: this.deps.clock.now() + ttl })
   }
 }

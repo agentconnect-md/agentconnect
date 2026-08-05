@@ -99,9 +99,46 @@ describe('subscribeSessionEvents', () => {
     expect(requestSignals[0]?.aborted).toBe(true)
     expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>).authorization).toBe('Bearer oidc-token-1')
     expect((fetchMock.mock.calls[1]![1]!.headers as Record<string, string>).authorization).toBe('Bearer oidc-token-2')
-    expect(onConnect).toHaveBeenCalledTimes(2)
+    expect(onConnect).toHaveBeenCalledTimes(1)
     expect(onError).not.toHaveBeenCalled()
 
     unsubscribe()
+  })
+
+  it('invalidates after a token-rotation reopen fails and creates a gap', async () => {
+    vi.useFakeTimers()
+    const requestSignals: AbortSignal[] = []
+    let attempt = 0
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      attempt++
+      if (attempt === 2) throw new Error('reopen failed')
+      const signal = init?.signal as AbortSignal
+      requestSignals.push(signal)
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), {
+            once: true
+          })
+        }
+      })
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onConnect = vi.fn()
+    const onError = vi.fn()
+
+    const unsubscribe = subscribeSessionEvents('org-1', { onConnect, onSession: vi.fn(), onActivity: vi.fn() }, onError)
+    await vi.waitFor(() => expect(onConnect).toHaveBeenCalledTimes(1))
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(onError).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(onConnect).toHaveBeenCalledTimes(2)
+
+    unsubscribe()
+    expect(requestSignals.at(-1)?.aborted).toBe(true)
   })
 })

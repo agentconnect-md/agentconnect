@@ -2434,7 +2434,7 @@ export const ConversationDto = z.object({
 export const SessionAccessIssueDto = z.object({
   provider: z.string().min(1),
   region: z.string().min(1).optional(),
-  reason: z.enum(['authorization', 'unavailable'])
+  reason: z.enum(['authorization', 'quota', 'unavailable'])
 })
 
 export const SessionListPageDto = z.object({

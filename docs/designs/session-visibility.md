@@ -653,9 +653,16 @@ ID/Secret for a tenant token and calls `chats/:chat_id/members` with
 `member_id_type=union_id`. Group and Bot p2p sessions compare that current
 member list with the viewer's sign-in `union_id`; provider failures fail closed.
 No browser Account API token, federated user token, Login App credential, or
-user-token refresh loop participates in Session reads. Only bounded
-allow/deny/error verdicts are cached across requests; Bot tenant token exchanges
-are deduplicated within one authorization read.
+user-token refresh loop participates in Session reads. One bounded member-list
+snapshot is shared per Bot App and chat across viewers, and concurrent reads are
+coalesced. Console reads that resolve Session access (lists, facets, details,
+transcripts, and usage) refresh from SSE where available, focus/reconnect, and
+explicit actions instead of timers. Bot tenant-token exchanges remain
+deduplicated within one authorization read. A provider quota response fails
+closed, pauses further checks for that organization and region, and gives the
+operator a specific recovery action. Planned OIDC token rotation reopens the SSE
+stream without invoking gap recovery; a failed reopen restores the normal
+reconnect invalidation.
 
 Every installation enforces the deployment tenant before storing a Bot. The
 Control Plane resolves the configured regional Login App's `tenant_key`,

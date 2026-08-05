@@ -4,7 +4,6 @@ import { consoleKeys } from './swr-keys'
 import { sessionFilterAgentKey } from './use-session-list'
 
 type SessionFacetKey = NonNullable<ReturnType<typeof consoleKeys.sessionFacets>>
-export const SESSION_FACET_REFRESH_MS = 60_000
 
 export function useSessionFacets(
   orgId: string | null | undefined,
@@ -32,6 +31,6 @@ export function useSessionFacets(
         ...(keyGithubRepoId ? { githubRepoId: keyGithubRepoId } : {})
       })
     },
-    { fallbackData, refreshInterval: SESSION_FACET_REFRESH_MS }
+    { fallbackData }
   )
 }

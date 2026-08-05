@@ -6,7 +6,6 @@ import { fetchConversations, fetchSessions, type SessionListFilters, type Sessio
 import { consoleKeys } from '@/lib/swr-keys'
 
 const SESSION_PAGE_LIMIT = 50
-const SESSION_FALLBACK_REFRESH_MS = 60_000
 type SessionPageKey = NonNullable<ReturnType<typeof consoleKeys.sessions>>
 
 /** The agent filter as one scalar SWR key part. Sorted so the same set of agents
@@ -97,9 +96,9 @@ export function useSessionList(
       // so a session moving to the top cannot leave stale cursor boundaries.
       revalidateAll: true,
       persistSize: false,
-      parallel: false,
-      // SSE is the immediate path; this safety net covers buffering proxies.
-      refreshInterval: SESSION_FALLBACK_REFRESH_MS
+      // SSE is the immediate path. Focus, reconnect and explicit refresh retain
+      // the fallback without polling live provider authorization every minute.
+      parallel: false
     }
   )
 

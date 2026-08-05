@@ -1054,13 +1054,7 @@ export default function SessionDetailView() {
     isLoading: conversationLoading
   } = useSWR(
     conversationKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, conversationKey] as const) : null,
-    ([, orgId, key]) => fetchConversationByKey(key, orgId),
-    {
-      // A just-created conversation can beat the CP's event/session sync —
-      // poll fast until members resolve, then settle to the normal cadence.
-      refreshInterval: (latest) => (latest ? 30_000 : 5_000),
-      revalidateOnFocus: false
-    }
+    ([, orgId, key]) => fetchConversationByKey(key, orgId)
   )
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
@@ -1308,10 +1302,8 @@ export default function SessionDetailView() {
     error: sessionDetailError,
     isLoading: sessionDetailLoading,
     mutate: mutateSessionDetail
-  } = useSWR<SessionDetailDto>(
-    consoleKeys.sessionDetail(activeOrg?.id, detailId),
-    ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
-    { refreshInterval: 30_000 }
+  } = useSWR<SessionDetailDto>(consoleKeys.sessionDetail(activeOrg?.id, detailId), ([, orgId, , sessionId]) =>
+    fetchSessionDetail(sessionId as string, orgId as string)
   )
   // Provider-rendered links use `source`; links opened from the Sessions list
   // can also retain its `integration` filter. Both are caller-known hints only:
@@ -1512,8 +1504,7 @@ export default function SessionDetailView() {
       : null
   const { data: extraHeaderDetail, mutate: mutateExtraHeaderDetail } = useSWR<SessionDetailDto>(
     consoleKeys.sessionDetail(activeOrg?.id, extraHeaderDetailId),
-    ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string),
-    { refreshInterval: 30_000 }
+    ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string)
   )
   const focusedSessionDetail =
     headerFocusSessionId === currentSessionDetail?.id
@@ -1926,8 +1917,8 @@ export default function SessionDetailView() {
       if (tailSessionRef.current === sid && !sessionBusyRef.current) reconcileLiveSteps(sid, persisted, aid)
     })()
       .catch(() => {
-        // Keep the last good transcript. The next SSE signal, reconnect, or
-        // safety poll retries without replacing visible history with an error.
+        // Keep the last good transcript. The next SSE signal or reconnect
+        // retries without replacing visible history with an error.
       })
       .finally(() => {
         if (tailInFlightRef.current !== run) return
@@ -1981,12 +1972,6 @@ export default function SessionDetailView() {
     if (!visibleTailReady || sessionBusy) return
     void refreshTranscriptTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTranscriptTail])
-
-  useEffect(() => {
-    if (!visibleTailReady) return
-    const timer = window.setInterval(() => void refreshTranscriptTail(), 15_000)
-    return () => window.clearInterval(timer)
-  }, [visibleTailReady, refreshTranscriptTail])
 
   // Everything above only APPENDS rows; nothing ever moved the viewport, so a
   // live session's newest output landed below the fold. Follow it — but only for
