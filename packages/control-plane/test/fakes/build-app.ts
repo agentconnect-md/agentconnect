@@ -34,6 +34,7 @@ import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import { botIdentityProjector } from '../../src/platforms/bot-identity.js'
 import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
@@ -61,6 +62,17 @@ export interface DaemonApp {
   close(): Promise<void>
 }
 
+// §9: reconcile projects every `IntegrationSpec.config` through the platform
+// registry, and the bot repo projects every new row's D6 identity through it,
+// so compose the same four providers prod registers. Their verify seams are
+// offline stubs — neither projector calls one.
+const PLATFORMS = buildCpPlatformRegistry([
+  createSlackCpProvider({}),
+  createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+  createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+  createFeishuCpProvider({})
+])
+
 export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
   const clock = systemClock
   const app = Fastify({ logger: false })
@@ -78,7 +90,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     hook: new PgHookRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
-    bot: new PgBotRepo(prisma),
+    bot: new PgBotRepo(prisma, botIdentityProjector(PLATFORMS)),
     botSecret: new PgBotSecretStore(prisma, cipher),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
@@ -101,15 +113,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     new AgentSpecAssembler(repos.agentSecret),
     repos.integrationChannel,
     repos.bot,
-    // §9: reconcile projects every `IntegrationSpec.config` through the platform
-    // registry, so compose the same four providers prod registers. Their verify
-    // seams are offline stubs — the projectors call none of them.
-    buildCpPlatformRegistry([
-      createSlackCpProvider({}),
-      createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
-      createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
-      createFeishuCpProvider({})
-    ])
+    PLATFORMS
   )
   const connReg = new ConnectionRegistry()
 

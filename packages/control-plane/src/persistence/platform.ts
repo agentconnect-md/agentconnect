@@ -8,11 +8,19 @@
  * the dropped `Platform` enum's closed set lives on HERE, as the application-level
  * guard asserted when a protocol platform is about to be written to Postgres: a
  * `webchat` value (or an id this deployment does not serve) reaching a persistence
- * write is a programming error, not data. The platform registry replaces this list
- * when providers land (S3).
+ * write is a programming error, not data.
+ *
+ * The FENCE stays here; the LIST it consults does not. Since S3 the served set is
+ * the platform registry's, and this module reads it through the registry's static
+ * declaration (`platforms/ids.ts`) rather than its own copy — `toDbPlatform` is a
+ * free function called from eight repositories and the placement compiler, so it
+ * cannot hold the composed registry instance, but it must not disagree with it
+ * either. A platform registered in the container and unknown here would throw on
+ * its first persisted row.
  */
 import type { Platform as ProtocolPlatform } from '@agentconnect.md/protocol'
 import { isSessionIdentityPlatform } from '@agentconnect.md/protocol'
+import { CP_PLATFORM_IDS, type CpPlatformId } from '../platforms/ids.js'
 
 /** True for the session-identity-only platforms, which have no persisted row. Lets a
  *  caller decide BEFORE reaching persistence — a read whose answer is "nothing is
@@ -22,9 +30,9 @@ import { isSessionIdentityPlatform } from '@agentconnect.md/protocol'
 export { isSessionIdentityPlatform }
 
 /** The chat platforms this deployment currently serves — the closed set the dropped
- *  DB enum used to enforce. */
-const DB_PLATFORMS = ['slack', 'telegram', 'discord', 'feishu'] as const
-export type DbPlatform = (typeof DB_PLATFORMS)[number]
+ *  DB enum used to enforce, now the platform registry's own set. */
+const DB_PLATFORMS = CP_PLATFORM_IDS
+export type DbPlatform = CpPlatformId
 
 /** Narrow a protocol platform to a persisted (DB) platform, or throw on the
  *  session-identity-only members (`webchat`, `hook`, `dream`) and on any id outside

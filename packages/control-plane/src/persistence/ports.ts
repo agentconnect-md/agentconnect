@@ -2418,6 +2418,51 @@ export interface CreateBotInput {
   createdByUserId?: string
 }
 
+/** Tenant sentinel for NEW rows of tenantless platforms (D6/§11): a real value —
+ *  unlike NULL — participates in the composite unique, so it is what makes
+ *  `(platform, externalAppId)` enforceable. NULL stays reserved for legacy rows. */
+export const TENANTLESS_SENTINEL = '-'
+
+/**
+ * The GENERIC identity columns of a `bot` row (D6/§11) — the platform-neutral
+ * home for what used to live only in per-platform columns.
+ *
+ *  - `externalAppId` / `externalTenantId` are the composite-unique pair the D6
+ *    fence enforces. A platform with no tenant axis writes
+ *    {@link TENANTLESS_SENTINEL} rather than leaving the tenant NULL, because a
+ *    NULL never participates in a composite unique and would silently disable
+ *    the fence. NULL is reserved for LEGACY rows written before D6.
+ *  - `platformConfig` is the generic bag for a platform's public row metadata
+ *    (its console-link app id, its gateway region), carried so the legacy
+ *    per-platform columns can eventually be dropped.
+ *
+ * Every value here is PUBLIC metadata — no token or secret ever belongs in it.
+ */
+export interface BotIdentityColumns {
+  externalAppId?: string
+  externalTenantId?: string
+  platformConfig?: Record<string, string>
+}
+
+/**
+ * How {@link BotRepo.create} learns a new row's {@link BotIdentityColumns}
+ * (audit F13).
+ *
+ * WHY A PORT AND NOT A `switch (input.platform)`. Which columns carry a bot's
+ * demux identity — and which platform has no tenant axis and so writes the
+ * sentinel — is per-platform knowledge, and it sat in shared persistence as a
+ * four-arm switch that a fifth platform would have had to edit
+ * (integration-plugin-architecture.md §12). It is now
+ * `CpPlatformProvider.projectBotIdentity`, wired in at the composition root;
+ * persistence keeps the WRITE (and therefore the §11 invariant that every new
+ * row gets its generic pair) and names no platform.
+ *
+ * Total by contract: a platform that declares nothing projects `{}`, which is
+ * what a platform with no external app identity at all (Telegram — a bot token
+ * and nothing else) legitimately has.
+ */
+export type BotIdentityProjector = (input: CreateBotInput) => BotIdentityColumns
+
 /** Domain view of a `bot` row + its current installs (joined). NEVER carries tokens. */
 export interface BotRecord {
   id: BotId
@@ -2509,9 +2554,10 @@ export interface BotRepo {
   /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
    *  by the composite demux key (a workspace binds to exactly one org). */
   getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
-  /** CROSS-ORG lookup by the generic demux identity (D6). Pass the `'-'` sentinel
-   *  as `externalTenantId` for tenantless platforms. Legacy rows (NULL identity)
-   *  are unreachable here by design. */
+  /** CROSS-ORG lookup by the generic demux identity (D6). Pass
+   *  {@link TENANTLESS_SENTINEL} as `externalTenantId` for tenantless platforms —
+   *  the same value {@link BotIdentityProjector} writes. Legacy rows (NULL
+   *  identity) are unreachable here by design. */
   getByExternalIdentity(platform: string, externalAppId: string, externalTenantId: string): Promise<BotRecord | null>
   /**
    * A fresh credential landed on an EXISTING bot (platform re-install / token

@@ -165,6 +165,7 @@ import { ensureDiscordMessageContentIntent, verifyDiscordBot } from './http/disc
 import { createDiscordBotProfileSyncer } from './http/discord-bot-profile.js'
 import type { CpPlatformRegistry } from './platforms/provider.js'
 import { buildCpPlatformRegistry } from './platforms/registry.js'
+import { botIdentityProjector } from './platforms/bot-identity.js'
 import { buildPendingInstallReapers, platformBackgroundLoops } from './platforms/lifecycle.js'
 import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
@@ -267,6 +268,24 @@ export function buildContainer(
   // instance — and therefore the one configured cipher.
   const organizationEnvironmentSecrets = new PgOrganizationEnvironmentSecretStore(prisma, secretCipher)
 
+  // LATE-BOUND platform registry (§9). The providers are constructed FAR below —
+  // they close over `httpDeps`, whose own route plugins do not exist yet — but
+  // holders built here (the bot repo's D6 identity projection, the orchestrators'
+  // spec assembly and `rc/bot-assign`) already need to reach them. `platforms` is
+  // a stable façade every holder can capture now; it forwards to the composed
+  // registry, and every read runs at write / reconcile / sync / request time,
+  // long after `buildContainer` has assigned it.
+  let composedPlatforms: CpPlatformRegistry | undefined = undefined
+  const requirePlatforms = (): CpPlatformRegistry => {
+    if (!composedPlatforms) throw new Error('platform registry read before composition')
+    return composedPlatforms
+  }
+  const platforms: CpPlatformRegistry = {
+    get: (platformId) => requirePlatforms().get(platformId),
+    all: () => requirePlatforms().all(),
+    ids: () => requirePlatforms().ids()
+  }
+
   // ── C6 repositories (the ONLY @prisma/client importers) ───────────────────
   const repos = {
     daemon: new PgDaemonRepo(prisma),
@@ -286,7 +305,9 @@ export function buildContainer(
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
-    bot: new PgBotRepo(prisma),
+    // §11 D6 dual-write: which columns carry this bot's demux identity is the
+    // provider's declaration, read at write time through the façade above.
+    bot: new PgBotRepo(prisma, botIdentityProjector(platforms)),
     botSecret: new PgBotSecretStore(prisma, secretCipher),
     // Owns its transaction: install/revoke each write two tables behind the
     // credential-generation fence, and serialize on the bot row (§5.3).
@@ -531,23 +552,6 @@ export function buildContainer(
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
   const sender = new ControlSender(connReg, repos.launch)
-
-  // LATE-BOUND platform registry (§9). The providers are constructed FAR below —
-  // they close over `httpDeps`, whose own route plugins do not exist yet — but the
-  // orchestrators built here already need to reach them (spec assembly,
-  // `rc/bot-assign`). `platforms` is a stable façade every holder can capture now;
-  // it forwards to the composed registry, and every read runs at reconcile /
-  // sync / request time, long after `buildContainer` has assigned it.
-  let composedPlatforms: CpPlatformRegistry | undefined = undefined
-  const requirePlatforms = (): CpPlatformRegistry => {
-    if (!composedPlatforms) throw new Error('platform registry read before composition')
-    return composedPlatforms
-  }
-  const platforms: CpPlatformRegistry = {
-    get: (platformId) => requirePlatforms().get(platformId),
-    all: () => requirePlatforms().all(),
-    ids: () => requirePlatforms().ids()
-  }
 
   // Per-session memory-capture gate convergence (session-visibility.md §5.1):
   // the CP is the authority on effective visibility; daemons only enforce it.

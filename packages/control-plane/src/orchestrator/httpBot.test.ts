@@ -1050,6 +1050,41 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(ch.sends.some((send) => send.type === 'rc/routes')).toBe(true)
   })
 
+  /**
+   * F9 — the gate on this path is the §5 manifest's
+   * `membershipEnumeration: 'authoritative'`, not `platform === 'slack'`.
+   *
+   * It is load-bearing in the destructive direction: `replaceChannels` REPLACES
+   * the stored set, so applying it to a platform whose rows are discovered from
+   * traffic would delete conversations no snapshot can restore. Slack is the one
+   * platform that declares an authoritative snapshot today, so these cases also
+   * pin that the rewrite did not widen the arm.
+   */
+  it('applies the snapshot only for a platform declaring authoritative membership', async () => {
+    for (const platform of ['telegram', 'discord', 'feishu', 'mastodon']) {
+      channels = [channel({ integrationId: INT_A, channelId: 'C-known', name: 'known', agentId: ALICE })]
+      botRow = bot({ platform })
+      await makeOrch().replaceChannels(BOT, [{ id: 'C1', name: 'deploys' }])
+      // Untouched: no row added, none dropped, no route push.
+      expect(
+        channels.map((c) => c.channelId),
+        platform
+      ).toEqual(['C-known'])
+      expect(
+        ch.sends.some((send) => send.type === 'rc/routes'),
+        platform
+      ).toBe(false)
+    }
+
+    channels = [channel({ integrationId: INT_A, channelId: 'C-known', name: 'known', agentId: ALICE })]
+    botRow = bot({ platform: 'slack' })
+    await makeOrch().replaceChannels(BOT, [{ id: 'C1', name: 'deploys' }])
+    // Slack alone declares the authoritative snapshot: the stale row is dropped
+    // and the reported one is fanned across both installs.
+    expect([...new Set(channels.map((c) => c.channelId))]).toEqual(['C1'])
+    expect(ch.sends.some((send) => send.type === 'rc/routes')).toBe(true)
+  })
+
   it('seeds a newly-invited channel with the creating (earliest) agent as its default owner', async () => {
     channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })]
     await makeOrch().replaceChannels(BOT, [

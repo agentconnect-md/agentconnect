@@ -57,6 +57,7 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { FakeClock } from './fake-clock.js'
 import { InMemoryDaemonStub } from './daemon-stub.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import { botIdentityProjector } from '../../src/platforms/bot-identity.js'
 import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
@@ -109,7 +110,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     hook: new PgHookRepo(prisma),
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
-    bot: new PgBotRepo(prisma),
+    bot: new PgBotRepo(prisma, botIdentityProjector(PLATFORMS)),
     botSecret: new PgBotSecretStore(prisma, cipher),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),

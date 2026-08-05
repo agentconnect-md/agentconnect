@@ -82,6 +82,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import type { ZodRawShape, ZodType } from 'zod'
 import type { IntegrationCoreEnvelope } from '@agentconnect.md/protocol'
 import type {
+  BotIdentityColumns,
   BotRecord,
   BotSecretMaterial,
   CreateBotInput,
@@ -436,6 +437,33 @@ export interface CpPlatformProvider<TCredentials = unknown> {
   /** How this platform packs the shared secret row + which slots gate an
    *  http assign. See {@link CpSecretShape}. */
   secretShape: CpSecretShape
+
+  /**
+   * Project a NEW bot row's generic D6 identity columns from the platform
+   * columns of the same write (§11; audit F13) — which value is this platform's
+   * external APP id, whether it has a TENANT axis or writes the tenantless
+   * sentinel, and what public metadata rides the generic `platformConfig` bag.
+   *
+   * An AT-WRITE read, and the reason it is a member rather than a repository
+   * `switch`: `PgBotRepo.create` performs the D6 dual-write for EVERY caller —
+   * the shared create tail, the Feishu one-click funnel, and anything added
+   * later — so the decision has to be reachable from persistence, but it is not
+   * persistence's to make. Core keeps the write (and so keeps §11's guarantee
+   * that a new row never leaves the pair NULL, which is reserved for legacy
+   * rows); the platform keeps the mapping.
+   *
+   * DISTINCT from {@link CpNewBotInstall.externalIdentity}, which is the create
+   * ROUTE's 409 pre-check and applies only to a platform that wants a clean
+   * conflict message on the credential-paste path. This member describes what is
+   * PERSISTED, on every path, and a platform may project an identity here
+   * without claiming a route-level fence (Slack does exactly that: its rows
+   * carry the pair whenever an app id and workspace were captured, while the
+   * legacy `(slackAppId, teamId)` unique remains its fence).
+   *
+   * Pure: no I/O. Absent ⇒ this platform persists no external identity
+   * (Telegram — a bot token and nothing else). PUBLIC metadata only.
+   */
+  projectBotIdentity?(input: CreateBotInput): BotIdentityColumns
 
   /** Pending-install funnel state models + their TTL reapers. Absent ⇒ the
    *  platform has no funnel (Telegram/Discord). */

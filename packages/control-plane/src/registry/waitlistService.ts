@@ -7,6 +7,7 @@ import type {
   WaitlistRedeemResult,
   WaitlistRepo
 } from '../persistence/ports.js'
+import type { CpPlatformId } from '../platforms/ids.js'
 import { WaitlistJoinTokenCodec } from './waitlistJoinToken.js'
 
 /** The derived admission status surfaced by `GET /me/access` (§5). `active` = may
@@ -18,7 +19,10 @@ export type WaitlistAccessStatus = 'active' | 'approved' | 'pending' | 'none'
 export interface WaitlistIntake {
   name: string
   company: string
-  platform: ('slack' | 'telegram' | 'discord')[]
+  /** The served platforms the applicant picked. Typed from the registry
+   *  declaration, not re-spelled: this used to be a second hand copy of the DTO's
+   *  enum and had already drifted apart from it by one id (audit F11). */
+  platform: CpPlatformId[]
   teamSize: string
   useCase?: string
 }

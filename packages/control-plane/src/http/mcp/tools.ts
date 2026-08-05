@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { ApprovalsReviewer } from '@agentconnect.md/protocol'
+import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 
 /** What a tool needs to execute: the caller's org and credentialed requests
  *  against the versioned REST surface (`/api/v1`-relative paths). */
@@ -364,7 +365,9 @@ export const MCP_TOOLS: McpToolDef[] = [
         schedule: z.string().min(1).describe('Cron expression, croner syntax (e.g. "0 9 * * MON-FRI")'),
         timezone: z.string().min(1).optional().describe('IANA timezone name (e.g. "Asia/Shanghai")'),
         trigger: z.string().min(1).describe('The prompt sent to the agent on each firing'),
-        targetPlatform: z.enum(['slack', 'telegram', 'discord', 'feishu']).optional(),
+        // Same cron target vocabulary the REST body accepts (`dto/index.ts`
+        // `Platform`), from the one registry declaration rather than a fourth copy.
+        targetPlatform: z.enum(CP_PLATFORM_IDS).optional(),
         targetChannel: z.string().min(1).optional().describe('Channel to deliver into; omit for a headless run'),
         targetIntegrationId: z
           .string()

@@ -22,7 +22,7 @@ import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../g
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
-import { toDbPlatform } from '../../persistence/platform.js'
+import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
 import { AgentWorkspaceIntegrationConflict } from '../../persistence/errors.js'
 import { Tag } from '../plugins/openapi.js'
 import {
@@ -283,15 +283,15 @@ export function hookRoutes(deps: HttpDeps) {
     const resolveTarget = async (
       orgId: string,
       agentId: string,
+      // `DbPlatform` is the served set the anchor may target — the same registry
+      // declaration `Platform` (the request body's own enum) and `toDbPlatform`
+      // (the value returned below) read, instead of a third inline spelling.
       body: {
-        targetPlatform: 'slack' | 'telegram' | 'discord' | 'feishu'
+        targetPlatform: DbPlatform
         targetChannel?: string
         targetIntegrationId?: string
       }
-    ): Promise<
-      | { ok: true; targetPlatform: 'slack' | 'telegram' | 'discord' | 'feishu'; targetIntegrationId?: IntegrationId }
-      | { ok: false }
-    > => {
+    ): Promise<{ ok: true; targetPlatform: DbPlatform; targetIntegrationId?: IntegrationId } | { ok: false }> => {
       if (!(body.targetIntegrationId && body.targetChannel)) return { ok: true, targetPlatform: body.targetPlatform }
       const integ = await deps.repos.integration.get(IntegrationId(body.targetIntegrationId))
       if (!integ || integ.orgId !== orgId || integ.agentId !== agentId) return { ok: false }

@@ -138,6 +138,10 @@ export function createTelegramCpProvider(deps: TelegramCpProviderDeps): CpPlatfo
       secrets: { botToken: credentials.botToken, appToken: null, signingSecret: null }
     }),
 
+    // No `projectBotIdentity` (§11): a Telegram install is a bot token and
+    // nothing else — no app id, no tenant, no public row metadata — so there is
+    // no identity to persist. Absence is the declaration; core projects `{}`.
+
     // One-slot packing of the shared two-slot bot_secret row
     // (`integrations.ts:443`: appToken/signingSecret stored null). No slot
     // gates an http assign — Telegram has no HTTP callback ingress at all.

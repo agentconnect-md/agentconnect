@@ -42,6 +42,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import { FeishuRegion } from '@agentconnect.md/protocol'
 import type { IntegrationFeishuConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, IntegrationRecord } from '../../persistence/ports.js'
+import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
 import type { FeishuBotVerifier } from '../../http/feishu-identity.js'
 import type { FeishuAppIconSyncer } from '../../http/feishu-app-icon.js'
 import type { CpConfigValidation, CpInstallTransport, CpPlatformProvider } from '../provider.js'
@@ -313,11 +314,33 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       },
       externalIdentity: {
         externalAppId: credentials.appId,
-        externalTenantId: '-',
+        externalTenantId: TENANTLESS_SENTINEL,
         conflictMessage:
           'This Feishu app is already registered as a bot. Reuse that bot (pick it under "Existing") instead of registering the app again.'
       }
     }),
+
+    /**
+     * D6 identity (§11): Feishu is APP-scoped with NO tenant axis, so the pair
+     * is the `cli_…` app id plus {@link TENANTLESS_SENTINEL} — a real value, so
+     * the composite unique actually fires and becomes a one-bot-per-Feishu-app
+     * fence. (Writing NULL there would silently disable it: a NULL never
+     * participates in a composite unique.)
+     *
+     * The gateway region has no generic column, so it rides the generic bag
+     * beside the app id — the durable home that lets a freed bot reinstall
+     * against the same gateway once the legacy columns are dropped.
+     */
+    projectBotIdentity: (input) => {
+      const bag = {
+        ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
+        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {})
+      }
+      return {
+        ...(input.feishuAppId ? { externalAppId: input.feishuAppId, externalTenantId: TENANTLESS_SENTINEL } : {}),
+        ...(Object.keys(bag).length ? { platformConfig: bag } : {})
+      }
+    },
 
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):
     // botToken = app SECRET (the credential), appToken = app ID (the
