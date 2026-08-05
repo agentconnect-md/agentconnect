@@ -1110,6 +1110,36 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('keeps a shared Slack image on its transcript row so the console can replay it', async () => {
+    // Slack hands out an auth-gated file URL, so the row can only carry the image if the
+    // daemon fetches it — without that the console showed just `[attached: …]`. The fetch
+    // is independent of the agent's image capability (quietHost advertises none).
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
+    await daemon.start()
+    const conn = makeRoutable(daemon) as any
+    const bytes = Buffer.from('PNGBYTES')
+    conn.downloadFile = vi.fn(async () => bytes)
+
+    await (daemon as any).dispatch(
+      'bot-a',
+      {
+        ...dm('100', 'look at this'),
+        attachments: [{ id: 'F1', name: 'shot.png', mimeType: 'image/png', size: bytes.length, sourceUrl: 'u' }]
+      },
+      'int-a'
+    )
+
+    const rows = (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    const row = rows.find((r: any) => r.sender === 'U1')
+    expect(row.text).toBe('look at this\n[attached: shot.png (image/png)]')
+    expect(JSON.parse(row.attachmentsJson)).toEqual([
+      { name: 'shot.png', mimeType: 'image/png', data: bytes.toString('base64') }
+    ])
+    expect(conn.downloadFile).toHaveBeenCalledOnce() // one fetch serves transcript + prompt
+
+    await daemon.stop()
+  }, 15_000)
+
   it('backfill preserves a remote agent author carried by an HTTP Slack bot', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => quietHost() as any })
     await daemon.start()

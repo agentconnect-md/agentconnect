@@ -2916,6 +2916,19 @@ export class LocalStore {
             )
             .run(e.eventTimeUs, e.channel, e.thread, e.ts, e.eventTimeUs)
         : undefined
+    // The observer often wins the INSERT race against SessionManager's authoritative
+    // append, and only that append has fetched the image bytes — upgrade the row in
+    // place instead of leaving attachmentsJson pinned to NULL (the console would then
+    // show only the `[attached: …]` label).
+    const attachmentsUpgraded =
+      Number(inserted.changes) === 0 && attachments?.length
+        ? this.db
+            .prepare(
+              `UPDATE transcript SET attachmentsJson = ?
+               WHERE channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND attachmentsJson IS NULL`
+            )
+            .run(JSON.stringify(attachments), e.channel, e.thread, e.ts)
+        : undefined
     // A later duplicate can be the first copy that carries provider reply metadata
     // (or a corrected selected passage). Upgrade it without ever clearing a quote when
     // a provider snapshot subsequently re-appends the same text row without metadata.
@@ -2943,6 +2956,7 @@ export class LocalStore {
       this.notifyTranscriptMutation(e.channel, e.thread, [e.sender, e.recipient], revision)
     } else if (
       Number(provenanceUpgraded?.changes ?? 0) === 1 ||
+      Number(attachmentsUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
       Number(postIdUpgraded?.changes ?? 0) === 1 ||
       Number(eventTimeUpgraded?.changes ?? 0) === 1 ||

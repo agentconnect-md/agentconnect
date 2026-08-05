@@ -84,6 +84,58 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
   )
 }
 
+/** The transcript-renderable formats, identified from their magic bytes. A declared
+ *  MIME type is not enough to decide: Feishu's `im.message.receive_v1` image event
+ *  carries only an `image_key`, so normalization types it `application/octet-stream`
+ *  (feishu-message.ts). Sniffing also corrects a provider that declares the wrong
+ *  format — the console renders these bytes directly, so the label has to be true. */
+export function sniffImageMimeType(bytes: Buffer): SessionImageAttachment['mimeType'] | undefined {
+  if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return 'image/png'
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
+  const riff = bytes.subarray(0, 12)
+  if (
+    riff.length === 12 &&
+    riff.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    riff.subarray(8).toString('latin1') === 'WEBP'
+  )
+    return 'image/webp'
+  return undefined
+}
+
+/**
+ * Fetch the bytes of the first candidate image so its transcript row can carry it
+ * for console replay. Webchat images arrive inline already; a platform attachment
+ * (Slack/Telegram/Discord/Feishu) is only an auth-gated URL, so without this the
+ * console can render nothing but the `[attached: …]` label. A provider that
+ * declares no usable type is settled by the bytes, and the corrected `mimeType`
+ * rides along so the mention, the transcript row and the ACP block all agree.
+ *
+ * The bytes are memoized onto the attachment, so `buildAttachmentBlocks` reuses
+ * them: one download serves the transcript and the prompt. `maxBytes` is the
+ * caller's prompt cap, mirroring `buildAttachmentBlocks`, so an over-cap file is
+ * skipped identically here; the tighter transcript ceiling is enforced by the
+ * `SessionImageAttachment` schema in `transcriptImageAttachments`.
+ *
+ * ponytail: one image per message. A second one keeps the label; showing more
+ * needs chunked/off-frame image reads, not a bigger cap.
+ */
+export async function hydrateTranscriptImage(
+  attachments: Attachment[] | undefined,
+  deps: Pick<AttachmentDeps, 'download' | 'maxBytes'>
+): Promise<void> {
+  const image = attachments?.find(
+    (att) => att.mimeType.startsWith('image/') || att.mimeType === 'application/octet-stream'
+  )
+  if (!image || image.inlineData) return
+  const cap = deps.maxBytes ?? Infinity
+  if (typeof image.size === 'number' && image.size > cap) return
+  const bytes = await deps.download(image).catch(() => null)
+  if (!bytes || bytes.byteLength > cap) return
+  image.inlineData = bytes
+  const sniffed = sniffImageMimeType(bytes)
+  if (sniffed) image.mimeType = sniffed
+}
+
 /** Keep a validated bounded inline image beside its daemon-local transcript row. */
 export function transcriptImageAttachments(attachments: Attachment[] | undefined): SessionImageAttachment[] {
   return (attachments ?? [])

@@ -387,6 +387,77 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('strips a label the row does not literally agree with (observer wrote it pre-download)', () => {
+    // recordObservedInbound recorded the Feishu label before any download settled the
+    // type, so the row says application/octet-stream while the stored image is a PNG.
+    const s = store()
+    seedHistorySession(s, { platform: 'feishu', channel: 'oc_1', thread: 'oc_1' })
+    s.appendTranscript({
+      channel: 'oc_1',
+      thread: 'oc_1',
+      ts: '1',
+      sender: 'ou_1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'look\n[attached: img_v3_abc (application/octet-stream)]',
+      attachments: [{ name: 'img_v3_abc', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      expect.objectContaining({
+        text: 'look',
+        attachments: [{ name: 'img_v3_abc', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+      })
+    ])
+    s.close()
+  })
+
+  it('keeps the label for files it could not inline beside the one image it did', () => {
+    // Only the first small image is stored; the PDF and the over-cap second image must
+    // still be visible as their labels rather than vanishing with the whole suffix.
+    const s = store()
+    seedHistorySession(s)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'review these\n[attached: small.png (image/png), report, final.pdf (application/pdf), huge.png (image/png)]',
+      attachments: [{ name: 'small.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      // The comma inside `report, final.pdf` is part of the file NAME, not a separator.
+      expect.objectContaining({
+        text: 'review these\n[attached: report, final.pdf (application/pdf), huge.png (image/png)]',
+        attachments: [{ name: 'small.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+      })
+    ])
+    s.close()
+  })
+
+  it('leaves the row alone when the label names nothing the attachment matches', () => {
+    const s = store()
+    seedHistorySession(s)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'see\n[attached: other.pdf (application/pdf)]',
+      attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      expect.objectContaining({ text: 'see\n[attached: other.pdf (application/pdf)]' })
+    ])
+    s.close()
+  })
+
   it('carries daemon-verified Slack bot provenance to the session DTO', () => {
     const s = store()
     seedHistorySession(s)

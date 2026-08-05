@@ -1459,6 +1459,29 @@ describe('LocalStore webchat MCP grant ledger', () => {
     const after = s.transcriptSince('C1', 'T', null)[0] as { eventTimeUs?: number }
     expect(after.eventTimeUs).toBe(1_754_123_458_000_000)
   })
+
+  it('a later append with the fetched image upgrades the observer-written row', () => {
+    // The observer records a platform message before the bytes are downloaded, so the
+    // authoritative append is INSERT-OR-IGNOREd — without an in-place upgrade the row's
+    // attachmentsJson stays NULL and the console shows only the `[attached: …]` label.
+    const s = store()
+    const text = 'look\n[attached: shot.png (image/png)]'
+    s.appendTranscript({ channel: 'C1', thread: 'T', ts: '99', sender: 'U1', kind: 'text', text })
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T',
+      ts: '99',
+      sender: 'U1',
+      kind: 'text',
+      text,
+      attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }]
+    })
+    const row = s.transcriptSince('C1', 'T', null)[0] as { attachmentsJson?: string | null }
+    expect(JSON.parse(row.attachmentsJson ?? 'null')).toEqual([
+      { name: 'shot.png', mimeType: 'image/png', data: 'aW1n' }
+    ])
+    s.close()
+  })
 })
 
 describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2/§8.6)', () => {

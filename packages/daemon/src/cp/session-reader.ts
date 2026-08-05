@@ -77,14 +77,29 @@ function transcriptAttachments(raw: string | null | undefined): NonNullable<Sess
   }
 }
 
-/** The persisted text keeps this synthetic suffix for prompt replay; the console
- * receives the real image instead, matching the live turn. */
+/**
+ * The persisted text keeps a synthetic `[attached: name (mimeType), …]` suffix for
+ * prompt replay, listing EVERY file on the message; the console instead receives the
+ * one image the daemon inlined. Drop only that image's entry and keep the rest as
+ * their label, so a second image, an over-cap image, or a plain file stays visible.
+ *
+ * Entries are matched on the name, not rebuilt from the attachment: the row may have
+ * been written by the observer before a download settled the real image type (a
+ * Feishu image event declares none). Nothing recognized ⇒ the row is left alone.
+ */
 function withoutAttachmentMention(text: string, attachments: NonNullable<SessionMessage['attachments']>): string {
   if (attachments.length === 0) return text
-  const mention = `[attached: ${attachments.map((attachment) => `${attachment.name} (${attachment.mimeType})`).join(', ')}]`
-  if (text === mention) return ''
-  const suffix = `\n${mention}`
-  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text
+  const label = /(?:^|\n)\[attached: ([^\]\n]*)\]$/.exec(text)
+  if (!label) return text
+  let list = label[1]!
+  for (const { name } of attachments) {
+    const entry = new RegExp(`(, )?${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\([^()]*\\)(, )?`).exec(list)
+    if (entry)
+      list = list.slice(0, entry.index) + (entry[1] && entry[2] ? ', ' : '') + list.slice(entry.index + entry[0].length)
+  }
+  if (list === label[1]) return text
+  const head = text.slice(0, label.index).trimEnd()
+  return (list ? `${head}\n[attached: ${list}]` : head).trim()
 }
 
 /** Largest index ≤ `len` that lands on a UTF-8 character boundary — never cuts a
