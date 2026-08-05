@@ -597,12 +597,14 @@ learned from it"); silence is not an option.
   without widening access.
 - Session links emitted into Slack, Feishu/Lark, and GitHub carry a non-authoritative provider
   hint. When such a deep link still resolves to the generic 404 page, the Console
-  offers `Link Slack profile`, `Link Lark profile`, `Link Feishu profile`, or
-  `Link GitHub profile` only if that provider is configured and the viewer has not
-  linked it already. Unsupported providers, ordinary/handwritten URLs, and linked
-  viewers get no extra action. The hint is intentionally forgeable and never
-  consulted for authorization, so it cannot confirm whether the session exists;
-  the protected session route remains 404.
+  uses the viewer's own profile status to offer `Link <provider> profile` when
+  unlinked or `Review <provider> profile` when linked. The unavailable-state copy
+  explains that the session may no longer exist, the required profile may be absent
+  or linked to another workspace, or the owning Agent may not be shared with the viewer.
+  Unsupported providers and ordinary/handwritten URLs get no provider action. The
+  hint is intentionally forgeable and never consulted for authorization, so none
+  of this guidance can confirm whether the session exists; the protected session
+  route remains 404.
 - The existing client-side "mine" heuristic
   (`packages/web/src/lib/session-trigger.ts` email/userId matching) stays as a
   display concern (the "you" label) but is no longer doing authorization work.
