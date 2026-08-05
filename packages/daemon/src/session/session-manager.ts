@@ -822,9 +822,13 @@ export class SessionManager {
           `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
           `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
           `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
+          `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
+          `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
+          `\`toAgent\` call without \`channel\` may not target yourself. ` +
           `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
           `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-          `a peer's exact \`mention\` token). To reach humans elsewhere, use the \`toUser\` mode: ` +
+          `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
+          `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
           `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
           `@-mention at the channel root. In that channel form, pass ` +
           `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +

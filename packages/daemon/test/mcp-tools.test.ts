@@ -196,6 +196,10 @@ describe('toolsForIntegrations', () => {
     expect(tool.description).toMatch(/^Send one message using exactly one target mode:/)
     expect(tool.description).toContain('{"toAgent":"<agent id>","message":"..."}')
     expect(tool.description).toContain('{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}')
+    expect(tool.description).toContain('This form MAY target yourself')
+    expect(tool.description).toContain('your own # Agent ID')
+    expect(tool.description).toContain('never an AgentConnect agent or your own bot identity')
+    expect(tool.description).not.toContain('cannot impersonate anyone or wake yourself')
     expect(tool.description).toContain('{"toUser":"<Slack user id>","message":"..."}')
     expect(tool.description).toContain(
       '{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}'
@@ -256,6 +260,20 @@ describe('toolsForIntegrations', () => {
     expect(Object.keys(branches[1]!.properties!)).toEqual(['agentId', 'needsReply'])
     expect(branches[1]!.required).toEqual(['agentId'])
     expect(branches[1]!.additionalProperties).toBe(false)
+  })
+
+  it('teaches discovery and target branches how to address self without confusing the Slack bot identity', () => {
+    const tools = toolsForIntegrations([slackInt])
+    const listAgents = tools.find((tool) => tool.name === 'listAgents')!
+    const agent = sendTargetBranch([slackInt], 'toAgent')
+    const user = sendTargetBranch([slackInt], 'toUser')
+
+    expect(listAgents.description).toContain('INCLUDING YOURSELF')
+    expect(listAgents.description).toContain('`toAgent` + `channel`')
+    expect(agent.description).toContain('channel-root form may target YOURSELF')
+    expect(agent.description).toContain('own AgentConnect ID from the # Agent block')
+    expect(agent.description).toContain('direct form may not target yourself')
+    expect(user.description).toContain('never an AgentConnect agent or your own bot identity')
   })
 
   it('still injects the unified send tool for an agent with no integrations, but no platform read tools', () => {
