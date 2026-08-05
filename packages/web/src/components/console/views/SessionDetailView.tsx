@@ -68,7 +68,12 @@ import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-t
 import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
-import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
+import {
+  sessionAttributionAgentAuthors,
+  sessionAttributionAgentId,
+  sessionSenderLabel,
+  sessionTranscriptAgentIds
+} from '@/lib/session-trigger'
 import { platformTranscriptOrdering } from '@/components/console/platforms/registry'
 import { mergeSessionMessages } from '@/lib/session-transcript'
 import { useStickToBottom } from '@/lib/stick-to-bottom'
@@ -1419,6 +1424,18 @@ export default function SessionDetailView() {
       : sessionBase
   const agentRuntime = session?.runtime || owner?.runtime || ''
 
+  // A non-flat single-session transcript can contain messages from visible A2A
+  // relatives without becoming a same-coordinate merged conversation. Surface
+  // only related Agents that actually authored a row here; unrelated lineage
+  // stays out of the focus menu, while `view=flat` keeps the owning Agent alone.
+  const relatedTranscriptAgentIds = useMemo(
+    () =>
+      !flatView && !conversationKey && transcriptSessionId === id && msgs
+        ? sessionTranscriptAgentIds(session?.platform ?? '', msgs, agentById)
+        : new Set<string>(),
+    [agentById, conversationKey, flatView, id, msgs, session?.platform, transcriptSessionId]
+  )
+
   // Header focus is presentation-only: it selects which participant owns the
   // Workspace, Visibility, and Details affordances without changing the merged
   // transcript or the conversation-wide composer target.
@@ -1453,6 +1470,18 @@ export default function SessionDetailView() {
       })
     }
 
+    if (!flatView && !conversationKey && currentSessionDetail) {
+      const related = [
+        currentSessionDetail.parentSession,
+        ...(currentSessionDetail.siblingSessions ?? []),
+        ...currentSessionDetail.childSessions
+      ]
+      for (const relation of related) {
+        if (!relation || !relatedTranscriptAgentIds.has(relation.agentId)) continue
+        candidates.push({ agentId: relation.agentId, sessionId: relation.id })
+      }
+    }
+
     const seen = new Set<string>()
     return candidates.flatMap((candidate) => {
       if (!candidate.agentId || seen.has(candidate.agentId)) return []
@@ -1476,7 +1505,16 @@ export default function SessionDetailView() {
         }
       ]
     })
-  }, [agentById, conversationMembers, orgPath, session])
+  }, [
+    agentById,
+    conversationKey,
+    conversationMembers,
+    currentSessionDetail,
+    flatView,
+    orgPath,
+    relatedTranscriptAgentIds,
+    session
+  ])
   // The persistent layout survives route-to-route navigation without remounting
   // this view. Scope the selection to the current route target so it supersedes
   // the last explicit menu choice, while ordinary rerenders keep the selection.
