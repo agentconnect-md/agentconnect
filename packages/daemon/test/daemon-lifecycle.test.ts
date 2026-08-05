@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -944,17 +944,21 @@ describe('Daemon idle sweep (#111/#118)', () => {
     entry.materialized = true
     mkdirSync(configFilesDir(adir), { recursive: true })
     writeFileSync(kubeFile, 'apiVersion: v1')
+    const configRootInode = statSync(configFilesDir(adir)).ino
 
-    // Quiet past configFilesIdleMs → the files go, the host stays warm.
+    // Quiet past configFilesIdleMs → the files go, the host and its bind-mounted
+    // config root stay warm.
     clock.advance(1001)
     ;(daemon as any).sweepIdle()
     expect(existsSync(kubeFile)).toBe(false)
+    expect(statSync(configFilesDir(adir)).ino).toBe(configRootInode)
     expect((daemon as any).hosts.has('bot-a')).toBe(true)
 
     // The next turn re-writes the file BEFORE the prompt reaches the child.
     await (daemon as any).dispatch('bot-a', dm('101', 'again'), 'int-a')
     expect(sawFileAtPrompt.at(-1)).toBe(true)
     expect(readFileSync(kubeFile, 'utf8')).toBe('apiVersion: v1')
+    expect(statSync(configFilesDir(adir)).ino).toBe(configRootInode)
 
     await daemon.stop()
   }, 15_000)

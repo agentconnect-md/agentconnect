@@ -88,15 +88,19 @@ describe('materializeConfigFiles', () => {
   it('rewrites a rotated value in place', () => {
     const dir = tmpAgentDir()
     materializeConfigFiles(dir, { KUBECONFIG_DATA: KUBE })
+    const rootInode = statSync(configFilesDir(dir)).ino
     materializeConfigFiles(dir, { KUBECONFIG_DATA: 'rotated' })
     expect(readFileSync(join(configFilesDir(dir), 'kubeconfig'), 'utf8')).toBe('rotated')
+    expect(statSync(configFilesDir(dir)).ino).toBe(rootInode)
   })
 
-  it('cleans up files with nothing planned and stays silent', () => {
+  it('clears files with nothing planned without replacing the root', () => {
     const dir = tmpAgentDir()
     materializeConfigFiles(dir, { KUBECONFIG_DATA: KUBE })
+    const rootInode = statSync(configFilesDir(dir)).ino
     const res = materializeConfigFiles(dir, {})
-    expect(existsSync(configFilesDir(dir))).toBe(false)
+    expect(existsSync(join(configFilesDir(dir), 'kubeconfig'))).toBe(false)
+    expect(statSync(configFilesDir(dir)).ino).toBe(rootInode)
     expect(res).toEqual({ env: {}, strip: [], notices: [] })
   })
 

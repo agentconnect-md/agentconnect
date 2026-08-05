@@ -6,6 +6,7 @@ import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import {
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
 import { sandboxWrap, sandboxBoundary, SandboxError, detectSandbox, writeSandboxSettings } from '../src/acp/sandbox.js'
 import { claudeInnerSandboxSettings } from '../src/acp/claude-runtime.js'
+import { clearConfigFiles, configFilesDir, materializeConfigFiles } from '../src/agents/config-file-env.js'
 
 // Ordinary ACP hosts launch through one SRT provider process with an immutable,
 // daemon-written policy rather than assembling bwrap arguments themselves.
@@ -197,6 +199,68 @@ describe('bwrap PID isolation', () => {
     })
     const out = execFileSync(cmd, args, { encoding: 'utf8', env: { ...process.env, HOME: home } }).trim()
     expect(out).toBe('OK')
+  })
+})
+
+// A warm bwrap process binds the config-files directory once. Idle cleanup must
+// retain that inode so files written for the next turn appear through the live
+// mount rather than at a new host path the sandbox cannot see.
+describe('bwrap config-file rematerialization', () => {
+  const hasBwrap = detectSandbox() === 'bwrap'
+
+  it.skipIf(!hasBwrap)('keeps a rematerialized kubeconfig visible inside the warm sandbox', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-sbx-config-'))
+    const agentDir = join(root, 'agent')
+    const workspace = join(agentDir, 'workspace')
+    const home = join(agentDir, 'home')
+    mkdirSync(workspace, { recursive: true })
+    mkdirSync(home)
+    materializeConfigFiles(agentDir, { KUBECONFIG_DATA: 'first' })
+    const kubeconfig = join(configFilesDir(agentDir), 'kubeconfig')
+    const configRootInode = statSync(configFilesDir(agentDir)).ino
+    const settingsPath = writeSandboxSettings(
+      agentDir,
+      sandboxBoundary({ agentDir, cwd: workspace, runtimeHome: home })
+    )
+    const { cmd, args } = sandboxWrap(
+      'sh',
+      [
+        '-c',
+        'printf "before:"; cat "$KUBECONFIG"; printf "\\n"; read _; printf "after:"; cat "$KUBECONFIG"; printf "\\n"'
+      ],
+      { mechanism: 'bwrap', writable: [workspace, home], settingsPath, cwd: workspace }
+    )
+    const child = spawn(cmd, args, {
+      cwd: workspace,
+      env: { ...process.env, HOME: home, KUBECONFIG: kubeconfig },
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8').on('data', (chunk) => (stdout += chunk))
+    child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr += chunk))
+    const closed = new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', resolve)
+    })
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000)
+
+    try {
+      await expect.poll(() => stdout, { timeout: 5_000 }).toContain('before:first\n')
+      expect(clearConfigFiles(agentDir)).toBeUndefined()
+      expect(existsSync(kubeconfig)).toBe(false)
+      expect(statSync(configFilesDir(agentDir)).ino).toBe(configRootInode)
+      materializeConfigFiles(agentDir, { KUBECONFIG_DATA: 'second' })
+      expect(statSync(configFilesDir(agentDir)).ino).toBe(configRootInode)
+      child.stdin.end('continue\n')
+
+      expect(await closed, stderr).toBe(0)
+      expect(stdout).toBe('before:first\nafter:second\n')
+    } finally {
+      clearTimeout(timeout)
+      if (child.exitCode === null) child.kill('SIGKILL')
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
