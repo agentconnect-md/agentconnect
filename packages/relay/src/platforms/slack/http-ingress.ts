@@ -23,38 +23,11 @@
  * Signing secrets + tokens are NEVER logged.
  */
 import type { FastifyInstance } from 'fastify'
-import type { Logger } from '../../log.js'
+import type { RelayIngressRouteDeps } from '../contract.js'
 import type { SlackInteractiveBody, SlackMessageEvent } from './http-ingest.js'
 
 /** Raw-body cap for the Slack endpoints (Slack payloads are well under 1 MiB). */
 export const SLACK_BODY_LIMIT = 1024 * 1024
-
-/** The §8 inbound seam the route drives (satisfied by `RelayIngressManager`):
- *  demux + verify + handle in one core-owned ladder; the plugin owns the
- *  cryptography and everything after authentication. `undefined` ⇒ 401. */
-export interface SlackIngestResolver {
-  handleInbound(
-    platformId: string,
-    rawBody: Buffer,
-    body: unknown,
-    headers: Record<string, string | string[] | undefined>
-  ): Promise<import('../contract.js').HandledDelivery | undefined>
-}
-
-export interface SlackHttpIngressDeps {
-  /** Late-bound — the manager is constructed alongside the rd/* server, after routes register. */
-  manager: () => SlackIngestResolver | undefined
-  log: Logger
-}
-
-function headerString(v: string | string[] | undefined): string | undefined {
-  return typeof v === 'string' && v.length > 0 ? v : undefined
-}
-
-function eventDedupKey(body: SlackEventEnvelope): string | undefined {
-  if (!body.event_id) return undefined
-  return `${body.api_app_id ?? ''}\0${body.team_id ?? ''}\0${body.event_id}`
-}
 
 /** The subset of a Slack Events API envelope the route reads for demux + dispatch. */
 interface SlackEventEnvelope {
@@ -72,7 +45,7 @@ interface SlackEventEnvelope {
   event?: SlackMessageEvent
 }
 
-export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIngressDeps): void {
+export function registerSlackHttpIngress(app: FastifyInstance, deps: RelayIngressRouteDeps): void {
   void app.register(async (scope) => {
     // Raw bytes for the HMAC — one isolated scope for both Slack content types.
     scope.addContentTypeParser(
@@ -88,8 +61,6 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIn
 
     scope.post('/slack/events', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      const signature = headerString(req.headers['x-slack-signature'])
-      const timestamp = headerString(req.headers['x-slack-request-timestamp'])
 
       let body: SlackEventEnvelope
       try {
@@ -115,8 +86,6 @@ export function registerSlackHttpIngress(app: FastifyInstance, deps: SlackHttpIn
 
     scope.post('/slack/interactions', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      const signature = headerString(req.headers['x-slack-signature'])
-      const timestamp = headerString(req.headers['x-slack-request-timestamp'])
 
       // The interaction payload is urlencoded `payload=<json>`. The HMAC is over the
       // RAW urlencoded bytes (not the decoded JSON).

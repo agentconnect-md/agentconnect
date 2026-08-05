@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WireFeishuCardActionEvent, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { FeishuHttpIngest, type FeishuCallbackHeaders } from './http-ingest.js'
 import { feishuIngressPlugin } from './ingress-plugin.js'
-import { registerFeishuHttpIngress, type FeishuIngestResolver } from './http-ingress.js'
+import { registerFeishuHttpIngress } from './http-ingress.js'
+import type { RelayInboundSeam } from '../contract.js'
 
 const NOW = 1_720_000_000_000
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
@@ -71,7 +72,7 @@ function makeApp(secrets: { verificationToken: string; encryptKey?: string } = {
     dedupSeen: () => false,
     clock: { now: () => NOW }
   } as unknown as import('../contract.js').RelayIngressHost
-  const resolver: FeishuIngestResolver = {
+  const resolver: RelayInboundSeam = {
     handleInbound: async (_platformId, rawBody, body, headers) => {
       const verified = feishuIngressPlugin.verify(
         ingest,

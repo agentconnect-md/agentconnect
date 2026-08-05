@@ -1,34 +1,9 @@
 import type { FastifyInstance } from 'fastify'
-import type { Logger } from '../../log.js'
-import { type FeishuHttpIngest, type VerifiedFeishuCallback } from './http-ingest.js'
+import type { RelayIngressRouteDeps } from '../contract.js'
 
 export const FEISHU_BODY_LIMIT = 1024 * 1024
-const FEISHU_CARD_ACTION_RESPONSE_TIMEOUT_MS = 2_500
 
-export interface FeishuVerifiedDelivery {
-  ingest: FeishuHttpIngest
-  callback: VerifiedFeishuCallback
-}
-
-export interface FeishuIngestResolver {
-  handleInbound(
-    platformId: string,
-    rawBody: Buffer,
-    body: unknown,
-    headers: Record<string, string | string[] | undefined>
-  ): Promise<import('../contract.js').HandledDelivery | undefined>
-}
-
-export interface FeishuHttpIngressDeps {
-  manager: () => FeishuIngestResolver | undefined
-  log: Logger
-}
-
-function headerString(value: string | string[] | undefined): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-export function registerFeishuHttpIngress(app: FastifyInstance, deps: FeishuHttpIngressDeps): void {
+export function registerFeishuHttpIngress(app: FastifyInstance, deps: RelayIngressRouteDeps): void {
   void app.register(async (scope) => {
     scope.addContentTypeParser(
       'application/json',

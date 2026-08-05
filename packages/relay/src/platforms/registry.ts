@@ -1,5 +1,6 @@
 /**
- * The relay's **per-platform ingest pools + demux index store** (§8, stage S3)
+ * The relay's **platform registry** — the static plugin list (§8/§12) plus the
+ * **per-platform ingest pools + demux index store** (stage S3)
  * — the S2 registry precedent (#526) applied to the relay: a platform states
  * how its bots are keyed and built ONCE (the plugin), and the shared lifecycle
  * only ever works pools and indexes it cannot parse.
@@ -16,7 +17,27 @@
  * delivery (bounded, lazily evicted), because a legacy bot's CP row may not
  * carry the app id at all.
  */
-import type { RelayBotIngress } from './contract.js'
+import type { RelayBotIngress, RelayPlatformIngressPlugin } from './contract.js'
+import { slackIngressPlugin } from './slack/ingress-plugin.js'
+import { feishuIngressPlugin } from './feishu/ingress-plugin.js'
+
+/**
+ * **The one place a relay platform id is written down.** Adding a platform is
+ * one entry here plus its `platforms/<id>/` module directory; every core path
+ * — assign, inbound demux, teardown, shutdown, route mounting — iterates this
+ * list and names no platform (§12: "a platform name is never core knowledge").
+ *
+ * Entries are erased to the contract's default bound. Core never reads a
+ * `TIngest`'s internals (§8) — it starts it, stops it, and hands it back to
+ * the plugin that built it, and each plugin's pool holds only ingests that
+ * plugin built, so the erasure is the contract's own guarantee rather than a
+ * cast around it.
+ *
+ * ORDER IS INSERTION ORDER and is observable in exactly one place: teardown
+ * asks each pool in turn. That is the order the two hand-named pools were
+ * asked in before the registry drove it (audit F2/F4), so nothing moved.
+ */
+export const relayIngressPlugins: readonly RelayPlatformIngressPlugin[] = [slackIngressPlugin, feishuIngressPlugin]
 
 /** One platform's pool of live per-bot ingests. Purely keyed by botId — the
  *  identity questions live in {@link DemuxIndex}, not here. */

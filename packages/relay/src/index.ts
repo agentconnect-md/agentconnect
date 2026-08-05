@@ -19,8 +19,7 @@ import { createRelayDaemonServer, type RelayDaemonServer } from './relay-daemon-
 import { createRelayBrowserServer } from './relay-browser-server.js'
 import { WebchatRouter } from './webchat-router.js'
 import { RelayIngressManager } from './relay-ingress-manager.js'
-import { registerSlackHttpIngress } from './platforms/slack/http-ingress.js'
-import { registerFeishuHttpIngress } from './platforms/feishu/http-ingress.js'
+import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
 import { mapAgentDirectory, toBotAssignment } from './bot-arbitration.js'
@@ -195,8 +194,15 @@ async function main(): Promise<void> {
 
   // IM HTTP ingress. Each callback is demuxed, authenticated, deduplicated,
   // normalized, arbitrated, and forwarded. Routes must register before listen.
-  registerSlackHttpIngress(server, { manager: () => held.relayIngress, log })
-  registerFeishuHttpIngress(server, { manager: () => held.relayIngress, log })
+  //
+  // Mounted from the platform registry, not by name (audit F5): each plugin
+  // declares its own paths, so adding a platform never edits this file. The
+  // paths themselves are unchanged by construction and pinned by enumeration
+  // in `platforms/route-mounts.test.ts` — public callback URLs are external
+  // contracts.
+  for (const plugin of relayIngressPlugins) {
+    plugin.installRoutes(server, { manager: () => held.relayIngress, log })
+  }
 
   // Public webhook ingress (POST /webhooks/in/:token). Routes must register
   // before listen; the rd/* server only exists after it — hence the late bind.
