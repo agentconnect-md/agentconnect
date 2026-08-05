@@ -78,7 +78,12 @@ import type {
   SubmitGithubReviewReq
 } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
-import { CONFIG_FILE_CONVENTIONS, cleanupConfigFiles, materializeConfigFiles } from './agents/config-file-env.js'
+import {
+  CONFIG_FILE_CONVENTIONS,
+  cleanupConfigFiles,
+  clearConfigFiles,
+  materializeConfigFiles
+} from './agents/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
@@ -1738,7 +1743,7 @@ export class Daemon {
   // Recorded at spawn because the reconcile remove path drops the roster entry BEFORE
   // stopping the host — the agent dir can't be re-resolved there. `childEnv` is the
   // merged spawn env snapshot the materialization was planned from: the idle sweep
-  // deletes the files once the agent goes quiet (`materialized` → false) and
+  // clears the files once the agent goes quiet (`materialized` → false) and
   // rematerializeConfigFiles() re-writes them from this snapshot before the next
   // turn — the pointer env vars fixed at spawn always reference the same paths, so
   // the warm child never notices.
@@ -17171,7 +17176,10 @@ export class Daemon {
       // The lease also covers the settle→followup gap of a background task: a
       // task-drain turn flips sdkState to running before any tool can fire.
       if (this.agentHasLiveSdkWork(agentId)) continue
-      const err = cleanupConfigFiles(entry.agentDir)
+      // Keep the root inode: a warm bwrap child has this directory bind-mounted.
+      // Removing and recreating the path would leave that mount on the old,
+      // empty inode, so rematerialized files would still be invisible inside it.
+      const err = clearConfigFiles(entry.agentDir)
       if (err) {
         this.log.warn(`config-files: idle cleanup for agent "${agentId}" failed — ${err}`)
         continue

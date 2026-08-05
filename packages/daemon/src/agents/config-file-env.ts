@@ -28,7 +28,7 @@
  * can read both. Cluster/registry-side scoping (per-agent ServiceAccounts,
  * least-privilege tokens) remains the real permission boundary.
  */
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 export interface ConfigFileConvention {
@@ -114,21 +114,27 @@ export interface MaterializeResult {
 /**
  * Materialize the planned config files under `configFilesDir(agentDir)`.
  *
- * The dir is wiped and rebuilt every call, so a removed/renamed secret
- * converges to file deletion on the next host spawn. A write failure keeps
- * that convention's env untouched (the raw data var stays visible to the
- * child — degraded, but strictly more usable than losing both) and reports a
- * notice.
+ * Existing contents are replaced every call, so a removed/renamed secret
+ * converges to file deletion on the next host spawn. The root directory itself
+ * is retained when it already exists: a warm Linux sandbox bind-mounts that
+ * directory inode, so replacing it would strand the child on the removed mount.
+ * A write failure keeps that convention's env untouched (the raw data var stays
+ * visible to the child — degraded, but strictly more usable than losing both)
+ * and reports a notice.
  */
 export function materializeConfigFiles(agentDir: string, env: Record<string, string | undefined>): MaterializeResult {
   const plan = planConfigFiles(env)
   const out: MaterializeResult = { env: {}, strip: [], notices: [...plan.notices] }
   const dir = configFilesDir(agentDir)
+  const clearError = clearConfigFiles(agentDir)
+  if (clearError) {
+    if (plan.materialize.length === 0) return out
+    out.notices.push(`${clearError} — secrets left as env vars.`)
+    return out
+  }
   try {
-    rmSync(dir, { recursive: true, force: true })
     if (plan.materialize.length > 0) mkdirPrivate(dir)
   } catch (err) {
-    if (plan.materialize.length === 0) return out
     out.notices.push(`config-files dir could not be prepared (${(err as Error).message}) — secrets left as env vars.`)
     return out
   }
@@ -159,13 +165,28 @@ export function materializeConfigFiles(agentDir: string, env: Record<string, str
 }
 
 /**
- * Remove an agent's materialized config files. Runs when the agent's host
- * stops (idle reap, removal, respawn, daemon shutdown) and as a boot sweep
- * after a non-graceful exit, so secret material does not rest in a second
- * on-disk copy while no child process can use it — the next spawn
- * re-materializes from the agent's secrets. Never throws: teardown must not
- * fail on a leftover file; a problem comes back as a message for the caller
- * to log.
+ * Remove materialized files while retaining the root directory inode. A live
+ * sandbox may have that directory bind-mounted read-only; keeping it in place
+ * lets a later materialization become visible inside the same warm child.
+ */
+export function clearConfigFiles(agentDir: string): string | undefined {
+  const dir = configFilesDir(agentDir)
+  try {
+    for (const entry of readdirSync(dir)) {
+      rmSync(join(dir, entry), { recursive: true, force: true })
+    }
+    return undefined
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    return `config-files contents could not be removed (${(err as Error).message})`
+  }
+}
+
+/**
+ * Remove an agent's materialized config-file directory after its host stops,
+ * and during the boot sweep after a non-graceful exit. With no live bind mount,
+ * teardown can remove the root too. Never throws: a problem comes back as a
+ * message for the caller to log.
  */
 export function cleanupConfigFiles(agentDir: string): string | undefined {
   try {
