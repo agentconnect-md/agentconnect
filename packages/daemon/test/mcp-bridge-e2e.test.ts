@@ -75,6 +75,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       integrationId: 'int-1',
       isDm: false,
       channel: 'C9',
+      sessionChannel: 'C9',
       thread: '5.5',
       tools
     })
