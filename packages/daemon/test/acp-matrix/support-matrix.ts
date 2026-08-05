@@ -16,9 +16,11 @@ export type FeatureId =
   | 'permission-mode-switch'
   | 'load-resume'
   | 'interactive-permission'
-  | 'elicitation'
   | 'usage-fold'
   | 'memory'
+  | 'sandbox'
+  | 'mcp'
+  | 'skills'
 
 export function verdictFor(feature: FeatureId, p: Profile): Verdict {
   switch (feature) {
@@ -26,7 +28,8 @@ export function verdictFor(feature: FeatureId, p: Profile): Verdict {
     case 'capabilities':
     case 'lifecycle':
     case 'interactive-permission':
-    case 'elicitation':
+    case 'sandbox':
+    case 'memory':
       return 'run'
     case 'model-switch':
       return (p.caps.models?.length ?? 0) >= 2 ? 'run' : 'degrade'
@@ -36,10 +39,10 @@ export function verdictFor(feature: FeatureId, p: Profile): Verdict {
       return p.caps.loadSession ? 'run' : 'degrade'
     case 'usage-fold':
       return p.caps.usage ? 'run' : 'degrade'
-    case 'memory':
-      // Claude carries the fresh-session memory index via _meta.systemPrompt; other
-      // runtimes have no such channel and the daemon inlines it instead ('degrade').
-      return p.claudeRuntime ? 'run' : 'degrade'
+    case 'mcp':
+      return p.caps.mcp.http || p.caps.mcp.sse ? 'run' : 'degrade'
+    case 'skills':
+      return p.caps.skillsAgentId ? 'run' : 'degrade'
   }
 }
 
@@ -50,7 +53,9 @@ export const FEATURES: FeatureId[] = [
   'permission-mode-switch',
   'load-resume',
   'interactive-permission',
-  'elicitation',
   'usage-fold',
-  'memory'
+  'memory',
+  'sandbox',
+  'mcp',
+  'skills'
 ]

@@ -20,7 +20,7 @@ send path** — so the daemon itself renders and posts the agent's output into t
      "Permission resolved");
    - **native session resume** is exercised by evicting the live host and dispatching
      again.
-     All 9 matrix feature dimensions, with the agent's REAL data.
+     All 11 matrix feature dimensions, with the agent's REAL data.
 3. Beneath the daemon's own messages, the test posts a structured per-agent verdict
    summary, then a summary table.
 
@@ -30,10 +30,10 @@ hand-posted on the agent's behalf.
 
 ### Feature coverage
 
-`caps · life · model · pmode · load · perm · usage · mem` are driven end-to-end through
-the daemon's Slack path. **elicitation** stays ⚪ n/a — real agents don't emit
-`elicitation/create` on cue; that card path is covered by the scriptable-fixture matrix in
-[`../acp-matrix.test.ts`](../acp-matrix.test.ts). `perm` shows ✓ when an agent actually
+`caps · life · model · pmode · load · perm · usage · mem · sbox · mcp · skills` are
+driven through the daemon's Slack path. `sbox` runs the lifecycle turn inside the
+daemon sandbox when this host supports it; `mcp` records remote transport admission;
+`skills` checks the audited bundled-CLI identity. `perm` shows ✓ when an agent actually
 requested a gated tool (card rendered + resolved) and `·` when it completed without one.
 
 ### Pass/fail

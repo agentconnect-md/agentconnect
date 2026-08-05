@@ -19,14 +19,10 @@ import { FEATURES, type FeatureId } from '../support-matrix.js'
  * the thread; `handleStatusAction`/`statusInfoForKey` do the real model + permission-mode
  * switching (the new model shows up in the daemon's status bar); a tool-triggering turn
  * makes the daemon post a real Allow/Deny CARD which we resolve via `handlePermissionChoice`;
- * and native session resume is exercised by evicting the host. All 9 matrix feature
+ * and native session resume is exercised by evicting the host. All matrix feature
  * dimensions, with the agent's REAL data. Each agent's structured verdicts are posted as a
  * summary reply beneath the daemon's own messages; a table follows. Skipped unless
  * AC_LIVE_SLACK_* are set.
- *
- * Elicitation stays ⚪ n/a — real agents don't emit elicitation/create on cue; that card
- * path is covered by the scriptable-fixture matrix in ../acp-matrix.test.ts.
- *
  * Run: GITHUB_ACTIONS=true pnpm --filter @agentconnect.md/daemon exec \
  *        vitest run test/acp-matrix/live/slack-live.test.ts
  */
@@ -38,9 +34,11 @@ const SHORT: Record<FeatureId, string> = {
   'permission-mode-switch': 'pmode',
   'load-resume': 'load',
   'interactive-permission': 'perm',
-  elicitation: 'elicit',
   'usage-fold': 'usage',
-  memory: 'mem'
+  memory: 'mem',
+  sandbox: 'sbox',
+  mcp: 'mcp',
+  skills: 'skills'
 }
 const CELL: Record<FeatureOutcome['status'], string> = { ok: '✓', degrade: '·', na: '~', fail: '✗' }
 const sw = (s?: { from?: string; to?: string; applied: boolean }) =>
@@ -94,7 +92,7 @@ function agentDetail(r: AgentResult): string {
     `• *usage:* ${r.usageTokens !== undefined ? `${r.usageTokens} tokens${r.usageCost ? ` ($${r.usageCost.toFixed(4)})` : ''}` : 'none'}  ·  *loadSession:* ${r.loadSession}  ·  *mcp:* http=${r.mcp?.http}/sse=${r.mcp?.sse}`
   )
   L.push(
-    `• *resume:* ${resumed(r) ? '✅' : '❌'}  ·  *permission:* ${perm}  ·  *elicitation:* n/a  ·  *memory:* ${r.memoryViaMeta ? '_meta.systemPrompt (Claude)' : 'inlined block'}`
+    `• *resume:* ${resumed(r) ? '✅' : '❌'}  ·  *permission:* ${perm}  ·  *memory:* ${r.memoryViaMeta ? '_meta.systemPrompt (Claude)' : 'inlined block'}`
   )
   return L.join('\n')
 }
@@ -121,7 +119,7 @@ function summaryBlocks(results: AgentResult[]): unknown[] {
 }
 
 describe.skipIf(!creds)('live e2e: real installed ACP agents driven through the daemon → Slack', () => {
-  it('launches every installed agent through the daemon, exercises all 9 features, reports to the thread', async () => {
+  it('launches every installed agent through the daemon, exercises the support matrix, reports to the thread', async () => {
     const thread = new SlackThread(creds!)
     const threadTs = await thread.open(`acp integration tests - ${new Date().toISOString()}`)
     // Real user id stamped on each injected trigger, so the daemon treats it as a
