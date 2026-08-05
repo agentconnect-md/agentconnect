@@ -379,6 +379,13 @@ export class WerewolfGame implements CollaborationGameWorld {
     return this.actionSpeakers.get(`${this.round}:${action}`)?.has(alias) === true
   }
 
+  /** Did this round already record ANY disposition for this actor + action? */
+  private hasRecordedAction(action: RecordedAction['action'], agentId: string): boolean {
+    return this.actions.some(
+      (record) => record.round === this.round && record.action === action && record.agentId === agentId
+    )
+  }
+
   /**
    * Close out one action for one actor at phase resolution.
    *
@@ -392,6 +399,10 @@ export class WerewolfGame implements CollaborationGameWorld {
     if (accepted) return
     const player = this.players.get(alias)
     if (!player) return
+    // Already classified this round (ambiguous / rejected / duplicate)? Then the
+    // attempt is on the record and close-out must stay silent — otherwise one
+    // failed statement is counted twice in the headline metrics.
+    if (this.hasRecordedAction(action, player.agentId)) return
     if (this.spokeFor(action, alias)) {
       this.recordAction({ agentId: player.agentId, action }, 'unparseable', 'no_clear_statement')
       return
@@ -666,6 +677,11 @@ export class WerewolfGame implements CollaborationGameWorld {
   }
 
   private resolveNightAndQueueDay(): void {
+    // Who OWED a night action, snapshotted before the victim is marked dead —
+    // the seer or doctor can be tonight's victim, and their missing action must
+    // still be accounted for rather than vanishing with them.
+    const nightSeer = this.living().find((player) => player.role === 'seer')
+    const nightDoctor = this.living().find((player) => player.role === 'doctor')
     const killed = this.nightKill?.target
     const saved = killed !== undefined && this.nightProtect === killed
     let deathLine = 'No one died last night.'
@@ -682,7 +698,11 @@ export class WerewolfGame implements CollaborationGameWorld {
     const livingWolves = this.wolves().filter((wolf) => wolf.alive)
     if (livingWolves.length > 0) {
       const anyWolfSpoke = livingWolves.some((wolf) => this.spokeFor('kill', wolf.alias))
-      if (this.nightKill === undefined) {
+      // Same rule as `closeOutAction`: if the pack already had an attempt
+      // classified this round (ambiguous, rejected, duplicate), it is on the
+      // record and close-out stays silent rather than counting it twice.
+      const packAlreadyRecorded = livingWolves.some((wolf) => this.hasRecordedAction('kill', wolf.agentId))
+      if (this.nightKill === undefined && !packAlreadyRecorded) {
         if (anyWolfSpoke) {
           this.recordAction({ agentId: livingWolves[0]!.agentId, action: 'kill' }, 'unparseable', 'no_clear_statement')
         } else {
@@ -698,9 +718,7 @@ export class WerewolfGame implements CollaborationGameWorld {
         }
       }
     }
-    const nightSeer = this.living().find((player) => player.role === 'seer')
     if (nightSeer) this.closeOutAction('inspect', nightSeer.alias, this.nightInspect !== undefined)
-    const nightDoctor = this.living().find((player) => player.role === 'doctor')
     if (nightDoctor) this.closeOutAction('protect', nightDoctor.alias, this.nightProtect !== undefined)
     this.world.appendEvent({
       type: 'night.resolved',
@@ -842,8 +860,10 @@ export class WerewolfGame implements CollaborationGameWorld {
   }
 
   private resolveDay(): void {
-    // Counted BEFORE the lynch: who was owed a vote this round.
-    const eligible = this.living().length
+    // Snapshotted BEFORE the lynch: who was owed a vote this round. Reading
+    // `living()` after the lynch would drop the lynched player's missing vote.
+    const owedVoters = this.living().map((player) => player.alias)
+    const eligible = owedVoters.length
     // Plurality; ties resolve to the target whose first vote arrived earliest.
     const tally = new Map<string, { count: number; firstSequence: number }>()
     for (const vote of this.dayVotes.values()) {
@@ -871,8 +891,9 @@ export class WerewolfGame implements CollaborationGameWorld {
       const victim = this.players.get(lynched)
       if (victim) victim.alive = false
     }
-    for (const voter of this.living()) {
-      this.closeOutAction('vote', voter.alias, this.dayVotes.has(voter.agentId))
+    for (const alias of owedVoters) {
+      const voter = this.players.get(alias)
+      if (voter) this.closeOutAction('vote', alias, this.dayVotes.has(voter.agentId))
     }
     if (this.dayVotes.size < eligible) this.votesTimedOut += 1
     this.world.appendEvent({

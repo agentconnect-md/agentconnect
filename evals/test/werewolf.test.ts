@@ -198,6 +198,41 @@ describe('werewolf actions are MESSAGES, parsed from the conversation they belon
     expect(f.world.events().filter((e) => e.type === 'action.kill')).toHaveLength(before)
   })
 
+  it('counts a failed statement ONCE: an ambiguous attempt is not re-counted at resolution', async () => {
+    // Regression: close-out used to speak for any actor without an ACCEPTED
+    // action, so a statement already classified ambiguous was counted a second
+    // time and `unparseableActions` double-reported it.
+    const f = fixture()
+    f.game.nextDeliveries()
+    f.game.nextDeliveries()
+    const wolves = f.byRole('werewolf')
+    const villagers = f.byRole('villager')
+    await f.say(wolves[0]!, 'den', `we could kill ${villagers[0]!} or kill ${villagers[1]!}.`)
+    // The night has to resolve for close-out to run; nobody stated a valid kill.
+    f.game.nextDeliveries()
+    const unparseable = f.world
+      .events()
+      .filter((event) => event.type === 'action.kill' && event.disposition === 'unparseable')
+    expect(unparseable).toHaveLength(1)
+    expect(String(unparseable[0]!.reason)).toMatch(/^ambiguous:/)
+  })
+
+  it('still accounts for the night victim\u2019s owed action instead of losing it with them', async () => {
+    // Regression: the seer/doctor scan ran AFTER the victim was marked dead, so
+    // if the victim was the seer its missing inspect silently vanished.
+    const f = fixture()
+    f.game.nextDeliveries()
+    f.game.nextDeliveries()
+    const wolves = f.byRole('werewolf')
+    const [seer] = f.byRole('seer')
+    // The wolves kill the seer, and the seer never states an inspection.
+    await f.say(wolves[0]!, 'den', `we kill ${seer!} tonight.`)
+    const inspectRecords = f.world.events().filter((event) => String(event.type).includes('inspect'))
+    const silent = f.world.events().filter((event) => event.type === 'action.silent' && event.action === 'inspect')
+    expect([...inspectRecords, ...silent].length).toBeGreaterThanOrEqual(1)
+    expect(silent.some((event) => event.agentAlias === seer!)).toBe(true)
+  })
+
   it('reads the seer and doctor night actions out of their own referee DMs', async () => {
     const f = fixture()
     f.game.nextDeliveries()
@@ -471,8 +506,10 @@ describe('werewolf day phase — natural sequential discussion driven by peer me
     // ── the referee opens the day and then SHUTS UP ──
     // Between opening a day and closing it, the only referee room event is the
     // single DAY prompt. Nobody is called on; nothing re-seeds the round.
+    let dayNumber = 0
     for (let index = 0; index < events.length; index++) {
       if (events[index]!.type !== 'day.discussion_opened') continue
+      dayNumber += 1
       const end = events.findIndex((event, at) => at > index && event.type === 'day.discussion_closed')
       expect(end).toBeGreaterThan(index)
       const refereeSpeech = events
@@ -484,7 +521,10 @@ describe('werewolf day phase — natural sequential discussion driven by peer me
       // between speech k landing and speech k+1 landing, the only thing that
       // entered the daemon on the public room was speech k's own echo.
       const speeches = events.slice(index, end).filter((event) => event.type === 'day.speech')
-      expect(speeches.length).toBeGreaterThanOrEqual(2)
+      // Only the FIRST day is guaranteed a full budget; a later scripted day can
+      // be entirely silent once circuits latch (see the SCRIPTED BOUNDARY test).
+      // The peer-drives-the-order property below still holds wherever it speaks.
+      if (dayNumber === 1) expect(speeches.length).toBeGreaterThanOrEqual(2)
       for (let step = 1; step < speeches.length; step++) {
         const previous = speeches[step - 1]!
         const current = speeches[step]!

@@ -202,7 +202,7 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 15 files, 113 tests
+pnpm eval:collab:contracts # 15 files, 115 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
@@ -229,7 +229,7 @@ Full gate, measured on this branch:
 | ------------------------------------------------------ | ------- |
 | `evals/test/routing-acceptance.test.ts`                | 8       |
 | `evals/test/game-runner.test.ts`                       | 5       |
-| `evals/test/werewolf.test.ts`                          | 16      |
+| `evals/test/werewolf.test.ts`                          | 18      |
 | `evals/test/quota-counting.test.ts`                    | 8       |
 | `evals/test/cross-room-counting.test.ts`               | 6       |
 | `evals/test/counting.test.ts`                          | 11      |
@@ -242,7 +242,7 @@ Full gate, measured on this branch:
 | `evals/test/virtual-connections.test.ts`               | 4       |
 | `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
 | `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
-| **Total**                                              | **113** |
+| **Total**                                              | **115** |
 
 **0 expected-fail.** Every pin is an ordinary assertion.
 
@@ -784,7 +784,7 @@ Stated explicitly, since several claims above are structural rather than observe
 
 | Claim                                                       | Basis                                                                                                                                             |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The 113 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
+| The 115 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
 | The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                                                         |
 | Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                                                         |
 | Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                                                          |
