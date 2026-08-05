@@ -160,6 +160,17 @@ export function createDiscordCpProvider(deps: DiscordCpProviderDeps): CpPlatform
       secrets: { botToken: credentials.botToken, appToken: null, signingSecret: null }
     }),
 
+    /**
+     * D6 identity (§11): Discord claims NO external app identity. The
+     * application id decoded from the bot token is display-only — it deep-links
+     * the console to the Developer Portal — and Discord has no HTTP callback
+     * ingress, so there is nothing to demux on and nothing the composite unique
+     * should fence. It therefore rides the generic bag alone, leaving the
+     * `(externalAppId, externalTenantId)` pair unset rather than claiming a
+     * uniqueness this platform has not earned.
+     */
+    projectBotIdentity: (input) => (input.discordAppId ? { platformConfig: { discordAppId: input.discordAppId } } : {}),
+
     // One-slot packing of the shared two-slot bot_secret row
     // (`integrations.ts:515`: appToken/signingSecret stored null). No slot
     // gates an http assign — Discord has no HTTP callback ingress at all.

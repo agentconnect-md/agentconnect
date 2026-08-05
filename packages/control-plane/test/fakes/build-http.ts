@@ -88,6 +88,7 @@ import { HookService } from '../../src/hooks/hook.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
+import { botIdentityProjector } from '../../src/platforms/bot-identity.js'
 import type { CpPlatformRegistry } from '../../src/platforms/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
@@ -235,7 +236,10 @@ export function buildHttpApp(
   const cipher = new PlaintextSecretCipher()
   const agentSecretStore = new PgAgentSecretStore(prisma, cipher)
   const integrationRepo = new PgIntegrationRepo(prisma)
-  const botRepo = new PgBotRepo(prisma)
+  // The D6 identity projection reads the registry at bot-row WRITE time; the
+  // façade it reads through is bound further down (see the LATE-BOUND note), so
+  // the extra arrow defers the `platforms` reference past its declaration.
+  const botRepo = new PgBotRepo(prisma, (input) => botIdentityProjector(platforms)(input))
   const botSecretStore = new PgBotSecretStore(prisma, cipher)
   const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
   const feishuAppRegistrationStore = new PgFeishuAppRegistrationStore(prisma, cipher)

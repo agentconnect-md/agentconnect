@@ -24,6 +24,7 @@ import type {
   RcThreadLookup,
   RcThreadLookupOk
 } from '@agentconnect.md/protocol'
+import { manifestFor } from '@agentconnect.md/protocol'
 import type {
   BotRepo,
   BotRecord,
@@ -448,10 +449,17 @@ export class HttpBotOrchestrator {
     return this.relayReg.all().length > 0
   }
 
-  /** Apply the authoritative channel-membership snapshot reported by the Slack
-   *  HTTP ingest. Every active integration of the bot represents the same Slack
-   *  app membership, so fan the snapshot across them, preserving per-install
+  /** Apply the authoritative channel-membership snapshot reported by an HTTP
+   *  ingest. Every active integration of the bot represents the same app-level
+   *  membership, so fan the snapshot across them, preserving per-install
    *  trigger/owner fields in the repository, then hot-refresh relay routes.
+   *
+   *  Gated on the §5 manifest's `membershipEnumeration: 'authoritative'` — the
+   *  declaration that a platform HAS one cheap whole-bot membership snapshot —
+   *  rather than on the platform name. A platform whose set is discovered from
+   *  traffic (`'observed'`) has no snapshot to apply and its rows must not be
+   *  replaced wholesale; an unknown id gets the fail-closed default and is
+   *  ignored, exactly as the retired `!== 'slack'` did.
    *
    *  For an HTTP bot, route compilation converges every reported channel to
    *  exactly one owner. A new or ownerless channel is assigned to the bot's
@@ -459,8 +467,11 @@ export class HttpBotOrchestrator {
    */
   async replaceChannels(botId: string, channels: ReportedChannel[]): Promise<void> {
     const bot = await this.bots.get(BotId(botId))
-    if (!bot || bot.platform !== 'slack' || bot.transport !== 'http') {
-      this.log.warn({ botId }, 'http-bot: channel snapshot for a non-http/unknown Slack bot — ignored')
+    if (!bot || manifestFor(bot.platform).membershipEnumeration !== 'authoritative' || bot.transport !== 'http') {
+      this.log.warn(
+        { botId },
+        'http-bot: channel snapshot for an unknown bot, a non-http transport, or a platform without authoritative membership — ignored'
+      )
       return
     }
     const installs = await this.integrations.listForBot(bot.id)

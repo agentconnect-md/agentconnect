@@ -102,6 +102,27 @@ async function installTelegram(app: HttpApp): Promise<string> {
   return (res.json() as { id: string }).id
 }
 
+/** Install a DISCORD integration — the one platform whose bot joins a SPACE
+ *  rather than individual conversations (§5 `leaveGranularity: 'space'`), so the
+ *  only one whose leave requests take the mirror-image arms of the two refusals
+ *  below. */
+async function installDiscord(app: HttpApp): Promise<string> {
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+  const res = await app.app.inject({
+    method: 'POST',
+    url: `${ORG}/integrations`,
+    payload: {
+      name: 'acme-dc',
+      platform: 'discord',
+      agentId,
+      discord: { botToken: 'MTIzNDU2Nzg5MDEyMzQ1Njc4.fixture.not-a-secret' }
+    }
+  })
+  expect(res.statusCode).toBe(201)
+  return (res.json() as { id: string }).id
+}
+
 /** Dispatch a hand-built `integration/channels` EVT through the real handler. */
 async function report(
   daemonId: string,
@@ -1214,7 +1235,11 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
     expect(spy.forgets).toEqual([{ daemonId: DAEMON, f: { integrationId: id, channels: ['-100123'] } }])
   })
 
-  it('refuses a server-scoped leave on a platform that has no server', async () => {
+  // The two arms below are one rule read off the §5 manifest's
+  // `leaveGranularity` (audit F12): a request whose target shape the platform
+  // cannot serve is refused HERE — before an owner resolves, before the mutation
+  // lease, before any daemon is reached — so neither ever dispatches.
+  it('refuses a space-scoped leave on a platform whose bot leaves conversations', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
@@ -1228,5 +1253,39 @@ describe('DELETE …/channels/:channelId (forget) and POST …/leave (platform)'
 
     expect(res.statusCode).toBe(400)
     expect(spy.leaves).toEqual([]) // never reached the daemon
+  })
+
+  it('refuses a conversation-scoped leave on a platform whose bot joins a space', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installDiscord(running)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${id}/leave`,
+      payload: { target: { kind: 'conversation', channel: 'C1' } }
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(spy.leaves).toEqual([])
+  })
+
+  it('dispatches a space-scoped leave on the platform that has one', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installDiscord(running)
+
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${id}/leave`,
+      payload: { target: { kind: 'space', spaceId: 'G1' } }
+    })
+
+    expect(res.statusCode).toBe(204)
+    expect(spy.leaves).toEqual([
+      { daemonId: DAEMON, l: { integrationId: id, target: { kind: 'space', spaceId: 'G1' } } }
+    ])
   })
 })

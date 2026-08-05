@@ -40,6 +40,16 @@
  */
 export type MembershipEnumeration = 'authoritative' | 'observed'
 
+/** What a bot can actually withdraw from, once it is in a conversation (§5).
+ *
+ *  - `conversation` — the bot is a member of the individual chat and leaves it
+ *    on its own (Slack `conversations.leave`, Telegram `leaveChat`).
+ *  - `space` — membership is granted at the enclosing space and the bot has no
+ *    per-conversation membership to drop, so the only withdrawal is leaving the
+ *    whole space (Discord: a bot joins a guild, not a channel).
+ */
+export type LeaveGranularity = 'conversation' | 'space'
+
 /** One platform's pre-dispatch capability declaration. */
 export interface PlatformManifest {
   /** Diagnostic label; never parsed. */
@@ -59,12 +69,25 @@ export interface PlatformManifest {
    *  separately); on a `false` platform bot senders never route. Fail-closed:
    *  an unknown platform admits no bot senders. */
   readonly botSenderRouting: boolean
+  /** What a leave request may target on this platform (§5). A PRE-DISPATCH
+   *  read: the control plane validates the SHAPE of a leave request — space vs
+   *  conversation — before it resolves an owner, takes the mutation lease, or
+   *  reaches the daemon that would perform the leave, so there is no adapter or
+   *  turn to ask. The same axis is the daemon's two leave members
+   *  (`leaveConversation` / `leaveSpace`) and the web module's
+   *  `WebChannelListSemantics.leave`; this is the declaration all three read
+   *  instead of re-spelling "Discord is the one with servers". */
+  readonly leaveGranularity: LeaveGranularity
 }
 
 /** The conservative arm of every axis — see the fail-closed note above. */
 export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   membershipEnumeration: 'observed',
-  botSenderRouting: false
+  botSenderRouting: false,
+  // The arm the retired branch took for every non-Discord id: an unknown
+  // platform is assumed to have no space to leave, so a space-targeted request
+  // is refused rather than dispatched at a platform that cannot serve it.
+  leaveGranularity: 'conversation'
 }
 
 /**
@@ -78,10 +101,20 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
   // is why the branches this replaces read "Slack does X, everyone else does Y".
   // It is also the only platform whose normalizer attributes bot authorship AND
   // explicit @-mentions well enough to admit third-party bot messages safely.
-  ['slack', { membershipEnumeration: 'authoritative', dmChannelPattern: /^D/, botSenderRouting: true }],
-  ['telegram', { membershipEnumeration: 'observed', botSenderRouting: false }],
-  ['discord', { membershipEnumeration: 'observed', botSenderRouting: false }],
-  ['feishu', { membershipEnumeration: 'observed', botSenderRouting: false }]
+  [
+    'slack',
+    {
+      membershipEnumeration: 'authoritative',
+      dmChannelPattern: /^D/,
+      botSenderRouting: true,
+      leaveGranularity: 'conversation'
+    }
+  ],
+  ['telegram', { membershipEnumeration: 'observed', botSenderRouting: false, leaveGranularity: 'conversation' }],
+  // A Discord bot is added to a GUILD, not to a channel — there is no
+  // per-channel membership to drop, so the only withdrawal is the whole server.
+  ['discord', { membershipEnumeration: 'observed', botSenderRouting: false, leaveGranularity: 'space' }],
+  ['feishu', { membershipEnumeration: 'observed', botSenderRouting: false, leaveGranularity: 'conversation' }]
 ])
 
 /** The manifest for `platform`. Total by construction: an unregistered id gets

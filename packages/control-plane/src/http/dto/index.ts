@@ -30,6 +30,7 @@ import {
   normalizeRepoSubdir
 } from '@agentconnect.md/protocol'
 import { HEX_COLOR_RE, AGENT_ICON_GLYPHS } from '../../agents/agent-icon.js'
+import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 
 // ── per-resource visibility / sharing (docs/designs/resource-visibility.md) ──
 /** 'org' = visible to every org member (default); 'restricted' = the complete
@@ -1805,10 +1806,23 @@ export const MeAccessDto = z.object({
 export const WaitlistJoinBody = z.object({
   name: z.string().trim().min(1).max(120),
   company: z.string().trim().min(1).max(120),
-  platform: z
-    .array(z.enum(['slack', 'telegram', 'discord']))
-    .min(1)
-    .max(3),
+  /**
+   * DECIDED (audit F11): marketing intake TRACKS THE REGISTRY.
+   *
+   * The question this answers is "which of the platforms AgentConnect serves
+   * will your team use", so its vocabulary is the served set — there is no
+   * separate marketing vocabulary here, no demand-signal option for a platform
+   * we do not run, and no served platform deliberately withheld. The hand copy
+   * proved that by drifting: it stayed at three ids after Feishu shipped, so a
+   * Feishu team simply could not say so, and the `.max(3)` cap was a second
+   * spelling of the same count. Both now come from the registry declaration.
+   *
+   * Widening is the safe direction for an intake enum — the server accepts a
+   * superset of what any client sends, so a console still offering three
+   * chips keeps working. (The console's own chip list is web-owned and is
+   * still three; that is a display gap, not a rejection.)
+   */
+  platform: z.array(z.enum(CP_PLATFORM_IDS)).min(1).max(CP_PLATFORM_IDS.length),
   teamSize: z.string().trim().min(1).max(40),
   useCase: z.string().trim().max(2000).optional()
 })
@@ -2034,7 +2048,13 @@ export const UpdateOrgBody = z
   )
 
 // ── crons ────────────────────────────────────────────────────────────────
-export const Platform = z.enum(['slack', 'telegram', 'discord', 'feishu'])
+/** The cron/hook OUTPUT-ANCHOR vocabulary: which platform a scheduled or
+ *  webhook-triggered run may post its anchor into. That is the set of platforms
+ *  this build can deliver to, so it tracks the platform registry (through its
+ *  static declaration — this schema is built at module load, before any
+ *  container exists) instead of a fourth hand-written union. `hooks.ts` and
+ *  `mcp/tools.ts` read the same declaration; nothing re-spells it. */
+export const Platform = z.enum(CP_PLATFORM_IDS)
 
 /** `schedule` must parse as a croner expression — the documented field contract
  *  (§3.11 "croner expr"). Rejecting here keeps a def no daemon could ever
@@ -2081,6 +2101,12 @@ export const UpsertCronBody = z.object({
   // Omitted on create ⇒ the CP process timezone; edits from the console always
   // resend the stored value so a non-default timezone is never reset silently.
   timezone: ianaTimezone.optional(),
+  // The MEMBERS track the registry; the DEFAULT does not, and must not. A cron
+  // created before `targetPlatform` existed reads back as Slack, so `'slack'`
+  // here is an envelope legacy value (audit §6.8 / ambiguous row 7) that names
+  // the historical shape of stored rows — not a statement that Slack is first
+  // among platforms. Deriving it from the registry would make an unrelated
+  // registration order silently rewrite what a legacy row means.
   targetPlatform: Platform.default('slack'),
   // Optional output routing: post the trigger there and thread the agent's
   // replies under it. Absent/empty ⇒ headless fire.
@@ -2158,6 +2184,8 @@ const HookBodyBase = z.object({
   name: z.string().trim().min(1).max(120),
   enabled: z.boolean().default(true),
   // Optional output anchoring (same trio as crons; absent ⇒ headless fire).
+  // `'slack'` is the same envelope legacy default the cron body carries — a
+  // stored-row compatibility value, not a registry read (audit §6.8).
   targetPlatform: Platform.default('slack'),
   targetChannel: z.string().min(1).optional(),
   targetIntegrationId: z.string().uuid().optional()

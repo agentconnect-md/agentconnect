@@ -15,6 +15,7 @@ import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { BotExternalIdentityTaken, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
+  BotIdentityProjector,
   BotRecord,
   CreateBotInput,
   BotSecretStore,
@@ -86,52 +87,33 @@ function toBotRecord(b: BotJoined): BotRecord {
   }
 }
 
-/** Tenant sentinel for NEW rows of tenantless platforms (D6/§11): a real value —
- *  unlike NULL — participates in the composite unique, so it is what makes
- *  `(platform, externalAppId)` enforceable. NULL stays reserved for legacy rows. */
-export const TENANTLESS_SENTINEL = '-'
-
-/** Derive the D6 generic identity dual-write from the legacy per-platform input
- *  fields. Reads stay on the legacy columns during the dual-write window; this
- *  only keeps the generic columns in lockstep for every NEW row. */
-function botExternalIdentity(input: CreateBotInput): {
-  externalAppId?: string
-  externalTenantId?: string
-  platformConfig?: Record<string, string>
-} {
-  switch (input.platform) {
-    case 'slack':
-      // Tenant-scoped: the pair mirrors (slackAppId, teamId) verbatim. A manual
-      // single-workspace install without a captured identity keeps NULLs — the
-      // same pre-capture semantics the legacy fence has today.
-      return {
-        ...(input.slackAppId ? { externalAppId: input.slackAppId } : {}),
-        ...(input.teamId ? { externalTenantId: input.teamId } : {})
-      }
-    case 'feishu': {
-      const bag = {
-        ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
-        ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {})
-      }
-      return {
-        // App-scoped identity (no tenant axis): the cli_ app id + the sentinel,
-        // which turns the composite unique into a one-bot-per-Feishu-app fence.
-        ...(input.feishuAppId ? { externalAppId: input.feishuAppId, externalTenantId: TENANTLESS_SENTINEL } : {}),
-        ...(Object.keys(bag).length ? { platformConfig: bag } : {})
-      }
-    }
-    case 'discord':
-      // Display-only app id; Discord has no ingress demux identity today.
-      return input.discordAppId ? { platformConfig: { discordAppId: input.discordAppId } } : {}
-    default:
-      return {}
-  }
-}
-
 export class PgBotRepo implements BotRepo {
-  constructor(private readonly db: PrismaLike) {}
+  /**
+   * @param projectIdentity The per-platform D6 identity projection
+   *   ({@link BotIdentityProjector}). The composition root wires it from the
+   *   platform registry; the four-arm `switch (input.platform)` it replaced was
+   *   the last piece of per-platform knowledge in this file (audit F13).
+   *
+   *   Defaulted so the transaction-scoped instances that only bump or revoke a
+   *   credential (`bot-credential.writer.ts`) need not carry it. A `create`
+   *   through an unwired repo is a composition bug, not a row with a quietly
+   *   absent identity, so it THROWS rather than writing the NULLs §11 reserves
+   *   for legacy rows.
+   */
+  constructor(
+    private readonly db: PrismaLike,
+    private readonly projectIdentity: BotIdentityProjector = () => {
+      throw new Error('PgBotRepo.create needs a bot-identity projector (wire it from the platform registry)')
+    }
+  ) {}
 
   async create(input: CreateBotInput): Promise<BotRecord> {
+    // The D6 generic dual-write (§11). Reads stay on the legacy columns during
+    // the dual-write window; this keeps the generic pair (and the metadata bag)
+    // in lockstep for every NEW row, whichever platform and whichever install
+    // path wrote it. Resolved BEFORE the write so an unwired projector surfaces
+    // as itself rather than as something the P2002 mapping below has to survive.
+    const identity = this.projectIdentity(input)
     try {
       const b = await this.db.bot.create({
         data: {
@@ -142,7 +124,7 @@ export class PgBotRepo implements BotRepo {
           ...(input.prebuilt !== undefined ? { prebuilt: input.prebuilt } : {}),
           ...(input.slackAppId ? { slackAppId: input.slackAppId } : {}),
           ...(input.teamId ? { teamId: input.teamId } : {}),
-          ...botExternalIdentity(input),
+          ...identity,
           ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
           ...(input.workspaceName ? { workspaceName: input.workspaceName } : {}),
           ...(input.botUserId ? { botUserId: input.botUserId } : {}),

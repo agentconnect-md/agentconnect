@@ -291,6 +291,12 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
 
     const secret = await prisma.botSecret.findUnique({ where: { botId: dto.botId as string } })
     expect(secret).toMatchObject({ botToken: '123456:AAE-xyz', appToken: null })
+    // D6 (§11): a Telegram install is a bot token and nothing else — no app id,
+    // no tenant, no public row metadata — so the row claims no external
+    // identity. Completes the four-platform pin the discord / feishu / slack
+    // cases in this file carry.
+    const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
+    expect(bot).toMatchObject({ externalAppId: null, externalTenantId: null, platformConfig: null })
 
     // The daemon got a telegram-shaped spec (single botToken, no slack block).
     expect(spy.upserts).toHaveLength(1)

@@ -18,6 +18,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { manifestFor } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
@@ -643,15 +644,20 @@ export function integrationRoutes(deps: HttpDeps) {
      * Does this platform need a durable suppression at all?
      *
      * Only the ones whose conversation list is rebuilt from session history — the
-     * daemon's `refreshObservedChannels` set. Slack re-lists its membership
-     * authoritatively, so its rows are governed by that listing and a tombstone would
-     * add nothing; demanding one would just make Forget fail whenever a Slack daemon
-     * is offline, for no gain. This is also why the multi-install fan-out below can
-     * never span several daemons today: a bot may only gain a second agent when it is
-     * shareable, and shareable is Slack-only.
+     * daemon's `refreshObservedChannels` set, which is exactly the manifest's
+     * `membershipEnumeration: 'observed'` arm (§5). A platform that re-lists its
+     * membership authoritatively has its rows governed by that listing and a
+     * tombstone would add nothing; demanding one would just make Forget fail
+     * whenever its daemon is offline, for no gain. This is also why the
+     * multi-install fan-out below can never span several daemons today: a bot may
+     * only gain a second agent when it is shareable, and shareable is Slack-only.
+     *
+     * Reading the manifest rather than naming the three observed platforms also
+     * makes the miss arm fail-closed: an id this build does not know gets
+     * `DEFAULT_MANIFEST` (`'observed'`) and is asked for a suppression, instead of
+     * being silently treated as authoritative.
      */
-    const needsSuppression = (platform: string): boolean =>
-      platform === 'telegram' || platform === 'discord' || platform === 'feishu'
+    const needsSuppression = (platform: string): boolean => manifestFor(platform).membershipEnumeration === 'observed'
 
     const pushForget = async (
       integration: IntegrationRecord,
@@ -1008,18 +1014,28 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!admitted) return
         const { integration, agent, bot } = admitted
         const target = req.body.target
-        if (target.kind === 'space' && integration.platform !== 'discord') {
+        // Which target shape this platform can actually serve — the §5 manifest's
+        // `leaveGranularity`, earned by this branch (it is a genuine PRE-DISPATCH
+        // read: the shape is validated before an owner resolves, before the
+        // mutation lease, and before any daemon is reached). The same axis is the
+        // daemon's two leave members and the web module's
+        // `WebChannelListSemantics.leave`; core now reads the declaration those
+        // two describe instead of re-spelling "Discord is the one with servers".
+        // Fail-closed on an unknown id: `'conversation'`, exactly the arm the
+        // `!== 'discord'` comparison took.
+        const leaves = manifestFor(integration.platform).leaveGranularity
+        if (target.kind === 'space' && leaves !== 'space') {
           return reply.code(400).send({
             error: 'Bad Request',
             statusCode: 400,
-            message: 'only Discord has a server to leave; leave the conversation instead'
+            message: 'this platform has no space to leave; leave the conversation instead'
           })
         }
-        if (target.kind === 'conversation' && integration.platform === 'discord') {
+        if (target.kind === 'conversation' && leaves === 'space') {
           return reply.code(400).send({
             error: 'Bad Request',
             statusCode: 400,
-            message: 'a Discord bot joins servers, not channels; leave the server instead'
+            message: 'on this platform the bot joins a space, not individual conversations; leave the space instead'
           })
         }
         const scope =
