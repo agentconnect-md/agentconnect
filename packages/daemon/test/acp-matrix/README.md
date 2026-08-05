@@ -23,6 +23,13 @@ AC_RUNTIME_MATRIX_TARGETS=codex-acp,opencode \
   pnpm --filter @agentconnect.md/daemon test:runtime-matrix
 ```
 
+To rerun only the sandbox probe and show child-runtime diagnostics:
+
+```bash
+AC_RUNTIME_MATRIX_TARGETS=claude-acp AC_RUNTIME_MATRIX_ONLY=sandbox \
+  AC_RUNTIME_MATRIX_DEBUG=1 pnpm --filter @agentconnect.md/daemon test:runtime-matrix
+```
+
 An installed adapter whose provider is logged out, rate-limited, or out of quota
 is shown as `U` (provider unavailable), not as a fabricated pass. A feature is
 marked `✓` only after the real adapter/provider path completes. A real behavioral

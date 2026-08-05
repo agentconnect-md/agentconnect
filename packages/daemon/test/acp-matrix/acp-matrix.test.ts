@@ -31,6 +31,7 @@ const IS_CI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS)
 const TURN_TIMEOUT = 180_000
 const SUITE_TIMEOUT = 30 * 60_000
 const SKILL_NAME = 'runtime-matrix-probe'
+const DEBUG_CHILD = process.env.AC_RUNTIME_MATRIX_DEBUG === '1'
 
 type Status = 'ok' | 'degrade' | 'na' | 'unavailable' | 'fail'
 interface Outcome {
@@ -215,7 +216,7 @@ async function runSandboxProbe(target: RuntimeTarget, root: string, token: strin
   const updates: unknown[] = []
   const host = new AcpHost(composed.runtime, {
     runtimeId: target.id,
-    suppressChildStderr: true,
+    suppressChildStderr: !DEBUG_CHILD,
     onUpdate: (_sessionId, update) => updates.push(update),
     env: composed.launch.env,
     inheritProcessEnv: composed.launch.inheritProcessEnv,
@@ -457,24 +458,25 @@ const SHORT: Record<FeatureId, string> = {
 }
 const CELL: Record<Status, string> = { ok: '✓', degrade: '·', na: '~', unavailable: 'U', fail: '✗' }
 
-function grid(results: RuntimeResult[]): string {
+function grid(results: RuntimeResult[], features: FeatureId[] = FEATURES): string {
   const idWidth = Math.max(7, ...results.map((result) => result.id.length))
-  const widths = FEATURES.map((feature) => Math.max(3, SHORT[feature].length))
-  const head = 'runtime'.padEnd(idWidth) + ' | ' + FEATURES.map((f, i) => SHORT[f].padStart(widths[i]!)).join(' ')
+  const widths = features.map((feature) => Math.max(3, SHORT[feature].length))
+  const head = 'runtime'.padEnd(idWidth) + ' | ' + features.map((f, i) => SHORT[f].padStart(widths[i]!)).join(' ')
   const separator = '-'.repeat(idWidth) + '-+-' + widths.map((width) => '-'.repeat(width)).join('-')
   const rows = results.map(
     (result) =>
       result.id.padEnd(idWidth) +
       ' | ' +
-      FEATURES.map((feature, index) => CELL[result.features[feature]?.status ?? 'na'].padStart(widths[index]!)).join(
-        ' '
-      )
+      features
+        .map((feature, index) => CELL[result.features[feature]?.status ?? 'na'].padStart(widths[index]!))
+        .join(' ')
   )
   return [head, separator, ...rows, '', 'legend: ✓ real pass · degrade ~ n/a U provider unavailable ✗ fail'].join('\n')
 }
 
 describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
   let targets: RuntimeTarget[] = []
+  let features: FeatureId[] = FEATURES
 
   beforeAll(async () => {
     const daemonRoot = resolveRoot()
@@ -491,6 +493,7 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       .filter(([id]) => id !== 'qoder-cli-cn' && (requested.size === 0 || requested.has(id)))
       .map(([id, entry]) => ({ id, runtime: entry.runtime, entry }))
       .sort((a, b) => a.id.localeCompare(b.id))
+    if (process.env.AC_RUNTIME_MATRIX_ONLY === 'sandbox') features = ['sandbox']
   })
 
   it(
@@ -499,16 +502,38 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       expect(targets.length, 'no installed ACP runtimes were discovered on this host').toBeGreaterThan(0)
       const results: RuntimeResult[] = []
       for (const target of targets) {
-        const result = await runRuntime(target)
+        const result =
+          features.length === 1 && features[0] === 'sandbox'
+            ? await (async (): Promise<RuntimeResult> => {
+                const root = mkdtempSync(join(tmpdir(), `ac-runtime-matrix-sandbox-${target.id}-`))
+                try {
+                  const outcome = await runSandboxProbe(
+                    target,
+                    root,
+                    `MATRIX_SANDBOX_OK_${Date.now().toString(36)}`
+                  ).catch((error): Outcome => ({ status: 'fail', detail: (error as Error).message }))
+                  return {
+                    id: target.id,
+                    reachable: true,
+                    features: { sandbox: outcome },
+                    models: [],
+                    modes: [],
+                    mcp: { http: false, sse: false }
+                  }
+                } finally {
+                  rmSync(root, { recursive: true, force: true })
+                }
+              })()
+            : await runRuntime(target)
         results.push(result)
         console.info(
           `[runtime-matrix] ${target.id}: ${result.reachable ? 'reachable' : 'unavailable'}${result.error ? ` — ${result.error}` : ''}`
         )
       }
 
-      console.info(`\nREAL local runtime matrix (${results.length} installed):\n${grid(results)}\n`)
+      console.info(`\nREAL local runtime matrix (${results.length} installed):\n${grid(results, features)}\n`)
       for (const result of results) {
-        for (const feature of FEATURES) {
+        for (const feature of features) {
           const outcome = result.features[feature]
           if (outcome?.status === 'fail')
             console.info(`[runtime-matrix] FAIL ${result.id}/${feature}: ${outcome.detail}`)
@@ -516,14 +541,16 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
       }
 
       const failures = results.flatMap((result) =>
-        FEATURES.filter((feature) => result.features[feature]?.status === 'fail').map(
-          (feature) => `${result.id}/${feature}: ${result.features[feature]!.detail}`
-        )
+        features
+          .filter((feature) => result.features[feature]?.status === 'fail')
+          .map((feature) => `${result.id}/${feature}: ${result.features[feature]!.detail}`)
       )
-      expect(
-        results.some((result) => result.features.lifecycle?.status === 'ok'),
-        'no installed runtime completed a real model/provider turn'
-      ).toBe(true)
+      if (features.includes('lifecycle')) {
+        expect(
+          results.some((result) => result.features.lifecycle?.status === 'ok'),
+          'no installed runtime completed a real model/provider turn'
+        ).toBe(true)
+      }
       expect(failures, `real runtime failures:\n${failures.join('\n')}`).toEqual([])
     },
     SUITE_TIMEOUT
