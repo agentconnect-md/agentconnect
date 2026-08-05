@@ -9,21 +9,28 @@
  */
 import { z } from 'zod'
 
-const SecureOriginSchema = z
+const HttpOriginSchema = z
   .string()
   .url()
   .superRefine((value, ctx) => {
     const url = new URL(value)
-    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-    const loopback =
-      hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
-    if (url.protocol !== 'https:' && !loopback) {
-      ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
     }
     if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
       ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
     }
   })
+
+const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
+  const url = new URL(value)
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const loopback =
+    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  if (url.protocol !== 'https:' && !loopback) {
+    ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
+  }
+})
 
 export const TenantAdminProcessConfigSchema = z
   .object({
@@ -41,7 +48,7 @@ export const TenantAdminProcessConfigSchema = z
     // Keep this startup-only slice aligned with the CP's SecretCipher. The
     // cipher key/address cannot be stored beside the ciphertext it unlocks.
     SECRET_CIPHER: z.enum(['none', 'vault-transit']).default('none'),
-    VAULT_ADDR: SecureOriginSchema.optional(),
+    VAULT_ADDR: HttpOriginSchema.optional(),
     VAULT_TRANSIT_KEY: z.string().default('agentconnect-cp'),
     VAULT_TRANSIT_MOUNT: z.string().default('transit'),
     VAULT_NAMESPACE: z.string().optional(),
