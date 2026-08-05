@@ -95,10 +95,7 @@ export function loadDeploymentEnvironment(environment: Environment = process.env
       environmentValue(environment, 'OIDC_ISSUER') ?? `${logtoOrigin ?? defaultLogtoOrigin}/oidc`
     ),
     managementEndpoint: OriginSchema.parse(
-      environmentValue(environment, 'LOGTO_MANAGEMENT_ENDPOINT') ??
-        environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ??
-        logtoOrigin ??
-        defaultLogtoOrigin
+      environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ?? logtoOrigin ?? defaultLogtoOrigin
     )
   }
 }

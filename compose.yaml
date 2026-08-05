@@ -102,6 +102,7 @@ services:
       - AGENTCONNECT_RELAY_PORT
       - OIDC_ISSUER
       - LOGTO_ENDPOINT
+      - LOGTO_MGMT_ENDPOINT
     init: true
     ports:
       - 127.0.0.1:8091:8091

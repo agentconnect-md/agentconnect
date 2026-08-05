@@ -537,7 +537,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ['AGENTCONNECT_PUBLIC_RELAY_URL', services.relay],
         ['AGENTCONNECT_PUBLIC_WEB_URL', services.web],
         ['LOGTO_ENDPOINT', bootstrapInfo.logtoEndpoint],
-        ['LOGTO_MANAGEMENT_ENDPOINT', bootstrapInfo.logtoManagementEndpoint]
+        ['LOGTO_MGMT_ENDPOINT', bootstrapInfo.logtoManagementEndpoint]
       ];
       el('startup-environment').textContent = environment
         .filter(([, value]) => value)

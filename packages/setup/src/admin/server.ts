@@ -154,7 +154,7 @@ export interface TenantAdminServerDeps {
     services: { web: string; controlPlane: string; relay: string }
   }
   now?: () => Date
-  /** Compose-only: host publishing is loopback and the admin bridge is isolated. */
+  /** Container-only: the browser origin is loopback and no public route reaches this process. */
   allowContainerLoopbackProxy?: boolean
 }
 
@@ -198,9 +198,8 @@ function isLocalRequest(publicUrl: string, allowContainerLoopbackProxy: boolean,
 
 function localOnly(publicUrl: string, allowContainerLoopbackProxy = false) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    // Direct CLI use requires a loopback peer. Compose explicitly opts into
-    // its loopback-published, isolated bridge proxy because Docker rewrites the
-    // peer address before Fastify sees it.
+    // Direct use requires a loopback peer. An isolated container may explicitly
+    // accept its local port-forward proxy because that rewrites the peer address.
     if (!isLocalRequest(publicUrl, allowContainerLoopbackProxy, request)) {
       void problem(reply, 403, 'deployment bootstrap is available on loopback only', 'LOOPBACK_REQUIRED')
     }
@@ -1411,7 +1410,7 @@ export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Pr
   const publicUrl = env.TENANT_ADMIN_URL ?? `http://localhost:${port}`
   const deploymentEnvironment = loadDeploymentEnvironment(env)
   if (!isLoopbackHostname(host) && !config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY) {
-    throw new Error('Tenant Admin may bind outside loopback only in the isolated Compose admin network')
+    throw new Error('Tenant Admin may bind outside loopback only behind an isolated local port forward')
   }
   const handle = openDeploymentConfigStore({
     databaseUrl: config.DATABASE_URL,
