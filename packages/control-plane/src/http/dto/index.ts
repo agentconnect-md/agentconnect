@@ -2348,6 +2348,8 @@ export const SessionDto = z.object({
   sessionId: z.string(),
   sessionKey: SessionKeyDto,
   agentId: z.string(),
+  /** Session-scoped display projection. It does not grant access to the Agent. */
+  agentName: z.string().nullable(),
   title: z.string().nullable(),
   status: z.string().nullable(),
   lastActivityAt: z.string().nullable(),
@@ -2387,6 +2389,9 @@ export const SessionDto = z.object({
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({
   agents: z.array(z.string()),
+  /** Session-scoped labels for the returned facet ids. They do not imply that
+   *  the corresponding Agent resource is visible. */
+  agentNames: z.record(z.string(), z.string()),
   integrations: z.array(z.string()),
   channels: z.array(
     z.object({
@@ -2460,6 +2465,8 @@ export const SessionListPageDto = z.object({
 export const SessionRelationDto = z.object({
   id: z.string(),
   agentId: z.string(),
+  /** Session-scoped display projection. It does not grant access to the Agent. */
+  agentName: z.string().nullable(),
   platform: z.string(),
   title: z.string().nullable()
 })
@@ -2470,6 +2477,8 @@ export const SessionDetailDto = z.object({
   siblingSessions: z.array(SessionRelationDto),
   childSessions: z.array(SessionRelationDto),
   agentId: z.string(),
+  /** Session-scoped display projection. It does not grant access to the Agent. */
+  agentName: z.string().nullable(),
   launchId: z.string().nullable(),
   platform: z.string().nullable(),
   channel: z.string().nullable(),
@@ -2514,8 +2523,8 @@ export const SessionDetailDto = z.object({
   /** Multi-agent webchat conversation roster, in pick order (webchat-multi-agents.md
    *  §3.1). Adopted/refreshed sessions have no live relay socket to deliver the
    *  verified roster, so the composer and header read it from here. Null for
-   *  single-agent conversations and for every other platform; `name` is null when
-   *  the caller cannot view that participant's agent. */
+   *  single-agent conversations and for every other platform; `name` is null only
+   *  when the Agent no longer has a resolvable display record. */
   participants: z
     .array(z.object({ agentId: z.string(), name: z.string().nullable(), primary: z.boolean() }))
     .nullable(),

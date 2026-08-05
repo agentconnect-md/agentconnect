@@ -706,14 +706,12 @@ describe('reference-write cannot target an invisible daemon', () => {
 })
 
 describe('derived visibility — session bodies, usage', () => {
-  it('caller-supplied agentId cannot authorize another agent’s session bodies', async () => {
+  it('Session body access follows the Session audience even when its Agent is hidden', async () => {
     const other = await makeUser('session-body-other', 'collaborator')
     const daemon = randomUUID()
     await seedDaemon(prisma, daemon)
-    const visible = randomUUID()
     const R = randomUUID()
     const session = randomUUID()
-    await seedAgent(prisma, visible, { daemonId: daemon })
     await seedAgent(prisma, R, { daemonId: daemon, visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] })
     await prisma.sessionMeta.create({
       data: {
@@ -728,11 +726,11 @@ describe('derived visibility — session bodies, usage', () => {
     })
 
     const app = appAs(other).app
-    for (const path of [
-      `/sessions/${session}/messages?agentId=${visible}`,
-      `/sessions/${session}/tool-body?agentId=${visible}&toolCallId=t1`
-    ]) {
-      expect((await app.inject({ method: 'GET', url: `${ORG}${path}` })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `${ORG}/agents/${R}` })).statusCode).toBe(404)
+    for (const path of [`/sessions/${session}/messages`, `/sessions/${session}/tool-body?toolCallId=t1`]) {
+      const response = await app.inject({ method: 'GET', url: `${ORG}${path}` })
+      expect(response.statusCode).toBe(503)
+      expect(response.json()).toMatchObject({ message: 'session has no recorded daemon' })
     }
   })
 

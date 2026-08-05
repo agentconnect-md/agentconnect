@@ -21,8 +21,9 @@ export interface SessionAccessResult {
   accessIssues?: SessionAccessIssue[]
 }
 
-/** Provider-owned half of Session visibility. Core only composes Agent
- * visibility with the result returned here. */
+/** Provider-owned half of Session visibility. Core combines the provider
+ * audience with the Session's own classification; Agent Team visibility is a
+ * separate resource boundary. */
 export interface SessionAccessPlugin {
   provider: string
   available: boolean

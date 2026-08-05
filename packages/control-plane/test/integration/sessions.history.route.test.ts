@@ -3,9 +3,9 @@
  *
  * - `GET /sessions` reads CP-stored metadata synced from daemon `event/session`
  *   snapshots; transcript bodies remain daemon-local.
- * - `GET /sessions/:id/messages` resolves and authorizes the owning agent from
- *   SessionMeta, then proxies one history page; 404 unknown/hidden session,
- *   503 unplaced/offline.
+ * - `GET /sessions/:id/messages` authorizes the Session audience independently
+ *   from owning-Agent Team visibility, then proxies one history page; 404 for
+ *   an unknown/hidden Session, 503 unplaced/offline.
  *
  * Driven with `app.inject`, a spy `ControlSender`, and a liveness override that
  * marks the seeded daemon connected.
@@ -16,6 +16,7 @@ import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { SessionListReq, SessionListPage, SessionHistoryReq, SessionHistoryPage } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
@@ -78,7 +79,7 @@ async function seedSession(agentId = AGENT, daemonId?: string): Promise<void> {
 describe('GET /sessions (metadata list from CP DB)', () => {
   it('lists CP-stored session metadata and maps the row shape', async () => {
     await seedDaemon(prisma, DAEMON)
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON }) // sessions filter by owning-agent visibility
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     await prisma.sessionMeta.create({
       data: {
         id: SESSION,
@@ -527,7 +528,7 @@ describe('GET /sessions (metadata list from CP DB)', () => {
 
   it('filters the metadata set by channel', async () => {
     await seedDaemon(prisma, DAEMON)
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON }) // sessions filter by owning-agent visibility
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
     await prisma.sessionMeta.createMany({
       data: [
         {
@@ -566,9 +567,21 @@ describe('GET /sessions (metadata list from CP DB)', () => {
 })
 
 describe('GET /sessions/:id/messages (history pull via the session daemon)', () => {
-  it('resolves the content owner from SessionMeta and proxies a page', async () => {
+  it('proxies a visible Session even when its owning Agent is hidden', async () => {
     await seedDaemon(prisma, DAEMON)
-    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const users = new PgUserRepo(prisma)
+    const selectedEmail = `history-selected-${randomUUID()}@acme.dev`
+    const { userId: selectedViewer } = await users.provisionOidcUser({
+      oidcSubject: `history-selected-${randomUUID()}`,
+      email: selectedEmail,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, selectedEmail, 'collaborator')
+    await seedAgent(prisma, AGENT, {
+      daemonId: DAEMON,
+      visibility: 'restricted',
+      sharedWith: [selectedViewer]
+    })
     await seedSession(AGENT, DAEMON)
     const spy = new SpyControl(
       { sessions: [] },
@@ -591,6 +604,9 @@ describe('GET /sessions/:id/messages (history pull via the session daemon)', () 
       }
     )
     running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    // Agent Team visibility still protects Agent configuration/workspace routes.
+    expect((await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT}` })).statusCode).toBe(404)
 
     const res = await running.app.inject({
       method: 'GET',

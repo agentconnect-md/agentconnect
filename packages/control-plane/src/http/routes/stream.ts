@@ -13,24 +13,12 @@ import type { HttpDeps } from '../deps.js'
 import type { SessionEventEnvelope } from '../../events/sink.js'
 import { Tag } from '../plugins/openapi.js'
 import { ctxOf } from '../rbac.js'
-import {
-  canView,
-  canViewSession,
-  type SessionViewable,
-  type Shareable,
-  type ViewCtx
-} from '../../authorization/policy.js'
+import { canViewSession, type SessionViewable, type ViewCtx } from '../../authorization/policy.js'
 import type { SessionExternalAccessSnapshot } from '../../persistence/ports.js'
 import { makeSessionAccessResolver } from '../session-access.js'
-import { AgentId, DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
+import { DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 
 const KEEPALIVE_MS = 25_000
-
-export function canStreamAgent(agent: (Shareable & { orgId: OrgId }) | null, orgId: OrgId, ctx: ViewCtx): boolean {
-  // `canView` assumes its caller already selected the current tenant. This org
-  // check applies before the resource policy for every role.
-  return !!agent && agent.orgId === orgId && canView(agent, ctx)
-}
 
 /**
  * Session-level gate for the live feed (session-visibility.md §5). BOTH envelope
@@ -39,15 +27,16 @@ export function canStreamAgent(agent: (Shareable & { orgId: OrgId }) | null, org
  * session's existence, revision, and live activity.
  *
  * A row that cannot be read is dropped — an activity event whose milestone never
- * committed has no visibility to check, so fail closed like the agent arm does.
+ * committed has no visibility to check, so it fails closed.
  */
 export function canStreamSession(
-  session: SessionViewable | null,
+  session: (SessionViewable & { orgId: OrgId }) | null,
+  orgId: OrgId,
   ctx: ViewCtx,
   identitySet: ReadonlySet<string>,
   externalAccess?: SessionExternalAccessSnapshot
 ): boolean {
-  return !!session && canViewSession(session, ctx, identitySet, externalAccess)
+  return !!session && session.orgId === orgId && canViewSession(session, ctx, identitySet, externalAccess)
 }
 
 function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
@@ -101,16 +90,12 @@ export function streamRoutes(deps: HttpDeps) {
           daemonOrg.set(daemonId, ok)
           return ok
         }
-        // Membership and agent visibility are live authorization inputs. Do not
-        // pin either to connection-open state: a member removal or a sharing
-        // tighten must stop this already-open stream on its next event.
+        // Organization membership is a live authorization input. Do not pin it
+        // to connection-open state: removing a member must stop this already-open
+        // stream on its next event.
         const currentCtx = async (): Promise<ViewCtx | null> => {
           const role = await deps.repos.org.roleOf(orgId, connectedCtx.userId).catch(() => null)
           return role ? { userId: connectedCtx.userId, role } : null
-        }
-        const canSeeAgent = async (agentId: string, ctx: ViewCtx): Promise<boolean> => {
-          const agent = await deps.repos.agent.get(AgentId(agentId)).catch(() => null)
-          return canStreamAgent(agent, orgId, ctx)
         }
 
         // Session visibility is deliberately NOT memoized: a §4.3 tightening must
@@ -123,11 +108,11 @@ export function streamRoutes(deps: HttpDeps) {
         // read in the common case (LogtoIdentityService caches per subject,
         // single-flight) and the unlink path invalidates that cache, so the
         // revocation lands on the next event, not the next connection.
-        const canSeeSession = async (sessionId: string, ctx: ViewCtx): Promise<boolean> => {
+        const canSeeSession = async (agentId: string, sessionId: string, ctx: ViewCtx): Promise<boolean> => {
           const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
-          if (!session) return false
+          if (!session || session.agentId !== agentId) return false
           const access = await sessionAccess.forSessions(req, [session]).catch(() => null)
-          return !!access && canStreamSession(session, ctx, access.identitySet, access.externalAccess)
+          return !!access && canStreamSession(session, orgId, ctx, access.identitySet, access.externalAccess)
         }
 
         const unsubscribe = deps.events.subscribe((envelope) => {
@@ -136,9 +121,8 @@ export function streamRoutes(deps: HttpDeps) {
             const ctx = await currentCtx()
             if (!ctx) return
             const agentId = envelope.activity?.agentId ?? envelope.event?.agentId
-            if (!agentId || !(await canSeeAgent(agentId, ctx))) return
             const sessionId = envelope.activity?.sessionId ?? envelope.event?.sessionId
-            if (!sessionId || !(await canSeeSession(sessionId, ctx))) return
+            if (!agentId || !sessionId || !(await canSeeSession(agentId, sessionId, ctx))) return
             writeEvent(reply, envelope)
           })()
         })

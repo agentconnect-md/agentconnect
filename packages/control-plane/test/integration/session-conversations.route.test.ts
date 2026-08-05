@@ -163,12 +163,11 @@ describe('GET /sessions — grouped conversations', () => {
     expect(secondBody.nextCursor).toBeNull()
   })
 
-  it('omits invisible members with no count or placeholder', async () => {
+  it('includes Session-audience members even when their Agent is hidden', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
-    // Restricted agent owned by another user — invisible to the caller. Its
-    // participation must leave NO trace on the grouped row (§7: hidden
-    // sessions' existence is itself hidden).
+    // Restricted Agent owned by another user — invisible to the caller. The
+    // channel Session still follows its own org audience and remains readable.
     const stranger = await prisma.user.create({
       data: { id: randomUUID(), email: `stranger-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Stranger' }
     })
@@ -184,11 +183,18 @@ describe('GET /sessions — grouped conversations', () => {
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions` })
     const body = res.json() as ConversationsBody
+    expect((await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT_B}` })).statusCode).toBe(404)
     expect(body.conversations).toHaveLength(1)
     const conv = body.conversations[0]!
-    expect(conv.sessions.map((s) => s.sessionId)).toEqual(['sess-vis'])
-    expect(JSON.stringify(body)).not.toContain('sess-hidden')
-    expect(JSON.stringify(body)).not.toContain(AGENT_B)
+    expect(conv.sessions.map((s) => s.sessionId)).toEqual(['sess-hidden', 'sess-vis'])
+    expect(JSON.stringify(body)).toContain(AGENT_B)
+
+    const facets = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/facets` })
+    expect(facets.statusCode).toBe(200)
+    expect(facets.json()).toMatchObject({
+      agents: expect.arrayContaining([AGENT_A, AGENT_B]),
+      agentNames: { [AGENT_A]: 'agent-a1a1', [AGENT_B]: 'agent-b1b1' }
+    })
   })
 
   it('resolves one conversation by key, and a webchat conversation by its id', async () => {
@@ -327,7 +333,7 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     expect(unfiltered.memberSessionIds).toEqual(['sess-b', 'sess-a'])
   })
 
-  it('keeps a member the caller cannot see out of the membership it reports', async () => {
+  it('reports Session membership independently from Agent visibility', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
     const stranger = await prisma.user.create({
@@ -341,11 +347,12 @@ describe('GET /sessions — multi-agent conversation filter', () => {
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?agentId=${AGENT_A}` })
     const body = res.json() as ConversationsBody
-    expect(body.conversations[0]!.memberSessionIds).toEqual(['sess-vis'])
-    expect(JSON.stringify(body)).not.toContain('sess-hidden')
+    expect((await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT_B}` })).statusCode).toBe(404)
+    expect(body.conversations[0]!.sessions.map((session) => session.sessionId)).toEqual(['sess-vis'])
+    expect(body.conversations[0]!.memberSessionIds).toEqual(['sess-hidden', 'sess-vis'])
   })
 
-  it('never lets an invisible participant qualify a conversation', async () => {
+  it("lets a hidden Agent's visible Session qualify a conversation", async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
     const stranger = await prisma.user.create({
@@ -357,17 +364,18 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     await slackReport('sess-vis', AGENT_A, 1_000)
     await slackReport('sess-hidden', AGENT_B, 2_000)
 
-    // Asking for a thread shared with an agent the caller cannot see must not
-    // confirm that the thread exists — the answer is empty, not A's row.
+    // Agent filters identify Session owners but do not grant Agent access. The
+    // two visible Sessions qualify their shared conversation even though B's
+    // Agent resource remains hidden.
     const res = await running.app.inject({
       method: 'GET',
       url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${AGENT_B}`
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { sessions: unknown[]; total: number | null }
-    expect(body.sessions).toHaveLength(0)
-    expect(body.total).toBe(0)
-    expect(JSON.stringify(body)).not.toContain('sess-hidden')
+    expect((await running.app.inject({ method: 'GET', url: `${ORG}/agents/${AGENT_B}` })).statusCode).toBe(404)
+    const body = res.json() as { sessions: Array<{ sessionId: string }>; total: number | null }
+    expect(body.sessions.map((session) => session.sessionId).sort()).toEqual(['sess-hidden', 'sess-vis'])
+    expect(body.total).toBe(2)
   })
 
   it('excludes rows with no groupable key — a conversation of one holds no second agent', async () => {
@@ -446,18 +454,26 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     expect(conv.memberSessionIds).toEqual(['sess-shared-b', 'sess-shared-a'])
   })
 
-  it('answers empty when any requested agent is not visible to the caller', async () => {
+  it('answers empty when any requested agent does not belong to the organization', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
     running = buildHttpApp(prisma)
     await slackReport('sess-a', AGENT_A, 1_000)
+    const missingAgent = randomUUID()
 
     const res = await running.app.inject({
       method: 'GET',
-      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${randomUUID()}`
+      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${missingAgent}`
     })
     expect(res.statusCode).toBe(200)
     expect((res.json() as { sessions: unknown[]; total: number | null }).sessions).toHaveLength(0)
+
+    const facets = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions/facets?agentId=${missingAgent}`
+    })
+    expect(facets.statusCode).toBe(200)
+    expect(facets.json()).toMatchObject({ agents: [], agentNames: {} })
   })
 
   it('pages the grouped list without re-emitting a filtered conversation', async () => {

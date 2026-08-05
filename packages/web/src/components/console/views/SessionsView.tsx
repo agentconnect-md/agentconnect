@@ -251,8 +251,11 @@ export default function SessionsView() {
     ])
   )
   const facetAgentIds = new Set(sessionFacets.agentIds)
+  const facetAgentNames = new Map(Object.entries(sessionFacets.agentNames))
   for (const session of localFacetSessions.agents) {
-    if (session.agentId) facetAgentIds.add(session.agentId)
+    if (!session.agentId) continue
+    facetAgentIds.add(session.agentId)
+    if (session.agentName?.trim()) facetAgentNames.set(session.agentId, session.agentName.trim())
   }
   // Playground and demo sessions are not part of the CP index. Merge each
   // facet from local rows that already satisfy the other three active filters.
@@ -368,6 +371,15 @@ export default function SessionsView() {
         v: a.id,
         label: agentLabel(a),
         face: <AgentIconView icon={a.icon} runtime={a.runtime} size={18} />
+      })),
+    // A Session facet may name an Agent outside the caller-visible Agent
+    // roster. It remains a plain Session filter with no Agent navigation.
+    ...[...facetAgentIds]
+      .filter((agentId) => !agentById.has(agentId) && facetAgentNames.has(agentId))
+      .map((agentId) => ({
+        v: agentId,
+        label: facetAgentNames.get(agentId)!,
+        face: catFace('bot')
       }))
   ]
   const integrationOpts: FilterOption[] = [

@@ -278,8 +278,8 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         }
       ).childSessions
     ).toEqual([
-      { id: firstChild, agentId: AGENT, platform: 'telegram', title: 'Check the database' },
-      { id: secondChild, agentId: AGENT, platform: 'discord', title: 'Check the API' }
+      { id: firstChild, agentId: AGENT, agentName: 'agent-a0a0', platform: 'telegram', title: 'Check the database' },
+      { id: secondChild, agentId: AGENT, agentName: 'agent-a0a0', platform: 'discord', title: 'Check the API' }
     ])
     expect((parentRes.json() as { parentSession: unknown }).parentSession).toBeNull()
     expect((parentRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([])
@@ -292,11 +292,12 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     ).toEqual({
       id: parent,
       agentId: AGENT,
+      agentName: 'agent-a0a0',
       platform: 'slack',
       title: 'Coordinate the rollout'
     })
     expect((childRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([
-      { id: secondChild, agentId: AGENT, platform: 'discord', title: 'Check the API' }
+      { id: secondChild, agentId: AGENT, agentName: 'agent-a0a0', platform: 'discord', title: 'Check the API' }
     ])
     expect((childRes.json() as { childSessions: unknown[] }).childSessions).toEqual([])
   })

@@ -858,7 +858,7 @@ function SessionRelationLink({
   bordered?: boolean
 }) {
   const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
-  const agentName = agent ? agentLabel(agent) : relation.agentId
+  const agentName = agent ? agentLabel(agent) : (relation.agentName ?? relation.agentId)
   return (
     <Link
       href={orgPath(`/sessions/${encodeURIComponent(relation.id)}${flatView ? '?view=flat' : ''}`)}
@@ -1016,26 +1016,20 @@ function SessionDetailFrame({ children, withRail = true }: { children: ReactNode
 
 function sessionUnavailableReasons(providerName: string | undefined, profileLinked: boolean | undefined): string[] {
   if (!providerName) {
-    return ['The session doesn’t exist or has been removed.', 'The Agent isn’t shared with you.']
+    return ['The session doesn’t exist or has been removed.']
   }
   if (profileLinked === false) {
-    return [
-      'The session doesn’t exist or has been removed.',
-      `Your ${providerName} profile isn’t linked.`,
-      'The Agent’s Team visibility doesn’t include you.'
-    ]
+    return ['The session doesn’t exist or has been removed.', `Your ${providerName} profile isn’t linked.`]
   }
   if (profileLinked === true) {
     return [
       'The session doesn’t exist or has been removed.',
-      `Your linked ${providerName} profile belongs to a different workspace.`,
-      'The Agent’s Team visibility doesn’t include you.'
+      `Your linked ${providerName} profile belongs to a different workspace.`
     ]
   }
   return [
     'The session doesn’t exist or has been removed.',
-    `Your ${providerName} profile isn’t linked or belongs to a different workspace.`,
-    'The Agent’s Team visibility doesn’t include you.'
+    `Your ${providerName} profile isn’t linked or belongs to a different workspace.`
   ]
 }
 
@@ -1416,7 +1410,7 @@ export default function SessionDetailView() {
     sessionBase && !localSession
       ? {
           ...sessionBase,
-          agentName: owner ? agentLabel(owner) : sessionBase.agentId,
+          agentName: owner ? agentLabel(owner) : (sessionBase.agentName ?? sessionBase.agentId),
           model: sessionBase.model ?? (sessionBase.runtime ? '' : (owner?.model ?? '—')),
           runtime: sessionBase.runtime ?? owner?.runtime ?? '',
           daemon: sessionBase.daemon ?? owner?.daemon
@@ -1447,6 +1441,7 @@ export default function SessionDetailView() {
       for (const member of conversationMembers) {
         candidates.push({
           agentId: member.agentId,
+          name: member.agentName ?? undefined,
           sessionId: member.sessionId,
           snapshot: sessionFromDto(member)
         })
@@ -1478,7 +1473,11 @@ export default function SessionDetailView() {
       ]
       for (const relation of related) {
         if (!relation || !relatedTranscriptAgentIds.has(relation.agentId)) continue
-        candidates.push({ agentId: relation.agentId, sessionId: relation.id })
+        candidates.push({
+          agentId: relation.agentId,
+          name: relation.agentName ?? undefined,
+          sessionId: relation.id
+        })
       }
     }
 

@@ -540,7 +540,7 @@ The CP stores **session metadata only** — `session_meta` rows synced by the
 while transcripts, tool payloads, and attachment bytes live solely in the
 daemon's local store. The two console views therefore split:
 
-- **The list** (`GET /sessions`) is a **CP database read** of the stored metadata — cursor-paginated (activity-ordered), filtered to the agents the caller may see (visibility inherits from the owning agent) — with no daemon round-trip; it works with every daemon offline.
+- **The list** (`GET /sessions`) is a **CP database read** of the stored metadata — cursor-paginated (activity-ordered) and filtered by each Session's audience, independently from owning-Agent Team visibility — with no daemon round-trip; it works with every daemon offline.
 - **The transcript** (`GET /sessions/:id/messages`, plus large tool bodies) remains an on-demand pull from the owning daemon over `session/history` / `session/tool-body`, proxied to the UI and never persisted. `session/list` is a daemon-side read-back frame and does not serve the console list.
 
 ```ts
@@ -588,11 +588,12 @@ separately.
 
 **List** (`GET /sessions`): a **CP database read** of the
 `event/session`-synced metadata — cursor-paginated, ordered by last activity,
-scoped to the caller's visible agents; `agentId`/`platform`/`channel` filters
-narrow the set. No daemon is contacted.
+scoped by each Session's audience; `agentId`/`platform`/`channel` filters narrow
+the set. An Agent id is only a storage/filter key here and its Team visibility
+does not hide an otherwise readable Session. No daemon is contacted.
 
 **History** (`GET /sessions/:id/messages?cursor=&limit=`): the CP loads the
-`session_meta` row, authorizes its owning agent, and resolves that agent's
+`session_meta` row, authorizes its Session audience, and resolves its recorded
 daemon; `session/history` carries the owner `agentId` so the daemon can verify
 the `(agentId, sessionId)` binding before returning content. Cursor-based,
 newest-first. If the agent is unplaced or its daemon is offline → 503 (the list

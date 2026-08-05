@@ -14,10 +14,9 @@ import { streamRoutes } from './stream.js'
 const ORG_ID = 'org-1'
 const SLACK_OWNER = 'slack:T024BE7LD:U0123ABCD'
 
-const agent = { id: 'agent-1', orgId: ORG_ID, visibility: 'org', sharedWith: [] }
 const sessions: Record<string, unknown> = {
-  'sess-dm': { visibility: 'private', ownerIdentity: SLACK_OWNER },
-  'sess-org': { visibility: 'org', ownerIdentity: null }
+  'sess-dm': { orgId: ORG_ID, agentId: 'agent-1', visibility: 'private', ownerIdentity: SLACK_OWNER },
+  'sess-org': { orgId: ORG_ID, agentId: 'agent-1', visibility: 'org', ownerIdentity: null }
 }
 
 function envelope(sessionId: string): SessionEventEnvelope {
@@ -69,7 +68,6 @@ describe('stream route × viewer identity (live unlink)', () => {
       registry: { get: async () => ({ orgId: ORG_ID }) },
       repos: {
         org: { roleOf: async () => 'collaborator' },
-        agent: { get: async () => agent },
         session: {
           get: async (id: string) => sessions[id] ?? null,
           getExternalScopes: async () => [],
