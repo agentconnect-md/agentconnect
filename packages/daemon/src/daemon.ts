@@ -5966,8 +5966,8 @@ export class Daemon {
     // rendezvous only converges if both halves name the SAME target. Route it to exactly
     // that agent — picking a different one implicitly would strand the internal wake.
     if (verified.agentCallDeliveryId) {
-      const paired = verified.recipients.filter((id) => id !== verified.authorAgentId)
-      if (paired.length === 0) return transcriptOnly('paired agent call named no other agent')
+      const paired = verified.recipients
+      if (paired.length === 0) return transcriptOnly('paired agent call named no agent')
       let firstPaired: { kind: 'rejected'; reason: DeliveryRejectionReason } | undefined
       for (const targetAgentId of paired) {
         const outcome = this.activateVerifiedAgentTarget(msg, verified, targetAgentId, deliveryHopCount, 'mention')
@@ -6125,13 +6125,14 @@ export class Daemon {
     // ladder returns before `onInboundOutcome`'s own mute gate; without it `!stop` would
     // silence humans while agents kept waking each other, which is the one situation the
     // command exists for now that the loop protections are the ordinary terminator.
-    if (targetAgentId === verified.authorAgentId) return undefined
+    const pairedSelfObservation = targetAgentId === verified.authorAgentId && verified.agentCallDeliveryId !== undefined
+    if (targetAgentId === verified.authorAgentId && !pairedSelfObservation) return undefined
     if (!this.agents.has(targetAgentId) || this.drainingAgents.has(targetAgentId)) return undefined
-    if (!this.cpCollab.admits(verified.authorAgentId, targetAgentId)) {
+    if (!pairedSelfObservation && !this.cpCollab.admits(verified.authorAgentId, targetAgentId)) {
       this.log.debug(`routing: agent edge ${verified.authorAgentId} → ${targetAgentId} denied by call policy`)
       return undefined
     }
-    if (!this.agentConversationAdmits(targetAgentId, msg)) {
+    if (!pairedSelfObservation && !this.agentConversationAdmits(targetAgentId, msg)) {
       this.log.debug(`routing: agent edge ${verified.authorAgentId} → ${targetAgentId} is off in this conversation`)
       return undefined
     }
@@ -7276,7 +7277,8 @@ export class Daemon {
     // The relay minted this claim, so the target must be one the relay actually named —
     // never a recipient inferred from the (untrusted) provider metadata riding along.
     if (msg.trustedRecipientAgentIds !== undefined && !msg.trustedRecipientAgentIds.includes(msg.agentId)) return false
-    if (authorAgentId === msg.agentId) return false
+    const pairedSelfObservation = authorAgentId === msg.agentId && msg.trustedAgentCallDeliveryId !== undefined
+    if (authorAgentId === msg.agentId && !pairedSelfObservation) return false
     // §4.1 step 4: TERMINAL-VERIFY the forwarded depth's range without re-incrementing.
     // A relay that forwarded an out-of-range or malformed depth is a bug or a compromise;
     // either way this daemon does not activate on it.
@@ -7286,13 +7288,13 @@ export class Daemon {
     }
     const orgId = this.cpCollab.orgForAgent(msg.agentId)
     if (!orgId || this.cpCollab.orgForAgent(authorAgentId) !== orgId) return false
-    if (!this.cpCollab.admits(authorAgentId, msg.agentId)) {
+    if (!pairedSelfObservation && !this.cpCollab.admits(authorAgentId, msg.agentId)) {
       this.log.info(`relay: agent mention ${msg.msgId} denied by call policy (${authorAgentId} → ${msg.agentId})`)
       return false
     }
     // The same conversation fence the human path applies at its last hop (`gatedAdmission`
     // below): Off means no activation, explicitly including an @-mention.
-    if (!this.gatedAdmission(msg.integrationId, normalized)) {
+    if (!pairedSelfObservation && !this.gatedAdmission(msg.integrationId, normalized)) {
       this.log.debug(`relay: agent mention ${msg.msgId} is off in this conversation`)
       return false
     }
@@ -8162,6 +8164,7 @@ export class Daemon {
       req.toAgentId === req.callerAgentId &&
       req.postless !== true &&
       req.transcriptTs !== undefined &&
+      !req.transcriptTs.startsWith('local-') &&
       req.agentCallDeliveryId !== undefined
     if (req.toAgentId === req.callerAgentId && !pairedChannelRootSelfWake) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:self`

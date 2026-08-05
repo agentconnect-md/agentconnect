@@ -678,8 +678,8 @@ export class RelayIngressManager {
     const paired = claim.agentCallDeliveryId !== undefined
     let deliveries: Array<{ targetAgentId: string; routeVia: 'mention' | 'implicit' }>
     if (paired) {
-      const targets = claim.mentionedAgentIds.filter((id) => id !== claim.authorAgentId)
-      if (targets.length === 0) return drop('paired agent call named no other agent')
+      const targets = claim.mentionedAgentIds
+      if (targets.length === 0) return drop('paired agent call named no agent')
       deliveries = targets.map((targetAgentId) => ({ targetAgentId, routeVia: 'mention' }))
     } else {
       const primary = this.router.routeAgentAuthored(botId, msg, claim.authorAgentId)
@@ -705,7 +705,8 @@ export class RelayIngressManager {
         drop(`target ${targetAgentId} is not a member of this bot`)
         continue
       }
-      if (!this.deps.admitsAgentCall(claim.authorAgentId, targetAgentId)) {
+      const pairedSelfObservation = paired && claim.authorAgentId === targetAgentId
+      if (!pairedSelfObservation && !this.deps.admitsAgentCall(claim.authorAgentId, targetAgentId)) {
         drop(`call policy excludes ${claim.authorAgentId} -> ${targetAgentId}`)
         continue
       }

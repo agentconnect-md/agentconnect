@@ -820,6 +820,48 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(calls).toHaveLength(0)
       await daemon.stop()
     })
+
+    it('relay platform event first: a paired self observation survives until its internal wake', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }])
+      const ack = (daemon as any).handleRelayIm(
+        imFrame({
+          agentId: 'bot-a',
+          integrationId: 'int-bot-a',
+          msgId: 'slack:C1:1720000000.000200:final#bot-a',
+          trustedFromAgentId: 'bot-a',
+          trustedRecipientAgentIds: ['bot-a'],
+          trustedAgentCallDeliveryId: 'd-self-relay',
+          payload: agentMessage({}, { mentionedAgentIds: ['bot-a'], agentCallDeliveryId: 'd-self-relay' })
+        })
+      )
+      expect(ack.accepted).toBe(true)
+      expect(calls).toHaveLength(0)
+      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+        state: 'pending',
+        agentCallDeliveryId: 'd-self-relay'
+      })
+
+      const res = await (daemon as any).messageAgent({
+        callerAgentId: 'bot-a',
+        platform: 'slack',
+        callerChannel: 'C1',
+        callerThread: '1720000000.000100',
+        toAgentId: 'bot-a',
+        text: 'continue here',
+        channel: 'C1',
+        thread: '1720000000.000200',
+        transcriptTs: '1720000000.000200',
+        agentCallDeliveryId: 'd-self-relay'
+      })
+      expect(res.delivered).toBe(true)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toMatchObject({ agentId: 'bot-a', callMeta: { callFrom: 'bot-a' } })
+      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+        state: 'admitted',
+        childSessionId: res.targetSession
+      })
+      await daemon.stop()
+    })
   })
 
   // §10 case 4 — the two halves of a paired `toAgent + channel` delivery may arrive in
@@ -890,6 +932,38 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         // The visible observation survives the transition, so the two collapse onto one
         // transcript row instead of duplicating the hand-off.
         platformMessageId: '1720000000.000200'
+      })
+      await daemon.stop()
+    })
+
+    it('direct platform event first: a paired self observation survives until its internal wake', async () => {
+      const { daemon, calls } = await boot([{ id: 'bot-a' }])
+      const visible = agentMessage(
+        {},
+        {
+          authorAgentId: 'bot-a',
+          mentionedAgentIds: ['bot-a'],
+          agentCallDeliveryId: 'd-self-direct'
+        }
+      )
+
+      expect(route(daemon, visible, ['int-bot-a']).kind).toBe('rejected')
+      expect(calls).toHaveLength(0)
+      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+        state: 'pending',
+        agentCallDeliveryId: 'd-self-direct'
+      })
+
+      const res = await wake(daemon, {
+        toAgentId: 'bot-a',
+        agentCallDeliveryId: 'd-self-direct'
+      })
+      expect(res.delivered).toBe(true)
+      expect(calls).toHaveLength(1)
+      expect(calls[0]).toMatchObject({ agentId: 'bot-a', callMeta: { callFrom: 'bot-a' } })
+      expect((daemon as any).store.getActivation(pairingKey(daemon, 'bot-a'))).toMatchObject({
+        state: 'admitted',
+        childSessionId: res.targetSession
       })
       await daemon.stop()
     })

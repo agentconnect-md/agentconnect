@@ -330,6 +330,22 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
+  it('rejects a self wake anchored only to a synthetic local timestamp', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const res = await call(
+      baseReq({
+        toAgentId: 'bot-a',
+        thread: 'local-0',
+        transcriptTs: 'local-0',
+        agentCallDeliveryId: 'synthetic-self-1'
+      })
+    )
+    expect(res).toMatchObject({ delivered: false, reason: 'self' })
+    expect(calls).toHaveLength(0)
+    await daemon.stop()
+  })
+
   it.each(['U1122334455', '<@U1122334455>', ' U1122334455 ', '\t<@U1122334455>\n'])(
     'rejects Slack target %s before publishing a misleading visible message',
     async (toAgentId) => {

@@ -1006,6 +1006,29 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls[0]!.agentCallDeliveryId).toBe(postedIdentity.response?.agentCallDeliveryId)
   })
 
+  it('does not authorize a self wake when the gateway returns no provider message id', async () => {
+    const gw = fakeGateway({ postMessage: vi.fn(async () => undefined) })
+    const { deps: d, calls } = wakeDeps({ gatewayFor: () => gw })
+    d.messageAgent = async (req) => {
+      calls.push(req)
+      return { delivered: false, reason: 'self' }
+    }
+
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { toAgent: 'bot-a', channel: 'C_X', message: 'continue here' },
+      d
+    )) as { wake?: { delivered: boolean; reason?: string }; post?: { ts: string } }
+
+    expect(res.post?.ts).toBe('local-0')
+    expect(res.wake).toEqual({ delivered: false, reason: 'self' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).not.toHaveProperty('thread')
+    expect(calls[0]).not.toHaveProperty('transcriptTs')
+    expect(calls[0]).not.toHaveProperty('agentCallDeliveryId')
+  })
+
   it('mints NO pairing id for a postless wake or a bare channel post', async () => {
     // §3.2: the id means "a visible post accompanies this wake". Stamping it on a bare
     // channel post would make ingress hold that post for an internal envelope that is
