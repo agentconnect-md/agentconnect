@@ -1269,7 +1269,8 @@ function waitBeforeReconnect(ms: number, signal: AbortSignal): Promise<void> {
 async function readSessionEventStream(
   orgId: string,
   signal: AbortSignal,
-  handlers: SessionEventHandlers
+  handlers: SessionEventHandlers,
+  recoverGap: boolean
 ): Promise<'ended' | 'reauth'> {
   const request = new AbortController()
   let reauth = false
@@ -1290,10 +1291,9 @@ async function readSessionEventStream(
     if (!res.ok) throw new ApiError(`GET ${path} → ${res.status} ${res.statusText}`, res.status)
     if (!res.body) throw new Error('session event stream is not readable')
 
-    // The sink has no replay/event ids, so every successful (re)connect invalidates
-    // the list once. This closes both a disconnect gap and the initial GET→subscribe
-    // race without requiring a polling cache layer.
-    handlers.onConnect()
+    // The sink has no replay/event ids, so an initial or recovered connection
+    // invalidates cached reads once. Planned token rotation is not a gap recovery.
+    if (recoverGap) handlers.onConnect()
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
@@ -1314,7 +1314,7 @@ async function readSessionEventStream(
         )
           handlers.onActivity(activity)
       } catch {
-        // A malformed optional invalidation is ignored; reconnect/fallback polling heals it.
+        // A malformed optional invalidation is ignored; reconnect/focus refresh heals it.
       }
     })
 
@@ -1350,17 +1350,22 @@ export function subscribeSessionEvents(
 ): () => void {
   const ctrl = new AbortController()
   let retryMs = 1000
+  let recoverGap = true
 
   void (async () => {
     while (!ctrl.signal.aborted) {
       try {
-        const ended = await readSessionEventStream(orgId, ctrl.signal, handlers)
+        const ended = await readSessionEventStream(orgId, ctrl.signal, handlers, recoverGap)
         retryMs = 1000
-        if (ended === 'reauth') continue
+        if (ended === 'reauth') {
+          recoverGap = false
+          continue
+        }
       } catch (error) {
         if (ctrl.signal.aborted) return
         onError?.(error)
       }
+      recoverGap = true
       if (ctrl.signal.aborted) return
       await waitBeforeReconnect(retryMs, ctrl.signal)
       retryMs = Math.min(retryMs * 2, 30_000)

@@ -660,7 +660,9 @@ transcripts, and usage) refresh from SSE where available, focus/reconnect, and
 explicit actions instead of timers. Bot tenant-token exchanges remain
 deduplicated within one authorization read. A provider quota response fails
 closed, pauses further checks for that organization and region, and gives the
-operator a specific recovery action.
+operator a specific recovery action. Planned OIDC token rotation reopens the SSE
+stream without invoking gap recovery; a failed reopen restores the normal
+reconnect invalidation.
 
 Every installation enforces the deployment tenant before storing a Bot. The
 Control Plane resolves the configured regional Login App's `tenant_key`,
