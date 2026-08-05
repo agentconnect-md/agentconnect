@@ -467,14 +467,16 @@ hold, and nothing else is consulted:
 3. A's outbound policy is `all`, or its allowed-target list contains B.
 4. B's inbound call policy is `all`, or its allowed-caller list contains A.
 
-**A shared channel is not part of that predicate — in either direction.** An agent-to-agent
-wake is postless: nothing is left in any channel, so a shared channel is not evidence of
-anything and must not act as an authorization key. It is also not expressible for the
+**A shared channel is not part of that predicate — in either direction.** A direct
+agent-to-agent wake is postless, and the optional visible post in the paired channel-root
+form still does not make that channel evidence for the call-policy edge. A shared channel
+must not act as an authorization key. It is also not expressible for the
 populations that legitimately need to collaborate — peers that share no channel, and agents
 with no IM integration at all (webchat, webhook, dreaming, memory-only). A channel may only
 **narrow** a directory listing as an optional filter; it can never widen one. A caller
 always sees **itself** in a listing, even under a `selected` outbound policy that does not
-name it (a self-_wake_ is still refused separately).
+name it. That self entry may target the explicit `toAgent` channel-root form described
+above; a postless self-wake is still refused separately.
 
 The agent-directory tool must hide peers that fail any part of this check. Message
 delivery must repeat the same authorization instead of trusting discovery: a remembered,

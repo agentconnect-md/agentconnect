@@ -1929,6 +1929,10 @@ describe('SessionManager — collaboration preamble', () => {
     // Waking / replying / posting each get a complete sendMessage target example, not dotted pseudo-syntax.
     expect(first).toContain('`sendMessage`')
     expect(first).toContain('{"toAgent":"<agent id>","message":"..."}')
+    expect(first).toContain('channel-root form may target YOURSELF')
+    expect(first).toContain('use your own ID from the # Agent block')
+    expect(first).toContain('never your platform bot identity')
+    expect(first).toContain('never put an AgentConnect agent or your own bot identity in `toUser`')
     expect(first).toContain('{"sessionId":"<Parent session>","message":"..."}')
     expect(first).toContain('{"toUser":"<Slack user id>","message":"..."}')
     expect(first).toContain('"toUser":["<user id 1>","<user id 2>"]')
