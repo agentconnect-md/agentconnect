@@ -89,6 +89,7 @@ function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds, runInSandbox: b
       status: 'active',
       runtime: id,
       runInSandbox,
+      allowRuntimeChangesInChat: true,
       workspace: { mode: 'from-scratch', path: join(adir, 'ws') },
       output: { mode: 'medium' },
       // Shared mode → the daemon opens a send-only Web-API client (no Socket Mode, no

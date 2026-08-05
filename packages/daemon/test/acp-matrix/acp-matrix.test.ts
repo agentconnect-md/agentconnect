@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import type { McpServer } from '@agentclientprotocol/sdk'
-import { AcpHost } from '../../src/acp/acp-host.js'
+import { AcpHost, turnFailureCode, turnFailureReason } from '../../src/acp/acp-host.js'
 import { detectSandbox } from '../../src/acp/sandbox.js'
 import { loadConfig } from '../../src/config/load-config.js'
 import type { RuntimeDef } from '../../src/config/config-schema.js'
@@ -154,7 +154,8 @@ function selectAllowOption(params: any): { outcome: { outcome: 'selected'; optio
 }
 
 function providerUnavailable(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  if (turnFailureCode(error) !== 'turn_failed') return true
+  const message = turnFailureReason(error).toLowerCase()
   return [
     'authentication required',
     'authenticate first',
@@ -165,6 +166,13 @@ function providerUnavailable(error: unknown): boolean {
     'high demand',
     'rate limit'
   ].some((part) => message.includes(part))
+}
+
+function runtimeErrorOutcome(error: unknown): Outcome {
+  return {
+    status: providerUnavailable(error) ? 'unavailable' : 'fail',
+    detail: turnFailureReason(error)
+  }
 }
 
 async function installProbeSkill(
@@ -312,10 +320,12 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
     if (result.models.length >= 2) {
       const from = host.modelOptions()?.current
       const to = result.models.find((model) => model !== from)!
-      const applied = await host.setSessionModel(sessionId, to)
-      result.features['model-switch'] = applied
-        ? { status: 'ok', detail: `${from ?? '?'} -> ${to}` }
-        : { status: 'fail', detail: `runtime rejected model switch to ${to}` }
+      const sent = await host.setSessionModel(sessionId, to)
+      const current = host.modelOptions()?.current
+      result.features['model-switch'] =
+        sent && current === to
+          ? { status: 'ok', detail: `${from ?? '?'} -> ${to}` }
+          : { status: 'fail', detail: `requested ${to}; rpcSent=${sent}, current=${current ?? '?'}` }
     } else {
       result.features['model-switch'] = { status: 'degrade', detail: `${result.models.length} model(s)` }
     }
@@ -323,10 +333,12 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
     if (result.modes.length >= 2) {
       const from = host.permissionModeOptions()?.current
       const to = result.modes.find((mode) => mode !== from)!
-      const applied = await host.setSessionPermissionMode(sessionId, to)
-      result.features['permission-mode-switch'] = applied
-        ? { status: 'ok', detail: `${from ?? '?'} -> ${to}` }
-        : { status: 'fail', detail: `runtime rejected permission-mode switch to ${to}` }
+      const sent = await host.setSessionPermissionMode(sessionId, to)
+      const current = host.permissionModeOptions()?.current
+      result.features['permission-mode-switch'] =
+        sent && current === to
+          ? { status: 'ok', detail: `${from ?? '?'} -> ${to}` }
+          : { status: 'fail', detail: `requested ${to}; rpcSent=${sent}, current=${current ?? '?'}` }
     } else {
       result.features['permission-mode-switch'] = { status: 'degrade', detail: `${result.modes.length} mode(s)` }
     }
@@ -384,9 +396,13 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
       result.features.skills = skillInstall
     }
 
+    // Keep this independent of the permission-mode switch above: modes such as
+    // read-only, plan, or full-access can suppress the permission request itself.
+    const permissionSession = await withTimeout(host.newSession(cwd), `${target.id}/permission session`)
+    permissionRequested = false
     const permissionStart = updates.length
     await withTimeout(
-      host.prompt(sessionId, [
+      host.prompt(permissionSession, [
         {
           type: 'text',
           text: 'Using your file tool, create matrix-permission.txt in the current workspace containing OK, then reply done.'
@@ -403,10 +419,7 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
 
     // Run this independently before the resume/restart phase so a runtime-specific
     // session/load failure cannot masquerade as a sandbox failure.
-    result.features.sandbox = await runSandboxProbe(target, root, sandboxToken).catch((error): Outcome => ({
-      status: 'fail',
-      detail: (error as Error).message
-    }))
+    result.features.sandbox = await runSandboxProbe(target, root, sandboxToken).catch(runtimeErrorOutcome)
 
     if (host.loadSupported()) {
       await host.stop()
@@ -430,7 +443,7 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
       result.features['load-resume'] = { status: 'degrade', detail: 'runtime does not advertise session/load' }
     }
   } catch (error) {
-    result.error = error instanceof Error ? error.message : String(error)
+    result.error = turnFailureReason(error)
     const status: Status = providerUnavailable(error) ? 'unavailable' : 'fail'
     for (const feature of FEATURES) {
       result.features[feature] ??= { status, detail: result.error }
@@ -511,7 +524,7 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
                     target,
                     root,
                     `MATRIX_SANDBOX_OK_${Date.now().toString(36)}`
-                  ).catch((error): Outcome => ({ status: 'fail', detail: (error as Error).message }))
+                  ).catch(runtimeErrorOutcome)
                   return {
                     id: target.id,
                     reachable: true,
