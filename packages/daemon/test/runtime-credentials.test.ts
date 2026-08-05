@@ -37,6 +37,37 @@ function settings(path: string): { filesystem: { allowWrite: string[] } } {
 }
 
 describe('Linux shared runtime login', () => {
+  it('opens only the canonical Git metadata directory to the inner Codex agent', () => {
+    const { daemonRoot, hostHome, scopeDir, cwd } = fixture()
+    const gitDir = join(cwd, '.git')
+    mkdirSync(gitDir)
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      scopeDir,
+      cwd,
+      daemonRoot,
+      agentsRoot: join(daemonRoot, 'agents'),
+      runInSandbox: true,
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const profileConfig = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as {
+      configOverrides: string[]
+    }
+    const agentFilesystem = profileConfig.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
+    )
+    const readOnlyFilesystem = profileConfig.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+    )
+    expect(agentFilesystem).toContain(`${JSON.stringify(realpathSync(gitDir))} = "write"`)
+    expect(readOnlyFilesystem).not.toContain(realpathSync(gitDir))
+    expect(profileConfig.configOverrides).toContain('features.unified_exec=false')
+  })
+
   it('opens the Codex credential channel even when the outer sandbox is disabled', () => {
     const { scopeDir, cwd } = fixture()
     const launch = prepareRuntimeLaunch({

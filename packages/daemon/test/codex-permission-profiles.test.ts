@@ -3,7 +3,9 @@ import { codexPermissionProfileConfig } from '../src/acp/codex-permission-profil
 
 describe('Codex permission profile launch config', () => {
   it('keeps daemon-owned denies in every ACP mode', () => {
-    const config = codexPermissionProfileConfig(['/agent/home/.codex', '/host/.codex/auth.json'])!
+    const config = codexPermissionProfileConfig({
+      protectedRoots: ['/agent/home/.codex', '/host/.codex/auth.json']
+    })!
 
     expect(config.modeProfiles).toEqual({
       'read-only': 'agentconnect-protected-read-only',
@@ -21,14 +23,17 @@ describe('Codex permission profile launch config', () => {
   })
 
   it('opens the inner network layer only for a daemon-provided credential channel', () => {
-    const config = codexPermissionProfileConfig(['/agent/home/.codex'], true)!
+    const config = codexPermissionProfileConfig({
+      protectedRoots: ['/agent/home/.codex'],
+      allowModelToolUnixSockets: true
+    })!
 
     expect(config.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
     expect(config.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
   })
 
   it('can open the credential channel without adding empty filesystem overrides', () => {
-    const config = codexPermissionProfileConfig([], true)!
+    const config = codexPermissionProfileConfig({ protectedRoots: [], allowModelToolUnixSockets: true })!
 
     expect(config.configOverrides).toContain('permissions.agentconnect-protected-workspace.network.enabled=true')
     expect(config.configOverrides).toContain('permissions.agentconnect-protected-read-only.network.enabled=true')
@@ -42,6 +47,24 @@ describe('Codex permission profile launch config', () => {
   })
 
   it('rejects non-absolute policy roots', () => {
-    expect(() => codexPermissionProfileConfig(['relative/auth.json'])).toThrow('must be absolute')
+    expect(() => codexPermissionProfileConfig({ protectedRoots: ['relative/auth.json'] })).toThrow('must be absolute')
+  })
+
+  it('opens only the agent Git metadata root and can disable unified exec', () => {
+    const config = codexPermissionProfileConfig({
+      protectedRoots: ['/agent/home/.codex'],
+      writableGitMetadataRoots: ['/agent/workspace/.git'],
+      disableUnifiedExec: true
+    })!
+
+    expect(config.configOverrides).toContain('features.unified_exec=false')
+    expect(config.configOverrides).toContain(
+      'permissions.agentconnect-protected-workspace.filesystem={ "/agent/workspace/.git" = "write", "/agent/home/.codex" = "deny" }'
+    )
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+      )
+    ).not.toContain('/agent/workspace/.git')
   })
 })

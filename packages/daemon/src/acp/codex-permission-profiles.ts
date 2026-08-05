@@ -13,6 +13,13 @@ export interface CodexPermissionProfileConfig {
   modeProfiles: Record<keyof typeof PROFILE_IDS, string>
 }
 
+export interface CodexPermissionProfileOptions {
+  protectedRoots: readonly string[]
+  writableGitMetadataRoots?: readonly string[]
+  allowModelToolUnixSockets?: boolean
+  disableUnifiedExec?: boolean
+}
+
 /** Prevent session config from redefining the daemon-owned profiles selected by
  * the adapter. Invalid/non-object input remains the adapter's responsibility. */
 export function codexConfigWithoutPermissionOverrides(raw: string | undefined): string | undefined {
@@ -44,36 +51,45 @@ export function codexConfigWithoutPermissionOverrides(raw: string | undefined): 
 
 /** Build the complete inner-tool policy from daemon-owned canonical paths. */
 export function codexPermissionProfileConfig(
-  protectedRoots: readonly string[],
-  allowModelToolUnixSockets = false
+  opts: CodexPermissionProfileOptions
 ): CodexPermissionProfileConfig | undefined {
-  const roots = [...new Set(protectedRoots.map((root) => normalize(root)))]
-  if (roots.length === 0 && !allowModelToolUnixSockets) return undefined
-  if (roots.some((root) => !isAbsolute(root))) {
-    throw new Error('Codex protected permission roots must be absolute paths')
+  const protectedRoots = [...new Set(opts.protectedRoots.map((root) => normalize(root)))]
+  const writableGitMetadataRoots = [...new Set((opts.writableGitMetadataRoots ?? []).map((root) => normalize(root)))]
+  const policyRoots = [...protectedRoots, ...writableGitMetadataRoots]
+  if (policyRoots.length === 0 && !opts.allowModelToolUnixSockets && !opts.disableUnifiedExec) return undefined
+  if (policyRoots.some((root) => !isAbsolute(root))) {
+    throw new Error('Codex permission roots must be absolute paths')
   }
 
-  const deny = tomlInlineTable(roots.map((root): [string, string] => [root, 'deny']))
-  const protectedFilesystem =
-    roots.length > 0
+  const readOnlyFilesystem =
+    protectedRoots.length > 0
       ? [
-          `permissions.${PROFILE_IDS['read-only']}.filesystem=${deny}`,
-          `permissions.${PROFILE_IDS.agent}.filesystem=${deny}`
+          `permissions.${PROFILE_IDS['read-only']}.filesystem=${tomlInlineTable(
+            protectedRoots.map((root): [string, string] => [root, 'deny'])
+          )}`
         ]
+      : []
+  const agentFilesystemEntries: Array<[string, string]> = [
+    ...writableGitMetadataRoots.map((root): [string, string] => [root, 'write']),
+    ...protectedRoots.map((root): [string, string] => [root, 'deny'])
+  ]
+  const agentFilesystem =
+    agentFilesystemEntries.length > 0
+      ? [`permissions.${PROFILE_IDS.agent}.filesystem=${tomlInlineTable(agentFilesystemEntries)}`]
       : []
   const fullAccess = tomlInlineTable([
     [':root', 'write'],
     ['/.git', 'write'],
     ['/.agents', 'write'],
     ['/.codex', 'write'],
-    ...roots.map((root): [string, string] => [root, 'deny'])
+    ...protectedRoots.map((root): [string, string] => [root, 'deny'])
   ])
   // On Linux Codex's restricted network seccomp permits AF_UNIX socket()
   // creation but rejects connect(). Enable the inner network layer only when
   // the daemon deliberately provides the agent-scoped GitHub credential
   // channel. When enabled, outer SRT remains the boundary; when disabled by the
   // operator, the launch is already explicitly unconfined.
-  const credentialChannelNetwork = allowModelToolUnixSockets
+  const credentialChannelNetwork = opts.allowModelToolUnixSockets
     ? [
         `permissions.${PROFILE_IDS['read-only']}.network.enabled=true`,
         `permissions.${PROFILE_IDS.agent}.network.enabled=true`
@@ -85,8 +101,12 @@ export function codexPermissionProfileConfig(
       `default_permissions="${PROFILE_IDS.agent}"`,
       `permissions.${PROFILE_IDS['read-only']}.extends=":read-only"`,
       `permissions.${PROFILE_IDS.agent}.extends=":workspace"`,
-      ...protectedFilesystem,
+      ...readOnlyFilesystem,
+      ...agentFilesystem,
       ...credentialChannelNetwork,
+      // Temporary until the bundled Codex includes the openai/codex#34115 fix:
+      // Guardian approval can otherwise hide the canonical unified-exec process.
+      ...(opts.disableUnifiedExec ? ['features.unified_exec=false'] : []),
       `permissions.${PROFILE_IDS['agent-full-access']}.filesystem=${fullAccess}`,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.enabled=true`,
       `permissions.${PROFILE_IDS['agent-full-access']}.network.allow_local_binding=true`,

@@ -17,16 +17,16 @@ import {
 import {
   CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV,
   codexConfigWithoutPermissionOverrides,
-  codexPermissionProfileConfig
+  codexPermissionProfileConfig,
+  type CodexPermissionProfileOptions
 } from './codex-permission-profiles.js'
 
 function applyCodexPermissionProfile(
   env: Record<string, string>,
-  protectedRoots: readonly string[],
-  allowModelToolUnixSockets: boolean,
+  opts: CodexPermissionProfileOptions,
   inheritedCodexConfig?: string
 ): void {
-  const profileConfig = codexPermissionProfileConfig(protectedRoots, allowModelToolUnixSockets)
+  const profileConfig = codexPermissionProfileConfig(opts)
   if (!profileConfig) return
 
   const codexConfig = codexConfigWithoutPermissionOverrides(env.CODEX_CONFIG ?? inheritedCodexConfig)
@@ -172,7 +172,11 @@ export function prepareRuntimeLaunch(opts: {
   if (!opts.runInSandbox && !opts.isolateHome) {
     const env = { ...(opts.explicitEnv ?? {}) }
     if (credentialProfile === 'codex' && opts.allowModelToolUnixSockets) {
-      applyCodexPermissionProfile(env, [], true, (opts.hostEnv ?? process.env).CODEX_CONFIG)
+      applyCodexPermissionProfile(
+        env,
+        { protectedRoots: [], allowModelToolUnixSockets: true },
+        (opts.hostEnv ?? process.env).CODEX_CONFIG
+      )
     }
     return { env, inheritProcessEnv: true }
   }
@@ -287,7 +291,10 @@ export function prepareRuntimeLaunch(opts: {
   if (!opts.runInSandbox) {
     if (credentialProfile === 'codex' && opts.allowModelToolUnixSockets) {
       const privateCodex = join(runtimeHome, '.codex')
-      applyCodexPermissionProfile(env, existsSync(privateCodex) ? [realpathSync(privateCodex)] : [], true)
+      applyCodexPermissionProfile(env, {
+        protectedRoots: existsSync(privateCodex) ? [realpathSync(privateCodex)] : [],
+        allowModelToolUnixSockets: true
+      })
     }
     return { env, inheritProcessEnv: false, runtimeHome }
   }
@@ -399,7 +406,21 @@ export function prepareRuntimeLaunch(opts: {
     ...privateCodexStateRoots
   ])
   if (credentialProfile === 'codex') {
-    applyCodexPermissionProfile(env, protectedCredentialRoots, opts.allowModelToolUnixSockets === true)
+    // Codex's :workspace profile protects `.git`. Re-open only the canonical
+    // metadata directory already covered by the outer sandbox's writable root;
+    // session worktree indexes and refs live below this main checkout directory.
+    const writableGitMetadataRoots = boundary.gitSafeDirectories.flatMap((workspaceRoot) => {
+      const gitDir = join(workspaceRoot, '.git')
+      if (!existsSync(gitDir) || !lstatSync(gitDir).isDirectory()) return []
+      const canonical = realpathSync(gitDir)
+      return boundary.writable.some((root) => inside(root, canonical)) ? [canonical] : []
+    })
+    applyCodexPermissionProfile(env, {
+      protectedRoots: protectedCredentialRoots,
+      writableGitMetadataRoots,
+      allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
+      disableUnifiedExec: true
+    })
   }
   return {
     env,
