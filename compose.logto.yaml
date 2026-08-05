@@ -1,8 +1,7 @@
 services:
   control-plane:
     environment:
-      - OIDC_ISSUER=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}/oidc
-      - LOGTO_MGMT_ENDPOINT=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
+      - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
 
   web:
     environment:

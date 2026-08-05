@@ -43,6 +43,9 @@ export function applyDeploymentEnvironment(
   }
 
   if (values.auth.mode === 'oidc') {
+    if (!base.OIDC_ISSUER?.trim() && !base.LOGTO_ENDPOINT?.trim()) {
+      throw new Error('OIDC_ISSUER or LOGTO_ENDPOINT startup environment is required when deployment auth is oidc')
+    }
     set('OIDC_AUDIENCE', values.auth.audience)
   }
 

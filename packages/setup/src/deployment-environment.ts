@@ -76,6 +76,7 @@ export interface DeploymentEnvironment {
 
 export function loadDeploymentEnvironment(environment: Environment = process.env): DeploymentEnvironment {
   const logtoEndpoint = environmentValue(environment, 'LOGTO_ENDPOINT')
+  const logtoOrigin = logtoEndpoint ? new URL(OriginSchema.parse(logtoEndpoint)).origin : undefined
   return {
     services: {
       web: OriginSchema.parse(
@@ -90,7 +91,7 @@ export function loadDeploymentEnvironment(environment: Environment = process.env
     },
     issuer: IssuerSchema.parse(
       environmentValue(environment, 'OIDC_ISSUER') ??
-        (logtoEndpoint ? `${logtoEndpoint.replace(/\/$/, '')}/oidc` : 'http://login.agentconnect.localhost:3001/oidc')
+        (logtoOrigin ? `${logtoOrigin}/oidc` : 'http://login.agentconnect.localhost:3001/oidc')
     )
   }
 }

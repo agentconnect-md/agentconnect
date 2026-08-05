@@ -266,7 +266,15 @@ export function loadBootstrapConfig(env: NodeJS.ProcessEnv = process.env): Boots
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  return AppConfigChecked.parse(env)
+  const logtoEndpoint = env.LOGTO_ENDPOINT?.trim()
+  if (!logtoEndpoint) return AppConfigChecked.parse(env)
+
+  const logtoOrigin = new URL(SecureOriginSchema.parse(logtoEndpoint)).origin
+  return AppConfigChecked.parse({
+    ...env,
+    OIDC_ISSUER: env.OIDC_ISSUER?.trim() || `${logtoOrigin}/oidc`,
+    LOGTO_MGMT_ENDPOINT: env.LOGTO_MGMT_ENDPOINT?.trim() || logtoOrigin
+  })
 }
 
 /** The first concrete browser origin in a CORS_ORIGIN value, or undefined when it names
