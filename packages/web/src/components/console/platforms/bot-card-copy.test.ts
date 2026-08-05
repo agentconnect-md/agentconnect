@@ -41,12 +41,13 @@ describe('Settings → Bots row copy', () => {
     ).toEqual(['slack'])
   })
 
-  it('names no platform in either default', () => {
+  it('names no platform in any default', () => {
     // The whole defect was a provider's vocabulary leaking onto other
     // providers' rows; a default that names one would reintroduce it.
     expect(DEFAULT_BOT_CARD_COPY.revokedHint).not.toMatch(PLATFORM_WORDS)
     expect(DEFAULT_BOT_CARD_COPY.shareHint.available).not.toMatch(PLATFORM_WORDS)
     expect(DEFAULT_BOT_CARD_COPY.shareHint.unavailable).not.toMatch(PLATFORM_WORDS)
+    expect(DEFAULT_BOT_CARD_COPY.identityNoun).not.toMatch(PLATFORM_WORDS)
   })
 
   it('collapses both share arms for a platform that cannot share at all', () => {
@@ -79,6 +80,6 @@ describe('Settings → Bots row copy', () => {
     const partial = platformRegistry.get('slack')!.settingsFragments!.copy!
     expect(partial.revokedHint).toBeDefined()
     expect(partial.shareHint).toBeDefined()
-    expect(Object.keys(DEFAULT_BOT_CARD_COPY).sort()).toEqual(['revokedHint', 'shareHint'])
+    expect(Object.keys(DEFAULT_BOT_CARD_COPY).sort()).toEqual(['identityNoun', 'revokedHint', 'shareHint'])
   })
 })

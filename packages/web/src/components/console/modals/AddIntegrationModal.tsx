@@ -24,9 +24,9 @@ import {
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
+import { BOT_PLATFORMS, PLATFORMS } from '@/components/console/platforms/host-projections'
 import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
-import { platformLabel } from '@/lib/platform-labels'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
@@ -82,37 +82,35 @@ import {
 // Each chat platform's create pane is a fragment behind `WizardHost`
 // (`components/console/platforms/<id>/`). The chassis knows no platform name
 // except where §5 manifest data has nowhere else to live yet (the picker labels
-// and the Lark/Feishu region switcher — see D2 in the contract).
+// and the Lark/Feishu region switcher — see D2 in the contract); the tile lists
+// themselves are registry projections in `platforms/host-projections.ts`.
 
-// `webhook` and `github` are not bot platforms: picking them mints an inbound
-// trigger (a hook) instead of installing a bot identity — webhook is
-// agent-fired-by-URL, github subscribes a repo's issue/PR/commit events. Both
-// live on the relay pool, so neither is gated by the daemon's adapter
-// capabilities.
-export type BotPlatform = 'slack' | 'telegram' | 'discord' | 'feishu'
-export type Platform = BotPlatform | 'webhook' | 'github'
+/**
+ * One picker choice: a chat-platform id the registry knows, or one of the two
+ * CORE trigger kinds. `webhook` and `github` are not bot platforms — picking
+ * either mints an inbound trigger (a hook) instead of installing a bot
+ * identity: webhook is agent-fired-by-URL, github subscribes a repo's
+ * issue/PR/commit events. Both live on the relay pool, so neither is gated by
+ * the daemon's adapter capabilities.
+ *
+ * OPEN by design (audit §10.6 F15). This was a closed union of the four chat
+ * ids plus the two trigger kinds, and the registry-derived tile list was CAST
+ * into it — a type asserting a platform set the runtime no longer has, which is
+ * the one thing the registry was made the single authority for. It is widened
+ * rather than GENERATED from the registry because generating it would mean
+ * re-closing an axis the contract deliberately keeps open: `platformId` is a
+ * `string` that is "never parsed", `WebPlatformRegistry.ids()` answers
+ * `readonly string[]`, and every host lookup over it is total by construction.
+ * A literal union would additionally have to survive the registry's erasure of
+ * its modules to one homogeneous array — the same erasure that already defeated
+ * the `TCardState` parameter (see `WebBotSettingsFragments` in the contract).
+ * Nothing reads this type to DECIDE anything; every consumer compares to a
+ * literal or asks the registry, and both still work on a string.
+ */
+export type Platform = string
 export type FeishuRegion = LarkFeishuTarget
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
-
-// Bot platforms are gated on the owning daemon's advertised adapters; the agent
-// page's empty-integrations tiles filter this same list so a tile can never
-// promise a platform this modal would refuse.
-//
-// The tile labels are the console's one display-name table
-// (`lib/platform-labels.ts`) projected OVER the registry's id set: §5's
-// `displayName` is manifest data shared with the daemon/relay/CP, deliberately
-// NOT a web-module member (contract D2), while the registry stays the single
-// authority for WHICH platforms exist and in what order.
-export const BOT_PLATFORMS: { key: BotPlatform; label: string }[] = platformRegistry
-  .ids()
-  .map((id) => ({ key: id as BotPlatform, label: platformLabel(id)?.picker ?? id }))
-
-export const PLATFORMS: { key: Platform; label: string }[] = [
-  ...BOT_PLATFORMS,
-  { key: 'webhook', label: 'Webhook' },
-  { key: 'github', label: 'GitHub' }
-]
 
 /** The trigger cadences (design vocabulary: "when created / updated / mention only"
  *  — the stored event patterns + the mentionOnly flag encode the choice).

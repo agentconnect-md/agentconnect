@@ -47,6 +47,7 @@ import {
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type AgentCallPolicy, type IntegrationRow } from '@/lib/data'
 import { botCardCopy, botSharingEditable, platformRegistry } from '@/components/console/platforms/registry'
+import { BOT_PLATFORM_TABS, botMatchesPlatformTab } from '@/components/console/platforms/host-projections'
 import { consoleKeys } from '@/lib/swr-keys'
 import { inviteLinkStatus, inviteLinkUrl } from '@/lib/org-invite-link'
 import EditMemberModal, { type MemberTarget } from '@/components/console/modals/EditMemberModal'
@@ -360,21 +361,6 @@ const MEMBER_GRID = 'grid-cols-[2fr_1.4fr_auto]'
 // actions. The 100px action track fits refresh + platform link + delete and stays
 // identical across rows; below 480px "Created by" is dropped to preserve space.
 const BOT_GRID = 'grid-cols-[3fr_1.1fr_1fr_100px] min-[480px]:grid-cols-[2fr_0.9fr_1.5fr_1fr_100px]'
-const BOT_PLATFORM_TABS = [
-  { key: 'slack', platform: 'slack', feishuRegion: null, label: 'Slack', noun: 'app' },
-  { key: 'discord', platform: 'discord', feishuRegion: null, label: 'Discord', noun: 'bot' },
-  { key: 'telegram', platform: 'telegram', feishuRegion: null, label: 'Telegram', noun: 'bot' },
-  { key: 'lark', platform: 'feishu', feishuRegion: 'lark', label: 'Lark', noun: 'bot' },
-  { key: 'feishu', platform: 'feishu', feishuRegion: 'feishu', label: 'Feishu', noun: 'bot' }
-] as const
-type BotPlatformTab = (typeof BOT_PLATFORM_TABS)[number]
-type BotPlatformTabKey = BotPlatformTab['key']
-
-function botMatchesPlatformTab(bot: BotDto, tab: BotPlatformTab): boolean {
-  if (bot.platform !== tab.platform) return false
-  return tab.feishuRegion === null || (bot.feishuRegion ?? 'feishu') === tab.feishuRegion
-}
-
 type BotRosterRow = { kind: 'workspace'; key: string; label: string } | { kind: 'bot'; key: string; bot: BotDto }
 
 // Preserve the server's bot order within each workspace. The heading is rendered
@@ -934,7 +920,7 @@ function BotsCard({
     refresh,
     loading: dataLoading
   } = useConsoleData()
-  const [platformTabKey, setPlatformTabKey] = useState<BotPlatformTabKey>('slack')
+  const [platformTabKey, setPlatformTabKey] = useState<string>(BOT_PLATFORM_TABS[0]?.key ?? '')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
   // 409s with a reason: no relay connected / still shared by several agents).
@@ -946,8 +932,11 @@ function BotsCard({
   const targetBotPlatformTabKey = targetBot
     ? BOT_PLATFORM_TABS.find((tab) => botMatchesPlatformTab(targetBot, tab))?.key
     : undefined
-  const platformTab = BOT_PLATFORM_TABS.find((tab) => tab.key === platformTabKey)!
-  const { label, noun } = platformTab
+  // The registry always registers modules, so the strip is never empty; falling
+  // back to the first tab is what keeps this lookup total, where the hand-written
+  // table simply assumed the key resolved.
+  const platformTab = (BOT_PLATFORM_TABS.find((tab) => tab.key === platformTabKey) ?? BOT_PLATFORM_TABS[0])!
+  const { label } = platformTab
   const platformBots = bots.filter((bot) => botMatchesPlatformTab(bot, platformTab))
   const rosterRows = botRosterRows(platformBots)
 
@@ -985,11 +974,13 @@ function BotsCard({
   const RowActions = fragments?.lifecycleActions?.RowActions
   const CardNotice = fragments?.lifecycleActions?.CardNotice
   const CardProvider = fragments?.lifecycleActions?.CardProvider ?? PassThrough
-  // The two sentences the CARD writes into its own chrome (the revoked badge,
-  // the Sharable cell). Both used to be Slack's model rendered over every
-  // platform's rows; the module supplies the wording, the host still decides
-  // when and which arm to show.
+  // The words the CARD writes into its own chrome (the revoked badge, the
+  // Sharable cell, and `noun` — the "app"/"bot" heading, delete tooltip and
+  // empty-state sentence). All of them used to be Slack's model rendered over
+  // every platform's rows; the module supplies the wording, the host still
+  // decides when and which arm to show.
   const rowCopy = botCardCopy(platformTab.platform)
+  const noun = rowCopy.identityNoun
 
   return (
     <div className="card mt-[18px]">
@@ -1022,7 +1013,9 @@ function BotsCard({
       </div>
       {/* gap must match the data rows' or the narrow tracks drift out of line. */}
       <div className={`row h ${BOT_GRID} gap-[11px]`}>
-        <span>{noun === 'app' ? 'App' : 'Bot'}</span>
+        {/* `.row.h` uppercases, so the module's lower-case noun renders as the
+            heading did when the host picked between two literals. */}
+        <span>{noun}</span>
         <span>Sharable</span>
         <span>Agents</span>
         <span className="whitespace-nowrap max-[479px]:hidden">Created by</span>

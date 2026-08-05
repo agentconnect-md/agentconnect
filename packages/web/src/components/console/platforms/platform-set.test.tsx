@@ -1,9 +1,18 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { larkFeishuBrand } from '@/components/LarkFeishuSwitcher'
 import { PlatformMark } from '@/components/marks'
 import { PLATFORM_LABEL_IDS, platformLabel } from '@/lib/platform-labels'
+import {
+  BOT_PLATFORMS,
+  BOT_PLATFORM_TABS,
+  INTEGRATION_BLURB,
+  PLATFORMS,
+  botMatchesPlatformTab,
+  platformTiles
+} from './host-projections'
 import { PLATFORM_MARK_IDS, platformMark } from './marks'
-import { platformRegistry } from './registry'
+import { botCardCopy, platformRegistry } from './registry'
 
 /**
  * The registry is the single platform-set authority (§10), but two lookups
@@ -14,8 +23,18 @@ import { platformRegistry } from './registry'
  * time, so this file is what keeps the copies honest: adding a module without
  * adding its mark or its label fails here rather than shipping a plug glyph and a
  * capitalized id into production.
+ *
+ * It also covers the host PROJECTIONS over that id set (`host-projections.ts`) —
+ * the install picker's tiles, the agent page's tile blurbs and the Settings →
+ * Bots tab strip. The strip in particular was a hand-written five-row table with
+ * its own labels and nouns, uncovered here, and therefore free to drift
+ * (integration-plugin-audit.md §10.6 F14).
  */
 const ALIASES = ['lark']
+
+/** Not a module and never will be: picking either mints an inbound trigger, not
+ *  a bot identity (contract, registry doc). The picker still offers them. */
+const CORE_TRIGGER_KINDS = ['webhook', 'github']
 
 describe('platform set', () => {
   it('gives every registered module a mark and a label', () => {
@@ -40,6 +59,96 @@ describe('platform set', () => {
       const label = platformLabel(id)!
       expect(label.name, id).toBe(label.picker)
     }
+  })
+
+  it('offers exactly the registered platforms as picker tiles, plus the two core triggers', () => {
+    // The tile SET is the registry's, in registry order; the two trigger kinds
+    // are appended by the chassis because they are not modules.
+    expect(BOT_PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids()])
+    expect(PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS])
+  })
+
+  it('labels every picker tile from the display-name table and blurbs every choice', () => {
+    for (const tile of BOT_PLATFORMS) {
+      expect(tile.label, tile.key).toBe(platformLabel(tile.key)?.picker)
+    }
+    // A choice with no one-liner is a tile with no tooltip — the drift a
+    // registry-derived list makes easy and an exhaustive record used to catch.
+    for (const tile of PLATFORMS) {
+      expect(INTEGRATION_BLURB[tile.key], tile.key).toBeTruthy()
+    }
+    expect(Object.keys(INTEGRATION_BLURB).sort()).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS].sort())
+  })
+
+  it('passes an id no module claims straight through the tile projection', () => {
+    // F15: the tile list used to be CAST into a closed union, so an id the
+    // registry could legitimately grow was a type-level lie. It is a plain
+    // string now — an unknown id renders as itself rather than as a claim that
+    // it is one of four.
+    expect(platformTiles(['zulip', 'slack'])).toEqual([
+      { key: 'zulip', label: 'zulip' },
+      { key: 'slack', label: 'Slack' }
+    ])
+  })
+
+  it('gives every registered platform a Settings → Bots tab', () => {
+    // Adding a module without a tab used to hide its bots from the card
+    // entirely. The strip is region-EXPANDED, so compare the platforms it
+    // covers, not its row count.
+    expect([...new Set(BOT_PLATFORM_TABS.map((tab) => tab.platform))]).toEqual([...platformRegistry.ids()])
+    expect(new Set(BOT_PLATFORM_TABS.map((tab) => tab.key)).size).toBe(BOT_PLATFORM_TABS.length)
+  })
+
+  it('takes every tab label from the display-name table, or from the cloud on a region row', () => {
+    for (const tab of BOT_PLATFORM_TABS) {
+      if (tab.region === null) {
+        expect(tab.label, tab.key).toBe(platformLabel(tab.platform)?.name)
+      } else {
+        // The one platform with regional clouds: the row is per CLOUD, and
+        // `platformLabel('feishu').name` is deliberately the international
+        // brand ("Lark"), so a region row's word comes from the region axis's
+        // own vocabulary instead of being re-spelled here.
+        expect(tab.label, tab.key).toBe(larkFeishuBrand(tab.region))
+      }
+    }
+    expect(BOT_PLATFORM_TABS.map((tab) => tab.label)).toEqual(['Slack', 'Telegram', 'Discord', 'Lark', 'Feishu'])
+  })
+
+  it('routes each bot to exactly one tab, region rows included', () => {
+    const bots = [
+      { platform: 'slack', feishuRegion: null },
+      { platform: 'telegram', feishuRegion: null },
+      { platform: 'discord', feishuRegion: null },
+      { platform: 'feishu', feishuRegion: 'lark' as const },
+      { platform: 'feishu', feishuRegion: 'feishu' as const },
+      // Rows predating the region axis belong to Feishu, not to Lark.
+      { platform: 'feishu', feishuRegion: null }
+    ]
+    for (const bot of bots) {
+      const matched = BOT_PLATFORM_TABS.filter((tab) => botMatchesPlatformTab(bot, tab))
+      expect(
+        matched.map((tab) => tab.label),
+        `${bot.platform}/${bot.feishuRegion}`
+      ).toHaveLength(1)
+    }
+    const legacyFeishu = BOT_PLATFORM_TABS.filter((tab) =>
+      botMatchesPlatformTab({ platform: 'feishu', feishuRegion: null }, tab)
+    )
+    expect(legacyFeishu[0]?.label).toBe('Feishu')
+    // A platform the console has not been taught lands on no tab at all rather
+    // than under whichever one happens to be first.
+    expect(BOT_PLATFORM_TABS.filter((tab) => botMatchesPlatformTab({ platform: 'zulip' }, tab))).toEqual([])
+  })
+
+  it('names the bot identity from the module, not from the tab table', () => {
+    // The noun was the tab table's own column ('app' for Slack, 'bot' for the
+    // rest). It is module copy now, so the card's heading, delete tooltip and
+    // empty state read one declaration.
+    expect(botCardCopy('slack').identityNoun).toBe('app')
+    for (const id of platformRegistry.ids().filter((p) => p !== 'slack')) {
+      expect(botCardCopy(id).identityNoun, id).toBe('bot')
+    }
+    expect(botCardCopy('zulip').identityNoun).toBe('bot')
   })
 
   it('renders the same mark through the module and through PlatformMark', () => {
