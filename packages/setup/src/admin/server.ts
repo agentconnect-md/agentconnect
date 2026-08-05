@@ -11,6 +11,11 @@ import {
   type FeishuRegistrationProvider
 } from '@agentconnect.md/control-plane/feishu-registration-provider'
 import {
+  createFeishuAppCredentialVerifier,
+  type FeishuAppCredentialVerifier
+} from '@agentconnect.md/control-plane/feishu-identity'
+import { createSlackConfigApi, type SlackConfigApi } from '@agentconnect.md/control-plane/slack-config-api'
+import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
   DEPLOYMENT_SECRET_KEYS,
@@ -44,12 +49,10 @@ import {
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
-  createSlackApp,
-  exportSlackManifest,
   requireProviderAppEndpoints,
-  slackConfiguredUrls,
-  type ProviderAppConfig
+  slackConfiguredUrls
 } from '../slack-app.js'
+import type { ProviderAppConfig } from '../provider-app.js'
 import {
   TenantAdminAuthError,
   TenantAdminAuthenticator,
@@ -147,6 +150,8 @@ export interface TenantAdminServerDeps {
   ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
   makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
+  verifyFeishuAppCredentials?: FeishuAppCredentialVerifier
+  slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp'>
   localAuthBootstrap?: {
     issuer: string
     managementEndpoint?: string
@@ -367,6 +372,8 @@ export function buildTenantAdminServer(
 ): FastifyInstance {
   const app = Fastify({ logger: false, ...options })
   const fetchImpl = deps.fetch ?? fetch
+  const verifyFeishuAppCredentials = deps.verifyFeishuAppCredentials ?? createFeishuAppCredentialVerifier(fetchImpl)
+  const slackConfigApi = deps.slackConfigApi ?? createSlackConfigApi({ fetch: fetchImpl })
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
   const authenticator = new TenantAdminAuthenticator(
     { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer) },
@@ -432,6 +439,43 @@ export function buildTenantAdminServer(
           }
         : undefined
     )
+  }
+
+  const expectedSlackManifest = (values: DeploymentConfigValuesV1): Record<string, unknown> => {
+    const browser = values.logto?.browser
+    return buildSlackDeploymentManifest(
+      slackProviderAppConfig(localAuthBootstrap.services),
+      'AgentConnect',
+      values.logto?.slackConnector && browser ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID } : undefined
+    )
+  }
+
+  const providerExpectations = (values: DeploymentConfigValuesV1) => {
+    let github: ReturnType<typeof githubConfiguredUrls> | null = null
+    let slack: ReturnType<typeof slackConfiguredUrls> | null = null
+    try {
+      const manifest = expectedGithubManifest(values)
+      github = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
+    } catch {
+      // Invalid startup URLs are surfaced as an unavailable expectation in the UI.
+    }
+    try {
+      slack = slackConfiguredUrls(expectedSlackManifest(values))
+    } catch {
+      // Slack requires HTTPS startup URLs; the UI keeps creation/check disabled.
+    }
+    return {
+      github,
+      slack,
+      google: values.logto?.browser
+        ? { origins: [logtoEndpoint], redirects: googleRedirectUris(logtoEndpoint) }
+        : { origins: [], redirects: [] }
+    }
+  }
+
+  const statusWithExpectations = (record: DeploymentConfigAdmin | null) => {
+    const status = toStatus(record)
+    return { ...status, providerExpectations: providerExpectations(status.values) }
   }
 
   app.addHook('onClose', async () => {
@@ -575,7 +619,7 @@ export function buildTenantAdminServer(
   })
 
   app.get('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async () =>
-    toStatus(await deps.store.getAdmin())
+    statusWithExpectations(await deps.store.getAdmin())
   )
 
   app.put('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async (request, reply) => {
@@ -588,7 +632,7 @@ export function buildTenantAdminServer(
       values: parsed.data.values
     })
     return {
-      ...toStatus(saved),
+      ...statusWithExpectations(saved),
       restartRequired: true as const
     }
   })
@@ -610,7 +654,7 @@ export function buildTenantAdminServer(
         }
       )
       const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
-      return { ...toStatus(saved), restartRequired: true as const }
+      return { ...statusWithExpectations(saved), restartRequired: true as const }
     })
   })
 
@@ -785,37 +829,22 @@ export function buildTenantAdminServer(
         return problem(reply, 409, `${region === 'feishu' ? 'Feishu' : 'Lark'} App credentials are not configured`)
       }
 
-      const origin = region === 'feishu' ? 'https://open.feishu.cn' : 'https://open.larksuite.com'
-      let response: Response
-      try {
-        response = await fetchImpl(`${origin}/open-apis/auth/v3/tenant_access_token/internal`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json; charset=utf-8' },
-          body: JSON.stringify({ app_id: regionalApp.loginAppId, app_secret: appSecret }),
-          signal: AbortSignal.timeout(5_000)
-        })
-      } catch {
-        return {
-          provider: region,
-          status: 'unknown' as const,
-          message: `${region === 'feishu' ? 'Feishu' : 'Lark'} could not be reached.`
-        }
-      }
-      const body = (await response.json().catch(() => ({}))) as { code?: number; tenant_access_token?: string }
-      if (!response.ok) {
-        return {
-          provider: region,
-          status: 'unknown' as const,
-          message: `${region === 'feishu' ? 'Feishu' : 'Lark'} returned HTTP ${response.status}.`
-        }
-      }
-      const matches = body.code === 0 && typeof body.tenant_access_token === 'string'
+      const result = await verifyFeishuAppCredentials(regionalApp.loginAppId, appSecret, region)
+      const label = region === 'feishu' ? 'Feishu' : 'Lark'
       return {
         provider: region,
-        status: matches ? ('pass' as const) : ('fail' as const),
-        message: matches
-          ? `${region === 'feishu' ? 'Feishu' : 'Lark'} accepted the saved App ID and secret.`
-          : `${region === 'feishu' ? 'Feishu' : 'Lark'} rejected the saved App ID or secret.`
+        status:
+          result.status === 'ok'
+            ? ('pass' as const)
+            : result.status === 'invalid'
+              ? ('fail' as const)
+              : ('unknown' as const),
+        message:
+          result.status === 'ok'
+            ? `${label} accepted the saved App ID and secret.`
+            : result.status === 'invalid'
+              ? `${label} rejected the saved App ID or secret.`
+              : `${label} could not be reached.`
       }
     }
   )
@@ -947,18 +976,16 @@ export function buildTenantAdminServer(
         return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
       }
 
-      let credentials: Awaited<ReturnType<typeof createSlackApp>>
-      try {
-        credentials = await createSlackApp(parsed.data.configToken, manifest, { fetch: fetchImpl })
-      } catch (error) {
-        return problem(reply, 502, error instanceof Error ? error.message : 'Slack App creation failed')
-      }
+      const created = await slackConfigApi.createApp(parsed.data.configToken, manifest)
+      if (!created.ok) return problem(reply, 502, `Slack App creation failed: ${created.error}`)
+      const credentials = created.app
       const put = slackDeploymentPut(current, credentials, slackConfiguredUrls(manifest), parsed.data.connectLogto)
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
 
       try {
-        const exported = await exportSlackManifest(parsed.data.configToken, credentials.appId, { fetch: fetchImpl })
-        const missing = auditSlackManifest(exported, manifest)
+        const exported = await slackConfigApi.exportApp(parsed.data.configToken, credentials.appId)
+        if (!exported.ok) throw new Error(exported.error)
+        const missing = auditSlackManifest(exported.manifest, manifest)
         if (missing.length > 0) throw new Error(`missing ${missing.join(', ')}`)
       } catch (error) {
         return problem(
@@ -1055,23 +1082,13 @@ export function buildTenantAdminServer(
       if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
       let manifest: Record<string, unknown>
       try {
-        const browser = current.values.logto?.browser
-        manifest = buildSlackDeploymentManifest(
-          slackProviderAppConfig(localAuthBootstrap.services),
-          'AgentConnect',
-          current.values.logto?.slackConnector && browser
-            ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID }
-            : undefined
-        )
+        manifest = expectedSlackManifest(current.values)
       } catch (error) {
         return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
       }
-      let actual: Record<string, unknown>
-      try {
-        actual = await exportSlackManifest(parsed.data.configToken, slack.appId, { fetch: fetchImpl })
-      } catch (error) {
-        return problem(reply, 502, error instanceof Error ? error.message : 'Slack App settings could not be checked')
-      }
+      const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
+      if (!exported.ok) return problem(reply, 502, `Slack App settings could not be checked: ${exported.error}`)
+      const actual = exported.manifest
       const missing = auditSlackManifest(actual, manifest)
       const expected = slackConfiguredUrls(manifest)
       let revision = current.revision

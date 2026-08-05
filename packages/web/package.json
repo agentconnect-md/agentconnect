@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agentconnect.md/protocol": "workspace:*",
     "@iconify-icons/logos": "^1.2.36",
     "@iconify-icons/ph": "^1.2.5",
     "@iconify/react": "^6.0.2",

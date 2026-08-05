@@ -347,8 +347,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     const tokenKey = 'agentconnect.tenant-admin.token';
     const verifierKey = 'agentconnect.tenant-admin.pkce';
     const stateKey = 'agentconnect.tenant-admin.state';
-    const googleConnectorId = 'agentconnect-google';
-    const githubConnectorId = 'agentconnect-github';
     let currentRevision = 0;
     let currentStatus = null;
     let bootstrapInfo = null;
@@ -369,7 +367,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     };
     const base64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const random = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
-    const join = (base, path) => String(base || '').replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
     const same = (a, b) => JSON.stringify([...(a || [])].sort()) === JSON.stringify([...(b || [])].sort());
     const configured = (byKey, key) => Boolean(byKey.get(key) && byKey.get(key).configured);
 
@@ -482,43 +479,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       return { owner: 'organization', organization };
     }
 
-    function githubExpected(values) {
-      const services = bootstrapInfo.services;
-      const browser = values.logto && values.logto.browser;
-      const callbacks = values.logto && values.logto.githubConnector && browser ? [
-        join(bootstrapInfo.logtoEndpoint, '/callback/' + githubConnectorId),
-        join(bootstrapInfo.logtoEndpoint, '/account/callback/social/' + githubConnectorId)
-      ] : [];
-      return {
-        externalUrl: services.web,
-        setupUrl: join(services.controlPlane, '/v1/github/setup/callback'),
-        webhookUrl: join(services.relay, '/webhooks/github'),
-        webhookActive: String(services.relay || '').startsWith('https://'),
-        callbackUrls: callbacks
-      };
-    }
-
-    function slackExpected(values) {
-      const services = bootstrapInfo.services;
-      const expected = {
-        oauthRedirectUrl: join(services.controlPlane, '/v1/integrations/slack/platform/callback'),
-        eventsUrl: join(services.relay, '/slack/events'),
-        interactionsUrl: join(services.relay, '/slack/interactions')
-      };
-      const browser = values.logto && values.logto.browser;
-      return values.logto && values.logto.slackConnector && browser
-        ? { ...expected, loginRedirectUrl: join(bootstrapInfo.logtoEndpoint, '/callback/agentconnect-slack') }
-        : expected;
-    }
-
-    function googleExpected(values) {
-      const endpoint = values.logto && values.logto.browser && bootstrapInfo.logtoEndpoint;
-      return endpoint ? {
-        origins: [endpoint],
-        redirects: [join(endpoint, '/callback/' + googleConnectorId), join(endpoint, '/account/callback/social/' + googleConnectorId)]
-      } : { origins: [], redirects: [] };
-    }
-
     function fieldsChanged(actual, expected) {
       if (!actual) return Object.keys(expected);
       return Object.keys(expected).filter((key) => Array.isArray(expected[key]) ? !same(actual[key], expected[key]) : actual[key] !== expected[key]);
@@ -549,6 +509,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       currentStatus = status;
       const byKey = new Map((status.secrets || []).map((item) => [item.key, item]));
       const values = status.values;
+      const expected = status.providerExpectations || { github: null, slack: null, google: { origins: [], redirects: [] } };
       renderStartupEnvironment();
 
       const logto = values.logto;
@@ -585,14 +546,14 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? github.slug + ' is configured. Webhook secret: ' + (webhookStored ? 'stored' : webhookInactive ? 'not required yet' : 'missing') + '.' +
           (webhookInactive ? ' Webhook delivery is not registered until HTTPS ingress is configured.' : '')
         : 'Creates the complete App used for repository installation, webhooks, and optional GitHub sign-in.';
-      const githubDrift = github ? fieldsChanged(github.configuredUrls, githubExpected(values)) : [];
+      const githubDrift = github ? (expected.github ? fieldsChanged(github.configuredUrls, expected.github) : ['startup public URLs']) : [];
       match('github-match', !github ? '' : githubDrift.length ? 'warn' : '', !github ? 'Not configured' : githubDrift.length ? 'Update required' : 'Ready to check');
       el('github-create-controls').hidden = Boolean(github);
       el('create-github').hidden = Boolean(github);
       el('clear-github').hidden = !github;
       el('connect-github-login').hidden = !github || !values.logto || Boolean(values.logto.githubConnector);
       el('check-github').hidden = !github;
-      if (github) showDrift('github-drift', githubDrift, githubExpected(values));
+      if (github) showDrift('github-drift', githubDrift, expected.github || {});
       else el('github-drift').hidden = true;
 
       const slack = values.slack;
@@ -606,7 +567,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? 'Enabled; reuses the Slack client secret above.'
         : 'Not enabled.';
       el('slack-status').textContent = slack ? slack.appId + ' is configured.' : 'Creates the default AgentConnect integration manifest.';
-      const slackDrift = slack ? fieldsChanged(slack.configuredUrls, slackExpected(values)) : [];
+      const slackDrift = slack ? (expected.slack ? fieldsChanged(slack.configuredUrls, expected.slack) : ['startup public URLs']) : [];
       match('slack-match', !slack ? '' : slackDrift.length ? 'warn' : '', !slack ? 'Not configured' : slackDrift.length ? 'Update required' : 'Ready to check');
       el('slack-name-field').hidden = Boolean(slack);
       el('create-slack').hidden = Boolean(slack);
@@ -616,12 +577,12 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('slack-settings').hidden = !slack;
       if (slack) {
         el('slack-settings').href = 'https://api.slack.com/apps/' + encodeURIComponent(slack.appId);
-        showDrift('slack-drift', slackDrift, slackExpected(values));
+        showDrift('slack-drift', slackDrift, expected.slack || {});
       } else el('slack-drift').hidden = true;
 
       const google = values.logto && values.logto.googleConnector;
       const googleSecret = configured(byKey, 'logto.googleConnectorClientSecret');
-      const expectedGoogle = googleExpected(values);
+      const expectedGoogle = expected.google;
       renderUriList('google-origins', expectedGoogle.origins);
       renderUriList('google-redirects', expectedGoogle.redirects);
       text('google-client-id', google && google.clientId);
@@ -1112,7 +1073,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const report = await checkLogto();
       const connector = report.findings.find((finding) => finding.id === 'logto.connectors');
       const google = currentStatus && currentStatus.values.logto && currentStatus.values.logto.googleConnector;
-      const expected = currentStatus ? googleExpected(currentStatus.values) : { redirects: [] };
+      const expected = currentStatus ? currentStatus.providerExpectations.google : { redirects: [] };
       const callbacksMatch = google && same(google.configuredRedirectUris, expected.redirects);
       const passed = connector && connector.status === 'pass' && callbacksMatch;
       match('google-match', passed ? 'pass' : 'warn', passed ? 'Matches' : 'Update required');

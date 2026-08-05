@@ -25,82 +25,23 @@
 // agent_view turns on Slack's Agent experience for newly-created apps (side panel,
 // app threads, and agent-oriented thread affordances).
 
-/** Kept in lock-step with the protocol callback consumed by daemon + relay. */
-export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
+import {
+  buildSlackAppManifest,
+  DEFAULT_SLACK_APP_NAME,
+  PLATFORM_APP_DESCRIPTION,
+  SLACK_BOT_EVENTS,
+  SLACK_BOT_SCOPES,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  type SlackAppManifest
+} from '@agentconnect.md/protocol/slack-app-manifest'
 
-/** Bot token scopes the Slack app requests. Widening this list later forces every
- *  workspace that already installed the app to re-authorize, so it covers group DMs
- *  (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and thread
- *  surfaces the adapter reads today.
- *
- *  Deliberately NO channel-write scope: `conversations.leave` would need
- *  `channels:manage`, which also grants create/archive/kick/rename and would force
- *  every installed workspace to re-authorize. Slack re-lists membership
- *  authoritatively, so removing the bot in Slack clears the console row by itself.
- *  Keep in lock-step with the control plane's copy. */
-export const SLACK_BOT_SCOPES = [
-  'files:read',
-  'app_mentions:read',
-  'channels:history',
-  'channels:read',
-  'commands',
-  'chat:write',
-  'chat:write.customize',
-  'files:write',
-  'groups:history',
-  'groups:read',
-  'im:history',
-  'im:write',
-  'mpim:history',
-  'mpim:read',
-  'reactions:write',
-  'assistant:write',
-  'users:read'
-] as const
-
-/** Bot events the daemon subscribes to: message.* / app_mention drive inbound
- *  delivery, assistant_thread_started preserves Agent/assistant DM thread roots,
- *  membership events drive the console's per-channel trigger config, and the two
- *  `app_*`/token lifecycle events feed the uninstall/revocation surfacing. */
-export const SLACK_BOT_EVENTS = [
-  'app_mention',
-  'app_uninstalled',
-  'assistant_thread_started',
-  'message.channels',
-  'message.groups',
-  'message.im',
-  'message.mpim',
-  'member_joined_channel',
-  'channel_left',
-  'group_left',
-  'tokens_revoked'
-] as const
-
-/** Fallback name so the manifest / deep link are always valid before the user types one. */
-export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
-export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
-
-export interface SlackAppManifest {
-  display_information: { name: string; background_color?: string }
-  features: {
-    bot_user: { display_name: string; always_online: boolean }
-    app_home: { home_tab_enabled: boolean; messages_tab_enabled: boolean; messages_tab_read_only_enabled: boolean }
-    agent_view: { agent_description: string; suggested_prompts: { title: string; message: string }[] }
-    shortcuts: { name: string; type: 'message'; callback_id: string; description: string }[]
-  }
-  oauth_config: { scopes: { bot: string[] }; pkce_enabled: boolean }
-  settings: {
-    // `request_url` is present only for the http (Events API) transport.
-    event_subscriptions: { request_url?: string; bot_events: string[] }
-    // `request_url` / `message_menu_options_url` are present only for http; both
-    // point at the relay's interactions endpoint (block_suggestion options are
-    // answered synchronously there).
-    interactivity: { is_enabled: boolean; request_url?: string; message_menu_options_url?: string }
-    org_deploy_enabled: boolean
-    socket_mode_enabled: boolean
-    token_rotation_enabled: boolean
-    is_mcp_enabled: boolean
-  }
+export {
+  DEFAULT_SLACK_APP_NAME,
+  PLATFORM_APP_DESCRIPTION,
+  SLACK_BOT_EVENTS,
+  SLACK_BOT_SCOPES,
+  SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
+  type SlackAppManifest
 }
 
 /** Transport-aware manifest options. `mode` selects Socket Mode (default) vs HTTP
@@ -129,51 +70,12 @@ export interface SlackAppNames {
  *  aim the request_urls at (missing ⇒ falls back to the socket shape rather than
  *  emit an http manifest with an empty request_url). */
 export function buildSlackManifest(names: SlackAppNames, opts?: SlackManifestOpts): SlackAppManifest {
-  const name = names.name.trim() || DEFAULT_SLACK_APP_NAME
-  const displayName = names.displayName?.trim() || name
-  // Normalize a ws(s):// relay base to http(s):// and strip a trailing slash — the
-  // manifest request_url must be an https origin (mirror of api.ts's http→ws flip).
-  const relayUrl = opts?.relayUrl?.replace(/^ws/, 'http').replace(/\/+$/, '')
-  const http = opts?.mode === 'http' && !!relayUrl
-  return {
-    display_information: { name, ...(opts?.backgroundColor ? { background_color: opts.backgroundColor } : {}) },
-    features: {
-      bot_user: { display_name: displayName, always_online: true },
-      app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
-      agent_view: {
-        agent_description: PLATFORM_APP_DESCRIPTION,
-        suggested_prompts: []
-      },
-      shortcuts: [
-        {
-          name: 'Manage session',
-          type: 'message',
-          callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
-          description: 'View or update the AgentConnect session for this conversation'
-        }
-      ]
-    },
-    oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES] }, pkce_enabled: false },
-    settings: {
-      event_subscriptions: {
-        ...(http ? { request_url: `${relayUrl}/slack/events` } : {}),
-        bot_events: [...SLACK_BOT_EVENTS]
-      },
-      interactivity: {
-        is_enabled: true,
-        ...(http
-          ? {
-              request_url: `${relayUrl}/slack/interactions`,
-              message_menu_options_url: `${relayUrl}/slack/interactions`
-            }
-          : {})
-      },
-      org_deploy_enabled: false,
-      socket_mode_enabled: !http,
-      token_rotation_enabled: false,
-      is_mcp_enabled: false
-    }
-  }
+  return buildSlackAppManifest(names.name, {
+    ...(names.displayName ? { displayName: names.displayName } : {}),
+    ...(opts?.mode === 'http' && opts.relayUrl ? { relayUrl: opts.relayUrl } : {}),
+    ...(opts?.backgroundColor ? { backgroundColor: opts.backgroundColor } : {}),
+    pkceEnabled: false
+  })
 }
 
 /** Pretty-printed manifest JSON — for the "Copy manifest" affordance. */

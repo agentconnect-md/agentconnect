@@ -22,6 +22,30 @@
       "import": "./dist/http/feishu-registration-provider.js",
       "default": "./dist/http/feishu-registration-provider.js"
     },
+    "./feishu-identity": {
+      "development": "./src/http/feishu-identity.ts",
+      "types": "./dist/http/feishu-identity.d.ts",
+      "import": "./dist/http/feishu-identity.js",
+      "default": "./dist/http/feishu-identity.js"
+    },
+    "./github-app-api": {
+      "development": "./src/github/setup-api.ts",
+      "types": "./dist/github/setup-api.d.ts",
+      "import": "./dist/github/setup-api.js",
+      "default": "./dist/github/setup-api.js"
+    },
+    "./slack-config-api": {
+      "development": "./src/http/slack-config-api.ts",
+      "types": "./dist/http/slack-config-api.d.ts",
+      "import": "./dist/http/slack-config-api.js",
+      "default": "./dist/http/slack-config-api.js"
+    },
+    "./slack-manifest": {
+      "development": "./src/http/slack-manifest.ts",
+      "types": "./dist/http/slack-manifest.d.ts",
+      "import": "./dist/http/slack-manifest.js",
+      "default": "./dist/http/slack-manifest.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",
@@ -67,6 +91,7 @@
     "@prisma/adapter-pg": "^7.9.0",
     "@prisma/client": "^7.9.0",
     "@resvg/resvg-js": "^2.6.2",
+    "@slack/web-api": "^8.0.0",
     "aws4fetch": "^1.0.20",
     "croner": "^10.0.1",
     "fastify": "^5.10.0",
