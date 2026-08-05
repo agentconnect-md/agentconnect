@@ -538,20 +538,27 @@ visibility grant.
 
 ## Session visibility
 
-Every session carries its own visibility, composed with — never widening — the visibility
-of the agent that owns it. Platform direct messages, Playground and webchat conversations,
-and sessions launched through the Web API default to **private**: only their owner can see
-them — deliberately no role exception, org owners included. Channel sessions, group direct
-messages, and automation-originated sessions (cron, hook, dream, agent-to-agent) default
-to **org**, visible to every member who can already view the agent. A session's initiator
-is recorded regardless of tier, and re-classification belongs to that recorded initiator
-alone: the person who started a channel conversation may later pull it private, and only a
-private session's owner may publish it back. Roles grant no re-classification rights — an
-org owner cannot flip someone else's session in either direction.
+Every session carries its own audience, independent from the Team visibility of the Agent
+that owns it. Passing the Session audience grants access to that Session's metadata and
+transcript; it does not grant access to the Agent's page, configuration, workspace, or
+invocation controls. The Console may show the owning Agent's display name as Session
+context, but makes it a link only when the viewer can also see that Agent.
+
+Platform direct messages, Playground and webchat conversations, and sessions launched
+through the Web API default to **private**: only their owner can see them — deliberately no
+role exception, org owners included. Channel sessions, group direct messages, and
+automation-originated sessions (cron, hook, dream, agent-to-agent) default to **org**,
+visible to every organization member. A session's initiator is recorded regardless of
+tier, and re-classification belongs to that recorded initiator alone: the person who
+started a channel conversation may later pull it private, and only a private session's
+owner may publish it back. Roles grant no re-classification rights — an org owner cannot
+flip someone else's session in either direction.
 
 An agent-to-agent child inherits its parent's visibility, because a delegation copies the
 parent's prompt into the child's transcript. Tightening a session therefore cascades to its
 descendants; publishing one never does — widening a child stays that child's own decision.
+The child remains readable to everyone in that inherited audience even when its target
+Agent is hidden from them.
 
 A session the caller may not see is reported as missing, not as forbidden: the console must
 not reveal that it exists.

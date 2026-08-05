@@ -18,8 +18,9 @@ const SLACK_OWNER = 'slack:T024BE7LD:U0123ABCD'
 
 const agent = {
   id: 'agent-1',
+  name: 'hidden-agent',
   orgId: ORG_ID,
-  visibility: 'org',
+  visibility: 'restricted',
   sharedWith: []
 }
 
@@ -67,7 +68,10 @@ function slackDmSession() {
   }
 }
 
-function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string; userId: string } | null> }) {
+function fakeDeps(overrides: {
+  slackIdentityFor?: () => Promise<{ teamId: string; userId: string } | null>
+  session?: ReturnType<typeof slackDmSession>
+}) {
   const listPage = vi.fn(async () => ({ sessions: [], total: 0, hasMore: false }))
   const listConversationPage = vi.fn(async () => ({ conversations: [], total: 0, hasMore: false }))
   const deps = {
@@ -77,7 +81,7 @@ function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string
         get: vi.fn(async () => agent)
       },
       session: {
-        get: vi.fn(async () => slackDmSession()),
+        get: vi.fn(async () => overrides.session ?? slackDmSession()),
         orgHasAny: vi.fn(async () => true),
         listExternalScopes: vi.fn(async () => []),
         getExternalScopes: vi.fn(async () => []),
@@ -158,7 +162,7 @@ describe('session routes × viewer identity', () => {
     }
   })
 
-  it('serves the detail of a private Slack DM session to its linked owner', async () => {
+  it('serves the detail of a private Slack DM session to its linked owner even when the Agent is hidden', async () => {
     const { deps } = fakeDeps({
       slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' })
     })
@@ -166,7 +170,8 @@ describe('session routes × viewer identity', () => {
     try {
       const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
       expect(res.statusCode).toBe(200)
-      const body = res.json() as { visibility: string; canChangeVisibility: boolean }
+      const body = res.json() as { agentName: string; visibility: string; canChangeVisibility: boolean }
+      expect(body.agentName).toBe('hidden-agent')
       expect(body.visibility).toBe('private')
       // Identity match also grants §4.3 re-classification, exactly like a
       // `user:<id>`-owned row.
@@ -184,6 +189,21 @@ describe('session routes × viewer identity', () => {
     try {
       const res = await app.inject({ method: 'GET', url: '/sessions/sess-1' })
       expect(res.statusCode).toBe(404)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('still 404s a matching Session audience from another organization', async () => {
+    const session = slackDmSession()
+    session.orgId = 'org-2'
+    const { deps } = fakeDeps({
+      session,
+      slackIdentityFor: async () => ({ teamId: 'T024BE7LD', userId: 'U0123ABCD' })
+    })
+    const app = await appAs(deps, { userId: 'u-1', oidcSubject: 'logto-sub' })
+    try {
+      expect((await app.inject({ method: 'GET', url: '/sessions/sess-1' })).statusCode).toBe(404)
     } finally {
       await app.close()
     }

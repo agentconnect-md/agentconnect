@@ -42,6 +42,50 @@ const sessionIds = (body: unknown): string[] =>
   (body as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)
 
 describe('session visibility — list & detail', () => {
+  it('shows a handoff Session across a hidden Agent boundary without exposing the Agent', async () => {
+    const viewer = await makeUser(`sv-hidden-agent-${randomUUID()}`, 'collaborator')
+    const selectedViewer = await makeUser(`sv-selected-agent-${randomUUID()}`, 'collaborator')
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const supportAgent = await seedAgent(prisma, randomUUID(), { daemonId, name: 'support-agent' })
+    const paymentsAgent = await seedAgent(prisma, randomUUID(), {
+      daemonId,
+      name: 'payments-agent',
+      visibility: 'restricted',
+      sharedWith: [selectedViewer]
+    })
+    const parent = await seedSessionMeta(prisma, `s-support-${randomUUID()}`, supportAgent, {})
+    const child = await seedSessionMeta(prisma, `s-payments-${randomUUID()}`, paymentsAgent, {
+      parentSessionId: parent
+    })
+    const app = appAs(viewer)
+
+    // The Agent resource stays hidden, including its configuration/workspace.
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/agents/${paymentsAgent}` })).statusCode).toBe(404)
+
+    // The Session audience is independent. A direct hidden-Agent filter remains
+    // valid and returns only Session-scoped metadata, including a display name.
+    const list = (
+      await app.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&agentId=${paymentsAgent}` })
+    ).json() as { sessions: Array<{ sessionId: string; agentName: string | null }> }
+    expect(list.sessions).toEqual([expect.objectContaining({ sessionId: child, agentName: 'payments-agent' })])
+
+    const childDetail = await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${child}` })
+    expect(childDetail.statusCode).toBe(200)
+    expect(childDetail.json()).toMatchObject({
+      id: child,
+      agentId: paymentsAgent,
+      agentName: 'payments-agent',
+      parentSession: { id: parent, agentId: supportAgent, agentName: 'support-agent' }
+    })
+
+    const parentDetail = (await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${parent}` })).json() as {
+      childSessions: Array<{ id: string; agentId: string; agentName: string | null }>
+    }
+    expect(parentDetail.childSessions).toEqual([
+      expect.objectContaining({ id: child, agentId: paymentsAgent, agentName: 'payments-agent' })
+    ])
+  })
+
   it('a collaborator sees org sessions and their own private ones, never another member’s', async () => {
     const mine = await makeUser('sv-mine', 'collaborator')
     const theirs = await makeUser('sv-theirs', 'collaborator')

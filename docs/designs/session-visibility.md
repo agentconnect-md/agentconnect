@@ -28,9 +28,10 @@ This design gives every session its own visibility:
   webchat** sessions, and sessions launched through the **Web API**. A
   Feishu/Lark custom-Bot p2p ownership matches through the user's cross-App
   `union_id`.
-- **`org`** — visible to every org member who can view the owning agent.
-  Default for automation-originated sessions and shared IM sessions when the
-  corresponding external-audience policy is disabled.
+- **`org`** — visible to every organization member, independently from the
+  owning Agent's Team visibility. Default for automation-originated sessions
+  and shared IM sessions when the corresponding external-audience policy is
+  disabled.
 - **`external`** — visible only when the viewer currently has provider access
   to the immutable external source scope recorded when the session was created.
   Slack stores `(workspace, conversation)`: public channels admit linked,
@@ -48,9 +49,12 @@ This design gives every session its own visibility:
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
 
-Session visibility **composes with** agent visibility: a session is visible iff
-the viewer can view the owning agent **and** passes the session-level
-predicate. It never widens agent visibility.
+Session visibility is **independent from** Agent Team visibility. Passing the
+session-level predicate grants access only to that Session's metadata,
+transcript, and Session-scoped live updates. It does not grant access to the
+owning Agent resource, configuration, workspace, or invocation controls. The
+Console may project the Agent's display name as Session context, but links it
+only when the Agent resource is independently visible.
 
 ## 2. The owner identity problem
 
@@ -451,16 +455,15 @@ transport failure — is `unknown`: deny plus `degraded`, which is what raises
 "external access checks are unavailable" and is re-asked on the short unknown
 TTL.
 
-All of these already gate on agent visibility; each additionally applies the
-session predicate:
+Session read surfaces use the Session predicate as their authorization boundary:
 
-| Surface                       | Where                                                                                     | Change                                                                                                                                                                                               |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))`, applied to every viewer (no org-owner bypass)                                                                                      |
-| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | apply `canViewSession` after the agent gate; fail as 404                                                                                                                                             |
-| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; invisible parent already renders `null`                                                                                                                                              |
-| SSE                           | `http/routes/stream.ts`                                                                   | applies the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations), and rechecks live org membership and agent visibility for each event |
-| Usage                         | `http/routes/usage.ts`                                                                    | same predicate on every session-backed aggregate                                                                                                                                                     |
+| Surface                       | Where                                                                                     | Change                                                                                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| List + facets                 | `persistence/repositories/session.repo.ts` (`pageWhereSql` — raw SQL, not Prisma `where`) | enumerate the org's Agent ids only as a storage scope, then apply `AND (visibility = 'org' OR owner_identity = ANY(:identitySet))` to every viewer (no org-owner bypass)             |
+| Detail / messages / tool-body | `http/routes/sessions.ts` `getOrgViewableSession`                                         | require the row's `orgId` plus `canViewSession`; fail as 404 without consulting Agent Team visibility                                                                                |
+| Children                      | `session.repo.ts` `listChildren`                                                          | same predicate; an invisible parent renders `null`, while a visible child is retained even when its owning Agent is hidden                                                           |
+| SSE                           | `http/routes/stream.ts`                                                                   | apply the predicate to every session-scoped envelope (`event/session` milestones and `event/session-activity` invalidations) and recheck live organization membership for each event |
+| Usage                         | `http/routes/usage.ts`                                                                    | keep the resource-scoped analytics intersection: Agent visibility plus the Session predicate on every session-backed aggregate                                                       |
 
 Invariants preserved:
 
@@ -609,8 +612,7 @@ learned from it"); silence is not an option.
   uses the viewer's own profile status to offer `Link <provider> profile` when
   unlinked or `Review <provider> profile` when linked. The unavailable state lists
   those possible reasons explicitly: the session may not exist or may have been
-  removed, the required profile may be absent or linked to another workspace, or the
-  owning Agent may not be shared with the viewer.
+  removed, or the required profile may be absent or linked to another workspace.
   Unsupported providers and ordinary/handwritten URLs get no provider action. The
   hint is intentionally forgeable and never consulted for authorization, so none
   of this guidance can confirm whether the session exists; the protected session
@@ -696,9 +698,10 @@ link ends public access without touching the session row.
   `conversationKind`; the §4.5 state machine — pending settlement is
   one-time and conditional (never overwrites `explicit`), tightening
   cascades transitively, widening never cascades.
-- **Integration (`test:int`):** list/detail/SSE visibility for a two-member
-  org (each member sees identity-owned private + org sessions; the owner role
-  does not widen private visibility);
+- **Integration (`test:int`):** list/detail/messages/SSE visibility for a
+  two-member org (each member sees identity-owned private + org sessions; the
+  owner role does not widen private visibility), plus a handoff child whose
+  Session remains readable while its restricted owning Agent stays 404;
   SSE assertion that **neither** `event/session` nor `event/session-activity`
   for a private session reaches an unauthorized subscriber; keyset pagination
   stability under the new predicate; migration backfill (`org` + `orgId`) on

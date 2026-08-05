@@ -18,7 +18,7 @@ import type { HttpDeps } from '../deps.js'
 import { AgentId, HookId, OrgId, SessionId } from '../../domain/ids.js'
 import { orgOf, ctxOf, denyNonOwner } from '../rbac.js'
 import { decodeConversationKey, encodeConversationKey } from '../conversation-key.js'
-import { canChangeSessionVisibility, canView, canViewSession } from '../../authorization/policy.js'
+import { canChangeSessionVisibility, canViewSession } from '../../authorization/policy.js'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
@@ -120,8 +120,21 @@ function hookIdForSession(s: HookSessionRow): string | null {
   return HookIdString.safeParse(id).success ? id : null
 }
 
-function sessionRelation(s: { id: string; agentId: string; platform: string | null; title: string | null }) {
-  return { id: s.id, agentId: s.agentId, platform: s.platform ?? 'slack', title: s.title }
+function agentDisplayName(agent: { name: string; displayName?: string | null }): string {
+  return agent.displayName?.trim() || agent.name
+}
+
+function sessionRelation(
+  s: { id: string; agentId: string; platform: string | null; title: string | null },
+  agentNames: ReadonlyMap<string, string>
+) {
+  return {
+    id: s.id,
+    agentId: s.agentId,
+    agentName: agentNames.get(s.agentId) ?? null,
+    platform: s.platform ?? 'slack',
+    title: s.title
+  }
 }
 
 function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, session: HookSessionRow) {
@@ -253,7 +266,11 @@ function sessionFacets(index: SessionFacetIndex, hookMetadata: Map<string, HookS
   }
 }
 
-function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMetadata>) {
+function sessionDto(
+  s: SessionPageRow,
+  hookMetadata: Map<string, HookSessionMetadata>,
+  agentNames: ReadonlyMap<string, string>
+) {
   const hook = hookMetadataForSession(hookMetadata, s)
   const display = sessionDisplayMetadata(s, hook)
   return {
@@ -264,6 +281,7 @@ function sessionDto(s: SessionPageRow, hookMetadata: Map<string, HookSessionMeta
       ...(s.thread !== null ? { thread: s.thread } : {})
     },
     agentId: s.agentId,
+    agentName: agentNames.get(s.agentId) ?? null,
     title: s.title ?? null,
     status: s.status ?? null,
     lastActivityAt: s.lastActivityAt.toISOString(),
@@ -316,20 +334,12 @@ export function sessionRoutes(deps: HttpDeps) {
   return async function sessionRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
 
-    // Fetch an agent AND verify it's in the caller's org AND visible to them — a
-    // cross-org id OR a restricted agent they can't see both read as absent (404).
-    // Sessions/usage/tool-bodies all derive their visibility from the owning agent.
-    const getOrgViewableAgent = async (req: FastifyRequest, agentId: string) => {
-      const agent = await deps.repos.agent.get(AgentId(agentId))
-      if (!agent || agent.orgId !== req.orgCtx!.orgId) return null
-      return canView(agent, ctxOf(req)) ? agent : null
-    }
-
-    // Session visibility (session-visibility.md §5) COMPOSES with the agent gate
-    // above: a session is visible iff its agent is visible AND the caller passes
-    // the session predicate. The repo arm and this in-app check must stay two
-    // spellings of one rule — both come from `canViewSession`, fed the SAME
-    // identity set: console identity plus provider-plugin contributions.
+    // Session reads are authorized by the Session audience, independently from
+    // the owning Agent's Team visibility. Passing this gate grants transcript
+    // access only; Agent configuration and workspace routes keep their own Agent
+    // resource gate. The repo arm and this in-app check must stay two spellings
+    // of one rule — both come from `canViewSession`, fed the SAME identity set:
+    // console identity plus provider-plugin contributions.
     const sessionAccess = makeSessionAccessResolver(deps)
     const viewerForQuery = async (req: FastifyRequest, query: Parameters<typeof sessionAccess.forQuery>[1]) => {
       const access = await sessionAccess.forQuery(req, query)
@@ -345,11 +355,10 @@ export function sessionRoutes(deps: HttpDeps) {
 
     const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
       const session = await deps.repos.session.get(SessionId(sessionId))
-      if (!session) return null
+      if (!session || session.orgId !== orgOf(req)) return null
       const access = await sessionAccess.forSessions(req, [session])
       if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) return null
-      const agent = await getOrgViewableAgent(req, session.agentId)
-      return agent ? { session, agent, access } : null
+      return { session, access }
     }
 
     type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
@@ -443,9 +452,9 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       },
       async (req) => {
-        const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
+        const orgAgentIds = (await deps.repos.agent.list(orgOf(req))).map((agent) => agent.id)
         const requested = requestedAgentIds(req.query)
-        if (requested.some((id) => !new Set<string>(visibleAgentIds).has(id))) {
+        if (requested.some((id) => !new Set<string>(orgAgentIds).has(id))) {
           return { agents: [], integrations: [], channels: [], triggers: [] }
         }
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
@@ -454,7 +463,7 @@ export function sessionRoutes(deps: HttpDeps) {
         // the selected agents' rows: a facet answers "what else can I narrow by",
         // and a conversation's channel is the same whichever member you read.
         const query = {
-          agentIds: visibleAgentIds,
+          agentIds: orgAgentIds,
           ...(requested.length === 1 ? { agentId: AgentId(requested[0]!) } : {}),
           ...(requested.length > 1 ? { conversationAgentIds: requested.map(AgentId) } : {}),
           ...(req.query.platform ? { platform: req.query.platform } : {}),
@@ -465,8 +474,8 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
         }
         // Each facet drops its own active filter, so its external-audience
-        // snapshot must span the same visible-agent superset.
-        const { viewer } = await viewerForQuery(req, { agentIds: visibleAgentIds.map(AgentId) })
+        // snapshot must span the same org-agent superset.
+        const { viewer } = await viewerForQuery(req, { agentIds: orgAgentIds.map(AgentId) })
         const index = await deps.repos.session.listFacets({ ...query, viewer })
         const metadataRows = [...index.integrations, ...index.channels, ...index.triggers]
         const hookMetadata = await hookMetadataForSessions(deps, metadataRows, orgOf(req))
@@ -502,22 +511,22 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'invalid conversation key' })
         }
 
-        // The set of agents THIS caller may see under the resource policy. Roles
-        // never widen visibility, so restricted-agent rows are hidden before any
-        // title/channel/usage metadata reaches the caller.
-        const visibleAgentIds = (await deps.repos.agent.list(orgOf(req), ctxOf(req))).map((agent) => agent.id)
-        const visibleAgentIdSet = new Set<string>(visibleAgentIds)
-        // Every requested agent must be visible. One the caller cannot see makes
-        // the whole answer empty rather than being quietly dropped: silently
-        // widening a two-agent question to a one-agent one would answer a
-        // question they did not ask with rows they may not have wanted.
+        // Agent Team visibility does not narrow Session reads. Agent names are a
+        // session-scoped display projection only; the Agent endpoints remain
+        // resource-gated, so a hidden owner still has no Agent/Workspace link.
+        const orgAgents = await deps.repos.agent.list(orgOf(req))
+        const orgAgentIds = orgAgents.map((agent) => agent.id)
+        const orgAgentIdSet = new Set<string>(orgAgentIds)
+        const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
+        // Every requested id must still name an Agent in this org. Unknown and
+        // cross-org ids make the whole answer empty rather than being dropped.
         const requested = requestedAgentIds(req.query)
         const selectedAgentIds =
           requested.length > 0
-            ? requested.every((id) => visibleAgentIdSet.has(id))
+            ? requested.every((id) => orgAgentIdSet.has(id))
               ? requested.map(AgentId)
               : []
-            : visibleAgentIds
+            : orgAgentIds
         // Org-level "any session exists" boolean (first page only). Computed over the
         // FULL org — including sessions the caller can't see — which is safe precisely
         // because it is a bare boolean; the getting-started conversation step derives
@@ -545,7 +554,7 @@ export function sessionRoutes(deps: HttpDeps) {
         // still names the participants an agent filter kept out of its `sessions`.
         // It reaches the query before the viewer is resolved, because the scopes
         // that authorize those extra members have to be resolved with it.
-        const memberAgentIds = requested.length > 0 ? visibleAgentIds : undefined
+        const memberAgentIds = requested.length > 0 ? orgAgentIds : undefined
         const query = {
           agentIds: selectedAgentIds,
           ...(conversationAgentIds ? { conversationAgentIds } : {}),
@@ -588,7 +597,7 @@ export function sessionRoutes(deps: HttpDeps) {
                       platform: conversationKey.platform,
                       channel: conversationKey.channel,
                       thread: conversationKey.thread,
-                      sessions: rows.map((session) => sessionDto(session, hookMetadata)),
+                      sessions: rows.map((session) => sessionDto(session, hookMetadata, agentNames)),
                       memberSessionIds: members.map((session) => session.id)
                     }
                   ]
@@ -605,7 +614,7 @@ export function sessionRoutes(deps: HttpDeps) {
           const hookMetadata = await hookMetadataForSessions(deps, page.sessions, orgOf(req))
           const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
           return {
-            sessions: page.sessions.map((session) => sessionDto(session, hookMetadata)),
+            sessions: page.sessions.map((session) => sessionDto(session, hookMetadata, agentNames)),
             total: page.total,
             nextCursor,
             accessSyncDegraded: access.degraded,
@@ -627,7 +636,7 @@ export function sessionRoutes(deps: HttpDeps) {
             platform: c.key.platform,
             channel: c.key.channel,
             thread: c.key.thread,
-            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata)),
+            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata, agentNames)),
             memberSessionIds: c.memberSessionIds
           })),
           total: page.total,
@@ -642,7 +651,7 @@ export function sessionRoutes(deps: HttpDeps) {
     // Deep-link detail (…/sessions/:id): served from CP-stored SessionMeta (synced
     // via the `event/session` EVT), so the page resolves even when the daemon is
     // offline. Metadata only — the transcript stays a `/messages` daemon pull.
-    // 404 for an unknown session OR one whose owning agent this caller can't see.
+    // 404 for an unknown session OR one outside the Session's own audience.
     r.get(
       '/sessions/:id',
       {
@@ -662,17 +671,18 @@ export function sessionRoutes(deps: HttpDeps) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
         const { session: s, access } = owned
-        // Relationships may cross agents (and daemons), so apply the same
-        // owning-agent visibility rule to every linked session. A hidden parent
-        // is indistinguishable from no parent; hidden children are omitted.
-        const visibleAgents = await deps.repos.agent.list(orgOf(req), ctxOf(req))
-        const visibleAgentIds = visibleAgents.map((a) => a.id)
-        const visibleAgentIdSet = new Set<string>(visibleAgentIds)
+        // Relationships may cross agents (and daemons). Enumerate Agents only to
+        // keep the metadata query org-scoped and to project display names; each
+        // linked Session is independently filtered by its own audience below.
+        const orgAgents = await deps.repos.agent.list(orgOf(req))
+        const orgAgentIds = orgAgents.map((agent) => agent.id)
+        const orgAgentIdSet = new Set<string>(orgAgentIds)
+        const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
         const ctx = ctxOf(req)
         const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata] = await Promise.all([
           s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), visibleAgentIds),
-          s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, visibleAgentIds) : Promise.resolve([]),
+          deps.repos.session.listChildren(SessionId(s.id), orgAgentIds),
+          s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, orgAgentIds) : Promise.resolve([]),
           deps.repos.sessionUsage.get(s.agentId, s.id),
           // A webchat session's channel IS its conversation id; the roster feeds
           // the adopted-session composer/header, which has no relay socket.
@@ -688,7 +698,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const relatedAccess = await sessionAccess.forSessions(req, related)
         const parentVisible =
           parent !== null &&
-          visibleAgentIdSet.has(parent.agentId) &&
+          orgAgentIdSet.has(parent.agentId) &&
           canViewSession(parent, ctx, relatedAccess.identitySet, relatedAccess.externalAccess)
         // A hidden parent is indistinguishable from no parent. Keep its sibling
         // branch hidden too, otherwise the response would still reveal the
@@ -711,10 +721,11 @@ export function sessionRoutes(deps: HttpDeps) {
         ]
         return {
           id: s.id,
-          parentSession: parentVisible ? sessionRelation(parent) : null,
-          siblingSessions: visibleSiblings.map(sessionRelation),
-          childSessions: visibleChildren.map(sessionRelation),
+          parentSession: parentVisible ? sessionRelation(parent, agentNames) : null,
+          siblingSessions: visibleSiblings.map((session) => sessionRelation(session, agentNames)),
+          childSessions: visibleChildren.map((session) => sessionRelation(session, agentNames)),
           agentId: s.agentId,
+          agentName: agentNames.get(s.agentId) ?? null,
           launchId: s.launchId,
           platform: s.platform,
           channel: s.channel,
@@ -736,7 +747,7 @@ export function sessionRoutes(deps: HttpDeps) {
             webchatRoster.length > 1
               ? webchatRoster.map((p) => ({
                   agentId: p.agentId,
-                  name: visibleAgents.find((a) => a.id === p.agentId)?.name ?? null,
+                  name: agentNames.get(p.agentId) ?? null,
                   primary: p.role === 'primary'
                 }))
               : null,

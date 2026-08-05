@@ -260,47 +260,15 @@ install routes. Every route derives visibility from the parent agent.
   parent agent rather than checking only the organization at
   `integrations.ts:116-118`.
 
-### 5.5 Session: daemon fan-out, not `SessionRepo.list`
+### 5.5 Session: an independent audience boundary
 
-The Control Plane does not store sessions. `GET /sessions` at
-`sessions.ts:52-96` fans out to online daemons through
-`deps.control.sessionList` at `sessions.ts:71` and merges results in memory by
-platform and channel. `SessionRepo.list` at `session.repo.ts:69-80` had zero
-callers, so putting a filter there would be dead code.
-
-- Filter fan-out results **at the route**. After merging, parse each session's
-  `agentId`, load the corresponding records in one `agent.list(orgId)` call,
-  and discard rows for which `canView(agent, ctxOf(req))` is false. For
-  `?agentId=`, validate `canView` before the query so a client cannot enumerate
-  UUIDs.
-- Apply the same gate before proxying the transcript from
-  `GET /sessions/:id/messages`, whose organization check is at
-  `sessions.ts:116-119`, and `GET /sessions/:id/tool-body`.
-- **Transcript body boundary:** `getOrgSessionAgent(req, agentId)` requires both
-  `agent.orgId === req.orgCtx.orgId` and `canView`, closing the cross-tenant
-  leak.
-- **SSE `GET /orgs/:orgId/stream`:** filter every `event/session` milestone by
-  agent visibility, not only by daemon organization. An envelope
-  includes `agentId`, `phase`, `link`, and a short human-readable,
-  content-derived `summary`; see `protocol/src/frames/telemetry.ts:25-33`. Both
-  the existence of a restricted agent's session and its summary would leak.
-
-Three filtering options were considered:
-
-1. **Drop the entire envelope, recommended for existence hiding.** Resolve
-   `agentId -> canView` per envelope and omit an invisible event. This reveals
-   not even activity and matches list/get 404 semantics. Following the existing
-   per-connection `daemonOrg` memo at `stream.ts:51-59`, memoize
-   `agentId -> canView` so each connection loads an agent only once.
-2. **Forward without `summary`, exposing existence but hiding content.** The
-   observer still sees `agentId`, `phase`, `link`, and timing. This blocks the
-   human-readable milestone but leaks the restricted resource and activity.
-3. **Organization-wide, with no filtering.** This is unacceptable because
-   `summary` derives from content.
-
-**Decision: option 1, drop the whole envelope.** It is consistent with
-"restricted means invisible" and costs one `AgentRepo.get` per agent ID per
-connection.
+Sessions now have their own persisted audience and are not child resources of
+the owning Agent for human reads. The current contract is authoritative in
+[`session-visibility.md`](session-visibility.md): list, detail, transcript,
+tool-body, relationships, and SSE all use the Session predicate plus the active
+organization boundary. A readable Session may project its owning Agent's name,
+but it does not make a restricted Agent resource, configuration, or workspace
+readable. Analytics remains resource-scoped and keeps the Agent intersection.
 
 ### 5.6 Usage: `usage.ts -> sessionUsage.aggregate`
 

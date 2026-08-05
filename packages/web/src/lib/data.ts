@@ -1044,7 +1044,7 @@ export function enrichSessionWithAgent(
 ): Session {
   return {
     ...session,
-    agentName: agent ? agentLabel(agent) : session.agentId,
+    agentName: agent ? agentLabel(agent) : (session.agentName ?? session.agentId),
     model: session.model ?? (session.runtime ? '' : (agent?.model ?? '—')),
     runtime: session.runtime ?? agent?.runtime ?? '',
     daemon: session.daemon ?? agent?.daemon

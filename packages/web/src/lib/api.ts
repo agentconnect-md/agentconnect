@@ -340,8 +340,9 @@ export interface SessionUsageDto {
 }
 
 // Session-level visibility (docs/designs/session-visibility.md): 'private' rows are
-// visible only to the session owner (no role override, org owners included); 'org' to every member who can view
-// the owning agent. Deliberately NOT ResourceVisibility ('org' | 'restricted').
+// visible only to the session owner (no role override, org owners included); 'org'
+// to every organization member. It is independent from the owning Agent's Team
+// visibility and deliberately NOT ResourceVisibility ('org' | 'restricted').
 export type SessionVisibility = 'private' | 'org' | 'external'
 export type MutableSessionVisibility = 'private' | 'org'
 
@@ -349,6 +350,8 @@ export interface SessionDto {
   sessionId: string
   sessionKey: { platform: string; channel: string; thread?: string }
   agentId: string
+  /** Session-scoped display projection; does not imply Agent access. */
+  agentName?: string | null
   title: string | null
   status: string | null
   lastActivityAt: string | null
@@ -476,6 +479,8 @@ export interface SessionListPage {
 export interface SessionRelationDto {
   id: string
   agentId: string
+  /** Session-scoped display projection; absent on older Control Planes. */
+  agentName?: string | null
   platform: string
   title: string | null
 }
@@ -487,6 +492,8 @@ export interface SessionDetailDto {
   siblingSessions?: SessionRelationDto[]
   childSessions: SessionRelationDto[]
   agentId: string
+  /** Session-scoped display projection; absent on older Control Planes. */
+  agentName?: string | null
   platform: string | null
   channel: string | null
   thread: string | null
@@ -525,7 +532,7 @@ export interface SessionDetailDto {
   accessIssues?: SessionAccessIssue[]
   /** Multi-agent webchat conversation roster, in pick order. Null for single-agent
    *  conversations and other platforms; absent on a CP that predates the feature.
-   *  `name` is null when the caller cannot view that participant's agent. */
+   *  `name` is null only when no Agent display record can be resolved. */
   participants?: Array<{ agentId: string; name: string | null; primary: boolean }> | null
   /** Durable workspace/tenant scope (merged-conversation-view.md §5.1) — part of
    *  the conversation key. Absent on a CP that predates the feature. */
@@ -1820,6 +1827,7 @@ export function sessionFromDto(d: SessionDto): Session {
     // list row carries no bodies, so steps start empty.
     steps: [],
     agentId: d.agentId,
+    ...(d.agentName?.trim() ? { agentName: d.agentName.trim() } : {}),
     // Session-recorded execution config (what this session actually ran with).
     // Omitted on legacy rows — data-context then falls back to the agent's
     // current config when flattening. `daemon` carries the daemonId (the views
@@ -1861,6 +1869,7 @@ export function sessionFromDetailDto(d: SessionDetailDto): Session {
       ...(d.thread !== null ? { thread: d.thread } : {})
     },
     agentId: d.agentId,
+    agentName: d.agentName ?? null,
     title: d.title,
     status: d.status,
     lastActivityAt: d.lastActivityAt,
@@ -2065,9 +2074,9 @@ export async function fetchConversations(
       ...rep,
       ...identity,
       ...purge,
-      // The members the FILTER returned, which is what the row can name. Names
-      // resolve at render time from the org agent list (the DTO carries ids only);
-      // the placeholder keeps the field shape valid.
+      // The members the FILTER returned, which is what the row can name. Each
+      // Session DTO carries a safe display projection even when the owning Agent
+      // itself is hidden from the caller.
       participants: members.map((member, i) => ({
         agentId: member.agentId ?? '',
         name: member.agentName ?? member.agentId ?? '',
@@ -2123,7 +2132,7 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
 }
 
 /** CP-stored detail metadata used for session-family navigation. The linked
- *  rows are already filtered by the caller's agent visibility on the server. */
+ *  rows are already filtered by each Session's audience on the server. */
 export function fetchSessionDetail(sessionId: string, orgId?: string): Promise<SessionDetailDto> {
   return apiGet<SessionDetailDto>(`${orgBase(orgId)}/sessions/${encodeURIComponent(sessionId)}`)
 }

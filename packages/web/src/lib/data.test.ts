@@ -215,6 +215,12 @@ describe('enrichSessionWithAgent', () => {
       daemon: 'daemon-recorded'
     })
   })
+
+  it('keeps the Session-projected name when the Agent itself is hidden', () => {
+    expect(enrichSessionWithAgent({ ...session, agentName: 'Payments Agent' })).toMatchObject({
+      agentName: 'Payments Agent'
+    })
+  })
 })
 
 const catalog = (over: Partial<RuntimeModelCatalog> = {}): RuntimeModelCatalog => ({
