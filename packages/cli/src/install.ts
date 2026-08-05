@@ -6,11 +6,26 @@
  * for a corrupt bundle). Must run inside the version lock (version-lock.ts).
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { nodeSatisfies } from './node-engines.js'
 import { versionDir, versionsDir } from './paths.js'
 import { downloadTarball, resolveDaemonTarget, verifyTarball, type ResolvedTarget } from './registry.js'
 import { isInstalled, type Channel } from './version-store.js'
+
+const SECCOMP_HELPER_PATHS = [
+  'dist/vendor/seccomp/x64/apply-seccomp',
+  'dist/vendor/seccomp/arm64/apply-seccomp'
+] as const
+
+/** npm normalizes non-`bin` payload files to 0644 while packing, including the
+ * native sandbox-runtime helpers staged by the daemon build. Restore their
+ * executable mode after the integrity-verified tarball is extracted. */
+export function repairDaemonBundleModes(root: string): void {
+  for (const relative of SECCOMP_HELPER_PATHS) {
+    const path = `${root}/${relative}`
+    if (existsSync(path)) chmodSync(path, 0o755)
+  }
+}
 
 /**
  * A pinned `--to` version. Rejects anything that is not a plain version token —
@@ -76,6 +91,7 @@ export async function installTarget(
     if (!existsSync(`${tmp}/dist/index.js`)) {
       throw new Error(`daemon ${target.version} tarball has no dist/index.js — refusing to install`)
     }
+    repairDaemonBundleModes(tmp)
 
     // Atomic publish. A racing install that already produced `dest` wins; drop
     // tmp — except a forced re-install, whose point is replacing the existing dir.
