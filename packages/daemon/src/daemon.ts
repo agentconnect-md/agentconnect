@@ -12386,6 +12386,9 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly,
+          // CallMeta is the trusted distinction between a real A2A delivery and
+          // synthetic `source: agent` wakes (background task/orchestration).
+          directAgentCall: callMeta !== undefined,
           // Memory READS (index injection + auto-recall) are no longer session-
           // gated — every session may use shared memory (#653). WRITES stay gated
           // (memory write tools via memoryAccessAllowed; post-turn distillation via
