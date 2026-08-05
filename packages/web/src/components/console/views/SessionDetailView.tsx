@@ -2942,7 +2942,12 @@ export default function SessionDetailView() {
             onMouseEnter={() => updateDetailPresence('hovered', true)}
             onMouseLeave={() => updateDetailPresence('hovered', false)}
             onFocus={() => updateDetailPresence('focused', true)}
-            onBlur={() => updateDetailPresence('focused', false)}
+            // Focus moving BETWEEN descendants (trigger → panel) must not drop
+            // presence, or keyboard users can never reach the panel's contents.
+            onBlur={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget)) return
+              updateDetailPresence('focused', false)
+            }}
           >
             <button
               type="button"
@@ -2972,7 +2977,12 @@ export default function SessionDetailView() {
               onMouseEnter={() => requestsPopover.setPresence('hovered', true)}
               onMouseLeave={() => requestsPopover.setPresence('hovered', false)}
               onFocus={() => requestsPopover.setPresence('focused', true)}
-              onBlur={() => requestsPopover.setPresence('focused', false)}
+              // Same as Details: ignore focus transitions that stay inside the
+              // wrapper, so tabbing from the trigger into Allow/Deny works.
+              onBlur={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget)) return
+                requestsPopover.setPresence('focused', false)
+              }}
             >
               <button
                 type="button"

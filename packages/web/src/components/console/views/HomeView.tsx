@@ -52,7 +52,7 @@ import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
 // scanner sees them (STYLE.md §8).
 const CHIP =
-  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
 
 // The literal Tailwind spelling of DASH_ROW_H (`.row` is a components-layer class, so
 // these utilities win). `content-center` centres the row's single grid track inside the
@@ -545,7 +545,7 @@ export default function HomeView() {
                     open={menu === 'agent'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
                     leading={
                       <span className="av h-4 w-4 rounded-xs">
                         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
@@ -579,7 +579,7 @@ export default function HomeView() {
                     open={menu === 'model'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
                     tooltips={false}
                     leading={
                       <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
