@@ -43,6 +43,7 @@
     "react-dom": "^19.2.8",
     "react-icons": "^5.7.0",
     "react-markdown": "^10.1.0",
+    "recharts": "^3.10.1",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "swr": "^2.4.2"

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
+import { Bar, BarChart, Legend, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { fetchUsage, fmtCost, fmtCountCompact as fmtCompact, type UsageRange } from '@/lib/api'
 import { agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
@@ -26,6 +27,25 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
   { key: 'd7', label: '7 days' },
   { key: 'd30', label: '30 days' }
 ]
+
+// SVG `fill` can't take a `var()` presentation attribute, so the stacked-bar hues
+// are applied as descendant CSS rules on the chart wrapper (a real declaration
+// out-ranks recharts' own `fill` attribute) — that keeps the bars theme-reactive
+// with no JS reading computed styles. Literal strings so Tailwind can see them.
+const SEG_FILL = [
+  '[&_.seg-0_path]:fill-(--chart-1)',
+  '[&_.seg-1_path]:fill-(--chart-2)',
+  '[&_.seg-2_path]:fill-(--chart-3)',
+  '[&_.seg-3_path]:fill-(--chart-4)',
+  '[&_.seg-4_path]:fill-(--chart-5)',
+  '[&_.seg-5_path]:fill-(--chart-6)',
+  '[&_.seg-6_path]:fill-(--chart-other)',
+  '[&_.seg-flat_path]:fill-(--brand)',
+  // recharts' accessibility layer makes the chart surface focusable, so clicking a
+  // bar leaves a UA focus ring around the whole plot — suppress it.
+  '[&_.recharts-wrapper]:outline-none',
+  '[&_.recharts-surface]:outline-none'
+].join(' ')
 
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 const USAGE_REFRESH_MS = 30_000
@@ -64,6 +84,13 @@ export default function UsageView() {
   const range: UsageRange = isMobile && parsed === 'd90' ? 'd30' : parsed
 
   const [groupBy, setGroupBy] = useState<GroupBy>('agent')
+  // Chart-legend series filter. Keys are group-specific (agent ids vs model names),
+  // so switching the rollup clears it rather than stranding a hidden key.
+  const [hiddenKeys, setHiddenKeys] = useState<string[]>([])
+  const selectGroup = (k: GroupBy) => {
+    setGroupBy(k)
+    setHiddenKeys([])
+  }
 
   const { agents } = useConsoleData()
   const waitingForOrg = orgLoading || (!activeOrg && orgs.length > 0)
@@ -255,9 +282,8 @@ export default function UsageView() {
         </div>
       </div>
 
-      {/* Spend over time. Pure-CSS bar chart (flex columns), matching the design —
-          no chart library needed. Bars are max-normalized; empty buckets render as
-          the 4px baseline. Hidden by graceful fallback if the CP predates `series`. */}
+      {/* Spend over time — recharts stacked bars. Hidden by graceful fallback if the
+          CP predates `series`. */}
 
       {/* First-load skeleton: same card + 180px body footprint as the real chart so
           the swap to data causes no layout shift. Deterministic bar heights (no
@@ -269,7 +295,7 @@ export default function UsageView() {
             <span className="ml-auto h-[11px] w-12 rounded-full bg-(--surface-active)" />
           </div>
           <div
-            className="flex h-[180px] animate-pulse items-end px-[18px] pb-[14px] pt-5"
+            className="flex h-[212px] animate-pulse items-end px-[18px] pb-[22px] pt-9"
             style={{ gap: skelBars > 40 ? 2 : skelBars > 14 ? 4 : 10 }}
           >
             {Array.from({ length: skelBars }, (_, i) => (
@@ -288,7 +314,6 @@ export default function UsageView() {
         (() => {
           const pts = data.series.points
           const labelEvery = Math.max(1, Math.ceil(pts.length / 8))
-          const gap = pts.length > 40 ? 2 : pts.length > 14 ? 4 : 10
           const unit = (currency ?? 'USD').toUpperCase()
           // Full IANA zone name (e.g. "Asia/Shanghai") — the buckets are aligned to
           // this zone, so tell the viewer. Client-only: the chart never renders on
@@ -334,22 +359,91 @@ export default function UsageView() {
               : k === OTHER
                 ? 'var(--chart-other)'
                 : `var(--chart-${topKeys.indexOf(k) + 1})`
-          // Per-bucket stack, bottom-up in stackKeys order. Negative deltas
-          // (downward corrections) can't render as height — clamp to 0; the
-          // bucket's tooltip total still reports the true net figure.
-          const stacks = recs.map((rec) => {
-            const segs = stackKeys
-              .map((k) => ({
-                k,
-                v:
-                  k === OTHER
-                    ? Object.entries(rec).reduce((s, [kk, vv]) => (topKeys.includes(kk) ? s : s + Math.max(0, vv)), 0)
-                    : Math.max(0, rec[k] ?? 0)
-              }))
-              .filter((s) => s.v > 0)
-            return { segs, total: segs.reduce((s, x) => s + x.v, 0) }
+          // One recharts row per bucket. Series are `s<i>` (index into stackKeys) so a
+          // model/agent id can never collide with `label`/`__total`. Negative deltas
+          // (downward corrections) can't render as height — clamp to 0; `__total` in
+          // the tooltip still reports the true net figure.
+          const chartData = recs.map((rec, i) => {
+            const row: Record<string, number | string> = {
+              label: bucketLabel(pts[i]!.start, data.series!.bucket),
+              __total: pts[i]!.costAmount
+            }
+            stackKeys.forEach((k, si) => {
+              row[`s${si}`] =
+                k === OTHER
+                  ? Object.entries(rec).reduce((s, [kk, vv]) => (topKeys.includes(kk) ? s : s + Math.max(0, vv)), 0)
+                  : Math.max(0, rec[k] ?? 0)
+            })
+            return row
           })
-          const maxSpend = Math.max(...stacks.map((s) => s.total), 0)
+
+          // Legend-driven filter. A hidden key stays in `stackKeys` (its hue never
+          // shifts onto another series) — the Bar is just `hide`den, so the stack and
+          // the y-scale recompute from the visible series only.
+          const hidden = new Set(hiddenKeys)
+          const toggleKey = (k: string) =>
+            setHiddenKeys((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]))
+          const visibleKeys = stackKeys.filter((k) => !hidden.has(k))
+
+          // Legend content is our own markup (recharts' default swatches can't take a
+          // `var()` color) rendered inside recharts' <Legend> slot, so the plot area
+          // reserves room for it instead of the card doing its own layout.
+          const LegendKeys = () => (
+            <div className="flex flex-wrap gap-x-3 gap-y-1 px-[8px]">
+              {stackKeys.map((k) => {
+                const off = hidden.has(k)
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => toggleKey(k)}
+                    aria-pressed={!off}
+                    title={off ? `Show ${keyName(k)}` : `Hide ${keyName(k)}`}
+                    className={`flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11px] leading-normal ${
+                      off ? 'text-(--text-disabled)' : 'text-(--text-secondary)'
+                    }`}
+                  >
+                    <span
+                      className="h-[9px] w-[9px] flex-none rounded-[3px]"
+                      style={{ backgroundColor: off ? 'var(--surface-active)' : keyColor(k) }}
+                    />
+                    {keyName(k)}
+                  </button>
+                )
+              })}
+            </div>
+          )
+
+          type TipSeg = { dataKey: string; name: string; value: number; payload: Record<string, number> }
+          const Tip = ({ active, payload, label }: { active?: boolean; payload?: TipSeg[]; label?: string }) => {
+            if (!active || !payload?.length) return null
+            const segs = [...payload].reverse().filter((s) => s.value > 0)
+            // Unfiltered, report the bucket's true net cost (`__total` keeps negative
+            // corrections the clamped segments drop); filtered, report what's shown.
+            const total = hidden.size
+              ? payload.reduce((s, x) => s + (x.value || 0), 0)
+              : (payload[0]!.payload.__total ?? 0)
+            return (
+              <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
+                <div className="mono text-[11px] font-semibold text-(--text-primary)">
+                  {label} · {fmtCost(total, currency)}
+                </div>
+                {hasBreakdown &&
+                  segs.map((s) => (
+                    <div
+                      key={s.dataKey}
+                      className="mt-1 flex items-center gap-[6px] font-sans text-[11px] leading-normal text-(--text-secondary)"
+                    >
+                      <span
+                        className="h-[8px] w-[8px] flex-none rounded-[2px]"
+                        style={{ backgroundColor: keyColor(stackKeys[Number(s.dataKey.slice(1))]!) }}
+                      />
+                      {s.name}: <span className="mono text-(--text-primary)">{fmtCost(s.value, currency)}</span>
+                    </div>
+                  ))}
+              </div>
+            )
+          }
           return (
             <div className="card mb-[18px] max-desktop:mx-4 max-desktop:mb-3 max-desktop:rounded-lg">
               <div className="cardhead">
@@ -359,78 +453,41 @@ export default function UsageView() {
                   {unit} / {data.series.bucket}
                 </span>
               </div>
-              {/* Legend shows even for a single key — the card title doesn't name
-                  the series, and touch users can't reach the hover tooltip. */}
-              {hasBreakdown && stackKeys.length > 0 && (
-                <div className="flex flex-wrap gap-x-3 gap-y-1 px-[18px] pt-3">
-                  {stackKeys.map((k) => (
-                    <span
-                      key={k}
-                      className="flex items-center gap-[5px] font-sans text-[11px] leading-normal text-(--text-secondary)"
-                    >
-                      <span
-                        className="h-[9px] w-[9px] flex-none rounded-[3px]"
-                        style={{ backgroundColor: keyColor(k) }}
+              {/* stackKeys order is bottom-up (largest series on the baseline), which is
+                  also recharts' render order, so `seg-<i>` lines up with SEG_FILL. */}
+              <div className={`h-[212px] px-[10px] pb-[6px] pt-3 text-(--text-tertiary) ${SEG_FILL}`}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 0, right: 8, bottom: 0, left: 8 }} barCategoryGap="18%">
+                    <XAxis
+                      dataKey="label"
+                      interval={labelEvery - 1}
+                      tickLine={false}
+                      axisLine={false}
+                      tickMargin={6}
+                      tick={{ fill: 'currentColor', fontSize: 10.5 }}
+                      className="mono"
+                    />
+                    <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
+                    {/* Legend shows even for a single key — the card title doesn't name
+                        the series. Click a key to filter it out of the stack. */}
+                    {hasBreakdown && stackKeys.length > 0 && (
+                      <Legend verticalAlign="top" align="left" height={32} content={<LegendKeys />} />
+                    )}
+                    {stackKeys.map((k, i) => (
+                      <Bar
+                        key={k}
+                        dataKey={`s${i}`}
+                        name={keyName(k)}
+                        stackId="spend"
+                        className={hasBreakdown ? `seg-${i}` : 'seg-flat'}
+                        maxBarSize={46}
+                        hide={hidden.has(k)}
+                        // Round only the top of the visible stack.
+                        radius={k === visibleKeys[visibleKeys.length - 1] ? [5, 5, 0, 0] : undefined}
                       />
-                      {keyName(k)}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div className="flex h-[180px] items-end px-[18px] pb-[14px] pt-5" style={{ gap }}>
-                {pts.map((p, i) => {
-                  const label = bucketLabel(p.start, data.series.bucket)
-                  const { segs, total } = stacks[i]!
-                  const tip = hasBreakdown
-                    ? [
-                        `${label} · ${fmtCost(p.costAmount, currency)}`,
-                        ...[...segs].reverse().map((s) => `${keyName(s.k)}: ${fmtCost(s.v, currency)}`)
-                      ].join('\n')
-                    : `${label} · ${fmtCost(p.costAmount, currency)}`
-                  return (
-                    <div
-                      key={p.start}
-                      className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-2"
-                      title={tip}
-                    >
-                      {/* Stack renders DOM top→bottom = reverse of stackKeys, so the
-                          largest key sits on the baseline. flex-grow splits the
-                          bucket height after the 2px surface gaps between segments.
-                          A tiny bar can be all gap (2px × segments ≥ its height),
-                          so gaps only apply once every segment can keep visible
-                          color (~127px usable plot height at 100%). */}
-                      <div
-                        className="flex w-full max-w-[46px] flex-col overflow-hidden rounded-t-[5px]"
-                        style={{
-                          height: `${maxSpend > 0 ? (total / maxSpend) * 100 : 0}%`,
-                          minHeight: 4,
-                          gap: maxSpend > 0 && (total / maxSpend) * 127 > segs.length * 6 ? 2 : 0
-                        }}
-                      >
-                        {segs.length === 0 ? (
-                          <div className="h-full w-full bg-(--surface-active)" />
-                        ) : (
-                          [...segs].reverse().map((s) => (
-                            <div
-                              key={s.k}
-                              className="min-h-0 w-full"
-                              // grow values normalized to sum 1 — raw costs can sum
-                              // below 1, which would leave the bar under-filled.
-                              style={{ flexGrow: s.v / total, backgroundColor: keyColor(s.k) }}
-                            />
-                          ))
-                        )}
-                      </div>
-                      <span
-                        className={`mono whitespace-nowrap text-[10.5px] leading-none text-(--text-tertiary) ${
-                          i % labelEvery === 0 ? '' : 'select-none'
-                        }`}
-                      >
-                        {i % labelEvery === 0 ? label : ' '}
-                      </span>
-                    </div>
-                  )
-                })}
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </div>
           )
@@ -444,7 +501,7 @@ export default function UsageView() {
         <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 desktop:px-[18px] desktop:py-[10px]">
           <div className="pillbar">
             {GROUPS.map((g) => (
-              <button key={g.key} className={groupBy === g.key ? 'pill on' : 'pill'} onClick={() => setGroupBy(g.key)}>
+              <button key={g.key} className={groupBy === g.key ? 'pill on' : 'pill'} onClick={() => selectGroup(g.key)}>
                 {g.label}
               </button>
             ))}
