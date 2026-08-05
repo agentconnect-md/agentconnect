@@ -5150,10 +5150,11 @@ export class Daemon {
   ): void {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
-    // Agent memory is agent-scoped and shared across users, so an isolated
-    // private or external session's turn must never be distilled into it. The
-    // gate is checked HERE — before both the managed distillation and the
-    // external capture outbox — and fails closed on unknown state.
+    // Agent memory is agent-scoped and shared across users, so a memory-excluded
+    // session's turn (a `private` session, or a DM / webchat / A2A-child /
+    // launch-correlated one) must never be distilled into it. The gate is checked
+    // HERE — before both the managed distillation and the external capture outbox
+    // — and fails closed on unknown state.
     if (this.store.isCaptureExcluded(sessionId)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
