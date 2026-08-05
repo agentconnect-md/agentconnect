@@ -1019,16 +1019,17 @@ describe('daemon durable inbox', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('rows for an unknown agent are skipped (left) on replay', async () => {
+  it('replays an unknown-agent row only after its CP integration binding converges', async () => {
     const g = gatedHost()
     const root = scaffold(['bot-a']) // only bot-a exists on this daemon
+    const integrationId = '66666666-6666-4666-8666-666666666666'
     const s = new LocalStore(statePath(root))
     s.appendInbox({
       id: 'slack:C1:100',
       sessionKey: sessionKey('slack', 'C1', 'T1', 'ghost'),
       agentId: 'ghost',
-      msg: JSON.stringify(msg('100', 'orphan')),
-      integrationId: 'int-a',
+      msg: JSON.stringify({ ...msg('100', 'orphan'), isDm: false, trigger: 'mention' }),
+      integrationId,
       callMeta: null,
       isQueueCmd: null,
       enqueuedAt: '100'
@@ -1040,6 +1041,41 @@ describe('daemon durable inbox', () => {
     // Never dispatched; the row is LEFT for another owner.
     expect(g.started.length).toBe(0)
     expect(inbox(root).map((r) => r.id)).toEqual(['slack:C1:100'])
+
+    const conn = {
+      workspaceId: vi.fn(() => 'T_READY'),
+      setStatus: vi.fn(async () => {}),
+      postMessage: vi.fn(async () => {})
+    }
+    vi.spyOn(daemon as any, 'reconcileSlackConnections').mockImplementation(async () => {
+      const integration = (daemon as any).agents
+        .get('ghost')
+        ?.integrations.find((candidate: { id: string }) => candidate.id === integrationId)
+      if (integration) (daemon as any).connByIntegration.set(integrationId, conn)
+    })
+    await (daemon as any).cpConfigApply().applyReconcileSnapshot({
+      routingEpoch: 1,
+      assignments: [],
+      agents: [{ agentId: 'ghost', name: 'ghost', runtime: 'claude' }],
+      integrations: [
+        {
+          integrationId,
+          agentId: 'ghost',
+          platform: 'slack',
+          core: { mode: 'direct', bindRules: [{ match: { kind: 'mention' } }], mutedChannels: [], gated: false },
+          config: { botToken: 'xoxb-test', appToken: 'xapp-test' }
+        }
+      ],
+      crons: [],
+      leases: [],
+      drop: { assignments: [], agents: [], integrations: [], crons: [] }
+    })
+    await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+    expect((daemon as any).connByIntegration.get(integrationId)).toBe(conn)
+    expect(g.started[0]).toContain('orphan')
+
+    g.releaseOne()
+    await vi.waitFor(() => expect(inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
   }, 15_000)
 
