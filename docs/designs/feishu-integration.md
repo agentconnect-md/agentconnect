@@ -487,7 +487,9 @@ The default one-click flow uses the official `PersonalAgent` app template and
 pre-fills AgentConnect's event and permission additions. They include
 `im.message.receive_v1`, message send/read and resource scopes,
 `im:chat:read`, `im:chat.members:bot_access`,
-`im:chat.members:read`, and `tenant:tenant:readonly`. The last scope lets the
+`im:chat.members:read`, `contact:contact.base:readonly`,
+`contact:user.base:readonly`, and `tenant:tenant:readonly`. The contact scopes
+preserve best-effort participant names and avatars; the tenant scope lets the
 Control Plane reject Apps outside the deployment's login organization. The
 user still reviews and confirms the app, and tenant policy may require
 administrator approval. For HTTP delivery, sensitive settings cannot travel in the deeplink:

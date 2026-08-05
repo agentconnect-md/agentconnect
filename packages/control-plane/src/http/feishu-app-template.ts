@@ -10,6 +10,8 @@ import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
 
 export const AGENTCONNECT_FEISHU_SCOPES = [
   'application:application:patch',
+  'contact:contact.base:readonly',
+  'contact:user.base:readonly',
   'im:chat:read',
   'im:chat.members:bot_access',
   'im:chat.members:read',

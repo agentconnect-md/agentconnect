@@ -21,7 +21,7 @@ function permissionError(
 function connectionFor(
   region: 'feishu' | 'lark',
   patchText: () => Promise<void>,
-  getUser: (id: string) => Promise<{ id: string }> = async (id) => ({ id })
+  getUser: (id: string, idType: 'open_id' | 'union_id') => Promise<{ id: string }> = async (id) => ({ id })
 ) {
   const createText = vi.fn(async (_chatId: string, _text: string) => ({}))
   const createCard = vi.fn(async (_chatId: string, _card: Record<string, unknown>) => ({ messageId: 'notice-1' }))
@@ -65,6 +65,17 @@ function connectionFor(
 }
 
 describe('Feishu/Lark permission update notice', () => {
+  it('uses union_id for normalized senders and open_id for rollout fallbacks', async () => {
+    const getUser = vi.fn(async (id: string) => ({ id }))
+    const { conn } = connectionFor('lark', async () => {}, getUser)
+
+    await conn.getUserProfile('on_union')
+    await conn.getUserProfile('ou_open')
+
+    expect(getUser).toHaveBeenNthCalledWith(1, 'on_union', 'union_id')
+    expect(getUser).toHaveBeenNthCalledWith(2, 'ou_open', 'open_id')
+  })
+
   it.each([
     ['feishu', 'https://open.feishu.cn'],
     ['lark', 'https://open.larksuite.com']

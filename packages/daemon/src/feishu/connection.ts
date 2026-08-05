@@ -151,7 +151,8 @@ export interface FeishuApi {
   listChats(cap: number): Promise<{ id: string; name?: string }[]>
   /** contact.user.get. */
   getUser(
-    userId: string
+    userId: string,
+    userIdType: 'open_id' | 'union_id'
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
@@ -323,10 +324,10 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
         .slice(0, cap)
         .map((i) => ({ id: i.chat_id ?? '', ...(i.name ? { name: i.name } : {}) }))
     },
-    async getUser(userId) {
+    async getUser(userId, userIdType) {
       const res = (await client.contact.user.get({
         path: { user_id: userId },
-        params: { user_id_type: 'open_id' }
+        params: { user_id_type: userIdType }
       })) as {
         data?: {
           user?: {
@@ -1026,7 +1027,9 @@ export class FeishuConnection implements PlatformConnection {
     user: string
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
     try {
-      return await this.handle.api.getUser(user)
+      // Normalized senders prefer union_id (`on_…`); rollout fallbacks and bot
+      // mentions retain their app-scoped open_id (`ou_…`).
+      return await this.handle.api.getUser(user, user.startsWith('on_') ? 'union_id' : 'open_id')
     } catch (err) {
       this.rememberPermissionIssue(err)
       return { id: user }

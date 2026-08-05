@@ -42,8 +42,8 @@ const FEISHU_COMMON_REQS: { icon: string; title: string; desc: string }[] = [
   },
   {
     icon: 'shield-check',
-    title: 'Grant message and tenant scopes',
-    desc: 'Request the message, chat and resource scopes plus tenant:tenant:readonly so AgentConnect can verify the App belongs to this deployment, then publish.'
+    title: 'Grant message, contact and tenant scopes',
+    desc: 'Request the message, chat and resource scopes, the two basic-contact read scopes, and tenant:tenant:readonly, then publish.'
   },
   {
     icon: 'users',
@@ -328,9 +328,9 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                   <div className="mt-[9px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                     <Icon name="shield-check" size={13} className="mt-[1px] flex-none" />
                     <span>
-                      You review the requested message, chat, resource and tenant-information permissions before the app
-                      is created. It must belong to the same {brand} organization used by this AgentConnect deployment.
-                      No App ID or Secret is shown here.
+                      You review the requested message, chat, resource, basic-contact and tenant-information permissions
+                      before the app is created. It must belong to the same {brand} organization used by this
+                      AgentConnect deployment. No App ID or Secret is shown here.
                     </span>
                   </div>
                 </>

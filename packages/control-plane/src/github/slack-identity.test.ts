@@ -197,13 +197,15 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
 })
 
 describe('LogtoIdentityService.feishuIdentitiesFor', () => {
-  it('reads cross-app union_id values from the stored provider subject and connector rawData', async () => {
+  it('prefers the connector raw union_id over its app-scoped provider subject', async () => {
     const { fetchImpl } = fakeLogto({
       'sub-1': {
         identities: {
           feishu: {
-            userId: 'on_feishu',
-            details: { rawData: { open_id: 'ou_feishu', tenant_key: 'tenant_feishu' } }
+            userId: 'ou_feishu',
+            details: {
+              rawData: { open_id: 'ou_feishu', union_id: 'on_feishu', tenant_key: 'tenant_feishu' }
+            }
           },
           lark: { details: { rawData: { data: { union_id: 'on_lark', tenant_key: 'tenant_lark' } } } }
         }

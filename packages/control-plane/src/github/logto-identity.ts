@@ -670,9 +670,9 @@ function feishuIdentitiesOf(user: LogtoUser | null): FeishuIdentity[] {
     const raw = identity?.details?.rawData
     const data = raw?.data as Record<string, unknown> | undefined
     const userInfo = raw?.userInfo as Record<string, unknown> | undefined
-    // Logto stores the connector's stable provider subject as `userId`. Keep
-    // rawData fallbacks for connector versions that preserved only user-info.
-    const unionId = firstString(identity?.userId, raw?.union_id, data?.union_id, userInfo?.union_id)
+    // The stock Logto connector stores Feishu's app-scoped `sub`/`open_id` as
+    // `userId`; only the explicit provider field is safe to treat as union_id.
+    const unionId = firstString(raw?.union_id, data?.union_id, userInfo?.union_id)
     const tenantKey = firstString(raw?.tenant_key, data?.tenant_key, userInfo?.tenant_key)
     if (unionId) identities.push({ region, unionId, ...(tenantKey ? { tenantKey } : {}) })
   }
