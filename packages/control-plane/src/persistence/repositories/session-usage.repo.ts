@@ -23,6 +23,7 @@ import type {
   UsageAggregate,
   AgentUsageAggregate,
   ModelUsageAggregate,
+  SpendBucket,
   ViewCtx,
   SessionFilterQuery
 } from '../ports.js'
@@ -254,9 +255,11 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // Floor `since` to the start of its local bucket, expressed as a UTC instant.
     const floorSince = Math.floor((since.getTime() - offMs) / stepMs) * stepMs + offMs
     const n = Math.floor((now - floorSince) / stepMs) + 1
-    const points: { start: string; costAmount: number }[] = Array.from({ length: n }, (_, i) => ({
+    const points: SpendBucket[] = Array.from({ length: n }, (_, i) => ({
       start: new Date(floorSince + i * stepMs).toISOString(),
-      costAmount: 0
+      costAmount: 0,
+      byAgent: {},
+      byModel: {}
     }))
 
     // Spend timeline → range spend by DIFFING consecutive cumulatives per session.
@@ -314,7 +317,14 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
       const modelKey = row.model ?? ''
       perModelCost.set(modelKey, (perModelCost.get(modelKey) ?? 0) + delta)
       const idx = Math.floor((row.at.getTime() - floorSince) / stepMs)
-      if (idx >= 0 && idx < n) points[idx]!.costAmount += delta
+      if (idx >= 0 && idx < n) {
+        const pt = points[idx]!
+        pt.costAmount += delta
+        if (delta !== 0) {
+          pt.byAgent[row.agentId] = (pt.byAgent[row.agentId] ?? 0) + delta
+          pt.byModel[modelKey] = (pt.byModel[modelKey] ?? 0) + delta
+        }
+      }
     }
 
     const agents: AgentUsageAggregate[] = grouped.map((g) => ({
