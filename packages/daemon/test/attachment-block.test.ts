@@ -134,7 +134,7 @@ describe('hydrateTranscriptImage', () => {
     const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('pixels')])
     const msg = normalizeFeishuMessage(
       feishuEventToMessageLike({
-        sender: { sender_id: { open_id: 'ou_1' }, sender_type: 'user' },
+        sender: { sender_id: { open_id: 'ou_1', union_id: 'on_1' }, sender_type: 'user' },
         message: {
           message_id: 'om_1',
           chat_id: 'oc_1',

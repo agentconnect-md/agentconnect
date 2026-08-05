@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { resolveFeishuPlatformApps } from './feishu-platform.js'
 
 describe('resolveFeishuPlatformApps', () => {
-  it('supports either region independently', () => {
+  it('supports either regional Login App independently', () => {
     expect(
       resolveFeishuPlatformApps({
         FEISHU_PLATFORM_APP_ID: undefined,

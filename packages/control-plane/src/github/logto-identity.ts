@@ -142,9 +142,9 @@ export interface SlackIdentity {
 
 export interface FeishuIdentity {
   region: 'feishu' | 'lark'
-  /** App-scoped human identity. It is comparable only when Logto and the
-   * messaging integration use the same platform app id. */
-  openId: string
+  /** Developer-organization-scoped human identity. Custom apps created by the
+   * same Lark/Feishu tenant report the same value for this person. */
+  unionId: string
 }
 
 // Slack namespaces its non-standard OIDC claims. `sub` carries the same user id
@@ -266,7 +266,7 @@ export class LogtoIdentityService {
    * This IS an identity assertion: the record exists in Logto only after a
    * Slack OIDC sign-in, or an Account API link driven by the user's own
    * authenticated session — so the session-visibility identity set
-   * (`http/viewer-identity.ts`) may match it against `ownerIdentity`. It is
+   * (the Slack Session-access plugin) may match it against `ownerIdentity`. It is
    * NOT an org/role statement: callers still compose it with org scoping.
    * Served from the shared user cache; a just-landed link is surfaced by the
    * console's refresh call (`forgetUser`).
@@ -275,8 +275,7 @@ export class LogtoIdentityService {
     return slackIdentityOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
   }
 
-  /** Linked Feishu/Lark identities. Their open_id values remain app-scoped;
-   * viewer-identity adds the configured app id before they can authorize. */
+  /** Linked Feishu/Lark identities, keyed by the provider's cross-app union_id. */
   async feishuIdentitiesFor(sub: string): Promise<FeishuIdentity[]> {
     return feishuIdentitiesOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
   }
@@ -664,13 +663,14 @@ function slackIdentityOf(user: LogtoUser | null): SlackIdentity | null {
 function feishuIdentitiesOf(user: LogtoUser | null): FeishuIdentity[] {
   const identities: FeishuIdentity[] = []
   for (const region of ['feishu', 'lark'] as const) {
-    const raw = user?.identities?.[region]?.details?.rawData
+    const identity = user?.identities?.[region]
+    const raw = identity?.details?.rawData
     const data = raw?.data as Record<string, unknown> | undefined
     const userInfo = raw?.userInfo as Record<string, unknown> | undefined
-    // Built-in Feishu currently stores the normalized user-info body; generic
-    // OAuth2 connectors may preserve the provider's {data:{...}} envelope.
-    const openId = firstString(raw?.open_id, data?.open_id, userInfo?.open_id)
-    if (openId) identities.push({ region, openId })
+    // The stock Logto connector stores Feishu's app-scoped `sub`/`open_id` as
+    // `userId`; only the explicit provider field is safe to treat as union_id.
+    const unionId = firstString(raw?.union_id, data?.union_id, userInfo?.union_id)
+    if (unionId) identities.push({ region, unionId })
   }
   return identities
 }

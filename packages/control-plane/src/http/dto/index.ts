@@ -1500,7 +1500,9 @@ export const FeishuAppRegistrationStartDto = z.object({
 export const FeishuAppRegistrationStatusDto = z.object({
   id: z.string().uuid(),
   status: z.enum(['pending', 'completed', 'failed']),
-  failureReason: z.enum(['denied', 'expired', 'agent_unavailable', 'invalid_credentials', 'setup_failed']).nullable(),
+  failureReason: z
+    .enum(['denied', 'expired', 'agent_unavailable', 'invalid_credentials', 'org_mismatch', 'setup_failed'])
+    .nullable(),
   integrationId: z.string().uuid().nullable(),
   expiresAt: z.string().datetime()
 })

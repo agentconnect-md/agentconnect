@@ -110,7 +110,7 @@ import type { TelegramBotVerifier } from '../../src/http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../src/http/telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from '../../src/http/discord-identity.js'
 import type { DiscordBotProfileSyncer } from '../../src/http/discord-bot-profile.js'
-import type { FeishuBotVerifier } from '../../src/http/feishu-identity.js'
+import type { FeishuAppTenantGuard, FeishuBotVerifier } from '../../src/http/feishu-identity.js'
 import type { FeishuHttpAppConfigurator } from '../../src/http/feishu-app-config.js'
 import type { FeishuAppIconSyncer } from '../../src/http/feishu-app-icon.js'
 import { createReadiness } from '../../src/http/readiness.js'
@@ -150,6 +150,7 @@ export interface PlatformStubs {
   ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
   syncDiscordBotProfile?: DiscordBotProfileSyncer
   verifyFeishuBot?: FeishuBotVerifier
+  feishuAppTenantGuard: FeishuAppTenantGuard
   configureFeishuHttpApp: FeishuHttpAppConfigurator
   syncFeishuAppIcon?: FeishuAppIconSyncer
   feishuAppRegistration: FeishuAppRegistrationService
@@ -168,6 +169,7 @@ const PLATFORM_STUB_KEYS = [
   'ensureDiscordMessageContentIntent',
   'syncDiscordBotProfile',
   'verifyFeishuBot',
+  'feishuAppTenantGuard',
   'configureFeishuHttpApp',
   'syncFeishuAppIcon',
   'feishuAppRegistration'
@@ -319,6 +321,10 @@ export function buildHttpApp(
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
     ensureDiscordMessageContentIntent: async () => 'ready',
     configureFeishuHttpApp: async () => {},
+    feishuAppTenantGuard: {
+      loginAppStatus: async () => 'ok',
+      checkApp: async () => 'ok'
+    },
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     ...Object.fromEntries(
       PLATFORM_STUB_KEYS.filter((key) => depsOverrides && key in depsOverrides).map((key) => [
@@ -428,6 +434,15 @@ export function buildHttpApp(
     sharedTx: <T>(fn: () => Promise<T>) => rootPrisma.$transaction((tx) => runWithSharedTx(tx, fn)),
     readiness: createReadiness(() => pingDb(prisma)),
     config: { DEFAULT_OWNER_ID, ...configOverrides },
+    sessionAccessPlugins: [
+      { provider: 'slack', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },
+      { provider: 'github', available: false, resolve: async () => ({ allowedScopes: [], degraded: false }) },
+      {
+        provider: 'feishu',
+        available: false,
+        resolve: async () => ({ allowedScopes: [], degraded: false })
+      }
+    ],
     ...coreOverrides,
     remoteGrantAuth,
     internalInvocationAuth
@@ -475,6 +490,7 @@ export function buildHttpApp(
       platformStubs.verifyFeishuBot
         ? platformStubs.verifyFeishuBot(appId, appSecret, region)
         : { status: 'unreachable' },
+    tenantGuard: platformStubs.feishuAppTenantGuard,
     configureHttpApp: (input) => platformStubs.configureFeishuHttpApp(input),
     registrations: platformStubs.feishuAppRegistration
   }
@@ -521,6 +537,7 @@ export function buildHttpApp(
     }),
     createFeishuCpProvider({
       verifyBot: feishuSeams.verifyBot!,
+      tenantGuard: feishuSeams.tenantGuard,
       funnelRoutes: { org: [feishuRegistrationRoutes(deps, feishuSeams)], publicCallback: [] },
       syncAppIcon: async (appId, appSecret, region, agent) =>
         platformStubs.syncFeishuAppIcon?.(appId, appSecret, region, agent)

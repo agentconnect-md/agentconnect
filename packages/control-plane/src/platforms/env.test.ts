@@ -7,11 +7,10 @@
  * key here is a deployment contract: a key that quietly stops being parsed reads
  * as "feature off" at boot, not as an error.
  *
- * So the first suite pins the full key set against the pre-refactor schema's
- * (core keys + the two providers' declarations, read off `origin/main`), the
- * second pins that the composition and the four PROVIDER instances agree — the
- * drift a static list would otherwise hide — and the third pins the collision
- * guards that make the spread safe.
+ * So the first suite pins the current deployment contract, the second pins
+ * that the composition and the four PROVIDER instances agree — the drift a
+ * static list would otherwise hide — and the third pins the collision guards
+ * that make the spread safe.
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
@@ -23,8 +22,8 @@ import { createDiscordCpProvider } from './discord/provider.js'
 import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
 
-/** Every key `loadConfig` accepted BEFORE the fold. */
-const KEYS_BEFORE = [
+/** Every supported deployment key. */
+const EXPECTED_KEYS = [
   'ACK_TIMEOUT_MS',
   'API_KEY_PEPPER',
   'CORS_ORIGIN',
@@ -97,8 +96,8 @@ const MINIMAL_ENV = {
 }
 
 describe('composed AppConfigSchema', () => {
-  it('accepts exactly the keys loadConfig accepted before the fold', () => {
-    expect(Object.keys(AppConfigSchema.shape).sort()).toEqual([...KEYS_BEFORE].sort())
+  it('accepts exactly the supported deployment keys', () => {
+    expect(Object.keys(AppConfigSchema.shape).sort()).toEqual([...EXPECTED_KEYS].sort())
   })
 
   it('keeps each platform key parsing as its provider declared it', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { BotRecord, ExternalScopeRecord } from '../persistence/ports.js'
+import type { SessionAccessViewer } from './session-access-plugin.js'
 import { SlackSessionAccessService } from './slack-session-access.js'
 
 const BOT_ID = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -52,6 +53,15 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
+function viewer(identity: string): SessionAccessViewer {
+  return {
+    request: {} as never,
+    orgId: 'org-1' as never,
+    userId: 'user-1',
+    identitySet: new Set([identity])
+  }
+}
+
 describe('SlackSessionAccessService', () => {
   it('resolves allowed scopes beyond the first 200', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
@@ -65,7 +75,7 @@ describe('SlackSessionAccessService', () => {
     })
     const scopes = Array.from({ length: 201 }, (_, index) => scopeAt(index + 1))
 
-    const result = await service(fetchImpl).resolve(scopes, new Set(['slack:T_INSTALL:U_MEMBER']))
+    const result = await service(fetchImpl).resolve(scopes, viewer('slack:T_INSTALL:U_MEMBER'))
 
     expect(result.degraded).toBe(false)
     expect(result.allowedScopes).toHaveLength(201)
@@ -83,7 +93,7 @@ describe('SlackSessionAccessService', () => {
       throw new Error(`unexpected Slack request: ${url}`)
     })
 
-    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_INSTALL:U_NOT_JOINED']))).resolves.toEqual({
+    await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_NOT_JOINED'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
       degraded: false
     })
@@ -102,11 +112,11 @@ describe('SlackSessionAccessService', () => {
     })
     const resolver = service(fetchImpl)
 
-    await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_GUEST']))).resolves.toEqual({
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_GUEST'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
       degraded: false
     })
-    await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_OTHER_GUEST']))).resolves.toEqual({
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_OTHER_GUEST'))).resolves.toEqual({
       allowedScopes: [],
       degraded: false
     })
@@ -125,7 +135,7 @@ describe('SlackSessionAccessService', () => {
         throw new Error(`unexpected Slack request: ${url}`)
       })
 
-      await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_INSTALL:U_LIMITED']))).resolves.toEqual({
+      await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_LIMITED'))).resolves.toEqual({
         allowedScopes: [],
         degraded: false
       })
@@ -141,11 +151,11 @@ describe('SlackSessionAccessService', () => {
     )
     const resolver = service(fetchImpl)
 
-    await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))).resolves.toEqual({
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
       degraded: false
     })
-    await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_OTHER']))).resolves.toEqual({
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_OTHER'))).resolves.toEqual({
       allowedScopes: [],
       degraded: false
     })
@@ -163,7 +173,7 @@ describe('SlackSessionAccessService', () => {
       return json({ ok: true, user: { team_id: 'T_HOME', is_external: true } })
     })
 
-    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_HOME:U_CONNECT']))).resolves.toEqual({
+    await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_HOME:U_CONNECT'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
       degraded: false
     })
@@ -180,7 +190,7 @@ describe('SlackSessionAccessService', () => {
       return json({ ok: true, user: { team_id: 'T_OTHER' } })
     })
 
-    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_HOME:U_CONNECT']))).resolves.toEqual({
+    await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_HOME:U_CONNECT'))).resolves.toEqual({
       allowedScopes: [],
       degraded: false
     })
@@ -188,7 +198,7 @@ describe('SlackSessionAccessService', () => {
 
   it('fails closed and reports degradation when Slack cannot answer', async () => {
     const resolver = service(async () => json({ ok: false, error: 'ratelimited' }))
-    await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))).resolves.toEqual({
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
       allowedScopes: [],
       degraded: true
     })
@@ -202,7 +212,7 @@ describe('SlackSessionAccessService', () => {
     'denies without degrading when the conversation is gone (%s)',
     async (error) => {
       const resolver = service(async () => json({ ok: false, error }))
-      await expect(resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))).resolves.toEqual({
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
         allowedScopes: [],
         degraded: false
       })
@@ -216,7 +226,7 @@ describe('SlackSessionAccessService', () => {
       }
       return json({ ok: false, error: 'user_not_found' })
     })
-    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_INSTALL:U_GONE']))).resolves.toEqual({
+    await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_GONE'))).resolves.toEqual({
       allowedScopes: [],
       degraded: false
     })
@@ -227,9 +237,9 @@ describe('SlackSessionAccessService', () => {
   it('caches the gone verdict instead of re-asking Slack per request', async () => {
     const fetchImpl = vi.fn(async () => json({ ok: false, error: 'channel_not_found' }))
     const resolver = service(fetchImpl)
-    await resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
     const afterFirst = fetchImpl.mock.calls.length
-    await resolver.resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
     expect(fetchImpl.mock.calls.length).toBe(afterFirst)
   })
 
@@ -240,7 +250,7 @@ describe('SlackSessionAccessService', () => {
       }
       return json({ ok: false, error: 'missing_scope' })
     })
-    await expect(service(fetchImpl).resolve([scope()], new Set(['slack:T_INSTALL:U_MEMBER']))).resolves.toEqual({
+    await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
       allowedScopes: [],
       degraded: true
     })

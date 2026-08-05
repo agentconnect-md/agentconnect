@@ -29,7 +29,7 @@ export default function SessionAccessNotice({
   ]
   const names = regions.map((region) => (region === 'feishu' ? 'Feishu' : 'Lark')).join(' and ')
   const message = names
-    ? `Your ${names} ${regions.length === 1 ? 'authorization needs' : 'authorizations need'} attention. Reconnect ${regions.length === 1 ? 'it' : 'them'} in Profile to restore ${impact === 'sessions' ? 'access to affected sessions' : 'usage from affected sessions'}.`
+    ? `Your ${names} sign-in ${regions.length === 1 ? 'identity needs' : 'identities need'} to be refreshed. Refresh ${regions.length === 1 ? 'it' : 'them'} in Profile to restore ${impact === 'sessions' ? 'access to affected sessions' : 'usage from affected sessions'}.`
     : impact === 'sessions'
       ? 'Some external access checks are unavailable. Affected sessions are hidden until access can be verified.'
       : 'Some external access checks are unavailable. Usage is temporarily under-counted rather than exposing inaccessible sessions.'
@@ -46,7 +46,7 @@ export default function SessionAccessNotice({
       <span className="min-w-0 flex-1">{message}</span>
       {names ? (
         <Link className="lnk flex-none" href={href}>
-          {regions.length === 1 ? `Reconnect ${names}` : 'Open Profile'}
+          {regions.length === 1 ? `Refresh ${names}` : 'Open Profile'}
         </Link>
       ) : null}
     </div>

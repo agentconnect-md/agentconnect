@@ -20,8 +20,8 @@ import {
   feishuIntegrationConfig,
   feishuSharedIntegrationConfig,
   refineFeishuCreateBody,
-  FeishuCpEnvSchema,
   FeishuCreateCredentials,
+  FeishuCpEnvSchema,
   FEISHU_REGISTRATION_TTL_MS
 } from './provider.js'
 import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/placement.js'
@@ -29,7 +29,6 @@ import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
 import { RelayRegistry, type RelayChannel } from '../../ws/relay-registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import { buildCpPlatformRegistry } from '../registry.js'
-import { AppConfigSchema } from '../../config/env.js'
 import type { FeishuBotVerification } from '../../http/feishu-identity.js'
 import type { BotProfileIconAgent } from '../../http/bot-profile-icon.js'
 import type {
@@ -53,6 +52,11 @@ const verifierOk = (over: Partial<Extract<FeishuBotVerification, { status: 'ok' 
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const AGENT_ID = AgentId('77777777-7777-4777-8777-777777777777')
+const validationProvider = (deps: Parameters<typeof createFeishuCpProvider>[0] = {}) =>
+  createFeishuCpProvider({
+    tenantGuard: { loginAppStatus: async () => 'ok', checkApp: async () => 'ok' },
+    ...deps
+  })
 
 const INTEGRATION: IntegrationRecord = {
   id: IntegrationId('66666666-6666-4666-8666-666666666666'),
@@ -181,20 +185,14 @@ describe('feishu provider identity + declarative facets', () => {
     expect(provider.secretShape.httpAssignRequires).toEqual(['verificationToken', 'appToken'])
   })
 
-  it('owns the FEISHU/LARK_PLATFORM_* env keys, spread into AppConfigSchema', () => {
+  it('declares the regional Login App credentials used as the tenant anchor', () => {
     expect(provider.envSchema).toBe(FeishuCpEnvSchema)
-    expect(Object.keys(FeishuCpEnvSchema)).toEqual([
+    expect(Object.keys(provider.envSchema!)).toEqual([
       'FEISHU_PLATFORM_APP_ID',
       'FEISHU_PLATFORM_APP_SECRET',
       'LARK_PLATFORM_APP_ID',
       'LARK_PLATFORM_APP_SECRET'
     ])
-    // One implementation: the live config schema is composed FROM this shape.
-    for (const key of Object.keys(FeishuCpEnvSchema)) {
-      expect(AppConfigSchema.shape[key as keyof typeof AppConfigSchema.shape]).toBe(
-        FeishuCpEnvSchema[key as keyof typeof FeishuCpEnvSchema]
-      )
-    }
   })
 
   it('declares the registration funnel from the injected store + the 10-minute constant TTL', () => {
@@ -262,9 +260,14 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
 
   it('passes the pasted pair + region to the verifier and derives name/openId', async () => {
     const verifyBot = verifierOk()
-    const provider = createFeishuCpProvider({ verifyBot })
+    const checkApp = vi.fn(async () => 'ok' as const)
+    const provider = validationProvider({
+      verifyBot,
+      tenantGuard: { loginAppStatus: async () => 'ok', checkApp }
+    })
     const result = await provider.validateConfig(CREDS, 'socket')
     expect(verifyBot).toHaveBeenCalledWith('cli_testapp', 'feishu-app-secret', 'lark')
+    expect(checkApp).toHaveBeenCalledWith('cli_testapp', 'feishu-app-secret', 'lark')
     expect(result).toEqual({
       ok: true,
       identity: { name: 'helper-app', externalAppId: 'cli_testapp', botUserId: 'ou_bot' }
@@ -272,7 +275,7 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
   })
 
   it('refuses rejected credentials with the route’s 400 copy', async () => {
-    const provider = createFeishuCpProvider({ verifyBot: vi.fn(async () => ({ status: 'invalid' as const })) })
+    const provider = validationProvider({ verifyBot: vi.fn(async () => ({ status: 'invalid' as const })) })
     expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
       ok: false,
       status: 400,
@@ -287,24 +290,46 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
       status: 503,
       message: 'Could not resolve this app’s bot identity. Enable the bot capability in Feishu, then try again.'
     }
-    const noOpenId = createFeishuCpProvider({ verifyBot: verifierOk({ openId: null }) })
+    const noOpenId = validationProvider({ verifyBot: verifierOk({ openId: null }) })
     expect(await noOpenId.validateConfig(CREDS, 'http')).toEqual(refusal)
-    const unreachable = createFeishuCpProvider({ verifyBot: vi.fn(async () => ({ status: 'unreachable' as const })) })
+    const unreachable = validationProvider({ verifyBot: vi.fn(async () => ({ status: 'unreachable' as const })) })
     expect(await unreachable.validateConfig(CREDS, 'http')).toEqual(refusal)
-    const unverified = createFeishuCpProvider({})
+    const unverified = validationProvider()
     expect(await unverified.validateConfig(CREDS, 'http')).toEqual(refusal)
   })
 
   it('socket transport stays best-effort about reachability (route parity)', async () => {
-    const unreachable = createFeishuCpProvider({ verifyBot: vi.fn(async () => ({ status: 'unreachable' as const })) })
+    const unreachable = validationProvider({ verifyBot: vi.fn(async () => ({ status: 'unreachable' as const })) })
     expect(await unreachable.validateConfig(CREDS, 'socket')).toEqual({
       ok: true,
       identity: { externalAppId: 'cli_testapp' }
     })
-    const unverified = createFeishuCpProvider({})
+    const unverified = validationProvider()
     expect(await unverified.validateConfig(CREDS, 'socket')).toEqual({
       ok: true,
       identity: { externalAppId: 'cli_testapp' }
+    })
+  })
+
+  it('rejects an App from a different deployment organization', async () => {
+    const provider = validationProvider({
+      verifyBot: verifierOk(),
+      tenantGuard: { loginAppStatus: async () => 'ok', checkApp: async () => 'org_mismatch' }
+    })
+    expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
+      ok: false,
+      status: 400,
+      code: 'FEISHU_ORG_MISMATCH',
+      message: 'This Bot App belongs to a different Lark/Feishu organization from this AgentConnect deployment.'
+    })
+  })
+
+  it('fails closed when this deployment has no matching Login App configured', async () => {
+    const provider = createFeishuCpProvider({ verifyBot: verifierOk() })
+    expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
+      ok: false,
+      status: 503,
+      message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
     })
   })
 })

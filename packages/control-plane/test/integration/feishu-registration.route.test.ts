@@ -173,7 +173,11 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     expect(addons).toMatchObject({
       scopes: {
-        tenant: expect.arrayContaining(['application:application:patch', 'im:chat.members:read'])
+        tenant: expect.arrayContaining([
+          'application:application:patch',
+          'im:chat.members:read',
+          'tenant:tenant:readonly'
+        ])
       }
     })
     await first.close()
@@ -200,6 +204,7 @@ describe('Feishu/Lark one-click app registration', () => {
     // The first successful Feishu-domain response identifies a Lark tenant;
     // the durable cursor switches domains, then a later browser poll resumes it.
     expect(requests.map((request) => request.get('action'))).toEqual(['begin', 'poll', 'poll'])
+    expect(requests[0]?.get('request_user_info')).toBe('open_id')
     const bot = await prisma.bot.findFirst({ where: { feishuAppId: 'cli_oneclick' } })
     expect(bot).toMatchObject({ name: 'AgentConnect Lark', feishuRegion: 'lark' })
     expect(await prisma.botSecret.findUnique({ where: { botId: bot!.id } })).toMatchObject({
@@ -257,6 +262,72 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(polled.json()).toMatchObject({ status: 'failed', failureReason: 'denied', integrationId: null })
     expect(await prisma.bot.count()).toBe(0)
     expect(await prisma.integration.count()).toBe(0)
+  })
+
+  it('rejects a new App outside the configured Login App organization', async () => {
+    const agentId = await placedAgent()
+    const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body))
+      if (form.get('action') === 'begin') {
+        return new Response(
+          JSON.stringify({
+            verification_uri_complete: 'https://accounts.feishu.cn/device?user_code=ORG-CHECK',
+            device_code: 'org-check-device-code',
+            expires_in: 600,
+            interval: 1
+          })
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          client_id: 'cli_other_org',
+          client_secret: 'other-org-secret',
+          user_info: { tenant_brand: 'feishu' }
+        })
+      )
+    })
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      feishuAppRegistration: service(fetcher),
+      feishuAppTenantGuard: {
+        loginAppStatus: async () => 'ok',
+        checkApp: async () => 'org_mismatch'
+      }
+    })
+    running = app
+
+    const started = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId, region: 'feishu' }
+    })
+    expect(started.statusCode).toBe(201)
+    const { id } = started.json() as { id: string }
+
+    const polled = await app.app.inject({ method: 'GET', url: `${ORG}/integrations/feishu/app/${id}` })
+    expect(polled.json()).toMatchObject({ status: 'failed', failureReason: 'org_mismatch' })
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.integration.count()).toBe(0)
+  })
+
+  it('does not start without a regional Login App tenant anchor', async () => {
+    const agentId = await placedAgent()
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      feishuAppTenantGuard: {
+        loginAppStatus: async () => 'not_configured',
+        checkApp: async () => 'not_configured'
+      }
+    })
+    running = app
+
+    const response = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId, region: 'lark' }
+    })
+    expect(response.statusCode).toBe(409)
+    expect(response.json()).toMatchObject({
+      message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
+    })
   })
 
   it('does not reuse one user’s pending setup for a different requester', async () => {

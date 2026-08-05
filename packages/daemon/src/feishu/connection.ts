@@ -151,7 +151,8 @@ export interface FeishuApi {
   listChats(cap: number): Promise<{ id: string; name?: string }[]>
   /** contact.user.get. */
   getUser(
-    userId: string
+    userId: string,
+    userIdType: 'open_id' | 'union_id'
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }>
   /** GET /open-apis/bot/v3/info — the bot's own open_id + display name. */
   getBotInfo(): Promise<{ openId?: string; name?: string }>
@@ -323,10 +324,10 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
         .slice(0, cap)
         .map((i) => ({ id: i.chat_id ?? '', ...(i.name ? { name: i.name } : {}) }))
     },
-    async getUser(userId) {
+    async getUser(userId, userIdType) {
       const res = (await client.contact.user.get({
         path: { user_id: userId },
-        params: { user_id_type: 'open_id' }
+        params: { user_id_type: userIdType }
       })) as {
         data?: {
           user?: {
@@ -591,6 +592,7 @@ export class FeishuConnection implements PlatformConnection {
           const like = feishuEventToMessageLike(event)
           // Skip our own messages — the agent's replies must not re-trigger a turn.
           if (like.senderOpenId && like.senderOpenId === this.botOpenId) return
+          if (!like.senderUnionId) return
           const msg = normalizeFeishuMessage(like, { traceId: this.deps.newTraceId() })
           log?.debug(
             `feishu: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +
@@ -1026,7 +1028,9 @@ export class FeishuConnection implements PlatformConnection {
     user: string
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
     try {
-      return await this.handle.api.getUser(user)
+      // Message senders use union_id (`on_…`); callback actors and mentions may
+      // still be provider-native open_id values (`ou_…`).
+      return await this.handle.api.getUser(user, user.startsWith('on_') ? 'union_id' : 'open_id')
     } catch (err) {
       this.rememberPermissionIssue(err)
       return { id: user }

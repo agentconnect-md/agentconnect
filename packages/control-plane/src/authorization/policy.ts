@@ -89,14 +89,7 @@ function externalSessionIsVisible(
     return false
   }
   if (resource.visibility === 'org') return true
-  // A custom-Bot p2p owner cannot be matched through the login app's app-scoped
-  // open_id. Its private baseline therefore accepts the same live chat proof as
-  // the enabled external policy; a Bot p2p has exactly one human member, so the
-  // proof remains owner-only. Other providers/private rows keep exact identity
-  // matching and cannot borrow an external audience decision.
-  const liveScopeVisibility =
-    resource.visibility === 'external' || (resource.visibility === 'private' && provider === 'feishu')
-  if (!liveScopeVisibility || resource.externalResolution !== 'settled' || !resource.externalScopeId) {
+  if (resource.visibility !== 'external' || resource.externalResolution !== 'settled' || !resource.externalScopeId) {
     return false
   }
   return snapshot.allowedScopes.some((scope) => scope.id === resource.externalScopeId)
@@ -126,8 +119,7 @@ export function can(principal: ViewCtx, request: AuthorizationRequest): boolean 
     case AuthorizationAction.SessionView:
       return request.resource.externalProvider
         ? request.resource.visibility === 'private'
-          ? identityOwnsSession(request.resource, request.identitySet) ||
-            externalSessionIsVisible(request.resource, request.externalAccess)
+          ? identityOwnsSession(request.resource, request.identitySet)
           : externalSessionIsVisible(request.resource, request.externalAccess)
         : request.resource.visibility === 'org' || identityOwnsSession(request.resource, request.identitySet)
     // Re-classification (§4.3) is owner-only: identity match with the recorded
@@ -157,7 +149,7 @@ export function canManageSharing(resource: Shareable, principal: ViewCtx): boole
 
 /** The BASE identity set — the console identity every caller carries. The BFF
  *  grows it with the caller's verified platform identities before matching
- *  (`http/viewer-identity.ts`); that expansion needs I/O, so it stays out of
+ *  through Session-access plugins; that expansion needs I/O, so it stays out of
  *  this pure policy module. */
 export function identitySetOf(principal: ViewCtx): Set<string> {
   return new Set([`user:${principal.userId}`])

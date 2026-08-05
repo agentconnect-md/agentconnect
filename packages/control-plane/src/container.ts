@@ -177,14 +177,13 @@ import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
 import { telegramCheckRoutes } from './http/routes/telegram-check.js'
 import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './http/platform-route-seams.js'
-import { verifyFeishuBot } from './http/feishu-identity.js'
+import { createFeishuAppTenantGuard, verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
-import { LogtoFederatedTokenService, logtoAccountEndpointFromIssuer } from './http/logto-federated-token.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -536,6 +535,9 @@ export function buildContainer(
   // Platform-published Slack app (preset-agents.md §5.3) — undefined ⇒ feature
   // absent (routes 404, console hides "Add to Slack"); partial set ⇒ fail-fast.
   const slackPlatformApp = resolveSlackPlatformAppConfig(config)
+
+  // Regional Login Apps mirrored from Logto. Their credentials are the stable
+  // deployment tenant anchor used to admit Bot Apps from the same organization.
   const feishuPlatformApps = resolveFeishuPlatformApps(config)
 
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
@@ -771,10 +773,6 @@ export function buildContainer(
     logtoMgmtCfg && config.OIDC_ISSUER
       ? new LogtoIdentityService(logtoMgmtCfg, clock, new PgSocialIdentityMutationGate(prisma))
       : undefined
-  const logtoFederatedToken =
-    logtoMgmtCfg && config.OIDC_ISSUER
-      ? new LogtoFederatedTokenService(logtoAccountEndpointFromIssuer(config.OIDC_ISSUER))
-      : undefined
   const githubUserAuthz =
     github && logtoIdentity
       ? new GithubUserAuthzService({
@@ -788,19 +786,20 @@ export function buildContainer(
     bots: repos.bot,
     botSecrets: repos.botSecret,
     clock,
+    ...(logtoIdentity ? { identity: logtoIdentity } : {}),
     ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {})
   })
-  const githubSessionAccess = github
-    ? new GithubSessionAccessService({
-        installations: repos.githubInstallation,
-        github,
-        ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
-        clock
-      })
-    : undefined
+  const githubSessionAccess = new GithubSessionAccessService({
+    installations: repos.githubInstallation,
+    ...(github ? { github } : {}),
+    ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
+    clock
+  })
   const feishuSessionAccess = new FeishuSessionAccessService({
     bots: repos.bot,
+    botSecrets: repos.botSecret,
     clock,
+    ...(logtoIdentity ? { identity: logtoIdentity } : {}),
     ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {})
   })
 
@@ -899,11 +898,7 @@ export function buildContainer(
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
-    ...(logtoFederatedToken ? { logtoFederatedToken } : {}),
-    slackSessionAccess,
-    ...(githubSessionAccess ? { githubSessionAccess } : {}),
-    feishuSessionAccess,
-    feishuPlatformApps,
+    sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
@@ -1047,8 +1042,10 @@ export function buildContainer(
     })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: verifyTelegramBot }
+  const feishuTenantGuard = createFeishuAppTenantGuard((region) => feishuPlatformApps[region])
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: verifyFeishuBot,
+    tenantGuard: feishuTenantGuard,
     configureHttpApp: configureFeishuHttpApp,
     registrations: new FeishuAppRegistrationService(repos.feishuAppRegistration)
   }
@@ -1112,6 +1109,7 @@ export function buildContainer(
     }),
     createFeishuCpProvider({
       verifyBot: verifyFeishuBot,
+      tenantGuard: feishuTenantGuard,
       funnelRoutes: { org: [feishuRegistrationRoutes(httpDeps, feishuSeams)], publicCallback: [] },
       syncAppIcon: syncFeishuAppIcon,
       pendingInstalls: {
@@ -1144,7 +1142,6 @@ export function buildContainer(
     integration: repos.integration,
     bot: repos.bot,
     githubInstallation: repos.githubInstallation,
-    feishuPlatformApps,
     integrationChannel: repos.integrationChannel,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),

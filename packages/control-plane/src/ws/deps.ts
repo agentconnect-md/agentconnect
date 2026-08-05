@@ -38,7 +38,6 @@ import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
-import type { FeishuPlatformApps } from '../config/feishu-platform.js'
 
 /** Config slice the WS edge reads. */
 export interface WsConfig {
@@ -78,8 +77,6 @@ export interface DaemonWsDeps {
   /** Resolves a trusted GitHub delivery's installation id to this org's
    * durable credential locator before binding a repository ExternalScope. */
   githubInstallation?: GithubInstallationRepo
-  /** Environment-owned apps whose app-scoped open_id domain matches Logto. */
-  feishuPlatformApps?: FeishuPlatformApps
   /** Persists authoritative membership snapshots and partial conversation reports. */
   integrationChannel: IntegrationChannelRepo
   /** Shares the HTTP agent-move boundary with daemon-originated conversation reports. */

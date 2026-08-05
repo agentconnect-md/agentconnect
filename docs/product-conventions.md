@@ -559,12 +559,20 @@ including for a channel that is public to full members of the installing workspa
 organization-owner role never bypasses these provider checks.
 
 An external membership check that cannot complete fails closed: affected sessions stay
-hidden. The console offers a provider-specific reconnect only when the failure occurred
-while retrieving the signed-in user's own federated authorization; provider API failures
-and unclassified degradation keep the generic unavailable notice. Feishu versus Lark is
-named from the session scope's verified regional app, never from a URL hint. Diagnostics
-may retain only the provider target, failure stage, HTTP status, and a bounded upstream
-error code — never account ids, bearer tokens, or upstream error messages.
+hidden. Provider API failures and unclassified degradation keep the generic unavailable
+notice. A missing Lark/Feishu `union_id` offers a one-time sign-in identity refresh in
+Profile; ordinary Session reads use the installed Bot App credential and never require a
+recurring user-token reconnect. Feishu versus Lark is named from the session scope's
+verified regional app, never from a URL hint. Diagnostics may retain only the provider
+target, failure stage, HTTP status, and a bounded upstream error code — never account ids,
+bearer tokens, or upstream error messages.
+
+A self-deployed AgentConnect instance is bound to the organization of its Lark/Feishu
+login App. Every Bot App installation, whether one-click or manual credentials, must
+resolve that configured Login App's `tenant_key`, compare it with the candidate App's
+`tenant_key`, and reject a mismatch. The authorizing human may be any member of the same
+organization; tenant verification must not be weakened into a same-user `union_id`
+comparison or require user-token storage.
 A reconnect that proves a different provider account must not replace the linked identity;
 the console tells the user to reconnect with the linked account or unlink before switching.
 

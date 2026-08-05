@@ -45,7 +45,10 @@ export interface FeishuMessageLike {
   messageType: string
   content: string
   rootId?: string
+  /** App-scoped sender id, used only to suppress the Bot's own events. */
   senderOpenId: string
+  /** Stable across custom apps created by the same developer organization. */
+  senderUnionId: string
   senderIsBot?: boolean
   mentions?: FeishuMention[]
   attachments?: FeishuAttachmentLike[]
@@ -161,6 +164,7 @@ export function feishuEventToMessageLike(event: FeishuRawEvent): FeishuMessageLi
     content: message.content ?? '',
     ...(message.root_id ? { rootId: message.root_id } : {}),
     senderOpenId: event.sender?.sender_id?.open_id ?? '',
+    senderUnionId: event.sender?.sender_id?.union_id ?? '',
     senderIsBot: senderType != null && senderType !== 'user',
     mentions: (message.mentions ?? []).map((mention) => ({
       ...(mention.key ? { key: mention.key } : {}),
@@ -187,7 +191,7 @@ export function normalizeFeishuMessage(
     platform: 'feishu',
     channel: message.chatId,
     thread: isDm ? message.chatId : (message.rootId ?? message.messageId),
-    sender: { id: message.senderOpenId, isBot: message.senderIsBot ?? false },
+    sender: { id: message.senderUnionId, isBot: message.senderIsBot ?? false },
     text: humanizeFeishuText(extractText(message.messageType, message.content), message.mentions),
     mentionedBots: (message.mentions ?? [])
       .map((mention) => mention?.id?.open_id)

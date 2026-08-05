@@ -681,6 +681,23 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(spy.upserts).toHaveLength(0)
   })
 
+  it('POST rejects a Feishu App from a different deployment organization', async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    app.platformStubs.feishuAppTenantGuard.checkApp = async () => 'org_mismatch'
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'feishu', agentId, feishu: { appId: 'cli_other_org', appSecret: 'secret' } }
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ code: 'FEISHU_ORG_MISMATCH' })
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.bot.count()).toBe(0)
+    expect(spy.upserts).toHaveLength(0)
+  })
+
   it('POST feishu derives the bot name from bot/v3/info, and proceeds when Feishu is unreachable', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()

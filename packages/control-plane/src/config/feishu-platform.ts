@@ -13,8 +13,9 @@ type EnvSlice = Pick<
   'FEISHU_PLATFORM_APP_ID' | 'FEISHU_PLATFORM_APP_SECRET' | 'LARK_PLATFORM_APP_ID' | 'LARK_PLATFORM_APP_SECRET'
 >
 
-/** Resolve each regional app independently. A partial pair is always a deploy
- * mistake; no pairs is the self-hosted/off default. */
+/** Resolve the regional Login Apps mirrored from the Logto connectors. Each
+ * regional pair is independently optional, but a partial pair is always a
+ * deployment mistake. */
 export function resolveFeishuPlatformApps(config: EnvSlice): FeishuPlatformApps {
   const apps: FeishuPlatformApps = {}
   for (const [region, idKey, secretKey] of [

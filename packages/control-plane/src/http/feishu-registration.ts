@@ -12,7 +12,7 @@ import type { FeishuAppRegistrationRecord, FeishuAppRegistrationStore, SlackTran
 import { OfficialFeishuRegistrationProvider, type FeishuRegistrationProvider } from './feishu-registration-provider.js'
 
 export type FeishuRegistrationFailure =
-  'denied' | 'expired' | 'agent_unavailable' | 'invalid_credentials' | 'setup_failed'
+  'denied' | 'expired' | 'agent_unavailable' | 'invalid_credentials' | 'org_mismatch' | 'setup_failed'
 
 export class FeishuRegistrationSetupError extends Error {
   constructor(readonly reason: Exclude<FeishuRegistrationFailure, 'denied' | 'expired'>) {

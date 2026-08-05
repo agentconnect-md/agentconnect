@@ -28,7 +28,7 @@ import type { SlackConfigApi } from './slack-config-api.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.js'
 import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
 import type { TelegramBotVerifier } from './telegram-identity.js'
-import type { FeishuBotVerifier } from './feishu-identity.js'
+import type { FeishuAppTenantGuard, FeishuBotVerifier } from './feishu-identity.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { CpProviderToolingCredentials } from '../platforms/provider.js'
@@ -69,6 +69,8 @@ export interface FeishuRouteSeams {
   /** Validates an appId + appSecret pair via the tenant-access-token exchange.
    *  Absent ⇒ no validation. */
   verifyBot?: FeishuBotVerifier
+  /** Enforces that newly-created Apps share the configured Login App's tenant. */
+  tenantGuard: FeishuAppTenantGuard
   /** Applies the sensitive delivery URL and verification keys the official
    *  one-click deeplink intentionally cannot carry. */
   configureHttpApp: FeishuHttpAppConfigurator

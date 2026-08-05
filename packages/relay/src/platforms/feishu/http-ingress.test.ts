@@ -20,7 +20,7 @@ function eventBody(eventId = 'evt-1') {
       app_id: 'cli_http_app'
     },
     event: {
-      sender: { sender_id: { open_id: 'ou_human' }, sender_type: 'user' },
+      sender: { sender_id: { open_id: 'ou_human', union_id: 'on_human' }, sender_type: 'user' },
       message: {
         message_id: 'om_1',
         chat_id: 'oc_1',
@@ -139,7 +139,7 @@ describe('Feishu HTTP ingress', () => {
       msgId: 'feishu:oc_1:om_1',
       platform: 'feishu',
       channel: 'oc_1',
-      sender: { id: 'ou_human', isBot: false },
+      sender: { id: 'on_human', isBot: false },
       text: '@Agent hello',
       mentionedBots: ['ou_bot']
     })

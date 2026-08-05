@@ -92,6 +92,7 @@ export class OfficialFeishuRegistrationProvider implements FeishuRegistrationPro
         ...(response.user_info?.tenant_brand ? { region: response.user_info.tenant_brand } : {})
       }
     }
+    if (response.client_id || response.client_secret) return { outcome: 'failed' }
     switch (response.error) {
       case 'authorization_pending':
         return { outcome: 'pending' }

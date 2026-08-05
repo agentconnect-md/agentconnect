@@ -43,7 +43,7 @@ import { FeishuRegion } from '@agentconnect.md/protocol'
 import type { IntegrationFeishuConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, IntegrationRecord } from '../../persistence/ports.js'
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
-import type { FeishuBotVerifier } from '../../http/feishu-identity.js'
+import type { FeishuAppTenantGuard, FeishuBotVerifier } from '../../http/feishu-identity.js'
 import type { FeishuAppIconSyncer } from '../../http/feishu-app-icon.js'
 import type { CpConfigValidation, CpInstallTransport, CpPlatformProvider } from '../provider.js'
 
@@ -82,16 +82,11 @@ export function refineFeishuCreateBody(
 }
 
 /**
- * Env keys this provider owns (§9 `envSchema`) — folded into `AppConfigSchema`
- * through `platforms/env.ts`, so the live schema and the provider's declaration
- * are ONE object.
- *
- * Platform-owned Feishu/Lark apps: each region is independently all-or-none —
- * the same app id must back its Logto social connector so app-scoped open_id
- * values can be compared safely during Session membership checks. The
- * per-region partial-set fail-fast lives in `config/feishu-platform.ts`
- * (`resolveFeishuPlatformApps`). MUST stay `.optional()` so an image bump
- * never fail-fasts an existing deploy.
+ * Credentials for the regional Login Apps configured in Logto. The Control
+ * Plane mirrors them so it can resolve the deployment tenant and reject Bot
+ * Apps created in another organization. They are static App credentials, not
+ * human access or refresh tokens. Each regional all-or-none check lives in
+ * `config/feishu-platform.ts`.
  */
 export const FeishuCpEnvSchema = {
   FEISHU_PLATFORM_APP_ID: z.string().optional(),
@@ -196,6 +191,8 @@ export interface FeishuCpProviderDeps {
    *  route's own fallback — except http transport, which then cannot resolve
    *  the bot identity and refuses with the route's 503). */
   verifyBot?: FeishuBotVerifier
+  /** Enforces that installed Apps share the configured Login App's tenant. */
+  tenantGuard?: FeishuAppTenantGuard
   /**
    * The registration funnel's Fastify plugin, injected PRE-BOUND to the route
    * deps (`feishuRegistrationRoutes` at `'org'`; Feishu has no browser OAuth
@@ -223,7 +220,7 @@ export interface FeishuCpProviderDeps {
 }
 
 export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformProvider<FeishuCreateCredentials> {
-  const { verifyBot, funnelRoutes, syncAppIcon, pendingInstalls } = deps
+  const { verifyBot, tenantGuard, funnelRoutes, syncAppIcon, pendingInstalls } = deps
   return {
     platformId: 'feishu',
 
@@ -234,6 +231,8 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
     credentialBodySchema: FeishuCreateCredentials,
 
     refineCreateBody: refineFeishuCreateBody,
+
+    envSchema: FeishuCpEnvSchema,
 
     /**
      * The tenant-access-token exchange (validates BOTH credentials in one
@@ -257,6 +256,40 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
           status: 400,
           message:
             'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
+        }
+      }
+      const tenant = tenantGuard
+        ? await tenantGuard.checkApp(credentials.appId, credentials.appSecret, credentials.region)
+        : 'not_configured'
+      if (tenant === 'not_configured') {
+        return {
+          ok: false,
+          status: 503,
+          message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
+        }
+      }
+      if (tenant === 'invalid_credentials') {
+        return {
+          ok: false,
+          status: 400,
+          message:
+            'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
+        }
+      }
+      if (tenant === 'unavailable' || tenant === 'unresolved') {
+        return {
+          ok: false,
+          status: 503,
+          message:
+            'Could not verify this App’s organization. Enable and publish the Obtain tenant information permission, then try again.'
+        }
+      }
+      if (tenant === 'org_mismatch') {
+        return {
+          ok: false,
+          status: 400,
+          code: 'FEISHU_ORG_MISMATCH',
+          message: 'This Bot App belongs to a different Lark/Feishu organization from this AgentConnect deployment.'
         }
       }
       // HTTP ingress cannot call Feishu with the app secret, so the CP must
@@ -375,8 +408,6 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
           ] as const
         }
       : {}),
-
-    envSchema: FeishuCpEnvSchema,
 
     // Ongoing agent-icon convergence only — the feishu create arm runs no
     // post-create push (the one-click funnel brands the app at registration

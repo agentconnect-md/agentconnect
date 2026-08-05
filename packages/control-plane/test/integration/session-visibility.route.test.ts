@@ -184,7 +184,7 @@ describe('session visibility — external conversation audiences', () => {
     const daemonId = await seedDaemon(prisma, randomUUID())
     const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
     const sessionId = `s-feishu-p2p-${randomUUID()}`
-    const ownerIdentity = 'feishu:lark:cli_custom:ou_owner'
+    const ownerIdentity = 'feishu:lark:cli_custom:on_owner'
     const repo = new PgSessionRepo(prisma)
     const recorded = await repo.recordMilestone({
       sessionId: SessionId(sessionId),
@@ -233,24 +233,6 @@ describe('session visibility — external conversation audiences', () => {
         })
       ).sessions
     ).toHaveLength(0)
-    expect(
-      (
-        await repo.listPage({
-          agentIds: [agentId],
-          limit: 10,
-          includeTotal: false,
-          viewer: {
-            ...baseline,
-            identitySet: [],
-            externalAccess: {
-              ...baseline.externalAccess,
-              allowedScopes: [{ id: scope!.id, aclRevision: scope!.aclRevision }]
-            }
-          }
-        })
-      ).sessions.map((session) => session.id)
-    ).toEqual([sessionId])
-
     const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'feishu', true)
     const external = await repo.get(SessionId(sessionId))
     expect(external).toMatchObject({ visibility: 'external', externalProvider: 'feishu' })
@@ -361,8 +343,9 @@ describe('session visibility — external conversation audiences', () => {
     expect(unavailable.statusCode).toBe(409)
 
     const ownerResponse = await appAs(owner, {
-      logtoIdentity: {} as never,
-      slackSessionAccess: { resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      sessionAccessPlugins: [
+        { provider: 'slack', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      ]
     }).app.inject({
       method: 'PUT',
       url: `${ORG}/session-access/slack`,
@@ -375,8 +358,9 @@ describe('session visibility — external conversation audiences', () => {
 
     const stillHidden = (
       await appAs(owner, {
-        logtoIdentity: {} as never,
-        slackSessionAccess: { resolve: async () => ({ allowedScopes: [], degraded: false }) }
+        sessionAccessPlugins: [
+          { provider: 'slack', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+        ]
       }).app.inject({ method: 'GET', url: `${ORG}/session-access/slack` })
     ).json()
     expect(stillHidden).toMatchObject({ state: 'enabled', hiddenSessions: 1 })
@@ -761,8 +745,9 @@ describe('session visibility — GitHub repository audience', () => {
     expect(forbidden.statusCode).toBe(403)
 
     const enabled = await appAs(owner, {
-      logtoIdentity: {} as never,
-      githubSessionAccess: { resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      sessionAccessPlugins: [
+        { provider: 'github', available: true, resolve: async () => ({ allowedScopes: [], degraded: false }) }
+      ]
     }).app.inject({
       method: 'PUT',
       url: `${ORG}/session-access/github`,
@@ -827,12 +812,16 @@ describe('session visibility — GitHub repository audience', () => {
     expect(await repo.get(githubSessionId)).toMatchObject({ visibility: 'external', externalResolution: 'settled' })
 
     const response = await appAs(viewer, {
-      githubSessionAccess: {
-        resolve: async (scopes) => ({
-          allowedScopes: scopes.map((scope) => ({ id: scope.id, aclRevision: scope.aclRevision })),
-          degraded: false
-        })
-      }
+      sessionAccessPlugins: [
+        {
+          provider: 'github',
+          available: true,
+          resolve: async (scopes) => ({
+            allowedScopes: scopes.map((scope) => ({ id: scope.id, aclRevision: scope.aclRevision })),
+            degraded: false
+          })
+        }
+      ]
     }).app.inject({ method: 'GET', url: `${ORG}/sessions/facets?integration=webchat` })
 
     expect(response.statusCode).toBe(200)

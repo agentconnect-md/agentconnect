@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import type { ExternalScopeRecord, GithubInstallationRecord } from '../persistence/ports.js'
 import { UserAuthzDeniedError } from '../github/user-authz.js'
+import type { SessionAccessViewer } from './session-access-plugin.js'
 import { GithubSessionAccessService } from './github-session-access.js'
 
 const installation: GithubInstallationRecord = {
@@ -55,12 +56,19 @@ function make(privateRepo: boolean, permissionForUser = vi.fn()) {
   return { service, repoRefById, permissionForUser, clock }
 }
 
+const viewer: SessionAccessViewer = {
+  request: {} as never,
+  orgId: installation.orgId,
+  userId: 'user-1',
+  identitySet: new Set(['user:user-1'])
+}
+
 describe('GithubSessionAccessService', () => {
   it('resolves allowed scopes beyond the first 200', async () => {
     const h = make(false)
     const scopes = Array.from({ length: 201 }, (_, index) => scopeAt(index + 1))
 
-    const result = await h.service.resolve(scopes, 'user-1')
+    const result = await h.service.resolve(scopes, viewer)
 
     expect(result.degraded).toBe(false)
     expect(result.allowedScopes).toHaveLength(201)
@@ -70,7 +78,7 @@ describe('GithubSessionAccessService', () => {
   it('allows an org member to read a public repository session without a linked GitHub identity', async () => {
     const h = make(false)
 
-    await expect(h.service.resolve([scope], 'user-1')).resolves.toEqual({
+    await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
       allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
       degraded: false
     })
@@ -84,11 +92,11 @@ describe('GithubSessionAccessService', () => {
       vi.fn().mockRejectedValue(new UserAuthzDeniedError('GitHub identity required', 'GITHUB_IDENTITY_REQUIRED'))
     )
 
-    expect((await allowed.service.resolve([scope], 'user-1')).allowedScopes).toHaveLength(1)
+    expect((await allowed.service.resolve([scope], viewer)).allowedScopes).toHaveLength(1)
     expect(allowed.permissionForUser).toHaveBeenCalledWith('user-1', installation, 'acme', 'private-repo', {
       maxCacheAgeMs: 0
     })
-    await expect(denied.service.resolve([scope], 'user-1')).resolves.toEqual({
+    await expect(denied.service.resolve([scope], viewer)).resolves.toEqual({
       allowedScopes: [],
       degraded: false
     })
@@ -97,13 +105,13 @@ describe('GithubSessionAccessService', () => {
   it('refreshes an allowed provider decision at the 120 second hard limit', async () => {
     const h = make(true, vi.fn().mockResolvedValue('read'))
 
-    await h.service.resolve([scope], 'user-1')
+    await h.service.resolve([scope], viewer)
     h.clock.advance(119_999)
-    await h.service.resolve([scope], 'user-1')
+    await h.service.resolve([scope], viewer)
     expect(h.permissionForUser).toHaveBeenCalledTimes(1)
 
     h.clock.advance(1)
-    await h.service.resolve([scope], 'user-1')
+    await h.service.resolve([scope], viewer)
     expect(h.permissionForUser).toHaveBeenCalledTimes(2)
   })
 
@@ -111,7 +119,7 @@ describe('GithubSessionAccessService', () => {
     const h = make(true)
     h.repoRefById.mockRejectedValue(new Error('provider unavailable'))
 
-    await expect(h.service.resolve([scope], 'user-1')).resolves.toEqual({
+    await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
       allowedScopes: [],
       degraded: true
     })

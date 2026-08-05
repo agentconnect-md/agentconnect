@@ -1282,13 +1282,7 @@ export class PgSessionRepo implements SessionRepo {
        AND scope."orgId" = s."orgId"
        AND scope."provider" = s."externalProvider"
       ${pageWhereSql(unrestricted, false)}
-        AND (
-          s."visibility" = 'external'::"SessionVisibility"
-          OR (
-            s."visibility" = 'private'::"SessionVisibility"
-            AND s."externalProvider" = 'feishu'
-          )
-        )
+        AND s."visibility" = 'external'::"SessionVisibility"
         AND s."externalResolution" = 'settled'::"ExternalResolution"
         AND scope."revokedAt" IS NULL
       ORDER BY scope."id"

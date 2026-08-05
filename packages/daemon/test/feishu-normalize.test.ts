@@ -13,6 +13,7 @@ const base: FeishuMessageLike = {
   messageType: 'text',
   content: JSON.stringify({ text: 'hello @_user_1' }),
   senderOpenId: 'ou_123',
+  senderUnionId: 'on_123',
   senderIsBot: false,
   mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: 'AgentBot' }]
 }
@@ -27,7 +28,7 @@ describe('normalizeFeishuMessage', () => {
       channel: 'oc_777',
       text: 'hello @AgentBot', // @_user_1 placeholder humanized to the mention name
       mentionedBots: ['ou_bot'], // routed on the mentioned party's open_id
-      sender: { id: 'ou_123', isBot: false },
+      sender: { id: 'on_123', isBot: false },
       isDm: false
     })
     // A top-level group @mention opens a topic thread → keyed on its own message id
