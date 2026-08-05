@@ -212,8 +212,8 @@ describe('LogtoIdentityService.feishuIdentitiesFor', () => {
       }
     })
     await expect(svcOf(fetchImpl).feishuIdentitiesFor('sub-1')).resolves.toEqual([
-      { region: 'feishu', unionId: 'on_feishu', tenantKey: 'tenant_feishu' },
-      { region: 'lark', unionId: 'on_lark', tenantKey: 'tenant_lark' }
+      { region: 'feishu', unionId: 'on_feishu' },
+      { region: 'lark', unionId: 'on_lark' }
     ])
   })
 

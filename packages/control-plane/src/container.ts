@@ -19,6 +19,7 @@ import { HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED } from '@agentconnect.md/p
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
+import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
@@ -535,6 +536,10 @@ export function buildContainer(
   // absent (routes 404, console hides "Add to Slack"); partial set ⇒ fail-fast.
   const slackPlatformApp = resolveSlackPlatformAppConfig(config)
 
+  // Regional Login Apps mirrored from Logto. Their credentials are the stable
+  // deployment tenant anchor used to admit Bot Apps from the same organization.
+  const feishuPlatformApps = resolveFeishuPlatformApps(config)
+
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
   // The installation repo feeds the github-kind compile (installationIds gate).
@@ -1039,16 +1044,20 @@ export function buildContainer(
     })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: verifyTelegramBot }
-  const feishuLoginTenantKeyFor = async (userId: string, region: 'feishu' | 'lark'): Promise<string | null> => {
-    if (!logtoIdentity) return null
-    const subject = await repos.user.getOidcSubject(userId)
-    if (!subject) return null
-    const identities = await logtoIdentity.feishuIdentitiesFor(subject)
-    return identities.find((identity) => identity.region === region)?.tenantKey ?? null
+  const feishuLoginTenantKeys = new Map<'feishu' | 'lark', string>()
+  const feishuLoginAppTenantKeyFor = async (region: 'feishu' | 'lark'): Promise<string | null> => {
+    const cached = feishuLoginTenantKeys.get(region)
+    if (cached) return cached
+    const app = feishuPlatformApps[region]
+    if (!app) return null
+    const resolution = await resolveFeishuAppTenant(app.appId, app.appSecret, region)
+    if (resolution.status !== 'ok') throw new Error(`could not resolve configured ${region} Login App tenant`)
+    feishuLoginTenantKeys.set(region, resolution.tenantKey)
+    return resolution.tenantKey
   }
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: verifyFeishuBot,
-    loginTenantKeyFor: feishuLoginTenantKeyFor,
+    loginAppTenantKeyFor: feishuLoginAppTenantKeyFor,
     resolveAppTenant: resolveFeishuAppTenant,
     configureHttpApp: configureFeishuHttpApp,
     registrations: new FeishuAppRegistrationService(repos.feishuAppRegistration)
@@ -1113,7 +1122,7 @@ export function buildContainer(
     }),
     createFeishuCpProvider({
       verifyBot: verifyFeishuBot,
-      loginTenantKeyFor: feishuLoginTenantKeyFor,
+      loginAppTenantKeyFor: feishuLoginAppTenantKeyFor,
       resolveAppTenant: resolveFeishuAppTenant,
       funnelRoutes: { org: [feishuRegistrationRoutes(httpDeps, feishuSeams)], publicCallback: [] },
       syncAppIcon: syncFeishuAppIcon,

@@ -29,14 +29,15 @@
  * {@link FeishuCreateCredentials} + {@link refineFeishuCreateBody} into its body
  * and runs {@link CpPlatformProvider.validateConfig} +
  * {@link CpPlatformProvider.buildNewBotInstall} (D6 fence included) as its tail,
- * the container's background lifecycle drives the declared registration
- * reaper, and spec assembly
+ * `config/env.ts` folds {@link FeishuCpEnvSchema}, the container's background
+ * lifecycle drives the declared registration reaper, and spec assembly
  * (`placement.ts`) / `rc/bot-assign` (`httpBot.ts`) await
  * {@link CpPlatformProvider.projectIntegrationConfig} /
  * {@link CpPlatformProvider.projectBotAssign}. The helpers below stay exported
  * as the ONE implementation both the projectors and the equivalence tests call.
  */
 import { z } from 'zod'
+import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import { FeishuRegion } from '@agentconnect.md/protocol'
 import type { IntegrationFeishuConfig } from '@agentconnect.md/protocol'
@@ -79,6 +80,20 @@ export function refineFeishuCreateBody(
     addIssue('http transport requires feishu.verificationToken')
   }
 }
+
+/**
+ * Credentials for the regional Login Apps configured in Logto. The Control
+ * Plane mirrors them so it can resolve the deployment tenant and reject Bot
+ * Apps created in another organization. They are static App credentials, not
+ * human access or refresh tokens. Each regional all-or-none check lives in
+ * `config/feishu-platform.ts`.
+ */
+export const FeishuCpEnvSchema = {
+  FEISHU_PLATFORM_APP_ID: z.string().optional(),
+  FEISHU_PLATFORM_APP_SECRET: z.string().optional(),
+  LARK_PLATFORM_APP_ID: z.string().optional(),
+  LARK_PLATFORM_APP_SECRET: z.string().optional()
+} satisfies ZodRawShape
 
 /** How long an unfinished one-click registration row may linger. Device code /
  *  App Secret are encrypted but deliberately short-lived: a terminal status is
@@ -176,8 +191,8 @@ export interface FeishuCpProviderDeps {
    *  route's own fallback — except http transport, which then cannot resolve
    *  the bot identity and refuses with the route's 503). */
   verifyBot?: FeishuBotVerifier
-  /** Reads the current installer's tenant from the deployment's login App. */
-  loginTenantKeyFor?: (userId: string, region: FeishuRegion) => Promise<string | null>
+  /** Resolves the configured regional Login App's immutable tenant_key. */
+  loginAppTenantKeyFor?: (region: FeishuRegion) => Promise<string | null>
   /** Resolves the tenant that owns pasted/new App credentials. */
   resolveAppTenant?: FeishuAppTenantResolver
   /**
@@ -207,7 +222,7 @@ export interface FeishuCpProviderDeps {
 }
 
 export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformProvider<FeishuCreateCredentials> {
-  const { verifyBot, loginTenantKeyFor, resolveAppTenant, funnelRoutes, syncAppIcon, pendingInstalls } = deps
+  const { verifyBot, loginAppTenantKeyFor, resolveAppTenant, funnelRoutes, syncAppIcon, pendingInstalls } = deps
   return {
     platformId: 'feishu',
 
@@ -218,6 +233,8 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
     credentialBodySchema: FeishuCreateCredentials,
 
     refineCreateBody: refineFeishuCreateBody,
+
+    envSchema: FeishuCpEnvSchema,
 
     /**
      * The tenant-access-token exchange (validates BOTH credentials in one
@@ -233,7 +250,7 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
      * http-transport relay-availability check is a 409 and stays core, as do
      * the D6 identity fence's 409s (contract §9).
      */
-    async validateConfig(credentials, transport, context): Promise<CpConfigValidation> {
+    async validateConfig(credentials, transport): Promise<CpConfigValidation> {
       const check = verifyBot ? await verifyBot(credentials.appId, credentials.appSecret, credentials.region) : null
       if (check?.status === 'invalid') {
         return {
@@ -243,28 +260,29 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
             'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
         }
       }
-      if (!context?.userId || !loginTenantKeyFor) {
+      if (!loginAppTenantKeyFor) {
         return {
           ok: false,
-          status: 400,
-          message: 'Sign in through this deployment’s Lark/Feishu login app before registering a Bot App.'
+          status: 503,
+          message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
         }
       }
       let loginTenantKey: string | null
       try {
-        loginTenantKey = await loginTenantKeyFor(context.userId, credentials.region)
+        loginTenantKey = await loginAppTenantKeyFor(credentials.region)
       } catch {
         return {
           ok: false,
           status: 503,
-          message: 'Could not verify the organization used by this AgentConnect deployment. Please try again.'
+          message:
+            'Could not verify the Login App’s organization. Enable and publish the Obtain tenant information permission, then try again.'
         }
       }
       if (!loginTenantKey) {
         return {
           ok: false,
-          status: 400,
-          message: 'Link the matching Lark/Feishu sign-in identity before registering a Bot App.'
+          status: 503,
+          message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
         }
       }
       if (!resolveAppTenant) {

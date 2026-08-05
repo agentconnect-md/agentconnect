@@ -145,9 +145,6 @@ export interface FeishuIdentity {
   /** Developer-organization-scoped human identity. Custom apps created by the
    * same Lark/Feishu tenant report the same value for this person. */
   unionId: string
-  /** Deployment tenant identity returned by the login App. Used only to
-   * validate new Bot Apps; AgentConnect does not copy it into its database. */
-  tenantKey?: string
 }
 
 // Slack namespaces its non-standard OIDC claims. `sub` carries the same user id
@@ -673,8 +670,7 @@ function feishuIdentitiesOf(user: LogtoUser | null): FeishuIdentity[] {
     // The stock Logto connector stores Feishu's app-scoped `sub`/`open_id` as
     // `userId`; only the explicit provider field is safe to treat as union_id.
     const unionId = firstString(raw?.union_id, data?.union_id, userInfo?.union_id)
-    const tenantKey = firstString(raw?.tenant_key, data?.tenant_key, userInfo?.tenant_key)
-    if (unionId) identities.push({ region, unionId, ...(tenantKey ? { tenantKey } : {}) })
+    if (unionId) identities.push({ region, unionId })
   }
   return identities
 }

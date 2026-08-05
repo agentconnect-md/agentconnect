@@ -7,10 +7,10 @@
  * key here is a deployment contract: a key that quietly stops being parsed reads
  * as "feature off" at boot, not as an error.
  *
- * So the first suite pins the current deployment contract (including retired
- * keys staying absent), the second pins that the composition and the four
- * PROVIDER instances agree — the drift a static list would otherwise hide —
- * and the third pins the collision guards that make the spread safe.
+ * So the first suite pins the current deployment contract, the second pins
+ * that the composition and the four PROVIDER instances agree — the drift a
+ * static list would otherwise hide — and the third pins the collision guards
+ * that make the spread safe.
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
@@ -31,12 +31,16 @@ const EXPECTED_KEYS = [
   'CRON_RUN_TTL_SEC',
   'DAEMON_DIST_TAG',
   'DATABASE_URL',
+  'FEISHU_PLATFORM_APP_ID',
+  'FEISHU_PLATFORM_APP_SECRET',
   'GITHUB_APP_CLIENT_ID',
   'GITHUB_APP_ID',
   'GITHUB_APP_PRIVATE_KEY_B64',
   'GITHUB_APP_SLUG',
   'HEARTBEAT_SEC',
   'HOST',
+  'LARK_PLATFORM_APP_ID',
+  'LARK_PLATFORM_APP_SECRET',
   'LOGTO_MGMT_APP_ID',
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_ENDPOINT',
@@ -103,18 +107,25 @@ describe('composed AppConfigSchema', () => {
       SLACK_PLATFORM_APP_ID: 'A1',
       SLACK_PLATFORM_CLIENT_ID: 'cid',
       SLACK_PLATFORM_CLIENT_SECRET: 'csecret',
-      SLACK_PLATFORM_SIGNING_SECRET: 'sig'
+      SLACK_PLATFORM_SIGNING_SECRET: 'sig',
+      FEISHU_PLATFORM_APP_ID: 'cli_feishu',
+      FEISHU_PLATFORM_APP_SECRET: 'fsecret',
+      LARK_PLATFORM_APP_ID: 'cli_lark',
+      LARK_PLATFORM_APP_SECRET: 'lsecret'
     } as NodeJS.ProcessEnv)
 
     // Coerced number + the reaper default that is NOT in the environment.
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(120)
     expect(config.SLACK_INSTALL_REAP_INTERVAL_SEC).toBe(600)
     expect(config.SLACK_PLATFORM_APP_ID).toBe('A1')
+    expect(config.FEISHU_PLATFORM_APP_SECRET).toBe('fsecret')
+    expect(config.LARK_PLATFORM_APP_ID).toBe('cli_lark')
   })
 
   it('leaves every platform key optional — an unset one never fail-fasts a boot', () => {
     const config = loadConfig(MINIMAL_ENV as NodeJS.ProcessEnv)
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
+    expect(config.FEISHU_PLATFORM_APP_ID).toBeUndefined()
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(3600)
   })
 })
@@ -139,7 +150,7 @@ describe('platform env declarations', () => {
   })
 
   it('declares nothing for a platform with no deployment configuration', () => {
-    for (const platformId of ['telegram', 'discord', 'feishu']) {
+    for (const platformId of ['telegram', 'discord']) {
       expect(CP_PLATFORM_ENV_SCHEMAS.some((decl) => decl.platformId === platformId)).toBe(false)
     }
   })

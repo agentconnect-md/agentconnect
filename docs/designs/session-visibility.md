@@ -170,8 +170,9 @@ enum VisibilitySource {
   short-lived in-process cache entries. Linked Slack, Feishu/Lark, and GitHub identities
   remain provider-owned and are resolved from Logto rather than copied into the
   AgentConnect database. Feishu/Lark membership checks reuse each installed Bot
-  App's required credential; AgentConnect stores no additional login App secret
-  or user access token for this feature.
+  App's required credential. The Login App secret remains static deployment
+  configuration for install-time tenant validation, but Session reads store no
+  additional credential and use no human access token.
 - `SessionExternalAccessPolicy` is per organization and provider. Its revision
   and read fence make enablement fail closed while historical rows converge.
   History whose scope cannot be reconstructed only settles if new trusted
@@ -656,18 +657,19 @@ For live chat access, the BFF exchanges the installed Bot App's durable App
 ID/Secret for a tenant token and calls `chats/:chat_id/members` with
 `member_id_type=union_id`. Group and Bot p2p sessions compare that current
 member list with the viewer's sign-in `union_id`; provider failures fail closed.
-No browser Account API token, federated user token, duplicate Control Plane
-login-App credential, or user-token refresh loop participates in Session reads.
-Only bounded allow/deny/error verdicts are cached across requests; Bot tenant
-token exchanges are deduplicated within one authorization read.
+No browser Account API token, federated user token, Login App credential, or
+user-token refresh loop participates in Session reads. Only bounded
+allow/deny/error verdicts are cached across requests; Bot tenant token exchanges
+are deduplicated within one authorization read.
 
 Every installation enforces the deployment tenant before storing a Bot. The
-Control Plane reads the login identity's `tenant_key`, resolves the candidate
-App's `tenant_key` with that App's tenant token, and rejects a mismatch as
-`org_mismatch`. This applies to one-click creation and pasted credentials, and
-allows any member of the same organization to authorize the one-click flow.
-The comparison is request-local: AgentConnect persists neither `tenant_key` nor
-a human access token.
+Control Plane resolves the configured regional Login App's `tenant_key`,
+resolves the candidate App's `tenant_key` with that App's tenant token, and
+rejects a mismatch as `org_mismatch`. This applies to one-click creation and
+pasted credentials, and allows any member of the same organization to authorize
+the one-click flow. The comparison does not persist either `tenant_key`; the
+Login App ID/Secret remain deployment configuration, and no human access token
+is stored.
 
 **Other platform session access (future, separate design).** Telegram and
 Discord still need an explicit verified identity binding before their platform

@@ -70,9 +70,9 @@ export interface FeishuRouteSeams {
   /** Validates an appId + appSecret pair via the tenant-access-token exchange.
    *  Absent ⇒ no validation. */
   verifyBot?: FeishuBotVerifier
-  /** The sign-in App's tenant_key for this user and cloud. Null means the user
-   *  has not linked a matching Lark/Feishu login identity. */
-  loginTenantKeyFor(userId: string, region: FeishuRegion): Promise<string | null>
+  /** The configured Login App's tenant_key for this cloud. Null means the
+   * regional Login App is not configured on this deployment. */
+  loginAppTenantKeyFor(region: FeishuRegion): Promise<string | null>
   /** Resolves the tenant that owns the newly-created App. */
   resolveAppTenant: FeishuAppTenantResolver
   /** Applies the sensitive delivery URL and verification keys the official

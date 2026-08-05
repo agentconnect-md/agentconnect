@@ -264,7 +264,7 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(await prisma.integration.count()).toBe(0)
   })
 
-  it('rejects a new App authorized outside the organization used to sign in', async () => {
+  it('rejects a new App outside the configured Login App organization', async () => {
     const agentId = await placedAgent()
     const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
       const form = new URLSearchParams(String(init?.body))
@@ -304,6 +304,24 @@ describe('Feishu/Lark one-click app registration', () => {
     expect(polled.json()).toMatchObject({ status: 'failed', failureReason: 'org_mismatch' })
     expect(await prisma.bot.count()).toBe(0)
     expect(await prisma.integration.count()).toBe(0)
+  })
+
+  it('does not start without a regional Login App tenant anchor', async () => {
+    const agentId = await placedAgent()
+    const app = buildHttpApp(prisma, undefined, undefined, undefined, {
+      feishuLoginAppTenantKeyFor: async () => null
+    })
+    running = app
+
+    const response = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/feishu/app`,
+      payload: { agentId, region: 'lark' }
+    })
+    expect(response.statusCode).toBe(409)
+    expect(response.json()).toMatchObject({
+      message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
+    })
   })
 
   it('does not reuse one user’s pending setup for a different requester', async () => {

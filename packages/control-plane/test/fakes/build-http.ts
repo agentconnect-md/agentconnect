@@ -151,7 +151,7 @@ export interface PlatformStubs {
   ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
   syncDiscordBotProfile?: DiscordBotProfileSyncer
   verifyFeishuBot?: FeishuBotVerifier
-  feishuLoginTenantKeyFor: (userId: string, region: FeishuRegion) => Promise<string | null>
+  feishuLoginAppTenantKeyFor: (region: FeishuRegion) => Promise<string | null>
   resolveFeishuAppTenant: FeishuAppTenantResolver
   configureFeishuHttpApp: FeishuHttpAppConfigurator
   syncFeishuAppIcon?: FeishuAppIconSyncer
@@ -171,7 +171,7 @@ const PLATFORM_STUB_KEYS = [
   'ensureDiscordMessageContentIntent',
   'syncDiscordBotProfile',
   'verifyFeishuBot',
-  'feishuLoginTenantKeyFor',
+  'feishuLoginAppTenantKeyFor',
   'resolveFeishuAppTenant',
   'configureFeishuHttpApp',
   'syncFeishuAppIcon',
@@ -324,7 +324,7 @@ export function buildHttpApp(
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
     ensureDiscordMessageContentIntent: async () => 'ready',
     configureFeishuHttpApp: async () => {},
-    feishuLoginTenantKeyFor: async () => 'tenant_same_org',
+    feishuLoginAppTenantKeyFor: async () => 'tenant_same_org',
     resolveFeishuAppTenant: async () => ({ status: 'ok', tenantKey: 'tenant_same_org' }),
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     ...Object.fromEntries(
@@ -482,7 +482,7 @@ export function buildHttpApp(
       platformStubs.verifyFeishuBot
         ? platformStubs.verifyFeishuBot(appId, appSecret, region)
         : { status: 'unreachable' },
-    loginTenantKeyFor: (userId, region) => platformStubs.feishuLoginTenantKeyFor(userId, region),
+    loginAppTenantKeyFor: (region) => platformStubs.feishuLoginAppTenantKeyFor(region),
     resolveAppTenant: (appId, appSecret, region) => platformStubs.resolveFeishuAppTenant(appId, appSecret, region),
     configureHttpApp: (input) => platformStubs.configureFeishuHttpApp(input),
     registrations: platformStubs.feishuAppRegistration
@@ -530,7 +530,7 @@ export function buildHttpApp(
     }),
     createFeishuCpProvider({
       verifyBot: feishuSeams.verifyBot!,
-      loginTenantKeyFor: feishuSeams.loginTenantKeyFor,
+      loginAppTenantKeyFor: feishuSeams.loginAppTenantKeyFor,
       resolveAppTenant: feishuSeams.resolveAppTenant,
       funnelRoutes: { org: [feishuRegistrationRoutes(deps, feishuSeams)], publicCallback: [] },
       syncAppIcon: async (appId, appSecret, region, agent) =>

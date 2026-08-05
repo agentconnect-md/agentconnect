@@ -188,10 +188,10 @@ IntegrationFeishuConfig }`.
   on every terminal outcome and TTL-reap old rows.
 - After approval, pass the returned App ID and App Secret directly to the same
   bot-secret installation helper used by the manual route only after the App's
-  `tenant_key` matches the creator's sign-in tenant. This requires the new App
-  and sign-in App to belong to the same Lark/Feishu organization, but does not
-  require the same human to authorize both. Never return either credential from
-  the registration routes.
+  `tenant_key` matches the configured regional Login App's `tenant_key`. This
+  requires every new App and the Login App to belong to the same Lark/Feishu
+  organization, but does not require the same human to create or authorize
+  them. Never return either credential from the registration routes.
 - In `src/http/dto/index.ts`:
   - Add `'feishu'` to the `platform` `[enum]` in `CreateIntegrationBody`; add
     optional `feishu: z.object({ appId, appSecret })`; and update both
@@ -390,8 +390,12 @@ Plane returns a provider authorization deeplink. After the user confirms the
 app and permissions, the SDK returns `appId` and `appSecret` only to the
 Control Plane. It exchanges those credentials for a tenant token, calls the
 tenant-information API, and compares the resulting `tenant_key` with the
-creator's verified sign-in tenant; a mismatch fails setup before any Bot is
-installed. The manual credential path runs the same tenant check.
+configured regional Login App's `tenant_key`; a mismatch fails setup before
+any Bot is installed. The manual credential path runs the same tenant check.
+The Login App ID/Secret are mirrored from the Logto connector into deployment
+configuration so this is an App-to-App comparison rather than an inference
+from whichever human happens to be installing the Bot. Both Apps must publish
+`tenant:tenant:readonly` so their tenant can be resolved.
 `verifyFeishuBot` validates the credentials and `botSecret.put` stores
 `{ botToken: appSecret, appToken: appId }`; `integrationToSpec` then distributes
 the integration to the daemon, which persists it in `agent.json` and starts
@@ -417,7 +421,9 @@ API egress.
   matching existing behavior.
 - Session audience checks use this already-required Bot credential to enumerate
   chat member `union_id` values. They do not store or refresh a human access
-  token, and the Control Plane needs no duplicate copy of the sign-in App secret.
+  token. The separately configured Login App secret is used only as the
+  deployment tenant anchor during Bot installation; it is not on the Session
+  authorization path.
 
 ## 7. Lark / Feishu-specific decisions
 
@@ -529,10 +535,10 @@ the sign-in App, then links to the selected Lark or Feishu Open Platform console
   device flow across replicas, leases each poll/finalize step, and installs
   credentials server-side through the same secret-store helper as the manual
   route. Both paths reject a Bot App whose `tenant_key` does not match the
-  deployment's sign-in organization. HTTP registrations additionally configure
-  the app's callback delivery after the relay assignment exists. App Secret
-  never enters a browser response and is cleared from the pending row after
-  settlement.
+  configured regional Login App's organization. HTTP registrations additionally
+  configure the app's callback delivery after the relay assignment exists. App
+  Secret never enters a browser response and is cleared from the pending row
+  after settlement.
 - **HTTP ingress:** the relay endpoint `/feishu/events` verifies/decrypts and
   deduplicates callbacks before forwarding normalized messages and CardKit
   actions directly to the owning daemon. Card actions return the daemon's

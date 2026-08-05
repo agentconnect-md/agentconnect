@@ -117,20 +117,20 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
         }
         let loginTenantKey: string | null
         try {
-          loginTenantKey = await feishu.loginTenantKeyFor(createdByUserId, req.body.region)
+          loginTenantKey = await feishu.loginAppTenantKeyFor(req.body.region)
         } catch {
           return reply.code(502).send({
             error: 'Bad Gateway',
             statusCode: 502,
-            message: 'Could not verify your Lark/Feishu sign-in identity. Please try again.'
+            message:
+              'Could not verify the configured Lark/Feishu Login App organization. Enable and publish the Obtain tenant information permission, then try again.'
           })
         }
         if (!loginTenantKey) {
           return reply.code(409).send({
             error: 'Conflict',
             statusCode: 409,
-            message:
-              'Link a Lark/Feishu sign-in identity for this cloud first. Every Bot App must belong to that same organization.'
+            message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
           })
         }
         try {
@@ -183,8 +183,8 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
       async (req, reply) => {
         const orgId = orgIdOf(req)
         const session = await feishu.registrations.get(req.params.id, orgId, async (registration) => {
-          const loginTenantKey = await feishu.loginTenantKeyFor(registration.createdByUserId, registration.region)
-          if (!loginTenantKey) throw new FeishuRegistrationSetupError('org_mismatch')
+          const loginTenantKey = await feishu.loginAppTenantKeyFor(registration.region)
+          if (!loginTenantKey) throw new FeishuRegistrationSetupError('setup_failed')
           const appTenant = await feishu.resolveAppTenant(
             registration.appId,
             registration.appSecret,

@@ -569,9 +569,10 @@ bearer tokens, or upstream error messages.
 
 A self-deployed AgentConnect instance is bound to the organization of its Lark/Feishu
 login App. Every Bot App installation, whether one-click or manual credentials, must
-compare the candidate App's `tenant_key` with that login tenant and reject a mismatch.
-The authorizing human may be any member of the same organization; tenant verification
-must not be weakened into a same-user `union_id` comparison or require user-token storage.
+resolve that configured Login App's `tenant_key`, compare it with the candidate App's
+`tenant_key`, and reject a mismatch. The authorizing human may be any member of the same
+organization; tenant verification must not be weakened into a same-user `union_id`
+comparison or require user-token storage.
 A reconnect that proves a different provider account must not replace the linked identity;
 the console tells the user to reconnect with the linked account or unlink before switching.
 
