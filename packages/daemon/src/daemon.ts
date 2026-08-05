@@ -64,7 +64,6 @@ import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-r
 import { attachmentMention, transcriptImageAttachments } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import { isValidatedRemoteMcpRuntime } from './mcp/remote-mcp-runtimes.js'
 import type {
   MessageAgentReq,
   MessageAgentResult,
@@ -3509,10 +3508,9 @@ export class Daemon {
       await this.reconcileDiscordConnections()
       await this.reconcileFeishuConnections()
     }
-    // The live roster just changed shape — re-announce register capabilities if
-    // the agent-derived feature set moved (e.g. the builtin preset agent landed,
-    // flipping `webchat_remote_mcp_v1`). No-op when nothing changed. Optional
-    // call: tests inject partial cpClient fakes (same as emitDaemonRuntimes).
+    // The live roster just changed shape — re-announce any agent-derived register
+    // capabilities. No-op when nothing changed. Optional call: tests inject
+    // partial cpClient fakes (same as emitDaemonRuntimes).
     this.cpClient?.updateCapabilities?.()
   }
 
@@ -4972,33 +4970,6 @@ export class Daemon {
   }
 
   private registrationFeatures(): string[] {
-    // Remote-MCP eligibility is (validated adapter provenance) AND (probed HTTP
-    // transport): the capability bit alone proves descriptor transport, not that
-    // the runtime keeps the Authorization bearer out of model-visible context (§13).
-    const hasRemoteMcpRuntime = [...this.runtimeMcpCaps.entries()].some(
-      ([runtimeId, caps]) =>
-        caps.http &&
-        isValidatedRemoteMcpRuntime(
-          runtimeId,
-          this.runtimeCatalog.entries[runtimeId],
-          this.runtimeProbedVersions.get(runtimeId)
-        )
-    )
-    // Static sibling of the probe path: a synced builtin (preset) agent on a
-    // validated launch advertises the feature without waiting for a probe round.
-    // The first register of a fresh process runs before the probe sweep, so the
-    // probed path alone would hide the feature until a reconnect; grant
-    // establishment stays safe because the turn-time gate (webchat dispatch)
-    // still requires the probed HTTP transport before any descriptor attaches.
-    const hasBuiltinRemoteMcpAgent = [...this.agents.values()].some(
-      (agent) =>
-        agent.builtin &&
-        isValidatedRemoteMcpRuntime(
-          agent.runtime,
-          this.runtimeCatalog.entries[agent.runtime],
-          this.runtimeProbedVersions.get(agent.runtime)
-        )
-    )
     return [
       ...(this.opts.agentName ? [] : ['agent-move-v1', 'workspace-convert-v1', 'workspace-edit-v2']),
       'workspace-file-edit-v1',
@@ -5021,9 +4992,11 @@ export class Daemon {
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
       WEBCHAT_MULTI_AGENT_FEATURE,
-      ...(this.remoteWebchatGrants && (hasRemoteMcpRuntime || hasBuiltinRemoteMcpAgent)
-        ? [WEBCHAT_REMOTE_MCP_FEATURE]
-        : [])
+      // This bit attests to daemon-side grant + ACP descriptor delivery, not to
+      // a runtime artifact, capability probe, or sandbox policy. The CP remains
+      // authoritative for deciding whether a conversation belongs to the
+      // built-in preset; turn-time dispatch rechecks the replicated marker.
+      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
     ]
   }
 
@@ -12210,21 +12183,11 @@ export class Daemon {
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
       // Remote administration uses only the standard ACP HTTPS MCP descriptor.
       // Authorization and write-operation idempotency are both CP-owned. The
-      // credential is installed only into validated adapters resolved from the
-      // daemon-owned catalog (curated/registry provenance) — generic HTTP MCP
-      // capability or a claude/codex-looking user launch line proves neither
-      // header privacy nor session scoping (§13).
-      const remoteCaps = this.runtimeMcpCaps.get(agent.runtime)
-      if (
-        webchat?.remoteMcp &&
-        this.remoteWebchatGrants &&
-        remoteCaps?.http &&
-        isValidatedRemoteMcpRuntime(
-          agent.runtime,
-          this.runtimeCatalog.entries[agent.runtime],
-          this.runtimeProbedVersions.get(agent.runtime)
-        )
-      ) {
+      // The runtime is already arbitrary executable code inside its configured
+      // process boundary, so artifact/provenance/version/probe gates do not add
+      // an enforceable security boundary. For a CP-authorized preset turn, try
+      // the standard ACP descriptor regardless of runtime or sandbox mode.
+      if (agent.builtin && webchat?.remoteMcp && this.remoteWebchatGrants) {
         try {
           const provisioned = await this.remoteWebchatGrants.provision(
             webchat.conversationId,
@@ -19328,8 +19291,8 @@ export class Daemon {
         ids.map((id) => this.runtimeProfileFor(id)),
         this.mcpServerFactsFromDefs()
       )
-      // Probe results feed registrationFeatures (`runtimeMcpCaps` → the remote-MCP
-      // bit), and register ran before this sweep — re-announce if the set moved.
+      // Probe results can change runtime-derived registration capabilities, and
+      // register ran before this sweep — re-announce if the set moved.
       this.cpClient?.updateCapabilities?.()
     } catch (err) {
       this.log.warn(`probe: sweep failed: ${formatErr(err)}`)

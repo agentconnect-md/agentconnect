@@ -208,7 +208,7 @@ The CP may issue a grant only when all of the following hold:
 - the target session is private and reports the required session-visibility
   capability;
 - the user may currently view and use the agent; and
-- the selected runtime advertises standard HTTPS MCP support.
+- the selected agent is still the organization's built-in `agentconnect` preset.
 
 The raw credential is returned exactly once, in the issuance reply that begins its
 delivery to the runtime. Because the CP retains only its hash, it never attempts to
@@ -316,11 +316,11 @@ Requirements:
   extension to attest this behavior.
 - The daemon must redact `headers` from diagnostics, errors, traces, and session
   dumps.
-- `session/new` and `session/load` attach the descriptor only to the exact eligible
+- `session/new` and `session/load` attach the descriptor only to the exact entitled
   webchat session.
-- Agent-scoped shared ACP hosts are permitted only when the runtime guarantees that
-  MCP descriptors and credentials are session-scoped. If it has agent-wide MCP
-  configuration, that runtime is ineligible until it supports session scoping.
+- Runtimes are expected to keep MCP descriptors and credentials session-scoped. A
+  runtime that applies them agent-wide is incompatible and must be fixed, but the
+  daemon does not claim it can prove that property from identity, version, or probes.
 - The daemon must apply the exact revision-fenced activation protocol in section
   5.2 when an access grant renews or the logical authority generation rotates.
 - The raw token is never persisted in `agent.json`, the transcript store, memory, or
@@ -607,20 +607,20 @@ organization, and global feature revocation without requiring daemon isolation.
 
 ## 11. Failure behavior
 
-| Failure                                           | Behavior                                                                                         |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Non-preset or non-webchat session                 | No `agentconnect-admin` descriptor.                                                              |
-| Runtime lacks standard HTTPS MCP descriptors      | Runtime is ineligible; ordinary chat continues.                                                  |
-| Grant missing, forged, expired, revoked, or stale | MCP returns authorization expired/invalid; no fallback identity.                                 |
-| CP unavailable                                    | Admin tool returns a retryable error; ordinary chat and local tools continue.                    |
-| User removed or visibility changed                | Next request fails under live authorization.                                                     |
-| Agent moved or authority generation changed       | Old grants fail; reconnect or session update installs the new descriptor.                        |
-| Duplicate open write intent                       | Returns the same pending operation; execution still requires browser approval.                   |
-| Retry after the operation became terminal         | The transport receipt replays that operation; it never creates another write.                    |
-| JSON-RPC id reused by a restarted runtime         | The rebuilt session's fresh grant scopes new receipts; the write proceeds as a new confirmation. |
-| Ambiguous write                                   | Report ambiguous; do not retry execution automatically.                                          |
-| Feature disabled                                  | Stop issuance, revoke active grants, and omit/remove descriptors.                                |
-| Credential appears in a log or transcript         | Treat as a security incident and revoke the access grant or authority generation.                |
+| Failure                                           | Behavior                                                                                             |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Non-preset or non-webchat session                 | No `agentconnect-admin` descriptor.                                                                  |
+| Runtime ignores or rejects HTTPS MCP descriptors  | Daemon still attempts attachment; surface tools as unavailable and keep ordinary chat when possible. |
+| Grant missing, forged, expired, revoked, or stale | MCP returns authorization expired/invalid; no fallback identity.                                     |
+| CP unavailable                                    | Admin tool returns a retryable error; ordinary chat and local tools continue.                        |
+| User removed or visibility changed                | Next request fails under live authorization.                                                         |
+| Agent moved or authority generation changed       | Old grants fail; reconnect or session update installs the new descriptor.                            |
+| Duplicate open write intent                       | Returns the same pending operation; execution still requires browser approval.                       |
+| Retry after the operation became terminal         | The transport receipt replays that operation; it never creates another write.                        |
+| JSON-RPC id reused by a restarted runtime         | The rebuilt session's fresh grant scopes new receipts; the write proceeds as a new confirmation.     |
+| Ambiguous write                                   | Report ambiguous; do not retry execution automatically.                                              |
+| Feature disabled                                  | Stop issuance, revoke active grants, and omit/remove descriptors.                                    |
+| Credential appears in a log or transcript         | Treat as a security incident and revoke the access grant or authority generation.                    |
 
 Errors shown to the user describe the action needed, for example:
 
@@ -654,28 +654,24 @@ for MCP use, but never the MCP transport header.
 
 Rename the wire capability from the implementation-specific
 `delegated_mcp_assertion_v1` to `webchat_remote_mcp_v1`. The new capability attests
-that the daemon can attach a private, session-scoped HTTPS MCP descriptor to the
-selected runtime. It does not attest to an OS sandbox or hostile-process isolation.
+that the daemon has confidential grant delivery and can attempt to attach a
+private, session-scoped HTTPS MCP descriptor through standard ACP session
+configuration. It does not attest that a runtime will accept or correctly use the
+descriptor, or to an OS sandbox or hostile-process isolation.
 
-The daemon advertises the capability when a validated remote-MCP launch is
-available through either evidence path: a completed runtime probe proving HTTP
-MCP transport, or a synced **builtin preset agent** whose runtime resolves to a
-validated launch under daemon-owned catalog provenance. The static builtin path
-exists because `register` precedes both the reconcile roster and the probe
-sweep — without it a freshly started daemon never advertises the capability on
-its first connection. A capability set that changes mid-connection (roster
-applied, probe completed) is re-announced via the `capabilities/update` frame
-(daemon-cp-ws-protocol.md §3.3a). Advertisement is only an establishment
-prerequisite: the turn-time attachment gate still independently requires the
-probed HTTP transport and exact launch validation before any descriptor
-attaches. Binary launches whose command does not pin an artifact also require
-the probe's actual ACP `agentInfo.version` to match the validated release.
+The daemon advertises the capability whenever its remote-grant delivery
+implementation is active. Runtime identity, package or catalog provenance,
+version, command line, environment, capability probes, and sandbox mode are not
+admission inputs. The runtime is already arbitrary executable code within its
+configured process boundary, so those checks cannot establish a further security
+boundary. At turn time the daemon requires both the CP-issued non-secret
+entitlement and the CP-replicated **builtin preset agent** marker, then attempts
+descriptor attachment regardless of runtime or sandbox mode.
 
 There is no CP-side rollout flag: the feature is on by default, and enablement
-is gated entirely on the daemon advertising `webchat_remote_mcp_v1` (the
-capability paths above). A deployment that must not offer the feature simply
-runs daemons without a validated remote-MCP runtime. Production enablement
-still requires:
+is gated entirely on the daemon advertising `webchat_remote_mcp_v1`. A deployment
+that must not offer the feature disables remote-grant delivery in the daemon or
+CP. Production enablement still requires:
 
 1. deployed CP support for grants, authentication, revocation, CP-owned operations, and
    redaction;
@@ -690,8 +686,9 @@ still requires:
 5. private session visibility enforcement; and
 6. a tested revoke path.
 
-Roll out by runtime and daemon canary. Do not infer support merely from operating
-system, executable presence, or generic MCP support.
+Roll out by daemon canary. Runtime integration coverage detects compatibility
+regressions but never becomes a runtime allowlist or a prerequisite for attempting
+attachment.
 
 During migration, CP must not issue both the old broker assertion flow and the new
 remote grant for one conversation. Existing feature code may remain behind its old
@@ -736,7 +733,7 @@ The implementation adds:
 - delegated Bearer authentication at `/api/v1/mcp`;
 - conversation-scoped CP operation idempotency across authority generations;
 - grant-scoped standard-JSON-RPC transport receipts for side-effecting calls;
-- standard HTTPS MCP transport capability checks; and
+- best-effort standard HTTPS MCP descriptor attachment; and
 - credential redaction tests across CP, relay, daemon, and runtime adapters.
 
 Protocol and implementation work must follow this document in separate changes. The

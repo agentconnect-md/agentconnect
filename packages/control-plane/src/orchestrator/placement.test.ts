@@ -303,7 +303,7 @@ describe('agentRecordToSpec runtime overrides', () => {
       gitCredential: 'github-app'
     })
     // The preset marker always ships (definite record field) so the daemon can
-    // gate preset-only capabilities (webchat_remote_mcp_v1) as soon as it syncs.
+    // gate preset-only behavior such as `agentconnect-admin` attachment.
     expect(agentRecordToSpec(agent, {})).toHaveProperty('builtin', false)
     expect(agentRecordToSpec({ ...agent, builtin: true }, {})).toHaveProperty('builtin', true)
   })

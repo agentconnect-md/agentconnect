@@ -4,8 +4,7 @@
  *
  * `register` computes the daemon's feature set before its reconcile roster is
  * applied and before its runtime probe sweep runs, so a feature derived from
- * either (e.g. `webchat_remote_mcp_v1`, gated on the synced builtin agent)
- * would otherwise stay hidden until the next reconnect. The live index is the
+ * either would otherwise stay hidden until the next reconnect. The live index is the
  * copy every hot gate reads (webchat verification, org-knowledge); the C4 row
  * is the durable sibling the console renders.
  */

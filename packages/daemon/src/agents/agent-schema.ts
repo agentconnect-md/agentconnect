@@ -192,9 +192,9 @@ export const AgentSchema = z.object({
   // on; an unavailable optional sandbox is ineffective. New agents default off.
   runInSandbox: z.boolean().default(false),
   // Org built-in preset marker (preset-agents.md §3.1), replicated from the CP via
-  // AgentSpec.builtin. Gates preset-only capabilities locally — e.g. advertising
-  // `webchat_remote_mcp_v1` without waiting for a runtime probe round. Never set
-  // by hand: the CP re-asserts it on every roster/upsert.
+  // AgentSpec.builtin. Gates preset-only behavior locally — including attaching
+  // `agentconnect-admin` when the CP supplies a webchat entitlement. Never set by
+  // hand: the CP re-asserts it on every roster/upsert.
   builtin: z.boolean().default(false),
   // Which memory backend this agent uses (see agents/memory-provider.ts). Absent ⇒
   // managed (the default). External keeps only connection id + bounded policy on

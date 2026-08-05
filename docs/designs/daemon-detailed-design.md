@@ -722,10 +722,12 @@ catalog only to a private, user-owned webchat session. It never attaches this
 catalog to an arbitrary agent, an IM session, automation, or an agent-to-agent
 session.
 
-The daemon admits the descriptor only when the selected runtime supports the
-standard ACP HTTPS MCP descriptor. AgentConnect defines no private ACP capability
-or runtime-generated retry header. The host operating system and daemon sandbox
-policy are irrelevant to this feature.
+For an entitled built-in preset turn, the daemon attempts the standard ACP HTTPS
+MCP descriptor regardless of runtime id, artifact, version, launch provenance,
+capability probe, or sandbox mode. The runtime is already arbitrary executable
+code inside its configured boundary, so those properties are compatibility facts,
+not an additional security boundary. AgentConnect defines no private ACP
+capability or runtime-generated retry header.
 
 On success, daemon registration advertises `webchat_remote_mcp_v1`. The relay
 delivers only a non-secret entitlement. The daemon obtains a short-lived opaque
@@ -1080,7 +1082,7 @@ control channel.
     "platforms": ["slack", "telegram", "discord", "feishu"], // Implemented platform drivers
     "runtimes": ["claude", "codex"], // Object.keys(resolveRuntimes); validate executables at startup
     "acp": true,
-    "features": ["session-visibility-v1", "webchat_remote_mcp_v1"] // Advertised when an installed runtime supports the standard HTTPS MCP descriptor.
+    "features": ["session-visibility-v1", "webchat_remote_mcp_v1"] // Advertised when confidential remote-grant delivery is active.
   },
   "maxAgents": 32,
   "localState": {
@@ -1113,10 +1115,11 @@ credential redaction, exact grant revocation, revision-fenced descriptor
 activation, and CP-owned operation idempotency; then confirm live registration
 advertises both `session-visibility-v1` and `webchat_remote_mcp_v1`.
 
-No OS sandbox package, Linux kernel setting, private ACP field, or runtime-generated
-idempotency header is a feature prerequisite. Runtime integration coverage verifies
-standard descriptor installation and replacement; CP-owned operations provide the
-write execution fence.
+No OS sandbox package, Linux kernel setting, runtime identity/version/provenance,
+capability probe, private ACP field, or runtime-generated idempotency header is a
+feature prerequisite. Runtime integration coverage verifies standard descriptor
+installation and replacement as a compatibility check, not an admission gate;
+CP-owned operations provide the write execution fence.
 
 Start with a canary and observe grant, descriptor, request, operation, and
 confirmation metrics. Labels are closed outcomes/reasons only; they exclude user,
