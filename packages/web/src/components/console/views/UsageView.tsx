@@ -359,7 +359,9 @@ export default function UsageView() {
                   {unit} / {data.series.bucket}
                 </span>
               </div>
-              {hasBreakdown && stackKeys.length >= 2 && (
+              {/* Legend shows even for a single key — the card title doesn't name
+                  the series, and touch users can't reach the hover tooltip. */}
+              {hasBreakdown && stackKeys.length > 0 && (
                 <div className="flex flex-wrap gap-x-3 gap-y-1 px-[18px] pt-3">
                   {stackKeys.map((k) => (
                     <span
@@ -393,10 +395,17 @@ export default function UsageView() {
                     >
                       {/* Stack renders DOM top→bottom = reverse of stackKeys, so the
                           largest key sits on the baseline. flex-grow splits the
-                          bucket height after the 2px surface gaps between segments. */}
+                          bucket height after the 2px surface gaps between segments.
+                          A tiny bar can be all gap (2px × segments ≥ its height),
+                          so gaps only apply once every segment can keep visible
+                          color (~127px usable plot height at 100%). */}
                       <div
-                        className="flex w-full max-w-[46px] flex-col gap-[2px] overflow-hidden rounded-t-[5px]"
-                        style={{ height: `${maxSpend > 0 ? (total / maxSpend) * 100 : 0}%`, minHeight: 4 }}
+                        className="flex w-full max-w-[46px] flex-col overflow-hidden rounded-t-[5px]"
+                        style={{
+                          height: `${maxSpend > 0 ? (total / maxSpend) * 100 : 0}%`,
+                          minHeight: 4,
+                          gap: maxSpend > 0 && (total / maxSpend) * 127 > segs.length * 6 ? 2 : 0
+                        }}
                       >
                         {segs.length === 0 ? (
                           <div className="h-full w-full bg-(--surface-active)" />
