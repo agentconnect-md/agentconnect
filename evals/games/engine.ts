@@ -288,9 +288,10 @@ export function werewolfManifest(options: { seed: number; playerCount?: number }
 
 /**
  * Scripted werewolf policy — deterministic role-following (no strategy):
- * role/partner learned from the private referee message; night actions and day
- * votes go through the REAL §6 evaluation tools over the daemon MCP socket;
- * public speech stays natural language and never repeats private content.
+ * role/partner learned from the private referee message; every night action and
+ * day vote is STATED IN WORDS in the conversation it belongs to (den, referee
+ * DM, or the public room), exactly as a model would say it — there is no tool
+ * channel any more. Speech never repeats private content.
  *
  * The DAY is sequential and peer-driven. The referee announces the order once;
  * after that this host decides purely from what it can SEE in the room:
@@ -312,7 +313,6 @@ export function scriptedWerewolfHostFactory(): (
 ) => unknown {
   return (agent, onUpdate) => {
     let sessions = 0
-    const bindings = new Map<string, DaemonMcpBinding>()
     const state: { role?: string; partner?: string; knownWolf?: string } = {}
     /** Per-session view of the current day's sequential discussion. */
     interface DayView {
@@ -338,20 +338,10 @@ export function scriptedWerewolfHostFactory(): (
             .filter(Boolean)
         : []
     }
-    const act = async (sessionId: string, tool: string, target: string): Promise<string> => {
-      const binding = bindings.get(sessionId)
-      if (!binding) return 'no daemon tools in this session'
-      const result = await callDaemonTool(binding, tool, { target })
-      return result.ok ? `${tool} done` : `${tool} failed: ${result.error ?? 'unknown error'}`
-    }
     return {
       start: async () => {},
-      newSession: async (_cwd: string, mcpServers?: unknown) => {
-        const sessionId = `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`
-        const binding = daemonMcpBinding(mcpServers)
-        if (binding) bindings.set(sessionId, binding)
-        return sessionId
-      },
+      // No MCP binding is captured: this policy has no tool channel at all.
+      newSession: async () => `scripted-${agent.id.slice(0, 8)}-${(sessions += 1)}`,
       hasSession: () => true,
       modelOptions: () => ({ current: 'scripted-werewolf', models: ['scripted-werewolf'] }),
       prompt: async (sessionId: string, blocks: { text?: string }[]) => {
@@ -372,14 +362,21 @@ export function scriptedWerewolfHostFactory(): (
         }
         if (/NIGHT \d+/.test(text)) {
           if (state.role === 'werewolf') {
+            // Only ONE wolf states the kill, and the pack agrees by seeing it:
+            // the den echo means the partner reads this message. The lower alias
+            // speaks first so the scripted pack converges deterministically.
             const targets = listAfter(text, 'Targets')
-            chunk(sessionId, targets[0] ? await act(sessionId, 'kill', targets[0]) : 'no targets')
+            const partner = state.partner
+            const iLead = partner === undefined || (agent.name ?? '') < partner
+            if (!targets[0]) chunk(sessionId, 'no targets tonight.')
+            else if (iLead) chunk(sessionId, `we kill ${targets[0]} tonight.`)
+            else chunk(sessionId, `agreed, ${targets[0]} works for me.`)
           } else if (state.role === 'seer') {
             const living = listAfter(text, 'Living').filter((alias) => alias !== agent.name)
-            chunk(sessionId, living[0] ? await act(sessionId, 'inspect', living[0]) : 'no one to inspect')
+            chunk(sessionId, living[0] ? `I inspect ${living[0]} tonight.` : 'no one to inspect')
           } else if (state.role === 'doctor') {
             const living = listAfter(text, 'Living')
-            chunk(sessionId, living[0] ? await act(sessionId, 'protect', living[0]) : 'no one to protect')
+            chunk(sessionId, living[0] ? `I protect ${living[0]} tonight.` : 'no one to protect')
           } else {
             chunk(sessionId, 'sleeping')
           }
@@ -399,8 +396,10 @@ export function scriptedWerewolfHostFactory(): (
               : state.role === 'werewolf'
                 ? candidates.find((alias) => alias !== state.partner)
                 : candidates[0]
-          if (target) await act(sessionId, 'vote', target)
-          return stayQuiet(sessionId)
+          if (!target) return stayQuiet(sessionId)
+          // The vote is PUBLIC now — it is said in the room like anything else.
+          chunk(sessionId, `I vote for ${target}.`)
+          return { stopReason: 'end_turn' }
         }
         // ── the sequential day ──
         // The referee's opening carries the order; everything after it is a peer
