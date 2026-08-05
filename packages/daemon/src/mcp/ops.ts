@@ -109,6 +109,9 @@ export interface SessionContext {
    *  thread titles are valid only for app-DM sessions. */
   isDm: boolean
   channel: string
+  /** Trusted enclosing channel when `channel` is itself a child conversation
+   *  (for example a Discord thread). Never supplied by the model. */
+  parentChannel?: string
   thread: string
   tools: ToolDescriptor[]
   /** Snapshot of the agent's integrations (id + platform) at session/new. Lets the
@@ -963,6 +966,18 @@ export async function executeTool(
     if (toUsers !== undefined && channel === undefined && Array.isArray(args.toUser)) {
       throw new Error('sendMessage: a `toUser` array requires `channel` — direct messages accept exactly one user id')
     }
+    // A Discord thread is itself the live delivery channel, so its id appears as
+    // `ctx.channel`. It is not, however, the enclosing channel ROOT that an explicit
+    // `sendMessage(..., channel)` targets. Silently replacing it with the parent would
+    // send the model's message somewhere other than it asked; failing with the trusted
+    // parent id lets it repair the call without weakening unknown-channel failures.
+    if (channel !== undefined && ctx.parentChannel !== undefined && channel === ctx.channel) {
+      throw new Error(
+        `sendMessage: channel ${JSON.stringify(channel)} is the current thread, not a channel root. ` +
+          `Use parent channel ${JSON.stringify(ctx.parentChannel)} for a channel-root send. To speak in the current ` +
+          'thread, write an ordinary reply instead; for a postless agent call, omit `channel`.'
+      )
+    }
 
     // The trusted wake request (built once) — also fed to the preflight below. `thread` and
     // `transcriptTs` are filled AFTER the post (they depend on the post's ts), so this base copy
@@ -1418,7 +1433,13 @@ export async function executeTool(
   switch (name) {
     case 'getCurrentChannel': {
       const info = await gw.getChannelInfo(ctx.channel).catch(() => undefined)
-      return { channel: ctx.channel, thread: ctx.thread, name: info?.name ?? null, isIm: info?.isIm ?? null }
+      return {
+        channel: ctx.channel,
+        thread: ctx.thread,
+        ...(ctx.parentChannel !== undefined ? { parentChannel: ctx.parentChannel } : {}),
+        name: info?.name ?? null,
+        isIm: info?.isIm ?? null
+      }
     }
     default:
       throw new Error(`unknown tool: ${name}`)

@@ -117,7 +117,8 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
     description:
       'Channel-root form: the target channel / chat id (Slack `C0123ABC`, Telegram/Discord/Feishu chat id). The post ' +
       'always lands at the channel ROOT, which opens a new conversation there — to speak in the thread you are ' +
-      'already in, just write your ordinary reply.'
+      'already in, just write your ordinary reply. If the # Agent block lists an Enclosing channel, use that ID ' +
+      'for a channel-root send; the current Channel is a child thread and is rejected here.'
   }
 
   // Mode 1 — toAgent: wake one AgentConnect agent. Two forms: postless (no channel, peers
@@ -356,7 +357,9 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
     {
       name: 'getCurrentChannel',
       description:
-        'Return the channel/chat (and thread/topic) THIS conversation is bound to, including its name when available.',
+        'Return the channel/chat (and thread/topic) THIS conversation is bound to, including its name when available. ' +
+        'When the current channel is itself a child conversation, `parentChannel` is the enclosing channel ID required ' +
+        'by `sendMessage` channel-root forms.',
       inputSchema: obj({})
     },
     {

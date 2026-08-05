@@ -644,23 +644,46 @@ describe('SessionManager', () => {
   it('the agent meta object carries identity, description and the channel source', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const mcpServersFor = vi.fn(() => [])
     const withDesc = { ...agent, name: 'matrixtest', id: 'bot-a', description: 'be helpful' }
-    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => withDesc, memory })
-    await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi', platform: 'discord', channel: 'C42' }))
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => host,
+      agentById: () => withDesc,
+      memory,
+      mcpServersFor
+    })
+    await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        text: 'hi',
+        platform: 'discord',
+        channel: 'T42',
+        parentChannel: 'C42',
+        thread: 'T42'
+      })
+    )
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).toContain('- Name: matrixtest')
     expect(metaArg).toContain('- ID: bot-a')
     expect(metaArg).toContain('- Source: discord')
-    expect(metaArg).toContain('- Channel: C42')
+    expect(metaArg).toContain('- Channel: T42')
+    expect(metaArg).toContain(
+      '- Enclosing channel: C42 — use this ID, not the current thread ID, for `sendMessage` channel-root sends'
+    )
     expect(metaArg).toContain('be helpful')
-    // No resolved display name for C42 → the channel-name line is omitted.
+    // No resolved display name for T42 → the channel-name line is omitted.
     expect(metaArg).not.toContain('- Channel name:')
     // session-concept §2.3 standing locators: Thread is always rendered; Session is
     // absent on a brand-new session's FIRST turn (its acpSessionId is minted AFTER this
     // block is composed); Parent session is absent when this session has no parent.
-    expect(metaArg).toContain('- Thread: 100.1')
+    expect(metaArg).toContain('- Thread: T42')
     expect(metaArg).not.toContain('- Session:')
     expect(metaArg).not.toContain('- Parent session:')
+    expect(mcpServersFor).toHaveBeenCalledWith(
+      expect.objectContaining({ platform: 'discord', channel: 'T42', parentChannel: 'C42', thread: 'T42' })
+    )
     store.close()
   })
 

@@ -295,6 +295,8 @@ export class SessionManager {
         agent: Agent
         platform: string
         channel: string
+        /** Enclosing channel when `channel` is itself a child conversation. */
+        parentChannel?: string
         thread: string
         integrationId?: string
         transportScope?: string
@@ -763,6 +765,12 @@ export class SessionManager {
         ? [`- Slack identity: bot user <@${slackSelfId}> is YOU — a message mentioning this ID is addressed to you`]
         : []),
       `- Channel: ${msg.channel}`,
+      ...(msg.parentChannel
+        ? [
+            `- Enclosing channel: ${msg.parentChannel} — use this ID, not the current thread ID, for ` +
+              '`sendMessage` channel-root sends'
+          ]
+        : []),
       ...(channelName ? [`- Channel name: ${channelName}`] : []),
       // session-concept §2.3: standing locator lines. `Thread` is this session's thread
       // segment; `Session` is its own stable id (only once minted — a brand-new session
@@ -904,6 +912,7 @@ export class SessionManager {
           agent,
           platform: msg.platform,
           channel: msg.channel,
+          ...(msg.parentChannel !== undefined ? { parentChannel: msg.parentChannel } : {}),
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
@@ -970,6 +979,7 @@ export class SessionManager {
           agent,
           platform: msg.platform,
           channel: msg.channel,
+          ...(msg.parentChannel !== undefined ? { parentChannel: msg.parentChannel } : {}),
           thread,
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),

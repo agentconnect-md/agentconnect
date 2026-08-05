@@ -600,6 +600,22 @@ describe('executeTool: read tools', () => {
     expect(res).toMatchObject({ channel: 'C_CURRENT', thread: '111.1', name: 'general' })
   })
 
+  it('getCurrentChannel exposes the trusted enclosing channel for a child thread', async () => {
+    const { deps: d } = deps(fakeGateway())
+    const res = (await executeTool(
+      { ...ctx, platform: 'discord', channel: 'T_CURRENT', parentChannel: 'C_PARENT', thread: 'T_CURRENT' },
+      'getCurrentChannel',
+      {},
+      d
+    )) as Record<string, unknown>
+    expect(res).toMatchObject({
+      channel: 'T_CURRENT',
+      thread: 'T_CURRENT',
+      parentChannel: 'C_PARENT',
+      name: 'general'
+    })
+  })
+
   it('listChannelMembers defaults to the current channel', async () => {
     const gw = fakeGateway()
     const { deps: d } = deps(gw)
@@ -934,6 +950,28 @@ describe('executeTool: sendMessage (wake / reply)', () => {
       // still land in the caller's channel, which is the interruption this form avoids.
       postless: true
     })
+  })
+
+  it('rejects the current child thread as a channel root and directs the caller to its trusted parent', async () => {
+    const { deps: d, calls, gw } = wakeDeps()
+    const threadCtx: SessionContext = {
+      ...ctx,
+      platform: 'discord',
+      channel: 'T_CURRENT',
+      parentChannel: 'C_PARENT',
+      thread: 'T_CURRENT',
+      integrations: [{ id: 'int-1', platform: 'discord' }]
+    }
+
+    await expect(
+      executeTool(threadCtx, 'sendMessage', { toAgent: 'peer-1', channel: 'T_CURRENT', message: 'over to you' }, d)
+    ).rejects.toThrow('channel "T_CURRENT" is the current thread, not a channel root. Use parent channel "C_PARENT"')
+    expect(gw.postMessage).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
+
+    await executeTool(threadCtx, 'sendMessage', { toAgent: 'peer-1', channel: 'C_PARENT', message: 'over to you' }, d)
+    expect(gw.postMessage).toHaveBeenCalledWith('C_PARENT', 'over to you', undefined, pairedAuthorIdentity)
+    expect(calls[0]).toMatchObject({ channel: 'C_PARENT', thread: 'C_PARENT', toAgentId: 'peer-1' })
   })
 
   it('channel + toAgent (no thread) posts a ROOT message and lands the peer in that post’s thread', async () => {

@@ -3066,7 +3066,7 @@ export class Daemon {
       // ACP session to its exact channel/thread/delivery integration.
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
-      mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
+      mcpServersFor: ({ agent, platform, channel, parentChannel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
           collaboration: this.evaluationProfile.collaboration === 'configured',
@@ -3101,6 +3101,7 @@ export class Daemon {
             ...(transportScope ? { transportScope } : {}),
             isDm,
             channel,
+            ...(parentChannel !== undefined ? { parentChannel } : {}),
             thread,
             tools,
             // Full integration set so sendPlatformMessage can route to ANY connected
