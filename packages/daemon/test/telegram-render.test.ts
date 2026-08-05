@@ -202,6 +202,19 @@ describe('TelegramConverger onFinal', () => {
     expect(footer.text).toBe('✅ done — <a href="https://app/s/1">details</a>')
   })
 
+  it('adds the hop-limit notice to the existing final footer', () => {
+    const c = new TelegramConverger('medium')
+    c.onUpdate(chunk('answer'))
+    const out = c.onFinal('https://app/s/1', 'Agent conversation stopped after reaching the 20-hop limit.')
+    expect(out).toContainEqual({
+      kind: 'notice',
+      text:
+        '✅ done — <a href="https://app/s/1">details</a> · ' +
+        'Agent conversation stopped after reaching the 20-hop limit.',
+      parseMode: 'HTML'
+    })
+  })
+
   it('omits the footer when no link is configured', () => {
     const c = new TelegramConverger('medium')
     c.onUpdate(chunk('answer'))

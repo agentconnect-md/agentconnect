@@ -173,7 +173,8 @@ function attributionText(info: SlackAttributionInfo): string {
     agent: info.botName,
     runtime: info.runtime,
     model: info.model,
-    renderSession: sessionUrl ? (label) => label : undefined
+    renderSession: sessionUrl ? (label) => label : undefined,
+    notice: info.notice
   })
 }
 
@@ -187,7 +188,8 @@ function attributionMrkdwn(info: SlackAttributionInfo): string {
     agent: botUrl ? `<${botUrl}|${botName}>` : botName,
     runtime,
     model,
-    renderSession: (label) => (sessionUrl ? `<${sessionUrl}|${escapeMrkdwnLabel(label)}>` : undefined)
+    renderSession: (label) => (sessionUrl ? `<${sessionUrl}|${escapeMrkdwnLabel(label)}>` : undefined),
+    notice: info.notice ? escapeMrkdwnLabel(info.notice) : undefined
   })
 }
 

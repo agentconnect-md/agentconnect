@@ -301,6 +301,7 @@ import {
   RdSlackAction,
   WireFeishuCardActionEvent,
   gitRepoLabel,
+  hasReachedAgentCallHopLimit,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   MAX_AGENT_CALL_HOPS,
@@ -862,10 +863,11 @@ function sdkLeaseKey(agentId: string, acpSessionId: string): string {
   return pendingTurnKey(agentId, acpSessionId)
 }
 
-// Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` that would
-// push the outgoing hopCount past this, so an A↔B wake loop can't run away.
+// Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` whose
+// outgoing hopCount reaches this boundary, so an A↔B wake loop can't run away.
 // send-message-routing-rework.md §4.1 puts a platform `@mention` delivery on this SAME
 // budget, which is why the constant is shared with the relay rather than redeclared here.
+const AGENT_CALL_HOP_LIMIT_NOTICE = `Agent conversation stopped after reaching the ${MAX_AGENT_CALL_HOPS}-hop limit.`
 
 /**
  * How long a paired `toAgent + channel` rendezvous waits for its other half
@@ -5958,8 +5960,8 @@ export class Daemon {
     // internal call. Computed once here and installed on the admitted turn, so a mention
     // chain and a `messageAgent` chain consume the same budget at the same rate.
     const deliveryHopCount = verified.sourceHopCount + 1
-    if (deliveryHopCount > MAX_AGENT_CALL_HOPS) {
-      return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
+    if (hasReachedAgentCallHopLimit(deliveryHopCount)) {
+      return transcriptOnly(`hop_limit: source depth ${verified.sourceHopCount} + 1 reaches ${MAX_AGENT_CALL_HOPS}`)
     }
     // The VISIBLE half of a paired `toAgent + channel` send is the one case whose target
     // is structured rather than parsed: `sendMessage` named the agent id outright, and the
@@ -7280,7 +7282,7 @@ export class Daemon {
     // §4.1 step 4: TERMINAL-VERIFY the forwarded depth's range without re-incrementing.
     // A relay that forwarded an out-of-range or malformed depth is a bug or a compromise;
     // either way this daemon does not activate on it.
-    if (!Number.isInteger(deliveryHopCount) || deliveryHopCount < 1 || deliveryHopCount > MAX_AGENT_CALL_HOPS) {
+    if (!Number.isInteger(deliveryHopCount) || deliveryHopCount < 1 || hasReachedAgentCallHopLimit(deliveryHopCount)) {
       this.log.warn(`relay: refusing agent mention ${msg.msgId} — delivery depth ${deliveryHopCount} out of range`)
       return false
     }
@@ -7715,7 +7717,7 @@ export class Daemon {
     }
 
     // Hop cap (§2.4): the relay already incremented; reject over the cap.
-    if (msg.hopCount > MAX_AGENT_CALL_HOPS) return record(nak('hop_limit'))
+    if (hasReachedAgentCallHopLimit(msg.hopCount)) return record(nak('hop_limit'))
 
     const { platform, channel, thread } = msg.coords
 
@@ -8076,7 +8078,7 @@ export class Daemon {
       req.callerTransportScope
     )
     const inbound = this.activeTurnCallMeta.get(callerKey)
-    if (inbound !== undefined && inbound.hopCount >= MAX_AGENT_CALL_HOPS) return 'hop_limit'
+    if (inbound !== undefined && hasReachedAgentCallHopLimit(inbound.hopCount + 1)) return 'hop_limit'
     return this.localWakeDecision(req).rejection
   }
 
@@ -8162,7 +8164,7 @@ export class Daemon {
       channel: req.callerChannel,
       ...(req.callerThread ? { thread: req.callerThread } : {})
     }
-    if (inbound !== undefined && sourceHopCount >= MAX_AGENT_CALL_HOPS) {
+    if (inbound !== undefined && hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:hop-limit`
       return observe('collaboration.delivery.rejected', {
         delivered: false,
@@ -8405,7 +8407,7 @@ export class Daemon {
     // A reply is an agent-call — bound it by the same hop cap so a reply ping-pong can't run away.
     // A human-triggered turn has no inbound depth, so it starts the chain at 0.
     const sourceHopCount = inbound?.hopCount ?? 0
-    if (sourceHopCount >= MAX_AGENT_CALL_HOPS) {
+    if (hasReachedAgentCallHopLimit(sourceHopCount + 1)) {
       return { delivered: false, reason: 'hop_limit' }
     }
     // §5.3 step 3: replying into the origin inherits the origin turn's correlationId when present
@@ -8834,7 +8836,7 @@ export class Daemon {
     const inbound = this.activeTurnCallMeta.get(originKey)
     // A self-post from a plain human/platform turn (no active callMeta) starts the self-chain at 1.
     const hopCount = inbound ? inbound.hopCount + 1 : 1
-    if (hopCount > MAX_AGENT_CALL_HOPS) {
+    if (hasReachedAgentCallHopLimit(hopCount)) {
       this.log.info(`channel-root session: hop limit reached for agent "${req.agentId}" — not spawning`)
       return false
     }
@@ -12581,12 +12583,15 @@ export class Daemon {
     let finalPhase: EventSession['phase'] = 'end'
     let turnModel: string | undefined
     let propagatingTurnError = false
+    const hopLimitNotice =
+      callMeta && hasReachedAgentCallHopLimit(p.sourceHopCount + 1) ? AGENT_CALL_HOP_LIMIT_NOTICE : undefined
     const currentAttributionInfo = (): SlackAttributionInfo => ({
       botName: agent.name,
       botUrl: this.agentLink(agentId),
       runtime: this.runtimeNames[agent.runtime] ?? agent.runtime,
       model: this.buildStatusInfo(p).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(msg.platform, integrationId))
+      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(msg.platform, integrationId)),
+      ...(hopLimitNotice ? { notice: hopLimitNotice } : {})
     })
     try {
       if (!p.selectedHost) {
@@ -13061,7 +13066,7 @@ export class Daemon {
           conv instanceof FeishuConverger
             ? conv.onFinal(finalAttributionInfo)
             : conv instanceof TelegramConverger || conv instanceof DiscordConverger
-              ? conv.onFinal(link)
+              ? conv.onFinal(link, hopLimitNotice)
               : conv.onFinal(finalAttributionInfo)
         for (const action of finals) this.enqueueApply(p, action)
       }

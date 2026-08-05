@@ -34,7 +34,7 @@
  * the connection's ACK_TIMEOUT_MS). Documented in the PR description.
  */
 import {
-  MAX_AGENT_CALL_HOPS,
+  hasReachedAgentCallHopLimit,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   type RdAgentMsg,
   type RdAgentMsgAck,
@@ -145,7 +145,7 @@ export function createAgentMsgRouter(deps: AgentMsgRouterDeps) {
 
     // (e) Hop increment + cap (§2.4).
     const hopCount = msg.hopCount + 1
-    if (hopCount > MAX_AGENT_CALL_HOPS) return nak(msg.deliveryId, 'hop_limit')
+    if (hasReachedAgentCallHopLimit(hopCount)) return nak(msg.deliveryId, 'hop_limit')
 
     // (f) Resolve the owning daemon connection and forward with a TRUSTED caller claim.
     const conn = deps.daemons()?.get(target.daemonId)

@@ -10,6 +10,7 @@ import {
   RdAgentMsgFwd,
   RdSlackAction,
   MAX_AGENT_CALL_HOPS,
+  hasReachedAgentCallHopLimit,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RelayWebchatOp,
   WEBCHAT_IMAGE_MAX_BYTES,
@@ -364,6 +365,8 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     // tests would catch that.
     expect(MAX_AGENT_CALL_HOPS).toBe(20)
     expect(Number.isInteger(MAX_AGENT_CALL_HOPS)).toBe(true)
+    expect(hasReachedAgentCallHopLimit(MAX_AGENT_CALL_HOPS - 1)).toBe(false)
+    expect(hasReachedAgentCallHopLimit(MAX_AGENT_CALL_HOPS)).toBe(true)
   })
 
   it('rd/hello advertises optional daemon capabilities, and an older daemon advertises none', () => {

@@ -46,6 +46,15 @@ describe('DiscordConverger modes', () => {
     expect(withTail.flushTerminal()).toEqual([{ kind: 'post', text: 'Quota exceeded.\n\nRetry after the reset at' }])
     expect(withTail.hasBuffered()).toBe(false)
   })
+
+  it('adds the hop-limit notice to the existing final footer', () => {
+    const c = new DiscordConverger('medium')
+    c.onUpdate(chunk('answer'))
+    expect(c.onFinal('https://app/s/1', 'Agent conversation stopped after reaching the 20-hop limit.')).toContainEqual({
+      kind: 'notice',
+      text: '✅ done — [details](https://app/s/1) · Agent conversation stopped after reaching the 20-hop limit.'
+    })
+  })
 })
 
 describe('DiscordConverger AC_NO_RESPONSE suppression', () => {

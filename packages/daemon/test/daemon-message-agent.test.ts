@@ -653,11 +653,11 @@ describe('messageAgent: §6.7 daemon-managed auto-inheritance (hop/origin + repl
   it('hop cap is enforced across an inherited chain', async () => {
     const root = scaffold([{ id: 'main' }, { id: 'worker' }, { id: 'third' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
-    // inbound hop already AT the cap → the next child would exceed it → rejected.
+    // The next child would reach the cap, so it is rejected.
     seedActiveTurn(
       daemon,
       { platform: 'slack', channel: 'C1', thread: '100.1', agentId: 'worker' },
-      { callFrom: 'main', hopCount: MAX_AGENT_CALL_HOPS, deliveryId: 'd0' }
+      { callFrom: 'main', hopCount: MAX_AGENT_CALL_HOPS - 1, deliveryId: 'd0' }
     )
     const res = await call(baseReq({ callerAgentId: 'worker', toAgentId: 'third' }))
     expect(res).toMatchObject({ delivered: false, reason: 'hop_limit' })
@@ -778,12 +778,12 @@ describe('messageAgent: cross-daemon routing (P2, source side)', () => {
     await daemon.stop()
   })
 
-  it('rejects a cross-daemon call at the hop cap before contacting the relay', async () => {
+  it('rejects a cross-daemon call whose next delivery reaches the hop cap', async () => {
     const root = scaffold([{ id: 'worker' }])
     const { daemon, call } = await bootWithDispatchSpy(root)
     ;(daemon as any).activeTurnCallMeta.set('slack:C1:100.1:worker', {
       callFrom: 'main',
-      hopCount: MAX_AGENT_CALL_HOPS,
+      hopCount: MAX_AGENT_CALL_HOPS - 1,
       deliveryId: 'd0'
     })
     const sendAgentMsg = vi.fn()

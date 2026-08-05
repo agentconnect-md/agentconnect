@@ -520,7 +520,7 @@ export class DiscordConverger {
   }
 
   /** Turn end: flush remaining body; in medium/high append a done footer with the deep link. */
-  onFinal(link?: string): DiscordAction[] {
+  onFinal(link?: string, notice?: string): DiscordAction[] {
     // A bare response-control marker (or a non-compliant explanation ending in a bare marker
     // line) means this message wasn't for the agent:
     // suppress everything across all modes (body, reasoning, footer, and minimal mode's
@@ -536,7 +536,9 @@ export class DiscordConverger {
     if (this.mode === 'none') return this.flush()
     if (this.mode === 'low') return [...this.flush()]
     const reasoning = this.drainReasoning()
-    const footer: DiscordAction[] = link ? [{ kind: 'notice', text: `✅ done — [details](${link})` }] : []
+    const footer: DiscordAction[] = link
+      ? [{ kind: 'notice', text: `✅ done — [details](${link})${notice ? ` · ${notice}` : ''}` }]
+      : []
     return [...reasoning, ...this.flush(), ...footer]
   }
 }

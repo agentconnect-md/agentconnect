@@ -30,4 +30,19 @@ describe('renderAttributionMessage', () => {
     expect(renderAttributionMessage({ ...parts, renderSession: () => undefined })).toBe(expected)
     expect(renderAttributionMessage({ ...parts, renderSession: () => ' \t ' })).toBe(expected)
   })
+
+  it('appends a turn-closing notice without changing the canonical footer order', () => {
+    expect(
+      renderAttributionMessage({
+        agent: 'review-bot',
+        runtime: 'Codex',
+        model: 'gpt-5.6-luna',
+        renderSession: (label) => `[${label}]`,
+        notice: 'Agent conversation stopped after reaching the 20-hop limit.'
+      })
+    ).toBe(
+      'sent by review-bot (Codex · gpt-5.6-luna) · [open in session] · ' +
+        'Agent conversation stopped after reaching the 20-hop limit.'
+    )
+  })
 })

@@ -161,4 +161,15 @@ describe('Lark CardKit reply lifecycle', () => {
       }
     ])
   })
+
+  it('keeps the hop-limit notice inside the completed reply card footer', () => {
+    const completed = buildCompletedReplyCard('Done', {
+      ...attribution,
+      notice: 'Agent conversation stopped after reaching the 20-hop limit.'
+    }) as { body: { elements: Record<string, unknown>[] } }
+
+    expect(JSON.stringify(completed.body.elements)).toContain(
+      'Agent conversation stopped after reaching the 20-hop limit.'
+    )
+  })
 })
