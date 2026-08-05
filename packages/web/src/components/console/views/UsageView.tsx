@@ -42,9 +42,16 @@ const SEG_FILL = [
   '[&_.seg-6_path]:fill-(--chart-other)',
   '[&_.seg-flat_path]:fill-(--brand)',
   // recharts' accessibility layer makes the chart surface focusable, so clicking a
-  // bar leaves a UA focus ring around the whole plot — suppress it.
+  // bar leaves a UA focus ring around the whole plot. Drop the default outline but
+  // keep a themed one for :focus-visible, so keyboard users still see where focus is.
   '[&_.recharts-wrapper]:outline-none',
-  '[&_.recharts-surface]:outline-none'
+  '[&_.recharts-surface]:outline-none',
+  '[&_.recharts-wrapper:focus-visible]:outline-2',
+  '[&_.recharts-wrapper:focus-visible]:outline-offset-2',
+  '[&_.recharts-wrapper:focus-visible]:outline-(--border-focus)',
+  '[&_.recharts-surface:focus-visible]:outline-2',
+  '[&_.recharts-surface:focus-visible]:outline-offset-2',
+  '[&_.recharts-surface:focus-visible]:outline-(--border-focus)'
 ].join(' ')
 
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
@@ -380,7 +387,11 @@ export default function UsageView() {
           // Legend-driven filter. A hidden key stays in `stackKeys` (its hue never
           // shifts onto another series) — the Bar is just `hide`den, so the stack and
           // the y-scale recompute from the visible series only.
-          const hidden = new Set(hiddenKeys)
+          // Intersected with the current stackKeys — a key hidden under a prior
+          // range/group-by can otherwise survive in `hiddenKeys` after that key
+          // disappears from view, permanently flipping the tooltip into the
+          // filtered-total branch with nothing left for the legend to un-hide.
+          const hidden = new Set(hiddenKeys.filter((k) => stackKeys.includes(k)))
           const toggleKey = (k: string) =>
             setHiddenKeys((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]))
           const visibleKeys = stackKeys.filter((k) => !hidden.has(k))
@@ -470,8 +481,11 @@ export default function UsageView() {
                     <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
                     {/* Legend shows even for a single key — the card title doesn't name
                         the series. Click a key to filter it out of the stack. */}
+                    {/* No fixed `height` — recharts measures the rendered legend box
+                        (which wraps to 2+ rows for 7 keys at mobile widths) and
+                        reduces the plot by that real height instead of a guess. */}
                     {hasBreakdown && stackKeys.length > 0 && (
-                      <Legend verticalAlign="top" align="left" height={32} content={<LegendKeys />} />
+                      <Legend verticalAlign="top" align="left" content={<LegendKeys />} />
                     )}
                     {stackKeys.map((k, i) => (
                       <Bar
