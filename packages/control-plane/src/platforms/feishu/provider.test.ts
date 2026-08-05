@@ -54,8 +54,7 @@ const ORG = OrgId('11111111-1111-4111-8111-111111111111')
 const AGENT_ID = AgentId('77777777-7777-4777-8777-777777777777')
 const validationProvider = (deps: Parameters<typeof createFeishuCpProvider>[0] = {}) =>
   createFeishuCpProvider({
-    loginAppTenantKeyFor: async () => 'tenant_deployment',
-    resolveAppTenant: async () => ({ status: 'ok', tenantKey: 'tenant_deployment' }),
+    tenantGuard: { loginAppStatus: async () => 'ok', checkApp: async () => 'ok' },
     ...deps
   })
 
@@ -261,11 +260,14 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
 
   it('passes the pasted pair + region to the verifier and derives name/openId', async () => {
     const verifyBot = verifierOk()
-    const loginAppTenantKeyFor = vi.fn(async () => 'tenant_deployment')
-    const provider = validationProvider({ verifyBot, loginAppTenantKeyFor })
+    const checkApp = vi.fn(async () => 'ok' as const)
+    const provider = validationProvider({
+      verifyBot,
+      tenantGuard: { loginAppStatus: async () => 'ok', checkApp }
+    })
     const result = await provider.validateConfig(CREDS, 'socket')
     expect(verifyBot).toHaveBeenCalledWith('cli_testapp', 'feishu-app-secret', 'lark')
-    expect(loginAppTenantKeyFor).toHaveBeenCalledWith('lark')
+    expect(checkApp).toHaveBeenCalledWith('cli_testapp', 'feishu-app-secret', 'lark')
     expect(result).toEqual({
       ok: true,
       identity: { name: 'helper-app', externalAppId: 'cli_testapp', botUserId: 'ou_bot' }
@@ -312,7 +314,7 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
   it('rejects an App from a different deployment organization', async () => {
     const provider = validationProvider({
       verifyBot: verifierOk(),
-      resolveAppTenant: async () => ({ status: 'ok', tenantKey: 'tenant_other' })
+      tenantGuard: { loginAppStatus: async () => 'ok', checkApp: async () => 'org_mismatch' }
     })
     expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
       ok: false,
@@ -323,10 +325,7 @@ describe('feishu validateConfig (route parity: integrations.ts feishu arm)', () 
   })
 
   it('fails closed when this deployment has no matching Login App configured', async () => {
-    const provider = createFeishuCpProvider({
-      verifyBot: verifierOk(),
-      resolveAppTenant: async () => ({ status: 'ok', tenantKey: 'tenant_deployment' })
-    })
+    const provider = createFeishuCpProvider({ verifyBot: verifierOk() })
     expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
       ok: false,
       status: 503,

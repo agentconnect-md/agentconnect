@@ -65,7 +65,7 @@ function connectionFor(
 }
 
 describe('Feishu/Lark permission update notice', () => {
-  it('uses union_id for normalized senders and open_id for rollout fallbacks', async () => {
+  it('uses the provider id type supplied by message senders and callback actors', async () => {
     const getUser = vi.fn(async (id: string) => ({ id }))
     const { conn } = connectionFor('lark', async () => {}, getUser)
 

@@ -177,7 +177,7 @@ import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
 import { telegramCheckRoutes } from './http/routes/telegram-check.js'
 import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './http/platform-route-seams.js'
-import { resolveFeishuAppTenant, verifyFeishuBot } from './http/feishu-identity.js'
+import { createFeishuAppTenantGuard, verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
 import { configureFeishuHttpApp } from './http/feishu-app-config.js'
@@ -786,20 +786,20 @@ export function buildContainer(
     bots: repos.bot,
     botSecrets: repos.botSecret,
     clock,
+    ...(logtoIdentity ? { identity: logtoIdentity } : {}),
     ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {})
   })
-  const githubSessionAccess = github
-    ? new GithubSessionAccessService({
-        installations: repos.githubInstallation,
-        github,
-        ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
-        clock
-      })
-    : undefined
+  const githubSessionAccess = new GithubSessionAccessService({
+    installations: repos.githubInstallation,
+    ...(github ? { github } : {}),
+    ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
+    clock
+  })
   const feishuSessionAccess = new FeishuSessionAccessService({
     bots: repos.bot,
     botSecrets: repos.botSecret,
     clock,
+    ...(logtoIdentity ? { identity: logtoIdentity } : {}),
     ...(opts.feishuFetch ? { fetchImpl: opts.feishuFetch } : {})
   })
 
@@ -898,9 +898,7 @@ export function buildContainer(
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
-    slackSessionAccess,
-    ...(githubSessionAccess ? { githubSessionAccess } : {}),
-    feishuSessionAccess,
+    sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],
     ...(iconStore ? { iconStore } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
@@ -1044,21 +1042,10 @@ export function buildContainer(
     })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: verifyTelegramBot }
-  const feishuLoginTenantKeys = new Map<'feishu' | 'lark', string>()
-  const feishuLoginAppTenantKeyFor = async (region: 'feishu' | 'lark'): Promise<string | null> => {
-    const cached = feishuLoginTenantKeys.get(region)
-    if (cached) return cached
-    const app = feishuPlatformApps[region]
-    if (!app) return null
-    const resolution = await resolveFeishuAppTenant(app.appId, app.appSecret, region)
-    if (resolution.status !== 'ok') throw new Error(`could not resolve configured ${region} Login App tenant`)
-    feishuLoginTenantKeys.set(region, resolution.tenantKey)
-    return resolution.tenantKey
-  }
+  const feishuTenantGuard = createFeishuAppTenantGuard((region) => feishuPlatformApps[region])
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: verifyFeishuBot,
-    loginAppTenantKeyFor: feishuLoginAppTenantKeyFor,
-    resolveAppTenant: resolveFeishuAppTenant,
+    tenantGuard: feishuTenantGuard,
     configureHttpApp: configureFeishuHttpApp,
     registrations: new FeishuAppRegistrationService(repos.feishuAppRegistration)
   }
@@ -1122,8 +1109,7 @@ export function buildContainer(
     }),
     createFeishuCpProvider({
       verifyBot: verifyFeishuBot,
-      loginAppTenantKeyFor: feishuLoginAppTenantKeyFor,
-      resolveAppTenant: resolveFeishuAppTenant,
+      tenantGuard: feishuTenantGuard,
       funnelRoutes: { org: [feishuRegistrationRoutes(httpDeps, feishuSeams)], publicCallback: [] },
       syncAppIcon: syncFeishuAppIcon,
       pendingInstalls: {

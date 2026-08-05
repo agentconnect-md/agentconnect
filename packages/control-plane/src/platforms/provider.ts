@@ -73,8 +73,8 @@
  * "audit homes, not new slots" (§9, final consequence): the session-audience
  * resolvers (`http/slack-session-access.ts` / `http/feishu-session-access.ts`
  * are platform plugins to the session-VISIBILITY system, not to this slot),
- * viewer-identity composition (`http/viewer-identity.ts:50-57` — per-platform
- * key arity), the external-scope realm key, and preset default-binding (a
+ * viewer-identity composition (owned by each Session-access plugin), the
+ * external-scope realm key, and preset default-binding (a
  * documented core→plugin reference). Wiring those through this interface
  * would couple two independent seams.
  */

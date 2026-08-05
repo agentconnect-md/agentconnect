@@ -592,6 +592,7 @@ export class FeishuConnection implements PlatformConnection {
           const like = feishuEventToMessageLike(event)
           // Skip our own messages — the agent's replies must not re-trigger a turn.
           if (like.senderOpenId && like.senderOpenId === this.botOpenId) return
+          if (!like.senderUnionId) return
           const msg = normalizeFeishuMessage(like, { traceId: this.deps.newTraceId() })
           log?.debug(
             `feishu: inbound ch=${msg.channel} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} ` +
@@ -1027,8 +1028,8 @@ export class FeishuConnection implements PlatformConnection {
     user: string
   ): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean; avatarUrl?: string }> {
     try {
-      // Normalized senders prefer union_id (`on_…`); rollout fallbacks and bot
-      // mentions retain their app-scoped open_id (`ou_…`).
+      // Message senders use union_id (`on_…`); callback actors and mentions may
+      // still be provider-native open_id values (`ou_…`).
       return await this.handle.api.getUser(user, user.startsWith('on_') ? 'union_id' : 'open_id')
     } catch (err) {
       this.rememberPermissionIssue(err)

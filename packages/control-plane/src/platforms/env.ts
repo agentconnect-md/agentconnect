@@ -12,9 +12,9 @@
  * PROVIDERS declare, so a provider that grows a key and forgets this file fails
  * a test instead of silently losing its env at boot.
  *
- * Resolution into typed config — including Slack's all-or-none partial-set
- * fail-fast — happens inside the provider's factory. Core consumes only the
- * schema shape.
+ * Resolution into typed config — including the all-or-none partial-set
+ * fail-fast of `config/slack-platform.ts` / `config/feishu-platform.ts` —
+ * happens inside the provider's factory. Core consumes only the schema shape.
  */
 import type { ZodRawShape } from 'zod'
 import { SlackCpEnvSchema } from './slack/provider.js'

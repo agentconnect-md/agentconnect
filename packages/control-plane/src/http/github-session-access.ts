@@ -2,6 +2,7 @@ import type { Clock } from '../domain/clock.js'
 import type { ExternalScopeRecord, GithubInstallationRepo } from '../persistence/ports.js'
 import type { GithubService } from '../github/service.js'
 import { UserAuthzDeniedError, type GithubUserAuthzService } from '../github/user-authz.js'
+import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 
 const ALLOW_TTL_MS = 120_000
 const DENY_TTL_MS = 30_000
@@ -12,15 +13,6 @@ const SCOPE_CONCURRENCY = 6
 
 type Decision = 'allow' | 'deny' | 'unknown'
 type CachedDecision = { decision: Decision; expiresAt: number }
-
-export interface GithubSessionAccessResult {
-  allowedScopes: Array<{ id: string; aclRevision: bigint }>
-  degraded: boolean
-}
-
-export interface GithubSessionAccessResolver {
-  resolve(scopes: readonly ExternalScopeRecord[], userId: string): Promise<GithubSessionAccessResult>
-}
 
 async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(values.length)
@@ -39,19 +31,24 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
 /** Current GitHub repository visibility for one console user. Repository ids
  * and installation locators are durable; user identity and permission remain
  * provider-owned and only bounded verdicts are cached in process. */
-export class GithubSessionAccessService implements GithubSessionAccessResolver {
+export class GithubSessionAccessService implements SessionAccessPlugin {
+  readonly provider = 'github'
   private readonly cache = new Map<string, CachedDecision>()
 
   constructor(
     private readonly deps: {
       installations: GithubInstallationRepo
-      github: Pick<GithubService, 'repoRefById'>
+      github?: Pick<GithubService, 'repoRefById'>
       userAuthz?: Pick<GithubUserAuthzService, 'permissionForUser'>
       clock: Clock
     }
   ) {}
 
-  async resolve(scopes: readonly ExternalScopeRecord[], userId: string): Promise<GithubSessionAccessResult> {
+  get available(): boolean {
+    return this.deps.github !== undefined && this.deps.userAuthz !== undefined
+  }
+
+  async resolve(scopes: readonly ExternalScopeRecord[], viewer: SessionAccessViewer): Promise<SessionAccessResult> {
     if (scopes.length === 0) return { allowedScopes: [], degraded: false }
     let degraded = false
     const decisions: Array<{ scope: ExternalScopeRecord; decision: Decision }> = []
@@ -60,7 +57,7 @@ export class GithubSessionAccessService implements GithubSessionAccessResolver {
     for (let start = 0; start < scopes.length; start += SCOPES_PER_BATCH) {
       decisions.push(
         ...(await mapLimited(scopes.slice(start, start + SCOPES_PER_BATCH), SCOPE_CONCURRENCY, async (scope) => {
-          const decision = await this.resolveScope(scope, userId)
+          const decision = await this.resolveScope(scope, viewer.userId)
           if (decision === 'unknown') degraded = true
           return { scope, decision }
         }))
@@ -86,6 +83,7 @@ export class GithubSessionAccessService implements GithubSessionAccessResolver {
     ) {
       return 'deny'
     }
+    if (!this.deps.github) return 'unknown'
     const installation = await this.deps.installations.get(scope.credentialId).catch(() => null)
     if (!installation) return 'unknown'
     if (installation.orgId !== scope.orgId || installation.revokedAt || installation.suspendedAt) return 'deny'

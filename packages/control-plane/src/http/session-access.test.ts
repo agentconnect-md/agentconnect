@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { canViewSession } from '../authorization/policy.js'
 import type { ExternalScopeRecord } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
-import type { FeishuSessionViewer } from './feishu-session-access.js'
+import type { SessionAccessPlugin } from './session-access-plugin.js'
 import { makeSessionAccessResolver } from './session-access.js'
 
 const scope: ExternalScopeRecord = {
@@ -30,11 +30,19 @@ function request(): FastifyRequest {
 
 describe('makeSessionAccessResolver', () => {
   it('matches a custom-Bot p2p owner by union_id without an external access check', async () => {
-    const feishuResolve = vi.fn(async (scopes: readonly ExternalScopeRecord[], viewer?: FeishuSessionViewer) => {
+    const getExternalScopes = vi.fn(async () => [scope])
+    const resolve = vi.fn(async (scopes: readonly ExternalScopeRecord[]) => {
       expect(scopes).toEqual([])
-      expect(viewer?.unionIdsFor('lark')).toEqual(['on_member'])
       return { allowedScopes: [], degraded: false, accessIssues: [] }
     })
+    const plugin: SessionAccessPlugin = {
+      provider: 'feishu',
+      available: true,
+      addViewerIdentities: async ({ identitySet }) => {
+        identitySet.add('feishu:lark:cli_custom_bot:on_member')
+      },
+      resolve
+    }
     const policy = {
       orgId: 'org-1',
       provider: 'feishu',
@@ -45,28 +53,15 @@ describe('makeSessionAccessResolver', () => {
     } as const
     const deps = {
       repos: {
-        bot: {
-          listForOrg: vi.fn(async () => [
-            {
-              platform: 'feishu',
-              feishuRegion: 'lark',
-              feishuAppId: 'cli_custom_bot',
-              revokedAt: null
-            }
-          ])
-        },
         session: {
-          getExternalScopes: vi.fn(async () => [scope]),
+          getExternalScopes,
           getExternalAccessPolicy: vi.fn(async (_orgId: string, provider: string) =>
             provider === 'feishu' ? policy : null
           )
         }
       },
       clock: { now: () => 1_000 },
-      logtoIdentity: {
-        feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }]
-      },
-      feishuSessionAccess: { resolve: feishuResolve }
+      sessionAccessPlugins: [plugin]
     } as unknown as HttpDeps
     const session = {
       visibility: 'private' as const,
@@ -78,6 +73,7 @@ describe('makeSessionAccessResolver', () => {
 
     const access = await makeSessionAccessResolver(deps).forSessions(request(), [session])
 
+    expect(getExternalScopes).toHaveBeenCalledWith([scope.id])
     expect(access.identitySet).toContain(session.ownerIdentity)
     expect(
       canViewSession(session, { userId: 'user-1', role: 'collaborator' }, access.identitySet, access.externalAccess)
@@ -86,35 +82,32 @@ describe('makeSessionAccessResolver', () => {
 
   it('passes the login union_id to the Bot-app group membership resolver', async () => {
     const getExternalScopes = vi.fn(async (ids: readonly string[]) => (ids.length > 0 ? [scope] : []))
+    const resolve = vi.fn(async (scopes: readonly ExternalScopeRecord[], viewer) => {
+      expect(viewer.identitySet).toContain('feishu:lark:cli_custom_bot:on_member')
+      return {
+        allowedScopes: scopes.map(({ id, aclRevision }) => ({ id, aclRevision })),
+        degraded: false,
+        accessIssues: []
+      }
+    }) satisfies SessionAccessPlugin['resolve']
     const deps = {
       repos: {
-        bot: {
-          listForOrg: vi.fn(async () => [
-            {
-              platform: 'feishu',
-              feishuRegion: 'lark',
-              feishuAppId: 'cli_custom_bot',
-              revokedAt: null
-            }
-          ])
-        },
         session: {
           getExternalScopes,
           getExternalAccessPolicy: vi.fn(async () => null)
         }
       },
       clock: { now: () => 1_000 },
-      logtoIdentity: { feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }] },
-      feishuSessionAccess: {
-        resolve: async (_scopes: readonly ExternalScopeRecord[], viewer?: FeishuSessionViewer) => {
-          expect(viewer?.unionIdsFor('lark')).toEqual(['on_member'])
-          return {
-            allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
-            degraded: false,
-            accessIssues: []
-          }
+      sessionAccessPlugins: [
+        {
+          provider: 'feishu',
+          available: true,
+          addViewerIdentities: async ({ identitySet }) => {
+            identitySet.add('feishu:lark:cli_custom_bot:on_member')
+          },
+          resolve
         }
-      }
+      ]
     } as unknown as HttpDeps
 
     const access = await makeSessionAccessResolver(deps).forSessions(request(), [

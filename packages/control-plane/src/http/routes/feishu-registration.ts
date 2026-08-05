@@ -115,22 +115,20 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
             message: 'HTTP callback delivery is unavailable on this deployment'
           })
         }
-        let loginTenantKey: string | null
-        try {
-          loginTenantKey = await feishu.loginAppTenantKeyFor(req.body.region)
-        } catch {
+        const tenant = await feishu.tenantGuard.loginAppStatus(req.body.region).catch(() => 'unavailable' as const)
+        if (tenant === 'not_configured') {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
+          })
+        }
+        if (tenant === 'unavailable') {
           return reply.code(502).send({
             error: 'Bad Gateway',
             statusCode: 502,
             message:
               'Could not verify the configured Lark/Feishu Login App organization. Enable and publish the Obtain tenant information permission, then try again.'
-          })
-        }
-        if (!loginTenantKey) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            statusCode: 409,
-            message: 'Configure the matching Lark/Feishu Login App on this deployment before creating Bot Apps.'
           })
         }
         try {
@@ -183,21 +181,17 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
       async (req, reply) => {
         const orgId = orgIdOf(req)
         const session = await feishu.registrations.get(req.params.id, orgId, async (registration) => {
-          const loginTenantKey = await feishu.loginAppTenantKeyFor(registration.region)
-          if (!loginTenantKey) throw new FeishuRegistrationSetupError('setup_failed')
-          const appTenant = await feishu.resolveAppTenant(
+          const tenant = await feishu.tenantGuard.checkApp(
             registration.appId,
             registration.appSecret,
             registration.region
           )
-          if (appTenant.status === 'invalid_credentials') {
-            throw new FeishuRegistrationSetupError('invalid_credentials')
-          }
-          if (appTenant.status === 'unresolved') throw new FeishuRegistrationSetupError('setup_failed')
-          if (appTenant.status === 'unavailable') {
+          if (tenant === 'invalid_credentials') throw new FeishuRegistrationSetupError('invalid_credentials')
+          if (tenant === 'org_mismatch') throw new FeishuRegistrationSetupError('org_mismatch')
+          if (tenant === 'unavailable') {
             throw new Error('Lark/Feishu App organization is temporarily unavailable')
           }
-          if (appTenant.tenantKey !== loginTenantKey) throw new FeishuRegistrationSetupError('org_mismatch')
+          if (tenant !== 'ok') throw new FeishuRegistrationSetupError('setup_failed')
 
           const check = feishu.verifyBot
             ? await feishu.verifyBot(registration.appId, registration.appSecret, registration.region)

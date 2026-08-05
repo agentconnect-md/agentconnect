@@ -2,8 +2,14 @@ import type { FeishuRegion } from '@agentconnect.md/protocol'
 import type { Clock } from '../domain/clock.js'
 import { BotId } from '../domain/ids.js'
 import type { FetchLike } from '../github/api.js'
+import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { BotRecord, BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
-import type { SessionAccessIssue } from './session-access.js'
+import type {
+  SessionAccessIssue,
+  SessionAccessPlugin,
+  SessionAccessResult,
+  SessionAccessViewer
+} from './session-access-plugin.js'
 
 const REGION_ORIGIN: Record<FeishuRegion, string> = {
   feishu: 'https://open.feishu.cn',
@@ -22,20 +28,6 @@ type ScopeDecision = { decision: Decision; issue?: SessionAccessIssue }
 
 const DEFINITIVE_DENIALS = new Set([232006, 232009, 232010, 232011])
 
-export interface FeishuSessionViewer {
-  unionIdsFor(region: FeishuRegion): readonly string[]
-}
-
-export interface FeishuSessionAccessResult {
-  allowedScopes: Array<{ id: string; aclRevision: bigint }>
-  degraded: boolean
-  accessIssues: SessionAccessIssue[]
-}
-
-export interface FeishuSessionAccessResolver {
-  resolve(scopes: readonly ExternalScopeRecord[], viewer?: FeishuSessionViewer): Promise<FeishuSessionAccessResult>
-}
-
 async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(values.length)
   let next = 0
@@ -53,19 +45,47 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
 /** Current Feishu/Lark conversation audience, resolved with the installed Bot
  * app's durable credential and compared against the viewer's login union_id.
  * No request-bound user token is fetched or retained. */
-export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
+export class FeishuSessionAccessService implements SessionAccessPlugin {
+  readonly provider = 'feishu'
   private readonly cache = new Map<string, { result: ScopeDecision; expiresAt: number }>()
 
   constructor(
-    private readonly deps: { bots: BotRepo; botSecrets: BotSecretStore; clock: Clock; fetchImpl?: FetchLike }
+    private readonly deps: {
+      bots: BotRepo
+      botSecrets: BotSecretStore
+      clock: Clock
+      fetchImpl?: FetchLike
+      identity?: Pick<LogtoIdentityService, 'feishuIdentitiesFor'>
+    }
   ) {}
 
-  async resolve(
-    scopes: readonly ExternalScopeRecord[],
-    viewer?: FeishuSessionViewer
-  ): Promise<FeishuSessionAccessResult> {
+  get available(): boolean {
+    return this.deps.identity !== undefined
+  }
+
+  async addViewerIdentities({ request, orgId, identitySet }: SessionAccessViewer): Promise<void> {
+    const subject = request.oidcSubject
+    if (!subject || !this.deps.identity) return
+    const [identities, apps] = await Promise.all([
+      this.deps.identity.feishuIdentitiesFor(subject),
+      this.deps.bots.listForOrg(orgId)
+    ])
+    for (const identity of identities) {
+      for (const bot of apps) {
+        if (
+          bot.platform === 'feishu' &&
+          bot.revokedAt === null &&
+          bot.feishuAppId &&
+          (bot.feishuRegion ?? 'feishu') === identity.region
+        ) {
+          identitySet.add(`feishu:${identity.region}:${bot.feishuAppId}:${identity.unionId}`)
+        }
+      }
+    }
+  }
+
+  async resolve(scopes: readonly ExternalScopeRecord[], viewer: SessionAccessViewer): Promise<SessionAccessResult> {
     if (scopes.length === 0) return { allowedScopes: [], degraded: false, accessIssues: [] }
-    if (!viewer) return { allowedScopes: [], degraded: true, accessIssues: [] }
     const tokens = new Map<string, Promise<string>>()
     const tokenFor = (bot: BotRecord, signal: AbortSignal): Promise<string> => {
       const key = `${bot.id}:${bot.credentialRevision}`
@@ -101,7 +121,7 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
 
   private async resolveScope(
     scope: ExternalScopeRecord,
-    viewer: FeishuSessionViewer,
+    viewer: SessionAccessViewer,
     tokenFor: (bot: BotRecord, signal: AbortSignal) => Promise<string>,
     signal: AbortSignal
   ): Promise<ScopeDecision> {
@@ -129,7 +149,15 @@ export class FeishuSessionAccessService implements FeishuSessionAccessResolver {
       return { decision: 'deny' }
     }
 
-    const unionIds = [...new Set(viewer.unionIdsFor(region))].sort()
+    const prefix = `feishu:${region}:`
+    const unionIds = [
+      ...new Set(
+        [...viewer.identitySet]
+          .filter((identity) => identity.startsWith(prefix))
+          .map((identity) => identity.split(':')[3])
+          .filter((identity): identity is string => Boolean(identity))
+      )
+    ].sort()
     if (unionIds.length === 0) {
       return { decision: 'unknown', issue: { provider: 'feishu', region, reason: 'authorization' } }
     }

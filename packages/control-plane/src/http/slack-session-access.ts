@@ -2,6 +2,8 @@ import type { FetchLike } from '../github/api.js'
 import type { Clock } from '../domain/clock.js'
 import type { BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
 import { BotId } from '../domain/ids.js'
+import type { LogtoIdentityService } from '../github/logto-identity.js'
+import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 
 const ALLOW_TTL_MS = 120_000
 const DENY_TTL_MS = 30_000
@@ -20,15 +22,6 @@ type SlackPrincipal = { key: string; teamId: string; userId: string }
 
 type CachedDecision = { decision: Decision; expiresAt: number }
 type CachedWorkspaceAccess = { access: WorkspaceAccess; expiresAt: number }
-
-export interface SlackSessionAccessResult {
-  allowedScopes: Array<{ id: string; aclRevision: bigint }>
-  degraded: boolean
-}
-
-export interface SlackSessionAccessResolver {
-  resolve(scopes: readonly ExternalScopeRecord[], identitySet: ReadonlySet<string>): Promise<SlackSessionAccessResult>
-}
 
 // `ok: false` covers two very different answers, and conflating them is what
 // made an ordinary event — a private channel deleted, or the bot removed from
@@ -76,7 +69,8 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
 /** Slack v1 current-access resolver. Public channels follow workspace access;
  * restricted conversations follow membership. Caches retain only bounded ACL
  * verdicts; linked identity remains request-local and provider-owned. */
-export class SlackSessionAccessService implements SlackSessionAccessResolver {
+export class SlackSessionAccessService implements SessionAccessPlugin {
+  readonly provider = 'slack'
   private readonly cache = new Map<string, CachedDecision>()
   private readonly workspaceAccessCache = new Map<string, CachedWorkspaceAccess>()
 
@@ -86,14 +80,23 @@ export class SlackSessionAccessService implements SlackSessionAccessResolver {
       botSecrets: BotSecretStore
       clock: Clock
       fetchImpl?: FetchLike
+      identity?: Pick<LogtoIdentityService, 'slackIdentityFor'>
     }
   ) {}
 
-  async resolve(
-    scopes: readonly ExternalScopeRecord[],
-    identitySet: ReadonlySet<string>
-  ): Promise<SlackSessionAccessResult> {
-    const principals = slackPrincipals(identitySet)
+  get available(): boolean {
+    return this.deps.identity !== undefined
+  }
+
+  async addViewerIdentities({ request, identitySet }: SessionAccessViewer): Promise<void> {
+    const subject = request.oidcSubject
+    if (!subject || !this.deps.identity) return
+    const identity = await this.deps.identity.slackIdentityFor(subject)
+    if (identity) identitySet.add(`slack:${identity.teamId}:${identity.userId}`)
+  }
+
+  async resolve(scopes: readonly ExternalScopeRecord[], viewer: SessionAccessViewer): Promise<SessionAccessResult> {
+    const principals = slackPrincipals(viewer.identitySet)
     if (principals.length === 0 || scopes.length === 0) return { allowedScopes: [], degraded: false }
     let degraded = false
     const decisions: Array<{ scope: ExternalScopeRecord; decision: Decision }> = []

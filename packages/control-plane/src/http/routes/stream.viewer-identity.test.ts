@@ -83,7 +83,16 @@ describe('stream route × viewer identity (live unlink)', () => {
         }
       },
       clock: { now: () => Date.now() },
-      logtoIdentity: { slackIdentityFor: async () => linked }
+      sessionAccessPlugins: [
+        {
+          provider: 'slack',
+          available: true,
+          addViewerIdentities: async ({ identitySet }) => {
+            if (linked) identitySet.add(`slack:${linked.teamId}:${linked.userId}`)
+          },
+          resolve: async () => ({ allowedScopes: [], degraded: false })
+        }
+      ]
     } as unknown as HttpDeps
 
     const app = Fastify()

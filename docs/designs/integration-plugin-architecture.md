@@ -696,13 +696,12 @@ Consequences the slot must own:
   reconciler and similar background loops register via the provider.
 - **The common create skeleton stays core:** visibility gates, placement
   check, daemon capability gate, mutation lease, `replicateUpsert`.
-- **Adjacent per-platform services get audit homes, not new slots:** the
-  session-audience resolvers (`SlackSessionAccessService` /
-  `FeishuSessionAccessService`) are platform plugins to the
-  session-visibility system; preset default-binding is a documented
-  core→plugin reference (preset provisioning names a platform's install
-  machinery); viewer-identity composition (`${platform}:${scope}:${user}`)
-  is declared per platform.
+- **Adjacent per-platform services get audit homes, not new slots:** Session
+  visibility has its own `SessionAccessPlugin` list. Each provider contributes
+  its verified viewer identities and resolves its current external scopes;
+  core only composes `canView(agent)` with those results. Preset default-binding
+  remains a documented core→plugin reference (preset provisioning names a
+  platform's install machinery).
 
 ## 10. Web Slot
 

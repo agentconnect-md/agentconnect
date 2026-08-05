@@ -5,18 +5,10 @@ import type {
   SessionFilterQuery,
   SessionMetaRecord
 } from '../persistence/ports.js'
+import { identitySetOf } from '../authorization/policy.js'
 import type { HttpDeps } from './deps.js'
-import { makeViewerIdentitySet } from './viewer-identity.js'
+import type { SessionAccessIssue, SessionAccessViewer } from './session-access-plugin.js'
 import { ctxOf, orgOf } from './rbac.js'
-
-/** Provider-neutral, requester-safe diagnostic from a session-visibility
- * plugin. A platform may add a region without turning that region into a
- * separate provider identity. */
-export interface SessionAccessIssue {
-  provider: string
-  region?: string
-  reason: 'authorization' | 'unavailable'
-}
 
 export interface ResolvedSessionAccess {
   identitySet: Set<string>
@@ -33,45 +25,46 @@ export interface ResolvedSessionAccess {
  * identity or provider grant; only the adapter's bounded decision cache lives
  * beyond this call. */
 export function makeSessionAccessResolver(deps: HttpDeps) {
-  const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity, deps.repos.bot)
+  const plugins = deps.sessionAccessPlugins ?? []
+  const pluginFor = new Map(plugins.map((plugin) => [plugin.provider, plugin]))
+  const providers = [...pluginFor.keys()]
 
-  const feishuViewerFor = (identitySet: ReadonlySet<string>) => ({
-    unionIdsFor: (region: 'feishu' | 'lark') => {
-      const prefix = `feishu:${region}:`
-      return [...identitySet]
-        .filter((identity) => identity.startsWith(prefix))
-        .map((identity) => identity.split(':')[3])
-        .filter((identity): identity is string => Boolean(identity))
+  const viewerFor = async (req: FastifyRequest): Promise<SessionAccessViewer> => {
+    const viewer = {
+      request: req,
+      orgId: orgOf(req),
+      userId: ctxOf(req).userId,
+      identitySet: identitySetOf(ctxOf(req))
     }
-  })
+    await Promise.all(
+      plugins.map(async (plugin) => {
+        try {
+          await plugin.addViewerIdentities?.(viewer)
+        } catch (err) {
+          req.log.warn({ err, provider: plugin.provider }, 'viewer identity lookup failed')
+        }
+      })
+    )
+    return viewer
+  }
 
   const forScopes = async (
-    req: FastifyRequest,
     scopes: readonly ExternalScopeRecord[],
-    identitySet: Set<string>,
-    accessScopes: readonly ExternalScopeRecord[] = scopes
+    viewer: SessionAccessViewer
   ): Promise<ResolvedSessionAccess> => {
-    const orgId = orgOf(req)
-    const providers = ['slack', 'github', 'feishu'] as const
+    const { orgId, identitySet } = viewer
     const initialPolicies = await Promise.all(
       providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider))
     )
-    const slackScopes = accessScopes.filter((scope) => scope.provider === 'slack' && scope.orgId === orgId)
-    const githubScopes = accessScopes.filter((scope) => scope.provider === 'github' && scope.orgId === orgId)
-    const feishuScopes = accessScopes.filter((scope) => scope.provider === 'feishu' && scope.orgId === orgId)
-    const feishuViewer = feishuViewerFor(identitySet)
-    const [slackResult, githubResult, feishuResult] = await Promise.all([
-      deps.slackSessionAccess
-        ? deps.slackSessionAccess.resolve(slackScopes, identitySet)
-        : Promise.resolve({ allowedScopes: [], degraded: slackScopes.length > 0 }),
-      deps.githubSessionAccess
-        ? deps.githubSessionAccess.resolve(githubScopes, ctxOf(req).userId)
-        : Promise.resolve({ allowedScopes: [], degraded: githubScopes.length > 0 }),
-      deps.feishuSessionAccess
-        ? deps.feishuSessionAccess.resolve(feishuScopes, feishuViewer)
-        : Promise.resolve({ allowedScopes: [], degraded: feishuScopes.length > 0, accessIssues: [] })
-    ])
-    const resolvedScopes = [...slackResult.allowedScopes, ...githubResult.allowedScopes, ...feishuResult.allowedScopes]
+    const results = await Promise.all(
+      plugins.map((plugin) =>
+        plugin.resolve(
+          scopes.filter((scope) => scope.provider === plugin.provider && scope.orgId === orgId),
+          viewer
+        )
+      )
+    )
+    const resolvedScopes = results.flatMap((result) => result.allowedScopes)
     // Provider lookup can take multiple round trips. Re-read the durable fence
     // afterwards so a concurrent enable cannot authorize with an old disabled
     // snapshot. SQL repeats the current-policy check for list reads.
@@ -81,12 +74,7 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
     ])
     const currentScopeRevisions = new Map(
       currentAllowedScopes
-        .filter(
-          (scope) =>
-            scope.orgId === orgId &&
-            providers.includes(scope.provider as (typeof providers)[number]) &&
-            scope.revokedAt === null
-        )
+        .filter((scope) => scope.orgId === orgId && pluginFor.has(scope.provider) && scope.revokedAt === null)
         .map((scope) => [scope.id, scope.aclRevision])
     )
     const allowedScopes = resolvedScopes.filter((scope) => currentScopeRevisions.get(scope.id) === scope.aclRevision)
@@ -105,57 +93,42 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
       // migration degradation (for example an unrelated historical pending
       // row) stays on the owner-only settings surface and must not make every
       // member-facing list/detail claim that a provider itself is unavailable.
-      degraded:
-        slackResult.degraded ||
-        githubResult.degraded ||
-        feishuResult.degraded ||
-        allowedScopes.length !== resolvedScopes.length,
-      accessIssues: feishuResult.accessIssues ?? []
+      degraded: results.some((result) => result.degraded) || allowedScopes.length !== resolvedScopes.length,
+      accessIssues: results.flatMap((result) => result.accessIssues ?? [])
     }
   }
 
   return {
     async forQuery(req: FastifyRequest, query: SessionFilterQuery): Promise<ResolvedSessionAccess> {
-      const identitySet = await identitySetFor(req)
+      const viewer = await viewerFor(req)
       const scopes = await deps.repos.session.listExternalScopes({
         ...query,
-        viewer: { role: ctxOf(req).role, identitySet: [...identitySet] }
+        viewer: { role: ctxOf(req).role, identitySet: [...viewer.identitySet] }
       })
-      return forScopes(req, scopes, identitySet)
+      return forScopes(scopes, viewer)
     },
     async forSessions(
       req: FastifyRequest,
-      sessions: readonly Pick<
-        SessionMetaRecord,
-        'visibility' | 'ownerIdentity' | 'externalProvider' | 'externalScopeId'
-      >[]
+      sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
     ): Promise<ResolvedSessionAccess> {
-      const identitySet = await identitySetFor(req)
-      const scoped = sessions.filter(
-        (session) => session.visibility === 'external' || session.externalProvider === 'feishu'
-      )
+      const viewer = await viewerFor(req)
       const ids = [
-        ...new Set(scoped.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
+        ...new Set(sessions.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
       ]
-      const membershipIds = new Set(
-        scoped
-          .filter(
-            (session) =>
-              session.visibility === 'external' ||
-              (session.visibility === 'private' &&
-                session.externalProvider === 'feishu' &&
-                (!session.ownerIdentity || !identitySet.has(session.ownerIdentity)))
-          )
+      const scopes = await deps.repos.session.getExternalScopes(ids)
+      const accessIds = new Set(
+        sessions
+          .filter((session) => session.visibility === 'external')
           .map((session) => session.externalScopeId)
           .filter((id): id is string => id !== null)
       )
-      const scopes = await deps.repos.session.getExternalScopes(ids)
-      return forScopes(
-        req,
-        scopes,
-        identitySet,
-        scopes.filter((scope) => membershipIds.has(scope.id))
+      const access = await forScopes(
+        scopes.filter((scope) => accessIds.has(scope.id)),
+        viewer
       )
+      // Private rows use scope metadata for provider branding only. Their
+      // authorization remains exact owner identity and never reaches a plugin.
+      return { ...access, externalScopes: scopes }
     }
   }
 }

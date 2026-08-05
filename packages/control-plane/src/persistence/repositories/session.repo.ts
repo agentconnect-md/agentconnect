@@ -1268,7 +1268,6 @@ export class PgSessionRepo implements SessionRepo {
     // become the viewer snapshot every later query is authorized against, so a
     // scope missed here is a row the membership query cannot admit — a member
     // dropped for having been filtered out, not for being invisible.
-    const identitySet = q.viewer?.identitySet ?? []
     const unrestricted = {
       ...q,
       ...(q.memberAgentIds ? { agentIds: q.memberAgentIds, agentId: undefined } : {})
@@ -1283,17 +1282,7 @@ export class PgSessionRepo implements SessionRepo {
        AND scope."orgId" = s."orgId"
        AND scope."provider" = s."externalProvider"
       ${pageWhereSql(unrestricted, false)}
-        AND (
-          s."visibility" = 'external'::"SessionVisibility"
-          OR (
-            s."visibility" = 'private'::"SessionVisibility"
-            AND s."externalProvider" = 'feishu'
-            AND (
-              s."ownerIdentity" IS NULL
-              OR NOT (s."ownerIdentity" = ANY(${identitySet}::text[]))
-            )
-          )
-        )
+        AND s."visibility" = 'external'::"SessionVisibility"
         AND s."externalResolution" = 'settled'::"ExternalResolution"
         AND scope."revokedAt" IS NULL
       ORDER BY scope."id"

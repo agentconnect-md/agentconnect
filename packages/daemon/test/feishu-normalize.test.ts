@@ -37,11 +37,6 @@ describe('normalizeFeishuMessage', () => {
     expect(m.attachments).toBeUndefined()
   })
 
-  it('falls back to open_id for rolling compatibility when union_id is absent', () => {
-    const { senderUnionId: _omit, ...legacy } = base
-    expect(normalizeFeishuMessage(legacy, { traceId: 't' }).sender.id).toBe('ou_123')
-  })
-
   it('keys a group thread reply on root_id, so the whole topic thread is one session', () => {
     // Turn 1 (top-level) keyed on om_111; a reply inside its thread carries root_id=om_111
     // and a distinct message_id → same thread key, so it continues the same session.

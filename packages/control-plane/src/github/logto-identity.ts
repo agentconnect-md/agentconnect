@@ -266,7 +266,7 @@ export class LogtoIdentityService {
    * This IS an identity assertion: the record exists in Logto only after a
    * Slack OIDC sign-in, or an Account API link driven by the user's own
    * authenticated session — so the session-visibility identity set
-   * (`http/viewer-identity.ts`) may match it against `ownerIdentity`. It is
+   * (the Slack Session-access plugin) may match it against `ownerIdentity`. It is
    * NOT an org/role statement: callers still compose it with org scoping.
    * Served from the shared user cache; a just-landed link is surfaced by the
    * console's refresh call (`forgetUser`).

@@ -68,7 +68,7 @@ hygiene we control, not as a defect claim about the provider.
   precedent worth copying: it is unambiguous without any assumption about `U…`
   on its own. It is also where the rule is now load-bearing: session
   visibility matches it against the viewer's identity set
-  (`control-plane/src/http/viewer-identity.ts`), which builds its Slack entry
+  (the Control Plane's Slack Session-access plugin), which builds its Slack entry
   from the same pair — both sides keyed alike, so neither can match on a bare
   `U…`.
 - **`slack_user_config`** is keyed `(orgId, userId)` where `userId` is the

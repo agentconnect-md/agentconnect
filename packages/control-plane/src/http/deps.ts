@@ -79,9 +79,7 @@ import type { WebchatMcpMetrics } from '../observability/webchat-mcp.js'
 import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
-import type { SlackSessionAccessResolver } from './slack-session-access.js'
-import type { GithubSessionAccessResolver } from './github-session-access.js'
-import type { FeishuSessionAccessResolver } from './feishu-session-access.js'
+import type { SessionAccessPlugin } from './session-access-plugin.js'
 
 export interface HttpServerConfig extends HumanAuthConfig {
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
@@ -326,12 +324,8 @@ export interface HttpDeps {
   /** Server-side Logto identity management for the signed-in user's Profile.
    *  Absent ⇒ LOGTO_MGMT_* or real OIDC auth is not configured. */
   logtoIdentity?: LogtoIdentityService
-  /** Current Slack channel access for external Session reads. */
-  slackSessionAccess?: SlackSessionAccessResolver
-  /** Current GitHub repository visibility for external Session reads. */
-  githubSessionAccess?: GithubSessionAccessResolver
-  /** Current Feishu/Lark chat membership for external Session reads. */
-  feishuSessionAccess?: FeishuSessionAccessResolver
+  /** Provider-owned identity + current-scope checks for Session visibility. */
+  sessionAccessPlugins?: readonly SessionAccessPlugin[]
   /** Uploaded-icon object store (docs/designs/icon-uploads.md); absent ⇒ S3_* unset,
    *  the icon upload/delete routes are not mounted and the console hides Upload. */
   iconStore?: IconStore

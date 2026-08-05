@@ -329,7 +329,7 @@ export function sessionRoutes(deps: HttpDeps) {
     // above: a session is visible iff its agent is visible AND the caller passes
     // the session predicate. The repo arm and this in-app check must stay two
     // spellings of one rule — both come from `canViewSession`, fed the SAME
-    // identity set: console identity plus the caller's linked Slack identity.
+    // identity set: console identity plus provider-plugin contributions.
     const sessionAccess = makeSessionAccessResolver(deps)
     const viewerForQuery = async (req: FastifyRequest, query: Parameters<typeof sessionAccess.forQuery>[1]) => {
       const access = await sessionAccess.forQuery(req, query)
@@ -353,15 +353,8 @@ export function sessionRoutes(deps: HttpDeps) {
     }
 
     type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
-    const externalAccessAvailable = (provider: ExternalAccessProvider) => {
-      if (provider === 'feishu') {
-        return deps.logtoIdentity !== undefined && deps.feishuSessionAccess !== undefined
-      }
-      return (
-        deps.logtoIdentity !== undefined &&
-        (provider === 'slack' ? deps.slackSessionAccess !== undefined : deps.githubSessionAccess !== undefined)
-      )
-    }
+    const externalAccessAvailable = (provider: ExternalAccessProvider) =>
+      deps.sessionAccessPlugins?.find((plugin) => plugin.provider === provider)?.available === true
 
     const externalAccessDto = async (orgId: OrgId, provider: ExternalAccessProvider, includeDiagnostics: boolean) => {
       const [policy, hiddenSessions] = await Promise.all([

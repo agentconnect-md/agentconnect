@@ -288,7 +288,10 @@ describe('Feishu/Lark one-click app registration', () => {
     })
     const app = buildHttpApp(prisma, undefined, undefined, undefined, {
       feishuAppRegistration: service(fetcher),
-      resolveFeishuAppTenant: async () => ({ status: 'ok', tenantKey: 'tenant_other_org' })
+      feishuAppTenantGuard: {
+        loginAppStatus: async () => 'ok',
+        checkApp: async () => 'org_mismatch'
+      }
     })
     running = app
 
@@ -309,7 +312,10 @@ describe('Feishu/Lark one-click app registration', () => {
   it('does not start without a regional Login App tenant anchor', async () => {
     const agentId = await placedAgent()
     const app = buildHttpApp(prisma, undefined, undefined, undefined, {
-      feishuLoginAppTenantKeyFor: async () => null
+      feishuAppTenantGuard: {
+        loginAppStatus: async () => 'not_configured',
+        checkApp: async () => 'not_configured'
+      }
     })
     running = app
 

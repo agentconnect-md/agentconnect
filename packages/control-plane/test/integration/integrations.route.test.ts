@@ -684,7 +684,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST rejects a Feishu App from a different deployment organization', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()
-    app.platformStubs.resolveFeishuAppTenant = async () => ({ status: 'ok', tenantKey: 'tenant_other_org' })
+    app.platformStubs.feishuAppTenantGuard.checkApp = async () => 'org_mismatch'
 
     const res = await app.app.inject({
       method: 'POST',

@@ -43,7 +43,7 @@ import { FeishuRegion } from '@agentconnect.md/protocol'
 import type { IntegrationFeishuConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, IntegrationRecord } from '../../persistence/ports.js'
 import { TENANTLESS_SENTINEL } from '../../persistence/ports.js'
-import type { FeishuAppTenantResolver, FeishuBotVerifier } from '../../http/feishu-identity.js'
+import type { FeishuAppTenantGuard, FeishuBotVerifier } from '../../http/feishu-identity.js'
 import type { FeishuAppIconSyncer } from '../../http/feishu-app-icon.js'
 import type { CpConfigValidation, CpInstallTransport, CpPlatformProvider } from '../provider.js'
 
@@ -191,10 +191,8 @@ export interface FeishuCpProviderDeps {
    *  route's own fallback — except http transport, which then cannot resolve
    *  the bot identity and refuses with the route's 503). */
   verifyBot?: FeishuBotVerifier
-  /** Resolves the configured regional Login App's immutable tenant_key. */
-  loginAppTenantKeyFor?: (region: FeishuRegion) => Promise<string | null>
-  /** Resolves the tenant that owns pasted/new App credentials. */
-  resolveAppTenant?: FeishuAppTenantResolver
+  /** Enforces that installed Apps share the configured Login App's tenant. */
+  tenantGuard?: FeishuAppTenantGuard
   /**
    * The registration funnel's Fastify plugin, injected PRE-BOUND to the route
    * deps (`feishuRegistrationRoutes` at `'org'`; Feishu has no browser OAuth
@@ -222,7 +220,7 @@ export interface FeishuCpProviderDeps {
 }
 
 export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformProvider<FeishuCreateCredentials> {
-  const { verifyBot, loginAppTenantKeyFor, resolveAppTenant, funnelRoutes, syncAppIcon, pendingInstalls } = deps
+  const { verifyBot, tenantGuard, funnelRoutes, syncAppIcon, pendingInstalls } = deps
   return {
     platformId: 'feishu',
 
@@ -260,40 +258,17 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
             'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
         }
       }
-      if (!loginAppTenantKeyFor) {
+      const tenant = tenantGuard
+        ? await tenantGuard.checkApp(credentials.appId, credentials.appSecret, credentials.region)
+        : 'not_configured'
+      if (tenant === 'not_configured') {
         return {
           ok: false,
           status: 503,
           message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
         }
       }
-      let loginTenantKey: string | null
-      try {
-        loginTenantKey = await loginAppTenantKeyFor(credentials.region)
-      } catch {
-        return {
-          ok: false,
-          status: 503,
-          message:
-            'Could not verify the Login App’s organization. Enable and publish the Obtain tenant information permission, then try again.'
-        }
-      }
-      if (!loginTenantKey) {
-        return {
-          ok: false,
-          status: 503,
-          message: 'This AgentConnect deployment has no Lark/Feishu Login App configured for this region.'
-        }
-      }
-      if (!resolveAppTenant) {
-        return {
-          ok: false,
-          status: 503,
-          message: 'Could not verify this App’s Lark/Feishu organization. Please try again.'
-        }
-      }
-      const appTenant = await resolveAppTenant(credentials.appId, credentials.appSecret, credentials.region)
-      if (appTenant.status === 'invalid_credentials') {
+      if (tenant === 'invalid_credentials') {
         return {
           ok: false,
           status: 400,
@@ -301,7 +276,7 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
             'Feishu rejected the credentials — check the App ID (cli_…) and App Secret from the Developer Console (Credentials & Basic Info).'
         }
       }
-      if (appTenant.status !== 'ok') {
+      if (tenant === 'unavailable' || tenant === 'unresolved') {
         return {
           ok: false,
           status: 503,
@@ -309,7 +284,7 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
             'Could not verify this App’s organization. Enable and publish the Obtain tenant information permission, then try again.'
         }
       }
-      if (appTenant.tenantKey !== loginTenantKey) {
+      if (tenant === 'org_mismatch') {
         return {
           ok: false,
           status: 400,

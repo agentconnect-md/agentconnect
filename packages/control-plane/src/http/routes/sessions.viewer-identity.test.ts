@@ -4,8 +4,8 @@
  * (session-visibility.md §5) — the repo list projection's `viewer.identitySet`
  * and the in-app `canViewSession` point read — so a private Slack DM session
  * (`ownerIdentity: slack:T…:U…`) lights up for the console user behind it.
- * The policy truth table lives in authorization/policy.test.ts; the identity
- * resolution rules in ../viewer-identity.test.ts.
+ * The policy truth table lives in authorization/policy.test.ts; this suite pins
+ * the request-time plugin wiring.
  */
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
@@ -91,7 +91,22 @@ function fakeDeps(overrides: { slackIdentityFor?: () => Promise<{ teamId: string
       hook: { getMany: vi.fn(async () => []) }
     },
     clock: { now: () => Date.now() },
-    ...(overrides.slackIdentityFor ? { logtoIdentity: { slackIdentityFor: overrides.slackIdentityFor } } : {})
+    ...(overrides.slackIdentityFor
+      ? {
+          sessionAccessPlugins: [
+            {
+              provider: 'slack',
+              available: true,
+              addViewerIdentities: async ({ request, identitySet }) => {
+                if (!request.oidcSubject) return
+                const identity = await overrides.slackIdentityFor!()
+                if (identity) identitySet.add(`slack:${identity.teamId}:${identity.userId}`)
+              },
+              resolve: async () => ({ allowedScopes: [], degraded: false })
+            }
+          ]
+        }
+      : {})
   } as unknown as HttpDeps
   return { deps, listPage, listConversationPage }
 }

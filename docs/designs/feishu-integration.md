@@ -282,8 +282,8 @@ IntegrationFeishuConfig }`.
   - Set `platform: 'feishu'`, `channel = chat_id`, and for a group set
     `thread = root_id ?? message_id`; for a direct chat use `chat_id`.
     Group topics use their root as the session key and reply anchor, while P2P
-    uses the chat. See section 7.4. Set `sender.id = union_id`, falling back to
-    `open_id` only for older/incomplete event payloads during rollout.
+    uses the chat. See section 7.4. Set `sender.id = union_id`; reject an event
+    that does not provide it.
   - A mention matches when `event.message.mentions[]` contains the bot's own
     open ID.
   - `isDm` is `chat_type === 'p2p'`.
