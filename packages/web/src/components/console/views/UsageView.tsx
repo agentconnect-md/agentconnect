@@ -28,7 +28,6 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
 ]
 
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
-const USAGE_REFRESH_MS = 30_000
 
 // How the usage table is broken down. Runtime is derived from the per-agent
 // aggregate; model comes from the server's per-session execution snapshots so
@@ -68,10 +67,8 @@ export default function UsageView() {
   const { agents } = useConsoleData()
   const waitingForOrg = orgLoading || (!activeOrg && orgs.length > 0)
   const usageKey = consoleKeys.usage(waitingForOrg ? null : activeOrg?.id, range)
-  const { data, error, isLoading } = useSWR(
-    usageKey,
-    ([, orgId, , requestedRange]) => fetchUsage(requestedRange, orgId),
-    { refreshInterval: USAGE_REFRESH_MS }
+  const { data, error, isLoading } = useSWR(usageKey, ([, orgId, , requestedRange]) =>
+    fetchUsage(requestedRange, orgId)
   )
   const loading = waitingForOrg || isLoading
   const err = orgError ?? (error ? (error instanceof Error ? error.message : String(error)) : null)

@@ -655,11 +655,12 @@ member list with the viewer's sign-in `union_id`; provider failures fail closed.
 No browser Account API token, federated user token, Login App credential, or
 user-token refresh loop participates in Session reads. One bounded member-list
 snapshot is shared per Bot App and chat across viewers, and concurrent reads are
-coalesced. The Console refreshes Session lists from SSE, focus/reconnect, and
-explicit actions instead of polling live membership every minute. Bot tenant
-token exchanges remain deduplicated within one authorization read. A provider
-quota response fails closed, pauses further checks for that organization and
-region, and gives the operator a specific recovery action.
+coalesced. Console reads that resolve Session access (lists, facets, details,
+transcripts, and usage) refresh from SSE where available, focus/reconnect, and
+explicit actions instead of timers. Bot tenant-token exchanges remain
+deduplicated within one authorization read. A provider quota response fails
+closed, pauses further checks for that organization and region, and gives the
+operator a specific recovery action.
 
 Every installation enforces the deployment tenant before storing a Bot. The
 Control Plane resolves the configured regional Login App's `tenant_key`,
