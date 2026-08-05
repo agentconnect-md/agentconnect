@@ -1,7 +1,7 @@
 /**
  * Safe, side-effect-free deployment-config subpath for operator tooling.
  *
- * Importing the package root starts the Control Plane process, so the setup CLI
+ * Importing the package root starts the Control Plane process, so Tenant Admin
  * uses this narrow composition facade instead. The typed service remains the
  * only place that validates the document, seals secrets, computes fingerprints,
  * and applies an atomic replacement.

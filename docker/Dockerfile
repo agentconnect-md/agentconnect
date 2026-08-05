@@ -15,7 +15,7 @@
 #
 # Control Plane — Fastify BFF + daemon WS gateway (packages/control-plane). The
 #   runtime also carries schema/migration files for the external migration
-#   runner and the self-contained setup dist used by the temporary Tenant Admin;
+#   runner and the self-contained Tenant Admin server;
 #   it deliberately contains no Prisma CLI.
 # Relay — shared integration ingress (packages/relay).
 # Memory plugin — centralized Mem0 MCP wrapper (packages/memory-plugin-mem0).
@@ -56,10 +56,9 @@ COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
-FROM manifests AS cp-builder
-ARG SETUP_VERSION=1.0.0-dev
-# Install the control-plane, the self-contained operator setup package, and
+# Install the control-plane, the self-contained Tenant Admin package, and
 # their workspace deps (skips the daemon and its native better-sqlite3 build).
+FROM manifests AS cp-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile \
   --filter "@agentconnect.md/control-plane..." \
@@ -77,13 +76,8 @@ RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/control-plane" \
   -r build
 
-# The same published package powers the operator CLI and the temporary Tenant
-# Admin server. Runtime dependencies are bundled; the CLI still reads its own
-# package manifest for the version string.
-RUN node -e \
-  'const fs=require("node:fs"),p="packages/setup/package.json",m=JSON.parse(fs.readFileSync(p,"utf8"));m.version=process.argv[1].replace(/^v/,"");fs.writeFileSync(p,JSON.stringify(m,null,2)+"\n")' \
-  "$SETUP_VERSION" \
-  && pnpm --filter "@agentconnect.md/setup" build
+# Bundle the Tenant Admin server and its runtime dependencies.
+RUN pnpm --filter "@agentconnect.md/setup" build
 
 # Materialize the same portable production bundle used by the other plain Node
 # services. The pnpm hook removes Prisma's build-only optional peers while

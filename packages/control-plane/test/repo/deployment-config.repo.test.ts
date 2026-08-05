@@ -22,12 +22,6 @@ class PrefixCipher implements SecretCipher {
 
 const GITHUB_VALUES: DeploymentConfigValuesV1 = {
   ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
-  publicUrls: {
-    ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1.publicUrls,
-    controlPlane: 'https://api.example.test',
-    web: 'https://console.example.test',
-    relay: 'https://relay.example.test'
-  },
   github: { appId: 123, slug: 'agentconnect-test', clientId: 'Iv1.test' }
 }
 

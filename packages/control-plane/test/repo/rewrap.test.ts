@@ -43,12 +43,11 @@ async function seedAllSecretTables(): Promise<void> {
       id: 1,
       schemaVersion: 1,
       values: {
-        publicUrls: { controlPlane: null, relay: null, web: null, mcp: null },
         auth: { mode: 'none' },
         github: null,
         slack: null,
         logto: null,
-        features: { presetAgentsEnabled: true, waitlistMode: false }
+        features: { presetAgentsEnabled: true }
       }
     }
   })

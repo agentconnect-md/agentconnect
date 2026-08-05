@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -5,6 +6,10 @@ import Fastify, {
   type FastifyServerOptions
 } from 'fastify'
 import { z } from 'zod'
+import {
+  OfficialFeishuRegistrationProvider,
+  type FeishuRegistrationProvider
+} from '@agentconnect.md/control-plane/feishu-registration-provider'
 import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
@@ -18,8 +23,33 @@ import {
   openDeploymentConfigStore,
   type DeploymentConfigAdmin,
   type DeploymentConfigRuntime,
-  type DeploymentConfigStore
+  type DeploymentConfigStore,
+  type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
+import { loadDeploymentEnvironment } from '../deployment-environment.js'
+import {
+  githubDeploymentPut,
+  localAuthLogtoPut,
+  logtoGoogleConnectorPut,
+  logtoGithubConnectorPut,
+  slackDeploymentPut
+} from '../deployment-config-client.js'
+import {
+  auditGithubApp,
+  buildGithubAppManifest,
+  convertGithubManifest,
+  githubConfiguredUrls,
+  githubManifestRegistrationUrl
+} from '../github-app.js'
+import {
+  auditSlackManifest,
+  buildSlackDeploymentManifest,
+  createSlackApp,
+  exportSlackManifest,
+  requireProviderAppEndpoints,
+  slackConfiguredUrls,
+  type ProviderAppConfig
+} from '../slack-app.js'
 import {
   TenantAdminAuthError,
   TenantAdminAuthenticator,
@@ -30,6 +60,9 @@ import {
 import { loadTenantAdminProcessConfig } from './config.js'
 import { TENANT_ADMIN_HTML } from './html.js'
 import {
+  LOGTO_GITHUB_CONNECTOR_ID,
+  LOGTO_GOOGLE_CONNECTOR_ID,
+  LOGTO_SLACK_CONNECTOR_ID,
   LogtoAdminClaimClient,
   LogtoManagementError,
   type LogtoManagementConfig,
@@ -40,6 +73,62 @@ const PutDeploymentConfigBody = z.strictObject({
   expectedRevision: z.number().int().nonnegative(),
   values: DeploymentConfigValuesV1Schema,
   secrets: DeploymentSecretPatchSchema.optional()
+})
+
+const BootstrapLogtoBody = z.strictObject({
+  managementAppId: z.string().trim().min(1).max(200),
+  managementAppSecret: z.string().min(1).max(10_000),
+  socialProvider: z.enum(['github', 'google', 'slack']).optional()
+})
+
+const GithubOwnerSchema = z.discriminatedUnion('owner', [
+  z.strictObject({ owner: z.literal('personal'), organization: z.null().optional() }),
+  z.strictObject({
+    owner: z.literal('organization'),
+    organization: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/)
+  })
+])
+
+const CreateGithubStartBody = z.strictObject({
+  purpose: z.literal('deployment'),
+  name: z.string().trim().min(1).max(100),
+  ownership: GithubOwnerSchema,
+  connectLogto: z.boolean().optional().default(false)
+})
+
+const CreateSlackBody = z.strictObject({
+  name: z.string().trim().min(1).max(80),
+  configToken: z.string().trim().min(1).max(10_000),
+  connectLogto: z.boolean().optional().default(false)
+})
+
+const ConfigureGoogleBody = z.strictObject({
+  clientId: z.string().trim().min(1).max(500),
+  clientSecret: z.string().min(1).max(10_000).optional()
+})
+
+const RegionalLoginAppBody = z
+  .strictObject({
+    appId: z.string().trim().min(1).max(500),
+    appSecret: z.string().min(1).max(10_000).optional()
+  })
+  .nullable()
+
+const ConfigureRegionalLoginAppBody = z.strictObject({
+  region: z.enum(['feishu', 'lark']),
+  app: RegionalLoginAppBody
+})
+
+const CreateRegionalLoginAppBody = z.strictObject({
+  region: z.enum(['feishu', 'lark']),
+  name: z.string().trim().min(1).max(100)
+})
+
+const CheckSlackBody = z.strictObject({
+  configToken: z.string().trim().min(1).max(10_000)
 })
 
 interface OidcDiscovery {
@@ -57,6 +146,12 @@ export interface TenantAdminServerDeps {
     config: LogtoManagementConfig
   ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
   makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
+  feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
+  localAuthBootstrap?: {
+    issuer: string
+    adminEndpoint?: string
+    services: { web: string; controlPlane: string; relay: string }
+  }
   now?: () => Date
   /** Compose-only: host publishing is loopback and the admin bridge is isolated. */
   allowContainerLoopbackProxy?: boolean
@@ -111,7 +206,28 @@ function localOnly(publicUrl: string, allowContainerLoopbackProxy = false) {
   }
 }
 
-function toStatus(record: DeploymentConfigAdmin | null) {
+function withStartupLogtoEndpoint(values: DeploymentConfigValuesV1, endpoint: string): DeploymentConfigValuesV1 {
+  if (!values.logto) return values
+  const origin = new URL(endpoint).origin
+  return {
+    ...values,
+    auth:
+      values.auth.mode === 'oidc'
+        ? {
+            ...values.auth,
+            issuer: `${origin}/oidc`,
+            browserClient: { ...values.auth.browserClient, endpoint: origin }
+          }
+        : values.auth,
+    logto: {
+      ...values.logto,
+      managementEndpoint: origin,
+      browser: values.logto.browser ? { ...values.logto.browser, endpoint: origin } : values.logto.browser
+    }
+  }
+}
+
+function toStatus(record: DeploymentConfigAdmin | null, logtoEndpoint?: string) {
   const secrets = record
     ? record.secrets.map((secret) => ({
         ...secret,
@@ -122,7 +238,10 @@ function toStatus(record: DeploymentConfigAdmin | null) {
     configured: record !== null,
     schemaVersion: DEPLOYMENT_CONFIG_SCHEMA_VERSION,
     revision: record?.revision ?? 0,
-    values: record?.values ?? DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+    values:
+      record && logtoEndpoint
+        ? withStartupLogtoEndpoint(record.values, logtoEndpoint)
+        : (record?.values ?? DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1),
     secrets,
     updatedAt: record?.updatedAt.toISOString() ?? null
   }
@@ -163,12 +282,12 @@ function logtoUpstreamStatus(error: unknown): 'fail' | 'unknown' {
   return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429 ? 'fail' : 'unknown'
 }
 
-function logtoConfig(record: DeploymentConfigRuntime | null): LogtoManagementConfig | null {
+function logtoConfig(record: DeploymentConfigRuntime | null, endpoint?: string): LogtoManagementConfig | null {
   if (!record || !record.values.logto) return null
   const secret = record.secrets['logto.managementAppSecret']
   if (!secret) return null
   return {
-    endpoint: record.values.logto.managementEndpoint,
+    endpoint: endpoint ? new URL(endpoint).origin : record.values.logto.managementEndpoint,
     appId: record.values.logto.managementAppId,
     appSecret: secret,
     resource: record.values.logto.managementResource
@@ -186,9 +305,37 @@ function appendPath(origin: string, path: string): string {
   return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
 }
 
-function logtoSetup(record: DeploymentConfigRuntime, tenantAdminUrl: string): ResolvedLogtoSetup | null {
-  const { auth, logto, publicUrls } = record.values
-  if (!logto || !publicUrls.web) return null
+function googleRedirectUris(endpoint: string): string[] {
+  return [
+    appendPath(endpoint, `/callback/${LOGTO_GOOGLE_CONNECTOR_ID}`),
+    appendPath(endpoint, `/account/callback/social/${LOGTO_GOOGLE_CONNECTOR_ID}`)
+  ]
+}
+
+function sameStrings(left: readonly string[] | undefined, right: readonly string[]): boolean {
+  return JSON.stringify([...(left ?? [])].sort()) === JSON.stringify([...right].sort())
+}
+
+type ServiceTopology = { web: string; controlPlane: string; relay: string }
+
+function providerAppConfig(services: ServiceTopology): ProviderAppConfig {
+  return { services }
+}
+
+function slackProviderAppConfig(services: ServiceTopology): ProviderAppConfig {
+  const config = providerAppConfig(services)
+  requireProviderAppEndpoints(config)
+  return config
+}
+
+function logtoSetup(
+  record: DeploymentConfigRuntime,
+  tenantAdminUrl: string,
+  services: ServiceTopology,
+  endpoint?: string
+): ResolvedLogtoSetup | null {
+  const { auth, logto } = record.values
+  if (!logto) return null
   const browser =
     logto.browser ??
     (auth.mode === 'oidc'
@@ -200,25 +347,42 @@ function logtoSetup(record: DeploymentConfigRuntime, tenantAdminUrl: string): Re
         }
       : null)
   if (!browser) return null
+  const resolvedBrowser = endpoint ? { ...browser, endpoint: new URL(endpoint).origin } : browser
 
   const githubSecret = record.secrets['logto.githubConnectorClientSecret']
+  const googleSecret = record.secrets['logto.googleConnectorClientSecret']
+  const slackSecret = record.secrets['slack.clientSecret']
   const applicationId =
-    auth.mode === 'oidc' && auth.browserClient.endpoint === browser.endpoint ? auth.browserClient.appId : undefined
-  const webOrigin = new URL(publicUrls.web).origin
+    auth.mode === 'oidc' && auth.browserClient.endpoint === resolvedBrowser.endpoint
+      ? auth.browserClient.appId
+      : undefined
+  const webOrigin = new URL(services.web).origin
   const adminOrigin = new URL(tenantAdminUrl).origin
   return {
-    endpoint: browser.endpoint,
-    apiResource: browser.apiResource,
-    socialProviders: [...browser.socialProviders],
+    endpoint: resolvedBrowser.endpoint,
+    apiResource: resolvedBrowser.apiResource,
+    socialProviders: [...resolvedBrowser.socialProviders],
     desired: {
       ...(applicationId ? { applicationId } : {}),
-      applicationName: browser.applicationName,
+      applicationName: resolvedBrowser.applicationName,
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
       corsAllowedOrigins: [...new Set([webOrigin, adminOrigin])],
-      socialProviders: [...browser.socialProviders],
+      socialProviders: [...resolvedBrowser.socialProviders],
       ...(logto.githubConnector && githubSecret
         ? { github: { clientId: logto.githubConnector.clientId, clientSecret: githubSecret } }
+        : {}),
+      ...(logto.googleConnector && googleSecret
+        ? { google: { clientId: logto.googleConnector.clientId, clientSecret: googleSecret } }
+        : {}),
+      ...(logto.slackConnector && slackSecret
+        ? {
+            slack: {
+              clientId: logto.slackConnector.clientId,
+              clientSecret: slackSecret,
+              scope: 'openid profile email'
+            }
+          }
         : {})
     }
   }
@@ -238,6 +402,37 @@ export function buildTenantAdminServer(
   )
   const discovery = new Map<string, Promise<OidcDiscovery>>()
   let mutationTail: Promise<void> = Promise.resolve()
+  const defaultEnvironment = loadDeploymentEnvironment({})
+  const localAuthBootstrap = deps.localAuthBootstrap ?? {
+    issuer: defaultEnvironment.issuer,
+    adminEndpoint: 'http://admin.agentconnect.localhost:3002',
+    services: defaultEnvironment.services
+  }
+  const logtoEndpoint = new URL(localAuthBootstrap.issuer).origin
+  const logtoAdminEndpoint =
+    localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://admin.agentconnect.localhost:3002'
+  const githubFlows = new Map<
+    string,
+    {
+      expectedRevision: number
+      connectLogto: boolean
+      configuredUrls: ReturnType<typeof githubConfiguredUrls>
+      expires: ReturnType<typeof setTimeout>
+    }
+  >()
+  const feishuRegistrationProvider =
+    deps.feishuRegistrationProvider ?? new OfficialFeishuRegistrationProvider(fetchImpl)
+  const regionalAppFlows = new Map<
+    string,
+    {
+      region: 'feishu' | 'lark'
+      providerDomain: string
+      deviceCode: string
+      intervalMs: number
+      nextPollAt: number
+      expiresAt: number
+    }
+  >()
 
   const serializeMutation = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = mutationTail.then(operation)
@@ -247,6 +442,29 @@ export function buildTenantAdminServer(
     )
     return result
   }
+
+  const expectedGithubManifest = (values: DeploymentConfigValuesV1): Record<string, unknown> => {
+    const browser = values.logto?.browser
+    const connectLogto = Boolean(values.logto?.githubConnector && browser)
+    return buildGithubAppManifest(
+      providerAppConfig(localAuthBootstrap.services),
+      'AgentConnect',
+      new URL('/api/v1/create/github/callback', deps.publicUrl).toString(),
+      connectLogto && browser
+        ? {
+            webUrl: localAuthBootstrap.services.web,
+            logtoEndpoint,
+            connectorId: LOGTO_GITHUB_CONNECTOR_ID
+          }
+        : undefined
+    )
+  }
+
+  app.addHook('onClose', async () => {
+    for (const flow of githubFlows.values()) clearTimeout(flow.expires)
+    githubFlows.clear()
+    regionalAppFlows.clear()
+  })
 
   const discover = (issuer: string): Promise<OidcDiscovery> => {
     const normalized = issuer.replace(/\/+$/, '')
@@ -315,12 +533,13 @@ export function buildTenantAdminServer(
   app.get('/api/v1/auth-config', async (_request, reply) => {
     const current = await deps.store.getAdmin()
     const auth = current?.values.auth
-    if (!auth || auth.mode === 'none') return { mode: 'none' as const }
+    if (!auth || auth.mode === 'none') return { mode: 'none' as const, logtoAdminEndpoint }
     const claimedFor = deploymentAdminClaimKey(current.values)
     try {
       const endpoints = await discover(auth.issuer)
       return {
         mode: 'oidc' as const,
+        logtoAdminEndpoint,
         claimAvailable: claimedFor !== null && current.adminClaimedFor !== claimedFor,
         endpoint: auth.browserClient.endpoint,
         appId: auth.browserClient.appId,
@@ -329,12 +548,59 @@ export function buildTenantAdminServer(
         ...endpoints
       }
     } catch (error) {
-      return problem(reply, 502, error instanceof Error ? error.message : 'OIDC discovery failed')
+      return {
+        mode: 'unavailable' as const,
+        logtoAdminEndpoint,
+        message: error instanceof Error ? error.message : 'OIDC discovery failed'
+      }
+    }
+  })
+
+  app.get('/api/v1/bootstrap-info', { preHandler: requireLocal }, async () => {
+    const redirectUris = googleRedirectUris(logtoEndpoint)
+    const current = await deps.store.getAdmin()
+    const logtoConfigured = Boolean(
+      current?.values.logto?.managementAppId &&
+      current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
+    )
+    let githubAvailable = true
+    let githubWebhookActive = false
+    try {
+      const config = providerAppConfig(localAuthBootstrap.services)
+      const manifest = buildGithubAppManifest(
+        config,
+        'AgentConnect',
+        new URL('/api/v1/create/github/callback', deps.publicUrl).toString()
+      )
+      githubWebhookActive = githubConfiguredUrls(config, manifest).webhookActive
+    } catch {
+      githubAvailable = false
+    }
+    const slackLoginEndpoint = logtoEndpoint
+    let slackAvailable = new URL(slackLoginEndpoint).protocol === 'https:'
+    if (slackAvailable) {
+      try {
+        slackProviderAppConfig(localAuthBootstrap.services)
+      } catch {
+        slackAvailable = false
+      }
+    }
+    return {
+      services: localAuthBootstrap.services,
+      logtoEndpoint,
+      logtoAdminEndpoint,
+      logtoConfigured,
+      logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
+      google: { javascriptOrigins: [logtoEndpoint], redirectUris },
+      githubAvailable,
+      githubWebhookActive,
+      slackAvailable,
+      slackLoginRedirectUrl: appendPath(slackLoginEndpoint, `/callback/${LOGTO_SLACK_CONNECTOR_ID}`)
     }
   })
 
   app.get('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async () =>
-    toStatus(await deps.store.getAdmin())
+    toStatus(await deps.store.getAdmin(), logtoEndpoint)
   )
 
   app.put('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async (request, reply) => {
@@ -342,23 +608,563 @@ export function buildTenantAdminServer(
     if (!parsed.success) {
       return problem(reply, 400, 'request does not match the deployment configuration schema')
     }
-    const saved = await deps.store.replace(parsed.data)
+    const saved = await deps.store.replace({
+      ...parsed.data,
+      values: withStartupLogtoEndpoint(parsed.data.values, logtoEndpoint)
+    })
     return {
-      ...toStatus(saved),
+      ...toStatus(saved, logtoEndpoint),
       restartRequired: true as const
     }
   })
 
+  app.post('/api/v1/bootstrap/logto', { preHandler: requireLocal }, async (request, reply) => {
+    const parsed = BootstrapLogtoBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'Logto Management API credentials are required')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (current?.values.auth.mode === 'oidc') {
+        return problem(reply, 409, 'Logto sign-in is already configured')
+      }
+      const put = localAuthLogtoPut(
+        { values: current?.values ?? DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1 },
+        {
+          ...localAuthBootstrap,
+          managementAppId: parsed.data.managementAppId,
+          managementAppSecret: parsed.data.managementAppSecret,
+          socialProvider: parsed.data.socialProvider
+        }
+      )
+      const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
+      return { ...toStatus(saved, logtoEndpoint), restartRequired: true as const }
+    })
+  })
+
+  app.post('/api/v1/create/github/start', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = CreateGithubStartBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'choose a valid GitHub App owner, name, and organization')
+    const current = await deps.store.getAdmin()
+    if (!current) return problem(reply, 409, 'save deployment settings before creating a GitHub App')
+
+    const redirectUrl = new URL('/api/v1/create/github/callback', deps.publicUrl).toString()
+    let manifest: Record<string, unknown>
+    let connectLogto = false
+    try {
+      if (current.values.github) return problem(reply, 409, 'a deployment GitHub App is already configured')
+      const browser = current.values.logto?.browser
+      connectLogto = Boolean(
+        browser &&
+        !current.values.logto?.githubConnector &&
+        (parsed.data.connectLogto || browser.socialProviders.includes('github'))
+      )
+      manifest = buildGithubAppManifest(
+        providerAppConfig(localAuthBootstrap.services),
+        parsed.data.name,
+        redirectUrl,
+        connectLogto && browser
+          ? {
+              webUrl: localAuthBootstrap.services.web,
+              logtoEndpoint,
+              connectorId: LOGTO_GITHUB_CONNECTOR_ID
+            }
+          : undefined
+      )
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'GitHub App configuration is incomplete')
+    }
+
+    const state = randomBytes(32).toString('base64url')
+    const organization = parsed.data.ownership.owner === 'organization' ? parsed.data.ownership.organization : undefined
+    const expires = setTimeout(() => githubFlows.delete(state), 15 * 60_000)
+    expires.unref()
+    githubFlows.set(state, {
+      expectedRevision: current.revision,
+      connectLogto,
+      configuredUrls: githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest),
+      expires
+    })
+    return {
+      action: githubManifestRegistrationUrl(organization, state),
+      manifest,
+      expiresInSeconds: 15 * 60
+    }
+  })
+
+  app.get('/api/v1/create/github/callback', async (request, reply) => {
+    const query = z
+      .object({ state: z.string().min(1), code: z.string().min(1).optional(), error: z.string().optional() })
+      .safeParse(request.query)
+    if (!query.success) return reply.redirect('/?github=invalid-callback')
+    const pending = githubFlows.get(query.data.state)
+    if (!pending) return reply.redirect('/?github=expired')
+    githubFlows.delete(query.data.state)
+    clearTimeout(pending.expires)
+    if (query.data.error || !query.data.code) return reply.redirect('/?github=cancelled')
+
+    let credentials: Awaited<ReturnType<typeof convertGithubManifest>>
+    try {
+      credentials = await convertGithubManifest(query.data.code, { fetch: fetchImpl })
+    } catch (error) {
+      request.log.warn({ err: error }, 'GitHub App manifest conversion failed')
+      return reply.redirect('/?github=conversion-failed')
+    }
+
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current || current.revision !== pending.expectedRevision) {
+        return reply.redirect('/?github=save-failed')
+      }
+      try {
+        const put = githubDeploymentPut(current, credentials, {
+          configuredUrls: pending.configuredUrls,
+          connectLogto: pending.connectLogto
+        })
+        await deps.store.replace({ expectedRevision: current.revision, ...put })
+      } catch (error) {
+        request.log.error({ err: error }, 'created GitHub App could not be saved')
+        return reply.redirect('/?github=save-failed')
+      }
+      return reply.redirect(`/?github=${pending.connectLogto ? 'deployment-login-created' : 'deployment-created'}`)
+    })
+  })
+
+  app.post('/api/v1/configure/github-login', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
+    serializeMutation(async () => {
+      const runtime = await deps.store.getRuntime(['github.clientSecret'])
+      const github = runtime?.values.github
+      const logto = runtime?.values.logto
+      const clientSecret = runtime?.secrets['github.clientSecret']
+      if (!runtime || !github || !github.clientId || !logto) {
+        return problem(reply, 409, 'save the deployment GitHub App and Logto configuration first')
+      }
+      if (!clientSecret) {
+        return problem(reply, 409, 'the deployment GitHub App client secret is missing')
+      }
+      const put = logtoGithubConnectorPut(runtime, {
+        appId: String(github.appId),
+        slug: github.slug,
+        clientId: github.clientId,
+        clientSecret
+      })
+      const saved = await deps.store.replace({ expectedRevision: runtime.revision, ...put })
+      return { revision: saved.revision, restartRequired: true as const }
+    })
+  )
+
+  app.post('/api/v1/configure/google', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureGoogleBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'Google OAuth client id is required')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
+      const redirectUris = googleRedirectUris(logtoEndpoint)
+      const put = logtoGoogleConnectorPut(current, {
+        clientId: parsed.data.clientId,
+        ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {}),
+        configuredRedirectUris: redirectUris
+      })
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return { revision: saved.revision, redirectUris, restartRequired: true as const }
+    })
+  })
+
+  app.post(
+    '/api/v1/configure/regional-login-app',
+    { preHandler: requireConfigurationAccess },
+    async (request, reply) => {
+      const parsed = ConfigureRegionalLoginAppBody.safeParse(request.body)
+      if (!parsed.success) return problem(reply, 400, 'a valid regional App ID is required')
+      return serializeMutation(async () => {
+        const current = await deps.store.getAdmin()
+        if (!current) return problem(reply, 409, 'save deployment settings before configuring a regional App')
+        const { region, app: regionalApp } = parsed.data
+        const secretKey = `${region}.loginAppSecret` as const
+        const saved = await deps.store.replace({
+          expectedRevision: current.revision,
+          values: {
+            ...current.values,
+            [region]: regionalApp ? { loginAppId: regionalApp.appId } : null
+          },
+          secrets: regionalApp?.appSecret
+            ? { [secretKey]: regionalApp.appSecret }
+            : regionalApp === null
+              ? { [secretKey]: null }
+              : undefined
+        })
+        return { region, revision: saved.revision, restartRequired: true as const }
+      })
+    }
+  )
+
+  app.get(
+    '/api/v1/check/regional-login-app/:region',
+    { preHandler: requireDiagnosticAccess },
+    async (request, reply) => {
+      const parsed = z.strictObject({ region: z.enum(['feishu', 'lark']) }).safeParse(request.params)
+      if (!parsed.success) return problem(reply, 400, 'choose Feishu or Lark')
+      const { region } = parsed.data
+      const secretKey = `${region}.loginAppSecret` as const
+      const runtime = await deps.store.getRuntime([secretKey])
+      const regionalApp = runtime?.values[region]
+      const appSecret = runtime?.secrets[secretKey]
+      if (!regionalApp || !appSecret) {
+        return problem(reply, 409, `${region === 'feishu' ? 'Feishu' : 'Lark'} App credentials are not configured`)
+      }
+
+      const origin = region === 'feishu' ? 'https://open.feishu.cn' : 'https://open.larksuite.com'
+      let response: Response
+      try {
+        response = await fetchImpl(`${origin}/open-apis/auth/v3/tenant_access_token/internal`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({ app_id: regionalApp.loginAppId, app_secret: appSecret }),
+          signal: AbortSignal.timeout(5_000)
+        })
+      } catch {
+        return {
+          provider: region,
+          status: 'unknown' as const,
+          message: `${region === 'feishu' ? 'Feishu' : 'Lark'} could not be reached.`
+        }
+      }
+      const body = (await response.json().catch(() => ({}))) as { code?: number; tenant_access_token?: string }
+      if (!response.ok) {
+        return {
+          provider: region,
+          status: 'unknown' as const,
+          message: `${region === 'feishu' ? 'Feishu' : 'Lark'} returned HTTP ${response.status}.`
+        }
+      }
+      const matches = body.code === 0 && typeof body.tenant_access_token === 'string'
+      return {
+        provider: region,
+        status: matches ? ('pass' as const) : ('fail' as const),
+        message: matches
+          ? `${region === 'feishu' ? 'Feishu' : 'Lark'} accepted the saved App ID and secret.`
+          : `${region === 'feishu' ? 'Feishu' : 'Lark'} rejected the saved App ID or secret.`
+      }
+    }
+  )
+
+  app.post(
+    '/api/v1/create/regional-login-app/start',
+    { preHandler: requireConfigurationAccess },
+    async (request, reply) => {
+      const parsed = CreateRegionalLoginAppBody.safeParse(request.body)
+      if (!parsed.success) return problem(reply, 400, 'choose Feishu or Lark and enter an App name')
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before creating a regional App')
+      if (current.values[parsed.data.region]) {
+        return problem(reply, 409, `${parsed.data.region === 'feishu' ? 'Feishu' : 'Lark'} is already configured`)
+      }
+      let begun: Awaited<ReturnType<FeishuRegistrationProvider['begin']>>
+      try {
+        begun = await feishuRegistrationProvider.begin(parsed.data.name, parsed.data.region)
+      } catch {
+        return problem(reply, 502, 'Could not start regional App creation. Please try again.')
+      }
+      const id = randomBytes(24).toString('base64url')
+      const now = Date.now()
+      regionalAppFlows.set(id, {
+        region: parsed.data.region,
+        providerDomain: begun.providerDomain,
+        deviceCode: begun.deviceCode,
+        intervalMs: begun.intervalMs,
+        nextPollAt: now,
+        expiresAt: now + begun.expiresInMs
+      })
+      return {
+        id,
+        region: parsed.data.region,
+        authorizationUrl: begun.authorizationUrl,
+        expiresAt: new Date(now + begun.expiresInMs).toISOString()
+      }
+    }
+  )
+
+  app.get(
+    '/api/v1/create/regional-login-app/:id',
+    { preHandler: requireConfigurationAccess },
+    async (request, reply) => {
+      const parsed = z.strictObject({ id: z.string().min(1) }).safeParse(request.params)
+      if (!parsed.success) return problem(reply, 400, 'invalid regional App creation id')
+      const flow = regionalAppFlows.get(parsed.data.id)
+      if (!flow) return problem(reply, 404, 'regional App creation was not found or has expired')
+      const now = Date.now()
+      if (now >= flow.expiresAt) {
+        regionalAppFlows.delete(parsed.data.id)
+        return { status: 'failed' as const, reason: 'expired' as const }
+      }
+      if (now < flow.nextPollAt) {
+        return { status: 'pending' as const, retryAfterMs: flow.nextPollAt - now }
+      }
+
+      let result: Awaited<ReturnType<FeishuRegistrationProvider['poll']>>
+      try {
+        result = await feishuRegistrationProvider.poll(flow.providerDomain, flow.deviceCode)
+      } catch {
+        flow.nextPollAt = now + flow.intervalMs
+        return { status: 'pending' as const, retryAfterMs: flow.intervalMs }
+      }
+      if (result.outcome === 'pending' || result.outcome === 'slow_down' || result.outcome === 'switch_domain') {
+        if (result.outcome === 'slow_down') flow.intervalMs += 5_000
+        if (result.outcome === 'switch_domain') flow.providerDomain = result.providerDomain
+        flow.nextPollAt = now + (result.outcome === 'switch_domain' ? 0 : flow.intervalMs)
+        return { status: 'pending' as const, retryAfterMs: Math.max(250, flow.nextPollAt - now) }
+      }
+      if (result.outcome !== 'authorized') {
+        regionalAppFlows.delete(parsed.data.id)
+        return { status: 'failed' as const, reason: result.outcome }
+      }
+      const resolvedRegion = result.region ?? flow.region
+      if (resolvedRegion !== flow.region) {
+        regionalAppFlows.delete(parsed.data.id)
+        return problem(reply, 409, 'The approved App belongs to the other regional platform. Use its matching card.')
+      }
+
+      return serializeMutation(async () => {
+        const current = await deps.store.getAdmin()
+        if (!current) return problem(reply, 409, 'deployment settings are no longer available')
+        if (current.values[flow.region]) {
+          regionalAppFlows.delete(parsed.data.id)
+          return problem(
+            reply,
+            409,
+            `${flow.region === 'feishu' ? 'Feishu' : 'Lark'} was configured by another session`
+          )
+        }
+        const secretKey = `${flow.region}.loginAppSecret` as const
+        const saved = await deps.store.replace({
+          expectedRevision: current.revision,
+          values: { ...current.values, [flow.region]: { loginAppId: result.appId } },
+          secrets: { [secretKey]: result.appSecret }
+        })
+        regionalAppFlows.delete(parsed.data.id)
+        return {
+          status: 'completed' as const,
+          region: flow.region,
+          appId: result.appId,
+          revision: saved.revision,
+          restartRequired: true as const
+        }
+      })
+    }
+  )
+
+  app.post('/api/v1/create/slack', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = CreateSlackBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'Slack App name and configuration token are required')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before creating a Slack App')
+      if (current.values.slack) return problem(reply, 409, 'a deployment Slack App is already configured')
+      let manifest: Record<string, unknown>
+      try {
+        const browser = current.values.logto?.browser
+        if (parsed.data.connectLogto && !browser) {
+          return problem(reply, 409, 'save Logto browser configuration before enabling Slack sign-in')
+        }
+        manifest = buildSlackDeploymentManifest(
+          slackProviderAppConfig(localAuthBootstrap.services),
+          parsed.data.name,
+          parsed.data.connectLogto && browser ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID } : undefined
+        )
+      } catch (error) {
+        return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
+      }
+
+      let credentials: Awaited<ReturnType<typeof createSlackApp>>
+      try {
+        credentials = await createSlackApp(parsed.data.configToken, manifest, { fetch: fetchImpl })
+      } catch (error) {
+        return problem(reply, 502, error instanceof Error ? error.message : 'Slack App creation failed')
+      }
+      const put = slackDeploymentPut(current, credentials, slackConfiguredUrls(manifest), parsed.data.connectLogto)
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+
+      try {
+        const exported = await exportSlackManifest(parsed.data.configToken, credentials.appId, { fetch: fetchImpl })
+        const missing = auditSlackManifest(exported, manifest)
+        if (missing.length > 0) throw new Error(`missing ${missing.join(', ')}`)
+      } catch (error) {
+        return problem(
+          reply,
+          502,
+          `Slack App ${credentials.appId} was created and saved, but manifest verification failed: ${(error as Error).message}`,
+          'SLACK_APP_VERIFICATION_FAILED'
+        )
+      }
+
+      return {
+        operation: 'create.slack' as const,
+        app: { id: credentials.appId },
+        revision: saved.revision,
+        restartRequired: true as const
+      }
+    })
+  })
+
+  app.get('/api/v1/check/github', { preHandler: requireDiagnosticAccess }, async (_request, reply) => {
+    const runtime = await deps.store.getRuntime(['github.privateKeyB64'])
+    const github = runtime?.values.github
+    const privateKey = runtime?.secrets['github.privateKeyB64']
+    if (!runtime || !github || !privateKey) {
+      return problem(reply, 409, 'the deployment GitHub App is not fully configured')
+    }
+    let manifest: Record<string, unknown>
+    try {
+      manifest = expectedGithubManifest(runtime.values)
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'GitHub App configuration is incomplete')
+    }
+    let audited: Awaited<ReturnType<typeof auditGithubApp>>
+    try {
+      audited = await auditGithubApp(github, privateKey, manifest, fetchImpl)
+    } catch (error) {
+      return problem(reply, 502, error instanceof Error ? error.message : 'GitHub App settings could not be checked')
+    }
+    const expectedUrls = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
+    const confirmed = github.configuredUrls
+    const missing = [...audited.missing]
+    if (confirmed?.setupUrl !== expectedUrls.setupUrl) missing.push('setup_url')
+    if (!sameStrings(confirmed?.callbackUrls, expectedUrls.callbackUrls)) missing.push('callback_urls')
+    if (confirmed?.webhookActive !== expectedUrls.webhookActive) missing.push('webhook_active')
+    return {
+      provider: 'github' as const,
+      status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
+      missing: [...new Set(missing)],
+      expected: expectedUrls,
+      settingsUrl: audited.app.settingsUrl,
+      note: 'GitHub exposes permissions, events, and webhook URL to this check. Callback, setup, and webhook-active settings require operator confirmation after editing the App.'
+    }
+  })
+
+  app.post('/api/v1/confirm/github-urls', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
+    serializeMutation(async () => {
+      const runtime = await deps.store.getRuntime(['github.privateKeyB64'])
+      const github = runtime?.values.github
+      const privateKey = runtime?.secrets['github.privateKeyB64']
+      if (!runtime || !github || !privateKey) {
+        return problem(reply, 409, 'the deployment GitHub App is not fully configured')
+      }
+      let manifest: Record<string, unknown>
+      let audited: Awaited<ReturnType<typeof auditGithubApp>>
+      try {
+        manifest = expectedGithubManifest(runtime.values)
+        audited = await auditGithubApp(github, privateKey, manifest, fetchImpl)
+      } catch (error) {
+        return problem(reply, 502, error instanceof Error ? error.message : 'GitHub App settings could not be checked')
+      }
+      if (audited.missing.length > 0) {
+        return problem(
+          reply,
+          409,
+          `GitHub App still differs in: ${audited.missing.join(', ')}`,
+          'GITHUB_APP_MANIFEST_DRIFT'
+        )
+      }
+      const configuredUrls = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
+      const saved = await deps.store.replace({
+        expectedRevision: runtime.revision,
+        values: { ...runtime.values, github: { ...github, configuredUrls } }
+      })
+      return { revision: saved.revision, configuredUrls, restartRequired: false as const }
+    })
+  )
+
+  app.post('/api/v1/check/slack', { preHandler: requireDiagnosticAccess }, async (request, reply) => {
+    const parsed = CheckSlackBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a Slack App configuration token is required')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      const slack = current?.values.slack
+      if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
+      let manifest: Record<string, unknown>
+      try {
+        const browser = current.values.logto?.browser
+        manifest = buildSlackDeploymentManifest(
+          slackProviderAppConfig(localAuthBootstrap.services),
+          'AgentConnect',
+          current.values.logto?.slackConnector && browser
+            ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID }
+            : undefined
+        )
+      } catch (error) {
+        return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
+      }
+      let actual: Record<string, unknown>
+      try {
+        actual = await exportSlackManifest(parsed.data.configToken, slack.appId, { fetch: fetchImpl })
+      } catch (error) {
+        return problem(reply, 502, error instanceof Error ? error.message : 'Slack App settings could not be checked')
+      }
+      const missing = auditSlackManifest(actual, manifest)
+      const expected = slackConfiguredUrls(manifest)
+      let revision = current.revision
+      if (missing.length === 0 && JSON.stringify(slack.configuredUrls) !== JSON.stringify(expected)) {
+        const saved = await deps.store.replace({
+          expectedRevision: current.revision,
+          values: { ...current.values, slack: { ...slack, configuredUrls: expected } }
+        })
+        revision = saved.revision
+      }
+      return {
+        provider: 'slack' as const,
+        status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
+        missing,
+        expected,
+        settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
+        revision,
+        restartRequired: false as const
+      }
+    })
+  })
+
   app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
     serializeMutation(async () => {
-      const runtime = await deps.store.getRuntime(['logto.managementAppSecret', 'logto.githubConnectorClientSecret'])
-      const config = logtoConfig(runtime)
-      if (!runtime || !config) {
+      const secretKeys = [
+        'logto.managementAppSecret',
+        'logto.githubConnectorClientSecret',
+        'logto.googleConnectorClientSecret',
+        'slack.clientSecret',
+        'github.clientSecret'
+      ] as const
+      const initialRuntime = await deps.store.getRuntime(secretKeys)
+      const config = logtoConfig(initialRuntime, logtoEndpoint)
+      if (!initialRuntime || !config) {
         return problem(reply, 409, 'save the Logto Management API configuration before creating Logto resources')
       }
-      const setup = logtoSetup(runtime, deps.publicUrl)
+      let runtime = initialRuntime
+      let setup = logtoSetup(runtime, deps.publicUrl, localAuthBootstrap.services, logtoEndpoint)
       if (!setup) {
         return problem(reply, 409, 'save Logto browser desired state before creating Logto resources')
+      }
+      const github = runtime.values.github
+      const githubClientId = github?.clientId
+      const githubSecret = runtime.secrets['github.clientSecret']
+      const shouldReconnectGithub =
+        setup.socialProviders.length === 0 &&
+        runtime.values.auth.mode === 'oidc' &&
+        runtime.values.auth.socialProviders.includes('github') &&
+        github !== null &&
+        typeof githubClientId === 'string' &&
+        githubSecret !== undefined
+      if (shouldReconnectGithub) {
+        const put = logtoGithubConnectorPut(runtime, {
+          appId: String(github.appId),
+          slug: github.slug,
+          clientId: githubClientId,
+          clientSecret: githubSecret
+        })
+        await deps.store.replace({ expectedRevision: runtime.revision, ...put })
+        const refreshed = await deps.store.getRuntime(secretKeys)
+        if (!refreshed) return problem(reply, 409, 'the deployment configuration changed while reconnecting GitHub')
+        runtime = refreshed
+        setup = logtoSetup(runtime, deps.publicUrl, localAuthBootstrap.services, logtoEndpoint)
+        if (!setup) return problem(reply, 409, 'save Logto browser desired state before creating Logto resources')
+      }
+      if (setup.socialProviders.length === 0) {
+        return problem(reply, 409, 'configure a Logto sign-in provider before creating Logto resources')
       }
 
       const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
@@ -374,11 +1180,12 @@ export function buildTenantAdminServer(
         },
         socialProviders: setup.socialProviders
       }
-      const configChanged = JSON.stringify(runtime.values.auth) !== JSON.stringify(auth)
+      const nextValues = withStartupLogtoEndpoint({ ...runtime.values, auth }, logtoEndpoint)
+      const configChanged = JSON.stringify(runtime.values) !== JSON.stringify(nextValues)
       const saved = configChanged
         ? await deps.store.replace({
             expectedRevision: runtime.revision,
-            values: { ...runtime.values, auth }
+            values: nextValues
           })
         : null
       const changed = reconciled.changed || configChanged
@@ -399,7 +1206,12 @@ export function buildTenantAdminServer(
   app.get('/api/v1/check/logto', { preHandler: requireDiagnosticAccess }, async () => {
     const findings: CheckFinding[] = []
     const report = () => checkReport(findings, deps.now ?? (() => new Date()))
-    const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+    const runtime = await deps.store.getRuntime([
+      'logto.managementAppSecret',
+      'logto.githubConnectorClientSecret',
+      'logto.googleConnectorClientSecret',
+      'slack.clientSecret'
+    ])
 
     if (!runtime) {
       findings.push({
@@ -431,9 +1243,9 @@ export function buildTenantAdminServer(
       status: 'pass',
       message: 'Logto Management API configuration is complete.'
     })
-    const config = logtoConfig(runtime)!
+    const config = logtoConfig(runtime, logtoEndpoint)!
     const client = deps.makeLogtoCheckClient?.(config) ?? new LogtoAdminClaimClient(config)
-    const setup = logtoSetup(runtime, deps.publicUrl)
+    const setup = logtoSetup(runtime, deps.publicUrl, localAuthBootstrap.services, logtoEndpoint)
 
     try {
       await client.verifyClientCredentials()
@@ -490,7 +1302,7 @@ export function buildTenantAdminServer(
             status: 'fail',
             message: adminRole.exists
               ? 'A role named ADMIN exists, but it is not a non-default User role.'
-              : 'The exact global User role ADMIN does not exist; claim it from the local Tenant Admin UI.'
+              : 'The exact global User role ADMIN does not exist; the first Tenant Admin sign-in will create it.'
           }
     )
     if (!setup) {
@@ -531,20 +1343,20 @@ export function buildTenantAdminServer(
               : 'The AgentConnect Logto SPA does not exist.'
           }
     )
-    const missingConnectors = setupInspection.connectors
-      .filter((connector) => !connector.exists)
+    const invalidConnectors = setupInspection.connectors
+      .filter((connector) => !connector.exists || !connector.matches)
       .map((connector) => connector.target)
     findings.push(
-      missingConnectors.length === 0
+      invalidConnectors.length === 0
         ? {
             id: 'logto.connectors',
             status: 'pass',
-            message: 'All configured Logto social connectors exist.'
+            message: 'All configured Logto social connectors match their saved OAuth clients.'
           }
         : {
             id: 'logto.connectors',
             status: 'fail',
-            message: `Missing Logto social connectors: ${missingConnectors.join(', ')}.`
+            message: `Missing or mismatched Logto social connectors: ${invalidConnectors.join(', ')}.`
           }
     )
     findings.push(
@@ -563,10 +1375,11 @@ export function buildTenantAdminServer(
     return report()
   })
 
-  // Local-only ADMIN self-claim. It verifies a real OIDC identity without the
-  // role, then the Management API creates the exact global User role ADMIN (if
-  // absent) and assigns the current operator. Every ordinary config route
-  // continues to require a fresh token carrying roles:[..., "ADMIN"].
+  // Local-only first-admin assignment. The Tenant Admin page calls this
+  // automatically after the first OIDC sign-in. It verifies a real identity
+  // without the role, then the Management API creates the exact global User
+  // role ADMIN (if absent) and assigns that operator. Every ordinary config
+  // route continues to require a fresh token carrying roles:[..., "ADMIN"].
   app.post('/api/v1/bootstrap/claim', { preHandler: requireLocal }, async (request, reply) =>
     serializeMutation(async () => {
       const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
@@ -597,13 +1410,13 @@ export function buildTenantAdminServer(
       const logto = runtime.values.logto
       const claimClient =
         deps.makeLogtoClaimClient?.({
-          endpoint: logto.managementEndpoint,
+          endpoint: logtoEndpoint,
           appId: logto.managementAppId,
           appSecret: managementSecret,
           resource: logto.managementResource
         }) ??
         new LogtoAdminClaimClient({
-          endpoint: logto.managementEndpoint,
+          endpoint: logtoEndpoint,
           appId: logto.managementAppId,
           appSecret: managementSecret,
           resource: logto.managementResource
@@ -617,20 +1430,13 @@ export function buildTenantAdminServer(
   return app
 }
 
-export interface ServeTenantAdminOptions {
-  host?: string
-  port?: number
-}
-
-/** Long-running `agentconnect-setup serve` action; CLI wiring lives in index.ts. */
-export async function serveTenantAdmin(
-  options: ServeTenantAdminOptions = {},
-  env: NodeJS.ProcessEnv = process.env
-): Promise<void> {
+/** Run the Tenant Admin HTTP server. */
+export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const config = loadTenantAdminProcessConfig(env)
-  const host = options.host ?? config.HOST
-  const port = options.port ?? config.PORT
+  const host = config.HOST
+  const port = config.PORT
   const publicUrl = env.TENANT_ADMIN_URL ?? `http://localhost:${port}`
+  const deploymentEnvironment = loadDeploymentEnvironment(env)
   if (!isLoopbackHostname(host) && !config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY) {
     throw new Error('Tenant Admin may bind outside loopback only in the isolated Compose admin network')
   }
@@ -647,7 +1453,16 @@ export async function serveTenantAdmin(
     ...(config.VAULT_JWT_ROLE ? { VAULT_JWT_ROLE: config.VAULT_JWT_ROLE } : {})
   })
   const app = buildTenantAdminServer(
-    { store: handle.store, publicUrl, allowContainerLoopbackProxy: config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY },
+    {
+      store: handle.store,
+      publicUrl,
+      allowContainerLoopbackProxy: config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY,
+      localAuthBootstrap: {
+        issuer: deploymentEnvironment.issuer,
+        adminEndpoint: config.LOGTO_ADMIN_ENDPOINT,
+        services: deploymentEnvironment.services
+      }
+    },
     { logger: true }
   )
   try {

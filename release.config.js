@@ -77,8 +77,8 @@ export default {
       }
     ],
     [
-      // Publish the setup CLI independently so a deployment-only change does
-      // not force a daemon or host-CLI release.
+      // Publish the self-contained Tenant Admin package independently so a
+      // deployment-only change does not force a daemon or host-CLI release.
       '@semantic-release/exec',
       {
         prepareCmd: 'sh scripts/publish-setup-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version}" prepare',

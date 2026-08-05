@@ -106,23 +106,23 @@ cd agentconnect
 docker compose up -d --pull always
 ```
 
-Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
-uses local no-auth mode, and is intended for local evaluation.
+Open `http://app.agentconnect.localhost:3000`. The special-use `.localhost`
+name resolves to loopback without DNS; the default stack still listens only on
+`127.0.0.1`, uses local no-auth mode, and is intended for local evaluation.
 
 The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,
 workspaces, and runtime credentials.
 
 To evaluate local sign-in without configuring DNS or TLS, use the optional
-official Logto overlay and the setup CLI:
+official Logto overlay and its browser-based Tenant Admin:
 
 ```bash
-npx -y @agentconnect.md/setup init local-auth
-docker compose -f compose.yaml -f compose.logto.yaml up -d postgres logto
+docker compose -f compose.yaml -f compose.logto.yaml up -d
 ```
 
-Continue with the one-command local-auth bootstrap in
-the [`@agentconnect.md/setup` walkthrough](packages/setup/README.md). The
+Continue with the browser-based local-auth bootstrap in the
+[`@agentconnect.md/setup` walkthrough](packages/setup/README.md). The
 default no-auth Compose command above is unchanged.
 
 For image pinning, production networking, sign-in, secrets, GitHub App setup,
@@ -196,18 +196,18 @@ For a complete local Control Plane and PostgreSQL development setup, follow the
 
 This repository is a pnpm workspace. Product packages live under `packages/`:
 
-| Package                               | Path                                                         | Role                                                                |
-| ------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `@agentconnect.md/cli`                | [`packages/cli`](packages/cli)                               | Stable `agentconnect` entry point, daemon lifecycle, and upgrades   |
-| `@agentconnect.md/connection`         | [`packages/connection`](packages/connection)                 | Shared WebSocket transport, correlation, backoff, and keepalive     |
-| `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF             |
-| `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                    |
-| `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                           |
-| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                                 |
-| `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts              |
-| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy                |
-| `@agentconnect.md/setup`              | [`packages/setup`](packages/setup)                           | Self-hosting profiles, provider App bootstrap, and readiness checks |
-| `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                        |
+| Package                               | Path                                                         | Role                                                              |
+| ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `@agentconnect.md/cli`                | [`packages/cli`](packages/cli)                               | Stable `agentconnect` entry point, daemon lifecycle, and upgrades |
+| `@agentconnect.md/connection`         | [`packages/connection`](packages/connection)                 | Shared WebSocket transport, correlation, backoff, and keepalive   |
+| `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF           |
+| `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
+| `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
+| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                               |
+| `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
+| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy              |
+| `@agentconnect.md/setup`              | [`packages/setup`](packages/setup)                           | Browser-based self-hosting and provider App administration        |
+| `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
 
 ## Explore
 
@@ -215,7 +215,7 @@ This repository is a pnpm workspace. Product packages live under `packages/`:
 - [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/oss-get-started)
 - [Architecture and detailed designs](docs/designs/)
 - [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
-- [Setup and integration diagnostics CLI](docs/designs/setup-cli.md)
+- [Tenant Admin](packages/setup/README.md)
 - [Daemon configuration](docs/designs/daemon-detailed-design.md)
 - [Config-file secrets](docs/config-file-secrets.md)
 - [Product conventions](docs/product-conventions.md)

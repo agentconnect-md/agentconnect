@@ -2,6 +2,8 @@
 import { ADMIN_ROLE } from './auth.js'
 
 export const LOGTO_GITHUB_CONNECTOR_ID = 'agentconnect-github'
+export const LOGTO_GOOGLE_CONNECTOR_ID = 'agentconnect-google'
+export const LOGTO_SLACK_CONNECTOR_ID = 'agentconnect-slack'
 
 const MANAGED_APP_TAG = 'agentconnectSetup'
 const MANAGED_APP_TAG_VALUE = { version: 1, resource: 'browser' } as const
@@ -21,6 +23,8 @@ export interface LogtoSetupDesired {
   corsAllowedOrigins: readonly string[]
   socialProviders: readonly string[]
   github?: { clientId: string; clientSecret: string }
+  google?: { clientId: string; clientSecret: string }
+  slack?: { clientId: string; clientSecret: string; scope: string }
 }
 
 interface LogtoRole {
@@ -43,6 +47,15 @@ interface LogtoConnector {
   id: string
   connectorId: string
   target: string
+  config: Record<string, unknown>
+}
+
+interface LogtoSignInExperience {
+  signIn: Record<string, unknown>
+  signUp: Record<string, unknown>
+  socialSignIn: Record<string, unknown>
+  socialSignInConnectorTargets: string[]
+  signInMode: unknown
 }
 
 export interface LogtoAdminRoleInspection {
@@ -53,14 +66,14 @@ export interface LogtoAdminRoleInspection {
 
 export interface LogtoSetupInspection {
   application: { id: string | null; exists: boolean; matches: boolean }
-  connectors: Array<{ target: string; id: string | null; exists: boolean }>
+  connectors: Array<{ target: string; id: string | null; exists: boolean; matches: boolean }>
   signInExperienceMatches: boolean
 }
 
 export interface LogtoSetupReconcileResult {
   changed: boolean
   application: { id: string; created: boolean; changed: boolean }
-  connectors: Array<{ target: string; id: string; created: boolean }>
+  connectors: Array<{ target: string; id: string; created: boolean; changed: boolean }>
   signInExperienceChanged: boolean
   adminRoleCreated: boolean
 }
@@ -74,6 +87,8 @@ export class LogtoManagementError extends Error {
       | 'MANAGED_APPLICATION_AMBIGUOUS'
       | 'SOCIAL_CONNECTOR_AMBIGUOUS'
       | 'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED'
+      | 'GOOGLE_CONNECTOR_CREDENTIALS_REQUIRED'
+      | 'SLACK_CONNECTOR_CREDENTIALS_REQUIRED'
       | 'SOCIAL_CONNECTOR_UNSUPPORTED',
     message: string,
     readonly status?: number
@@ -120,7 +135,50 @@ function parseConnector(value: unknown): LogtoConnector | null {
   const metadata = asRecord(row.metadata)
   const target = typeof row.target === 'string' ? row.target : metadata.target
   if (typeof row.id !== 'string' || typeof row.connectorId !== 'string' || typeof target !== 'string') return null
-  return { id: row.id, connectorId: row.connectorId, target }
+  return { id: row.id, connectorId: row.connectorId, target, config: asRecord(row.config) }
+}
+
+function desiredConnector(
+  target: string,
+  desired: LogtoSetupDesired
+): { id: string; connectorId: string; config: Record<string, string> } {
+  if (target === 'github') {
+    if (!desired.github) {
+      throw new LogtoManagementError(
+        'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED',
+        'the Logto GitHub connector needs the deployment GitHub App client id and secret'
+      )
+    }
+    return { id: LOGTO_GITHUB_CONNECTOR_ID, connectorId: 'github-universal', config: desired.github }
+  }
+  if (target === 'google') {
+    if (!desired.google) {
+      throw new LogtoManagementError(
+        'GOOGLE_CONNECTOR_CREDENTIALS_REQUIRED',
+        'the Logto Google connector needs a Google OAuth client id and secret'
+      )
+    }
+    return { id: LOGTO_GOOGLE_CONNECTOR_ID, connectorId: 'google-universal', config: desired.google }
+  }
+  if (target === 'slack') {
+    if (!desired.slack) {
+      throw new LogtoManagementError(
+        'SLACK_CONNECTOR_CREDENTIALS_REQUIRED',
+        'the Logto Slack connector needs the deployment Slack App client id and secret'
+      )
+    }
+    return { id: LOGTO_SLACK_CONNECTOR_ID, connectorId: 'slack-universal', config: desired.slack }
+  }
+  throw new LogtoManagementError(
+    'SOCIAL_CONNECTOR_UNSUPPORTED',
+    `automatic creation is not supported for the missing Logto social connector ${target}`
+  )
+}
+
+function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof desiredConnector>): boolean {
+  return (
+    connector.connectorId === desired.connectorId && JSON.stringify(connector.config) === JSON.stringify(desired.config)
+  )
 }
 
 export class LogtoAdminClaimClient {
@@ -163,7 +221,7 @@ export class LogtoAdminClaimClient {
   async inspectSetup(desired: LogtoSetupDesired): Promise<LogtoSetupInspection> {
     const application = await this.findApplication(desired.applicationId)
     const connectors = await this.listConnectors()
-    const signInTargets = await this.getSignInTargets()
+    const signInExperience = await this.getSignInExperience()
     return {
       application: {
         id: application?.id ?? null,
@@ -178,9 +236,15 @@ export class LogtoAdminClaimClient {
             `Logto has more than one social connector for target ${target}`
           )
         }
-        return { target, id: matches[0]?.id ?? null, exists: matches.length === 1 }
+        const connector = matches[0]
+        return {
+          target,
+          id: connector?.id ?? null,
+          exists: connector !== undefined,
+          matches: connector ? connectorMatches(connector, desiredConnector(target, desired)) : false
+        }
       }),
-      signInExperienceMatches: sameStrings(signInTargets, desired.socialProviders)
+      signInExperienceMatches: this.signInExperienceMatches(signInExperience, desired.socialProviders)
     }
   }
 
@@ -192,7 +256,7 @@ export class LogtoAdminClaimClient {
     return {
       changed:
         application.changed ||
-        connectors.some((connector) => connector.created) ||
+        connectors.some((connector) => connector.changed) ||
         signInExperienceChanged ||
         adminRoleCreated,
       application,
@@ -348,9 +412,9 @@ export class LogtoAdminClaimClient {
 
   private async ensureConnectors(
     desired: LogtoSetupDesired
-  ): Promise<Array<{ target: string; id: string; created: boolean }>> {
+  ): Promise<Array<{ target: string; id: string; created: boolean; changed: boolean }>> {
     const existing = await this.listConnectors()
-    const result: Array<{ target: string; id: string; created: boolean }> = []
+    const result: Array<{ target: string; id: string; created: boolean; changed: boolean }> = []
     for (const target of desired.socialProviders) {
       const matches = existing.filter((connector) => connector.target === target)
       if (matches.length > 1) {
@@ -359,42 +423,45 @@ export class LogtoAdminClaimClient {
           `Logto has more than one social connector for target ${target}`
         )
       }
-      if (matches[0]) {
-        result.push({ target, id: matches[0].id, created: false })
+      const expected = desiredConnector(target, desired)
+      if (matches[0] && connectorMatches(matches[0], expected)) {
+        result.push({ target, id: matches[0].id, created: false, changed: false })
         continue
       }
-      if (target !== 'github') {
-        throw new LogtoManagementError(
-          'SOCIAL_CONNECTOR_UNSUPPORTED',
-          `automatic creation is not supported for the missing Logto social connector ${target}`
-        )
-      }
-      if (!desired.github) {
-        throw new LogtoManagementError(
-          'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED',
-          'the Logto GitHub connector needs a login GitHub App client id and secret'
-        )
+      if (matches[0]) {
+        const response = await this.request(`/api/connectors/${encodeURIComponent(matches[0].id)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ config: expected.config, syncProfile: true })
+        })
+        const connector = parseConnector(await response.json().catch(() => null))
+        if (!connector || connector.target !== target) {
+          throw new LogtoManagementError('LOGTO_UNAVAILABLE', `Logto returned an invalid ${target} connector`)
+        }
+        existing.splice(existing.indexOf(matches[0]), 1, connector)
+        result.push({ target, id: connector.id, created: false, changed: true })
+        continue
       }
       const response = await this.request('/api/connectors', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          id: LOGTO_GITHUB_CONNECTOR_ID,
-          connectorId: 'github-universal',
-          config: desired.github,
+          id: expected.id,
+          connectorId: expected.connectorId,
+          config: expected.config,
           syncProfile: true
         })
       })
       const connector = parseConnector(await response.json().catch(() => null))
-      if (!connector || connector.target !== 'github') {
+      if (!connector || connector.target !== target) {
         throw new LogtoManagementError(
           'LOGTO_UNAVAILABLE',
-          'Logto returned an invalid GitHub connector',
+          `Logto returned an invalid ${target} connector`,
           response.status
         )
       }
       existing.push(connector)
-      result.push({ target, id: connector.id, created: true })
+      result.push({ target, id: connector.id, created: true, changed: true })
     }
     return result
   }
@@ -405,20 +472,52 @@ export class LogtoAdminClaimClient {
     return rows.map(parseConnector).filter((connector): connector is LogtoConnector => connector !== null)
   }
 
-  private async getSignInTargets(): Promise<string[]> {
+  private async getSignInExperience(): Promise<LogtoSignInExperience> {
     const value = asRecord(await this.getJson('/api/sign-in-exp'))
-    if (!Array.isArray(value.socialSignInConnectorTargets)) {
+    if (!Array.isArray(value.socialSignInConnectorTargets) || !value.signIn || !value.signUp || !value.socialSignIn) {
       throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto returned an invalid sign-in experience')
     }
-    return stringArray(value.socialSignInConnectorTargets)
+    return {
+      signIn: asRecord(value.signIn),
+      signUp: asRecord(value.signUp),
+      socialSignIn: asRecord(value.socialSignIn),
+      socialSignInConnectorTargets: stringArray(value.socialSignInConnectorTargets),
+      signInMode: value.signInMode
+    }
+  }
+
+  private signInExperienceMatches(current: LogtoSignInExperience, targets: readonly string[]): boolean {
+    const methods = current.signIn.methods
+    const identifiers = current.signUp.identifiers
+    const secondaryIdentifiers = current.signUp.secondaryIdentifiers
+    return (
+      Array.isArray(methods) &&
+      methods.length === 0 &&
+      Array.isArray(identifiers) &&
+      identifiers.length === 0 &&
+      current.signUp.password === false &&
+      current.signUp.verify === false &&
+      (secondaryIdentifiers === undefined ||
+        (Array.isArray(secondaryIdentifiers) && secondaryIdentifiers.length === 0)) &&
+      current.socialSignIn.skipRequiredIdentifiers === true &&
+      current.signInMode === 'SignInAndRegister' &&
+      sameStrings(current.socialSignInConnectorTargets, targets)
+    )
   }
 
   private async ensureSignInExperience(targets: readonly string[]): Promise<boolean> {
-    if (sameStrings(await this.getSignInTargets(), targets)) return false
+    const current = await this.getSignInExperience()
+    if (this.signInExperienceMatches(current, targets)) return false
     await this.request('/api/sign-in-exp', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ socialSignInConnectorTargets: targets })
+      body: JSON.stringify({
+        signIn: { methods: [] },
+        signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
+        socialSignIn: { ...current.socialSignIn, skipRequiredIdentifiers: true },
+        socialSignInConnectorTargets: targets,
+        signInMode: 'SignInAndRegister'
+      })
     })
     return true
   }

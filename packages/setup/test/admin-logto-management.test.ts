@@ -157,10 +157,18 @@ describe('Logto ADMIN claim', () => {
 })
 
 describe('Logto setup reconciliation', () => {
-  it('creates the managed SPA, GitHub connector, sign-in method, and ADMIN role idempotently', async () => {
+  it('creates the managed SPA, social connectors, sign-in method, and ADMIN role idempotently', async () => {
     let application: Record<string, unknown> | undefined
-    let connector: Record<string, unknown> | undefined
-    let signInTargets: string[] = []
+    const connectors: Record<string, unknown>[] = []
+    let signInExperience: Record<string, unknown> = {
+      signIn: {
+        methods: [{ identifier: 'username', password: true, verificationCode: false, isPasswordPrimary: true }]
+      },
+      signUp: { identifiers: ['username'], password: true, verify: false },
+      socialSignIn: { automaticAccountLinking: false, skipRequiredIdentifiers: false },
+      socialSignInConnectorTargets: [],
+      signInMode: 'SignInAndRegister'
+    }
     let role: Record<string, unknown> | undefined
     const fetcher: typeof fetch = async (input, init) => {
       const url = new URL(String(input))
@@ -172,17 +180,23 @@ describe('Logto setup reconciliation', () => {
       if (url.pathname === '/api/applications') return response(application ? [application] : [])
       if (url.pathname === '/api/connectors' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>
-        connector = { ...body, target: 'github' }
+        const target =
+          body.connectorId === 'google-universal'
+            ? 'google'
+            : body.connectorId === 'slack-universal'
+              ? 'slack'
+              : 'github'
+        const connector = { ...body, target }
+        connectors.push(connector)
         return response(connector)
       }
-      if (url.pathname === '/api/connectors') return response(connector ? [connector] : [])
+      if (url.pathname === '/api/connectors') return response(connectors)
       if (url.pathname === '/api/sign-in-exp' && init?.method === 'PATCH') {
-        signInTargets = (JSON.parse(String(init.body)) as { socialSignInConnectorTargets: string[] })
-          .socialSignInConnectorTargets
-        return response({ socialSignInConnectorTargets: signInTargets })
+        signInExperience = { ...signInExperience, ...JSON.parse(String(init.body)) }
+        return response(signInExperience)
       }
       if (url.pathname === '/api/sign-in-exp') {
-        return response({ socialSignInConnectorTargets: signInTargets })
+        return response(signInExperience)
       }
       if (url.pathname === '/api/roles' && url.search) return response(role ? [role] : [])
       if (url.pathname === '/api/roles') {
@@ -197,23 +211,40 @@ describe('Logto setup reconciliation', () => {
       redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
       postLogoutRedirectUris: ['http://localhost:3000/login'],
       corsAllowedOrigins: ['http://localhost:3000', 'http://localhost:8091'],
-      socialProviders: ['github'],
-      github: { clientId: 'github-client', clientSecret: 'github-secret' }
+      socialProviders: ['github', 'google', 'slack'],
+      github: { clientId: 'github-client', clientSecret: 'github-secret' },
+      google: { clientId: 'google-client', clientSecret: 'google-secret' },
+      slack: { clientId: 'slack-client', clientSecret: 'slack-secret', scope: 'openid profile email' }
     }
 
     await expect(client.reconcileSetup(desired)).resolves.toMatchObject({
       changed: true,
       application: { id: 'browser-app', created: true },
-      connectors: [{ target: 'github', id: 'agentconnect-github', created: true }],
+      connectors: [
+        { target: 'github', id: 'agentconnect-github', created: true },
+        { target: 'google', id: 'agentconnect-google', created: true },
+        { target: 'slack', id: 'agentconnect-slack', created: true }
+      ],
       signInExperienceChanged: true,
       adminRoleCreated: true
     })
     await expect(client.reconcileSetup(desired)).resolves.toMatchObject({
       changed: false,
       application: { id: 'browser-app', created: false, changed: false },
-      connectors: [{ target: 'github', id: 'agentconnect-github', created: false }],
+      connectors: [
+        { target: 'github', id: 'agentconnect-github', created: false },
+        { target: 'google', id: 'agentconnect-google', created: false },
+        { target: 'slack', id: 'agentconnect-slack', created: false }
+      ],
       signInExperienceChanged: false,
       adminRoleCreated: false
+    })
+    expect(signInExperience).toMatchObject({
+      signIn: { methods: [] },
+      signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
+      socialSignIn: { automaticAccountLinking: false, skipRequiredIdentifiers: true },
+      socialSignInConnectorTargets: ['github', 'google', 'slack'],
+      signInMode: 'SignInAndRegister'
     })
   })
 })

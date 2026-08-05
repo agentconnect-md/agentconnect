@@ -1,16 +1,8 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createPrivateKey, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { requireProviderAppEndpoints, type ProviderAppConfig } from './slack-app.js'
-
-export const GITHUB_DEPLOYMENT_ENV_KEYS = [
-  'GITHUB_APP_ID',
-  'GITHUB_APP_SLUG',
-  'GITHUB_APP_CLIENT_ID',
-  'GITHUB_APP_PRIVATE_KEY_B64',
-  'GITHUB_APP_WEBHOOK_SECRET',
-  'GITHUB_APP_CLIENT_SECRET'
-] as const
+import { SignJWT } from 'jose'
+import type { ProviderAppConfig } from './slack-app.js'
 
 export interface GithubAppCredentials {
   appId: string
@@ -18,7 +10,7 @@ export interface GithubAppCredentials {
   clientId: string
   clientSecret: string
   privateKeyBase64: string
-  webhookSecret: string
+  webhookSecret?: string
 }
 
 export interface GithubManifestFlow {
@@ -41,6 +33,27 @@ export interface GithubLoginAppConfig {
   logtoEndpoint: string
   connectorId: string
 }
+
+export const GITHUB_APP_PERMISSIONS = {
+  metadata: 'read',
+  contents: 'write',
+  issues: 'write',
+  pull_requests: 'write',
+  actions: 'write',
+  checks: 'write',
+  workflows: 'write',
+  email_addresses: 'read'
+} as const
+
+export const GITHUB_APP_EVENTS = [
+  'push',
+  'issues',
+  'issue_comment',
+  'pull_request',
+  'pull_request_review_comment',
+  'check_run',
+  'check_suite'
+] as const
 
 const GITHUB_ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
 
@@ -71,9 +84,9 @@ function escapeHtml(value: string): string {
   })
 }
 
-function registrationUrl(githubOrg: string | undefined, state: string): string {
+export function githubManifestRegistrationUrl(githubOrg: string | undefined, state: string): string {
   if (githubOrg !== undefined && !GITHUB_ORG.test(githubOrg)) {
-    throw new Error('--github-org must be a GitHub organization login')
+    throw new Error('GitHub organization login is invalid')
   }
   const base = githubOrg
     ? `https://github.com/organizations/${githubOrg}/settings/apps/new`
@@ -86,62 +99,188 @@ function registrationUrl(githubOrg: string | undefined, state: string): string {
 export function buildGithubAppManifest(
   config: ProviderAppConfig,
   name: string,
-  redirectUrl: string
+  redirectUrl: string,
+  login?: GithubLoginAppConfig
 ): Record<string, unknown> {
-  requireProviderAppEndpoints(config)
+  const webUrl = githubServiceUrl(config.services.web, 'Web')
+  const controlPlaneUrl = githubServiceUrl(config.services.controlPlane, 'API')
+  const relayUrl = githubServiceUrl(config.services.relay, 'ingress')
+  const webhookActive = new URL(relayUrl).protocol === 'https:'
   return {
     name: name.trim() || 'AgentConnect',
-    url: config.services.web,
+    url: webUrl,
     redirect_url: redirectUrl,
-    setup_url: appendPath(config.services.controlPlane, '/v1/github/setup/callback'),
+    ...(login
+      ? {
+          callback_urls: [
+            appendPath(login.logtoEndpoint, `/callback/${login.connectorId}`),
+            appendPath(login.logtoEndpoint, `/account/callback/social/${login.connectorId}`)
+          ]
+        }
+      : {}),
+    setup_url: appendPath(controlPlaneUrl, '/v1/github/setup/callback'),
     setup_on_update: true,
     public: true,
     request_oauth_on_install: false,
-    hook_attributes: {
-      url: appendPath(config.services.relay, '/webhooks/github'),
-      active: true
-    },
-    default_permissions: {
-      metadata: 'read',
-      contents: 'write',
-      issues: 'write',
-      pull_requests: 'write',
-      actions: 'write',
-      checks: 'write',
-      workflows: 'write'
-    },
-    default_events: [
-      'push',
-      'issues',
-      'issue_comment',
-      'pull_request',
-      'pull_request_review_comment',
-      'check_run',
-      'check_suite'
-    ]
+    ...(webhookActive
+      ? {
+          hook_attributes: {
+            url: appendPath(relayUrl, '/webhooks/github'),
+            active: true
+          },
+          default_events: [...GITHUB_APP_EVENTS]
+        }
+      : {}),
+    default_permissions: GITHUB_APP_PERMISSIONS
   }
 }
 
-/** A login-only GitHub App: no repository permissions, installation, or webhook. */
-export function buildGithubLoginAppManifest(
-  config: GithubLoginAppConfig,
-  name: string,
-  redirectUrl: string
-): Record<string, unknown> {
-  return {
-    name: name.trim() || 'AgentConnect Login',
-    description: 'Sign in to AgentConnect with GitHub.',
-    url: config.webUrl,
-    redirect_url: redirectUrl,
-    callback_urls: [
-      appendPath(config.logtoEndpoint, `/callback/${config.connectorId}`),
-      appendPath(config.logtoEndpoint, `/account/callback/social/${config.connectorId}`)
-    ],
-    public: true,
-    request_oauth_on_install: false,
-    default_permissions: { emails: 'read' },
-    default_events: []
+export interface GithubConfiguredUrls {
+  externalUrl: string
+  setupUrl: string
+  webhookUrl: string
+  webhookActive: boolean
+  callbackUrls: string[]
+}
+
+function githubServiceUrl(value: string | undefined, label: string): string {
+  if (!value) throw new Error(`GitHub App creation requires a saved ${label} URL`)
+  const url = new URL(value)
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const loopback =
+    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error(`GitHub App ${label} URL must use HTTPS unless it is loopback`)
   }
+  return url.origin
+}
+
+export function githubConfiguredUrls(
+  config: ProviderAppConfig,
+  manifest: Record<string, unknown>
+): GithubConfiguredUrls {
+  if (typeof manifest.url !== 'string' || typeof manifest.setup_url !== 'string') {
+    throw new Error('GitHub App manifest is missing managed URLs')
+  }
+  const relayUrl = githubServiceUrl(config.services.relay, 'ingress')
+  return {
+    externalUrl: manifest.url,
+    setupUrl: manifest.setup_url,
+    webhookUrl: appendPath(relayUrl, '/webhooks/github'),
+    webhookActive: new URL(relayUrl).protocol === 'https:',
+    callbackUrls: Array.isArray(manifest.callback_urls)
+      ? manifest.callback_urls.filter((value): value is string => typeof value === 'string')
+      : []
+  }
+}
+
+interface GithubAppApiResponse {
+  id?: unknown
+  slug?: unknown
+  client_id?: unknown
+  external_url?: unknown
+  html_url?: unknown
+  permissions?: unknown
+  events?: unknown
+  owner?: unknown
+}
+
+interface GithubWebhookApiResponse {
+  url?: unknown
+}
+
+export interface GithubAppAuditResult {
+  app: { id: number; slug: string; owner: string | null; settingsUrl: string }
+  missing: string[]
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+}
+
+function sameRecord(left: unknown, right: Record<string, string>): boolean {
+  const actual = asRecord(left)
+  const actualKeys = Object.keys(actual).sort()
+  const expectedKeys = Object.keys(right).sort()
+  return (
+    JSON.stringify(actualKeys) === JSON.stringify(expectedKeys) &&
+    expectedKeys.every((key) => actual[key] === right[key])
+  )
+}
+
+function sameStringSet(left: unknown, right: readonly string[]): boolean {
+  if (!Array.isArray(left) || !left.every((value) => typeof value === 'string')) return false
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort())
+}
+
+async function githubAppJwt(appId: number, clientId: string | null, privateKeyBase64: string): Promise<string> {
+  const pem = Buffer.from(privateKeyBase64, 'base64').toString('utf8')
+  const privateKey = createPrivateKey(pem)
+  const now = Math.floor(Date.now() / 1_000)
+  return new SignJWT({})
+    .setProtectedHeader({ alg: 'RS256' })
+    .setIssuedAt(now - 60)
+    .setExpirationTime(now + 9 * 60)
+    .setIssuer(clientId ?? String(appId))
+    .sign(privateKey)
+}
+
+async function githubJson<T>(path: string, jwt: string, fetchImpl: typeof fetch): Promise<T> {
+  let response: Response
+  try {
+    response = await fetchImpl(`https://api.github.com${path}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${jwt}`,
+        'x-github-api-version': '2022-11-28'
+      },
+      signal: AbortSignal.timeout(10_000)
+    })
+  } catch {
+    throw new Error('GitHub App settings are unreachable')
+  }
+  if (!response.ok) throw new Error(`GitHub App settings returned HTTP ${response.status}`)
+  return (await response.json()) as T
+}
+
+export async function auditGithubApp(
+  identity: { appId: number; slug: string; clientId: string | null },
+  privateKeyBase64: string,
+  expectedManifest: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch
+): Promise<GithubAppAuditResult> {
+  const jwt = await githubAppJwt(identity.appId, identity.clientId, privateKeyBase64)
+  const expectedHook = asRecord(expectedManifest.hook_attributes)
+  const [app, hook] = await Promise.all([
+    githubJson<GithubAppApiResponse>('/app', jwt, fetchImpl),
+    typeof expectedHook.url === 'string'
+      ? githubJson<GithubWebhookApiResponse>('/app/hook/config', jwt, fetchImpl)
+      : Promise.resolve(undefined)
+  ])
+  const missing: string[] = []
+  if (
+    app.id !== identity.appId ||
+    app.slug !== identity.slug ||
+    (identity.clientId !== null && app.client_id !== identity.clientId)
+  ) {
+    missing.push('identity')
+  }
+  if (app.external_url !== expectedManifest.url) missing.push('external_url')
+  if (!sameRecord(app.permissions, GITHUB_APP_PERMISSIONS)) missing.push('permissions')
+  const expectedEvents = Array.isArray(expectedManifest.default_events)
+    ? expectedManifest.default_events.filter((event): event is string => typeof event === 'string')
+    : []
+  if (!sameStringSet(app.events, expectedEvents)) missing.push('events')
+  if (typeof expectedHook.url === 'string' && hook?.url !== expectedHook.url) missing.push('webhook_url')
+
+  const owner = asRecord(app.owner)
+  const ownerLogin = typeof owner.login === 'string' ? owner.login : null
+  const ownerType = owner.type
+  const settingsUrl =
+    ownerType === 'Organization' && ownerLogin
+      ? `https://github.com/organizations/${encodeURIComponent(ownerLogin)}/settings/apps/${encodeURIComponent(identity.slug)}`
+      : `https://github.com/settings/apps/${encodeURIComponent(identity.slug)}`
+  return { app: { id: identity.appId, slug: identity.slug, owner: ownerLogin, settingsUrl }, missing }
 }
 
 function closeServer(server: Server): Promise<void> {
@@ -159,7 +298,7 @@ async function startGithubManifestRegistration(
   const state = randomBytes(32).toString('base64url')
   const startToken = randomBytes(24).toString('base64url')
   const scriptNonce = randomBytes(18).toString('base64url')
-  const action = registrationUrl(githubOrg, state)
+  const action = githubManifestRegistrationUrl(githubOrg, state)
   let settle: ((value: string) => void) | undefined
   let rejectCode: ((reason: Error) => void) | undefined
   let settled = false
@@ -268,45 +407,35 @@ export function startGithubManifestFlow(
   config: ProviderAppConfig,
   name: string,
   githubOrg?: string,
-  options: GithubManifestFlowOptions = {}
+  options: GithubManifestFlowOptions = {},
+  login?: GithubLoginAppConfig
 ): Promise<GithubManifestFlow> {
-  requireProviderAppEndpoints(config)
   return startGithubManifestRegistration(
-    (redirectUrl) => buildGithubAppManifest(config, name, redirectUrl),
+    (redirectUrl) => buildGithubAppManifest(config, name, redirectUrl, login),
     githubOrg,
     options
   )
-}
-
-export function startGithubLoginManifestFlow(
-  config: GithubLoginAppConfig,
-  name: string,
-  githubOrg?: string,
-  options: GithubManifestFlowOptions = {}
-): Promise<GithubManifestFlow> {
-  return startGithubManifestRegistration(
-    (redirectUrl) => buildGithubLoginAppManifest(config, name, redirectUrl),
-    githubOrg,
-    options
-  )
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
 function requiredString(record: Record<string, unknown>, field: string): string {
   const value = record[field]
   if (typeof value !== 'string' || value.length === 0) {
-    throw new Error('GitHub manifest conversion returned incomplete credentials')
+    throw new Error(`GitHub manifest conversion response is missing ${field}`)
   }
   return value
 }
 
-export async function convertGithubManifest(
+function requiredAppId(record: Record<string, unknown>): string {
+  if (typeof record.id !== 'number' || !Number.isSafeInteger(record.id) || record.id <= 0) {
+    throw new Error('GitHub manifest conversion response is missing a valid id')
+  }
+  return String(record.id)
+}
+
+async function exchangeGithubManifest(
   code: string,
   options: GithubConversionOptions = {}
-): Promise<GithubAppCredentials> {
+): Promise<Record<string, unknown>> {
   const fetcher = options.fetch ?? fetch
   let response: Response
   try {
@@ -330,17 +459,26 @@ export async function convertGithubManifest(
   } catch {
     throw new Error('GitHub manifest conversion returned an invalid response')
   }
-  const record = asRecord(body)
-  if (typeof record.id !== 'number' || !Number.isSafeInteger(record.id) || record.id <= 0) {
-    throw new Error('GitHub manifest conversion returned incomplete credentials')
-  }
+  return asRecord(body)
+}
+
+export async function convertGithubManifest(
+  code: string,
+  options: GithubConversionOptions = {}
+): Promise<GithubAppCredentials> {
+  const record = await exchangeGithubManifest(code, options)
+  const appId = requiredAppId(record)
   const pem = requiredString(record, 'pem')
+  const clientId = requiredString(record, 'client_id')
+  const privateKeyBase64 = Buffer.from(pem, 'utf8').toString('base64')
+  const webhookSecret =
+    typeof record.webhook_secret === 'string' && record.webhook_secret ? record.webhook_secret : undefined
   return {
-    appId: String(record.id),
+    appId,
     slug: requiredString(record, 'slug'),
-    clientId: requiredString(record, 'client_id'),
+    clientId,
     clientSecret: requiredString(record, 'client_secret'),
-    privateKeyBase64: Buffer.from(pem, 'utf8').toString('base64'),
-    webhookSecret: requiredString(record, 'webhook_secret')
+    privateKeyBase64,
+    ...(webhookSecret ? { webhookSecret } : {})
   }
 }

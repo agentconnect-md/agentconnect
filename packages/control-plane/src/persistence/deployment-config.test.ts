@@ -7,12 +7,6 @@ import {
 
 const base: DeploymentConfigValuesV1 = {
   ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
-  publicUrls: {
-    ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1.publicUrls,
-    controlPlane: 'https://api.example.test',
-    relay: 'https://relay.example.test',
-    web: 'https://console.example.test'
-  },
   github: { appId: 1, slug: 'agentconnect', clientId: 'Iv1.first' },
   slack: { appId: 'A1', clientId: '1.1' },
   logto: {
@@ -43,10 +37,33 @@ describe('deploymentSecretsRequiringRefresh', () => {
         }
       })
     ).toEqual(['logto.githubConnectorClientSecret'])
+    expect(
+      deploymentSecretsRequiringRefresh(base, {
+        ...base,
+        logto: {
+          ...base.logto!,
+          googleConnector: {
+            clientId: 'google-client',
+            configuredRedirectUris: ['https://login.example.test/callback/agentconnect-google']
+          }
+        }
+      })
+    ).toEqual(['logto.googleConnectorClientSecret'])
+    expect(
+      deploymentSecretsRequiringRefresh(base, {
+        ...base,
+        logto: {
+          ...base.logto!,
+          slackConnector: { appId: 'A1', clientId: '1.1' }
+        }
+      })
+    ).toEqual([])
 
     expect(
       deploymentSecretsRequiringRefresh(base, {
         ...base,
+        feishu: { loginAppId: 'cli_feishu' },
+        lark: { loginAppId: 'cli_lark' },
         github: { appId: 2, slug: 'renamed', clientId: 'Iv1.second' },
         slack: { appId: 'A2', clientId: '2.2' },
         logto: { ...base.logto!, managementAppId: 'm2m-2' }
@@ -57,6 +74,8 @@ describe('deploymentSecretsRequiringRefresh', () => {
       'github.clientSecret',
       'slack.clientSecret',
       'slack.signingSecret',
+      'feishu.loginAppSecret',
+      'lark.loginAppSecret',
       'logto.managementAppSecret'
     ])
   })

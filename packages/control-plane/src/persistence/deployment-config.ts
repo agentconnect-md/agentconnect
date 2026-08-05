@@ -32,10 +32,6 @@ const HttpUrlSchema = z
     }
   })
 
-const OriginUrlSchema = HttpUrlSchema.refine(
-  (value) => new URL(value).pathname === '/',
-  'must be an origin without a path'
-)
 function isSecureHttpUrl(value: string): boolean {
   const url = new URL(value)
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
@@ -49,14 +45,6 @@ const SecureOriginUrlSchema = SecureHttpUrlSchema.refine(
   'must be an origin without a path'
 )
 const NullableUrlSchema = HttpUrlSchema.nullable()
-const NullableOriginUrlSchema = OriginUrlSchema.nullable()
-
-const PublicUrlsSchema = z.strictObject({
-  controlPlane: NullableOriginUrlSchema,
-  relay: NullableOriginUrlSchema,
-  web: NullableOriginUrlSchema,
-  mcp: NullableOriginUrlSchema
-})
 
 const AuthSchema = z.discriminatedUnion('mode', [
   z.strictObject({ mode: z.literal('none') }),
@@ -82,7 +70,9 @@ const LogtoBrowserSchema = z.strictObject({
   endpoint: SecureOriginUrlSchema,
   applicationName: z.string().trim().min(1).default('AgentConnect'),
   apiResource: NullableUrlSchema.default(null),
-  socialProviders: z.array(z.string().trim().min(1)).min(1)
+  // The setup wizard persists and verifies Management API access before the
+  // operator chooses a sign-in provider. Auth itself still requires one.
+  socialProviders: z.array(z.string().trim().min(1)).default([])
 })
 
 const LogtoGithubConnectorSchema = z.strictObject({
@@ -91,24 +81,60 @@ const LogtoGithubConnectorSchema = z.strictObject({
   clientId: z.string().trim().min(1)
 })
 
+const LogtoGoogleConnectorSchema = z.strictObject({
+  clientId: z.string().trim().min(1),
+  /** Provider-console callbacks last confirmed by the operator. */
+  configuredRedirectUris: z.array(SecureHttpUrlSchema).min(1)
+})
+
+const LogtoSlackConnectorSchema = z.strictObject({
+  appId: z.string().trim().min(1),
+  clientId: z.string().trim().min(1)
+})
+
+const GithubAppConfiguredUrlsSchema = z.strictObject({
+  externalUrl: SecureOriginUrlSchema,
+  setupUrl: SecureHttpUrlSchema,
+  webhookUrl: SecureHttpUrlSchema,
+  webhookActive: z.boolean().optional(),
+  callbackUrls: z.array(SecureHttpUrlSchema)
+})
+
+const SlackAppConfiguredUrlsSchema = z.strictObject({
+  oauthRedirectUrl: SecureHttpUrlSchema,
+  eventsUrl: SecureHttpUrlSchema,
+  interactionsUrl: SecureHttpUrlSchema,
+  loginRedirectUrl: SecureHttpUrlSchema.optional()
+})
+
+const RegionalLoginAppSchema = z.strictObject({
+  loginAppId: z.string().trim().min(1)
+})
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
-    publicUrls: PublicUrlsSchema,
     auth: AuthSchema,
     github: z
       .strictObject({
         appId: z.number().int().positive(),
         slug: z.string().trim().min(1),
-        clientId: z.string().trim().min(1).nullable()
+        clientId: z.string().trim().min(1).nullable(),
+        /** Provider settings last created or explicitly confirmed by setup. */
+        configuredUrls: GithubAppConfiguredUrlsSchema.optional()
       })
       .nullable(),
     slack: z
       .strictObject({
         appId: z.string().trim().min(1),
-        clientId: z.string().trim().min(1)
+        clientId: z.string().trim().min(1),
+        /** Provider settings last verified through Slack's manifest API. */
+        configuredUrls: SlackAppConfiguredUrlsSchema.optional()
       })
       .nullable(),
+    /** Regional Login Apps used as the tenant anchor for Bot App admission. */
+    feishu: RegionalLoginAppSchema.nullable().optional(),
+    lark: RegionalLoginAppSchema.nullable().optional(),
     logto: z
       .strictObject({
         managementEndpoint: SecureOriginUrlSchema,
@@ -116,22 +142,34 @@ export const DeploymentConfigValuesV1Schema = z
         managementResource: HttpUrlSchema,
         /** Desired browser app state; `create logto` projects it into `auth`. */
         browser: LogtoBrowserSchema.nullable().default(null),
-        /** Login-only GitHub App identity. Its client secret stays write-only. */
-        githubConnector: LogtoGithubConnectorSchema.nullable().default(null)
+        /** GitHub App OAuth identity used by the Logto connector. */
+        githubConnector: LogtoGithubConnectorSchema.nullable().default(null),
+        /** Google OAuth client identity. Its secret stays write-only. */
+        googleConnector: LogtoGoogleConnectorSchema.nullable().optional(),
+        /** Deployment Slack App identity reused for Slack social sign-in. */
+        slackConnector: LogtoSlackConnectorSchema.nullable().optional()
       })
       .nullable(),
     features: z.strictObject({
-      presetAgentsEnabled: z.boolean(),
-      waitlistMode: z.boolean()
+      presetAgentsEnabled: z.boolean()
     })
   })
   .superRefine((values, ctx) => {
-    for (const key of ['controlPlane', 'web'] as const) {
-      if (!values.publicUrls[key]) {
+    if (values.logto?.slackConnector) {
+      if (!values.slack) {
         ctx.addIssue({
           code: 'custom',
-          path: ['publicUrls', key],
-          message: `a ${key} public URL is required in a persisted deployment configuration`
+          path: ['logto', 'slackConnector'],
+          message: 'requires the deployment Slack App'
+        })
+      } else if (
+        values.logto.slackConnector.appId !== values.slack.appId ||
+        values.logto.slackConnector.clientId !== values.slack.clientId
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['logto', 'slackConnector'],
+          message: 'must reuse the deployment Slack App identity'
         })
       }
     }
@@ -152,47 +190,17 @@ export const DeploymentConfigValuesV1Schema = z
           message: 'must equal the browser endpoint plus /oidc'
         })
       }
-      for (const key of ['controlPlane', 'web'] as const) {
-        const url = values.publicUrls[key]
-        if (!url || !isSecureHttpUrl(url)) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['publicUrls', key],
-            message: `a secure ${key} public URL is required when OIDC is enabled`
-          })
-        }
-      }
-    }
-    if (values.github || values.slack) {
-      for (const key of ['web', 'controlPlane', 'relay'] as const) {
-        const url = values.publicUrls[key]
-        if (!url || new URL(url).protocol !== 'https:') {
-          const provider =
-            values.github && values.slack ? 'GitHub and Slack Apps' : values.github ? 'GitHub App' : 'Slack App'
-          ctx.addIssue({
-            code: 'custom',
-            path: ['publicUrls', key],
-            message: `an HTTPS ${key} public URL is required when the ${provider} is enabled`
-          })
-        }
-      }
     }
   })
 
 export type DeploymentConfigValuesV1 = z.infer<typeof DeploymentConfigValuesV1Schema>
 
 export const DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1: DeploymentConfigValuesV1 = {
-  publicUrls: {
-    controlPlane: 'http://localhost:8080',
-    relay: 'http://localhost:8090',
-    web: 'http://localhost:3000',
-    mcp: null
-  },
   auth: { mode: 'none' },
   github: null,
   slack: null,
   logto: null,
-  features: { presetAgentsEnabled: true, waitlistMode: false }
+  features: { presetAgentsEnabled: true }
 }
 
 export const DEPLOYMENT_SECRET_KEYS = [
@@ -203,8 +211,11 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'github.clientSecret',
   'slack.clientSecret',
   'slack.signingSecret',
+  'feishu.loginAppSecret',
+  'lark.loginAppSecret',
   'logto.managementAppSecret',
-  'logto.githubConnectorClientSecret'
+  'logto.githubConnectorClientSecret',
+  'logto.googleConnectorClientSecret'
 ] as const
 
 export const DeploymentSecretKeySchema = z.enum(DEPLOYMENT_SECRET_KEYS)
@@ -351,8 +362,13 @@ export function deploymentSecretsRequiringRefresh(
   const githubAppChanged = next.github && previous?.github?.appId !== next.github.appId
   const githubClientChanged =
     next.github !== null && next.github.clientId !== null && previous?.github?.clientId !== next.github.clientId
+  const githubWebhookEnabled = next.github?.configuredUrls?.webhookActive !== false
+  const githubWebhookActivated =
+    next.github !== null && githubWebhookEnabled && previous?.github?.configuredUrls?.webhookActive === false
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
+  const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
+  const larkIdentityChanged = next.lark && previous?.lark?.loginAppId !== next.lark.loginAppId
   const logtoIdentityChanged =
     next.logto &&
     (previous?.logto?.managementEndpoint !== next.logto.managementEndpoint ||
@@ -361,27 +377,44 @@ export function deploymentSecretsRequiringRefresh(
     next.logto?.githubConnector &&
     (previous?.logto?.githubConnector?.appId !== next.logto.githubConnector.appId ||
       previous?.logto?.githubConnector?.clientId !== next.logto.githubConnector.clientId)
-
+  const logtoGoogleConnectorChanged =
+    next.logto?.googleConnector && previous?.logto?.googleConnector?.clientId !== next.logto.googleConnector.clientId
   return [
-    ...(githubAppChanged ? (['github.privateKeyB64', 'github.webhookSecret'] as const) : []),
+    ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
+    ...(next.github && githubWebhookEnabled && (githubAppChanged || githubWebhookActivated)
+      ? (['github.webhookSecret'] as const)
+      : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
+    ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
+    ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
-    ...(logtoGithubConnectorChanged ? (['logto.githubConnectorClientSecret'] as const) : [])
+    ...(logtoGithubConnectorChanged ? (['logto.githubConnectorClientSecret'] as const) : []),
+    ...(logtoGoogleConnectorChanged ? (['logto.googleConnectorClientSecret'] as const) : [])
   ]
 }
 
 function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[] {
   return [
-    ...(values.github ? (['github.privateKeyB64', 'github.webhookSecret'] as const) : []),
+    ...(values.github ? (['github.privateKeyB64'] as const) : []),
+    ...(values.github && values.github.configuredUrls?.webhookActive !== false
+      ? (['github.webhookSecret'] as const)
+      : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
+    ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
+    ...(values.lark ? (['lark.loginAppSecret'] as const) : []),
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),
-    ...(values.logto?.githubConnector ? (['logto.githubConnectorClientSecret'] as const) : [])
+    ...(values.logto?.githubConnector ? (['logto.githubConnectorClientSecret'] as const) : []),
+    ...(values.logto?.googleConnector ? (['logto.googleConnectorClientSecret'] as const) : [])
   ]
 }
 
 function runtimeSecretKeys(values: DeploymentConfigValuesV1): Set<DeploymentSecretKey> {
-  return new Set(requiredSecrets(values))
+  const keys = new Set(requiredSecrets(values))
+  // Tenant Admin may reuse the deployment App for Logto sign-in. Keep this
+  // optional for the GitHub runtime, but allow an explicit setup-side read.
+  if (values.github) keys.add('github.clientSecret')
+  return keys
 }
 
 /** Bind a successful ADMIN claim to exactly one OIDC issuer/browser app pair. */

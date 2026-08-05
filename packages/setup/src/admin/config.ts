@@ -1,5 +1,5 @@
 /**
- * Process bootstrap configuration for `agentconnect-setup serve`.
+ * Process bootstrap configuration for the Tenant Admin server.
  *
  * Product/provider settings intentionally do not live here: they are loaded
  * from the deployment config singleton after initialization, or held only in
@@ -32,7 +32,11 @@ export const TenantAdminProcessConfigSchema = z
     PORT: z.coerce.number().int().min(1).max(65_535).default(8091),
     TENANT_ADMIN_URL: SecureOriginSchema.default('http://localhost:8091'),
     TENANT_ADMIN_ALLOW_CONTAINER_PROXY: z.stringbool().default(false),
-    DATABASE_URL: z.string().url(),
+    LOGTO_ADMIN_ENDPOINT: SecureOriginSchema.default('http://admin.agentconnect.localhost:3002'),
+    DATABASE_URL: z
+      .string()
+      .url()
+      .default('postgresql://agentconnect:agentconnect-local-only@127.0.0.1:5432/agentconnect?schema=public'),
 
     // Keep this startup-only slice aligned with the CP's SecretCipher. The
     // cipher key/address cannot be stored beside the ciphertext it unlocks.

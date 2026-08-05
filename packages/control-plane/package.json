@@ -16,6 +16,12 @@
       "import": "./dist/deployment-config-store.js",
       "default": "./dist/deployment-config-store.js"
     },
+    "./feishu-registration-provider": {
+      "development": "./src/http/feishu-registration-provider.ts",
+      "types": "./dist/http/feishu-registration-provider.d.ts",
+      "import": "./dist/http/feishu-registration-provider.js",
+      "default": "./dist/http/feishu-registration-provider.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",

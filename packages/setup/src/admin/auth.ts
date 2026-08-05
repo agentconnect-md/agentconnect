@@ -1,5 +1,5 @@
 /**
- * Logto/OIDC authentication for the temporary Tenant Admin surface.
+ * Logto/OIDC authentication for the loopback-only Tenant Admin surface.
  *
  * There are two deliberately separate checks:
  *  - bootstrap identity: a signature-checked token, accepted only inside the

@@ -3,18 +3,14 @@ import type { DeploymentConfigRuntime } from '../persistence/deployment-config.j
 /**
  * Environment-shaped runtime projection for the deployment settings stored in
  * Postgres. The Control Plane still has one validated `AppConfig`; this helper
- * simply overlays the persisted desired state before `loadConfig()` parses it.
+ * simply overlays persisted provider/auth state before `loadConfig()` parses it.
  *
- * A persisted row owns every key below, including absence. This matters during
- * the migration from env configuration: disabling OIDC or a provider in the
- * deployment document must not silently fall back to stale container env.
+ * Public service URLs, database/bootstrap/Vault settings, and CORS remain
+ * process topology owned by the startup environment. A persisted row owns
+ * every key below, including absence, so disabling OIDC or a provider does not
+ * silently fall back to stale container env.
  */
 const MANAGED_KEYS = [
-  'PUBLIC_CP_URL',
-  'PUBLIC_RELAY_URL',
-  'PUBLIC_WEB_URL',
-  'PUBLIC_MCP_URL',
-  'CORS_ORIGIN',
   'OIDC_ISSUER',
   'OIDC_AUDIENCE',
   'GITHUB_APP_ID',
@@ -25,12 +21,15 @@ const MANAGED_KEYS = [
   'SLACK_PLATFORM_CLIENT_ID',
   'SLACK_PLATFORM_CLIENT_SECRET',
   'SLACK_PLATFORM_SIGNING_SECRET',
+  'FEISHU_PLATFORM_APP_ID',
+  'FEISHU_PLATFORM_APP_SECRET',
+  'LARK_PLATFORM_APP_ID',
+  'LARK_PLATFORM_APP_SECRET',
   'LOGTO_MGMT_ENDPOINT',
   'LOGTO_MGMT_APP_ID',
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_RESOURCE',
-  'PRESET_AGENTS_ENABLED',
-  'WAITLIST_MODE'
+  'PRESET_AGENTS_ENABLED'
 ] as const
 
 export function applyDeploymentEnvironment(
@@ -44,14 +43,6 @@ export function applyDeploymentEnvironment(
   const set = (key: string, value: string | null | undefined): void => {
     if (value !== null && value !== undefined) env[key] = value
   }
-
-  set('PUBLIC_CP_URL', values.publicUrls.controlPlane)
-  set('PUBLIC_RELAY_URL', values.publicUrls.relay)
-  set('PUBLIC_WEB_URL', values.publicUrls.web)
-  set('PUBLIC_MCP_URL', values.publicUrls.mcp)
-  // The deployment document has one browser origin in v1. Keep the existing
-  // CORS machinery as the consumer rather than introducing a second policy.
-  set('CORS_ORIGIN', values.publicUrls.web ? new URL(values.publicUrls.web).origin : null)
 
   if (values.auth.mode === 'oidc') {
     set('OIDC_ISSUER', values.auth.issuer)
@@ -72,6 +63,15 @@ export function applyDeploymentEnvironment(
     set('SLACK_PLATFORM_SIGNING_SECRET', secrets['slack.signingSecret'])
   }
 
+  if (values.feishu) {
+    set('FEISHU_PLATFORM_APP_ID', values.feishu.loginAppId)
+    set('FEISHU_PLATFORM_APP_SECRET', secrets['feishu.loginAppSecret'])
+  }
+  if (values.lark) {
+    set('LARK_PLATFORM_APP_ID', values.lark.loginAppId)
+    set('LARK_PLATFORM_APP_SECRET', secrets['lark.loginAppSecret'])
+  }
+
   if (values.logto) {
     set('LOGTO_MGMT_ENDPOINT', values.logto.managementEndpoint)
     set('LOGTO_MGMT_APP_ID', values.logto.managementAppId)
@@ -80,6 +80,5 @@ export function applyDeploymentEnvironment(
   }
 
   env.PRESET_AGENTS_ENABLED = String(values.features.presetAgentsEnabled)
-  env.WAITLIST_MODE = String(values.features.waitlistMode)
   return env
 }

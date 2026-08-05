@@ -1,14 +1,3 @@
-import type { SetupConfig } from './config.js'
-
-export const SLACK_CONFIG_TOKEN_ENV = 'SLACK_CONFIG_TOKEN'
-
-export const SLACK_DEPLOYMENT_ENV_KEYS = [
-  'SLACK_PLATFORM_APP_ID',
-  'SLACK_PLATFORM_CLIENT_ID',
-  'SLACK_PLATFORM_CLIENT_SECRET',
-  'SLACK_PLATFORM_SIGNING_SECRET'
-] as const
-
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
@@ -44,9 +33,6 @@ export const SLACK_BOT_EVENTS = [
 ] as const
 
 type SlackManifest = Record<string, unknown>
-type ExternalSetupWithRelay = Extract<SetupConfig, { mode: 'external' }> & {
-  services: Extract<SetupConfig, { mode: 'external' }>['services'] & { relay: string; web: string }
-}
 export interface ProviderAppConfig {
   services: {
     web?: string
@@ -70,14 +56,20 @@ export interface SlackAppCreateOptions {
   timeoutMs?: number
 }
 
-function appendPath(base: string, path: string): string {
-  return `${base.replace(/\/$/, '')}/${path.replace(/^\//, '')}`
+export interface SlackConfiguredUrls {
+  oauthRedirectUrl: string
+  eventsUrl: string
+  interactionsUrl: string
+  loginRedirectUrl?: string
 }
 
-export function requireExternalRelay(config: SetupConfig): asserts config is ExternalSetupWithRelay {
-  if (config.mode !== 'external' || !config.services.relay || !config.services.web) {
-    throw new Error('legacy env-file App creation requires external mode with HTTPS --web-url and --relay-url')
-  }
+export interface SlackLoginAppConfig {
+  logtoEndpoint: string
+  connectorId: string
+}
+
+function appendPath(base: string, path: string): string {
+  return `${base.replace(/\/$/, '')}/${path.replace(/^\//, '')}`
 }
 
 export function requireProviderAppEndpoints(config: ProviderAppConfig): asserts config is ProviderAppConfigWithRelay {
@@ -94,10 +86,18 @@ export function requireProviderAppEndpoints(config: ProviderAppConfig): asserts 
 }
 
 /** Keep this deployment manifest aligned with the Control Plane's install manifest. */
-export function buildSlackDeploymentManifest(config: ProviderAppConfig, name: string): SlackManifest {
+export function buildSlackDeploymentManifest(
+  config: ProviderAppConfig,
+  name: string,
+  login?: SlackLoginAppConfig
+): SlackManifest {
   requireProviderAppEndpoints(config)
   const displayName = name.trim() || 'AgentConnect'
   const redirectUrl = appendPath(config.services.controlPlane, '/v1/integrations/slack/platform/callback')
+  const loginRedirectUrl = login ? appendPath(login.logtoEndpoint, `/callback/${login.connectorId}`) : undefined
+  if (loginRedirectUrl && new URL(loginRedirectUrl).protocol !== 'https:') {
+    throw new Error('Slack sign-in requires an HTTPS Logto endpoint')
+  }
   const eventsUrl = appendPath(config.services.relay, '/slack/events')
   const interactionsUrl = appendPath(config.services.relay, '/slack/interactions')
 
@@ -121,7 +121,7 @@ export function buildSlackDeploymentManifest(config: ProviderAppConfig, name: st
     },
     oauth_config: {
       scopes: { bot: [...SLACK_BOT_SCOPES] },
-      redirect_urls: [redirectUrl]
+      redirect_urls: [redirectUrl, ...(loginRedirectUrl ? [loginRedirectUrl] : [])]
     },
     settings: {
       event_subscriptions: { bot_events: [...SLACK_BOT_EVENTS], request_url: eventsUrl },
@@ -135,6 +135,27 @@ export function buildSlackDeploymentManifest(config: ProviderAppConfig, name: st
       token_rotation_enabled: false,
       is_mcp_enabled: false
     }
+  }
+}
+
+export function slackConfiguredUrls(manifest: SlackManifest): SlackConfiguredUrls {
+  const oauth = asRecord(manifest.oauth_config)
+  const settings = asRecord(manifest.settings)
+  const events = asRecord(settings.event_subscriptions)
+  const interactivity = asRecord(settings.interactivity)
+  const redirects = asStrings(oauth.redirect_urls)
+  if (
+    (redirects.length !== 1 && redirects.length !== 2) ||
+    typeof events.request_url !== 'string' ||
+    typeof interactivity.request_url !== 'string'
+  ) {
+    throw new Error('Slack App manifest is missing managed URLs')
+  }
+  return {
+    oauthRedirectUrl: redirects[0]!,
+    eventsUrl: events.request_url,
+    interactionsUrl: interactivity.request_url,
+    ...(redirects[1] ? { loginRedirectUrl: redirects[1] } : {})
   }
 }
 

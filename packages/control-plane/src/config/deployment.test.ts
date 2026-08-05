@@ -13,17 +13,11 @@ function runtime(overrides: Partial<DeploymentConfigRuntime> = {}): DeploymentCo
     schemaVersion: 1,
     revision: 1,
     values: {
-      publicUrls: {
-        controlPlane: 'https://api.example.test',
-        relay: 'https://relay.example.test',
-        web: 'https://console.example.test',
-        mcp: null
-      },
       auth: { mode: 'none' },
       github: null,
       slack: null,
       logto: null,
-      features: { presetAgentsEnabled: true, waitlistMode: false }
+      features: { presetAgentsEnabled: true }
     },
     secrets: {},
     updatedAt: new Date(0),
@@ -32,16 +26,14 @@ function runtime(overrides: Partial<DeploymentConfigRuntime> = {}): DeploymentCo
 }
 
 describe('applyDeploymentEnvironment', () => {
-  it('canonicalizes a trailing-slash Web URL for the browser CORS origin', () => {
-    const base = runtime()
+  it('leaves public service topology owned by the startup environment', () => {
     const env = applyDeploymentEnvironment(
-      bootstrap,
-      runtime({
-        values: {
-          ...base.values,
-          publicUrls: { ...base.values.publicUrls, web: 'https://console.example.test/' }
-        }
-      })
+      {
+        ...bootstrap,
+        PUBLIC_WEB_URL: 'https://console.example.test/',
+        CORS_ORIGIN: 'https://console.example.test'
+      },
+      runtime()
     )
 
     expect(env.PUBLIC_WEB_URL).toBe('https://console.example.test/')
@@ -53,6 +45,10 @@ describe('applyDeploymentEnvironment', () => {
       applyDeploymentEnvironment(
         {
           ...bootstrap,
+          PUBLIC_CP_URL: 'https://api.example.test',
+          PUBLIC_RELAY_URL: 'https://relay.example.test',
+          PUBLIC_WEB_URL: 'https://console.example.test',
+          CORS_ORIGIN: 'https://console.example.test',
           OIDC_ISSUER: 'https://old-login.example.test/oidc',
           GITHUB_APP_ID: '123',
           GITHUB_APP_SLUG: 'old-app',
@@ -97,6 +93,8 @@ describe('applyDeploymentEnvironment', () => {
             },
             github: { appId: 123, slug: 'agentconnect-example', clientId: 'Iv1.example' },
             slack: { appId: 'A123', clientId: '123.456' },
+            feishu: { loginAppId: 'cli_feishu' },
+            lark: { loginAppId: 'cli_lark' },
             logto: {
               managementEndpoint: 'https://login.example.test',
               managementAppId: 'm2m-app',
@@ -104,7 +102,7 @@ describe('applyDeploymentEnvironment', () => {
               browser: null,
               githubConnector: null
             },
-            features: { presetAgentsEnabled: false, waitlistMode: true }
+            features: { presetAgentsEnabled: false }
           },
           secrets: {
             'github.privateKeyB64': 'github-key',
@@ -112,6 +110,8 @@ describe('applyDeploymentEnvironment', () => {
             'github.clientSecret': 'connector-only',
             'slack.clientSecret': 'slack-client-secret',
             'slack.signingSecret': 'slack-signing-secret',
+            'feishu.loginAppSecret': 'feishu-secret',
+            'lark.loginAppSecret': 'lark-secret',
             'logto.managementAppSecret': 'logto-secret'
           }
         })
@@ -124,10 +124,35 @@ describe('applyDeploymentEnvironment', () => {
       GITHUB_APP_ID: 123,
       GITHUB_APP_PRIVATE_KEY_B64: 'github-key',
       SLACK_PLATFORM_CLIENT_SECRET: 'slack-client-secret',
+      FEISHU_PLATFORM_APP_ID: 'cli_feishu',
+      FEISHU_PLATFORM_APP_SECRET: 'feishu-secret',
+      LARK_PLATFORM_APP_ID: 'cli_lark',
+      LARK_PLATFORM_APP_SECRET: 'lark-secret',
       LOGTO_MGMT_APP_SECRET: 'logto-secret',
       PRESET_AGENTS_ENABLED: false,
-      WAITLIST_MODE: true
+      WAITLIST_MODE: false
     })
     expect(config).not.toHaveProperty('GITHUB_APP_WEBHOOK_SECRET')
+  })
+
+  it('keeps regional Login Apps owned by the deployment document', () => {
+    const base = runtime()
+    const managed = applyDeploymentEnvironment(
+      {
+        ...bootstrap,
+        FEISHU_PLATFORM_APP_ID: 'startup-feishu',
+        FEISHU_PLATFORM_APP_SECRET: 'startup-secret',
+        LARK_PLATFORM_APP_ID: 'startup-lark',
+        LARK_PLATFORM_APP_SECRET: 'startup-secret'
+      },
+      runtime({
+        values: { ...base.values, feishu: null, lark: { loginAppId: 'cli_lark' } },
+        secrets: { 'lark.loginAppSecret': 'db-secret' }
+      })
+    )
+    expect(managed.FEISHU_PLATFORM_APP_ID).toBeUndefined()
+    expect(managed.FEISHU_PLATFORM_APP_SECRET).toBeUndefined()
+    expect(managed.LARK_PLATFORM_APP_ID).toBe('cli_lark')
+    expect(managed.LARK_PLATFORM_APP_SECRET).toBe('db-secret')
   })
 })

@@ -817,12 +817,10 @@ export function buildContainer(
       ? {
           deploymentRevision: opts.deploymentConfig.revision,
           publicRuntimeConfig: {
-            apiUrl: opts.deploymentConfig.values.publicUrls.controlPlane
-              ? `${opts.deploymentConfig.values.publicUrls.controlPlane.replace(/\/$/, '')}/api/v1`
-              : null,
-            relayUrl: opts.deploymentConfig.values.publicUrls.relay,
-            webUrl: opts.deploymentConfig.values.publicUrls.web,
-            mcpUrl: opts.deploymentConfig.values.publicUrls.mcp,
+            apiUrl: config.PUBLIC_CP_URL ? `${config.PUBLIC_CP_URL.replace(/\/$/, '')}/api/v1` : null,
+            relayUrl: config.PUBLIC_RELAY_URL ?? null,
+            webUrl: config.PUBLIC_WEB_URL ?? null,
+            mcpUrl: config.PUBLIC_MCP_URL ?? null,
             auth:
               opts.deploymentConfig.values.auth.mode === 'oidc'
                 ? {

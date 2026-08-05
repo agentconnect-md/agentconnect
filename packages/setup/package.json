@@ -1,7 +1,7 @@
 {
   "name": "@agentconnect.md/setup",
   "version": "1.0.0-dev",
-  "description": "AgentConnect self-hosting setup, provider App bootstrap, and deployment checks",
+  "description": "AgentConnect self-hosted Tenant Admin server",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -17,16 +17,13 @@
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",
-  "bin": {
-    "agentconnect-setup": "dist/index.js"
-  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsdown && node scripts/assert-self-contained.mjs",
     "clean": "rm -rf dist",
-    "dev": "tsx --conditions=development src/index.ts",
+    "dev": "tsx watch --conditions=development src/index.ts",
     "prepack": "pnpm run build",
     "test": "vitest run",
     "test:unit": "vitest run",
@@ -34,10 +31,8 @@
   },
   "dependencies": {
     "@agentconnect.md/control-plane": "workspace:*",
-    "commander": "^15.0.0",
     "fastify": "^5.10.0",
     "jose": "^6.2.4",
-    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -50,9 +45,8 @@
   },
   "keywords": [
     "agentconnect",
-    "cli",
     "self-hosting",
-    "setup"
+    "tenant-admin"
   ],
   "engines": {
     "node": ">=24.12.0"

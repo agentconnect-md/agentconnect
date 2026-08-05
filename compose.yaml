@@ -18,6 +18,8 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    ports:
+      - 127.0.0.1:${AGENTCONNECT_POSTGRES_PORT:-5432}:5432
     volumes:
       # PostgreSQL 18+ keeps PGDATA in a versioned child directory.
       - postgres-data:/var/lib/postgresql
@@ -59,25 +61,17 @@ services:
     volumes:
       - migration-files:/migration:ro
 
-  # Explicit, temporary deployment administration surface. It reuses the
-  # Control Plane image but runs the self-contained @agentconnect.md/setup
-  # bundle instead of the Control Plane process. The host mapping stays on
-  # loopback; stop this profile after saving and verifying configuration.
+  # Loopback-only deployment administration surface. It reuses the Control
+  # Plane image but runs the self-contained @agentconnect.md/setup bundle
+  # instead of the Control Plane process. It is never published beyond the
+  # Docker host's loopback interface.
   tenant-admin:
     <<: *control-plane-image
-    profiles: [admin]
     build:
       context: .
       dockerfile: docker/Dockerfile
       target: control-plane
-    command:
-      - node
-      - /app/packages/setup/dist/index.js
-      - serve
-      - --host
-      - 0.0.0.0
-      - --port
-      - '8091'
+    command: ['node', '/app/packages/setup/dist/index.js']
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,6 +79,8 @@ services:
         condition: service_completed_successfully
     environment:
       - NODE_ENV=production
+      - HOST=0.0.0.0
+      - PORT=8091
       - DATABASE_URL=postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
       - SECRET_CIPHER
       - VAULT_ADDR
@@ -97,12 +93,21 @@ services:
       - VAULT_AUTH_MOUNT
       - TENANT_ADMIN_URL=http://localhost:8091
       - TENANT_ADMIN_ALLOW_CONTAINER_PROXY=true
+      - LOGTO_ADMIN_ENDPOINT=${LOGTO_ADMIN_ENDPOINT:-http://admin.agentconnect.localhost:3002}
+      - AGENTCONNECT_PUBLIC_CP_URL
+      - AGENTCONNECT_PUBLIC_WEB_URL
+      - AGENTCONNECT_PUBLIC_RELAY_URL
+      - AGENTCONNECT_CP_PORT
+      - AGENTCONNECT_WEB_PORT
+      - AGENTCONNECT_RELAY_PORT
+      - OIDC_ISSUER
+      - LOGTO_ENDPOINT
     init: true
     ports:
       - 127.0.0.1:8091:8091
     networks:
       - admin
-    restart: 'no'
+    restart: unless-stopped
 
   control-plane:
     <<: *control-plane-image
@@ -133,10 +138,10 @@ services:
       - VAULT_JWT_ROLE
       - VAULT_JWT_PATH
       - VAULT_AUTH_MOUNT
-      - PUBLIC_CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}
-      - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
-      - PUBLIC_RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
-      - CORS_ORIGIN=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
+      - PUBLIC_CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://api.agentconnect.localhost:${AGENTCONNECT_CP_PORT:-8080}}
+      - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://app.agentconnect.localhost:${AGENTCONNECT_WEB_PORT:-3000}}
+      - PUBLIC_RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://relay.agentconnect.localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      - CORS_ORIGIN=${AGENTCONNECT_PUBLIC_WEB_URL:-http://app.agentconnect.localhost:${AGENTCONNECT_WEB_PORT:-3000}}
       - PRESET_AGENTS_ENABLED
       - OIDC_ISSUER
       - OIDC_AUDIENCE
@@ -144,10 +149,6 @@ services:
       - SLACK_PLATFORM_CLIENT_ID
       - SLACK_PLATFORM_CLIENT_SECRET
       - SLACK_PLATFORM_SIGNING_SECRET
-      - FEISHU_PLATFORM_APP_ID
-      - FEISHU_PLATFORM_APP_SECRET
-      - LARK_PLATFORM_APP_ID
-      - LARK_PLATFORM_APP_SECRET
       - GITHUB_APP_ID
       - GITHUB_APP_PRIVATE_KEY_B64
       - GITHUB_APP_SLUG
@@ -225,8 +226,8 @@ services:
       # Topology-only bootstrap. Public browser settings are read once from the
       # Control Plane's DB-backed startup snapshot and still require a restart.
       - CP_INTERNAL_URL=http://control-plane:8080/api/v1
-      - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
-      - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
+      - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://api.agentconnect.localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
+      - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://relay.agentconnect.localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
       - LOGTO_ENDPOINT
       - LOGTO_APP_ID
       - LOGTO_API_RESOURCE
