@@ -46,29 +46,45 @@ function json(body: unknown, status = 200): Response {
 function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
   return new FeishuSessionAccessService({
     bots: { get: async () => bot() } as never,
+    botSecrets: {
+      get: async () => ({
+        botToken: 'app-secret',
+        appToken: 'cli_custom',
+        signingSecret: null
+      })
+    } as never,
     clock: { now: () => 1_000 } as never,
     fetchImpl
   })
 }
 
-function viewer(accessTokenFor = vi.fn(async () => 'user-token')): FeishuSessionViewer {
-  return { subject: 'logto-user', accessTokenFor }
+function viewer(unionIds: string[] = ['on_member']): FeishuSessionViewer {
+  return { unionIdsFor: (region) => (region === 'lark' ? unionIds : []) }
 }
 
 describe('FeishuSessionAccessService', () => {
-  it('resolves allowed scopes beyond the first 200 with one regional user token', async () => {
-    const accessTokenFor = vi.fn(async () => 'user-token')
-    const fetchImpl = async () => json({ code: 0, data: { is_in_chat: true } })
+  it('resolves allowed scopes beyond the first 200 with one Bot-app tenant token', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.endsWith('/tenant_access_token/internal')
+        ? json({ code: 0, tenant_access_token: 'tenant-token' })
+        : json({ code: 0, data: { items: [{ member_id: 'on_member' }], has_more: false } })
+    )
     const scopes = Array.from({ length: 201 }, (_, index) => scopeAt(index + 1))
-    const result = await service(fetchImpl).resolve(scopes, viewer(accessTokenFor))
+    const result = await service(fetchImpl).resolve(scopes, viewer())
     expect(result.allowedScopes).toHaveLength(201)
     expect(result.degraded).toBe(false)
     expect(result.accessIssues).toEqual([])
-    expect(accessTokenFor).toHaveBeenCalledOnce()
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith('/tenant_access_token/internal'))).toHaveLength(
+      1
+    )
   })
 
   it('uses the Lark gateway and allows a current member of a custom Bot chat', async () => {
-    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.endsWith('/tenant_access_token/internal')
+        ? json({ code: 0, tenant_access_token: 'tenant-token' })
+        : json({ code: 0, data: { items: [{ member_id: 'on_member' }], has_more: false } })
+    )
 
     await expect(service(fetchImpl).resolve([scope()], viewer())).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
@@ -76,20 +92,26 @@ describe('FeishuSessionAccessService', () => {
       accessIssues: []
     })
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://open.larksuite.com/open-apis/im/v1/chats/oc_chat/members/is_in_chat',
+      expect.stringContaining(
+        'https://open.larksuite.com/open-apis/im/v1/chats/oc_chat/members?member_id_type=union_id'
+      ),
       expect.objectContaining({ headers: expect.any(Headers) })
     )
-    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer user-token')
+    expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get('authorization')).toBe('Bearer tenant-token')
   })
 
-  it('denies when the user token is not in the chat', async () => {
+  it('denies when the viewer union_id is not in the chat', async () => {
     await expect(
-      service(async () => json({ code: 0, data: { is_in_chat: false } })).resolve([scope()], viewer())
+      service(async (url) =>
+        url.endsWith('/tenant_access_token/internal')
+          ? json({ code: 0, tenant_access_token: 'tenant-token' })
+          : json({ code: 0, data: { items: [], has_more: false } })
+      ).resolve([scope()], viewer())
     ).resolves.toEqual({ allowedScopes: [], degraded: false, accessIssues: [] })
   })
 
-  it('fails closed and reports degradation when no request-bound user credential is present', async () => {
-    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
+  it('fails closed and reports degradation when no verified login identity is present', async () => {
+    const fetchImpl = vi.fn(async () => json({ code: 0, data: { items: [{ member_id: 'on_member' }] } }))
     await expect(service(fetchImpl).resolve([scope()])).resolves.toEqual({
       allowedScopes: [],
       degraded: true,
@@ -98,13 +120,9 @@ describe('FeishuSessionAccessService', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it('identifies a request-bound authorization failure without calling the chat API', async () => {
-    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
-    const accessTokenFor = vi.fn(async () => {
-      throw new Error('provider token unavailable')
-    })
-
-    await expect(service(fetchImpl).resolve([scope()], viewer(accessTokenFor))).resolves.toEqual({
+  it('identifies a missing regional union_id without calling the chat API', async () => {
+    const fetchImpl = vi.fn(async () => json({ code: 0, data: { items: [{ member_id: 'on_member' }] } }))
+    await expect(service(fetchImpl).resolve([scope()], viewer([]))).resolves.toEqual({
       allowedScopes: [],
       degraded: true,
       accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'authorization' }]
@@ -114,7 +132,11 @@ describe('FeishuSessionAccessService', () => {
 
   it('fails closed and reports degradation for a provider permission failure', async () => {
     await expect(
-      service(async () => json({ code: 99991672, msg: 'missing scope' })).resolve([scope()], viewer())
+      service(async (url) =>
+        url.endsWith('/tenant_access_token/internal')
+          ? json({ code: 0, tenant_access_token: 'tenant-token' })
+          : json({ code: 99991672, msg: 'missing scope' })
+      ).resolve([scope()], viewer())
     ).resolves.toEqual({
       allowedScopes: [],
       degraded: true,
@@ -123,7 +145,7 @@ describe('FeishuSessionAccessService', () => {
   })
 
   it('rejects a scope whose realm does not match its custom Bot app', async () => {
-    const fetchImpl = vi.fn(async () => json({ code: 0, data: { is_in_chat: true } }))
+    const fetchImpl = vi.fn(async () => json({ code: 0, data: { items: [{ member_id: 'on_member' }] } }))
     await expect(service(fetchImpl).resolve([{ ...scope(), realmKey: 'lark:cli_other' }], viewer())).resolves.toEqual({
       allowedScopes: [],
       degraded: false,

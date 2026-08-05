@@ -26,8 +26,9 @@ This design gives every session its own visibility:
   override**: a private session is a DM-grade transcript, and role grants no
   access to it. Default for platform **DM** sessions, **Playground /
   webchat** sessions, and sessions launched through the **Web API**. A
-  Feishu/Lark custom-Bot p2p owner may instead be proven by current membership
-  in that p2p chat because its app-scoped sender id cannot match the login app.
+  Feishu/Lark custom-Bot p2p ownership normally matches through the user's
+  cross-App `union_id`; older events that reported only an app-scoped sender id
+  may instead be proven by current membership in that p2p chat.
 - **`org`** — visible to every org member who can view the owning agent.
   Default for automation-originated sessions and shared IM sessions when the
   corresponding external-audience policy is disabled.
@@ -40,8 +41,10 @@ This design gives every session its own visibility:
   require no linked identity; private repositories require the viewer's
   currently linked GitHub account to retain read access.
   Feishu/Lark sessions created through any registered Bot app require current
-  chat membership, asserted with the viewer's stored login-app user token.
-  This covers both group chats and Bot p2p conversations.
+  chat membership. The BFF uses that Bot App's durable tenant credential to
+  list member `union_id` values and compares them with the viewer's verified
+  sign-in identity. This covers both group chats and Bot p2p conversations and
+  requires no stored user token.
 - **Share-by-link ("public")** — future work; a session with an active share
   link is readable by anyone holding the link. Deliberately **not** a member of
   the visibility enum; see §8.
@@ -66,6 +69,7 @@ work).
 ownerIdentity :=
   user:<app_user_id>                     — console-originated (webchat, Web API launch)
   <platform>:<workspace>:<platform_uid>  — IM-originated, e.g. slack:T024BE7LD:U0123ABCD
+  feishu:<region>:<bot_app_id>:<union_id> — Lark/Feishu custom-Bot ingress
 ```
 
 The IM form carries a **workspace/tenant segment** from day one: platform uids
@@ -89,13 +93,13 @@ matches the same three-part tuple.
 
 Matching is set membership: at request time the BFF computes the viewer's
 **identity set** — `{ user:<userId> }` for every caller, plus the caller's
-verified Slack identity (`slack:<teamId>:<userId>`) or a same-app Feishu/Lark
-identity (`feishu:<region>:<appId>:<openId>`) when linked (§7,
+verified Slack identity (`slack:<teamId>:<userId>`) or a same-developer-org
+Feishu/Lark identity (`feishu:<region>:<botAppId>:<unionId>`) when linked (§7,
 `http/viewer-identity.ts`) — and a `private` session is
 visible when `ownerIdentity ∈ identitySet`. A provider-bound Feishu/Lark p2p
-also accepts a live `is_in_chat` proof from the viewer's login-app user token:
-the chat has one human participant, so this is a cross-app owner proof rather
-than a shared-group audience grant.
+also accepts a live Bot-credential membership proof for legacy sessions whose
+event carried only `open_id`: the chat has one human participant, so this is an
+owner proof rather than a shared-group audience grant.
 
 Consequences:
 
@@ -165,7 +169,9 @@ enum VisibilitySource {
   Slack/Feishu/Lark conversation-access and GitHub repository-access decisions are bounded,
   short-lived in-process cache entries. Linked Slack, Feishu/Lark, and GitHub identities
   remain provider-owned and are resolved from Logto rather than copied into the
-  AgentConnect database.
+  AgentConnect database. Feishu/Lark membership checks reuse each installed Bot
+  App's required credential; AgentConnect stores no additional login App secret
+  or user access token for this feature.
 - `SessionExternalAccessPolicy` is per organization and provider. Its revision
   and read fence make enablement fail closed while historical rows converge.
   History whose scope cannot be reconstructed only settles if new trusted
@@ -234,8 +240,8 @@ GitHub direct ingress reports:
 Feishu/Lark direct ingress uses provider `feishu`, a `conversation` resource,
 and realm `<region>:<appId>`. The App ID identifies and validates the registered
 Bot credential that received the message; it does not need to match the
-environment's login App ID because authorization compares no app-scoped
-`open_id` values.
+sign-in App ID because authorization compares developer-org-scoped `union_id`
+values rather than app-scoped `open_id` values.
 
 The daemon pins that tuple on first use. A later input from a different source
 is rejected rather than silently reusing the session. A2A descendants carry
@@ -637,20 +643,31 @@ login from Logto and asks GitHub for that user's current effective repository
 permission. AgentConnect stores neither the GitHub login nor a copied provider
 ACL; only bounded allow/deny/error verdicts are cached in process.
 
-**Feishu/Lark (shipped).** Logto's connector stores the user's federated token
-after social authorization. On Session authorization reads, the browser sends
-its opaque Account API token to the BFF. The BFF first verifies that token's
-account id equals the request's already verified OIDC subject, then retrieves
-the corresponding regional user token and calls `is_in_chat` for each immutable
-chat id reported by a registered Bot app. The login and Bot App IDs may differ:
-the provider evaluates the current user token directly, so AgentConnect never
-compares their app-scoped `open_id` values. Both group and Bot p2p sessions use
-this live membership decision when sync is enabled. While sync is disabled, a
-p2p session stays `private`; when the same-app identity tuple cannot match a
-custom Bot, the same live check proves its sole human owner instead of leaving
-the session permanently orphaned. Provider failures fail closed.
-Raw Account API and provider tokens are never persisted or logged by the BFF;
-only bounded allow/deny/error verdicts are cached in process.
+**Feishu/Lark (shipped).** Logto provides the verified sign-in identity's
+regional `union_id`. Lark/Feishu guarantees that this value is shared for the
+same human across Apps owned by one developer organization, while `open_id`
+remains App-scoped. `http/viewer-identity.ts` therefore projects the sign-in
+`union_id` into every active Bot App domain in the current AgentConnect
+organization: `feishu:<region>:<botAppId>:<unionId>`. New inbound events use
+`sender_id.union_id` for the same owner tuple, with `open_id` retained only as a
+rolling-upgrade fallback.
+
+For live chat access, the BFF exchanges the installed Bot App's durable App
+ID/Secret for a tenant token and calls `chats/:chat_id/members` with
+`member_id_type=union_id`. Group and Bot p2p sessions compare that current
+member list with the viewer's sign-in `union_id`; provider failures fail closed.
+No browser Account API token, federated user token, duplicate Control Plane
+login-App credential, or user-token refresh loop participates in Session reads.
+Only bounded allow/deny/error verdicts are cached across requests; Bot tenant
+token exchanges are deduplicated within one authorization read.
+
+Every installation enforces the deployment tenant before storing a Bot. The
+Control Plane reads the login identity's `tenant_key`, resolves the candidate
+App's `tenant_key` with that App's tenant token, and rejects a mismatch as
+`org_mismatch`. This applies to one-click creation and pasted credentials, and
+allows any member of the same organization to authorize the one-click flow.
+The comparison is request-local: AgentConnect persists neither `tenant_key` nor
+a human access token.
 
 **Other platform session access (future, separate design).** Telegram and
 Discord still need an explicit verified identity binding before their platform
@@ -706,7 +723,8 @@ link ends public access without touching the session row.
   validation; numeric repository identity across rename; public, private-linked,
   no-access, and provider-error decisions; ambiguous-history hiding; A2A scope
   inheritance; owner-role non-bypass; and parity across every session read path.
-- **Feishu/Lark external audience:** Account-token/OIDC-subject binding;
-  registered custom-Bot source validation; regional `is_in_chat` checks with a
-  stored user token; group and Bot p2p classification; definitive denial versus
-  degraded provider failure; and raw-token non-retention.
+- **Feishu/Lark external audience:** sign-in `union_id` extraction; same-org
+  one-click App validation; registered custom-Bot source validation; regional
+  member enumeration with the Bot App tenant credential and
+  `member_id_type=union_id`; group and Bot p2p classification; definitive denial
+  versus degraded provider failure; and absence of user-token storage.

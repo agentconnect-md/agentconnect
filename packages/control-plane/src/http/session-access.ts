@@ -7,7 +7,6 @@ import type {
 } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { makeViewerIdentitySet } from './viewer-identity.js'
-import { LOGTO_ACCOUNT_TOKEN_HEADER, LogtoFederatedTokenError } from './logto-federated-token.js'
 import { ctxOf, orgOf } from './rbac.js'
 
 /** Provider-neutral, requester-safe diagnostic from a session-visibility
@@ -34,53 +33,33 @@ export interface ResolvedSessionAccess {
  * identity or provider grant; only the adapter's bounded decision cache lives
  * beyond this call. */
 export function makeSessionAccessResolver(deps: HttpDeps) {
-  const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity, deps.feishuPlatformApps)
+  const identitySetFor = makeViewerIdentitySet(deps.logtoIdentity, deps.repos.bot)
 
-  const accountTokenOf = (req: FastifyRequest): string | undefined => {
-    const value = req.headers[LOGTO_ACCOUNT_TOKEN_HEADER]
-    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
-  }
+  const feishuViewerFor = (identitySet: ReadonlySet<string>) => ({
+    unionIdsFor: (region: 'feishu' | 'lark') => {
+      const prefix = `feishu:${region}:`
+      return [...identitySet]
+        .filter((identity) => identity.startsWith(prefix))
+        .map((identity) => identity.split(':')[3])
+        .filter((identity): identity is string => Boolean(identity))
+    }
+  })
 
   const forScopes = async (
     req: FastifyRequest,
-    scopes: readonly ExternalScopeRecord[]
+    scopes: readonly ExternalScopeRecord[],
+    identitySet: Set<string>,
+    accessScopes: readonly ExternalScopeRecord[] = scopes
   ): Promise<ResolvedSessionAccess> => {
     const orgId = orgOf(req)
     const providers = ['slack', 'github', 'feishu'] as const
-    const [identitySet, initialPolicies] = await Promise.all([
-      identitySetFor(req),
-      Promise.all(providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider)))
-    ])
-    const slackScopes = scopes.filter((scope) => scope.provider === 'slack' && scope.orgId === orgId)
-    const githubScopes = scopes.filter((scope) => scope.provider === 'github' && scope.orgId === orgId)
-    const feishuScopes = scopes.filter((scope) => scope.provider === 'feishu' && scope.orgId === orgId)
-    const accountToken = accountTokenOf(req)
-    const federated =
-      req.oidcSubject && accountToken && deps.logtoFederatedToken
-        ? deps.logtoFederatedToken.forRequest(req.oidcSubject, accountToken)
-        : undefined
-    const feishuViewer = federated
-      ? {
-          subject: req.oidcSubject!,
-          accessTokenFor: async (region: 'feishu' | 'lark') => {
-            try {
-              return await federated.accessTokenFor(region)
-            } catch (error) {
-              const diagnostic =
-                error instanceof LogtoFederatedTokenError
-                  ? {
-                      target: error.target ?? region,
-                      stage: error.stage,
-                      status: error.status ?? null,
-                      code: error.code ?? null
-                    }
-                  : { target: region, stage: 'federated_token', status: null, code: 'unclassified_failure' }
-              req.log.warn({ provider: 'feishu', ...diagnostic }, 'Federated session access token is unavailable')
-              throw error
-            }
-          }
-        }
-      : undefined
+    const initialPolicies = await Promise.all(
+      providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider))
+    )
+    const slackScopes = accessScopes.filter((scope) => scope.provider === 'slack' && scope.orgId === orgId)
+    const githubScopes = accessScopes.filter((scope) => scope.provider === 'github' && scope.orgId === orgId)
+    const feishuScopes = accessScopes.filter((scope) => scope.provider === 'feishu' && scope.orgId === orgId)
+    const feishuViewer = feishuViewerFor(identitySet)
     const [slackResult, githubResult, feishuResult] = await Promise.all([
       deps.slackSessionAccess
         ? deps.slackSessionAccess.resolve(slackScopes, identitySet)
@@ -137,25 +116,46 @@ export function makeSessionAccessResolver(deps: HttpDeps) {
 
   return {
     async forQuery(req: FastifyRequest, query: SessionFilterQuery): Promise<ResolvedSessionAccess> {
-      return forScopes(req, await deps.repos.session.listExternalScopes(query))
+      const identitySet = await identitySetFor(req)
+      const scopes = await deps.repos.session.listExternalScopes({
+        ...query,
+        viewer: { role: ctxOf(req).role, identitySet: [...identitySet] }
+      })
+      return forScopes(req, scopes, identitySet)
     },
     async forSessions(
       req: FastifyRequest,
-      sessions: readonly Pick<SessionMetaRecord, 'visibility' | 'externalProvider' | 'externalScopeId'>[]
+      sessions: readonly Pick<
+        SessionMetaRecord,
+        'visibility' | 'ownerIdentity' | 'externalProvider' | 'externalScopeId'
+      >[]
     ): Promise<ResolvedSessionAccess> {
+      const identitySet = await identitySetFor(req)
+      const scoped = sessions.filter(
+        (session) => session.visibility === 'external' || session.externalProvider === 'feishu'
+      )
       const ids = [
-        ...new Set(
-          sessions
-            .filter(
-              (session) =>
-                session.visibility === 'external' ||
-                (session.visibility === 'private' && session.externalProvider === 'feishu')
-            )
-            .map((session) => session.externalScopeId)
-            .filter((id): id is string => id !== null)
-        )
+        ...new Set(scoped.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
       ]
-      return forScopes(req, await deps.repos.session.getExternalScopes(ids))
+      const membershipIds = new Set(
+        scoped
+          .filter(
+            (session) =>
+              session.visibility === 'external' ||
+              (session.visibility === 'private' &&
+                session.externalProvider === 'feishu' &&
+                (!session.ownerIdentity || !identitySet.has(session.ownerIdentity)))
+          )
+          .map((session) => session.externalScopeId)
+          .filter((id): id is string => id !== null)
+      )
+      const scopes = await deps.repos.session.getExternalScopes(ids)
+      return forScopes(
+        req,
+        scopes,
+        identitySet,
+        scopes.filter((scope) => membershipIds.has(scope.id))
+      )
     }
   }
 }

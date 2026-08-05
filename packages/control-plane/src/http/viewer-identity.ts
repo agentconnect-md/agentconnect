@@ -23,11 +23,12 @@
 import type { FastifyRequest } from 'fastify'
 import { identitySetOf } from '../authorization/policy.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
-import type { FeishuPlatformApps } from '../config/feishu-platform.js'
+import type { BotRepo } from '../persistence/ports.js'
 import { ctxOf } from './rbac.js'
 
 /** The one provider read this needs — injectable so tests stay offline. */
 export type ProviderIdentityReader = Partial<Pick<LogtoIdentityService, 'slackIdentityFor' | 'feishuIdentitiesFor'>>
+type FeishuAppReader = Pick<BotRepo, 'listForOrg'>
 
 export type ViewerIdentitySetResolver = (req: FastifyRequest) => Promise<Set<string>>
 
@@ -35,15 +36,16 @@ export type ViewerIdentitySetResolver = (req: FastifyRequest) => Promise<Set<str
  *  `logtoIdentity` absent (LOGTO_MGMT_* unset) ⇒ console identity only. */
 export function makeViewerIdentitySet(
   logtoIdentity?: ProviderIdentityReader,
-  feishuPlatformApps: FeishuPlatformApps = {}
+  feishuApps?: FeishuAppReader
 ): ViewerIdentitySetResolver {
   return async (req) => {
     const identitySet = identitySetOf(ctxOf(req))
     const sub = req.oidcSubject
     if (!sub || !logtoIdentity) return identitySet
-    const [slackResult, feishuResult] = await Promise.allSettled([
+    const [slackResult, feishuResult, appResult] = await Promise.allSettled([
       logtoIdentity.slackIdentityFor?.(sub),
-      logtoIdentity.feishuIdentitiesFor?.(sub)
+      logtoIdentity.feishuIdentitiesFor?.(sub),
+      req.orgCtx && feishuApps ? feishuApps.listForOrg(req.orgCtx.orgId) : []
     ])
     if (slackResult.status === 'fulfilled') {
       const slack = slackResult.value
@@ -52,12 +54,24 @@ export function makeViewerIdentitySet(
       req.log.warn({ err: slackResult.reason }, 'viewer identity: Slack lookup failed')
     }
     if (feishuResult.status === 'fulfilled') {
+      const apps = appResult.status === 'fulfilled' ? appResult.value : []
       for (const identity of feishuResult.value ?? []) {
-        const app = feishuPlatformApps[identity.region]
-        if (app) identitySet.add(`feishu:${identity.region}:${app.appId}:${identity.openId}`)
+        for (const bot of apps) {
+          if (
+            bot.platform === 'feishu' &&
+            bot.revokedAt === null &&
+            bot.feishuAppId &&
+            (bot.feishuRegion ?? 'feishu') === identity.region
+          ) {
+            identitySet.add(`feishu:${identity.region}:${bot.feishuAppId}:${identity.unionId}`)
+          }
+        }
       }
     } else {
       req.log.warn({ err: feishuResult.reason }, 'viewer identity: Feishu/Lark lookup failed')
+    }
+    if (appResult.status === 'rejected') {
+      req.log.warn({ err: appResult.reason }, 'viewer identity: Feishu/Lark app lookup failed')
     }
     return identitySet
   }

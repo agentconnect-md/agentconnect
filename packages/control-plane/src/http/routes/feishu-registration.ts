@@ -115,6 +115,24 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
             message: 'HTTP callback delivery is unavailable on this deployment'
           })
         }
+        let loginTenantKey: string | null
+        try {
+          loginTenantKey = await feishu.loginTenantKeyFor(createdByUserId, req.body.region)
+        } catch {
+          return reply.code(502).send({
+            error: 'Bad Gateway',
+            statusCode: 502,
+            message: 'Could not verify your Lark/Feishu sign-in identity. Please try again.'
+          })
+        }
+        if (!loginTenantKey) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message:
+              'Link a Lark/Feishu sign-in identity for this cloud first. Every Bot App must belong to that same organization.'
+          })
+        }
         try {
           const started = await feishu.registrations.start({
             orgId,
@@ -165,6 +183,22 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
       async (req, reply) => {
         const orgId = orgIdOf(req)
         const session = await feishu.registrations.get(req.params.id, orgId, async (registration) => {
+          const loginTenantKey = await feishu.loginTenantKeyFor(registration.createdByUserId, registration.region)
+          if (!loginTenantKey) throw new FeishuRegistrationSetupError('org_mismatch')
+          const appTenant = await feishu.resolveAppTenant(
+            registration.appId,
+            registration.appSecret,
+            registration.region
+          )
+          if (appTenant.status === 'invalid_credentials') {
+            throw new FeishuRegistrationSetupError('invalid_credentials')
+          }
+          if (appTenant.status === 'unresolved') throw new FeishuRegistrationSetupError('setup_failed')
+          if (appTenant.status === 'unavailable') {
+            throw new Error('Lark/Feishu App organization is temporarily unavailable')
+          }
+          if (appTenant.tenantKey !== loginTenantKey) throw new FeishuRegistrationSetupError('org_mismatch')
+
           const check = feishu.verifyBot
             ? await feishu.verifyBot(registration.appId, registration.appSecret, registration.region)
             : null

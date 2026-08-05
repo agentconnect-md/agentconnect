@@ -155,7 +155,7 @@ export class FeishuHttpIngest {
     }
     if (callback.eventType !== 'im.message.receive_v1') return undefined
     const like = feishuEventToMessageLike(callback.event as FeishuRawEvent)
-    if (!like.messageId || !like.chatId || !like.senderOpenId) return
+    if (!like.messageId || !like.chatId || (!like.senderOpenId && !like.senderUnionId)) return
     await this.deps.onMessage(
       normalizeFeishuMessage(like, {
         traceId: callback.eventId ? `feishu:${callback.eventId}` : `feishu:${like.chatId}:${like.messageId}`

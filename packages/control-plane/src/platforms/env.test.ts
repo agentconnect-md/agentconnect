@@ -7,11 +7,10 @@
  * key here is a deployment contract: a key that quietly stops being parsed reads
  * as "feature off" at boot, not as an error.
  *
- * So the first suite pins the full key set against the pre-refactor schema's
- * (core keys + the two providers' declarations, read off `origin/main`), the
- * second pins that the composition and the four PROVIDER instances agree — the
- * drift a static list would otherwise hide — and the third pins the collision
- * guards that make the spread safe.
+ * So the first suite pins the current deployment contract (including retired
+ * keys staying absent), the second pins that the composition and the four
+ * PROVIDER instances agree — the drift a static list would otherwise hide —
+ * and the third pins the collision guards that make the spread safe.
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
@@ -23,8 +22,8 @@ import { createDiscordCpProvider } from './discord/provider.js'
 import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
 
-/** Every key `loadConfig` accepted BEFORE the fold. */
-const KEYS_BEFORE = [
+/** Every supported deployment key. */
+const EXPECTED_KEYS = [
   'ACK_TIMEOUT_MS',
   'API_KEY_PEPPER',
   'CORS_ORIGIN',
@@ -32,16 +31,12 @@ const KEYS_BEFORE = [
   'CRON_RUN_TTL_SEC',
   'DAEMON_DIST_TAG',
   'DATABASE_URL',
-  'FEISHU_PLATFORM_APP_ID',
-  'FEISHU_PLATFORM_APP_SECRET',
   'GITHUB_APP_CLIENT_ID',
   'GITHUB_APP_ID',
   'GITHUB_APP_PRIVATE_KEY_B64',
   'GITHUB_APP_SLUG',
   'HEARTBEAT_SEC',
   'HOST',
-  'LARK_PLATFORM_APP_ID',
-  'LARK_PLATFORM_APP_SECRET',
   'LOGTO_MGMT_APP_ID',
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_ENDPOINT',
@@ -97,8 +92,8 @@ const MINIMAL_ENV = {
 }
 
 describe('composed AppConfigSchema', () => {
-  it('accepts exactly the keys loadConfig accepted before the fold', () => {
-    expect(Object.keys(AppConfigSchema.shape).sort()).toEqual([...KEYS_BEFORE].sort())
+  it('accepts exactly the supported deployment keys', () => {
+    expect(Object.keys(AppConfigSchema.shape).sort()).toEqual([...EXPECTED_KEYS].sort())
   })
 
   it('keeps each platform key parsing as its provider declared it', () => {
@@ -108,25 +103,18 @@ describe('composed AppConfigSchema', () => {
       SLACK_PLATFORM_APP_ID: 'A1',
       SLACK_PLATFORM_CLIENT_ID: 'cid',
       SLACK_PLATFORM_CLIENT_SECRET: 'csecret',
-      SLACK_PLATFORM_SIGNING_SECRET: 'sig',
-      FEISHU_PLATFORM_APP_ID: 'cli_feishu',
-      FEISHU_PLATFORM_APP_SECRET: 'fsecret',
-      LARK_PLATFORM_APP_ID: 'cli_lark',
-      LARK_PLATFORM_APP_SECRET: 'lsecret'
+      SLACK_PLATFORM_SIGNING_SECRET: 'sig'
     } as NodeJS.ProcessEnv)
 
     // Coerced number + the reaper default that is NOT in the environment.
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(120)
     expect(config.SLACK_INSTALL_REAP_INTERVAL_SEC).toBe(600)
     expect(config.SLACK_PLATFORM_APP_ID).toBe('A1')
-    expect(config.FEISHU_PLATFORM_APP_SECRET).toBe('fsecret')
-    expect(config.LARK_PLATFORM_APP_ID).toBe('cli_lark')
   })
 
   it('leaves every platform key optional — an unset one never fail-fasts a boot', () => {
     const config = loadConfig(MINIMAL_ENV as NodeJS.ProcessEnv)
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
-    expect(config.FEISHU_PLATFORM_APP_ID).toBeUndefined()
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(3600)
   })
 })
@@ -151,7 +139,7 @@ describe('platform env declarations', () => {
   })
 
   it('declares nothing for a platform with no deployment configuration', () => {
-    for (const platformId of ['telegram', 'discord']) {
+    for (const platformId of ['telegram', 'discord', 'feishu']) {
       expect(CP_PLATFORM_ENV_SCHEMAS.some((decl) => decl.platformId === platformId)).toBe(false)
     }
   })

@@ -13,6 +13,7 @@ const base: FeishuMessageLike = {
   messageType: 'text',
   content: JSON.stringify({ text: 'hello @_user_1' }),
   senderOpenId: 'ou_123',
+  senderUnionId: 'on_123',
   senderIsBot: false,
   mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: 'AgentBot' }]
 }
@@ -27,13 +28,18 @@ describe('normalizeFeishuMessage', () => {
       channel: 'oc_777',
       text: 'hello @AgentBot', // @_user_1 placeholder humanized to the mention name
       mentionedBots: ['ou_bot'], // routed on the mentioned party's open_id
-      sender: { id: 'ou_123', isBot: false },
+      sender: { id: 'on_123', isBot: false },
       isDm: false
     })
     // A top-level group @mention opens a topic thread → keyed on its own message id
     // (which the connection replies into as the thread root).
     expect(m.thread).toBe('om_111')
     expect(m.attachments).toBeUndefined()
+  })
+
+  it('falls back to open_id for rolling compatibility when union_id is absent', () => {
+    const { senderUnionId: _omit, ...legacy } = base
+    expect(normalizeFeishuMessage(legacy, { traceId: 't' }).sender.id).toBe('ou_123')
   })
 
   it('keys a group thread reply on root_id, so the whole topic thread is one session', () => {

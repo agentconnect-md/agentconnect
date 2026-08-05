@@ -22,19 +22,26 @@ describe('makeViewerIdentitySet', () => {
     expect(slackIdentityFor).toHaveBeenCalledWith('logto-sub')
   })
 
-  it('adds an app-qualified Lark identity only for the configured matching app', async () => {
+  it('adds the same Lark union_id in every active app domain registered to the org', async () => {
     const resolve = makeViewerIdentitySet(
-      { feishuIdentitiesFor: async () => [{ region: 'lark', openId: 'ou_member' }] },
-      { lark: { appId: 'cli_platform', appSecret: 'secret' } }
+      { feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }] },
+      {
+        listForOrg: async () =>
+          [
+            { platform: 'feishu', feishuRegion: 'lark', feishuAppId: 'cli_one', revokedAt: null },
+            { platform: 'feishu', feishuRegion: 'lark', feishuAppId: 'cli_two', revokedAt: null },
+            { platform: 'feishu', feishuRegion: 'feishu', feishuAppId: 'cli_mainland', revokedAt: null }
+          ] as never
+      }
     )
     expect(await resolve(reqOf({ userId: 'u-1', oidcSubject: 'logto-sub' }))).toEqual(
-      new Set(['user:u-1', 'feishu:lark:cli_platform:ou_member'])
+      new Set(['user:u-1', 'feishu:lark:cli_one:on_member', 'feishu:lark:cli_two:on_member'])
     )
   })
 
-  it('does not admit a Lark open_id without its configured app domain', async () => {
+  it('does not admit a Lark union_id without a registered app domain', async () => {
     const resolve = makeViewerIdentitySet({
-      feishuIdentitiesFor: async () => [{ region: 'lark', openId: 'ou_member' }]
+      feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }]
     })
     expect(await resolve(reqOf({ userId: 'u-1', oidcSubject: 'logto-sub' }))).toEqual(new Set(['user:u-1']))
   })

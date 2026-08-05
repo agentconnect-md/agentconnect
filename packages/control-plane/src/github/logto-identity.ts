@@ -142,9 +142,12 @@ export interface SlackIdentity {
 
 export interface FeishuIdentity {
   region: 'feishu' | 'lark'
-  /** App-scoped human identity. It is comparable only when Logto and the
-   * messaging integration use the same platform app id. */
-  openId: string
+  /** Developer-organization-scoped human identity. Custom apps created by the
+   * same Lark/Feishu tenant report the same value for this person. */
+  unionId: string
+  /** Deployment tenant identity returned by the login App. Used only to
+   * validate new Bot Apps; AgentConnect does not copy it into its database. */
+  tenantKey?: string
 }
 
 // Slack namespaces its non-standard OIDC claims. `sub` carries the same user id
@@ -275,8 +278,7 @@ export class LogtoIdentityService {
     return slackIdentityOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
   }
 
-  /** Linked Feishu/Lark identities. Their open_id values remain app-scoped;
-   * viewer-identity adds the configured app id before they can authorize. */
+  /** Linked Feishu/Lark identities, keyed by the provider's cross-app union_id. */
   async feishuIdentitiesFor(sub: string): Promise<FeishuIdentity[]> {
     return feishuIdentitiesOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
   }
@@ -664,13 +666,15 @@ function slackIdentityOf(user: LogtoUser | null): SlackIdentity | null {
 function feishuIdentitiesOf(user: LogtoUser | null): FeishuIdentity[] {
   const identities: FeishuIdentity[] = []
   for (const region of ['feishu', 'lark'] as const) {
-    const raw = user?.identities?.[region]?.details?.rawData
+    const identity = user?.identities?.[region]
+    const raw = identity?.details?.rawData
     const data = raw?.data as Record<string, unknown> | undefined
     const userInfo = raw?.userInfo as Record<string, unknown> | undefined
-    // Built-in Feishu currently stores the normalized user-info body; generic
-    // OAuth2 connectors may preserve the provider's {data:{...}} envelope.
-    const openId = firstString(raw?.open_id, data?.open_id, userInfo?.open_id)
-    if (openId) identities.push({ region, openId })
+    // Logto stores the connector's stable provider subject as `userId`. Keep
+    // rawData fallbacks for connector versions that preserved only user-info.
+    const unionId = firstString(identity?.userId, raw?.union_id, data?.union_id, userInfo?.union_id)
+    const tenantKey = firstString(raw?.tenant_key, data?.tenant_key, userInfo?.tenant_key)
+    if (unionId) identities.push({ region, unionId, ...(tenantKey ? { tenantKey } : {}) })
   }
   return identities
 }

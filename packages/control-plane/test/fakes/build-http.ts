@@ -8,6 +8,7 @@
  * stub (no `OIDC_ISSUER`). Tests drive it with `app.inject` — DB-backed, NO socket.
  */
 import type { FastifyInstance } from 'fastify'
+import type { FeishuRegion } from '@agentconnect.md/protocol'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import {
   PgAgentRepo,
@@ -110,7 +111,7 @@ import type { TelegramBotVerifier } from '../../src/http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../src/http/telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from '../../src/http/discord-identity.js'
 import type { DiscordBotProfileSyncer } from '../../src/http/discord-bot-profile.js'
-import type { FeishuBotVerifier } from '../../src/http/feishu-identity.js'
+import type { FeishuAppTenantResolver, FeishuBotVerifier } from '../../src/http/feishu-identity.js'
 import type { FeishuHttpAppConfigurator } from '../../src/http/feishu-app-config.js'
 import type { FeishuAppIconSyncer } from '../../src/http/feishu-app-icon.js'
 import { createReadiness } from '../../src/http/readiness.js'
@@ -150,6 +151,8 @@ export interface PlatformStubs {
   ensureDiscordMessageContentIntent: DiscordMessageContentIntentEnsurer
   syncDiscordBotProfile?: DiscordBotProfileSyncer
   verifyFeishuBot?: FeishuBotVerifier
+  feishuLoginTenantKeyFor: (userId: string, region: FeishuRegion) => Promise<string | null>
+  resolveFeishuAppTenant: FeishuAppTenantResolver
   configureFeishuHttpApp: FeishuHttpAppConfigurator
   syncFeishuAppIcon?: FeishuAppIconSyncer
   feishuAppRegistration: FeishuAppRegistrationService
@@ -168,6 +171,8 @@ const PLATFORM_STUB_KEYS = [
   'ensureDiscordMessageContentIntent',
   'syncDiscordBotProfile',
   'verifyFeishuBot',
+  'feishuLoginTenantKeyFor',
+  'resolveFeishuAppTenant',
   'configureFeishuHttpApp',
   'syncFeishuAppIcon',
   'feishuAppRegistration'
@@ -319,6 +324,8 @@ export function buildHttpApp(
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
     ensureDiscordMessageContentIntent: async () => 'ready',
     configureFeishuHttpApp: async () => {},
+    feishuLoginTenantKeyFor: async () => 'tenant_same_org',
+    resolveFeishuAppTenant: async () => ({ status: 'ok', tenantKey: 'tenant_same_org' }),
     feishuAppRegistration: new FeishuAppRegistrationService(feishuAppRegistrationStore),
     ...Object.fromEntries(
       PLATFORM_STUB_KEYS.filter((key) => depsOverrides && key in depsOverrides).map((key) => [
@@ -475,6 +482,8 @@ export function buildHttpApp(
       platformStubs.verifyFeishuBot
         ? platformStubs.verifyFeishuBot(appId, appSecret, region)
         : { status: 'unreachable' },
+    loginTenantKeyFor: (userId, region) => platformStubs.feishuLoginTenantKeyFor(userId, region),
+    resolveAppTenant: (appId, appSecret, region) => platformStubs.resolveFeishuAppTenant(appId, appSecret, region),
     configureHttpApp: (input) => platformStubs.configureFeishuHttpApp(input),
     registrations: platformStubs.feishuAppRegistration
   }
@@ -521,6 +530,8 @@ export function buildHttpApp(
     }),
     createFeishuCpProvider({
       verifyBot: feishuSeams.verifyBot!,
+      loginTenantKeyFor: feishuSeams.loginTenantKeyFor,
+      resolveAppTenant: feishuSeams.resolveAppTenant,
       funnelRoutes: { org: [feishuRegistrationRoutes(deps, feishuSeams)], publicCallback: [] },
       syncAppIcon: async (appId, appSecret, region, agent) =>
         platformStubs.syncFeishuAppIcon?.(appId, appSecret, region, agent)

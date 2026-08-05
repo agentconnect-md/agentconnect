@@ -197,24 +197,27 @@ describe('LogtoIdentityService.slackIdentityFor', () => {
 })
 
 describe('LogtoIdentityService.feishuIdentitiesFor', () => {
-  it('reads app-scoped open_id values from both built-in Feishu and generic Lark connector rawData', async () => {
+  it('reads cross-app union_id values from the stored provider subject and connector rawData', async () => {
     const { fetchImpl } = fakeLogto({
       'sub-1': {
         identities: {
-          feishu: { userId: 'union-f', details: { rawData: { open_id: 'ou_feishu' } } },
-          lark: { userId: 'union-l', details: { rawData: { data: { open_id: 'ou_lark' } } } }
+          feishu: {
+            userId: 'on_feishu',
+            details: { rawData: { open_id: 'ou_feishu', tenant_key: 'tenant_feishu' } }
+          },
+          lark: { details: { rawData: { data: { union_id: 'on_lark', tenant_key: 'tenant_lark' } } } }
         }
       }
     })
     await expect(svcOf(fetchImpl).feishuIdentitiesFor('sub-1')).resolves.toEqual([
-      { region: 'feishu', openId: 'ou_feishu' },
-      { region: 'lark', openId: 'ou_lark' }
+      { region: 'feishu', unionId: 'on_feishu', tenantKey: 'tenant_feishu' },
+      { region: 'lark', unionId: 'on_lark', tenantKey: 'tenant_lark' }
     ])
   })
 
-  it('ignores an identity whose connector rawData has no open_id', async () => {
+  it('ignores an identity whose connector record has no union_id', async () => {
     const { fetchImpl } = fakeLogto({
-      'sub-1': { identities: { lark: { userId: 'union-only', details: { rawData: { union_id: 'on_x' } } } } }
+      'sub-1': { identities: { lark: { details: { rawData: { open_id: 'ou_only' } } } } }
     })
     await expect(svcOf(fetchImpl).feishuIdentitiesFor('sub-1')).resolves.toEqual([])
   })

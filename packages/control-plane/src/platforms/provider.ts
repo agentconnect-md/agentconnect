@@ -161,6 +161,14 @@ export interface CpConfigRefusal {
 
 export type CpConfigValidation = { ok: true; identity: CpValidatedIdentity } | CpConfigRefusal
 
+/** Request identity available to platform validation without teaching core
+ * which providers use it. Feishu uses it to bind pasted App credentials to the
+ * deployment's login tenant; other providers currently ignore it. */
+export interface CpConfigValidationContext {
+  orgId: OrgId
+  userId?: string
+}
+
 /**
  * The PLATFORM-SPECIFIC half of "register a new bot from pasted credentials" —
  * everything core's one shared create tail (`http/install-bot.ts`) cannot know:
@@ -413,7 +421,11 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    * contract: only a DEFINITIVE rejection may refuse with 400; a network blip
    * is 503, never proof the credential is bad.
    */
-  validateConfig(credentials: TCredentials, transport: CpInstallTransport): Promise<CpConfigValidation>
+  validateConfig(
+    credentials: TCredentials,
+    transport: CpInstallTransport,
+    context?: CpConfigValidationContext
+  ): Promise<CpConfigValidation>
 
   /**
    * Map a validated credential block onto the rows a NEW bot install writes —

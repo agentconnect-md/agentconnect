@@ -173,7 +173,8 @@ IntegrationFeishuConfig }`.
   the durable registration status.
 - Keep the reviewable template in `src/http/feishu-app-template.ts`: use
   `createOnly: true`, the platform `PersonalAgent` preset, AgentConnect's
-  tenant scopes, and `im.message.receive_v1`.
+  tenant scopes (including `tenant:tenant:readonly`) and
+  `im.message.receive_v1`.
 - Start every device flow on the canonical `accounts.feishu.cn` issuer. For
   Lark, preserve the returned `user_code` while changing the user-facing
   launcher to `open.larksuite.com`; direct issuance from
@@ -186,8 +187,11 @@ IntegrationFeishuConfig }`.
   pre-reserved bot/integration IDs make retries idempotent. Clear both secrets
   on every terminal outcome and TTL-reap old rows.
 - After approval, pass the returned App ID and App Secret directly to the same
-  bot-secret installation helper used by the manual route. Never return either
-  credential from the registration routes.
+  bot-secret installation helper used by the manual route only after the App's
+  `tenant_key` matches the creator's sign-in tenant. This requires the new App
+  and sign-in App to belong to the same Lark/Feishu organization, but does not
+  require the same human to authorize both. Never return either credential from
+  the registration routes.
 - In `src/http/dto/index.ts`:
   - Add `'feishu'` to the `platform` `[enum]` in `CreateIntegrationBody`; add
     optional `feishu: z.object({ appId, appSecret })`; and update both
@@ -278,7 +282,8 @@ IntegrationFeishuConfig }`.
   - Set `platform: 'feishu'`, `channel = chat_id`, and for a group set
     `thread = root_id ?? message_id`; for a direct chat use `chat_id`.
     Group topics use their root as the session key and reply anchor, while P2P
-    uses the chat. See section 7.4. Set `sender.id = open_id`.
+    uses the chat. See section 7.4. Set `sender.id = union_id`, falling back to
+    `open_id` only for older/incomplete event payloads during rollout.
   - A mention matches when `event.message.mentions[]` contains the bot's own
     open ID.
   - `isDm` is `chat_type === 'p2p'`.
@@ -383,7 +388,11 @@ All three must include `'feishu'` for end-to-end selection.
 At one-click installation, the Console starts registration and the Control
 Plane returns a provider authorization deeplink. After the user confirms the
 app and permissions, the SDK returns `appId` and `appSecret` only to the
-Control Plane. `verifyFeishuBot` validates them and `botSecret.put` stores
+Control Plane. It exchanges those credentials for a tenant token, calls the
+tenant-information API, and compares the resulting `tenant_key` with the
+creator's verified sign-in tenant; a mismatch fails setup before any Bot is
+installed. The manual credential path runs the same tenant check.
+`verifyFeishuBot` validates the credentials and `botSecret.put` stores
 `{ botToken: appSecret, appToken: appId }`; `integrationToSpec` then distributes
 the integration to the daemon, which persists it in `agent.json` and starts
 `WSClient`.
@@ -406,6 +415,9 @@ API egress.
 - Uninstalling through `DELETE /integrations` removes only integration
   metadata. It retains the bot and credentials and marks the bot free for reuse,
   matching existing behavior.
+- Session audience checks use this already-required Bot credential to enumerate
+  chat member `union_id` values. They do not store or refresh a human access
+  token, and the Control Plane needs no duplicate copy of the sign-in App secret.
 
 ## 7. Lark / Feishu-specific decisions
 
@@ -475,10 +487,10 @@ The default one-click flow uses the official `PersonalAgent` app template and
 pre-fills AgentConnect's event and permission additions. They include
 `im.message.receive_v1`, message send/read and resource scopes,
 `im:chat:read`, `im:chat.members:bot_access`,
-`contact:contact.base:readonly`, and `contact:user.base:readonly`. The last
-scope is required for participant names instead of raw `ou_...` IDs. The user
-still reviews and confirms the app, and tenant policy may require administrator
-approval. For HTTP delivery, sensitive settings cannot travel in the deeplink:
+`im:chat.members:read`, and `tenant:tenant:readonly`. The last scope lets the
+Control Plane reject Apps outside the deployment's login organization. The
+user still reviews and confirms the app, and tenant policy may require
+administrator approval. For HTTP delivery, sensitive settings cannot travel in the deeplink:
 after approval the Control Plane uses the returned credentials to set the
 stable `/feishu/events` Request URL, Verification Token, and Encrypt Key through
 the application-config OpenAPI, after assigning those same values to the relay.
@@ -495,7 +507,8 @@ Manual setup must configure the same bot capability, scopes, publication state,
 and `im.message.receive_v1` event, selecting either **Long Connection** or
 **HTTP callbacks** for delivery. In both paths, adding the bot to a target group
 remains a user action. The setup checklist documents those manual prerequisites
-and links to the selected Lark or Feishu Open Platform console.
+and requires every Bot App to be created in the same developer organization as
+the sign-in App, then links to the selected Lark or Feishu Open Platform console.
 
 ## 8. Current implementation and remaining scope
 
@@ -513,9 +526,11 @@ and links to the selected Lark or Feishu Open Platform console.
 - **Control Plane:** a durable registration coordinator resumes the official
   device flow across replicas, leases each poll/finalize step, and installs
   credentials server-side through the same secret-store helper as the manual
-  route. HTTP registrations additionally configure the app's callback delivery
-  after the relay assignment exists. App Secret never enters a browser response
-  and is cleared from the pending row after settlement.
+  route. Both paths reject a Bot App whose `tenant_key` does not match the
+  deployment's sign-in organization. HTTP registrations additionally configure
+  the app's callback delivery after the relay assignment exists. App Secret
+  never enters a browser response and is cleared from the pending row after
+  settlement.
 - **HTTP ingress:** the relay endpoint `/feishu/events` verifies/decrypts and
   deduplicates callbacks before forwarding normalized messages and CardKit
   actions directly to the owning daemon. Card actions return the daemon's

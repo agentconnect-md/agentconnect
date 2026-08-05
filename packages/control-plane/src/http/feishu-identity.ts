@@ -32,6 +32,21 @@ export type FeishuBotVerifier = (
   region?: FeishuRegion
 ) => Promise<FeishuBotVerification>
 
+/** Resolve the tenant that owns an App. The installer compares this immutable
+ *  tenant_key with the login App's tenant without retaining either an App-user
+ *  token or a request-bound authorization grant. */
+export type FeishuAppTenantResolution =
+  | { status: 'ok'; tenantKey: string }
+  | { status: 'invalid_credentials' }
+  | { status: 'unresolved' }
+  | { status: 'unavailable' }
+
+export type FeishuAppTenantResolver = (
+  appId: string,
+  appSecret: string,
+  region: FeishuRegion
+) => Promise<FeishuAppTenantResolution>
+
 /** Open-platform gateway per region. Mainland China ('feishu') vs international ('lark');
  *  the verifier must exchange credentials against the SAME host the daemon's SDK will use,
  *  or a valid Lark app would be rejected against the Feishu gateway. Defaults to feishu. */
@@ -78,5 +93,38 @@ export const verifyFeishuBot: FeishuBotVerifier = async (appId, appSecret, regio
     return { status: 'ok', name, openId }
   } catch {
     return { status: 'ok', name: null, openId: null }
+  }
+}
+
+export const resolveFeishuAppTenant: FeishuAppTenantResolver = async (appId, appSecret, region) => {
+  const base = REGION_BASE[region]
+  let token: string
+  try {
+    const res = await fetch(`${base}/auth/v3/tenant_access_token/internal`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+      signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
+    })
+    if (!res.ok) return { status: 'unavailable' }
+    const body = (await res.json()) as { code?: number; tenant_access_token?: string }
+    if (body.code !== 0 || !body.tenant_access_token) return { status: 'invalid_credentials' }
+    token = body.tenant_access_token
+  } catch {
+    return { status: 'unavailable' }
+  }
+
+  try {
+    const res = await fetch(`${base}/tenant/v2/tenant/query`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
+    })
+    if (!res.ok) return { status: 'unavailable' }
+    const body = (await res.json()) as { code?: number; data?: { tenant?: { tenant_key?: string } } }
+    if (body.code !== 0) return { status: 'unavailable' }
+    const tenantKey = body.data?.tenant?.tenant_key?.trim()
+    return tenantKey ? { status: 'ok', tenantKey } : { status: 'unresolved' }
+  } catch {
+    return { status: 'unavailable' }
   }
 }

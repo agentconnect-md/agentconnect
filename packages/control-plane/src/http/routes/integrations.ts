@@ -431,7 +431,10 @@ export function integrationRoutes(deps: HttpDeps) {
           // stale / wrong / swapped credential fails the request instead of minting
           // an integration whose transport never opens. Reachability stays
           // best-effort by contract: only a DEFINITIVE rejection refuses with 400.
-          const validated = await provider.validateConfig(credentials, transport)
+          const validated = await provider.validateConfig(credentials, transport, {
+            orgId,
+            ...(req.principal ? { userId: req.principal.userId } : {})
+          })
           if (!validated.ok) return sendConfigRefusal(reply, validated)
 
           // The platform half of the write: which bot/integration columns this

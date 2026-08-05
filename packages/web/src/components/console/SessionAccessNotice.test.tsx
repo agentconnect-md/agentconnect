@@ -8,7 +8,7 @@ vi.mock('@/lib/org-context', () => ({
 import SessionAccessNotice from './SessionAccessNotice'
 
 describe('SessionAccessNotice', () => {
-  it('offers direct renewal for a classified regional authorization failure', () => {
+  it('offers a one-time identity refresh for a classified regional identity failure', () => {
     const html = renderToStaticMarkup(
       <SessionAccessNotice
         degraded
@@ -17,8 +17,8 @@ describe('SessionAccessNotice', () => {
       />
     )
 
-    expect(html).toContain('Your Lark authorization needs attention.')
-    expect(html).toContain('Reconnect Lark')
+    expect(html).toContain('Your Lark sign-in identity needs to be refreshed.')
+    expect(html).toContain('Refresh Lark')
     expect(html).toContain('/agentconnect/profile?reauthorize=lark#sign-in-methods')
   })
 

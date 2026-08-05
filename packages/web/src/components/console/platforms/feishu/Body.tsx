@@ -22,6 +22,8 @@ const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
   expired: 'This setup link expired — start again.',
   agent_unavailable: 'This agent moved or was removed during setup. Check its daemon, then try again.',
   invalid_credentials: 'The app was created, but its credentials could not be verified.',
+  org_mismatch:
+    'This app belongs to a different Lark/Feishu organization from this AgentConnect deployment. Create it in the same organization and try again.',
   setup_failed: 'Lark/Feishu could not complete the app setup. Please try again.'
 }
 
@@ -29,14 +31,19 @@ const FEISHU_REGISTRATION_FAILURES: Record<string, string> = {
 // and each fails silently if missed — surfaced as a transport-aware checklist.
 const FEISHU_COMMON_REQS: { icon: string; title: string; desc: string }[] = [
   {
+    icon: 'building-2',
+    title: 'Use the same organization',
+    desc: 'Create every Bot App in the same Lark/Feishu organization as the App used to sign in to AgentConnect.'
+  },
+  {
     icon: 'bot',
     title: 'Enable the bot capability',
     desc: 'In the app’s “Add features”, turn on Bot — otherwise it can’t send or receive messages.'
   },
   {
     icon: 'shield-check',
-    title: 'Grant message and name scopes',
-    desc: 'Request the message, chat and resource scopes plus contact:contact.base:readonly and contact:user.base:readonly so channels and participants have readable names, then publish.'
+    title: 'Grant message and tenant scopes',
+    desc: 'Request the message, chat and resource scopes plus tenant:tenant:readonly so AgentConnect can verify the App belongs to this deployment, then publish.'
   },
   {
     icon: 'users',
@@ -321,8 +328,9 @@ export function FeishuWizardBody({ agent, host }: { agent: Agent; host: WizardHo
                   <div className="mt-[9px] flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                     <Icon name="shield-check" size={13} className="mt-[1px] flex-none" />
                     <span>
-                      You review the requested message, chat, resource and basic-contact permissions before the app is
-                      created. No App ID or Secret is shown here.
+                      You review the requested message, chat, resource and tenant-information permissions before the app
+                      is created. It must belong to the same {brand} organization used by this AgentConnect deployment.
+                      No App ID or Secret is shown here.
                     </span>
                   </div>
                 </>

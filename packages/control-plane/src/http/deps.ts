@@ -82,8 +82,6 @@ import type { ConnectorsClient } from '../connectors/client.js'
 import type { SlackSessionAccessResolver } from './slack-session-access.js'
 import type { GithubSessionAccessResolver } from './github-session-access.js'
 import type { FeishuSessionAccessResolver } from './feishu-session-access.js'
-import type { LogtoFederatedTokenResolver } from './logto-federated-token.js'
-import type { FeishuPlatformApps } from '../config/feishu-platform.js'
 
 export interface HttpServerConfig extends HumanAuthConfig {
   /** Drives browser CORS for the Web UI (see `buildHttpServer`). */
@@ -334,10 +332,6 @@ export interface HttpDeps {
   githubSessionAccess?: GithubSessionAccessResolver
   /** Current Feishu/Lark chat membership for external Session reads. */
   feishuSessionAccess?: FeishuSessionAccessResolver
-  /** Request-bound Logto vault access for Feishu/Lark user tokens. */
-  logtoFederatedToken?: LogtoFederatedTokenResolver
-  /** Platform apps shared by Logto profile linking and membership resolution. */
-  feishuPlatformApps?: FeishuPlatformApps
   /** Uploaded-icon object store (docs/designs/icon-uploads.md); absent ⇒ S3_* unset,
    *  the icon upload/delete routes are not mounted and the console hides Upload. */
   iconStore?: IconStore

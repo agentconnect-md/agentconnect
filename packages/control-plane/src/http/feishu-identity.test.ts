@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { verifyFeishuBot } from './feishu-identity.js'
+import { resolveFeishuAppTenant, verifyFeishuBot } from './feishu-identity.js'
 
 /** Capture every fetch URL and answer the two-step verify flow (token exchange, then
  *  bot/info) with success, so we can assert WHICH host the verifier dialed. */
@@ -34,5 +34,27 @@ describe('verifyFeishuBot gateway selection', () => {
     expect(r).toEqual({ status: 'ok', name: 'Acme', openId: 'ou_bot' })
     expect(urls.length).toBeGreaterThan(0)
     expect(urls.every((u) => u.startsWith('https://open.larksuite.com/open-apis'))).toBe(true)
+  })
+})
+
+describe('resolveFeishuAppTenant', () => {
+  it('resolves the organization that owns a new Lark App', async () => {
+    const urls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        urls.push(url)
+        const body = url.includes('tenant_access_token')
+          ? { code: 0, tenant_access_token: 'tenant-token' }
+          : { code: 0, data: { tenant: { tenant_key: 'tenant_same_org' } } }
+        return new Response(JSON.stringify(body))
+      })
+    )
+
+    await expect(resolveFeishuAppTenant('cli_new', 'secret', 'lark')).resolves.toEqual({
+      status: 'ok',
+      tenantKey: 'tenant_same_org'
+    })
+    expect(urls[1]).toBe('https://open.larksuite.com/open-apis/tenant/v2/tenant/query')
   })
 })

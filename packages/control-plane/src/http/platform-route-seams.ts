@@ -28,10 +28,11 @@ import type { SlackConfigApi } from './slack-config-api.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from './slack-identity.js'
 import type { SlackPlatformAppConfig } from '../config/slack-platform.js'
 import type { TelegramBotVerifier } from './telegram-identity.js'
-import type { FeishuBotVerifier } from './feishu-identity.js'
+import type { FeishuAppTenantResolver, FeishuBotVerifier } from './feishu-identity.js'
 import type { FeishuHttpAppConfigurator } from './feishu-app-config.js'
 import type { FeishuAppRegistrationService } from './feishu-registration.js'
 import type { CpProviderToolingCredentials } from '../platforms/provider.js'
+import type { FeishuRegion } from '@agentconnect.md/protocol'
 
 /** Seams for the Slack route plugins: the two install funnels, the config-token
  *  routes, and the Settings→Bots manifest refresh. */
@@ -69,6 +70,11 @@ export interface FeishuRouteSeams {
   /** Validates an appId + appSecret pair via the tenant-access-token exchange.
    *  Absent ⇒ no validation. */
   verifyBot?: FeishuBotVerifier
+  /** The sign-in App's tenant_key for this user and cloud. Null means the user
+   *  has not linked a matching Lark/Feishu login identity. */
+  loginTenantKeyFor(userId: string, region: FeishuRegion): Promise<string | null>
+  /** Resolves the tenant that owns the newly-created App. */
+  resolveAppTenant: FeishuAppTenantResolver
   /** Applies the sensitive delivery URL and verification keys the official
    *  one-click deeplink intentionally cannot carry. */
   configureHttpApp: FeishuHttpAppConfigurator

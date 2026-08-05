@@ -1,22 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./auth', () => ({
-  getAccountToken: vi.fn(async () => 'account-token'),
   getToken: vi.fn(async () => undefined),
   getIdTokenRaw: vi.fn(async () => undefined),
   getUser: vi.fn(async () => undefined),
   signOutDeletedAccount: vi.fn()
 }))
 
-import { getAccountToken } from './auth'
+import { getToken } from './auth'
 import { subscribeSessionEvents } from './api'
-
-const LOGTO_ACCOUNT_TOKEN_HEADER = 'x-ac-logto-account-token'
 
 describe('subscribeSessionEvents', () => {
   afterEach(() => {
     vi.useRealTimers()
-    vi.mocked(getAccountToken).mockReset().mockResolvedValue('account-token')
+    vi.mocked(getToken).mockReset().mockResolvedValue(undefined)
     vi.unstubAllGlobals()
   })
 
@@ -48,9 +45,7 @@ describe('subscribeSessionEvents', () => {
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) })
     )
     expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>).accept).toBe('text/event-stream')
-    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)['x-ac-logto-account-token']).toBe(
-      'account-token'
-    )
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)['x-ac-logto-account-token']).toBeUndefined()
 
     const encoder = new TextEncoder()
     streamController.enqueue(encoder.encode('event: sess'))
@@ -75,9 +70,9 @@ describe('subscribeSessionEvents', () => {
     expect(requestSignal.aborted).toBe(true)
   })
 
-  it('reopens a live stream to rotate its Account API token', async () => {
+  it('reopens a live stream to rotate its OIDC resource token', async () => {
     vi.useFakeTimers()
-    vi.mocked(getAccountToken).mockReset().mockResolvedValueOnce('account-token-1').mockResolvedValue('account-token-2')
+    vi.mocked(getToken).mockReset().mockResolvedValueOnce('oidc-token-1').mockResolvedValue('oidc-token-2')
     const requestSignals: AbortSignal[] = []
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const signal = init?.signal as AbortSignal
@@ -102,12 +97,8 @@ describe('subscribeSessionEvents', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 
     expect(requestSignals[0]?.aborted).toBe(true)
-    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)[LOGTO_ACCOUNT_TOKEN_HEADER]).toBe(
-      'account-token-1'
-    )
-    expect((fetchMock.mock.calls[1]![1]!.headers as Record<string, string>)[LOGTO_ACCOUNT_TOKEN_HEADER]).toBe(
-      'account-token-2'
-    )
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>).authorization).toBe('Bearer oidc-token-1')
+    expect((fetchMock.mock.calls[1]![1]!.headers as Record<string, string>).authorization).toBe('Bearer oidc-token-2')
     expect(onConnect).toHaveBeenCalledTimes(2)
     expect(onError).not.toHaveBeenCalled()
 

@@ -4,7 +4,6 @@ import { canViewSession } from '../authorization/policy.js'
 import type { ExternalScopeRecord } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import type { FeishuSessionViewer } from './feishu-session-access.js'
-import { LOGTO_ACCOUNT_TOKEN_HEADER, LogtoFederatedTokenError } from './logto-federated-token.js'
 import { makeSessionAccessResolver } from './session-access.js'
 
 const scope: ExternalScopeRecord = {
@@ -22,7 +21,7 @@ const scope: ExternalScopeRecord = {
 
 function request(): FastifyRequest {
   return {
-    headers: { [LOGTO_ACCOUNT_TOKEN_HEADER]: 'account-token' },
+    headers: {},
     oidcSubject: 'logto-subject',
     orgCtx: { orgId: 'org-1', role: 'collaborator', userId: 'user-1' },
     log: { warn: vi.fn() }
@@ -30,14 +29,11 @@ function request(): FastifyRequest {
 }
 
 describe('makeSessionAccessResolver', () => {
-  it('proves a custom-Bot p2p owner with the different login-app user token', async () => {
-    const accessTokenFor = vi.fn(async () => 'lark-user-token')
-    const forRequest = vi.fn(() => ({ accessTokenFor }))
+  it('matches a custom-Bot p2p owner by union_id without an external access check', async () => {
     const feishuResolve = vi.fn(async (scopes: readonly ExternalScopeRecord[], viewer?: FeishuSessionViewer) => {
-      expect(scopes).toEqual([scope])
-      expect(viewer?.subject).toBe('logto-subject')
-      await expect(viewer?.accessTokenFor('lark')).resolves.toBe('lark-user-token')
-      return { allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }], degraded: false, accessIssues: [] }
+      expect(scopes).toEqual([])
+      expect(viewer?.unionIdsFor('lark')).toEqual(['on_member'])
+      return { allowedScopes: [], degraded: false, accessIssues: [] }
     })
     const policy = {
       orgId: 'org-1',
@@ -49,6 +45,16 @@ describe('makeSessionAccessResolver', () => {
     } as const
     const deps = {
       repos: {
+        bot: {
+          listForOrg: vi.fn(async () => [
+            {
+              platform: 'feishu',
+              feishuRegion: 'lark',
+              feishuAppId: 'cli_custom_bot',
+              revokedAt: null
+            }
+          ])
+        },
         session: {
           getExternalScopes: vi.fn(async () => [scope]),
           getExternalAccessPolicy: vi.fn(async (_orgId: string, provider: string) =>
@@ -58,15 +64,13 @@ describe('makeSessionAccessResolver', () => {
       },
       clock: { now: () => 1_000 },
       logtoIdentity: {
-        feishuIdentitiesFor: async () => [{ region: 'lark', openId: 'ou_login_app' }]
+        feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }]
       },
-      feishuPlatformApps: { lark: { appId: 'cli_login_app', appSecret: 'secret' } },
-      logtoFederatedToken: { forRequest },
       feishuSessionAccess: { resolve: feishuResolve }
     } as unknown as HttpDeps
     const session = {
       visibility: 'private' as const,
-      ownerIdentity: 'feishu:lark:cli_custom_bot:ou_custom_app',
+      ownerIdentity: 'feishu:lark:cli_custom_bot:on_member',
       externalProvider: 'feishu',
       externalScopeId: scope.id,
       externalResolution: 'settled' as const
@@ -74,69 +78,55 @@ describe('makeSessionAccessResolver', () => {
 
     const access = await makeSessionAccessResolver(deps).forSessions(request(), [session])
 
-    expect(forRequest).toHaveBeenCalledWith('logto-subject', 'account-token')
-    expect(access.identitySet).toContain('feishu:lark:cli_login_app:ou_login_app')
-    expect(access.identitySet).not.toContain(session.ownerIdentity)
+    expect(access.identitySet).toContain(session.ownerIdentity)
     expect(
       canViewSession(session, { userId: 'user-1', role: 'collaborator' }, access.identitySet, access.externalAccess)
     ).toBe(true)
   })
 
-  it('logs safe federated-token diagnostics and returns an actionable access issue', async () => {
-    const req = request()
-    const upstream = new LogtoFederatedTokenError('Federated access token is unavailable', {
-      stage: 'federated_token',
-      target: 'lark',
-      status: 400,
-      code: 'connector.general'
-    })
+  it('passes the login union_id to the Bot-app group membership resolver', async () => {
     const getExternalScopes = vi.fn(async (ids: readonly string[]) => (ids.length > 0 ? [scope] : []))
     const deps = {
       repos: {
+        bot: {
+          listForOrg: vi.fn(async () => [
+            {
+              platform: 'feishu',
+              feishuRegion: 'lark',
+              feishuAppId: 'cli_custom_bot',
+              revokedAt: null
+            }
+          ])
+        },
         session: {
           getExternalScopes,
           getExternalAccessPolicy: vi.fn(async () => null)
         }
       },
       clock: { now: () => 1_000 },
-      logtoIdentity: { feishuIdentitiesFor: async () => [] },
-      logtoFederatedToken: {
-        forRequest: () => ({
-          accessTokenFor: async () => {
-            throw upstream
-          }
-        })
-      },
+      logtoIdentity: { feishuIdentitiesFor: async () => [{ region: 'lark', unionId: 'on_member' }] },
       feishuSessionAccess: {
         resolve: async (_scopes: readonly ExternalScopeRecord[], viewer?: FeishuSessionViewer) => {
-          await viewer?.accessTokenFor('lark').catch(() => undefined)
+          expect(viewer?.unionIdsFor('lark')).toEqual(['on_member'])
           return {
-            allowedScopes: [],
-            degraded: true,
-            accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'authorization' as const }]
+            allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+            degraded: false,
+            accessIssues: []
           }
         }
       }
     } as unknown as HttpDeps
 
-    const access = await makeSessionAccessResolver(deps).forSessions(req, [
+    const access = await makeSessionAccessResolver(deps).forSessions(request(), [
       {
         visibility: 'external',
+        ownerIdentity: null,
         externalProvider: 'feishu',
         externalScopeId: scope.id
       }
     ])
 
-    expect(access.accessIssues).toEqual([{ provider: 'feishu', region: 'lark', reason: 'authorization' }])
-    expect(req.log.warn).toHaveBeenCalledWith(
-      {
-        provider: 'feishu',
-        target: 'lark',
-        stage: 'federated_token',
-        status: 400,
-        code: 'connector.general'
-      },
-      'Federated session access token is unavailable'
-    )
+    expect(access.degraded).toBe(false)
+    expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
   })
 })

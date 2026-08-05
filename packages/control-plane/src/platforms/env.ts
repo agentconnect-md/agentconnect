@@ -12,21 +12,17 @@
  * PROVIDERS declare, so a provider that grows a key and forgets this file fails
  * a test instead of silently losing its env at boot.
  *
- * Resolution into typed config — including the all-or-none partial-set
- * fail-fast of `config/slack-platform.ts` / `config/feishu-platform.ts` —
- * happens inside the provider's factory. Core consumes only the schema shape.
+ * Resolution into typed config — including Slack's all-or-none partial-set
+ * fail-fast — happens inside the provider's factory. Core consumes only the
+ * schema shape.
  */
 import type { ZodRawShape } from 'zod'
 import { SlackCpEnvSchema } from './slack/provider.js'
-import { FeishuCpEnvSchema } from './feishu/provider.js'
 
 /** Every platform's declared env keys. Telegram and Discord own none — their
  *  whole install is the create-DTO path, with no deployment-level
  *  configuration, so they are absent here rather than present-and-empty. */
-export const CP_PLATFORM_ENV_SCHEMAS = [
-  { platformId: 'slack', envSchema: SlackCpEnvSchema },
-  { platformId: 'feishu', envSchema: FeishuCpEnvSchema }
-] as const
+export const CP_PLATFORM_ENV_SCHEMAS = [{ platformId: 'slack', envSchema: SlackCpEnvSchema }] as const
 
 type EnvSchemaOf<T> = T extends { envSchema: infer S } ? S : never
 type UnionToIntersection<U> = (U extends unknown ? (k: U) => void : never) extends (k: infer I) => void ? I : never

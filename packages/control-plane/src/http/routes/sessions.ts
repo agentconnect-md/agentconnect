@@ -355,11 +355,7 @@ export function sessionRoutes(deps: HttpDeps) {
     type ExternalAccessProvider = 'slack' | 'github' | 'feishu'
     const externalAccessAvailable = (provider: ExternalAccessProvider) => {
       if (provider === 'feishu') {
-        return (
-          deps.feishuSessionAccess !== undefined &&
-          deps.logtoFederatedToken !== undefined &&
-          Object.keys(deps.feishuPlatformApps ?? {}).length > 0
-        )
+        return deps.logtoIdentity !== undefined && deps.feishuSessionAccess !== undefined
       }
       return (
         deps.logtoIdentity !== undefined &&
