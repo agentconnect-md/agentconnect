@@ -169,6 +169,13 @@ describe('DreamRunner pipeline', () => {
     store.insertDream(dream('completed', ['sess-1'], 'd1'))
     expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
 
+    // Millisecond boundary: a session whose updatedAt EQUALS the baseline (e.g.
+    // written in the same ms as the dream's createdAt, after the source query)
+    // counts as new. The comparison is inclusive (>=) so this is re-mined once
+    // rather than dropped forever — "duplicates possible, gaps never".
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1', updatedAt: cutoff }]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+
     // A session with activity AFTER the last dream → run.
     store.sources = [
       { sessionId: 'sess-2', channel: 'C2', thread: 'T2', updatedAt: cutoff + 1000 },

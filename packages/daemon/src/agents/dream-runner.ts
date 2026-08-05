@@ -341,12 +341,13 @@ export class DreamRunner {
    * last SUCCESSFUL dream (completed or adopted) did not consolidate. Scheduled
    * dreams consult this to skip re-dreaming an unchanged corpus — running a fresh
    * host + burning model tokens to re-derive the same proposal is pure waste.
-   * Returns true when the agent has never completed a dream (so the first
-   * scheduled run always proceeds). Manual dreams never call this: an explicit
-   * request always runs.
+   * When the agent has never completed a dream there is no baseline, so any
+   * session at all makes this true; an agent with no sessions yet has nothing to
+   * consolidate and skips even its first scheduled run. Manual dreams never call
+   * this: an explicit request always runs.
    *
    * "New" is by activity, not just session identity: a session counts when its
-   * `updatedAt` is newer than the last successful dream's baseline — so a
+   * `updatedAt` is at or after the last successful dream's baseline — so a
    * brand-new session AND fresh messages in an already-mined session both
    * re-trigger (new messages bump `updatedAt`). This mirrors the automatic window
    * in {@link selectSessionSources}: true iff that selection is non-empty.
@@ -366,11 +367,20 @@ export class DreamRunner {
   /**
    * The sessions a dream should mine, chosen AUTOMATICALLY — no operator config.
    * Default: every session with activity since the last successful dream (its
-   * `updatedAt` is newer than that dream's start), capped at
+   * `updatedAt` is at or after that dream's baseline), capped at
    * {@link MAX_AUTO_SESSION_WINDOW}. The first dream (no baseline) mines the
    * current corpus up to the cap. An explicit `sessionWindow` (a per-run manual
    * override, or a legacy configured policy value) still pins a fixed newest-N
    * window instead.
+   *
+   * The comparison is inclusive (`>=`) on purpose. Both the baseline and
+   * `updatedAt` have millisecond resolution, so a session written just after the
+   * source query but in the same millisecond as the baseline has
+   * `updatedAt === cutoff`; a strict `>` would drop it from this dream (query
+   * already ran) and every later one — a permanent gap. `>=` instead re-mines the
+   * boundary sessions once (a harmless duplicate the pipeline already tolerates)
+   * and self-heals: the next dream's baseline moves past them. The invariant is
+   * "duplicates possible, gaps never".
    *
    * The cap is an intentional bound, not a paging cursor: it takes the newest N
    * active sessions by `updatedAt`. If more than N sessions changed since the last
@@ -390,7 +400,7 @@ export class DreamRunner {
     if (!lastSuccessful) return recent
     const cutoff = Date.parse(lastSuccessful.createdAt)
     if (!Number.isFinite(cutoff)) return recent
-    return recent.filter((s) => s.updatedAt > cutoff)
+    return recent.filter((s) => s.updatedAt >= cutoff)
   }
 
   async start(

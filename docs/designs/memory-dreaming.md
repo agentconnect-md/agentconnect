@@ -137,7 +137,8 @@ managed-only constraint structural:
 export const MemoryDreamingPolicy = z
   .object({
     enabled: z.boolean(),
-    /** How many recent sessions to mine (default 20, max 100). */
+    /** Optional override pinning a fixed newest-N session window (max 100). When
+     *  absent (the norm), the window is sized automatically — see "Gather signal". */
     sessionWindow: z.number().int().min(1).max(100).optional(),
     /** Optional cron for scheduled dreams (same syntax as agent crons). */
     schedule: z.string().min(1).max(128).optional(),
@@ -214,11 +215,15 @@ interface DreamRecord {
 2. **Gather signal.** Pull the relevant sessions' transcripts for this agent from
    the daemon store. The window is sized **automatically** (no operator config):
    the sessions with activity since the last successful dream — each one's
-   `updatedAt` is newer than that dream's start — capped at 100; the first dream
-   (no baseline) takes the current corpus up to the cap. A scheduled tick with no
-   such session is skipped (nothing new to consolidate). An explicit
-   `sessionWindow` (a per-run manual override, or a legacy configured policy
-   value) instead pins a fixed newest-N window. Every session the agent itself
+   `updatedAt` is at or after that dream's baseline — capped at 100; the first dream
+   (no baseline) takes the current corpus up to the cap. The baseline is stamped
+   **before** the source query and the comparison is inclusive (`>=`), so at
+   millisecond resolution a session written in the same millisecond as the
+   baseline is re-mined once rather than silently dropped: the invariant is
+   "duplicates possible, gaps never". A scheduled tick with no such session is
+   skipped (nothing new to consolidate). An explicit `sessionWindow` (a per-run
+   manual override, or a legacy configured policy value) instead pins a fixed
+   newest-N window. Every session the agent itself
    participated in is eligible — channel, DM, webchat, external (GitHub), A2A, and
    launched alike;
    the per-turn capture-visibility gate is deliberately **not** applied here (see
