@@ -8018,7 +8018,13 @@ export class Daemon {
    */
   private localWakeDecision(req: MessageAgentReq): { rejection: string } | { rejection: null; channel: string } {
     const caller = this.agents.get(req.callerAgentId)
-    if (!caller || (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(req.toAgentId))) {
+    const channelRootSelfWake = req.toAgentId === req.callerAgentId && req.postless !== true
+    if (
+      !caller ||
+      (!channelRootSelfWake &&
+        caller.outboundPolicy === 'selected' &&
+        !caller.allowedTargetAgentIds.includes(req.toAgentId))
+    ) {
       return { rejection: 'not_allowed' }
     }
 
@@ -8029,7 +8035,13 @@ export class Daemon {
     // BEFORE the local-target lookup so it also decides a REMOTE target and an id that is
     // in no directory at all (previously the latter fell through to a misleading
     // 'offline'). Fails closed on an absent/stale snapshot, as before.
-    if (!this.cpCollab.admits(req.callerAgentId, req.toAgentId)) return { rejection: 'not_allowed' }
+    // A visible channel-root self wake is not an inter-agent policy edge. The successful
+    // platform post proves the caller can write the named conversation; coordinate integrity
+    // below still proves the resulting child may be keyed there. Postless self calls never
+    // reach this branch — the explicit self guard rejects those before authorization.
+    if (!channelRootSelfWake && !this.cpCollab.admits(req.callerAgentId, req.toAgentId)) {
+      return { rejection: 'not_allowed' }
+    }
 
     // COORDINATE INTEGRITY — the SAME decision the relay's ingress and this daemon's
     // `rd/agentmsg` terminal-verify apply, so all three wake paths enforce one rule. Channel
@@ -8052,7 +8064,11 @@ export class Daemon {
     if (coords.verdict === 'reject') return { rejection: 'not_allowed' }
 
     const target = this.agents.get(req.toAgentId)
-    if (target?.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(req.callerAgentId)) {
+    if (
+      !channelRootSelfWake &&
+      target?.callPolicy === 'selected' &&
+      !target.allowedCallerAgentIds.includes(req.callerAgentId)
+    ) {
       return { rejection: 'not_allowed' }
     }
     // Branch 3 substitutes the coordinate rather than refusing the wake; branch 1 hands back
@@ -8067,7 +8083,10 @@ export class Daemon {
     if (isPlatformMemberId(platform, req.toAgentId)) {
       return 'invalid_target'
     }
-    if (req.toAgentId === req.callerAgentId) return 'self'
+    // `sendMessage(toAgent=self, channel=...)` preflights before the root post exists, so
+    // absence of the postless marker is the trusted indication that this is the visible form.
+    // messageAgent performs the stronger post-ts + pairing-id check before dispatch.
+    if (req.toAgentId === req.callerAgentId && req.postless === true) return 'self'
     const callerKey = sessionKey(
       platform,
       req.callerChannel,
@@ -8136,8 +8155,15 @@ export class Daemon {
         reason: 'invalid_target'
       })
     }
-    // Self-message guard (§4.5): an agent waking itself is a loop — reject before publish.
-    if (req.toAgentId === req.callerAgentId) {
+    // A self wake is valid only when `sendMessage` has already published the paired channel-root
+    // post and can anchor the child to its real provider coordinate. Postless self calls — and
+    // any internal caller that merely omits the marker without proving a post — remain loops.
+    const pairedChannelRootSelfWake =
+      req.toAgentId === req.callerAgentId &&
+      req.postless !== true &&
+      req.transcriptTs !== undefined &&
+      req.agentCallDeliveryId !== undefined
+    if (req.toAgentId === req.callerAgentId && !pairedChannelRootSelfWake) {
       const fallbackThread = req.thread ?? `agentcall:${req.channel}:self`
       return observe('collaboration.delivery.rejected', {
         delivered: false,

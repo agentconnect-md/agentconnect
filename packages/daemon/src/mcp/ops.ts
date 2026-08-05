@@ -438,7 +438,7 @@ export interface OpsDeps {
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free preflight for a peer wake: returns a typed rejection reason if
    *  {@link messageAgent} would refuse this wake for a locally-decidable reason (capability
-   *  disabled, invalid target id, self, hop-limit, caller outbound policy, or a LOCAL
+   *  disabled, invalid target id, a postless self-call, hop-limit, caller outbound policy, or a LOCAL
    *  target's inbound policy/channel membership), else null. `sendMessage` uses it to skip the visible channel post for a
    *  `toAgent`+`channel` wake that will not be delivered. Absent in the chat CLI / tests with
    *  no daemon ⇒ the post is not gated (treated as null). */
@@ -962,8 +962,8 @@ export async function executeTool(
           }
         : undefined
     // PREFLIGHT (side-effect-free): would messageAgent refuse this wake for a locally-decidable
-    // reason (capability off / bad target id / self / hop-limit / a local target that disallows
-    // this caller)? If so we must NOT leave a misleading public post for a peer that is never
+    // reason (capability off / bad target id / postless self-call / hop-limit / a local target
+    // that disallows this caller)? If so we must NOT leave a misleading public post for a peer that is never
     // woken — so the post below is gated on `wakeRejection === null`. The wake itself still runs
     // through messageAgent (it re-checks, emits the evaluation event, and returns the typed
     // reason). A REMOTE target's call-policy can't be preflighted here (that verdict lives on the

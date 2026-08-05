@@ -258,12 +258,75 @@ describe('messageAgent: same-daemon delivery', () => {
     await daemon.stop()
   })
 
-  it('rejects a self-message before any lookup', async () => {
+  it('rejects a postless self-message before any lookup', async () => {
     const root = scaffold([{ id: 'bot-a' }])
     const { daemon, calls, call } = await bootWithDispatchSpy(root)
-    const res = await call(baseReq({ toAgentId: 'bot-a' }))
+    const res = await call(baseReq({ toAgentId: 'bot-a', postless: true }))
     expect(res).toMatchObject({ delivered: false, reason: 'self' })
     expect(calls.length).toBe(0)
+    await daemon.stop()
+  })
+
+  it('admits a paired channel-root self wake into a new child session exactly once', async () => {
+    const root = scaffold([
+      {
+        id: 'bot-a',
+        callPolicy: 'selected',
+        allowedCallerAgentIds: [],
+        outboundPolicy: 'selected',
+        allowedTargetAgentIds: []
+      }
+    ])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const callerKey = sessionKey('slack', 'C1', '100.1', 'bot-a')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+
+    const req = baseReq({
+      toAgentId: 'bot-a',
+      thread: '200.2',
+      transcriptTs: '200.2',
+      agentCallDeliveryId: 'paired-self-1'
+    })
+    expect(
+      (daemon as any).wakeRejectionReason({ ...req, transcriptTs: undefined, agentCallDeliveryId: undefined })
+    ).toBeNull()
+
+    const res = await call(req)
+    expect(res).toMatchObject({ delivered: true, targetSession: 'slack:C1:200.2:bot-a' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      agentId: 'bot-a',
+      msg: {
+        channel: 'C1',
+        thread: '200.2',
+        transcriptTs: '200.2',
+        sender: { id: 'bot-a', isBot: true }
+      },
+      callMeta: {
+        callFrom: 'bot-a',
+        originSessionId: 'acp-parent-1',
+        originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+      }
+    })
+    await daemon.stop()
+  })
+
+  it('rejects an unpaired self wake that only omits the postless marker', async () => {
+    const root = scaffold([{ id: 'bot-a' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const res = await call(baseReq({ toAgentId: 'bot-a', thread: '200.2' }))
+    expect(res).toMatchObject({ delivered: false, reason: 'self' })
+    expect(calls).toHaveLength(0)
     await daemon.stop()
   })
 

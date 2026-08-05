@@ -970,6 +970,42 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(calls[0]!.agentCallDeliveryId).toBe(postedId.response?.agentCallDeliveryId)
   })
 
+  it('channel + toAgent self posts a paired ROOT message and wakes the caller without allowSelf', async () => {
+    const { deps: d, calls, gw } = wakeDeps()
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { toAgent: 'bot-a', channel: 'C_X', message: 'continue here' },
+      d
+    )) as {
+      ok: boolean
+      wake?: { delivered: boolean }
+      post?: { channel: string; thread: string | null; ts: string }
+    }
+
+    expect(res).toMatchObject({
+      ok: true,
+      wake: { delivered: true },
+      post: { channel: 'C_X', thread: null, ts: 'ts-123' }
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      callerAgentId: 'bot-a',
+      toAgentId: 'bot-a',
+      channel: 'C_X',
+      thread: 'ts-123',
+      transcriptTs: 'ts-123'
+    })
+    expect(calls[0]).not.toHaveProperty('postless')
+
+    const postedIdentity = (gw.postMessage as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![3] as {
+      response?: { mentionedAgentIds?: string[]; agentCallDeliveryId?: string }
+    }
+    expect(postedIdentity.response?.mentionedAgentIds).toEqual(['bot-a'])
+    expect(postedIdentity.response?.agentCallDeliveryId).toBeTruthy()
+    expect(calls[0]!.agentCallDeliveryId).toBe(postedIdentity.response?.agentCallDeliveryId)
+  })
+
   it('mints NO pairing id for a postless wake or a bare channel post', async () => {
     // §3.2: the id means "a visible post accompanies this wake". Stamping it on a bare
     // channel post would make ingress hold that post for an internal envelope that is

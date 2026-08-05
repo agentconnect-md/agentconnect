@@ -502,7 +502,7 @@ export interface SubtaskRow {
   text: string
   status: 'pending' | 'sending' | 'delivered' | 'succeeded' | 'worker_error' | 'timed_out'
   result?: string | null
-  /** Typed reason on a failed delivery (self/not_allowed/not_local/no_agent/offline). */
+  /** Typed reason on a failed delivery (postless self/not_allowed/not_local/no_agent/offline). */
   deliveryReason?: string | null
   updatedAt: string
 }

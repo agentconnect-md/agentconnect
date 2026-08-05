@@ -155,9 +155,11 @@ ladder a human message takes, with the author removed from the candidate set:
 - Each peer is an INDEPENDENT delivery: its own session, `!stop` mute, Off fence, and
   inbox row. A muted participant stays muted — `!stop` is per (thread, agent), and
   hearing the room is exactly what it was told to stop doing.
-- **The author can never be the target.** This is the one absolute. An agent's own
-  reply always matches its own rule, so self-activation is not a loop the hop cap
-  slows down — it is unconditional. The author is excluded once, before any rung.
+- **An ordinary platform reply can never target its author.** An agent's own reply
+  always matches its own rule, so echo-based self-activation is not a loop the hop cap
+  slows down — it is unconditional. The author is excluded once, before any ordinary
+  routing rung. The paired `toAgent + channel` exception above is driven by its internal
+  envelope, not by routing the author's platform echo.
 - A third-party bot keeps its existing behavior: where supported, it may activate
   an agent only through an explicit mention. The difference is verification, not
   bot-ness — we know exactly which agent wrote a verified message and have already
@@ -416,6 +418,11 @@ recipient: existing participants still receive their independent implicit copies
 shared bot's address therefore still needs its agent slug when an agent wants to write
 one; a bare `<@U_SHARED>` joins only the routes that token can actually resolve.
 
+The author-removal rule applies to ordinary platform replies. An explicit paired
+`toAgent` channel-root delivery may target its own author: the internal envelope activates
+the new child once, while the platform echo remains only the paired observation. The
+postless form still rejects self-targets because it has no new conversation boundary.
+
 Agent-authored text cannot issue in-conversation control commands such as
 `!stop`, `!resume`, or configuration actions.
 
@@ -605,12 +612,13 @@ At minimum, cover:
 8. Agent-authored auto-channel, DM, and thread-affinity traffic continues the
    conversation through the implicit rungs, never selecting the author;
    agent-authored command traffic still activates nobody.
-9. The author is never the target on any connection, and a body naming the author,
-   a human, or an unresolvable peer does not change delivery. An agent-authored
+9. An ordinary platform reply never targets its author on any connection, and a body
+   naming the author, a human, or an unresolvable peer does not change delivery. An agent-authored
    delivery obeys a `!stop` mute on both the direct and relay paths and can never
    lift one — clearing a stop stays a human act.
 10. A paired `toAgent + channel` delivery reaches the exact agent the tool named,
-    on both ladders, so its rendezvous halves converge.
+    including the caller itself, on both ladders, so its rendezvous halves converge
+    and activate one child exactly once.
 11. Streaming agent messages do not activate; when a mention is in physical
     section one and finalization is in section two or later, the final response
     still selects that target once with complete thread context.
