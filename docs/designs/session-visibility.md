@@ -569,12 +569,18 @@ the guarantee is "private hides the transcript at CP commit and stops
 feeding shared memory once every affected daemon has acked (`applied`)",
 not retroactive amnesia.
 
-Shared external sessions are always excluded from managed shared-memory
-capture and recall, even while the provider access-sync switch is disabled. This
-prevents a provider-scoped conversation from feeding a broader organization
-memory namespace. The gate covers AgentConnect-managed and external memory
-paths; a runtime's own opaque/native memory cannot be isolated per session by
-AgentConnect and must not be presented as covered by this guarantee.
+External-source (Slack/Feishu channel) sessions are **not** excluded from managed
+shared-memory capture merely for being external — they behave like any other
+channel (Discord/Telegram already did), so agents remember what happens in the
+channels they work in. Only an explicitly `private` session is excluded; the
+external audience is still tracked for console access and source-binding, but no
+longer forces a memory hard-deny. The product tradeoff (an external channel may
+seat non-org members whose words then enter agent-scoped memory) is accepted by
+default; set a session `private` to exclude it. DM / webchat / A2A-child /
+launch-correlated sessions stay excluded as before. The gate covers
+AgentConnect-managed and external memory paths; a runtime's own opaque/native
+memory cannot be isolated per session by AgentConnect and must not be presented as
+covered by this guarantee.
 
 Per-owner memory namespaces are a possible future relaxation, but the
 exclusion gate is the shipping requirement — the `private` tier's guarantee

@@ -1972,13 +1972,12 @@ export class LocalStore {
    */
   isCaptureExcluded(acpSessionId: string | undefined): boolean {
     if (!acpSessionId) return true
-    // A trusted external source binding is a daemon-local hard deny. It must
-    // win even if an older CP `org` ack is still present while a legacy session
-    // is being bound, and it remains true when provider sync is disabled.
-    const external = this.db
-      .prepare('SELECT 1 FROM sessions WHERE acpSessionId = ? AND externalProvider IS NOT NULL LIMIT 1')
-      .get(acpSessionId)
-    if (external) return true
+    // External-source binding (a Slack/Feishu channel = external identity domain)
+    // no longer forces memory exclusion: such channels behave like any other
+    // channel (Discord/Telegram already did), gated only by the local verdict and
+    // the CP-confirmed visibility below (#653 follow-up; session-visibility.md
+    // §5.1). DM / webchat / A2A / launch-correlated sessions stay private through
+    // those same layers.
     const row = this.db
       .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE acpSessionId = ?')
       .get(acpSessionId) as { localExcluded: number; cpPrivate: number | null } | undefined

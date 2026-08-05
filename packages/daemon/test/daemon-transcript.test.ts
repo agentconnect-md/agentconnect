@@ -215,7 +215,10 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('never captures post-turn memory from a shared Slack input', async () => {
+  // A Slack/Feishu channel (external identity domain) is no longer memory-excluded
+  // just for being external — it captures like any other channel. DMs stay private
+  // (see the DM test below).
+  it('captures post-turn memory from a Slack channel input', async () => {
     const { factory } = replyingHost('here is my answer')
     const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
     await daemon.start()
@@ -225,8 +228,8 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
 
-    expect((daemon as any).store.isCaptureExcluded('acp-1')).toBe(true)
-    expect(recordTurn).not.toHaveBeenCalled()
+    expect((daemon as any).store.isCaptureExcluded('acp-1')).toBe(false)
+    await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     await daemon.stop()
   }, 15_000)
 

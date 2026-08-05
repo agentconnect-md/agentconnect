@@ -1594,7 +1594,10 @@ export class PgSessionRepo implements SessionRepo {
     return rows.map((r) => ({
       sessionId: SessionId(r.id),
       visibility: r.visibility as SessionVisibility,
-      sharedMemoryExcluded: r.visibility !== 'org' || r.externalProvider !== null,
+      // External-source sessions are no longer memory-excluded just for being
+      // external; only an explicitly `private` session excludes memory
+      // (session-visibility.md §5.1). Keep this in step with `toPush`.
+      sharedMemoryExcluded: r.visibility === 'private',
       visibilityRev: r.visibilityRev
     }))
   }

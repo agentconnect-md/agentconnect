@@ -57,7 +57,11 @@ function toPush(s: SessionMetaRecord): SessionVisibilityPush {
   return {
     sessionId: s.id,
     visibility: s.visibility,
-    sharedMemoryExcluded: s.visibility !== 'org' || s.externalProvider != null,
+    // An external-source session (Slack/Feishu channel) is no longer memory-
+    // excluded just for being external — `external` visibility now captures like
+    // `org`. Only an explicitly `private` session excludes memory
+    // (session-visibility.md §5.1).
+    sharedMemoryExcluded: s.visibility === 'private',
     visibilityRev: s.visibilityRev
   }
 }
