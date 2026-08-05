@@ -3,76 +3,32 @@
  * (docs/designs/slack-install-smoothing.md §Tier B).
  *
  * In the MANUAL flow the console builds the manifest and deep-links the user to
- * Slack (packages/web/src/lib/slack-manifest.ts). In the AUTO flow the CP creates
- * the app itself via `apps.manifest.create`, so it must build the same manifest —
+ * Slack (packages/web/src/components/console/platforms/slack/manifest.ts). In the
+ * AUTO flow the CP creates the app itself via `apps.manifest.create`, so it must build the same manifest —
  * PLUS `oauth_config.redirect_urls` pointing at the CP's own OAuth callback. The
  * CP owns that field on purpose: a client-supplied redirect URL would be an
  * open-redirect / token-theft hole.
  *
- * The scopes/events MUST stay in lock-step with the manual manifest AND with what
- * the daemon's Slack adapter actually uses (packages/daemon/src/slack/*). The two
- * lists below are pinned by a drift-guard test (slack-manifest.test.ts); when you
- * change them here, change them in packages/web/src/lib/slack-manifest.ts too.
+ * The shared protocol module owns the canonical desired state. This module adds
+ * Control Plane URL helpers and merge rules for already-installed Apps.
  */
-import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
-import { PLATFORM_APP_DESCRIPTION } from './platform-app-description.js'
+import {
+  buildSlackAppManifest,
+  DEFAULT_SLACK_APP_NAME,
+  PLATFORM_APP_DESCRIPTION,
+  SLACK_BOT_EVENTS,
+  SLACK_BOT_SCOPES,
+  slackEventsRequestUrl,
+  slackInteractionsRequestUrl
+} from '@agentconnect.md/protocol/slack-app-manifest'
 
-/**
- * Bot token scopes the Slack app requests. Widening this list later forces every
- * workspace that already installed the app to re-authorize, so it covers group
- * DMs (`mpim:*`) and agent-initiated DMs (`im:write`) alongside the channel and
- * thread surfaces the adapter reads today.
- *
- * Deliberately NO channel-write scope. `conversations.leave` would need
- * `channels:manage` (or `groups:write` for private channels), and Slack offers no
- * leave-only scope — `channels:manage` also grants create, archive, kick, rename and
- * unarchive, none of which this app uses. Taking four unused powers AND forcing every
- * installed workspace to re-authorize buys very little here: Slack reports its own
- * membership authoritatively, so removing the bot in Slack makes the console row
- * disappear by itself. The console offers Off and Forget for Slack instead, and
- * leaving is done in Slack. A deployment that grants these scopes on its own app can
- * still call the leave API; only the manifest and the console affordance omit it.
- */
-export const SLACK_BOT_SCOPES = [
-  'files:read',
-  'app_mentions:read',
-  'channels:history',
-  'channels:read',
-  'commands',
-  'chat:write',
-  'chat:write.customize',
-  'files:write',
-  'groups:history',
-  'groups:read',
-  'im:history',
-  'im:write',
-  'mpim:history',
-  'mpim:read',
-  'reactions:write',
-  'assistant:write',
-  'users:read'
-] as const
-
-/** Bot events the daemon subscribes to. The two `app_*` lifecycle events carry no
- *  OAuth grant (event additions never force a workspace re-auth); the relay-pool
- *  ingest turns them into `rc/bot-revoked` (preset-agents.md §5.3), while a
- *  socket-mode daemon has no handler and Bolt drops them silently. */
-export const SLACK_BOT_EVENTS = [
-  'app_mention',
-  'app_uninstalled',
-  'assistant_thread_started',
-  'message.channels',
-  'message.groups',
-  'message.im',
-  'message.mpim',
-  'member_joined_channel',
-  'channel_left',
-  'group_left',
-  'tokens_revoked'
-] as const
-
-/** Fallback app name so the manifest is always valid before the user types one. */
-export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
+export {
+  DEFAULT_SLACK_APP_NAME,
+  SLACK_BOT_EVENTS,
+  SLACK_BOT_SCOPES,
+  slackEventsRequestUrl,
+  slackInteractionsRequestUrl
+}
 
 type ManifestRecord = Record<string, unknown>
 
@@ -97,15 +53,6 @@ function mergeManagedShortcuts(current: unknown, managed: unknown): unknown[] {
   return [...required, ...existing]
 }
 
-/** The relay pool's Events API endpoints, derived from its public HTTPS base
- *  (slack-http-mode §6): the manifest's `request_url`s Slack POSTs inbound to. */
-export function slackEventsRequestUrl(relayHttpBase: string): string {
-  return `${relayHttpBase.replace(/\/$/, '')}/slack/events`
-}
-export function slackInteractionsRequestUrl(relayHttpBase: string): string {
-  return `${relayHttpBase.replace(/\/$/, '')}/slack/interactions`
-}
-
 /** AgentConnect-owned defaults without an OAuth redirect URL. Existing-app refresh
  *  adds the current CP callback only when one is configured, while create always
  *  supplies it through `buildInstallManifest` below.
@@ -120,55 +67,14 @@ export function slackInteractionsRequestUrl(relayHttpBase: string): string {
 export interface SlackManifestOptions {
   httpRelayBase?: string
   backgroundColor?: string
+  additionalRedirectUrls?: readonly string[]
 }
 
 function buildManagedManifest(name: string, options: SlackManifestOptions = {}): ManifestRecord {
-  const displayName = name.trim() || DEFAULT_SLACK_APP_NAME
-  const http = !!options.httpRelayBase
-  return {
-    display_information: {
-      name: displayName,
-      ...(options.backgroundColor ? { background_color: options.backgroundColor } : {})
-    },
-    features: {
-      bot_user: { display_name: displayName, always_online: true },
-      app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
-      agent_view: {
-        agent_description: PLATFORM_APP_DESCRIPTION,
-        suggested_prompts: []
-      },
-      shortcuts: [
-        {
-          name: 'Manage session',
-          type: 'message',
-          callback_id: SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
-          description: 'View or update the AgentConnect session for this conversation'
-        }
-      ]
-    },
-    oauth_config: {
-      scopes: { bot: [...SLACK_BOT_SCOPES] }
-    },
-    settings: {
-      event_subscriptions: {
-        bot_events: [...SLACK_BOT_EVENTS],
-        ...(http ? { request_url: slackEventsRequestUrl(options.httpRelayBase!) } : {})
-      },
-      interactivity: {
-        is_enabled: true,
-        ...(http
-          ? {
-              request_url: slackInteractionsRequestUrl(options.httpRelayBase!),
-              message_menu_options_url: slackInteractionsRequestUrl(options.httpRelayBase!)
-            }
-          : {})
-      },
-      org_deploy_enabled: false,
-      socket_mode_enabled: !http,
-      token_rotation_enabled: false,
-      is_mcp_enabled: false
-    }
-  }
+  return buildSlackAppManifest(name, {
+    ...(options.httpRelayBase ? { relayUrl: options.httpRelayBase } : {}),
+    ...(options.backgroundColor ? { backgroundColor: options.backgroundColor } : {})
+  })
 }
 
 /**
@@ -189,7 +95,7 @@ export function buildInstallManifest(
     ...managed,
     oauth_config: {
       ...asRecord(managed.oauth_config),
-      redirect_urls: [redirectUrl]
+      redirect_urls: [...new Set([redirectUrl, ...(options.additionalRedirectUrls ?? [])])]
     }
   }
 }

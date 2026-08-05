@@ -184,6 +184,9 @@ importers:
       '@resvg/resvg-js':
         specifier: ^2.6.2
         version: 2.6.2
+      '@slack/web-api':
+        specifier: ^8.0.0
+        version: 8.0.0
       aws4fetch:
         specifier: ^1.0.20
         version: 1.0.20
@@ -518,6 +521,9 @@ importers:
 
   packages/web:
     dependencies:
+      '@agentconnect.md/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@iconify-icons/logos':
         specifier: ^1.2.36
         version: 1.2.36

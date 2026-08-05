@@ -69,7 +69,7 @@ describe('slackConfigApi.exportApp (apps.manifest.export)', () => {
     expect(await slackConfigApi.exportApp('xoxe.xoxp-token', 'A012ABCD0A0')).toEqual({ ok: true, manifest })
     const request = vi.mocked(globalThis.fetch).mock.calls[0]!
     expect(request[0]).toBe('https://slack.com/api/apps.manifest.export')
-    const body = request[1]?.body as URLSearchParams
+    const body = new URLSearchParams(String(request[1]?.body))
     expect(body.get('token')).toBe('xoxe.xoxp-token')
     expect(body.get('app_id')).toBe('A012ABCD0A0')
   })
@@ -99,7 +99,7 @@ describe('slackConfigApi.updateApp (apps.manifest.update)', () => {
     })
     const request = vi.mocked(globalThis.fetch).mock.calls[0]!
     expect(request[0]).toBe('https://slack.com/api/apps.manifest.update')
-    const body = request[1]?.body as URLSearchParams
+    const body = new URLSearchParams(String(request[1]?.body))
     expect(body.get('app_id')).toBe('A012ABCD0A0')
     expect(JSON.parse(body.get('manifest')!)).toEqual(manifest)
   })

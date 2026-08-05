@@ -1,8 +1,8 @@
-import { createPrivateKey, randomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { SignJWT } from 'jose'
-import type { ProviderAppConfig } from './slack-app.js'
+import { githubRequest, mintAppJwt, resolveGithubSetupAppConfig } from '@agentconnect.md/control-plane/github-app-api'
+import type { ProviderAppConfig } from './provider-app.js'
 
 export interface GithubAppCredentials {
   appId: string
@@ -213,48 +213,19 @@ function sameStringSet(left: unknown, right: readonly string[]): boolean {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort())
 }
 
-async function githubAppJwt(appId: number, clientId: string | null, privateKeyBase64: string): Promise<string> {
-  const pem = Buffer.from(privateKeyBase64, 'base64').toString('utf8')
-  const privateKey = createPrivateKey(pem)
-  const now = Math.floor(Date.now() / 1_000)
-  return new SignJWT({})
-    .setProtectedHeader({ alg: 'RS256' })
-    .setIssuedAt(now - 60)
-    .setExpirationTime(now + 9 * 60)
-    .setIssuer(clientId ?? String(appId))
-    .sign(privateKey)
-}
-
-async function githubJson<T>(path: string, jwt: string, fetchImpl: typeof fetch): Promise<T> {
-  let response: Response
-  try {
-    response = await fetchImpl(`https://api.github.com${path}`, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${jwt}`,
-        'x-github-api-version': '2022-11-28'
-      },
-      signal: AbortSignal.timeout(10_000)
-    })
-  } catch {
-    throw new Error('GitHub App settings are unreachable')
-  }
-  if (!response.ok) throw new Error(`GitHub App settings returned HTTP ${response.status}`)
-  return (await response.json()) as T
-}
-
 export async function auditGithubApp(
   identity: { appId: number; slug: string; clientId: string | null },
   privateKeyBase64: string,
   expectedManifest: Record<string, unknown>,
   fetchImpl: typeof fetch = fetch
 ): Promise<GithubAppAuditResult> {
-  const jwt = await githubAppJwt(identity.appId, identity.clientId, privateKeyBase64)
+  const config = resolveGithubSetupAppConfig({ ...identity, privateKeyBase64 })
+  const jwt = await mintAppJwt(config)
   const expectedHook = asRecord(expectedManifest.hook_attributes)
   const [app, hook] = await Promise.all([
-    githubJson<GithubAppApiResponse>('/app', jwt, fetchImpl),
+    githubRequest<GithubAppApiResponse>('/app', { auth: jwt, fetchImpl }),
     typeof expectedHook.url === 'string'
-      ? githubJson<GithubWebhookApiResponse>('/app/hook/config', jwt, fetchImpl)
+      ? githubRequest<GithubWebhookApiResponse>('/app/hook/config', { auth: jwt, fetchImpl })
       : Promise.resolve(undefined)
   ])
   const missing: string[] = []

@@ -176,6 +176,7 @@ ENV NEXT_PUBLIC_CP_URL=/cp/api/v1 \
   BUILD_TIME=$BUILD_TIME
 # Keep the runtime copy stable when an application has no public assets yet.
 RUN mkdir -p packages/web/public \
+  && pnpm --filter "@agentconnect.md/protocol" build \
   && pnpm --filter "@agentconnect.md/web" build
 
 # ───────────────────────────── web: runtime ─────────────────────────────────

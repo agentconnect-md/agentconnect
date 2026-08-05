@@ -68,10 +68,11 @@ const FEISHU_TIMEOUT_MS = 5000
 async function tenantAccessToken(
   appId: string,
   appSecret: string,
-  region: FeishuRegion
+  region: FeishuRegion,
+  fetcher: typeof fetch = fetch
 ): Promise<{ status: 'ok'; token: string } | { status: 'invalid' | 'unavailable' }> {
   try {
-    const res = await fetch(`${REGION_BASE[region]}/auth/v3/tenant_access_token/internal`, {
+    const res = await fetcher(`${REGION_BASE[region]}/auth/v3/tenant_access_token/internal`, {
       method: 'POST',
       headers: { 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
@@ -84,6 +85,21 @@ async function tenantAccessToken(
       : { status: 'invalid' }
   } catch {
     return { status: 'unavailable' }
+  }
+}
+
+export type FeishuAppCredentialVerification = { status: 'ok' | 'invalid' | 'unavailable' }
+export type FeishuAppCredentialVerifier = (
+  appId: string,
+  appSecret: string,
+  region: FeishuRegion
+) => Promise<FeishuAppCredentialVerification>
+
+/** Lightweight credential check shared by the runtime installer and Tenant Admin. */
+export function createFeishuAppCredentialVerifier(fetcher?: typeof fetch): FeishuAppCredentialVerifier {
+  return async (appId, appSecret, region) => {
+    const result = await tenantAccessToken(appId, appSecret, region, fetcher ?? fetch)
+    return { status: result.status }
   }
 }
 
