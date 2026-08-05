@@ -8,14 +8,18 @@ import {
   buildDistillationPrompt,
   MEMORY_DISTILLATION_SYSTEM_PROMPT,
   parseDistilledMemories,
-  trustedExtractionMode
+  readOnlyExtractionMode
 } from '../src/agents/memory-distiller.js'
 import { ManagedMemoryProvider } from '../src/agents/memory-provider.js'
 
 describe('managed memory auto-distillation', () => {
-  it('fails closed for Codex-style runtimes without a trusted system-prompt channel', () => {
-    expect(trustedExtractionMode(false, ['agent', 'read-only'])).toBeUndefined()
-    expect(trustedExtractionMode(true, ['default', 'plan'])).toBe('plan')
+  it('gates extraction on a read-only mode, independent of the system-prompt channel (#653)', () => {
+    // The read-only/plan mode is the only hard gate; trust of the system-prompt
+    // channel no longer fail-closes, so Codex-style runtimes (no ACP system prompt)
+    // still distill via the inline-policy path as long as they have a safe mode.
+    expect(readOnlyExtractionMode(['agent', 'read-only'])).toBe('read-only')
+    expect(readOnlyExtractionMode(['default', 'plan'])).toBe('plan')
+    expect(readOnlyExtractionMode(['default', 'agent'])).toBeUndefined()
   })
 
   it('keeps the complete policy in trusted system context, separate from turn data', async () => {
