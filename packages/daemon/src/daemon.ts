@@ -3324,6 +3324,9 @@ export class Daemon {
    */
   private reconcileRun?: Promise<void>
   private reconcilePending = false
+  // Register snapshots publish agents before integrations. Carry newly-owned
+  // inbox rows across coalesced passes and retry only after convergence is idle.
+  private readonly pendingInboxReplayAgents = new Set<string>()
   async reconcile(): Promise<void> {
     if (this.reconcileRun) {
       this.reconcilePending = true
@@ -3338,6 +3341,11 @@ export class Daemon {
     if (this.reconcilePending) {
       this.reconcilePending = false
       await this.reconcile()
+    }
+    if (!this.reconcileRun && !this.reconcilePending && this.pendingInboxReplayAgents.size > 0) {
+      const agentIds = new Set(this.pendingInboxReplayAgents)
+      this.pendingInboxReplayAgents.clear()
+      this.replayInbox(agentIds)
     }
   }
 
@@ -3502,6 +3510,7 @@ export class Daemon {
       // already paused is still an explicit operator stop, so terminally discard that
       // old backlog now rather than letting a later unpause+restart resurrect it.
       if (a.pause) this.purgeAgentInbox(a.id)
+      else this.pendingInboxReplayAgents.add(a.id)
       // New agent: warm its git-repo checkout in the background now (e.g. on daemon
       // start every agent is a toStart), so the repo is cloned ahead of the first message.
       this.prefetchClone(a as LoadedAgent)
@@ -17665,7 +17674,7 @@ export class Daemon {
    * may hold that agent; we neither drop the row nor block on it). Webchat turns were never
    * persisted, so none appear here.
    */
-  private replayInbox(): void {
+  private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
       rows = this.store.listInboxBySessionKeyFifo()
@@ -17679,6 +17688,7 @@ export class Daemon {
     const purgedPausedAgents = new Set<string>()
     const purgedLoopScopes = new Set<string>()
     for (const row of rows) {
+      if (agentIds && !agentIds.has(row.agentId)) continue
       // A completed hook row is a redacted durable receipt, not work. It is
       // re-emitted from onReady (when the CP socket is actually writable) and
       // remains here to absorb relay redelivery without another model turn.
