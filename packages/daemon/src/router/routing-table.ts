@@ -5,16 +5,9 @@ import type { RoutingRule } from './routing-rule.js'
 
 const KIND_ORDER = ['mention', 'dm', 'keyword', 'auto'] as const
 
-/**
- * Does a rule's channel scope cover this message? A channel-scoped rule also serves the
- * threads INSIDE that channel: a Discord session keys on the thread's own channel id, so
- * a trigger the operator set on "#general" would otherwise stop applying the moment the
- * bot opens a thread there. Every channel-scope comparison in the ladder goes through
- * here — the scope filter AND the CP-override check — so the two can't disagree.
- */
 function channelInScope(scopeChannel: string | undefined, msg: NormalizedMessage): boolean {
   if (scopeChannel === undefined) return true
-  return scopeChannel === msg.channel || scopeChannel === msg.parentChannel
+  return scopeChannel === msg.channel
 }
 
 function scopeMatches(r: RoutingRule, msg: NormalizedMessage): boolean {

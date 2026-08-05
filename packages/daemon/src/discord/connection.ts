@@ -482,29 +482,32 @@ export class DiscordConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Post a message. `channel` is already the concrete channel/thread id (Discord
-   * threads are their own channels — see normalize.ts), so `threadTs` is unused —
-   * the session channel IS the reply target. Long text is chunked to the 2000-char
-   * cap; returns the FIRST resulting message id.
-   */
-  async postMessage(channel: string, text: string, _threadTs?: string): Promise<string | undefined> {
+  /** Discord threads are provider channels, so the normalized `{ channel, thread }`
+   * pair maps to a concrete send target by preferring `thread`. */
+  private replyTarget(channel: string, thread?: string): string {
+    return thread || channel
+  }
+
+  /** Post a message to the normalized channel/thread coordinates. Long text is
+   * chunked to the 2000-char cap; returns the FIRST resulting message id. */
+  async postMessage(channel: string, text: string, threadTs?: string): Promise<string | undefined> {
+    const target = this.replyTarget(channel, threadTs)
     return this.queue.enqueue(async () => {
-      const ch = await this.sendableChannel(channel)
+      const ch = await this.sendableChannel(target)
       if (!ch) {
-        await this.postPermissionUpdateNotice(channel, ch)
+        await this.postPermissionUpdateNotice(target, ch)
         return undefined
       }
       let firstId: string | undefined
       for (const chunk of chunkForDiscord(text)) {
         const sent = await ch.send({ content: chunk }).catch((err: Error) => {
-          this.rememberPermissionIssue(err, channel)
-          this.deps.log?.debug(`discord: send failed (ch=${channel}): ${err.message}`)
+          this.rememberPermissionIssue(err, target)
+          this.deps.log?.debug(`discord: send failed (ch=${target}): ${err.message}`)
           return null
         })
         if (sent && firstId === undefined) firstId = sent.id
       }
-      await this.postPermissionUpdateNotice(channel, ch)
+      await this.postPermissionUpdateNotice(target, ch)
       return firstId
     })
   }
@@ -522,24 +525,25 @@ export class DiscordConnection implements PlatformConnection {
     text: string,
     opts: { threadTs?: string; keyboard?: DiscordComponents; sessionKey?: string } = {}
   ): Promise<string | undefined> {
+    const target = this.replyTarget(channel, opts.threadTs)
     return this.queue.enqueue(async () => {
       let ch: Sendable | null = null
       try {
-        ch = await this.sendableChannel(channel)
+        ch = await this.sendableChannel(target)
         if (!ch) {
-          await this.postPermissionUpdateNotice(channel, ch)
+          await this.postPermissionUpdateNotice(target, ch)
           return undefined
         }
         const payload: SendPayload = { content: chunkForDiscord(text)[0] ?? '' }
         if (opts.keyboard) payload.components = opts.keyboard
         const sent = await ch.send(payload)
-        if (sent && opts.sessionKey) this.statusKeys.set(`${channel}:${sent.id}`, opts.sessionKey)
-        await this.postPermissionUpdateNotice(channel, ch)
+        if (sent && opts.sessionKey) this.statusKeys.set(`${target}:${sent.id}`, opts.sessionKey)
+        await this.postPermissionUpdateNotice(target, ch)
         return sent?.id
       } catch (err) {
-        this.rememberPermissionIssue(err, channel)
-        await this.postPermissionUpdateNotice(channel, ch)
-        this.deps.log?.debug(`discord: send (chrome) failed (ch=${channel}): ${(err as Error).message}`)
+        this.rememberPermissionIssue(err, target)
+        await this.postPermissionUpdateNotice(target, ch)
+        this.deps.log?.debug(`discord: send (chrome) failed (ch=${target}): ${(err as Error).message}`)
         return undefined
       }
     })
@@ -551,14 +555,15 @@ export class DiscordConnection implements PlatformConnection {
     channel: string,
     messageId: string,
     text: string,
-    opts: { keyboard?: DiscordComponents } = {}
+    opts: { threadTs?: string; keyboard?: DiscordComponents } = {}
   ): Promise<void> {
+    const target = this.replyTarget(channel, opts.threadTs)
     await this.queue.enqueue(async () => {
       let ch: Sendable | null = null
       try {
-        ch = await this.sendableChannel(channel)
+        ch = await this.sendableChannel(target)
         if (!ch?.messages) {
-          await this.postPermissionUpdateNotice(channel, ch)
+          await this.postPermissionUpdateNotice(target, ch)
           return
         }
         const msg = await ch.messages.fetch(messageId)
@@ -566,25 +571,26 @@ export class DiscordConnection implements PlatformConnection {
         if (opts.keyboard) payload.components = opts.keyboard
         await msg.edit(payload)
       } catch (err) {
-        this.rememberPermissionIssue(err, channel)
-        this.deps.log?.debug(`discord: edit failed (ch=${channel} id=${messageId}): ${(err as Error).message}`)
+        this.rememberPermissionIssue(err, target)
+        this.deps.log?.debug(`discord: edit failed (ch=${target} id=${messageId}): ${(err as Error).message}`)
       }
-      await this.postPermissionUpdateNotice(channel, ch)
+      await this.postPermissionUpdateNotice(target, ch)
     })
   }
 
   /** Best-effort transient "typing…" indicator (Discord's analog of a status bar).
    *  Not queued — a fire-and-forget hint that expires on its own (~10s). */
-  async sendChatAction(channel: string): Promise<void> {
+  async sendChatAction(channel: string, threadTs?: string): Promise<void> {
+    const target = this.replyTarget(channel, threadTs)
     let ch: Sendable | null = null
     try {
-      ch = await this.sendableChannel(channel)
+      ch = await this.sendableChannel(target)
       if (ch?.sendTyping) await ch.sendTyping()
     } catch (err) {
-      this.rememberPermissionIssue(err, channel)
-      this.deps.log?.debug(`discord: sendTyping failed (ch=${channel}): ${(err as Error).message}`)
+      this.rememberPermissionIssue(err, target)
+      this.deps.log?.debug(`discord: sendTyping failed (ch=${target}): ${(err as Error).message}`)
     }
-    await this.postPermissionUpdateNotice(channel, ch)
+    await this.postPermissionUpdateNotice(target, ch)
   }
 
   /**

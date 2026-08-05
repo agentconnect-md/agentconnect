@@ -2,11 +2,9 @@
  * Discord's **thread promotion** (§7.4 `openThreadForTopLevel`, stage S2).
  *
  * A top-level channel @mention opens a thread off the triggering message first,
- * then the turn dispatches INTO that thread (Slack-parity). The re-keying rules
- * are Discord's conversation model: channel == thread == session
- * (see discord/normalize.ts), so the freshly created thread id becomes all
- * three coordinates, and the original message id — whose ts equals the thread
- * id — makes the session treat that message as the thread root.
+ * then the turn dispatches INTO that thread (Slack-parity). `channel` remains
+ * the enclosing configurable channel and the freshly-created id becomes only
+ * `thread`, matching Slack's `{ channel, thread_ts }` coordinate semantics.
  *
  * WANT reads the generic `promoteToThread` coordinate (§6.5); Discord's legacy
  * `discordTopLevel` named twin retired with the S1b cleanup.
@@ -38,20 +36,9 @@ export const discordThreadPromotion: ThreadPromotion<ThreadPromotionMessage> = {
       return
     }
     host.info(`discord: opened thread ${threadId} for ch=${msg.channel} msg=${messageId}`)
-    // The session is about to key on the thread; record the channel it belongs to
-    // (and its space) NOW, while `msg.channel` still names the parent — channel
-    // discovery then reports this one channel instead of a row per thread we open
-    // under it.
-    host.setChannelScope(threadId, { parentId: msg.channel })
-    // Re-key the turn onto the thread channel (channel == thread == session; see
-    // discord/normalize.ts). msgId keeps the original message id → its `ts`, which
-    // equals the thread id, so the session treats this message as the thread root.
-    msg.parentChannel = msg.channel
-    msg.channel = threadId
+    // Keep `channel` on the enclosing conversation; only the thread coordinate
+    // changes. Discord guarantees the new thread id equals the starter message id,
+    // so the triggering message is still recognized as the thread root.
     msg.thread = threadId
-    // The session now keys on the thread id, not the parent channel the inbound
-    // resolver already noted — label the thread too so the console shows its name.
-    // `conn` is non-null here (threadId is only set when createThread ran on it).
-    host.noteChannel(conn, threadId)
   }
 }

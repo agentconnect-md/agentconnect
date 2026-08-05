@@ -65,6 +65,51 @@ describe('LocalStore', () => {
     s.close()
   })
 
+  it('migrates legacy Discord thread-as-channel sessions onto parent/thread coordinates', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-discord-coords-')), 'local.sqlite')
+    const first = new LocalStore(path)
+    const legacyKey = sessionKey('discord', 'T1', 'T1', 'bot-a')
+    const nextKey = sessionKey('discord', 'C1', 'T1', 'bot-a')
+    first.setChannelScope('T1', { parentId: 'C1' }, 1)
+    first.upsertSession({
+      key: legacyKey,
+      agentId: 'bot-a',
+      platform: 'discord',
+      channel: 'T1',
+      thread: 'T1',
+      acpSessionId: 'acp-discord',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: 1
+    })
+    first.setSessionMuted(legacyKey, true)
+    first.appendTranscript({ channel: 'T1', thread: 'T1', ts: '1', sender: 'U1', kind: 'text', text: 'hello' })
+    first.appendInbox({
+      id: 'discord-delivery',
+      sessionKey: legacyKey,
+      agentId: 'bot-a',
+      msg: JSON.stringify({ platform: 'discord', channel: 'T1', thread: 'T1', parentChannel: 'C1' }),
+      enqueuedAt: '1'
+    })
+    first.close()
+
+    const restored = new LocalStore(path)
+    expect(restored.getSession(legacyKey)).toBeUndefined()
+    expect(restored.getSession(nextKey)).toMatchObject({
+      key: nextKey,
+      channel: 'C1',
+      thread: 'T1',
+      acpSessionId: 'acp-discord'
+    })
+    expect(restored.isSessionMuted(nextKey)).toBe(true)
+    expect(restored.threadTranscript('C1', 'T1').map((row) => row.text)).toEqual(['hello'])
+    expect(restored.threadTranscript('T1', 'T1')).toEqual([])
+    const inbox = restored.listInboxBySessionKeyFifo()[0]!
+    expect(inbox.sessionKey).toBe(nextKey)
+    expect(JSON.parse(inbox.msg)).toEqual({ platform: 'discord', channel: 'C1', thread: 'T1' })
+    restored.close()
+  })
+
   it('persists only explicitly pending session snapshots and fences stale ACKs', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-session-outbox-')), 'local.sqlite')
     const first = new LocalStore(path)

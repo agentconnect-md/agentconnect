@@ -18,15 +18,7 @@
  * admission handle); the strategy decides everything platform-shaped.
  */
 
-/** What a promotion may ask of core. Deliberately narrow: recording the
- *  parent-channel scope and labeling the new thread are core bookkeeping the
- *  platform cannot reach on its own. */
 export interface ThreadPromotionHost {
-  /** Record the thread's parent channel NOW, while the message still names it —
-   *  channel discovery then reports the one channel instead of a row per thread. */
-  setChannelScope(channel: string, scope: { parentId: string }): void
-  /** Ask the channel-name resolver to label the freshly opened thread. */
-  noteChannel(conn: unknown, channel: string): void
   info(message: string): void
   debug(message: string): void
 }
@@ -38,7 +30,6 @@ export interface ThreadPromotionMessage {
   platform: string
   channel: string
   thread?: string
-  parentChannel?: string
   msgId: string
   text: string
   promoteToThread?: boolean

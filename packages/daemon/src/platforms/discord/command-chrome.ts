@@ -23,8 +23,9 @@ import type { CommandChromeContext, CommandChromeSurface, SelectCardSpec } from 
 
 export const discordCommandChrome: CommandChromeSurface<unknown, DiscordStatusInfo> = {
   platform: 'discord',
-  // Commands resolve through the channel's latest session, as before this seam.
-  threadIdentifiesSession: false,
+  // Discord now carries Slack-parity parent/thread coordinates, so a command in a
+  // thread identifies that exact session rather than the channel's newest thread.
+  threadIdentifiesSession: true,
 
   reply(conn: unknown, _msg: unknown, ctx: CommandChromeContext, text: string): void {
     void (conn as DiscordConnection).postMessage(ctx.channel, text, ctx.replyThread)
@@ -35,7 +36,7 @@ export const discordCommandChrome: CommandChromeSurface<unknown, DiscordStatusIn
     void (conn as DiscordConnection).postChrome(
       ctx.channel,
       renderStatusText(info),
-      link ? { keyboard: buildLinkComponents(link) } : {}
+      link ? { threadTs: ctx.replyThread, keyboard: buildLinkComponents(link) } : { threadTs: ctx.replyThread }
     )
   },
 
@@ -44,6 +45,7 @@ export const discordCommandChrome: CommandChromeSurface<unknown, DiscordStatusIn
     if (!components) return false
     // sessionKey = the resolved key, so a tapped button resolves back to it.
     void (conn as DiscordConnection).postChrome(ctx.channel, card.header, {
+      threadTs: ctx.replyThread,
       keyboard: components,
       sessionKey: ctx.sessionKey
     })

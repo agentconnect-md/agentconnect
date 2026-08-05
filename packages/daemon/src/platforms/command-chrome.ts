@@ -62,7 +62,7 @@ export interface CommandChromeSurface<TMsg, TInfo> {
   /** Platform id this surface presents for; never parsed. */
   readonly platform: string
   /** Does a command's thread coordinate identify the session it acts on?
-   *  Slack: yes — a command inside a session thread targets that session.
+   *  Slack/Discord: yes — a command inside a session thread targets that session.
    *  Reply-threading platforms mint a fresh thread per command: no. */
   readonly threadIdentifiesSession: boolean
   /** Post a short control reply on the platform's own reply surface. */

@@ -177,8 +177,6 @@ describe('routeRules ladder', () => {
       const rules = [rule({ agentId: 'A', scope: { channel: 'C1' }, match: { kind: 'auto' }, mutedChannels: ['C1'] })]
       const owner = (c: string, t: string) => (c === 'C1' && t === 'T1' ? 'A' : null)
       expect(routeRules(msg({ channel: 'C1', thread: 'T1' }), rules, owner)).toBeNull()
-      // Discord keys a thread on its own channel id; the enclosing channel's Off still applies.
-      expect(routeRules(msg({ channel: 'THREAD', parentChannel: 'C1' }), rules, noOwner)).toBeNull()
     })
 
     it('silences a CP session placement in the muted channel', () => {
@@ -287,22 +285,21 @@ describe('routeRules platform isolation', () => {
     expect(routeRules(msg({ platform: 'slack' }), rules, noOwner)).toBeNull()
   })
 
-  it("a channel-scoped rule serves that channel's threads (Discord keys a session on the thread)", () => {
+  it("a channel-scoped rule serves that channel's Discord threads", () => {
     const rules = [rule({ agentId: 'a', scope: { channel: 'C1' }, match: { kind: 'auto' }, platform: 'discord' })]
-    const inThread = msg({ platform: 'discord', channel: 'T9', thread: 'T9', parentChannel: 'C1' })
+    const inThread = msg({ platform: 'discord', channel: 'C1', thread: 'T9' })
     expect(routeRules(inThread, rules, noOwner)?.agentId).toBe('a')
     // Another channel's thread is still out of scope.
-    expect(routeRules({ ...inThread, parentChannel: 'C2' }, rules, noOwner)).toBeNull()
+    expect(routeRules({ ...inThread, channel: 'C2' }, rules, noOwner)).toBeNull()
   })
 
   it('a CP rule scoped to the enclosing channel still overrides a local rule in a thread', () => {
-    // The CP-override check uses the same channel-scope predicate as the scope filter,
-    // so a parent-scoped CP rule wins even when the local rule is listed first.
+    // The CP-override check uses the same channel coordinate as the scope filter.
     const rules = [
       rule({ agentId: 'local', source: 'config', scope: { channel: 'C1' }, match: { kind: 'auto' } }),
       rule({ agentId: 'cpAgent', source: 'cp', scope: { channel: 'C1' }, match: { kind: 'auto' } })
     ]
-    const inThread = msg({ platform: 'discord', channel: 'T1', thread: 'T1', parentChannel: 'C1' })
+    const inThread = msg({ platform: 'discord', channel: 'C1', thread: 'T1' })
     expect(routeRules(inThread, rules, noOwner)?.agentId).toBe('cpAgent')
   })
 

@@ -385,6 +385,13 @@ branch.
 
 Named `telegram*` / `discord*` fields are deprecated behind the projection.
 
+`channel` consistently names the enclosing configurable conversation; `thread`
+names the logical thread inside it. This includes Discord even though its provider API
+models a thread as a channel: Discord ingress emits `{ channel: parentChannelId,
+thread: threadChannelId }`, and its output adapter selects `thread ?? channel` as the
+concrete API destination. The retired `parentChannel` normalized field and the former
+`{ channel: threadChannelId, thread: threadChannelId }` shape are migrated daemon-locally.
+
 ### 6.6 `platform_action`: a semi-opaque envelope
 
 `source: 'slack_action'` (and the Feishu analog) is replaced by one frame
