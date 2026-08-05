@@ -65,7 +65,7 @@ import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
-import { sessionResumeState } from '@/lib/session-resume'
+import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
@@ -1349,9 +1349,10 @@ export default function SessionDetailView() {
       : sessionMerged
   // Session mode: does this session belong to a multi-participant conversation?
   // One bounded resolver probe per detail view (same SWR cache family as
-  // conversation mode); a hit redirects to the merged page (§5.3).
+  // conversation mode). A normal route redirects on a hit (§5.3); the diagnostic
+  // flat route stays put but still needs the full roster for safe resume gating.
   const selfKey = useMemo(() => {
-    if (flatView || conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') {
+    if (conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') {
       return null
     }
     return encodeConversationKey({
@@ -1360,8 +1361,8 @@ export default function SessionDetailView() {
       channel: currentSessionDetail.channel,
       thread: currentSessionDetail.thread
     })
-  }, [flatView, conversationKey, currentSessionDetail])
-  const { data: selfConversation } = useSWR(
+  }, [conversationKey, currentSessionDetail])
+  const { data: selfConversation, isLoading: selfConversationLoading } = useSWR(
     selfKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, selfKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
     { revalidateOnFocus: false }
@@ -2129,12 +2130,20 @@ export default function SessionDetailView() {
   const currentDaemonByAgent = new Map(
     agents.map((agent) => [agent.id, agent.daemon === '—' ? undefined : agent.daemon])
   )
+  const resumeConversationMembers = conversationKey ? conversationMembers : selfConversation?.sessions
+  const resumeConversationLookupPending = conversationKey
+    ? conversationLoading
+    : Boolean(selfKey && selfConversationLoading)
+  const resumeConversationLookupRequired = Boolean(conversationKey || selfKey)
   const persistedResumeMembers = isWebchat
-    ? conversationMembers
-      ? conversationMembers.map((member) => ({ agentId: member.agentId, daemonId: member.daemonId }))
-      : currentSessionDetail
-        ? [{ agentId: currentSessionDetail.agentId, daemonId: currentSessionDetail.daemonId }]
-        : null
+    ? sessionResumeMembers(
+        resumeConversationMembers?.map((member) => ({ agentId: member.agentId, daemonId: member.daemonId })),
+        currentSessionDetail
+          ? { agentId: currentSessionDetail.agentId, daemonId: currentSessionDetail.daemonId }
+          : null,
+        resumeConversationLookupRequired,
+        resumeConversationLookupPending
+      )
     : []
   const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, currentDaemonByAgent)
   const resumeDisabled = isWebchat && resumeState !== 'available'

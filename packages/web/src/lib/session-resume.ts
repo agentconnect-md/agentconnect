@@ -7,6 +7,24 @@ export interface SessionResumeMember {
 }
 
 /**
+ * Select the ownership rows used by the resume gate. A session route may still
+ * represent a multi-agent conversation (notably the diagnostic `view=flat`
+ * route), so resolved conversation membership takes precedence over the
+ * selected session. While that lookup is pending, fail closed.
+ */
+export function sessionResumeMembers(
+  conversationMembers: readonly SessionResumeMember[] | null | undefined,
+  currentSession: SessionResumeMember | null,
+  lookupRequired: boolean,
+  lookupPending: boolean
+): readonly SessionResumeMember[] | null {
+  if (lookupPending) return null
+  if (conversationMembers?.length) return conversationMembers
+  if (lookupRequired) return []
+  return currentSession ? [currentSession] : null
+}
+
+/**
  * A persisted conversation can resume only while every participating agent is
  * still placed on the daemon that owns its session. Agent moves do not copy ACP
  * state, transcripts, or worktrees to the new daemon.
