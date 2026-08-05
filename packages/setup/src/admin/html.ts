@@ -486,8 +486,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const services = bootstrapInfo.services;
       const browser = values.logto && values.logto.browser;
       const callbacks = values.logto && values.logto.githubConnector && browser ? [
-        join(browser.endpoint, '/callback/' + githubConnectorId),
-        join(browser.endpoint, '/account/callback/social/' + githubConnectorId)
+        join(bootstrapInfo.logtoEndpoint, '/callback/' + githubConnectorId),
+        join(bootstrapInfo.logtoEndpoint, '/account/callback/social/' + githubConnectorId)
       ] : [];
       return {
         externalUrl: services.web,
@@ -507,12 +507,12 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       };
       const browser = values.logto && values.logto.browser;
       return values.logto && values.logto.slackConnector && browser
-        ? { ...expected, loginRedirectUrl: join(browser.endpoint, '/callback/agentconnect-slack') }
+        ? { ...expected, loginRedirectUrl: join(bootstrapInfo.logtoEndpoint, '/callback/agentconnect-slack') }
         : expected;
     }
 
     function googleExpected(values) {
-      const endpoint = values.logto && values.logto.browser && values.logto.browser.endpoint;
+      const endpoint = values.logto && values.logto.browser && bootstrapInfo.logtoEndpoint;
       return endpoint ? {
         origins: [endpoint],
         redirects: [join(endpoint, '/callback/' + googleConnectorId), join(endpoint, '/account/callback/social/' + googleConnectorId)]
@@ -530,18 +530,13 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       box.textContent = fields.length === 0 ? '' : 'Update required: ' + fields.join(', ') + '. Expected values: ' + JSON.stringify(expected);
     }
 
-    function renderStartupEnvironment(values) {
+    function renderStartupEnvironment() {
       const services = bootstrapInfo.services;
-      const logtoEndpoint = values.logto && values.logto.browser
-        ? values.logto.browser.endpoint
-        : values.auth.mode === 'oidc'
-          ? values.auth.browserClient.endpoint
-          : null;
       const environment = [
         ['AGENTCONNECT_PUBLIC_CP_URL', services.controlPlane],
         ['AGENTCONNECT_PUBLIC_RELAY_URL', services.relay],
         ['AGENTCONNECT_PUBLIC_WEB_URL', services.web],
-        ['LOGTO_ENDPOINT', logtoEndpoint]
+        ['LOGTO_ENDPOINT', bootstrapInfo.logtoEndpoint]
       ];
       el('startup-environment').textContent = environment
         .filter(([, value]) => value)
@@ -553,14 +548,14 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       currentStatus = status;
       const byKey = new Map((status.secrets || []).map((item) => [item.key, item]));
       const values = status.values;
-      renderStartupEnvironment(values);
+      renderStartupEnvironment();
 
       const logto = values.logto;
-      text('logto-management-endpoint', logto && logto.managementEndpoint);
+      text('logto-management-endpoint', logto && bootstrapInfo.logtoEndpoint);
       text('logto-management-id', logto && logto.managementAppId);
       text('logto-management-resource', logto && logto.managementResource);
       secretText('logto-management-secret-display', byKey, 'logto.managementAppSecret', Boolean(logto));
-      text('logto-browser-endpoint', logto && logto.browser && logto.browser.endpoint);
+      text('logto-browser-endpoint', logto && logto.browser && bootstrapInfo.logtoEndpoint);
       text('logto-browser-id', values.auth.mode === 'oidc' ? values.auth.browserClient.appId : null);
       text('logto-browser-resource', logto && logto.browser && logto.browser.apiResource);
       el('logto-edit-controls').hidden = true;
@@ -784,9 +779,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const browser = { ...logto.browser, apiResource: browserResource };
       const auth = {
         ...values.auth,
-        issuer: join(browser.endpoint, '/oidc'),
         audience: browserResource || browserAppId,
-        browserClient: { endpoint: browser.endpoint, appId: browserAppId, apiResource: browserResource }
+        browserClient: { appId: browserAppId, apiResource: browserResource }
       };
       await replaceConfiguration(
         {

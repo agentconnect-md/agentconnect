@@ -40,7 +40,7 @@ describe('applyDeploymentEnvironment', () => {
     expect(env.CORS_ORIGIN).toBe('https://console.example.test')
   })
 
-  it('lets a persisted row clear stale env configuration', () => {
+  it('lets a persisted row clear stale DB-owned env configuration', () => {
     const config = loadConfig(
       applyDeploymentEnvironment(
         {
@@ -67,7 +67,7 @@ describe('applyDeploymentEnvironment', () => {
       PRESET_AGENTS_ENABLED: true,
       WAITLIST_MODE: false
     })
-    expect(config.OIDC_ISSUER).toBeUndefined()
+    expect(config.OIDC_ISSUER).toBe('https://old-login.example.test/oidc')
     expect(config.GITHUB_APP_ID).toBeUndefined()
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
   })
@@ -76,16 +76,18 @@ describe('applyDeploymentEnvironment', () => {
     const base = runtime()
     const config = loadConfig(
       applyDeploymentEnvironment(
-        bootstrap,
+        {
+          ...bootstrap,
+          OIDC_ISSUER: 'https://login.example.test/oidc',
+          LOGTO_MGMT_ENDPOINT: 'https://login.example.test'
+        },
         runtime({
           values: {
             ...base.values,
             auth: {
               mode: 'oidc',
-              issuer: 'https://login.example.test/oidc',
               audience: 'https://api.example.test',
               browserClient: {
-                endpoint: 'https://login.example.test',
                 appId: 'web-app',
                 apiResource: 'https://api.example.test'
               },
@@ -96,7 +98,6 @@ describe('applyDeploymentEnvironment', () => {
             feishu: { loginAppId: 'cli_feishu' },
             lark: { loginAppId: 'cli_lark' },
             logto: {
-              managementEndpoint: 'https://login.example.test',
               managementAppId: 'm2m-app',
               managementResource: 'https://login.example.test/api',
               browser: null,
@@ -128,6 +129,7 @@ describe('applyDeploymentEnvironment', () => {
       FEISHU_PLATFORM_APP_SECRET: 'feishu-secret',
       LARK_PLATFORM_APP_ID: 'cli_lark',
       LARK_PLATFORM_APP_SECRET: 'lark-secret',
+      LOGTO_MGMT_ENDPOINT: 'https://login.example.test',
       LOGTO_MGMT_APP_SECRET: 'logto-secret',
       PRESET_AGENTS_ENABLED: false,
       WAITLIST_MODE: false

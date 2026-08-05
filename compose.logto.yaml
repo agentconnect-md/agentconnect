@@ -1,4 +1,13 @@
 services:
+  control-plane:
+    environment:
+      - OIDC_ISSUER=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}/oidc
+      - LOGTO_MGMT_ENDPOINT=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
+
+  web:
+    environment:
+      - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
+
   logto-db-init:
     image: postgres:18-alpine
     depends_on:
@@ -39,7 +48,7 @@ services:
     entrypoint: ['sh', '-c', 'npm run cli db seed -- --swe && npm start']
     environment:
       DB_URL: postgresql://logto:${LOGTO_POSTGRES_PASSWORD:-logto}@postgres:5432/logto
-      ENDPOINT: http://login.agentconnect.localhost:3001
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
       ADMIN_ENDPOINT: http://admin.agentconnect.localhost:3002
     healthcheck:
       test:

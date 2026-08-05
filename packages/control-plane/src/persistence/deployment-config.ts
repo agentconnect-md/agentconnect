@@ -50,13 +50,8 @@ const AuthSchema = z.discriminatedUnion('mode', [
   z.strictObject({ mode: z.literal('none') }),
   z.strictObject({
     mode: z.literal('oidc'),
-    issuer: SecureHttpUrlSchema.refine(
-      (value) => new URL(value).pathname.replace(/\/$/, '').endsWith('/oidc'),
-      'must end in /oidc'
-    ),
     audience: z.string().min(1),
     browserClient: z.strictObject({
-      endpoint: SecureOriginUrlSchema,
       appId: z.string().min(1),
       apiResource: NullableUrlSchema
     }),
@@ -67,7 +62,6 @@ const AuthSchema = z.discriminatedUnion('mode', [
 ])
 
 const LogtoBrowserSchema = z.strictObject({
-  endpoint: SecureOriginUrlSchema,
   applicationName: z.string().trim().min(1).default('AgentConnect'),
   apiResource: NullableUrlSchema.default(null),
   // The setup wizard persists and verifies Management API access before the
@@ -137,7 +131,6 @@ export const DeploymentConfigValuesV1Schema = z
     lark: RegionalLoginAppSchema.nullable().optional(),
     logto: z
       .strictObject({
-        managementEndpoint: SecureOriginUrlSchema,
         managementAppId: z.string().trim().min(1),
         managementResource: HttpUrlSchema,
         /** Desired browser app state; `create logto` projects it into `auth`. */
@@ -180,14 +173,6 @@ export const DeploymentConfigValuesV1Schema = z
           code: 'custom',
           path: ['auth', 'audience'],
           message: 'must equal the browser API resource, or the browser app id when no API resource is configured'
-        })
-      }
-      const expectedIssuer = `${values.auth.browserClient.endpoint.replace(/\/+$/, '')}/oidc`
-      if (values.auth.issuer.replace(/\/+$/, '') !== expectedIssuer) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['auth', 'issuer'],
-          message: 'must equal the browser endpoint plus /oidc'
         })
       }
     }
@@ -369,10 +354,7 @@ export function deploymentSecretsRequiringRefresh(
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
   const larkIdentityChanged = next.lark && previous?.lark?.loginAppId !== next.lark.loginAppId
-  const logtoIdentityChanged =
-    next.logto &&
-    (previous?.logto?.managementEndpoint !== next.logto.managementEndpoint ||
-      previous?.logto?.managementAppId !== next.logto.managementAppId)
+  const logtoIdentityChanged = next.logto && previous?.logto?.managementAppId !== next.logto.managementAppId
   const logtoGithubConnectorChanged =
     next.logto?.githubConnector &&
     (previous?.logto?.githubConnector?.appId !== next.logto.githubConnector.appId ||
@@ -417,10 +399,10 @@ function runtimeSecretKeys(values: DeploymentConfigValuesV1): Set<DeploymentSecr
   return keys
 }
 
-/** Bind a successful ADMIN claim to exactly one OIDC issuer/browser app pair. */
-export function deploymentAdminClaimKey(values: DeploymentConfigValuesV1): string | null {
+/** Bind a successful ADMIN claim to exactly one startup issuer/browser app pair. */
+export function deploymentAdminClaimKey(values: DeploymentConfigValuesV1, issuer: string): string | null {
   if (values.auth.mode !== 'oidc') return null
-  return createHash('sha256').update(`${values.auth.issuer}\0${values.auth.browserClient.appId}`, 'utf8').digest('hex')
+  return createHash('sha256').update(`${issuer}\0${values.auth.browserClient.appId}`, 'utf8').digest('hex')
 }
 
 function toAdmin(row: StoredDeploymentConfigAdmin): DeploymentConfigAdmin {

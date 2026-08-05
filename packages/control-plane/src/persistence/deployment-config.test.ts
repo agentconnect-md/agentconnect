@@ -10,7 +10,6 @@ const base: DeploymentConfigValuesV1 = {
   github: { appId: 1, slug: 'agentconnect', clientId: 'Iv1.first' },
   slack: { appId: 'A1', clientId: '1.1' },
   logto: {
-    managementEndpoint: 'https://login.example.test',
     managementAppId: 'm2m-1',
     managementResource: 'https://default.logto.app/api',
     browser: null,

@@ -11,7 +11,6 @@ import type { DeploymentConfigRuntime } from '../persistence/deployment-config.j
  * silently fall back to stale container env.
  */
 const MANAGED_KEYS = [
-  'OIDC_ISSUER',
   'OIDC_AUDIENCE',
   'GITHUB_APP_ID',
   'GITHUB_APP_SLUG',
@@ -25,7 +24,6 @@ const MANAGED_KEYS = [
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
   'LARK_PLATFORM_APP_SECRET',
-  'LOGTO_MGMT_ENDPOINT',
   'LOGTO_MGMT_APP_ID',
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_RESOURCE',
@@ -45,7 +43,6 @@ export function applyDeploymentEnvironment(
   }
 
   if (values.auth.mode === 'oidc') {
-    set('OIDC_ISSUER', values.auth.issuer)
     set('OIDC_AUDIENCE', values.auth.audience)
   }
 
@@ -73,7 +70,6 @@ export function applyDeploymentEnvironment(
   }
 
   if (values.logto) {
-    set('LOGTO_MGMT_ENDPOINT', values.logto.managementEndpoint)
     set('LOGTO_MGMT_APP_ID', values.logto.managementAppId)
     set('LOGTO_MGMT_APP_SECRET', secrets['logto.managementAppSecret'])
     set('LOGTO_MGMT_RESOURCE', values.logto.managementResource)

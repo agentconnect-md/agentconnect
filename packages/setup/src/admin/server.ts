@@ -206,28 +206,7 @@ function localOnly(publicUrl: string, allowContainerLoopbackProxy = false) {
   }
 }
 
-function withStartupLogtoEndpoint(values: DeploymentConfigValuesV1, endpoint: string): DeploymentConfigValuesV1 {
-  if (!values.logto) return values
-  const origin = new URL(endpoint).origin
-  return {
-    ...values,
-    auth:
-      values.auth.mode === 'oidc'
-        ? {
-            ...values.auth,
-            issuer: `${origin}/oidc`,
-            browserClient: { ...values.auth.browserClient, endpoint: origin }
-          }
-        : values.auth,
-    logto: {
-      ...values.logto,
-      managementEndpoint: origin,
-      browser: values.logto.browser ? { ...values.logto.browser, endpoint: origin } : values.logto.browser
-    }
-  }
-}
-
-function toStatus(record: DeploymentConfigAdmin | null, logtoEndpoint?: string) {
+function toStatus(record: DeploymentConfigAdmin | null) {
   const secrets = record
     ? record.secrets.map((secret) => ({
         ...secret,
@@ -238,21 +217,18 @@ function toStatus(record: DeploymentConfigAdmin | null, logtoEndpoint?: string) 
     configured: record !== null,
     schemaVersion: DEPLOYMENT_CONFIG_SCHEMA_VERSION,
     revision: record?.revision ?? 0,
-    values:
-      record && logtoEndpoint
-        ? withStartupLogtoEndpoint(record.values, logtoEndpoint)
-        : (record?.values ?? DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1),
+    values: record?.values ?? DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
     secrets,
     updatedAt: record?.updatedAt.toISOString() ?? null
   }
 }
 
-function oidcOf(record: DeploymentConfigAdmin | null): AdminOidcConfig | null {
+function oidcOf(record: DeploymentConfigAdmin | null, issuer: string): AdminOidcConfig | null {
   const auth = record?.values.auth
   // Logto emits the `roles` scope into the ID token. Tenant Admin therefore
   // validates that token against the browser application's client id. The CP
   // continues to validate API access tokens against auth.audience separately.
-  return auth?.mode === 'oidc' ? { issuer: auth.issuer, audience: auth.browserClient.appId } : null
+  return auth?.mode === 'oidc' ? { issuer, audience: auth.browserClient.appId } : null
 }
 
 function authFailure(reply: FastifyReply, error: TenantAdminAuthError): FastifyReply {
@@ -282,12 +258,12 @@ function logtoUpstreamStatus(error: unknown): 'fail' | 'unknown' {
   return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429 ? 'fail' : 'unknown'
 }
 
-function logtoConfig(record: DeploymentConfigRuntime | null, endpoint?: string): LogtoManagementConfig | null {
+function logtoConfig(record: DeploymentConfigRuntime | null, endpoint: string): LogtoManagementConfig | null {
   if (!record || !record.values.logto) return null
   const secret = record.secrets['logto.managementAppSecret']
   if (!secret) return null
   return {
-    endpoint: endpoint ? new URL(endpoint).origin : record.values.logto.managementEndpoint,
+    endpoint: new URL(endpoint).origin,
     appId: record.values.logto.managementAppId,
     appSecret: secret,
     resource: record.values.logto.managementResource
@@ -332,7 +308,7 @@ function logtoSetup(
   record: DeploymentConfigRuntime,
   tenantAdminUrl: string,
   services: ServiceTopology,
-  endpoint?: string
+  endpoint: string
 ): ResolvedLogtoSetup | null {
   const { auth, logto } = record.values
   if (!logto) return null
@@ -340,35 +316,31 @@ function logtoSetup(
     logto.browser ??
     (auth.mode === 'oidc'
       ? {
-          endpoint: auth.browserClient.endpoint,
           applicationName: 'AgentConnect',
           apiResource: auth.browserClient.apiResource,
           socialProviders: auth.socialProviders
         }
       : null)
   if (!browser) return null
-  const resolvedBrowser = endpoint ? { ...browser, endpoint: new URL(endpoint).origin } : browser
+  const resolvedEndpoint = new URL(endpoint).origin
 
   const githubSecret = record.secrets['logto.githubConnectorClientSecret']
   const googleSecret = record.secrets['logto.googleConnectorClientSecret']
   const slackSecret = record.secrets['slack.clientSecret']
-  const applicationId =
-    auth.mode === 'oidc' && auth.browserClient.endpoint === resolvedBrowser.endpoint
-      ? auth.browserClient.appId
-      : undefined
+  const applicationId = auth.mode === 'oidc' ? auth.browserClient.appId : undefined
   const webOrigin = new URL(services.web).origin
   const adminOrigin = new URL(tenantAdminUrl).origin
   return {
-    endpoint: resolvedBrowser.endpoint,
-    apiResource: resolvedBrowser.apiResource,
-    socialProviders: [...resolvedBrowser.socialProviders],
+    endpoint: resolvedEndpoint,
+    apiResource: browser.apiResource,
+    socialProviders: [...browser.socialProviders],
     desired: {
       ...(applicationId ? { applicationId } : {}),
-      applicationName: resolvedBrowser.applicationName,
+      applicationName: browser.applicationName,
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
       corsAllowedOrigins: [...new Set([webOrigin, adminOrigin])],
-      socialProviders: [...resolvedBrowser.socialProviders],
+      socialProviders: [...browser.socialProviders],
       ...(logto.githubConnector && githubSecret
         ? { github: { clientId: logto.githubConnector.clientId, clientSecret: githubSecret } }
         : {}),
@@ -397,7 +369,7 @@ export function buildTenantAdminServer(
   const fetchImpl = deps.fetch ?? fetch
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
   const authenticator = new TenantAdminAuthenticator(
-    { get: async () => oidcOf(await deps.store.getAdmin()) },
+    { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer) },
     deps.verifyOidcToken
   )
   const discovery = new Map<string, Promise<OidcDiscovery>>()
@@ -488,7 +460,7 @@ export function buildTenantAdminServer(
 
   const requireConfigurationAccess = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const current = await deps.store.getAdmin()
-    const claimedFor = current ? deploymentAdminClaimKey(current.values) : null
+    const claimedFor = current ? deploymentAdminClaimKey(current.values, localAuthBootstrap.issuer) : null
     if (!current || current.values.auth.mode === 'none' || !claimedFor || current.adminClaimedFor !== claimedFor) {
       return requireLocal(request, reply)
     }
@@ -534,14 +506,14 @@ export function buildTenantAdminServer(
     const current = await deps.store.getAdmin()
     const auth = current?.values.auth
     if (!auth || auth.mode === 'none') return { mode: 'none' as const, logtoAdminEndpoint }
-    const claimedFor = deploymentAdminClaimKey(current.values)
+    const claimedFor = deploymentAdminClaimKey(current.values, localAuthBootstrap.issuer)
     try {
-      const endpoints = await discover(auth.issuer)
+      const endpoints = await discover(localAuthBootstrap.issuer)
       return {
         mode: 'oidc' as const,
         logtoAdminEndpoint,
         claimAvailable: claimedFor !== null && current.adminClaimedFor !== claimedFor,
-        endpoint: auth.browserClient.endpoint,
+        endpoint: logtoEndpoint,
         appId: auth.browserClient.appId,
         resource: auth.browserClient.apiResource,
         redirectUri: new URL('/auth/callback', deps.publicUrl).toString(),
@@ -600,7 +572,7 @@ export function buildTenantAdminServer(
   })
 
   app.get('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async () =>
-    toStatus(await deps.store.getAdmin(), logtoEndpoint)
+    toStatus(await deps.store.getAdmin())
   )
 
   app.put('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async (request, reply) => {
@@ -610,10 +582,10 @@ export function buildTenantAdminServer(
     }
     const saved = await deps.store.replace({
       ...parsed.data,
-      values: withStartupLogtoEndpoint(parsed.data.values, logtoEndpoint)
+      values: parsed.data.values
     })
     return {
-      ...toStatus(saved, logtoEndpoint),
+      ...toStatus(saved),
       restartRequired: true as const
     }
   })
@@ -636,7 +608,7 @@ export function buildTenantAdminServer(
         }
       )
       const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
-      return { ...toStatus(saved, logtoEndpoint), restartRequired: true as const }
+      return { ...toStatus(saved), restartRequired: true as const }
     })
   })
 
@@ -1171,16 +1143,14 @@ export function buildTenantAdminServer(
       const reconciled = await client.reconcileSetup(setup.desired)
       const auth = {
         mode: 'oidc' as const,
-        issuer: appendPath(setup.endpoint, '/oidc'),
         audience: setup.apiResource ?? reconciled.application.id,
         browserClient: {
-          endpoint: setup.endpoint,
           appId: reconciled.application.id,
           apiResource: setup.apiResource
         },
         socialProviders: setup.socialProviders
       }
-      const nextValues = withStartupLogtoEndpoint({ ...runtime.values, auth }, logtoEndpoint)
+      const nextValues = { ...runtime.values, auth }
       const configChanged = JSON.stringify(runtime.values) !== JSON.stringify(nextValues)
       const saved = configChanged
         ? await deps.store.replace({
@@ -1386,7 +1356,7 @@ export function buildTenantAdminServer(
       if (!runtime || runtime.values.auth.mode !== 'oidc' || !runtime.values.logto) {
         return problem(reply, 409, 'save OIDC and Logto Management API configuration before claiming ADMIN')
       }
-      const claimedFor = deploymentAdminClaimKey(runtime.values)
+      const claimedFor = deploymentAdminClaimKey(runtime.values, localAuthBootstrap.issuer)
       const admin = await deps.store.getAdmin()
       if (!claimedFor || admin?.revision !== runtime.revision) {
         return problem(reply, 409, 'deployment configuration changed while ADMIN was being claimed')

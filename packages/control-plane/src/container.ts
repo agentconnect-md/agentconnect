@@ -822,10 +822,10 @@ export function buildContainer(
             webUrl: config.PUBLIC_WEB_URL ?? null,
             mcpUrl: config.PUBLIC_MCP_URL ?? null,
             auth:
-              opts.deploymentConfig.values.auth.mode === 'oidc'
+              opts.deploymentConfig.values.auth.mode === 'oidc' && config.OIDC_ISSUER
                 ? {
-                    endpoint: opts.deploymentConfig.values.auth.browserClient.endpoint,
-                    issuer: opts.deploymentConfig.values.auth.issuer,
+                    endpoint: new URL(config.OIDC_ISSUER).origin,
+                    issuer: config.OIDC_ISSUER,
                     appId: opts.deploymentConfig.values.auth.browserClient.appId,
                     apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
                     socialProviders: opts.deploymentConfig.values.auth.socialProviders
