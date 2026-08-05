@@ -200,6 +200,11 @@ export interface DreamRunnerDeps {
 
 const DEFAULT_SESSION_WINDOW = 20
 const TRANSCRIPT_ROWS_PER_SESSION = 200
+// How far back to scan an agent's dreams for the last SUCCESSFUL one when
+// deciding whether a scheduled dream has new sessions to mine. Generous enough
+// that a run of failed dreams after a success never hides the baseline; if it is
+// somehow exceeded the check fails open (the scheduled dream runs).
+const LAST_SUCCESSFUL_DREAM_SCAN = 50
 const DREAMS_DIRNAME = 'memory-dreams'
 const BACKUPS_DIRNAME = 'memory-backups'
 /** Staged file names are the validator's own outputs; anything else is a violation. */
@@ -329,6 +334,29 @@ export class DreamRunner {
   /** Start a dream. Rejects when dreaming is not enabled for the agent or one
    *  is already in flight. Returns immediately with the `pending` record; the
    *  pipeline runs asynchronously (poll via get/list, as the console does). */
+  /**
+   * Whether a scheduled dream would mine at least one session the last
+   * SUCCESSFUL dream (completed or adopted) did not. Scheduled dreams consult
+   * this to skip re-dreaming an unchanged corpus — running a fresh host + burning
+   * model tokens to re-derive the same proposal is pure waste. Returns true when
+   * the agent has never completed a dream (so the first scheduled run always
+   * proceeds). Manual dreams never call this: an explicit request always runs.
+   *
+   * "New" is by session id: a brand-new session the last dream never saw. New
+   * *messages* inside an already-mined session don't re-trigger — the last dream
+   * already consolidated that session's thread — which matches "no new sessions".
+   */
+  hasNewSessionsSinceLastDream(agentId: string): boolean {
+    const sessionWindow = this.deps.dreamingPolicyFor(agentId)?.sessionWindow ?? DEFAULT_SESSION_WINDOW
+    const currentIds = this.deps.store.dreamSessionSources(agentId, sessionWindow).map((s) => s.sessionId)
+    const lastSuccessful = this.deps.store
+      .listDreams(agentId, LAST_SUCCESSFUL_DREAM_SCAN)
+      .find((d) => d.status === 'completed' || d.status === 'adopted')
+    if (!lastSuccessful) return true
+    const mined = new Set(lastSuccessful.sessionIds)
+    return currentIds.some((id) => !mined.has(id))
+  }
+
   async start(
     agentId: string,
     opts: { trigger: DreamTrigger; sessionWindow?: number; instructions?: string }

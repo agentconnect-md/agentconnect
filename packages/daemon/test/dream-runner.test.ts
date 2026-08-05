@@ -141,6 +141,46 @@ async function settle(store: FakeStore, dreamId: string): Promise<DreamInfo> {
 }
 
 describe('DreamRunner pipeline', () => {
+  it('hasNewSessionsSinceLastDream: only new session ids past the last successful dream count', async () => {
+    const { store, runner } = await setup({})
+    const dream = (status: DreamInfo['status'], sessionIds: string[], dreamId: string): DreamInfo => ({
+      dreamId,
+      agentId: 'a1',
+      status,
+      trigger: 'schedule',
+      sessionIds,
+      snapshotDigest: 'sha256:x',
+      createdAt: new Date().toISOString()
+    })
+
+    // Never dreamed → the first scheduled run always proceeds.
+    store.sources = [{ sessionId: 'sess-1', channel: 'C1', thread: 'T1' }]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+
+    // Last successful dream already mined the only current session → skip.
+    store.insertDream(dream('completed', ['sess-1'], 'd1'))
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
+
+    // A brand-new session appears → run.
+    store.sources = [
+      { sessionId: 'sess-2', channel: 'C2', thread: 'T2' },
+      { sessionId: 'sess-1', channel: 'C1', thread: 'T1' }
+    ]
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+
+    // An adopted dream that already saw both sessions → skip again. (Clear first:
+    // the fake's listDreams is insertion-ordered, so a single baseline keeps the
+    // "most recent successful" unambiguous — the real store orders by createdAt.)
+    store.dreams.clear()
+    store.insertDream(dream('adopted', ['sess-1', 'sess-2'], 'd2'))
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(false)
+
+    // Only a FAILED dream covers the current sessions → no successful baseline → run (retry).
+    store.dreams.clear()
+    store.insertDream(dream('failed', ['sess-1', 'sess-2'], 'd3'))
+    expect(runner.hasNewSessionsSinceLastDream('a1')).toBe(true)
+  })
+
   it('stages a validated proposal without touching the live store', async () => {
     const { dir, store, runner, prompts } = await setup({})
     const started = await runner.start('a1', { trigger: 'manual' })

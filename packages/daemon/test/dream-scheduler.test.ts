@@ -125,13 +125,19 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     let started = false
     const inner = daemon as unknown as {
       onDreamScheduleFire(id: string): void
-      dreamRunner(): { start(id: string, opts: unknown): Promise<unknown> }
+      dreamRunner(): {
+        start(id: string, opts: unknown): Promise<unknown>
+        hasNewSessionsSinceLastDream(id: string): boolean
+      }
     }
     inner.dreamRunner = () => ({
       start: async () => {
         started = true
         return { dreamId: 'drm-test' }
-      }
+      },
+      // Isolate the lifecycle gates from the "new sessions" gate — that gate has
+      // its own unit coverage; here we only assert whether the gates let a tick through.
+      hasNewSessionsSinceLastDream: () => true
     })
     inner.onDreamScheduleFire(agentId)
     await new Promise((r) => setTimeout(r, 20))
