@@ -109,4 +109,11 @@ export class CommandChromeRegistry<TMsg, TInfo> {
   threadIdentifiesSession(platform: string): boolean {
     return this.surfaces.get(platform)?.threadIdentifiesSession ?? false
   }
+
+  /** Every registered platform id, registration order. Exists so the daemon's
+   *  platform set can be CHECKED against this registry rather than re-listed —
+   *  see the capability-drift test. */
+  ids(): string[] {
+    return [...this.surfaces.keys()]
+  }
 }

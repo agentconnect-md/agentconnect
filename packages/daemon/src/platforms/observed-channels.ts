@@ -15,7 +15,34 @@
  * Telegram and Feishu chats have neither notion; their rows pass through. That
  * is the default: no collapse, no spaces — any platform without a registered
  * strategy reports observed rows exactly as collected.
+ *
+ * WHICH platforms get rebuilt this way is {@link observedMembershipPlatforms} —
+ * a derived set, not a hand list, so the "no authoritative snapshot" fact has one
+ * spelling in the daemon rather than two.
  */
+import { manifestFor } from '@agentconnect.md/protocol'
+import { platformIds } from './integration-config.js'
+
+/**
+ * The platforms whose reachable-conversation set core must rebuild from OBSERVED
+ * traffic — this daemon's registered platforms (integration-config.ts) filtered by
+ * the §5 manifest's `membershipEnumeration`. Today: Telegram, Discord, Feishu.
+ *
+ * BOUNDED BY THE REGISTRY, not by the manifest alone. `manifestFor` is total and its
+ * fail-closed default is `observed`, so an id this build has never heard of would
+ * answer "observed" — correct as a per-message capability read, wrong as an
+ * ENUMERATION. Core can only rebuild a platform it has a module for, so the registry
+ * supplies the universe and the manifest supplies the filter.
+ *
+ * Computed once: both inputs are static module tables.
+ */
+const OBSERVED_MEMBERSHIP_PLATFORMS: readonly string[] = Object.freeze(
+  platformIds().filter((platform) => manifestFor(platform).membershipEnumeration === 'observed')
+)
+
+export function observedMembershipPlatforms(): readonly string[] {
+  return OBSERVED_MEMBERSHIP_PLATFORMS
+}
 
 /** One observed conversation row, as the snapshot pipeline carries it. */
 export interface ObservedChannelRow {

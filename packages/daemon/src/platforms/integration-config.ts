@@ -45,6 +45,24 @@ const CONFIG_SCHEMAS = {
  *  rather than re-listed — the two cannot drift apart. */
 export type IntegrationConfig = z.infer<(typeof CONFIG_SCHEMAS)[keyof typeof CONFIG_SCHEMAS]>
 
+/**
+ * Every chat platform this daemon has a module for, in registry order.
+ *
+ * THIS registry is the authority rather than one of the other per-platform tables
+ * because absence here is TOTAL: {@link integrationConfig} returns `undefined` for an
+ * unregistered id and every consumer fails closed on that (skip the integration, open
+ * no connection). A platform missing from the turn-output or command-chrome registries
+ * merely renders through the core fallback; a platform missing from this one cannot be
+ * served at all.
+ *
+ * Read by the CP registration handshake, whose advertised `capabilities.platforms` is
+ * what the CP's pre-install gate and the console's tile gating consume — so a platform
+ * added here becomes installable without a second edit anywhere.
+ */
+export function platformIds(): string[] {
+  return Object.keys(CONFIG_SCHEMAS)
+}
+
 /** The core routing knobs core owns, whatever the platform (§6.4 `core`). */
 export interface IntegrationCore {
   mode: 'direct' | 'shared'

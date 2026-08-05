@@ -90,6 +90,25 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
    *  (Slack retries stale footer removals). Exact-lookup only, like
    *  {@link onSuppress}. */
   onSettle?(turn: TTurn): Promise<void>
+  /**
+   * Close this turn's logical RESPONSE, once the complete answer has been
+   * delivered (send-message-routing-rework.md §5.5). Distinct from
+   * {@link onSettle}, and not foldable into it: this runs on the SUCCESS path
+   * only, before post-turn work, whereas settlement is cleanup in the turn's
+   * `finally` and also runs after a failure.
+   *
+   * The platform fact is whether a delivered answer can be RE-STAMPED at all —
+   * Slack edits its last message to carry the `final` delivery state plus the
+   * recipients resolved from the whole response, which is what lets a peer
+   * distinguish a finished answer from a streamed prefix. A platform that cannot
+   * amend a sent message registers nothing and the turn simply ends, which is
+   * every non-Slack platform's behavior today.
+   *
+   * Exact-lookup only, like {@link onSuppress}: a webchat / hook / dream turn
+   * renders through the core surface but must not inherit its platform's
+   * response closure.
+   */
+  closeResponse?(turn: TTurn): Promise<void>
 }
 
 /**
@@ -155,5 +174,12 @@ export class TurnOutputRegistry<TTurn, TAction, TConv, TMessage> {
    *  surface, but they must not inherit its platform's teardown. */
   exact(platform: string): TurnOutputSurface<TTurn, TAction, TConv, TMessage> | undefined {
     return this.surfaces.get(platform)
+  }
+
+  /** Every registered platform id, registration order. Exists so the daemon's
+   *  platform set can be CHECKED against this registry rather than re-listed —
+   *  see the capability-drift test. */
+  ids(): string[] {
+    return [...this.surfaces.keys()]
   }
 }
