@@ -36,6 +36,7 @@ export function renderReport(
     .join('\n')
 }
 
-export function reportExitCode(findings: readonly DeploymentFinding[]): 0 | 1 {
-  return findings.some((finding) => finding.status === 'fail') ? 1 : 0
+export function reportExitCode(findings: readonly { status: 'pass' | 'fail' | 'unknown' }[]): 0 | 1 | 2 {
+  if (findings.some((finding) => finding.status === 'fail')) return 1
+  return findings.some((finding) => finding.status === 'unknown') ? 2 : 0
 }

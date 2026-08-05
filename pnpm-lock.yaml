@@ -484,9 +484,18 @@ importers:
 
   packages/setup:
     dependencies:
+      '@agentconnect.md/control-plane':
+        specifier: workspace:*
+        version: link:../control-plane
       commander:
         specifier: ^15.0.0
         version: 15.0.0
+      fastify:
+        specifier: ^5.10.0
+        version: 5.10.0
+      jose:
+        specifier: ^6.2.4
+        version: 6.2.4
       yaml:
         specifier: ^2.9.0
         version: 2.9.0

@@ -1,8 +1,9 @@
 # Setup and Integration Diagnostics CLI
 
-> **Status:** Accepted; the Phase 1 MVP implements `init` and
-> `check deployment`, and Phase 1.1 adds narrow one-time GitHub/Slack App
-> bootstrap commands. Provider reconciliation remains planned.
+> **Status:** Accepted and implemented through Phase 1.2. The MVP has one
+> published operator package with the CLI, narrow GitHub/Slack App bootstrap,
+> DB-backed deployment settings, and an explicit temporary Tenant Admin
+> (`agentconnect-setup serve`). Full provider reconciliation remains planned.
 >
 > **Related designs:**
 >
@@ -14,10 +15,12 @@
 > - [github-app-git-credentials.md](github-app-git-credentials.md) defines the
 >   deployment GitHub App trust boundary.
 
-`@agentconnect.md/setup` is a separate operator CLI for bootstrapping and
-auditing an AgentConnect deployment. Its first-party providers are GitHub,
-Slack, and Logto. It also asks the Control Plane to audit the effective
-permissions of installed chat and code-host integrations.
+`@agentconnect.md/setup` is the only operator npm package for bootstrapping and
+auditing an AgentConnect deployment. Its normal CLI is the primary interface;
+the same binary can temporarily serve the Tenant Admin API and thin browser UI.
+The current MVP creates GitHub and Slack Apps, checks Logto Management access,
+and bootstraps a shared Logto `ADMIN` role. Full Logto reconciliation and
+installed-integration audits are later phases.
 
 The package should make a fresh OSS installation materially more
 out-of-the-box without sharing credentials from AgentConnect Cloud. Every
@@ -25,34 +28,38 @@ deployment still owns its provider applications and secrets.
 
 ## 1. Decisions
 
-1. **A separate package and binary.** `@agentconnect.md/setup` exposes the
-   `agentconnect-setup` binary and is normally run through
-   `npx @agentconnect.md/setup`. It is not a subcommand of `agentconnect`: the
-   existing CLI manages one daemon host, while setup manages deployment-wide
-   external resources.
-2. **One small target command vocabulary.** The reconciled workflow is `init`,
-   `plan`, `apply`, and `check`. Phase 1.1 deliberately ships only
-   `create github|slack` as two explicit bootstrap commands instead of building
-   a provider framework before it is needed. The later reconcilers live behind
-   registered contributors rather than more top-level provider commands.
-3. **Desired state for reconciliation.** A versioned, non-secret
-   `agentconnect.setup.yaml` records intended capabilities and resource
-   identity. Re-running `plan` or `apply` is safe. The Phase 1.1 bootstrap does
-   not extend the alpha schema; it fails closed on partial env configuration and
-   never overwrites provider credentials.
+1. **One operator package, two execution modes.** `@agentconnect.md/setup`
+   exposes the `agentconnect-setup` binary and is normally run through
+   `npx @agentconnect.md/setup`. The CLI remains primary. `serve` starts a
+   temporary Tenant Admin from that same artifact; there is no second public
+   admin package or always-on admin service. It is not a subcommand of
+   `agentconnect`, which manages one daemon host rather than deployment-wide
+   resources.
+2. **One small current command vocabulary.** The MVP ships `init`,
+   `config get|apply`, `create github|slack`, `check`, and `serve`. Explicit
+   provider creation avoids building a generic reconciliation framework before
+   it is earned. Later `plan`/`apply` reconcilers live behind registered
+   contributors rather than more top-level provider commands.
+3. **Postgres is runtime desired state.** `agentconnect.setup.yaml` remains a
+   non-secret CLI/bootstrap profile. The typed, versioned deployment singleton
+   in Postgres is authoritative for public origins, OIDC/Logto, deployment
+   GitHub/Slack Apps, and feature policy. The Control Plane reads one snapshot at
+   process startup; updates report `restartRequired` instead of pretending to
+   hot-reload.
 4. **Actual grants are authoritative.** A manifest or desired permission is
    only the declaration. `check` separately reports effective token scopes,
    installation permissions, callbacks, connectivity, and runtime readiness.
 5. **`check` is read-only.** Existing install-time validation may enable a
    provider setting as a convenience; diagnostics never reuse a mutating path.
    Delivery or email probes require an explicit `--probe`.
-6. **Secrets never become setup state.** Secret values come from a secret
-   source and go directly to an explicit secret sink. They are absent from the
-   YAML, plans, JSON reports, logs, URLs, and Control Plane responses.
-7. **Logto is a first-class deployment dependency.** Setup covers its SPA,
-   API resource, OIDC contract, Management API access, Account API policy,
-   connectors, and sign-in experience. It is not reduced to three environment
-   variables.
+6. **Deployment secrets are sealed, write-only state.** Provider secrets are
+   stored in dedicated rows through the same `SecretCipher` as other CP secrets.
+   Admin reads expose only configured state, fingerprints, and timestamps. Raw
+   values remain absent from YAML, plans, JSON responses, logs, and URLs.
+7. **Logto is a first-class deployment dependency.** The typed deployment
+   document covers its OIDC and Management API settings. The MVP checks the M2M
+   grant and exact non-default `ADMIN` User role; SPA, connector, and sign-in
+   reconciliation remain Phase 2.
 8. **Deployment creation precedes tenant installation.** Setup creates the
    deployment GitHub/Slack Apps before startup; each organization installs
    those Apps only after its first user signs in. The two stages are never
@@ -73,17 +80,21 @@ deployment still owns its provider applications and secrets.
     a pinned official Logto image and reuses the existing Postgres instance and
     volume. It creates a separate `logto` database and role; database name,
     user, and password all default to `logto`.
+13. **Tenant Admin is explicit and temporary.** Compose places it behind the
+    opt-in `admin` profile and publishes it on `127.0.0.1:8091` only. Operators
+    stop it after configuration and restart Control Plane, Relay, and Web. Setup
+    does not mount a container runtime socket or grow a TLS/ingress manager.
 
 ## 2. Goals and non-goals
 
 The CLI must:
 
 - create or adopt the deployment GitHub App and Slack App;
-- reconcile the AgentConnect-owned portion of a Logto tenant;
+- check Logto Management access and bootstrap the shared `ADMIN` role;
 - offer an optional localhost Logto overlay without changing the default
   no-auth Compose command;
-- generate non-default core deployment secrets and render the exact runtime
-  environment values needed by Compose;
+- persist typed deployment settings and sealed provider secrets without making
+  the operator transcribe runtime environment variables;
 - show a redacted plan before provider-side mutation;
 - validate declared configuration and effective permissions;
 - audit every installed integration without copying its credentials to the
@@ -132,8 +143,10 @@ installation project:
 setup init local-auth
   -> start Postgres and the optional Logto Compose overlay
   -> create the initial Logto administrator
-  -> create the AgentConnect SPA and one localhost-capable social connector
-  -> start the complete stack with the Logto runtime values
+  -> create a bootstrap Logto Management API credential
+  -> start temporary Tenant Admin and save the deployment document
+  -> setup check logto and claim ADMIN
+  -> stop Tenant Admin and start the complete stack
   -> setup check deployment
 ```
 
@@ -158,36 +171,38 @@ A non-local deployment uses the following single path:
 ```text
 clone and select an AgentConnect release
   -> setup init
+  -> run that release's database migration job
   -> prepare the selected reachable endpoints and start or select Logto
-  -> create the first Logto Management API M2M credential
-  -> setup plan
-  -> setup apply (create resources and write runtime env)
-  -> start AgentConnect with the generated runtime env
-  -> setup apply (resume any live-callback operations)
+  -> create a bootstrap Logto Management API M2M credential
+  -> start agentconnect-setup serve (or the Compose admin profile)
+  -> setup config apply
+  -> setup create github / setup create slack
+  -> sign in locally, claim ADMIN, sign in again, and run final checks
+  -> stop Tenant Admin
+  -> restart Control Plane, Relay, and Web on the stored deployment revision
   -> setup check deployment
   -> first browser sign-in creates the personal organization
   -> connect a daemon
   -> install GitHub and Slack into the organization/workspace
   -> mint a personal API key
-  -> setup check all
 ```
 
-`init` selects `networked` access, pins the target release, records the external
-origins, and writes fresh Postgres password, API-key pepper, and Relay token
-values directly to the secret sink. It also records the chosen Logto and
-integration capabilities. It never puts those generated values in desired
-state or terminal output.
+`init` records the non-secret profile used by the CLI. Postgres connectivity,
+the API-key pepper, relay bootstrap credential, and the SecretCipher/Vault root
+remain process-bootstrap environment because they must exist before the stored
+document can be read. Tenant Admin writes the typed deployment document and
+sealed provider values; neither path prints a secret.
 
 Addressing, certificates, ingress, external database services, and any external
 Logto process remain operator-owned. A user-owned public DNS name is not a
 global prerequisite: private/VPN deployments may use internal DNS with trusted
 HTTPS, and a provider-reachable tunnel URL can satisfy a public callback
 requirement. Logto must be reachable and its one bootstrap Management API
-credential must exist before `apply`; the
-GitHub and Slack Apps and all other AgentConnect-owned Logto resources can then
-be prepared before AgentConnect is exposed to its users. The generated runtime
-env enables OIDC on the first networked start, avoiding a temporary
-network-exposed no-auth window.
+credential must exist before Tenant Admin can check it and assign `ADMIN`. The
+GitHub and Slack Apps can then be prepared before AgentConnect is exposed to
+its users. The stored startup
+snapshot enables OIDC on the first networked Control Plane start, avoiding a
+temporary network-exposed no-auth window.
 
 Public callback ingress is capability-derived. GitHub webhooks and the
 deployment-wide Slack HTTP App require a stable provider-reachable HTTPS Relay
@@ -197,76 +212,65 @@ selected capability earns that requirement.
 
 A provider operation that requires a live callback endpoint is represented as
 deferred, not failed or silently skipped. In particular, setup can create the
-deployment Slack App and capture its credentials before startup, then enable
-and verify its Events API and interactivity URLs only after the Relay is
-reachable. The post-start `apply` resumes only those deferred idempotent
-operations; when none exist, the CLI omits that step from its next-command
-output.
+deployment Slack App and seal its credentials before the runtime restart, then
+verify its Events API and interactivity URLs after the Relay is reachable.
 
-After startup, `check deployment` verifies service readiness, required callback
-reachability, OIDC, non-default core secrets, the configured secret-storage
-policy, Relay availability, and deployment provider state. The first successful
+After startup, `check deployment` verifies the active DB revision/auth mode,
+Web and Control Plane reachability, Relay readiness when configured, and OIDC
+discovery/JWKS consistency. The first successful
 OIDC sign-in JIT-provisions the user's personal AgentConnect organization and
 built-in agent. Only then can that organization bind a GitHub installation,
 install the deployment Slack App into a workspace, and connect its daemon.
 
-The user mints a personal API key in the Console for the final
-`check integrations` pass. `check all` combines both scopes, and `--probe` can
-perform an explicit end-to-end delivery smoke test. Every command prints one
-exact next command plus any remaining manual provider action; the user should
-not need to reconstruct the sequence from documentation.
+Installed-integration diagnostics, `check integrations`, `check all`, and
+active `--probe` delivery checks are Phase 3, not commands in the shipped MVP.
 
 ## 4. Command surface
 
-The complete target v1 surface is:
-
-```text
-agentconnect-setup init
-agentconnect-setup plan
-agentconnect-setup apply
-agentconnect-setup check [all|deployment|integrations]
-```
-
-The package-name form is the recommended OSS entry point:
-
-```bash
-npx -y @agentconnect.md/setup init
-npx -y @agentconnect.md/setup plan
-npx -y @agentconnect.md/setup apply
-npx -y @agentconnect.md/setup check all
-```
-
-CI should pin an exact package version instead of using an implicit latest
-version.
-
-The shipped MVP registers `init`, `check deployment`, and two narrow one-time
-provider App bootstraps. It does not expose `plan` or `apply` as placeholders:
-those commands arrive with the first real provider reconciler in Phase 2.
-
-Its current package-name form is:
+The shipped MVP has one package and these command groups:
 
 ```bash
 npx -y @agentconnect.md/setup init local
 npx -y @agentconnect.md/setup init local-auth
-npx -y @agentconnect.md/setup init external --web-url <url> --control-plane-url <url> --issuer <url>
+npx -y @agentconnect.md/setup init external --control-plane-url <url>
+npx -y @agentconnect.md/setup serve
+npx -y @agentconnect.md/setup config get
+npx -y @agentconnect.md/setup config apply --file <json|->
 npx -y @agentconnect.md/setup create github [--github-org <login>]
 npx -y @agentconnect.md/setup create slack
 npx -y @agentconnect.md/setup check deployment
+npx -y @agentconnect.md/setup check logto
 ```
 
-Both `create` commands require an `external` profile with an HTTPS Relay URL
-and write the returned credentials directly to an owner-only env file. GitHub
-uses its browser-assisted App Manifest flow; Slack reads a temporary
-`SLACK_CONFIG_TOKEN` from the process environment and verifies the created
-manifest through `apps.manifest.export`. Neither command adopts, updates, or
-deletes an App. Slack Public Distribution and organization/workspace
-installation remain explicit provider-console actions.
+The normal CLI remains the primary, automation-friendly interface. `serve`
+temporarily opens the DB write authority and a thin browser UI. Compose runs the
+same self-contained dist from the Control Plane image with
+`docker compose --profile admin up -d tenant-admin`; it is not another npm
+package. The default endpoint is loopback `http://127.0.0.1:8091`.
+
+`config get` returns only the typed document and redacted secret status.
+`config apply` replaces that document and applies a write-only secret patch;
+changed results set `restartRequired: true`. Both provider `create` commands
+require an external profile with an HTTPS Relay URL and use that DB sink by
+default. Passing `--env-file` explicitly selects the owner-only legacy file
+sink. GitHub uses its browser-assisted App Manifest flow; Slack reads a
+temporary `SLACK_CONFIG_TOKEN` and verifies the result through
+`apps.manifest.export`. Neither command adopts, updates, or deletes an App.
+Slack Public Distribution and organization/workspace installation remain
+explicit provider-console actions.
+
+After a DB write, the operator stops Tenant Admin, restarts Control Plane,
+Relay, and Web, and runs `check deployment`. CI should pin an exact package
+version instead of using an implicit latest version. Full `plan`/`apply`
+provider reconciliation remains a later phase; the MVP does not register
+placeholder commands.
 
 ### 4.1 Target v1 common options
 
 | Option                 | Meaning                                                                |
 | ---------------------- | ---------------------------------------------------------------------- |
-| `--config <path>`      | Desired-state file; defaults to `agentconnect.setup.yaml`              |
+| `--config <path>`      | CLI bootstrap profile; defaults to `agentconnect.setup.yaml`           |
+| `--admin-url <url>`    | Temporary Tenant Admin origin; defaults to loopback port 8091          |
 | `--provider <id>`      | Repeatable open provider filter, such as `github`, `slack`, or `logto` |
 | `--format table\|json` | Human table by default; stable versioned JSON for automation           |
 | `--non-interactive`    | Never open a browser or prompt                                         |
@@ -274,8 +278,9 @@ installation remain explicit provider-console actions.
 | `--probe`              | Permit provider-contributed active delivery probes during `check`      |
 | `--strict`             | Treat optional warnings as failures                                    |
 
-The MVP implements `--config` and `check --format`; the remaining flags arrive
-with the commands or provider behaviors that use them.
+The MVP implements `--config`, `--admin-url`, and `check --format`; the
+remaining target flags arrive with the commands or provider behaviors that use
+them.
 
 Secret values are intentionally not accepted as command-line flags because
 shell history and process listings expose them. Providers request named secret
@@ -283,16 +288,43 @@ references from the configured source.
 
 ### 4.2 `init`
 
-`init` creates the non-secret desired-state file. The MVP accepts `local`,
-`local-auth`, or `external`; the default is `local`. External mode requires the
-Web, Control Plane, and OIDC issuer URLs and accepts a Relay URL only when the
-deployment needs callback ingress. Later provider phases add release, feature,
-provider, and secret-sink selection without putting secret values in YAML.
+`init` creates the non-secret CLI/bootstrap profile. The MVP accepts `local`,
+`local-auth`, or `external`; the default is `local`. External mode requires only
+the Control Plane URL used to locate `/api/v1/runtime-config`. Web, Relay, OIDC,
+feature, and provider values live in the DB-backed document. The older YAML
+fields remain only for env-fallback and explicit `--env-file` compatibility.
 
 It refuses to overwrite an existing file; the operator must move it or choose
 another `--config` path. It performs no provider mutation.
 
-### 4.3 `plan`
+### 4.3 `serve`
+
+`serve` opens the deployment-config store with only the startup roots it cannot
+load from that store: `DATABASE_URL` and the `SecretCipher`/Vault settings. It
+serves the ADMIN-protected configuration API and a thin browser UI. Its default
+bind is loopback; the Compose `admin` profile binds container port 8091 to
+`127.0.0.1:8091` and has `restart: no`.
+
+After OIDC is enabled, CLI calls send the Logto ID token from
+`TENANT_ADMIN_ID_TOKEN`. Tenant Admin requires `ADMIN` in its `roles` claim and
+validates `aud` against the browser application's app id. It does not accept a
+Control Plane API access token for this surface.
+
+It is a temporary maintenance surface. It neither starts nor controls the
+Control Plane, Relay, Web, Logto, TLS, or ingress, and it never receives a
+container-runtime socket.
+
+### 4.4 `config get|apply`
+
+`config get` reads the typed deployment singleton through Tenant Admin. Secret
+fields are represented only by configured state, fingerprint, and timestamp.
+
+`config apply --file <json|->` performs an atomic full replacement of typed
+non-secret values plus a partial secret patch. Omission preserves a secret,
+string replaces it, and `null` clears it. An equivalent input is a no-op;
+otherwise the revision advances and the result requires a runtime restart.
+
+### 4.5 Future `plan`
 
 `plan` resolves provider dependencies, inspects current resources, and emits a
 redacted ordered operation list. Each operation has a stable id, provider,
@@ -303,7 +335,7 @@ the observable prerequisite, such as a reachable Relay callback.
 V1 plans may create, adopt, or update explicitly managed fields. They never
 contain delete operations. Unknown provider-owned fields are preserved.
 
-### 4.4 `apply`
+### 4.6 Future `apply`
 
 `apply` recomputes the plan, displays it, and executes it only after approval
 or `--yes`. It is idempotent and stops before dependent operations when a
@@ -315,22 +347,25 @@ now ready.
 
 Browser-assisted provider flows open a URL when possible and also print it for
 remote terminals. A short-lived loopback callback may receive one-time setup
-codes; long-lived credentials are written directly to the secret sink.
+codes; long-lived credentials go directly to the DB-backed sealed store through
+Tenant Admin.
 
 `--non-interactive` can update adopted resources with existing credentials but
 cannot complete a provider flow that requires a human owner to authorize it.
 
-### 4.5 `check`
+### 4.7 `check`
 
-`check` has three scopes:
+The shipped MVP has two scopes:
 
-| Scope          | Checks                                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------------------------- |
-| `deployment`   | Core config/readiness, runtime env, GitHub/Slack/Logto resources, callbacks, and provider access           |
-| `integrations` | Effective permissions and runtime readiness for org-owned installed integrations through the Control Plane |
-| `all`          | Both; this is the default                                                                                  |
+| Scope        | Checks                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------- |
+| `deployment` | Core service reachability, configured auth, OIDC discovery/signing keys, and callback availability      |
+| `logto`      | Stored Management API config, client credentials, role-read permission, and the exact global ADMIN role |
 
-`check integrations` requires a Control Plane URL and an organization-scoped
+Phase 3 adds `integrations` for effective permissions and runtime readiness of
+organization-owned installations, plus `all` to combine those provider checks.
+
+The future `check integrations` scope requires a Control Plane URL and an organization-scoped
 personal API key minted by a current organization owner. The key comes from a
 secret reference, normally `env:AGENTCONNECT_API_KEY`, and is never sent to a
 provider. Its existing one-key-to-one-organization binding selects the
@@ -341,17 +376,17 @@ normalized findings.
 Examples:
 
 ```bash
-npx -y @agentconnect.md/setup plan --provider logto
-npx -y @agentconnect.md/setup apply --provider github --provider slack
-npx -y @agentconnect.md/setup check deployment --provider logto
-npx -y @agentconnect.md/setup check integrations --format json --strict
+npx -y @agentconnect.md/setup config get
+npx -y @agentconnect.md/setup config apply --file deployment.json
+npx -y @agentconnect.md/setup create github
+npx -y @agentconnect.md/setup check deployment
+npx -y @agentconnect.md/setup check logto
 ```
 
 ## 5. Desired state and secret boundary
 
-The checked-in file contains intent and secret references only:
-
-The Phase 1 schema is deliberately narrow:
+The checked-in bootstrap profile remains deliberately narrow and contains no
+secret values:
 
 ```yaml
 apiVersion: setup.agentconnect.md/v1alpha1
@@ -365,88 +400,40 @@ auth:
   issuer: http://login.agentconnect.localhost:3001/oidc
 ```
 
-Provider reconciliation will use a new alpha schema revision rather than
-silently reinterpreting an existing MVP file. Its target shape includes the
-following sections:
+The runtime source of truth is a singleton `deployment_config` row with a schema
+version, monotonically increasing revision, and typed JSON document. Version 1
+contains:
 
-```yaml
-apiVersion: setup.agentconnect.md/v1alpha2
-kind: AgentConnectSetup
+- public Control Plane, Relay, Web, and MCP origins;
+- `none` or OIDC auth, including browser Logto configuration and social
+  providers;
+- deployment GitHub, Slack, and Logto non-secret App identity;
+- preset-agent and waitlist feature policy.
 
-deployment:
-  access: networked
-  callbackIngress: public
-  release: vX.Y.Z
-  externalControlPlaneUrl: https://cp.example.com
-  controlPlaneApiUrl: https://cp.example.com/api/v1
-  externalRelayUrl: https://relay.example.com
-  daemonRelayUrl: wss://relay.example.com
-  externalWebUrl: https://app.example.com
+Secrets live in one row per declared key under `deployment_secret`; arbitrary
+environment names are rejected. The current keys cover GitHub private/webhook/
+client secrets, Slack client/signing secrets, and the Logto Management API
+secret. Every value is sealed and opened through the configured `SecretCipher`.
+Admin reads never select or return opened values.
 
-diagnostics:
-  apiKey: env:AGENTCONNECT_API_KEY
+The Control Plane loads and validates this document once, after connecting to
+Postgres and constructing the cipher but before assembling its runtime graph. A
+persisted document owns its managed keys, including absence, so a stale
+container variable cannot silently re-enable a disabled provider. No row means
+the previous env-only startup remains compatible. A saved revision takes effect
+only after Control Plane, Relay, and Web restart; Tenant Admin returns this fact
+as `restartRequired`.
 
-secrets:
-  sources:
-    - type: environment
-  sink:
-    type: envFile
-    path: .agentconnect/runtime.env
+The bootstrap environment remains intentionally small: database access,
+process bind/topology, the API-key pepper and relay authentication, and the
+SecretCipher/Vault root of trust. The encryption root cannot be stored beside
+the ciphertext it unlocks. DNS, TLS, image selection, database provisioning,
+and orchestrator settings also remain operator-owned.
 
-providers:
-  github:
-    resource:
-      mode: createOrAdopt
-      name: AgentConnect
-    features: [repositories, pullRequests, checks, actions]
-  slack:
-    resource:
-      mode: createOrAdopt
-      name: AgentConnect
-    transport: http
-  logto:
-    endpoint: https://login.example.com
-    management:
-      endpoint: https://tenant.example.com
-      resource: https://tenant.example.com/api
-      bootstrap:
-        appId: env:LOGTO_BOOTSTRAP_APP_ID
-        appSecret: env:LOGTO_BOOTSTRAP_APP_SECRET
-    application:
-      name: AgentConnect Console
-    apiResource: https://api.example.com
-    socialProviders: [github, google]
-    accountApi:
-      socialIdentities: edit
-```
-
-`externalControlPlaneUrl` is the unversioned, client-reachable origin projected
-to the existing `PUBLIC_CP_URL` env key; it does not imply public-internet
-reachability. `controlPlaneApiUrl` is the versioned, potentially rewritten REST
-base used by the CLI and projected to the Web console as `CP_URL`. Setup never
-constructs provider callbacks from the REST base. `externalRelayUrl` is optional
-when `callbackIngress` is `none`; `daemonRelayUrl` remains independently
-reachable by every daemon.
-
-Provider resource ids learned during adoption may be recorded in the YAML as
-non-secret identity. Generated secrets and tokens may not. The env-file sink:
-
-- is opt-in and intended for the Compose path;
-- is created atomically with owner-only permissions;
-- changes only keys owned by the selected setup providers;
-- refuses a path that is tracked or not ignored when it is inside a Git
-  checkout; and
-- is never echoed after a write.
-
-For a networked Compose deployment, core owns the generated
-`AGENTCONNECT_POSTGRES_PASSWORD`, `AGENTCONNECT_API_KEY_PEPPER`, and
-`AGENTCONNECT_RELAY_TOKEN` keys in that sink. Provider contributors own only
-their declared runtime keys. Neither side may overwrite a user-owned key
-without showing an update operation in `plan`.
-
-Other deployment systems consume `plan --format json` and implement a secret
-sink outside this package. Kubernetes or cloud-secret mutation is not part of
-v1.
+Passing `--env-file` explicitly to a provider-create command retains the legacy
+owner-only file sink for compatibility and recovery. It is not the documented
+primary flow. The writer remains atomic, refuses tracked/unignored Git paths,
+uses mode `0600`, and never echoes a value.
 
 ## 6. Setup provider contract
 
@@ -489,8 +476,8 @@ force GitHub and Logto into the chat message contract.
 `apply` uses GitHub's App Manifest flow to create an App with server-owned
 permissions, events, setup URL, and webhook URL. The one-time conversion result
 contains the App identity, private key, webhook secret, and OAuth credentials;
-secret fields go directly to the sink and produce the existing
-`GITHUB_APP_*` runtime projection.
+secret fields go directly to the sealed deployment store. The Control Plane
+projects them into its existing GitHub runtime contract after restart.
 
 The setup callback needs to be reachable by the installer's browser. A
 provider-reachable HTTPS Relay is required only when selected GitHub event
@@ -519,8 +506,8 @@ signed setup callback establishes ownership.
 
 `apply` uses Slack's App Manifest API with an App Configuration token to create
 or update the deployment-wide Add to Slack App. It derives OAuth redirect,
-Events API, and interactivity URLs from the deployment origins and writes the
-existing `SLACK_PLATFORM_*` runtime projection.
+Events API, and interactivity URLs from the deployment origins and stores the
+App identity plus sealed credentials in the deployment document.
 
 The deployment App uses HTTP ingress and therefore requires a stable
 provider-reachable HTTPS Relay. That URL may come from owned ingress or a
@@ -547,12 +534,17 @@ workspace through AgentConnect. `check` validates:
 A scope present in the current manifest but absent from an already-installed
 bot token is a failure with a reinstall remediation, not a pass.
 
-### 7.3 Logto
+### 7.3 Logto (current bootstrap and future Phase 2 reconciliation)
 
-The operator must first supply one existing Logto Management API M2M credential
-with the permissions required to manage the selected tenant. This is the one
-unavoidable bootstrap step: a tenant cannot use its own Management API to mint
-the first administrator credential from nothing. Under the current Logto
+The shipped MVP reads the explicit Management API endpoint/resource, verifies
+the M2M `all` grant, checks that `ADMIN` is a non-default User role, and creates
+or assigns that role during the local claim flow. The reconciliation behavior
+below is the accepted Phase 2 design and is not yet exposed by the CLI.
+
+The operator must supply one existing Logto Management API M2M credential with
+the permissions required to manage the selected tenant. This is the unavoidable
+bootstrap step: a tenant cannot call its Management API before an authorized
+client exists. Under the current Logto
 Management API contract, both the bootstrap credential and the generated
 runtime M2M role need the Management API's `all` permission; `check` verifies
 the effective grant instead of trusting the role name.
@@ -571,9 +563,10 @@ reconcile:
 - the sign-in experience so it exposes exactly the selected connectors; and
 - optional email connector and required templates for profile-linking flows.
 
-It writes the existing web, Control Plane, and Management API environment
-projection (`LOGTO_*`, `OIDC_*`, and `SOCIAL_PROVIDERS`). It preserves unknown
-tenant resources and fields. V1 never deletes a connector or application.
+It writes the browser, Control Plane, and Management API settings to the typed
+deployment document. Control Plane and Web consume the startup projection after
+restart. It preserves unknown tenant resources and fields. V1 never deletes a
+connector or application.
 
 The sign-in `endpoint`, Management API `endpoint`, and Management API `resource`
 are separate desired fields even when all three share one origin. `init` may
@@ -614,17 +607,17 @@ API contracts for Logto Cloud and self-hosted Logto. There is no `selfHosted`
 mode branch. A custom or self-hosted deployment sets its canonical Management
 API endpoint and resource independently from the public sign-in endpoint.
 
-The self-hosted flow is therefore:
+The current self-hosted flow is therefore:
 
 1. start Logto and its database using the operator's chosen deployment method;
-2. create the first Management API M2M credential in Logto;
-3. run `apply --provider logto` to reconcile all AgentConnect-owned resources
-   and write the runtime env projection; and
-4. run `check deployment --provider logto` before enabling OIDC in the Control
-   Plane.
+2. create a bootstrap Management API M2M credential in Logto;
+3. start temporary Tenant Admin and save the Logto/OIDC deployment settings;
+4. sign in locally, claim `ADMIN`, and run `check logto`;
+5. stop Tenant Admin and restart Control Plane, Relay, and Web; and
+6. run `check deployment` before admitting users.
 
-The CLI removes the tenant-configuration work after Logto is reachable. It does
-not own the Logto process, database, SMTP service, TLS, backups, or upgrades.
+The MVP does not own Logto tenant reconciliation, process lifecycle, database,
+SMTP service, TLS, backups, or upgrades.
 
 ## 8. Installed-integration diagnostics
 
@@ -803,11 +796,28 @@ The report is still written on exit 1 or 2 so CI can archive it.
   the target provider/reconciliation framework;
 - require external HTTPS Control Plane, Web, and Relay endpoints already
   described by the existing alpha schema;
-- atomically write the exact runtime credentials to an env file with mode
-  `0600`, refuse Git-tracked or unignored sinks, and never log or overwrite
-  secrets; and
+- retain the atomic mode-`0600` env-file writer only as an explicit legacy
+  fallback, refusing Git-tracked or unignored sinks and never logging secrets;
+  and
 - verify Slack's managed permissions and callback manifest after creation while
   keeping Public Distribution manual.
+
+### Phase 1.2: DB deployment source and temporary Tenant Admin
+
+- add the typed, versioned deployment singleton and per-key sealed secret rows;
+- load one startup snapshot in Control Plane, distribute Relay-owned ingress
+  configuration over its authenticated control connection, and serve Web's
+  public runtime settings from Control Plane;
+- add `config get|apply` and make provider-create commands use the DB sink by
+  default;
+- add `serve` to the same `@agentconnect.md/setup` artifact, with a thin UI and
+  ADMIN-only API after bootstrap; the first local operator can claim the shared
+  global `ADMIN` role, then that self-claim closes for the configured OIDC app;
+- add `check logto` through Tenant Admin without returning the stored Management
+  API credential to the CLI;
+- carry the self-contained setup dist in the Control Plane image and expose it
+  only through Compose's loopback `admin` profile; and
+- report restart-required state explicitly instead of implementing hot reload.
 
 ### Phase 2: deployment providers
 
@@ -815,7 +825,7 @@ The report is still written on exit 1 or 2 so CI can archive it.
   dependency ordering with the first real provider implementation;
 - extend GitHub App handling with adopt/update/check;
 - extend Slack App handling with adopt/update/check; and
-- implement Logto plan/apply/check, including runtime env projection and the
+- implement Logto plan/apply/check against the DB-backed deployment document and the
   explicit Management API bootstrap handoff.
 
 ### Phase 3: effective integration audit
@@ -839,6 +849,9 @@ The report is still written on exit 1 or 2 so CI can archive it.
 
 ## 12. Acceptance criteria
 
+Items 1-9 cover the shipped MVP. Items 10-17 are acceptance criteria for the
+future phases named in section 11.
+
 1. The loopback-only local quickstart still requires only Compose and Add
    daemon; setup adds no mandatory provider step.
 2. The optional local-auth overlay starts the pinned official Logto image on
@@ -849,28 +862,35 @@ The report is still written on exit 1 or 2 so CI can archive it.
 4. `check deployment` fails when the database-backed Control Plane readiness,
    Relay readiness, configured auth mode, OIDC issuer, or JWKS is wrong, and it
    never mutates the deployment.
-5. A networked OSS operator can create deployment GitHub and Slack Apps and reconcile
-   an existing Logto tenant without manually transcribing generated secrets.
-   The same path works against Logto Cloud and a reachable self-hosted Logto
-   endpoint.
-6. Networked `init` pins a release, creates the three non-default core secrets,
-   derives callback-ingress requirements from selected capabilities, and
-   enables OIDC before the first networked start without printing a secret.
-7. Every unavoidable provider-console action is shown as an unfinished manual
+5. A networked OSS operator can create deployment GitHub and Slack Apps, verify
+   an existing Logto Management API credential, and bootstrap `ADMIN` without
+   printing generated secrets. The same check/claim path works against Logto
+   Cloud and a reachable self-hosted Logto endpoint.
+6. The only published setup artifact provides both the CLI and `serve`; Compose
+   runs that same self-contained dist from the Control Plane image, behind an
+   explicit profile bound to `127.0.0.1:8091`.
+7. A persisted deployment document overrides its managed legacy environment
+   keys, secret reads expose only metadata, and the encryption root remains
+   outside the database.
+8. A changed revision reports `restartRequired`; stopping Tenant Admin and
+   restarting Control Plane, Relay, and Web activates the same revision across
+   all three processes.
+9. Every unavoidable provider-console action is shown as an unfinished manual
    operation with a direct remediation; the CLI never reports it as applied.
-8. Re-running `plan` immediately after `apply` yields no automatic operations.
-9. Removing an effective Slack scope, GitHub installation permission, or Logto
-   role produces a known failing `grant` finding even when desired manifests are
-   correct.
-10. A provider outage produces `unknown` and exit 2, not an invalid-token claim.
-11. `check integrations` never returns or logs a stored integration credential.
-12. Removing or demoting the personal key's user prevents both diagnostics and
+10. When Phase 2 lands, re-running `plan` immediately after `apply` yields no
+    automatic operations.
+11. Removing an effective Slack scope, GitHub installation permission, or Logto
+    role produces a known failing `grant` finding even when desired manifests are
+    correct.
+12. A provider outage produces `unknown` and exit 2, not an invalid-token claim.
+13. `check integrations` never returns or logs a stored integration credential.
+14. Removing or demoting the personal key's user prevents both diagnostics and
     probes before any subject credential is opened.
-13. Restricted integrations not shared with that owner are excluded before
+15. Restricted integrations not shared with that owner are excluded before
     credential access; owner role does not widen resource visibility.
-14. GitHub remains on the code-host seam and all core provider execution is
+16. GitHub remains on the code-host seam and all core provider execution is
     registry-driven.
-15. Golden redaction tests prove that every secret-shaped fixture is absent from
+17. Golden redaction tests prove that every secret-shaped fixture is absent from
     table output, JSON output, errors, and logs. Contract tests cover exit-code
     aggregation and one representative provider; provider API clients use only
     focused behavior tests.

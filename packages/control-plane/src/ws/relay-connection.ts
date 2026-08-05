@@ -16,6 +16,7 @@
  */
 import type {
   RcAuth,
+  RcDeploymentConfig,
   RcGithubCommentAuthz,
   RcGithubRerequest,
   RcGithubRerequestResult,
@@ -51,6 +52,9 @@ export interface RelayConnDeps {
   auth: RelayAuthService
   relays: RelayRepo
   clock: Clock
+  /** Static deployment snapshot loaded before the CP assembled. Secret-bearing;
+   *  sent only after relay authentication and never logged. */
+  deploymentConfig?: RcDeploymentConfig
   /** Fired after a successful register — recompute + fan `relay/roster` to daemons,
    *  and replay the compiled hook rules to THIS relay (its table is a memory copy). */
   onRegistered: (ch: RelayChannel) => void
@@ -235,7 +239,8 @@ export class RelayConnection implements RelayChannel {
     this.state = 'REGISTERING'
     this.reply(frame, 'rc/auth/ok', {
       heartbeatSec: this.deps.auth.heartbeatSec,
-      serverTime: new Date(this.deps.clock.now()).toISOString()
+      serverTime: new Date(this.deps.clock.now()).toISOString(),
+      ...(this.deps.deploymentConfig ? { deploymentConfig: this.deps.deploymentConfig } : {})
     })
   }
 

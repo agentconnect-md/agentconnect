@@ -1,5 +1,21 @@
 import { describe, it, expect } from 'vitest'
-import { corsWebOrigin, resolveWebAppUrl } from './env.js'
+import { corsWebOrigin, loadBootstrapConfig, resolveWebAppUrl } from './env.js'
+
+describe('loadBootstrapConfig', () => {
+  it('does not parse DB-owned runtime fields before the deployment row can be read', () => {
+    expect(
+      loadBootstrapConfig({
+        DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+        OIDC_ISSUER: 'not-a-url',
+        GITHUB_APP_ID: 'not-a-number',
+        WAITLIST_MODE: 'not-a-boolean'
+      })
+    ).toMatchObject({
+      DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+      SECRET_CIPHER: 'none'
+    })
+  })
+})
 
 describe('corsWebOrigin', () => {
   it('returns a single concrete origin verbatim', () => {

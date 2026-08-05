@@ -224,7 +224,7 @@ function makeHarness(authzCapacity = 20): Harness {
     limiter: new HookRateLimiter(clock, { capacity: 3, refillPerSec: 0 }),
     clock,
     log,
-    webhookSecret: SECRET
+    webhookSecret: () => SECRET
   })
   h.app = app
   h.table = table
@@ -265,10 +265,42 @@ describe('github ingress', () => {
     })
   }
 
-  it('answers 404 when the route is not registered (secret unset ⇒ whole endpoint absent)', async () => {
+  it('answers 404 before a startup snapshot supplies the secret', async () => {
+    const snapshot: { secret?: string } = {}
     const bare = Fastify()
-    const res = await bare.inject({ method: 'POST', url: '/webhooks/github', payload: '{}' })
+    registerGithubIngress(bare, {
+      table: new HookTable(),
+      daemons: () => undefined,
+      report: () => {},
+      doorbell: () => {},
+      authorizeComment: async () => false,
+      authorizeRerequest: async () => ({ allowed: false }),
+      authzLimiter: new HookRateLimiter(new FakeClock()),
+      limiter: new HookRateLimiter(new FakeClock()),
+      clock: new FakeClock(),
+      log,
+      webhookSecret: () => snapshot.secret
+    })
+    const res = await bare.inject({
+      method: 'POST',
+      url: '/webhooks/github',
+      headers: { 'content-type': 'application/json' },
+      payload: '{}'
+    })
     expect(res.statusCode).toBe(404)
+    snapshot.secret = SECRET
+    const payload = JSON.stringify({ zen: 'ready' })
+    const ready = await bare.inject({
+      method: 'POST',
+      url: '/webhooks/github',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'ping',
+        'x-hub-signature-256': sign(payload)
+      },
+      payload
+    })
+    expect(ready.statusCode).toBe(204)
     await bare.close()
   })
 

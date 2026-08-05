@@ -26,8 +26,12 @@ case "$MODE" in
     ;;
 esac
 
-SETUP_PATHS="packages/setup tsconfig.base.json"
-SETUP_IMPORTERS="packages/setup"
+# Keep this identical to the Control Plane image input set in
+# component-versions.sh. The image embeds this package, so whenever those bits
+# rebuild, npm receives the same version that the image reports.
+COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
+SETUP_PATHS="packages/control-plane packages/setup packages/protocol $COMMON"
+SETUP_IMPORTERS="packages/setup packages/control-plane packages/protocol"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # shellcheck disable=SC2086
@@ -43,6 +47,9 @@ if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev
 fi
 
 if [ "$MODE" = prepare ]; then
+  cd "$REPO_ROOT"
+  pnpm --filter @agentconnect.md/protocol build
+  pnpm --filter @agentconnect.md/control-plane build
   cd "$REPO_ROOT/packages/setup"
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
   pnpm run build

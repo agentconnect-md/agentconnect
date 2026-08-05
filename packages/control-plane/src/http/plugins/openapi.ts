@@ -53,6 +53,7 @@ export const OPENAPI_JSON_PATH = `${API_V1_PREFIX}/openapi.json`
  * documented operation should carry exactly one of these.
  */
 export const Tag = {
+  Deployment: 'Deployment',
   Organizations: 'Organizations',
   Profile: 'Profile',
   Members: 'Members',
@@ -78,6 +79,7 @@ export const Tag = {
 
 /** Group order + blurbs for the docs sidebar (OpenAPI top-level `tags`). */
 const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
+  { name: Tag.Deployment, description: 'Secret-free runtime metadata for deployment clients.' },
   { name: Tag.Organizations, description: 'The caller’s organizations — list, create, rename, delete.' },
   { name: Tag.Profile, description: 'The signed-in user’s own profile.' },
   { name: Tag.Members, description: 'Organization membership and roles.' },

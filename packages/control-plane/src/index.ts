@@ -29,26 +29,40 @@ process.on('unhandledRejection', (reason) => {
 
 async function main(): Promise<void> {
   const [
-    { loadConfig },
+    { loadBootstrapConfig, loadConfig },
+    { applyDeploymentEnvironment },
     { systemClock },
     { createPrisma },
+    { PgDeploymentConfigStore },
     { ensureDefaultTenant },
     { makeSecretsProvider },
+    { makeSecretCipher },
     { buildApp }
   ] = await Promise.all([
     import('./config/env.js'),
+    import('./config/deployment.js'),
     import('./domain/clock.js'),
     import('./persistence/prisma.js'),
+    import('./persistence/repositories/deployment-config.repo.js'),
     import('./persistence/ensure-default-tenant.js'),
     import('./secrets/providers/memory.js'),
+    import('./secrets/cipher.js'),
     import('./app.js')
   ])
 
-  // 1. Validate config or refuse to start (fail-fast, §2.4).
-  const config = loadConfig()
+  // 1. Bootstrap roots stay in the process environment: database access and
+  // the SecretCipher root must exist before the deployment document can open.
+  const bootstrapConfig = loadBootstrapConfig()
 
   // 2. The single Prisma touch in the process; the only seam the bootstrap owns.
-  const prisma = createPrisma(config.DATABASE_URL)
+  const prisma = createPrisma(bootstrapConfig.DATABASE_URL)
+  const secretCipher = makeSecretCipher(bootstrapConfig)
+  const deploymentConfig = await new PgDeploymentConfigStore(prisma, secretCipher).getRuntime()
+
+  // A persisted document owns its projected keys and is applied once per
+  // process lifetime. No row means the existing env-only deployment remains
+  // fully compatible. `loadConfig` still performs the final fail-fast check.
+  const config = deploymentConfig ? loadConfig(applyDeploymentEnvironment(process.env, deploymentConfig)) : loadConfig()
   if (!config.OIDC_ISSUER) {
     await ensureDefaultTenant(prisma, { presetAgents: config.PRESET_AGENTS_ENABLED })
   }
@@ -59,6 +73,8 @@ async function main(): Promise<void> {
     config,
     clock: systemClock,
     secretsProvider: makeSecretsProvider(config),
+    secretCipher,
+    ...(deploymentConfig ? { deploymentConfig } : {}),
     fastify: { logger: true }
   })
 

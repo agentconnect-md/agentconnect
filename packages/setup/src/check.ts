@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { SetupConfig } from './config.js'
 
 export type FindingStatus = 'pass' | 'fail'
@@ -13,6 +14,42 @@ export interface CheckOptions {
   timeoutMs?: number
 }
 
+const RuntimeBrowserAuthSchema = z
+  .object({
+    endpoint: z.string().url(),
+    issuer: z.string().url(),
+    appId: z.string().min(1),
+    apiResource: z.string().url().nullable(),
+    socialProviders: z.array(z.string().min(1))
+  })
+  .strict()
+
+const RuntimeConfigSchema = z
+  .object({
+    schemaVersion: z.literal('1'),
+    revision: z.number().int().positive().nullable(),
+    config: z
+      .object({
+        apiUrl: z.string().url().nullable(),
+        relayUrl: z.string().url().nullable(),
+        webUrl: z.string().url().nullable(),
+        mcpUrl: z.string().url().nullable(),
+        auth: RuntimeBrowserAuthSchema.nullable()
+      })
+      .strict()
+      .nullable()
+  })
+  .strict()
+  .refine((value) => (value.revision === null) === (value.config === null))
+
+type ActiveAuth = { mode: 'none' } | { mode: 'oidc'; issuer: string }
+type ActiveServices = { controlPlane: string | null; relay: string | null; web: string | null }
+
+type RuntimeInspection =
+  | { source: 'database'; auth: ActiveAuth; services: ActiveServices; finding: DeploymentFinding }
+  | { source: 'environment'; finding: DeploymentFinding }
+  | { source: 'unavailable'; finding: DeploymentFinding }
+
 const joinUrl = (base: string, path: string): string => {
   const prefix = base.endsWith('/') ? base : `${base}/`
   return new URL(path.replace(/^\//, ''), prefix).toString()
@@ -26,6 +63,14 @@ const isLoopbackHostname = (hostname: string): boolean => {
     normalized === '127.0.0.1' ||
     normalized === '::1'
   )
+}
+
+function controlPlaneBaseUrl(apiUrl: string): string | null {
+  const parsed = new URL(apiUrl)
+  const pathname = parsed.pathname.replace(/\/+$/, '')
+  if (!pathname.endsWith('/api/v1')) return null
+  parsed.pathname = pathname.slice(0, -'/api/v1'.length) || '/'
+  return parsed.toString()
 }
 
 function validateFinalUrl(requestedUrl: string, response: Response): void {
@@ -91,27 +136,101 @@ async function checkReadiness(
   }
 }
 
-async function checkAuthMode(
+async function inspectRuntimeConfig(
   config: SetupConfig,
   fetcher: typeof fetch,
   timeoutMs: number
+): Promise<RuntimeInspection> {
+  const url = joinUrl(config.services.controlPlane, 'api/v1/runtime-config')
+  let response: Response
+  try {
+    response = await request(fetcher, url, timeoutMs, 'manual')
+  } catch (error) {
+    return {
+      source: 'unavailable',
+      finding: {
+        id: 'control-plane.runtime-config',
+        status: 'fail',
+        message: `could not read active deployment configuration: ${(error as Error).message}`
+      }
+    }
+  }
+  if (!response.ok) {
+    return {
+      source: 'unavailable',
+      finding: {
+        id: 'control-plane.runtime-config',
+        status: 'fail',
+        message: `active deployment configuration returned HTTP ${response.status}`
+      }
+    }
+  }
+
+  let parsed: z.infer<typeof RuntimeConfigSchema>
+  try {
+    const result = RuntimeConfigSchema.safeParse(await response.json())
+    if (!result.success) throw new Error('invalid runtime configuration')
+    parsed = result.data
+  } catch {
+    return {
+      source: 'unavailable',
+      finding: {
+        id: 'control-plane.runtime-config',
+        status: 'fail',
+        message: 'AgentConnect API returned an invalid active deployment configuration'
+      }
+    }
+  }
+
+  if (parsed.revision === null || parsed.config === null) {
+    return {
+      source: 'environment',
+      finding: {
+        id: 'control-plane.runtime-config',
+        status: 'pass',
+        message: 'AgentConnect API is using environment fallback (active deployment config revision: none)'
+      }
+    }
+  }
+
+  const auth: ActiveAuth = parsed.config.auth ? { mode: 'oidc', issuer: parsed.config.auth.issuer } : { mode: 'none' }
+  return {
+    source: 'database',
+    auth,
+    services: {
+      controlPlane: parsed.config.apiUrl ? controlPlaneBaseUrl(parsed.config.apiUrl) : null,
+      relay: parsed.config.relayUrl,
+      web: parsed.config.webUrl
+    },
+    finding: {
+      id: 'control-plane.runtime-config',
+      status: 'pass',
+      message: `AgentConnect API is running deployment config revision ${parsed.revision} with ${auth.mode === 'oidc' ? 'OIDC' : 'no-auth'} authentication`
+    }
+  }
+}
+
+async function checkAuthMode(
+  expectAuth: boolean,
+  controlPlaneUrl: string,
+  fetcher: typeof fetch,
+  timeoutMs: number
 ): Promise<DeploymentFinding> {
-  const expectAuth = config.mode !== 'local'
-  const url = joinUrl(config.services.controlPlane, 'api/v1/me')
+  const url = joinUrl(controlPlaneUrl, 'api/v1/me')
   try {
     const response = await request(fetcher, url, timeoutMs, 'manual')
     if (expectAuth && response.status === 401) {
       return { id: 'auth.mode', status: 'pass', message: 'sign-in is required by the API' }
     }
     if (!expectAuth && response.ok) {
-      return { id: 'auth.mode', status: 'pass', message: 'local no-auth mode is active' }
+      return { id: 'auth.mode', status: 'pass', message: 'no-auth mode is active' }
     }
     return {
       id: 'auth.mode',
       status: 'fail',
       message: expectAuth
-        ? `API did not require sign-in (HTTP ${response.status}); set OIDC_ISSUER and restart it`
-        : `local no-auth mode did not admit the request (HTTP ${response.status})`
+        ? `API did not require sign-in (HTTP ${response.status}); update active OIDC configuration and restart the Control Plane`
+        : `no-auth mode did not admit the request (HTTP ${response.status})`
     }
   } catch (error) {
     return { id: 'auth.mode', status: 'fail', message: `could not verify sign-in mode: ${(error as Error).message}` }
@@ -195,32 +314,66 @@ async function checkOidc(issuer: string, fetcher: typeof fetch, timeoutMs: numbe
 export async function checkDeployment(config: SetupConfig, options: CheckOptions = {}): Promise<DeploymentFinding[]> {
   const fetcher = options.fetch ?? fetch
   const timeoutMs = options.timeoutMs ?? 5_000
+  const runtime = await inspectRuntimeConfig(config, fetcher, timeoutMs)
+  const activeAuth: ActiveAuth | undefined =
+    runtime.source === 'database'
+      ? runtime.auth
+      : runtime.source === 'environment'
+        ? config.mode === 'local'
+          ? { mode: 'none' }
+          : config.auth
+            ? { mode: 'oidc', issuer: config.auth.issuer }
+            : { mode: 'none' }
+        : undefined
+  const activeServices: ActiveServices | undefined =
+    runtime.source === 'database'
+      ? runtime.services
+      : runtime.source === 'environment'
+        ? {
+            controlPlane: config.services.controlPlane,
+            relay: config.services.relay ?? null,
+            web: config.services.web ?? null
+          }
+        : undefined
+
+  const unavailableService = (id: string, label: string): Promise<DeploymentFinding> =>
+    Promise.resolve({ id, status: 'fail', message: `${label} URL is not configured in the active deployment` })
   const serviceChecks = [
-    checkHttp(fetcher, timeoutMs, 'web.reachable', 'Web console', config.services.web),
-    checkReadiness(
-      fetcher,
-      timeoutMs,
-      'control-plane.ready',
-      'AgentConnect API',
-      joinUrl(config.services.controlPlane, 'readyz'),
-      'ok'
-    ),
-    ...(config.services.relay
+    activeServices?.web
+      ? checkHttp(fetcher, timeoutMs, 'web.reachable', 'Web console', activeServices.web)
+      : unavailableService('web.reachable', 'Web console'),
+    activeServices?.controlPlane
+      ? checkReadiness(
+          fetcher,
+          timeoutMs,
+          'control-plane.ready',
+          'AgentConnect API',
+          joinUrl(activeServices.controlPlane, 'readyz'),
+          'ok'
+        )
+      : unavailableService('control-plane.ready', 'AgentConnect API'),
+    ...(activeServices?.relay
       ? [
           checkReadiness(
             fetcher,
             timeoutMs,
             'relay.ready',
             'callback service',
-            joinUrl(config.services.relay, 'readyz'),
+            joinUrl(activeServices.relay, 'readyz'),
             'ready'
           )
         ]
       : []),
-    checkAuthMode(config, fetcher, timeoutMs)
+    activeAuth && activeServices?.controlPlane
+      ? checkAuthMode(activeAuth.mode === 'oidc', activeServices.controlPlane, fetcher, timeoutMs)
+      : Promise.resolve<DeploymentFinding>({
+          id: 'auth.mode',
+          status: 'fail',
+          message: 'could not verify active sign-in mode without an active AgentConnect API URL'
+        })
   ]
 
-  const findings = await Promise.all(serviceChecks)
-  if (config.mode !== 'local') findings.push(...(await checkOidc(config.auth.issuer, fetcher, timeoutMs)))
+  const findings = [runtime.finding, ...(await Promise.all(serviceChecks))]
+  if (activeAuth?.mode === 'oidc') findings.push(...(await checkOidc(activeAuth.issuer, fetcher, timeoutMs)))
   return findings
 }

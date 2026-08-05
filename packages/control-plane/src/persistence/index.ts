@@ -7,6 +7,7 @@
  */
 export * from './ports.js'
 export * from './errors.js'
+export * from './deployment-config.js'
 export { createPrisma, withTx, disconnectPrisma, type PrismaLike } from './prisma.js'
 
 export { PgDaemonRepo } from './repositories/daemon.repo.js'
@@ -73,3 +74,4 @@ export { PgUserRepo } from './repositories/user.repo.js'
 export { PgOrgRepo } from './repositories/org.repo.js'
 export { PgOrgInviteLinkRepo } from './repositories/org-invite-link.repo.js'
 export { PgWaitlistRepo } from './repositories/waitlist.repo.js'
+export { PgDeploymentConfigRepository, PgDeploymentConfigStore } from './repositories/deployment-config.repo.js'

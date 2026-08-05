@@ -70,12 +70,15 @@ export const SetupConfigSchema = z.discriminatedUnion('mode', [
       mode: z.literal('external'),
       services: z
         .object({
-          web: httpsUrl,
+          web: httpsUrl.optional(),
           controlPlane: httpsUrl,
           relay: httpsUrl.optional()
         })
         .strict(),
-      auth: z.object({ issuer: oidcIssuer.and(httpsUrl) }).strict()
+      auth: z
+        .object({ issuer: oidcIssuer.and(httpsUrl) })
+        .strict()
+        .optional()
     })
     .strict()
 ])
@@ -117,26 +120,18 @@ export function createSetupConfig(mode: SetupMode, input: ExternalConfigInput = 
     })
   }
 
-  const missing = [
-    ['--web-url', input.web],
-    ['--control-plane-url', input.controlPlane],
-    ['--issuer', input.issuer]
-  ]
-    .filter(([, value]) => !value)
-    .map(([flag]) => flag)
-
-  if (missing.length > 0) throw new Error(`external mode requires ${missing.join(', ')}`)
+  if (!input.controlPlane) throw new Error('external mode requires --control-plane-url')
 
   return SetupConfigSchema.parse({
     apiVersion: SETUP_API_VERSION,
     kind: 'AgentConnectSetup',
     mode,
     services: {
-      web: input.web,
       controlPlane: input.controlPlane,
+      ...(input.web ? { web: input.web } : {}),
       ...(input.relay ? { relay: input.relay } : {})
     },
-    auth: { issuer: input.issuer }
+    ...(input.issuer ? { auth: { issuer: input.issuer } } : {})
   })
 }
 

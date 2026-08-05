@@ -34,6 +34,8 @@ export const prisma = new PrismaClient({
  * stays applied between tests.
  */
 const TABLES = [
+  // FK-less deployment singleton; its secret side rows cascade from it.
+  'deployment_config',
   'audit_event',
   'cron_def',
   'secret_lease',

@@ -24,6 +24,15 @@ describe('setup config', () => {
     ).toThrow('external URLs must use HTTPS')
   })
 
+  it('keeps the external setup file to the Control Plane bootstrap locator by default', () => {
+    expect(createSetupConfig('external', { controlPlane: 'https://api.example.test' })).toEqual({
+      apiVersion: 'setup.agentconnect.md/v1alpha1',
+      kind: 'AgentConnectSetup',
+      mode: 'external',
+      services: { controlPlane: 'https://api.example.test' }
+    })
+  })
+
   it.each([
     ['credentials', 'https://user:secret@console.example.test', 'URLs must not contain credentials'],
     ['query parameters', 'https://console.example.test?token=secret', 'URLs must not contain query parameters'],
@@ -62,10 +71,13 @@ const response = (status: number, body?: unknown, url?: string): Response => {
   return result
 }
 
+const environmentRuntimeConfig = (): Response => response(200, { schemaVersion: '1', revision: null, config: null })
+
 describe('deployment checks', () => {
   it('checks only the local services and no-auth mode', async () => {
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) return environmentRuntimeConfig()
       if (url.endsWith('/api/v1/me')) return response(200)
       if (url === 'http://localhost:8080/readyz') return response(200, { status: 'ok' })
       if (url === 'http://localhost:8090/readyz') return response(200, { status: 'ready' })
@@ -73,7 +85,11 @@ describe('deployment checks', () => {
     })
     const findings = await checkDeployment(createSetupConfig('local'), { fetch: fetcher })
     expect(findings.every((finding) => finding.status === 'pass')).toBe(true)
-    expect(fetcher).toHaveBeenCalledTimes(4)
+    expect(findings.find((finding) => finding.id === 'control-plane.runtime-config')).toMatchObject({
+      status: 'pass',
+      message: expect.stringContaining('active deployment config revision: none')
+    })
+    expect(fetcher).toHaveBeenCalledTimes(5)
     expect(fetcher.mock.calls.some(([input]) => String(input).includes('openid-configuration'))).toBe(false)
   })
 
@@ -81,6 +97,7 @@ describe('deployment checks', () => {
     const issuer = 'http://login.agentconnect.localhost:3001/oidc'
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) return environmentRuntimeConfig()
       if (url.endsWith('/api/v1/me')) return response(401)
       if (url === 'http://localhost:8080/readyz') return response(200, { status: 'ok' })
       if (url === 'http://localhost:8090/readyz') return response(200, { status: 'ready' })
@@ -101,6 +118,7 @@ describe('deployment checks', () => {
   it('fails closed on an issuer mismatch', async () => {
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) return environmentRuntimeConfig()
       if (url.endsWith('/api/v1/me')) return response(401)
       if (url === 'http://localhost:8080/readyz') return response(200, { status: 'ok' })
       if (url === 'http://localhost:8090/readyz') return response(200, { status: 'ready' })
@@ -122,6 +140,7 @@ describe('deployment checks', () => {
   it('reports a null discovery document as a structured failure', async () => {
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) return environmentRuntimeConfig()
       if (url.endsWith('/api/v1/me')) return response(401)
       if (url === 'http://localhost:8080/readyz') return response(200, { status: 'ok' })
       if (url === 'http://localhost:8090/readyz') return response(200, { status: 'ready' })
@@ -138,6 +157,7 @@ describe('deployment checks', () => {
   it('does not accept redirected readiness endpoints', async () => {
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) return environmentRuntimeConfig()
       if (url.endsWith('/readyz')) return response(302)
       return response(200)
     })
@@ -152,14 +172,18 @@ describe('deployment checks', () => {
       controlPlane: 'https://api.example.test',
       issuer: 'https://login.example.test/oidc'
     })
-    if (config.mode !== 'external') throw new Error('expected external config')
+    if (config.mode !== 'external' || !config.services.web || !config.auth) {
+      throw new Error('expected complete external config')
+    }
+    const issuer = config.auth.issuer
     const fetcher = vi.fn<typeof fetch>(async (input) => {
       const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) return environmentRuntimeConfig()
       if (url === config.services.web) return response(200, undefined, 'http://console.example.test')
       if (url.endsWith('/readyz')) return response(200, { status: 'ok' })
       if (url.endsWith('/api/v1/me')) return response(401)
       if (url.endsWith('/.well-known/openid-configuration')) {
-        return response(200, { issuer: config.auth.issuer, jwks_uri: `${config.auth.issuer}/jwks` })
+        return response(200, { issuer, jwks_uri: `${issuer}/jwks` })
       }
       if (url.endsWith('/oidc/jwks')) return response(200, { keys: [{ kid: 'one' }] })
       return response(404)
@@ -169,6 +193,56 @@ describe('deployment checks', () => {
       status: 'fail',
       message: expect.stringContaining('redirected to a non-HTTPS URL')
     })
+  })
+
+  it('uses the active database revision and auth instead of the setup profile', async () => {
+    const endpoint = 'http://login.agentconnect.localhost:3001'
+    const issuer = `${endpoint}/oidc`
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/runtime-config')) {
+        return response(200, {
+          schemaVersion: '1',
+          revision: 7,
+          config: {
+            apiUrl: 'http://localhost:8180/api/v1',
+            relayUrl: 'http://localhost:8190',
+            webUrl: 'http://localhost:3100',
+            mcpUrl: null,
+            auth: {
+              endpoint,
+              issuer,
+              appId: 'agentconnect-web',
+              apiResource: 'http://localhost:8080',
+              socialProviders: ['github']
+            }
+          }
+        })
+      }
+      if (url.endsWith('/api/v1/me')) return response(401)
+      if (url === 'http://localhost:8180/readyz') return response(200, { status: 'ok' })
+      if (url === 'http://localhost:8190/readyz') return response(200, { status: 'ready' })
+      if (url.endsWith('/.well-known/openid-configuration')) {
+        return response(200, { issuer, jwks_uri: `${issuer}/jwks` })
+      }
+      if (url.endsWith('/oidc/jwks')) return response(200, { keys: [{ kid: 'one' }] })
+      return response(200)
+    })
+
+    const findings = await checkDeployment(createSetupConfig('local'), { fetch: fetcher })
+
+    expect(findings.every((finding) => finding.status === 'pass')).toBe(true)
+    expect(findings.find((finding) => finding.id === 'control-plane.runtime-config')).toEqual({
+      id: 'control-plane.runtime-config',
+      status: 'pass',
+      message: 'AgentConnect API is running deployment config revision 7 with OIDC authentication'
+    })
+    expect(fetcher.mock.calls.some(([input]) => String(input) === `${issuer}/.well-known/openid-configuration`)).toBe(
+      true
+    )
+    expect(fetcher.mock.calls.some(([input]) => String(input) === 'http://localhost:3100')).toBe(true)
+    expect(fetcher.mock.calls.some(([input]) => String(input) === 'http://localhost:8080/readyz')).toBe(false)
+    expect(fetcher.mock.calls.some(([input]) => String(input) === 'http://localhost:8090/readyz')).toBe(false)
   })
 
   it('renders stable JSON without response bodies', () => {
@@ -185,5 +259,11 @@ describe('deployment checks', () => {
       findings: [{ id: 'web.reachable', status: 'pass', message: 'Web console is reachable' }],
       summary: { pass: 1, fail: 0 }
     })
+  })
+
+  it('uses distinct exit codes for failed and unknown readiness', () => {
+    expect(reportExitCode([{ status: 'pass' }])).toBe(0)
+    expect(reportExitCode([{ status: 'unknown' }])).toBe(2)
+    expect(reportExitCode([{ status: 'unknown' }, { status: 'fail' }])).toBe(1)
   })
 })

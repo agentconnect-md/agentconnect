@@ -14,8 +14,9 @@
 # standalone output; all targets still share the base and manifest layers.
 #
 # Control Plane — Fastify BFF + daemon WS gateway (packages/control-plane). The
-#   runtime carries only the schema/migration files needed by an external
-#   migration runner; it deliberately contains no Prisma CLI.
+#   runtime also carries schema/migration files for the external migration
+#   runner and the self-contained setup dist used by the temporary Tenant Admin;
+#   it deliberately contains no Prisma CLI.
 # Relay — shared integration ingress (packages/relay).
 # Memory plugin — centralized Mem0 MCP wrapper (packages/memory-plugin-mem0).
 # Web console — Next.js (packages/web).
@@ -48,6 +49,7 @@ COPY packages/message/package.json packages/message/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/connection/package.json packages/connection/
 COPY packages/control-plane/package.json packages/control-plane/
+COPY packages/setup/package.json packages/setup/
 COPY packages/daemon/package.json packages/daemon/
 COPY packages/relay/package.json packages/relay/
 COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
@@ -55,10 +57,13 @@ COPY packages/web/package.json packages/web/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
 FROM manifests AS cp-builder
-# Install only the control-plane and its workspace deps (skips the daemon and
-# its native better-sqlite3 build entirely).
+ARG SETUP_VERSION=1.0.0-dev
+# Install the control-plane, the self-contained operator setup package, and
+# their workspace deps (skips the daemon and its native better-sqlite3 build).
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-  pnpm install --frozen-lockfile --filter "@agentconnect.md/control-plane..."
+  pnpm install --frozen-lockfile \
+  --filter "@agentconnect.md/control-plane..." \
+  --filter "@agentconnect.md/setup..."
 
 # Source last — editing app code no longer busts the install layer above.
 COPY . .
@@ -71,6 +76,14 @@ RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/control-plane" \
   -r build
+
+# The same published package powers the operator CLI and the temporary Tenant
+# Admin server. Runtime dependencies are bundled; the CLI still reads its own
+# package manifest for the version string.
+RUN node -e \
+  'const fs=require("node:fs"),p="packages/setup/package.json",m=JSON.parse(fs.readFileSync(p,"utf8"));m.version=process.argv[1].replace(/^v/,"");fs.writeFileSync(p,JSON.stringify(m,null,2)+"\n")' \
+  "$SETUP_VERSION" \
+  && pnpm --filter "@agentconnect.md/setup" build
 
 # Materialize the same portable production bundle used by the other plain Node
 # services. The pnpm hook removes Prisma's build-only optional peers while
@@ -95,6 +108,8 @@ RUN apt-get update \
 # Production dependencies, built workspace packages, and the version-matched
 # Prisma schema/migrations used by the schema-export init container.
 COPY --from=cp-builder /control-plane ./
+COPY --from=cp-builder /app/packages/setup/dist /app/packages/setup/dist
+COPY --from=cp-builder /app/packages/setup/package.json /app/packages/setup/package.json
 
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

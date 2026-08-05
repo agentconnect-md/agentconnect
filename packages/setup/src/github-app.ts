@@ -1,8 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import type { SetupConfig } from './config.js'
-import { requireExternalRelay } from './slack-app.js'
+import { requireProviderAppEndpoints, type ProviderAppConfig } from './slack-app.js'
 
 export const GITHUB_DEPLOYMENT_ENV_KEYS = [
   'GITHUB_APP_ID',
@@ -79,11 +78,11 @@ function registrationUrl(githubOrg: string | undefined, state: string): string {
 }
 
 export function buildGithubAppManifest(
-  config: SetupConfig,
+  config: ProviderAppConfig,
   name: string,
   redirectUrl: string
 ): Record<string, unknown> {
-  requireExternalRelay(config)
+  requireProviderAppEndpoints(config)
   return {
     name: name.trim() || 'AgentConnect',
     url: config.services.web,
@@ -125,12 +124,12 @@ function closeServer(server: Server): Promise<void> {
 }
 
 export async function startGithubManifestFlow(
-  config: SetupConfig,
+  config: ProviderAppConfig,
   name: string,
   githubOrg?: string,
   options: GithubManifestFlowOptions = {}
 ): Promise<GithubManifestFlow> {
-  requireExternalRelay(config)
+  requireProviderAppEndpoints(config)
   const state = randomBytes(32).toString('base64url')
   const startToken = randomBytes(24).toString('base64url')
   const scriptNonce = randomBytes(18).toString('base64url')

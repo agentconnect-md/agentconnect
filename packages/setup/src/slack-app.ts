@@ -45,7 +45,17 @@ export const SLACK_BOT_EVENTS = [
 
 type SlackManifest = Record<string, unknown>
 type ExternalSetupWithRelay = Extract<SetupConfig, { mode: 'external' }> & {
-  services: Extract<SetupConfig, { mode: 'external' }>['services'] & { relay: string }
+  services: Extract<SetupConfig, { mode: 'external' }>['services'] & { relay: string; web: string }
+}
+export interface ProviderAppConfig {
+  services: {
+    web?: string
+    controlPlane: string
+    relay?: string
+  }
+}
+type ProviderAppConfigWithRelay = ProviderAppConfig & {
+  services: ProviderAppConfig['services'] & { relay: string; web: string }
 }
 
 export interface SlackAppCredentials {
@@ -65,14 +75,27 @@ function appendPath(base: string, path: string): string {
 }
 
 export function requireExternalRelay(config: SetupConfig): asserts config is ExternalSetupWithRelay {
-  if (config.mode !== 'external' || !config.services.relay) {
-    throw new Error('app creation requires external mode with an HTTPS --relay-url')
+  if (config.mode !== 'external' || !config.services.relay || !config.services.web) {
+    throw new Error('legacy env-file App creation requires external mode with HTTPS --web-url and --relay-url')
+  }
+}
+
+export function requireProviderAppEndpoints(config: ProviderAppConfig): asserts config is ProviderAppConfigWithRelay {
+  const entries = [
+    ['Web', config.services.web],
+    ['Control Plane', config.services.controlPlane],
+    ['Relay', config.services.relay]
+  ] as const
+  for (const [label, value] of entries) {
+    if (!value || new URL(value).protocol !== 'https:') {
+      throw new Error(`app creation requires a saved HTTPS ${label} public URL`)
+    }
   }
 }
 
 /** Keep this deployment manifest aligned with the Control Plane's install manifest. */
-export function buildSlackDeploymentManifest(config: SetupConfig, name: string): SlackManifest {
-  requireExternalRelay(config)
+export function buildSlackDeploymentManifest(config: ProviderAppConfig, name: string): SlackManifest {
+  requireProviderAppEndpoints(config)
   const displayName = name.trim() || 'AgentConnect'
   const redirectUrl = appendPath(config.services.controlPlane, '/v1/integrations/slack/platform/callback')
   const eventsUrl = appendPath(config.services.relay, '/slack/events')

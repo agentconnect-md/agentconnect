@@ -10,6 +10,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./deployment-config-store": {
+      "development": "./src/deployment-config-store.ts",
+      "types": "./dist/deployment-config-store.d.ts",
+      "import": "./dist/deployment-config-store.js",
+      "default": "./dist/deployment-config-store.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",

@@ -22,6 +22,7 @@ import { installZod } from './plugins/zod.js'
 import { installOpenapi } from './plugins/openapi.js'
 import { humanAuthPlugin } from './plugins/auth.js'
 import { healthRoutes } from './routes/health.js'
+import { runtimeConfigRoutes } from './routes/runtime-config.js'
 import { daemonRoutes } from './routes/daemons.js'
 import { keyRoutes } from './routes/keys.js'
 import { agentRoutes } from './routes/agents.js'
@@ -208,6 +209,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   void app.register(oauthRoutes(deps))
   void app.register(
     async (api) => {
+      await api.register(runtimeConfigRoutes(deps.runtimeConfig))
       await api.register(orgRoutes(deps))
       await api.register(meRoutes(deps))
       await api.register(meSocialIdentityRoutes(deps))

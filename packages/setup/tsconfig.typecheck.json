@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "customConditions": ["development"],
     "noEmit": true,
     "paths": {
       "@agentconnect.md/protocol": ["../protocol/src/index.ts"]

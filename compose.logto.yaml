@@ -60,3 +60,7 @@ services:
         aliases:
           - login.agentconnect.localhost
           - admin.agentconnect.localhost
+      admin:
+        aliases:
+          - login.agentconnect.localhost
+          - admin.agentconnect.localhost

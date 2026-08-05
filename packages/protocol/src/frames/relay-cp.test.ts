@@ -70,6 +70,28 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(decodeRelayCpFrame(envelope('rc/auth', { method: 'token', credential: '' })).ok).toBe(false)
   })
 
+  it('carries an optional secret-bearing deployment snapshot on rc/auth/ok', () => {
+    const frame = envelope('rc/auth/ok', {
+      heartbeatSec: 15,
+      serverTime: '2026-08-05T00:00:00.000Z',
+      deploymentConfig: { revision: 3, githubWebhookSecret: 'ghw_secret' }
+    })
+    const decoded = decodeRelayCpFrame(frame)
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || decoded.frame.type !== 'rc/auth/ok') throw new Error('expected rc/auth/ok')
+    expect(decoded.frame.payload.deploymentConfig).toEqual({ revision: 3, githubWebhookSecret: 'ghw_secret' })
+
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/auth/ok', {
+          heartbeatSec: 15,
+          serverTime: '2026-08-05T00:00:00.000Z',
+          deploymentConfig: { revision: 3, githubWebhookSecret: '' }
+        })
+      ).ok
+    ).toBe(false)
+  })
+
   it('decodes rc/heartbeat (empty payload)', () => {
     const r = decodeRelayCpFrame(envelope('rc/heartbeat', {}))
     expect(r.ok).toBe(true)

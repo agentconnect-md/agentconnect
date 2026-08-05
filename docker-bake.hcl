@@ -18,6 +18,10 @@ variable "GIT_SHA" {
   default = ""
 }
 
+variable "SETUP_VERSION" {
+  default = "1.0.0-dev"
+}
+
 # Mem0 OSS does not publish its REST server as a container image. Build the
 # official server source at the immutable commit behind upstream v2.0.12 and
 # constrain the installed Python SDK to the matching release. Update these two
@@ -43,6 +47,9 @@ target "_release" {
 target "control-plane" {
   inherits = ["_release"]
   target   = "control-plane"
+  args = {
+    SETUP_VERSION = SETUP_VERSION
+  }
   tags = concat(
     ["${REGISTRY}/${OWNER}/control-plane:${VERSION}"],
     LATEST ? ["${REGISTRY}/${OWNER}/control-plane:latest"] : []

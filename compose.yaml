@@ -21,6 +21,9 @@ services:
     volumes:
       # PostgreSQL 18+ keeps PGDATA in a versioned child directory.
       - postgres-data:/var/lib/postgresql
+    networks:
+      - default
+      - admin
 
   migration-files:
     <<: *control-plane-image
@@ -56,6 +59,51 @@ services:
     volumes:
       - migration-files:/migration:ro
 
+  # Explicit, temporary deployment administration surface. It reuses the
+  # Control Plane image but runs the self-contained @agentconnect.md/setup
+  # bundle instead of the Control Plane process. The host mapping stays on
+  # loopback; stop this profile after saving and verifying configuration.
+  tenant-admin:
+    <<: *control-plane-image
+    profiles: [admin]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: control-plane
+    command:
+      - node
+      - /app/packages/setup/dist/index.js
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8091'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
+      - SECRET_CIPHER
+      - VAULT_ADDR
+      - VAULT_TRANSIT_KEY
+      - VAULT_TRANSIT_MOUNT
+      - VAULT_NAMESPACE
+      - VAULT_TOKEN
+      - VAULT_JWT_ROLE
+      - VAULT_JWT_PATH
+      - VAULT_AUTH_MOUNT
+      - TENANT_ADMIN_URL=http://localhost:8091
+      - TENANT_ADMIN_ALLOW_CONTAINER_PROXY=true
+    init: true
+    ports:
+      - 127.0.0.1:8091:8091
+    networks:
+      - admin
+    restart: 'no'
+
   control-plane:
     <<: *control-plane-image
     build:
@@ -74,6 +122,17 @@ services:
       - DATABASE_URL=postgresql://agentconnect:${AGENTCONNECT_POSTGRES_PASSWORD:-agentconnect-local-only}@postgres:5432/agentconnect?schema=public
       - API_KEY_PEPPER=${AGENTCONNECT_API_KEY_PEPPER:-local-only-api-key-pepper-0000000000000000}
       - RELAY_TOKEN=${AGENTCONNECT_RELAY_TOKEN:-local-only-relay-token-0000000000000000}
+      # Bootstrap root for DB-backed deployment secrets. These values cannot be
+      # stored beside the ciphertext they unlock and therefore remain startup env.
+      - SECRET_CIPHER
+      - VAULT_ADDR
+      - VAULT_TRANSIT_KEY
+      - VAULT_TRANSIT_MOUNT
+      - VAULT_NAMESPACE
+      - VAULT_TOKEN
+      - VAULT_JWT_ROLE
+      - VAULT_JWT_PATH
+      - VAULT_AUTH_MOUNT
       - PUBLIC_CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}
       - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://localhost:${AGENTCONNECT_WEB_PORT:-3000}}
       - PUBLIC_RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
@@ -163,6 +222,9 @@ services:
     environment:
       - PORT=8080
       - HOSTNAME=0.0.0.0
+      # Topology-only bootstrap. Public browser settings are read once from the
+      # Control Plane's DB-backed startup snapshot and still require a restart.
+      - CP_INTERNAL_URL=http://control-plane:8080/api/v1
       - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
       - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
       - LOGTO_ENDPOINT
@@ -190,3 +252,6 @@ services:
 volumes:
   migration-files:
   postgres-data:
+
+networks:
+  admin:

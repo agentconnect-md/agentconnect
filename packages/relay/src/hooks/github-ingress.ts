@@ -4,8 +4,8 @@
  * The second of the two bearer-less writable public entrypoints; unlike the
  * generic ingress the signature check is MANDATORY:
  *
- *  - the caller only registers this route when `GITHUB_APP_WEBHOOK_SECRET` is
- *    configured (unset ⇒ the whole endpoint answers 404, design decision 13);
+ *  - the route is always mounted, but answers 404 before the immutable startup
+ *    deployment snapshot supplies a secret (design decision 13);
  *  - `X-Hub-Signature-256` over the raw bytes, timing-safe; failure ⇒ 401;
  *  - verified but unmatched deliveries still answer 202 (no subscription-
  *    topology oracle); `ping` answers 204 after verification;
@@ -73,8 +73,8 @@ export interface GithubIngressDeps {
   limiter: HookRateLimiter
   clock: Clock
   log: Logger
-  /** The App webhook secret — the caller registers this route only when it is set. */
-  webhookSecret: string
+  /** The App webhook secret from this process's immutable startup snapshot. */
+  webhookSecret: () => string | undefined
 }
 
 /** The slice of a GitHub webhook payload the matcher/envelope reads. Everything
@@ -720,8 +720,10 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
 
     scope.post('/webhooks/github', { bodyLimit: GITHUB_BODY_LIMIT }, async (req, reply) => {
       const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
+      const webhookSecret = deps.webhookSecret()
+      if (!webhookSecret) return reply.code(404).send({ error: 'Not Found', statusCode: 404 })
       // MANDATORY signature — only GitHub (or a secret holder) may spend work here.
-      if (!verifySha256Header(deps.webhookSecret, raw, headerString(req.headers['x-hub-signature-256']))) {
+      if (!verifySha256Header(webhookSecret, raw, headerString(req.headers['x-hub-signature-256']))) {
         return reply.code(401).send({ error: 'Unauthorized', statusCode: 401 })
       }
 
