@@ -501,7 +501,9 @@ export default function HomeView() {
               </>
             )}
           </div>
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
+            instead of wrapping into a second toolbar line. */}
+          <div className="flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap">
             {agent ? (
               <>
                 {multi ? (

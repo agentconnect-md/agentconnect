@@ -138,13 +138,13 @@ const SELF_BUBBLE =
 // "pill" with a leading mark, effort/permission are plain chips. Full literal
 // strings so Tailwind's scanner sees them (STYLE.md §8).
 const COMPOSER_CHIP =
-  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
 const COMPOSER_CHIP_STATIC =
-  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)'
+  'inline-flex h-7 min-w-0 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)'
 const COMPOSER_PILL =
-  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
+  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
 const COMPOSER_PILL_STATIC =
-  'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
+  'inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
 
 // The "fast" tag shown inside the model pill when fast mode is on.
 function FastBadge() {
@@ -153,6 +153,39 @@ function FastBadge() {
       fast
     </span>
   )
+}
+
+// Shared open/dismiss state for the header's hover-or-tap popovers (Details,
+// Requests). `tapped` is the touch path: a tap neither hovers nor reliably
+// focuses a button (Safari does not focus one on tap), so the mobile triggers
+// toggle this latch instead of relying on the desktop hover presence. Escape
+// dismisses until every presence signal drops.
+function useHeaderPopover() {
+  const [state, setState] = useState({ hovered: false, focused: false, tapped: false, dismissed: false })
+  const open = (state.hovered || state.focused || state.tapped) && !state.dismissed
+  const setPresence = (key: 'hovered' | 'focused', value: boolean) =>
+    setState((current) => {
+      const next = { ...current, [key]: value }
+      return { ...next, dismissed: next.hovered || next.focused || next.tapped ? current.dismissed : false }
+    })
+  const closeTap = () => setState((current) => ({ ...current, tapped: false, dismissed: false }))
+  const toggleTap = () => setState((current) => ({ ...current, tapped: !current.tapped, dismissed: false }))
+  // Stable (setState identity), so session-switch reset effects can depend on it.
+  const reset = useCallback(() => setState({ hovered: false, focused: false, tapped: false, dismissed: false }), [])
+  // Hover does not move focus to the trigger, so Escape has to be observed while
+  // the popover is open rather than only on the button.
+  useEffect(() => {
+    if (!open) return
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setState((current) => ({ ...current, tapped: false, dismissed: true }))
+    }
+    document.addEventListener('keydown', dismiss, true)
+    return () => document.removeEventListener('keydown', dismiss, true)
+  }, [open])
+  return { open, setPresence, closeTap, toggleTap, reset }
 }
 
 // The composer's textarea, isolated so a keystroke re-renders ONLY this node:
@@ -1165,25 +1198,15 @@ export default function SessionDetailView() {
   const { user: viewer, me } = useProfile()
   const [copied, setCopied] = useState(false)
   const detailTooltipId = useId()
-  // `tapped` is the touch path: a tap neither hovers nor reliably focuses a button
-  // (Safari does not focus one on tap), so the mobile header's Details trigger
-  // toggles this latch instead of relying on the desktop hover presence.
-  const [detailInteraction, setDetailInteraction] = useState({
-    hovered: false,
-    focused: false,
-    tapped: false,
-    dismissed: false
-  })
-  const detailOpen =
-    (detailInteraction.hovered || detailInteraction.focused || detailInteraction.tapped) && !detailInteraction.dismissed
-  const updateDetailPresence = (key: 'hovered' | 'focused', value: boolean) =>
-    setDetailInteraction((current) => {
-      const next = { ...current, [key]: value }
-      return { ...next, dismissed: next.hovered || next.focused || next.tapped ? current.dismissed : false }
-    })
-  const closeDetailTap = () => setDetailInteraction((current) => ({ ...current, tapped: false, dismissed: false }))
-  const toggleDetailTap = () =>
-    setDetailInteraction((current) => ({ ...current, tapped: !current.tapped, dismissed: false }))
+  const requestsTooltipId = useId()
+  const {
+    open: detailOpen,
+    setPresence: updateDetailPresence,
+    closeTap: closeDetailTap,
+    toggleTap: toggleDetailTap,
+    reset: resetDetailPopover
+  } = useHeaderPopover()
+  const requestsPopover = useHeaderPopover()
   const [msgs, setMsgs] = useState<SessionMessageDto[] | null>(null)
   // Conversation mode: per-member fetched rows + live cursors; the rendered
   // transcript is always mergeConversation() over the CURRENT map, so every
@@ -1266,20 +1289,6 @@ export default function SessionDetailView() {
   const tailReadyRef = useRef(false)
   const tailInFlightRef = useRef<Promise<void> | null>(null)
   const tailDirtyRef = useRef(false)
-
-  // Hover does not move focus to the trigger, so Escape has to be observed while
-  // the tooltip is open rather than only on the button.
-  useEffect(() => {
-    if (!detailOpen) return
-    const dismissDetails = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      setDetailInteraction((current) => ({ ...current, tapped: false, dismissed: true }))
-    }
-    document.addEventListener('keydown', dismissDetails, true)
-    return () => document.removeEventListener('keydown', dismissDetails, true)
-  }, [detailOpen])
 
   const localSession =
     getPgSession(id) ??
@@ -2018,7 +2027,8 @@ export default function SessionDetailView() {
   useEffect(() => {
     imagePrepareGenerationRef.current += 1
     setCopied(false)
-    setDetailInteraction({ hovered: false, focused: false, tapped: false, dismissed: false })
+    resetDetailPopover()
+    requestsPopover.reset()
     setWorkOverride(new Map())
     setImagePreparing(false)
     setImageError(null)
@@ -2824,6 +2834,27 @@ export default function SessionDetailView() {
   // meta row → transcript. Both form factors put the run's numbers behind the
   // same Details popover. Breakpoint differences are CSS-gated (desktop: /
   // max-desktop:), never JS-forked.
+  // Approval requests are an action the user has to answer, so on a live session
+  // they ride inside the sticky composer footer (always above the input, never
+  // scrolled away). A non-live session has no composer — it keeps the top slot.
+  // Either way the strip shows only while something is PENDING; the full history
+  // (answered included) lives behind the header's Requests popover.
+  const canReviewApprovals = Boolean(owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId)
+  const approvalCard = (className: string) =>
+    canReviewApprovals && session.agentId ? (
+      <ApprovalRequestsCard
+        key={session.id}
+        agentId={session.agentId}
+        sessionId={session.realSessionId ?? session.id}
+        pendingOnly
+        className={className}
+      />
+    ) : null
+  const requestsPanel =
+    canReviewApprovals && session.agentId ? (
+      <ApprovalRequestsCard bare agentId={session.agentId} sessionId={session.realSessionId ?? session.id} />
+    ) : null
+
   return (
     // Three-column track ([nav · body · rail]): the full-width row lets the
     // sibling-session rail sit flush against the page's right edge while the 880px
@@ -2933,6 +2964,39 @@ export default function SessionDetailView() {
               </div>
             </div>
           </div>
+          {requestsPanel && (
+            // Same hover-or-tap affordance as Details: the approval history
+            // (answered requests included) reachable without scrolling the page.
+            <div
+              className="relative ml-[-3px] flex flex-none items-center"
+              onMouseEnter={() => requestsPopover.setPresence('hovered', true)}
+              onMouseLeave={() => requestsPopover.setPresence('hovered', false)}
+              onFocus={() => requestsPopover.setPresence('focused', true)}
+              onBlur={() => requestsPopover.setPresence('focused', false)}
+            >
+              <button
+                type="button"
+                className="inline-flex h-[22px] items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+                aria-describedby={requestsTooltipId}
+              >
+                <Icon name="shield-check" size={14} />
+                Requests
+              </button>
+              <div
+                id={requestsTooltipId}
+                role="tooltip"
+                className={`absolute top-full left-0 z-50 pt-[5px] transition-[opacity,visibility] ${
+                  requestsPopover.open
+                    ? 'pointer-events-auto visible opacity-100'
+                    : 'pointer-events-none invisible opacity-0'
+                }`}
+              >
+                <div className="max-h-[340px] w-[min(420px,calc(100vw-64px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-lg)">
+                  {requestsPanel}
+                </div>
+              </div>
+            </div>
+          )}
           <button
             className="ml-auto flex h-[19px] w-[19px] flex-none cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
             onClick={onCopyLink}
@@ -2964,9 +3028,11 @@ export default function SessionDetailView() {
             />
           </span>
           {workspaceHref ? (
+            // Borderless on purpose (no `iconbtn`): a boxed button in this strip of
+            // plain text triggers reads as the odd one out and eats width.
             <Link
               href={orgPath(workspaceHref)}
-              className="iconbtn flex h-[26px] w-[26px] flex-none items-center justify-center no-underline"
+              className="flex h-[26px] w-[22px] flex-none items-center justify-center rounded-md text-(--text-secondary) no-underline active:bg-(--surface-active)"
               title={workspaceTitle}
               aria-label={workspaceTitle}
             >
@@ -2981,11 +3047,23 @@ export default function SessionDetailView() {
             // Its own id: the desktop tooltip stays in the DOM (hidden by CSS, not
             // unmounted), so sharing one would put a duplicate id on the page.
             aria-controls={`${detailTooltipId}-mobile`}
-            className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
+            className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-0 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
           >
             <Icon name="info" size={14} />
             Details
           </button>
+          {requestsPanel && (
+            <button
+              type="button"
+              onClick={requestsPopover.toggleTap}
+              aria-expanded={requestsPopover.open}
+              aria-controls={`${requestsTooltipId}-mobile`}
+              aria-label="Approval requests"
+              className="inline-flex h-[26px] flex-none items-center gap-1 rounded-md border-0 bg-transparent px-0 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) active:bg-(--surface-active)"
+            >
+              <Icon name="shield-check" size={14} />
+            </button>
+          )}
           {detailOpen && (
             <>
               {/* Tap-away close: a popover a phone cannot dismiss without hitting the
@@ -2998,6 +3076,19 @@ export default function SessionDetailView() {
                 className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(280px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) py-[5px] shadow-(--shadow-lg)"
               >
                 {detailPanel}
+              </div>
+            </>
+          )}
+          {requestsPanel && requestsPopover.open && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={requestsPopover.closeTap} aria-hidden="true" />
+              <div
+                id={`${requestsTooltipId}-mobile`}
+                role="dialog"
+                aria-label="Approval requests"
+                className="absolute top-full right-4 z-50 max-h-[60vh] w-[min(360px,calc(100vw-32px))] overflow-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-lg)"
+              >
+                {requestsPanel}
               </div>
             </>
           )}
@@ -3027,15 +3118,7 @@ export default function SessionDetailView() {
           )
         )}
 
-        {owner?.canEdit && !owner.name.startsWith(MOCK_PREFIX) && session.agentId && (
-          <ApprovalRequestsCard
-            key={session.id}
-            agentId={session.agentId}
-            sessionId={session.realSessionId ?? session.id}
-            hideWhenEmpty
-            className="mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4"
-          />
-        )}
+        {!isLive && approvalCard('mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4')}
 
         {wantTranscript && visibleMsgLoading && (
           <div className="flex justify-center py-10">
@@ -3381,6 +3464,7 @@ export default function SessionDetailView() {
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
                 />
+                {approvalCard('mb-2 max-desktop:rounded-lg')}
                 {/* Queued messages (Claude Code-style): sends accepted while a turn was
                   still streaming wait here, dispatch in order as turns finish, and can
                   be cancelled individually before they go out. */}
@@ -3511,7 +3595,9 @@ export default function SessionDetailView() {
                         </>
                       )}
                     </div>
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                    {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
+                      instead of wrapping into a second toolbar line. */}
+                    <div className="flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap">
                       {multiLive &&
                         liveRoster.map((p) => {
                           const rosterAgent = agents.find((a) => a.id === p.agentId)
@@ -3625,7 +3711,7 @@ export default function SessionDetailView() {
                               <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
                                 <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
                               </span>
-                              {modelLabel(pgModel)}
+                              <span className="truncate">{modelLabel(pgModel)}</span>
                               {pgFastModeAvailable && pgFastMode && <FastBadge />}
                             </span>
                           )
@@ -3656,8 +3742,10 @@ export default function SessionDetailView() {
                         ) : (
                           pgEffort && (
                             <span className={COMPOSER_CHIP_STATIC} title="Effort">
-                              {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
-                                effortLabel(agentRuntime, pgEffort)}
+                              <span className="truncate">
+                                {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
+                                  effortLabel(agentRuntime, pgEffort)}
+                              </span>
                             </span>
                           )
                         ))}
@@ -3691,7 +3779,9 @@ export default function SessionDetailView() {
                         ) : (
                           pgPermissionPreset && (
                             <span className={COMPOSER_CHIP_STATIC} title="Permission">
-                              {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                              <span className="truncate">
+                                {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                              </span>
                             </span>
                           )
                         ))}

@@ -202,7 +202,11 @@ export function SessionVisibilityControl({
 
   return (
     <span className="inline-flex items-center gap-[6px]">
-      <span ref={wrapRef} className="relative inline-flex flex-none">
+      {/* Positioned only on desktop: on mobile the trigger sits mid-header, so a
+        300px menu anchored to it runs off the left screen edge — un-positioning
+        the wrapper lets the menu anchor to the (relative) mobile header row and
+        align to its right gutter instead, like the Details dialog. */}
+      <span ref={wrapRef} className="inline-flex flex-none desktop:relative">
         <button
           ref={triggerRef}
           type="button"
@@ -239,7 +243,7 @@ export function SessionVisibilityControl({
             id={menuId}
             role="menu"
             aria-labelledby={headingId}
-            className="absolute top-[calc(100%+7px)] left-0 z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) max-desktop:right-0 max-desktop:left-auto"
+            className="absolute top-[calc(100%+7px)] left-0 z-50 w-[300px] max-w-[calc(100vw-32px)] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg) max-desktop:top-full max-desktop:right-4 max-desktop:left-auto"
             onKeyDown={moveFocus}
           >
             <span id={headingId} className="sr-only">
