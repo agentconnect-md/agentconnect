@@ -52,7 +52,7 @@ import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
 // scanner sees them (STYLE.md §8).
 const CHIP =
-  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
+  'inline-flex h-7 items-center gap-[6px] rounded-md px-[9px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)'
 
 // The literal Tailwind spelling of DASH_ROW_H (`.row` is a components-layer class, so
 // these utilities win). `content-center` centres the row's single grid track inside the
@@ -501,7 +501,17 @@ export default function HomeView() {
               </>
             )}
           </div>
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
+            instead of wrapping into a second toolbar line. Except with a
+            multi-agent roster: those chips are unbounded in count, so no amount
+            of truncation bounds one line — let that case wrap. */}
+          <div
+            className={
+              multi
+                ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
+                : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+            }
+          >
             {agent ? (
               <>
                 {multi ? (
@@ -511,12 +521,12 @@ export default function HomeView() {
                   [agent, ...members].map((a, i) => (
                     <span
                       key={a.id}
-                      className="inline-flex h-7 items-center gap-[7px] rounded-full bg-(--surface-hover) px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
+                      className="inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full bg-(--surface-hover) px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
                     >
-                      <span className="av h-4 w-4 rounded-xs">
+                      <span className="av h-4 w-4 flex-none rounded-xs">
                         <AgentIconView icon={a.icon} runtime={a.runtime} size={16} />
                       </span>
-                      {agentLabel(a)}
+                      <span className="truncate">{agentLabel(a)}</span>
                       <button
                         type="button"
                         aria-label={`Remove ${agentLabel(a)}`}
@@ -535,7 +545,7 @@ export default function HomeView() {
                     open={menu === 'agent'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    triggerClassName="inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
                     leading={
                       <span className="av h-4 w-4 rounded-xs">
                         <AgentIconView icon={agent.icon} runtime={agent.runtime} size={16} />
@@ -569,7 +579,7 @@ export default function HomeView() {
                     open={menu === 'model'}
                     align="left"
                     placement="down"
-                    triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
+                    triggerClassName="inline-flex h-7 items-center gap-[3px] rounded-full px-[10px] max-desktop:px-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)"
                     tooltips={false}
                     leading={
                       <span className="inline-flex h-4 w-4 flex-none items-center justify-center">
@@ -609,14 +619,14 @@ export default function HomeView() {
                   />
                 )}
                 {!multi && githubWorkspace && (
-                  <label className={`${CHIP} cursor-pointer`}>
+                  <label className={`${CHIP} min-w-0 cursor-pointer`}>
                     <input
                       type="checkbox"
                       checked={worktree}
                       onChange={(event) => setWorktreeOverride(event.target.checked)}
-                      className="h-4 w-4 accent-(--brand)"
+                      className="h-4 w-4 flex-none accent-(--brand)"
                     />
-                    Worktree
+                    <span className="truncate">Worktree</span>
                   </label>
                 )}
               </>

@@ -98,11 +98,14 @@ export function ComposerMenu({
   }
 
   return (
-    <div className="relative flex-none">
+    // min-w-0 (not flex-none): in a nowrap composer row (mobile) the trigger
+    // shrinks and truncates its label instead of wrapping the whole row. An
+    // icon-only trigger has no label to truncate — it keeps its fixed box.
+    <div className={`relative ${iconOnly ? 'flex-none' : 'min-w-0'}`}>
       <button
         ref={triggerRef}
         type="button"
-        className={triggerClassName ?? DEFAULT_TRIGGER}
+        className={`${triggerClassName ?? DEFAULT_TRIGGER} min-w-0 max-w-full`}
         aria-label={`${title}: ${selected?.label ?? value}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -116,9 +119,9 @@ export function ComposerMenu({
         }}
       >
         {leading}
-        {!iconOnly && <span>{selected?.label ?? value}</span>}
+        {!iconOnly && <span className="truncate">{selected?.label ?? value}</span>}
         {trailing}
-        {!iconOnly && <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />}
+        {!iconOnly && <Icon name="chevron-down" size={13} color="var(--text-tertiary)" className="flex-none" />}
       </button>
       {open && (
         <>

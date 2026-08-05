@@ -18915,7 +18915,10 @@ export class Daemon {
           const pending = this.transcriptActivityTimers.get(key)
           if (!pending || pending.timer !== timer) return
           this.transcriptActivityTimers.delete(key)
-          this.cpClient?.emitSessionActivity(pending.activity)
+          // Optional call: the debounce can outlive a test whose partial cp
+          // client mock lacks this method — a missing sink is a no-op, not a
+          // crash (matches the ?.-guarded client itself).
+          this.cpClient?.emitSessionActivity?.(pending.activity)
         }, 250)
         this.transcriptActivityTimers.set(key, { timer, activity })
       }
