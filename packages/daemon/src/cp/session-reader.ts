@@ -78,13 +78,13 @@ function transcriptAttachments(raw: string | null | undefined): NonNullable<Sess
 }
 
 /** The persisted text keeps this synthetic suffix for prompt replay; the console
- * receives the real image instead, matching the live turn. */
+ * receives the real image instead, matching the live turn. The label is matched by
+ * shape, not rebuilt from the attachment: the row may have been written by the
+ * observer before a download settled the real image type (a Feishu image event
+ * declares none), or the message may have carried files the transcript can't inline. */
 function withoutAttachmentMention(text: string, attachments: NonNullable<SessionMessage['attachments']>): string {
   if (attachments.length === 0) return text
-  const mention = `[attached: ${attachments.map((attachment) => `${attachment.name} (${attachment.mimeType})`).join(', ')}]`
-  if (text === mention) return ''
-  const suffix = `\n${mention}`
-  return text.endsWith(suffix) ? text.slice(0, -suffix.length) : text
+  return text.replace(/(?:^|\n)\[attached: [^\]\n]*\]$/, '').trim()
 }
 
 /** Largest index ≤ `len` that lands on a UTF-8 character boundary — never cuts a

@@ -7,6 +7,7 @@ import {
   hydrateTranscriptImage,
   transcriptImageAttachments
 } from '../src/session/attachment-block.js'
+import { feishuEventToMessageLike, normalizeFeishuMessage } from '../src/feishu/normalize.js'
 import type { Attachment } from '../src/messages/normalized.js'
 
 const att = (over: Partial<Attachment> = {}): Attachment => ({
@@ -118,7 +119,7 @@ describe('hydrateTranscriptImage', () => {
     const bytes = Buffer.from('IMG')
     const download = vi.fn(async () => bytes)
     const attachments = [att({ size: bytes.length })]
-    await hydrateTranscriptImage(attachments, download)
+    await hydrateTranscriptImage(attachments, { download })
     expect(transcriptImageAttachments(attachments)).toEqual([
       { name: 'a.png', mimeType: 'image/png', data: bytes.toString('base64') }
     ])
@@ -127,25 +128,65 @@ describe('hydrateTranscriptImage', () => {
     expect(download).toHaveBeenCalledOnce()
   })
 
-  it('leaves an oversized or non-image attachment alone (label-only replay)', async () => {
-    const download = vi.fn(async () => Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES + 1))
-    const big = [att({ size: WEBCHAT_IMAGE_MAX_BYTES + 1 })]
-    await hydrateTranscriptImage(big, download)
+  it('carries a raw Feishu image event (no provider MIME) through to the transcript', async () => {
+    // Feishu's im.message.receive_v1 image event has only an image_key, so
+    // normalization types it application/octet-stream — the bytes are what settle it.
+    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('pixels')])
+    const msg = normalizeFeishuMessage(
+      feishuEventToMessageLike({
+        sender: { sender_id: { open_id: 'ou_1' }, sender_type: 'user' },
+        message: {
+          message_id: 'om_1',
+          chat_id: 'oc_1',
+          chat_type: 'p2p',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_v3_abc' })
+        }
+      }),
+      { traceId: 't1' }
+    )
+    const attachments = msg.attachments as Attachment[]
+    expect(attachments[0]).toMatchObject({ mimeType: 'application/octet-stream', sourceUrl: 'om_1:image:img_v3_abc' })
+
+    const download = vi.fn(async () => png)
+    await hydrateTranscriptImage(attachments, { download })
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'img_v3_abc', mimeType: 'image/png', data: png.toString('base64') }
+    ])
+    // The corrected type also unlocks the inline ACP image block (it was a
+    // resource_link while the attachment claimed application/octet-stream).
+    const blocks = await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
+    expect(blocks[0]).toEqual({ type: 'image', data: png.toString('base64'), mimeType: 'image/png' })
+    expect(download).toHaveBeenCalledOnce()
+  })
+
+  it('skips a declared non-image and a file over the caller’s cap', async () => {
+    const download = vi.fn(async () => Buffer.from('IMG'))
+    const big = [att({ size: 9_000 })]
+    await hydrateTranscriptImage(big, { download, maxBytes: 8_000 })
     expect(download).not.toHaveBeenCalled() // known size over the cap ⇒ never fetched
     const doc = [att({ name: 'd.pdf', mimeType: 'application/pdf' })]
-    await hydrateTranscriptImage(doc, download)
+    await hydrateTranscriptImage(doc, { download })
     expect(download).not.toHaveBeenCalled()
-    // A file whose size the platform did not report is fetched, then rejected by size.
-    const unknown = [att()]
-    await hydrateTranscriptImage(unknown, download)
+  })
+
+  it('memoizes an image too big for the transcript, so the prompt still fetches once', async () => {
+    // No reported size (Feishu never reports one), bytes over the transcript ceiling:
+    // the schema drops it from the transcript, but the download must not repeat.
+    const download = vi.fn(async () => Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES + 1))
+    const attachments = [att()]
+    await hydrateTranscriptImage(attachments, { download })
+    expect(transcriptImageAttachments(attachments)).toEqual([])
+    await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
     expect(download).toHaveBeenCalledOnce()
-    expect(transcriptImageAttachments(unknown)).toEqual([])
   })
 
   it('survives a failed download', async () => {
     const attachments = [att()]
-    await hydrateTranscriptImage(attachments, async () => {
-      throw new Error('network')
+    await hydrateTranscriptImage(attachments, {
+      download: async () => {
+        throw new Error('network')
+      }
     })
     expect(transcriptImageAttachments(attachments)).toEqual([])
   })

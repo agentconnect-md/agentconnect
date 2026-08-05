@@ -454,10 +454,10 @@ export class SessionManager {
     // for prompt replay; a bounded inline image stays daemon-local for UI replay).
     // A platform image is only an auth-gated URL, so fetch it here — the bytes are
     // memoized on the attachment and reused by the prompt blocks below (one fetch).
-    await hydrateTranscriptImage(
-      msg.attachments,
-      (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null)
-    )
+    await hydrateTranscriptImage(msg.attachments, {
+      download: (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null),
+      ...(this.deps.attachmentMaxBytes !== undefined ? { maxBytes: this.deps.attachmentMaxBytes } : {})
+    })
     const mention = attachmentMention(msg.attachments)
     const transcriptAttachments = transcriptImageAttachments(msg.attachments)
     const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
