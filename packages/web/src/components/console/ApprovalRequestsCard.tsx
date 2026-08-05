@@ -35,16 +35,23 @@ export function ApprovalRequestsCard({
     shouldRetryOnError: false
   })
   const [busy, setBusy] = useState<string | null>(null)
-  // Collapse follows the pending count by default — nothing to answer, nothing to
-  // show — and a manual toggle only overrides that until the count next changes,
-  // so an incoming request reopens the card and answering the last one folds it.
-  const [collapseOverride, setCollapseOverride] = useState<{ pending: number; collapsed: boolean } | null>(null)
+  // Collapse follows the pending set by default — nothing to answer, nothing to
+  // show — and a manual toggle only overrides that until the SET changes. Keyed
+  // by the pending ids (not the count): a count can return to its old value with
+  // different requests in it, and a stale "collapsed at 1 pending" must not hide
+  // a genuinely new request.
+  const [collapseOverride, setCollapseOverride] = useState<{ key: string; collapsed: boolean } | null>(null)
   const [decisionError, setDecisionError] = useState<string | null>(null)
   const sessionRequests = sessionId ? allRequests?.filter((request) => request.sessionId === sessionId) : allRequests
-  const pendingCount = sessionRequests?.filter((request) => request.status === 'pending').length ?? 0
+  const pendingRequests = sessionRequests?.filter((request) => request.status === 'pending') ?? []
+  const pendingCount = pendingRequests.length
+  const pendingKey = pendingRequests
+    .map((request) => request.id)
+    .sort()
+    .join('\n')
   // The composer strip only shows what still needs an answer: fully-resolved
   // history lives behind the header's Requests popover instead.
-  const requests = pendingOnly ? sessionRequests?.filter((request) => request.status === 'pending') : sessionRequests
+  const requests = pendingOnly ? sessionRequests && pendingRequests : sessionRequests
 
   if (pendingOnly && pendingCount === 0) return null
 
@@ -75,7 +82,7 @@ export function ApprovalRequestsCard({
     }
   }
 
-  const collapsed = collapseOverride?.pending === pendingCount ? collapseOverride.collapsed : pendingCount === 0
+  const collapsed = collapseOverride?.key === pendingKey ? collapseOverride.collapsed : pendingCount === 0
 
   const body = (
     <>
@@ -158,7 +165,7 @@ export function ApprovalRequestsCard({
       >
         <button
           type="button"
-          onClick={() => setCollapseOverride({ pending: pendingCount, collapsed: !collapsed })}
+          onClick={() => setCollapseOverride({ key: pendingKey, collapsed: !collapsed })}
           aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 text-left"
         >

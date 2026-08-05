@@ -2977,14 +2977,19 @@ export default function SessionDetailView() {
               <button
                 type="button"
                 className="inline-flex h-[22px] items-center gap-1 rounded-md border-0 bg-transparent px-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-                aria-describedby={requestsTooltipId}
+                aria-haspopup="dialog"
+                aria-expanded={requestsPopover.open}
+                aria-controls={requestsTooltipId}
               >
                 <Icon name="shield-check" size={14} />
                 Requests
               </button>
+              {/* dialog, not tooltip: Allow/Deny live inside, and a tooltip role
+                misrepresents interactive content to assistive tech. */}
               <div
                 id={requestsTooltipId}
-                role="tooltip"
+                role="dialog"
+                aria-label="Approval requests"
                 className={`absolute top-full left-0 z-50 pt-[5px] transition-[opacity,visibility] ${
                   requestsPopover.open
                     ? 'pointer-events-auto visible opacity-100'
@@ -3596,8 +3601,16 @@ export default function SessionDetailView() {
                       )}
                     </div>
                     {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-                      instead of wrapping into a second toolbar line. */}
-                    <div className="flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap">
+                      instead of wrapping into a second toolbar line. Except with a
+                      multi-agent roster: those chips are unbounded in count, so no
+                      amount of truncation bounds one line — let that case wrap. */}
+                    <div
+                      className={
+                        multiLive
+                          ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
+                          : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+                      }
+                    >
                       {multiLive &&
                         liveRoster.map((p) => {
                           const rosterAgent = agents.find((a) => a.id === p.agentId)
@@ -3608,7 +3621,7 @@ export default function SessionDetailView() {
                                   <AgentIconView icon={rosterAgent.icon} runtime={rosterAgent.runtime} size={14} />
                                 </span>
                               )}
-                              {p.name}
+                              <span className="truncate">{p.name}</span>
                             </span>
                           )
                         })}
@@ -3786,7 +3799,7 @@ export default function SessionDetailView() {
                           )
                         ))}
                       {canChooseWorktree && (
-                        <label className={`${COMPOSER_CHIP} cursor-pointer`}>
+                        <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
                           <input
                             type="checkbox"
                             checked={pgWorktree}
@@ -3795,9 +3808,9 @@ export default function SessionDetailView() {
                               setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
                               pgSetWorktree(session.id, worktree)
                             }}
-                            className="h-4 w-4 accent-(--brand)"
+                            className="h-4 w-4 flex-none accent-(--brand)"
                           />
-                          Worktree
+                          <span className="truncate">Worktree</span>
                         </label>
                       )}
                     </div>

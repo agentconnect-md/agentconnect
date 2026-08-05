@@ -502,8 +502,16 @@ export default function HomeView() {
             )}
           </div>
           {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
-            instead of wrapping into a second toolbar line. */}
-          <div className="flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap">
+            instead of wrapping into a second toolbar line. Except with a
+            multi-agent roster: those chips are unbounded in count, so no amount
+            of truncation bounds one line — let that case wrap. */}
+          <div
+            className={
+              multi
+                ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
+                : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+            }
+          >
             {agent ? (
               <>
                 {multi ? (
@@ -513,12 +521,12 @@ export default function HomeView() {
                   [agent, ...members].map((a, i) => (
                     <span
                       key={a.id}
-                      className="inline-flex h-7 items-center gap-[7px] rounded-full bg-(--surface-hover) px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
+                      className="inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full bg-(--surface-hover) px-[10px] font-sans text-[12.5px] font-medium leading-normal text-(--text-primary)"
                     >
-                      <span className="av h-4 w-4 rounded-xs">
+                      <span className="av h-4 w-4 flex-none rounded-xs">
                         <AgentIconView icon={a.icon} runtime={a.runtime} size={16} />
                       </span>
-                      {agentLabel(a)}
+                      <span className="truncate">{agentLabel(a)}</span>
                       <button
                         type="button"
                         aria-label={`Remove ${agentLabel(a)}`}
@@ -611,14 +619,14 @@ export default function HomeView() {
                   />
                 )}
                 {!multi && githubWorkspace && (
-                  <label className={`${CHIP} cursor-pointer`}>
+                  <label className={`${CHIP} min-w-0 cursor-pointer`}>
                     <input
                       type="checkbox"
                       checked={worktree}
                       onChange={(event) => setWorktreeOverride(event.target.checked)}
-                      className="h-4 w-4 accent-(--brand)"
+                      className="h-4 w-4 flex-none accent-(--brand)"
                     />
-                    Worktree
+                    <span className="truncate">Worktree</span>
                   </label>
                 )}
               </>

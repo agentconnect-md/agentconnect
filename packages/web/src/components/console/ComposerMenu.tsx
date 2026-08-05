@@ -99,8 +99,9 @@ export function ComposerMenu({
 
   return (
     // min-w-0 (not flex-none): in a nowrap composer row (mobile) the trigger
-    // shrinks and truncates its label instead of wrapping the whole row.
-    <div className="relative min-w-0">
+    // shrinks and truncates its label instead of wrapping the whole row. An
+    // icon-only trigger has no label to truncate — it keeps its fixed box.
+    <div className={`relative ${iconOnly ? 'flex-none' : 'min-w-0'}`}>
       <button
         ref={triggerRef}
         type="button"
