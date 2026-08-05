@@ -3,7 +3,7 @@
 // Create-organization dialog (design: `isCreateOrgModal`). REAL: POST /orgs —
 // the caller becomes the org's first owner and the console switches into it.
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button, Icon } from '@/components/ui'
 import { ApiError } from '@/lib/api'
 import { useOrgs, orgUrlPrefix } from '@/lib/org-context'
@@ -17,11 +17,16 @@ export default function CreateOrgModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const slugInputRef = useRef<HTMLInputElement>(null)
 
   const valid = SLUG_RE.test(slug)
 
   const submit = async () => {
-    if (!valid || busy) return
+    if (busy) return
+    if (!valid) {
+      setErr(slug ? 'Use lowercase letters, digits, and hyphens only.' : 'Enter a URL name.')
+      return
+    }
     setBusy(true)
     setErr(null)
     try {
@@ -48,14 +53,21 @@ export default function CreateOrgModal({ onClose }: { onClose: () => void }) {
       <div className="modalbody">
         <div className="fld">
           <span className="fldlbl">Name</span>
-          <div className="inp justify-start gap-0">
+          <div
+            className={`inp justify-start gap-0 ${err ? 'border-(--status-error)' : ''}`}
+            onClick={() => slugInputRef.current?.focus()}
+          >
             <span className="flex-none font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
               {orgUrlPrefix()}
             </span>
             <input
+              ref={slugInputRef}
               className="mono min-w-0 flex-1 border-0 bg-transparent text-[12.5px] normal-nums outline-0 [font-family:inherit]"
               value={slug}
-              onChange={(e) => setSlug(e.target.value.toLowerCase())}
+              onChange={(e) => {
+                setSlug(e.target.value.toLowerCase())
+                setErr(null)
+              }}
               placeholder="my-organization"
             />
           </div>
