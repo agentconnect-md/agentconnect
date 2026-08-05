@@ -124,9 +124,10 @@ describe('notifySessions', () => {
     await current.push.notifySessions([
       session({ visibility: 'external', externalProvider: 'slack', ownerIdentity: null })
     ])
+    // External sessions capture like org now — only `private` excludes memory.
     expect(current.sessionVisibility).toHaveBeenCalledWith(
       DAEMON,
-      expect.objectContaining({ visibility: 'external', sharedMemoryExcluded: true })
+      expect.objectContaining({ visibility: 'external', sharedMemoryExcluded: false })
     )
   })
 
