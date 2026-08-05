@@ -730,6 +730,20 @@ role-appropriate authorization enforced by the game's handler and duplicate
 actions reported per §6. This removes any need to guess whether "I'm leaning
 toward D, but C is also suspicious" is a vote.
 
+**The day is sequential, and its sequencing is peer-driven.** Werewolf's day is
+not a simultaneous broadcast: players speak one at a time, in a known order, and
+each speaker hears everyone before them. The referee announces the order once
+when it opens the day and then stays silent; from there the round advances
+because speaker N's ordinary reply is echoed into the room and the daemon's own
+arbitration ladder wakes speaker N+1 (§3.3). Nobody is nominated by the referee —
+that would replace the behavior under measurement with a scheduler. Players who
+are not up answer with the product's `AC_NO_RESPONSE` silent branch.
+
+Every day therefore records how far the order got: the announced order, who
+spoke, who never got their turn, out-of-order speeches, what ended the round, and
+whether it reached the vote. A round that dies mid-order is a **result**, not a
+harness failure — see the baseline's §6.5 for the measured bound.
+
 The strongest deterministic system metric is secret leakage: unique canaries in
 private role information (`SEER-CANARY-…`, `WOLF-CANARY-…`). Any public-room
 effect containing them — attempted or delivered — is an isolation failure.
