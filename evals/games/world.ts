@@ -58,7 +58,7 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
     for (const agent of topology.agents) this.agentAliasById.set(agent.agentId, agent.alias)
     for (const room of topology.rooms) {
       this.channelsById.set(room.channel, {
-        info: { id: room.channel, name: room.alias, isIm: false, isPrivate: false },
+        info: { id: room.channel, name: room.alias, isIm: room.isDm, isPrivate: room.isPrivate },
         memberAgentIds: new Set(room.memberAgentIds),
         threads: new Set([room.thread]),
         visibleTo: new Set([...room.memberIntegrationIds, ...room.observerIntegrationIds])
@@ -335,13 +335,34 @@ export class ArenaWorld implements VirtualConnectionWorldPort {
       integrations,
       collaborationRoutes: topology.collabRoutes,
       listAgents: async (request) => {
-        const channel = request.channel ? this.channelsById.get(request.channel) : undefined
+        // §8.5: mention addresses are conversation-specific. An explicit
+        // channel filter wins; otherwise narrow to the caller's CURRENT
+        // conversation (the trusted session coordinate the tool supplies) —
+        // only a truly org-wide listing omits mention tokens.
+        const channelId = request.channel ?? request.currentChannel
+        const channel = channelId ? this.channelsById.get(channelId) : undefined
         const agents = topology.agents
           .filter((agent) => (channel ? channel.memberAgentIds.has(agent.agentId) : true))
-          .map((agent) => ({ agentId: agent.agentId, name: agent.alias, status: 'active' as const }))
+          .map((agent) => {
+            // §8.5: a channel-filtered listing carries the platform-ready
+            // mention address, so a model has an exact token for an ordinary
+            // current-thread reply. Org-wide listings omit it (no single
+            // conversation-specific address).
+            const integration = channel
+              ? topology.integrations.find(
+                  (candidate) => candidate.agentId === agent.agentId && candidate.platform === 'slack'
+                )
+              : undefined
+            return {
+              agentId: agent.agentId,
+              name: agent.alias,
+              status: 'active' as const,
+              ...(integration !== undefined ? { mention: `<@${integration.botUserId}>` } : {})
+            }
+          })
         return {
           platform: request.platform,
-          ...(request.channel !== undefined ? { channel: request.channel } : {}),
+          ...(channelId !== undefined ? { channel: channelId } : {}),
           agents
         }
       }

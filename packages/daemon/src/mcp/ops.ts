@@ -531,6 +531,15 @@ export interface OpsDeps {
    *  their own boundaries. Checked at CALL time so a mid-session policy change
    *  takes effect immediately. Absent ⇒ allowed (e.g. in unit fixtures). */
   memoryAccessAllowed?: (ctx: SessionContext) => boolean
+  /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
+   *  Returns undefined when `name` is not an evaluation tool. Visibility and
+   *  role-aware authorization live behind this seam (the daemon guarantees
+   *  authentic caller identity; the game decides whether the action is legal). */
+  evaluationTool?: (
+    ctx: SessionContext,
+    name: string,
+    args: Record<string, unknown>
+  ) => Promise<{ result: unknown } | undefined>
   /** Record an agent-sent message into the session transcript. */
   recordOutbound: (
     ctx: SessionContext,
@@ -637,6 +646,15 @@ export async function executeTool(
   deps: OpsDeps
 ): Promise<unknown> {
   if (deps.canRun && !deps.canRun(ctx)) throw new Error('this agent turn has been stopped')
+  // Collaboration Arena evaluation tools (collaboration-arena.md §6): game-owned
+  // structured actions merged into the session tool set at composition time.
+  // Name collisions with product tools are rejected at daemon startup, so this
+  // dispatch can never shadow a product tool. The handler receives the trusted
+  // token-bound SessionContext — never tool-input-supplied identity.
+  if (deps.evaluationTool) {
+    const handled = await deps.evaluationTool(ctx, name, args)
+    if (handled !== undefined) return handled.result
+  }
   // Session naming is daemon-local and platform-neutral. SECURITY: the model
   // contributes only the title; all routing coordinates come from the trusted
   // token-bound SessionContext.

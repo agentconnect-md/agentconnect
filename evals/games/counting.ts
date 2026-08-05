@@ -12,10 +12,16 @@
  *
  * - `referee-announced` (§10.1's canonical form): the referee relays a
  *   synthesized acceptance event ("Accepted: 1 … Next expected number: 2").
- * - `peer-driven` (§3.3 taken literally): every DELIVERED agent reply is
- *   relayed verbatim to the OTHER members through the real ingress path, and
- *   the referee goes silent after the start message — agents continue the
- *   count from EACH OTHER's messages; the referee only observes and validates.
+ * - `peer-driven` (§3.3 taken literally): every DELIVERED agent post fans back
+ *   to the OTHER members' connections as the production Slack echo
+ *   (`PlatformEcho`) — the streaming post under its own message id plus the
+ *   response-closing finalize carrying the daemon-stamped authorship claim —
+ *   and the referee goes silent after the start message. Since PR #549 an
+ *   agent message that names nobody CONTINUES the conversation through the
+ *   same arbitration ladder a human message takes (author excluded), so a
+ *   peer's bare number genuinely wakes the other agents; the exchange is
+ *   bounded by the hop cap (`MAX_AGENT_CALL_HOPS`) and the durable loop guard
+ *   rather than by anyone declining to answer.
  *
  * Relay TIMING is production timing: the fan-out fires SYNCHRONOUSLY from the
  * §7.2 sink the moment a post is delivered — while the other agents' turns are
@@ -26,14 +32,12 @@
  * sees a peer message it has not represented, and REGENERATES instead of
  * posting a now-stale number.
  *
- * Product-fidelity note on the relay sender: in AgentConnect a managed agent
- * bot's own platform post is deliberately never an activation path (ingress
- * drops managed-bot senders before routing — loop protection; trusted A2A wakes
- * go through `messageAgent`), so the ACTIVATION copy is delivered from each
- * agent's distinct platform user identity rather than its bot identity. The
- * payload is the ORIGINAL message text — no synthetic wrapper — and the
- * provider thread history additionally carries the post under its real bot
- * identity with `agentAuthorId`, which is what the turn-final snapshot reads.
+ * Product-fidelity note on the echo sender: each echoed copy carries the
+ * posting agent's REAL managed bot identity plus the §4 authorship claim the
+ * daemon stamped on the finalized response. Verification remains the line
+ * between a participant and anonymous bot traffic: streaming posts and
+ * claim-less bot messages still never route — only the finalized event with a
+ * verifiable claim reaches the routing ladder.
  *
  * Counting has NO winner or loser. It is a probe of LEADERLESS group
  * self-organization (无领导小组讨论): can a room of agents coordinate
@@ -57,6 +61,7 @@ import type {
   GameWaveRecord,
   RecordedOutboundEffect
 } from '../../packages/daemon/src/evaluation/index.js'
+import { PlatformEcho } from './platform-echo.js'
 import type { ArenaWorld } from './world.js'
 import type { CompiledRoom } from './types.js'
 
@@ -102,6 +107,8 @@ export class CountingGame implements CollaborationGameWorld {
   private readonly pendingWaves: GameWave[] = []
   private liveIngress?: (event: EvaluationPlatformEvent) => DeliveryHandle
   private readonly liveHandles: DeliveryHandle[] = []
+  /** Peer-driven propagation: the production platform echo (§2.3/§5/§6). */
+  private readonly echo?: PlatformEcho
 
   private readonly variant: CountingVariant
 
@@ -114,6 +121,7 @@ export class CountingGame implements CollaborationGameWorld {
     this.variant = options.variant ?? 'referee-announced'
     this.refereeUserId = options.refereeUserId ?? 'W-ARENA-REFEREE'
     this.environment = options.world.buildEnvironment()
+    this.echo = this.variant === 'peer-driven' ? new PlatformEcho(options.world, room) : undefined
   }
 
   private roomBroadcast(text: string): GameWave {
@@ -150,95 +158,18 @@ export class CountingGame implements CollaborationGameWorld {
     return { platformEvents, refereeEvents: [] }
   }
 
-  /**
-   * §3.3 peer relay, fired synchronously from the §7.2 sink on delivery: one
-   * delivered agent post becomes ONE room message fanned to every OTHER member
-   * integration (production suppresses the author's own bot echo), carrying the
-   * ORIGINAL text and the posting agent's own platform user identity.
-   */
-  private relayPeerPost(effect: RecordedOutboundEffect): void {
-    if (this.variant !== 'peer-driven' || this.terminalReason !== undefined) return
-    if (effect.kind !== 'reply' || effect.status !== 'delivered') return
-    if (effect.channel !== this.room.channel || effect.agentId === undefined) return
-    // Digit-free chatter is a real room message but carries no count signal;
-    // relaying it would re-prompt the room without advancing anything (a
-    // waiting production agent posts nothing at all).
-    if (!/-?\d/.test(effect.text)) return
-    const fromAlias = this.world.aliasOfAgent(effect.agentId)
-    const messageId = this.world.mintMessageId(this.room.platform)
-    this.world.registerRoomMessage(this.room.channel, messageId)
-    // FIDELITY: the fan-out carries the posting agent's REAL managed bot
-    // identity -- the same botUserId the virtual connection exposes and
-    // getThreadReplies reports. Production Slack fans the event out to every
-    // other integration and the daemon's first ingress gate then drops
-    // managed-bot senders (isAgentBotMessage -- anti bot-loop), so these
-    // deliveries are EXPECTED to come back rejected 'suppressed': one agent's
-    // post never wakes another agent. The suppressed outcome is recorded below
-    // so the trace explains why a peer-driven room stalls without a human or
-    // referee cadence. Peers still SEE the post -- through their in-flight
-    // turns' provider thread snapshot (turn-final refresh), never as a wake.
-    const botUserId = this.world.botUserIdFor(effect.integrationId) ?? effect.agentId
-    const botAppId = this.world.botAppIdFor(effect.integrationId)
-    const outcomes: { integrationId: string; admission: Promise<{ admitted: boolean; reason?: string }> }[] = []
-    for (const integrationId of this.room.memberIntegrationIds) {
-      if (integrationId === effect.integrationId) continue
-      const handle = this.liveIngress?.({
-        integrationId,
-        payload: {
-          channel: this.room.channel,
-          thread: this.room.thread,
-          messageId,
-          text: effect.text,
-          sender: { id: botUserId, isBot: true, ...(botAppId !== undefined ? { appId: botAppId } : {}) }
-        }
-      })
-      if (handle) {
-        this.liveHandles.push(handle)
-        outcomes.push({
-          integrationId,
-          admission: handle.admission.then((admission) =>
-            admission.admitted ? { admitted: true } : { admitted: false, reason: admission.reason }
-          )
-        })
-      }
-    }
-    this.world.appendEvent({
-      type: 'peer.relay',
-      origin: 'agent_effect',
-      roomId: this.room.alias,
-      fromAgentId: effect.agentId,
-      fromAlias,
-      botUserId,
-      sourceSequence: effect.sequence,
-      messageId,
-      text: effect.text
-    })
-    // Per-target admission outcomes (suppression is decided synchronously in
-    // the daemon's ingress, so these settle before the wave barrier).
-    void Promise.all(
-      outcomes.map(async (entry) => ({ integrationId: entry.integrationId, ...(await entry.admission) }))
-    )
-      .then((resolved) => {
-        this.world.appendEvent({
-          type: 'peer.relay.outcome',
-          origin: 'agent_effect',
-          roomId: this.room.alias,
-          messageId,
-          outcomes: resolved
-        })
-      })
-      .catch(() => {})
-  }
-
   /** §8: the runner supplies live ingress so relays enter the daemon the moment
    *  a post lands, not at the wave barrier. */
   attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
     this.liveIngress = inject
-    this.world.onDelivered((effect) => this.relayPeerPost(effect))
+    // Peer-driven: the platform echo IS the propagation mechanism — whether an
+    // echoed post activates anyone is the DAEMON's routing decision, never ours.
+    this.echo?.attach(inject)
   }
 
-  /** Handles for relays injected mid-wave; the runner awaits and drains them. */
+  /** Handles for echoes injected mid-wave; the runner awaits and drains them. */
   drainLiveHandles(): DeliveryHandle[] {
+    if (this.echo) return this.echo.drainHandles()
     const handles = [...this.liveHandles]
     this.liveHandles.length = 0
     return handles
@@ -352,8 +283,8 @@ export class CountingGame implements CollaborationGameWorld {
         )
       }
     }
-    // Peer-driven relays are NOT queued here: each was already injected
-    // synchronously on delivery (relayPeerPost) so concurrent turns could
+    // Peer-driven echoes are NOT queued here: each was already injected
+    // synchronously on delivery (PlatformEcho) so concurrent turns could
     // observe it at their turn-final refresh and regenerate.
     void deliveredReplies
   }

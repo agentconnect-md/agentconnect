@@ -130,23 +130,28 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     expect(start.platformEvents[0]!.payload.channel).toBe(room.channel)
   })
 
-  it("relays a delivered reply LIVE under the poster's REAL managed bot identity", async () => {
+  it("echoes a delivered reply LIVE under the poster's REAL managed bot identity and ORIGINAL coordinates", async () => {
     const { game, reply, room, integrationOf, world, injected } = fixture(3, 'peer-driven')
     game.nextDeliveries()
-    // The relay fires from the §7.2 sink itself — before any wave barrier and
+    // The echo fires from the §7.2 sink itself — before any wave barrier and
     // before applyEffects, so a concurrent turn can still observe it.
-    await reply('agent-a', '1')
+    const posted = await reply('agent-a', '1')
+    expect(posted.status).toBe('delivered')
     expect(injected).toHaveLength(3)
     expect(new Set(injected.map((event) => event.payload.messageId)).size).toBe(1)
+    // The STREAMING copy keeps the post's own channel:ts — the same event every
+    // other dedicated app receives — never a synthetic re-mint.
+    expect(injected[0]!.payload.messageId).toBe((posted as { messageId: string }).messageId)
     expect(injected.map((event) => event.integrationId)).not.toContain(integrationOf('agent-a').integrationId)
     for (const event of injected) {
       expect(event.payload.thread).toBe(room.thread)
       // ORIGINAL text — no synthetic wrapper — and the SAME managed bot
-      // identity production Slack would deliver (the anti-bot-loop ingress
-      // gate must see exactly what it sees in production and suppress it).
+      // identity production Slack would deliver. A streaming copy carries no
+      // authorship claim, so ingress suppresses it (final events only).
       expect(event.payload.text).toBe('1')
       expect(event.payload.sender.id).toBe(integrationOf('agent-a').botUserId)
       expect(event.payload.sender.isBot).toBe(true)
+      expect(event.payload.agentAuthorship).toBeUndefined()
     }
     // The provider thread history carries the post under its real bot identity
     // with the stable author id — this is what the turn-final snapshot reads.
@@ -156,21 +161,60 @@ describe('peer-driven counting (§3.3) — agents continue the count from EACH O
     game.applyEffects(game.drainOutboundEffects())
     const events = world.events()
     expect(events.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
-    expect(events.filter((event) => event.type === 'peer.relay')).toHaveLength(1)
-    // Relays never come back through the wave barrier.
+    expect(events.filter((event) => event.type === 'platform.echo')).toHaveLength(1)
+    // Echoes never come back through the wave barrier.
     expect(game.nextDeliveries().platformEvents).toHaveLength(0)
   })
 
-  it('relays duplicates and wrong numbers (they are real room messages) but not digit-free chatter', async () => {
+  it('echoes a FINALIZED response as the response-final tagged event carrying the daemon-stamped §4 claim', async () => {
+    const { game, reply, room, integrationOf, world, injected } = fixture(3, 'peer-driven')
+    game.nextDeliveries()
+    const posted = (await reply('agent-a', '1')) as { status: string; messageId: string }
+    injected.length = 0
+    const integration = integrationOf('agent-a')
+    await world.recordOutbound({
+      kind: 'finalize',
+      platform: 'slack',
+      integrationId: integration.integrationId,
+      channel: room.channel,
+      thread: room.thread,
+      messageTs: posted.messageId,
+      identity: { agentAuthorId: integration.agentId },
+      text: '1',
+      response: { responseId: 'resp-1', deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
+    })
+    // The finalized message_changed echo keeps the ORIGINAL coordinates —
+    // msgId included — and is told apart from the post it edits by
+    // `ingressEventTag` (the extra per-connection dedup dimension), carrying
+    // the author's §4 claim for the receiving daemon to verify.
+    expect(injected).toHaveLength(3)
+    for (const event of injected) {
+      expect(event.payload.messageId).toBe(posted.messageId)
+      expect(event.payload.ingressEventTag).toBe('response-final')
+      expect(event.payload.thread).toBe(room.thread)
+      expect(event.payload.sender.id).toBe(integration.botUserId)
+      expect(event.payload.agentAuthorship).toMatchObject({
+        authorAgentId: integration.agentId,
+        responseId: 'resp-1',
+        deliveryState: 'final',
+        hopCount: 0,
+        mentionedAgentIds: []
+      })
+    }
+  })
+
+  it('echoes duplicates, wrong numbers, AND chatter alike — production echoes every delivered post', async () => {
     const { game, reply, injected } = fixture(3, 'peer-driven')
     game.nextDeliveries()
     await reply('agent-a', '1')
     await reply('agent-b', '1') // duplicate race — still a real room message
     await reply('agent-c', '5') // wrong number — still a real room message
-    await reply('agent-d', 'waiting.') // chatter — recorded, never relayed
-    // Three digit-bearing replies × three other members each.
-    expect(injected).toHaveLength(9)
-    expect(injected.every((event) => !String(event.payload.text).includes('waiting.'))).toBe(true)
+    await reply('agent-d', 'waiting.') // chatter — a real room message too
+    // Four delivered replies × three other members each. Since PR #549 even a
+    // digit-free reply CONTINUES the conversation if it finalizes with a
+    // verifiable claim, so the echo must not editorialize about content.
+    expect(injected).toHaveLength(12)
+    expect(injected.filter((event) => String(event.payload.text).includes('waiting.'))).toHaveLength(3)
     game.applyEffects(game.drainOutboundEffects())
     const verdict = game.verdict()
     expect(verdict.outcome).toMatchObject({ acceptedPrefix: 1, variant: 'peer-driven' })

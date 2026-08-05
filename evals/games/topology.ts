@@ -21,9 +21,9 @@ export function deterministicUuid(seed: number, name: string): string {
   return `${hex(0, 8)}-${hex(8, 4)}-4${hex(13, 3)}-${variantNibble}${hex(17, 3)}-${hex(20, 12)}`
 }
 
-function slackChannelId(seed: number, alias: string): string {
+function slackChannelId(seed: number, alias: string, dm = false): string {
   const digest = createHash('sha256').update(`channel:${seed}:${alias}`).digest('hex')
-  return `C${digest.slice(0, 10).toUpperCase()}`
+  return `${dm ? 'D' : 'C'}${digest.slice(0, 10).toUpperCase()}`
 }
 
 function numericChannelId(seed: number, alias: string): string {
@@ -70,7 +70,8 @@ export function compileTopology(manifest: GameTopologyManifest): CompiledTopolog
   // two same-platform rooms holds ONE integration reaching both channels).
   const integrationByKey = new Map<string, CompiledIntegrationSpec>()
   const rooms: CompiledRoom[] = manifest.rooms.map((room) => {
-    const channel = room.platform === 'slack' ? slackChannelId(seed, room.id) : numericChannelId(seed, room.id)
+    const channel =
+      room.platform === 'slack' ? slackChannelId(seed, room.id, room.dm === true) : numericChannelId(seed, room.id)
     const thread = threadCoordinate(room.platform, channel, seed, room.id)
     const resolveIntegration = (agentAlias: string): CompiledIntegrationSpec => {
       const key = `${agentAlias}/${room.platform}`
@@ -109,6 +110,8 @@ export function compileTopology(manifest: GameTopologyManifest): CompiledTopolog
       platform: room.platform,
       channel,
       thread,
+      isDm: room.dm === true,
+      isPrivate: room.isPrivate === true || room.dm === true,
       memberAgentIds: room.members.map((alias) => agentIdByAlias.get(alias)!),
       memberIntegrationIds,
       observerIntegrationIds
