@@ -252,6 +252,68 @@ describe('werewolf end to end — scripted role-followers over real sessions and
   }, 600_000)
 })
 
+describe('werewolf multi-round play — night → sequential day → vote → resolution, to a winner', () => {
+  it('loops rounds until a faction wins, with real actions and a consistent final state', async () => {
+    const result = await runWerewolf({ seed: 42, artifactDir: join(scratch(), 'multiround'), timeoutMs: 300_000 })
+    expect(result.status).toBe('passed')
+    expect(result.verdict.terminalReason).toBe('completed')
+
+    // A WINNER, and a win condition the survivors actually satisfy.
+    const winner = result.verdict.outcome.winner as 'village' | 'werewolves'
+    expect(['village', 'werewolves']).toContain(winner)
+    const roles = result.verdict.outcome.roles as Record<string, string>
+    const survivors = result.verdict.outcome.survivors as string[]
+    const livingWolves = survivors.filter((alias) => roles[alias] === 'werewolf').length
+    const livingOthers = survivors.length - livingWolves
+    if (winner === 'village') expect(livingWolves).toBe(0)
+    else expect(livingWolves).toBeGreaterThanOrEqual(livingOthers)
+
+    // MULTI-round: more than one night/day cycle actually ran.
+    const rounds = Number(result.verdict.outcome.rounds)
+    expect(rounds).toBeGreaterThanOrEqual(2)
+    expect(result.verdict.metrics.daysOpened).toBeGreaterThanOrEqual(2)
+    expect(result.verdict.metrics.daysReachingVote).toBe(result.verdict.metrics.daysOpened)
+
+    // Each phase of each round did its job through the REAL machinery.
+    expect(result.verdict.metrics.kills).toBeGreaterThanOrEqual(2)
+    expect(result.verdict.metrics.votesCast).toBeGreaterThanOrEqual(2)
+    expect(result.verdict.metrics.speechesDelivered).toBeGreaterThanOrEqual(2)
+    expect(result.verdict.invariants).toMatchObject({
+      attemptedUnauthorizedEffects: 0,
+      wrongRoomMessages: 0,
+      privateLeaks: 0
+    })
+
+    // The per-round budget really does reset: total admitted automatic turns
+    // exceed one window's worth of 8, with nothing gated (§6.5).
+    expect(result.verdict.metrics.peerWakesGated).toBe(0)
+    expect(result.verdict.metrics.peerWakesAdmitted).toBeGreaterThan(8)
+
+    // The event stream tells the same story in order: every round is a night
+    // that resolves, a day that opens and closes, and a day that resolves.
+    const events = worldEvents(result.paths.worldEvents)
+    const phases = events
+      .map((event) => String(event.type))
+      .filter((type) =>
+        ['night.resolved', 'day.discussion_opened', 'day.discussion_closed', 'day.resolved', 'game.won'].includes(type)
+      )
+    expect(phases.at(-1)).toBe('game.won')
+    expect(phases.filter((type) => type === 'night.resolved').length).toBeGreaterThanOrEqual(2)
+    for (let index = 0; index + 3 < phases.length; index += 4) {
+      expect(phases.slice(index, index + 4)).toEqual([
+        'night.resolved',
+        'day.discussion_opened',
+        'day.discussion_closed',
+        'day.resolved'
+      ])
+    }
+    // A lynch actually removed someone each day that reached a verdict.
+    const lynched = events.filter((event) => event.type === 'day.resolved' && event.lynched !== undefined)
+    expect(lynched.length).toBeGreaterThanOrEqual(1)
+    for (const day of lynched) expect(survivors).not.toContain(String(day.lynched))
+  }, 300_000)
+})
+
 describe('werewolf day phase — natural sequential discussion driven by peer messages', () => {
   it('opens the day once and then advances only on players continuing each other', async () => {
     const artifactDir = join(scratch(), 'sequential')

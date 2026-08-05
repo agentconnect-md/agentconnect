@@ -566,15 +566,45 @@ const BUILTIN_TOOL_FQNS = new Set(
   ])
 )
 
-function containsBuiltinToolFqn(id: string): boolean {
+/**
+ * Extra tool names this daemon serves on the RESERVED server beyond the static
+ * product registry. Today that is exactly the Collaboration Arena's §6
+ * evaluation tools (collaboration-arena.md §6).
+ *
+ * THE INVARIANT, because this widens an auto-approval decision:
+ *
+ *  - The names come from `evaluation.environment.tools`, injected IN-PROCESS at
+ *    Daemon construction. There is no wire, agent, peer, CP or config path that
+ *    can add one, so an agent cannot name its way into auto-approval.
+ *  - `evaluation` is undefined in production ⇒ this set is EMPTY ⇒ behavior is
+ *    bit-for-bit what it was before. Only an evaluation harness populates it.
+ *  - A name only ever matches under the reserved `agentconnect` prefix. A tool
+ *    with the same name on any OTHER MCP server (daemon-configured or
+ *    agent-selected) does not match and still gets its permission card.
+ *  - Startup already rejects an evaluation tool that shadows a product tool or
+ *    duplicates another, so this can never silently re-point an existing name.
+ *  - These tools carry no authority the agent does not already have: they are
+ *    the game's own scoreboard mutations, dispatched on the trusted token-bound
+ *    SessionContext, and the runtime's dangerous built-ins (Bash/Edit/…) are
+ *    NOT in this set and still prompt.
+ */
+function reservedToolFqns(name: string): [string, string] {
+  return [`mcp__${RESERVED_MCP_SERVER_NAME}__${name}`, `mcp.${RESERVED_MCP_SERVER_NAME}.${name}`]
+}
+
+function containsBuiltinToolFqn(id: string, extraReservedToolNames?: ReadonlySet<string>): boolean {
   if (BUILTIN_TOOL_FQNS.has(id)) return true
   // Some ACP adapters suffix an opaque invocation id to the flattened MCP name.
   for (const fqn of BUILTIN_PERMISSION_TOOL_FQNS) if (id.includes(fqn)) return true
+  for (const name of extraReservedToolNames ?? []) {
+    const [flat, dotted] = reservedToolFqns(name)
+    if (id === dotted || id.includes(flat)) return true
+  }
   return false
 }
 
 /** Identify a structured ACP tool event for one of this daemon's own MCP tools. */
-export function isBuiltinSystemToolCall(update: unknown): boolean {
+export function isBuiltinSystemToolCall(update: unknown, extraReservedToolNames?: ReadonlySet<string>): boolean {
   if (!update || typeof update !== 'object') return false
   const u = update as { sessionUpdate?: unknown; rawInput?: unknown; title?: unknown }
   if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update') return false
@@ -586,10 +616,18 @@ export function isBuiltinSystemToolCall(update: unknown): boolean {
     return (
       rawInput.server === RESERVED_MCP_SERVER_NAME &&
       typeof rawInput.tool === 'string' &&
-      BUILTIN_TOOL_NAMES.has(rawInput.tool)
+      (BUILTIN_TOOL_NAMES.has(rawInput.tool) || extraReservedToolNames?.has(rawInput.tool) === true)
     )
   }
-  return typeof u.title === 'string' && BUILTIN_TOOL_FQNS.has(u.title)
+  // Exact title match, exactly as before for the product set; the extra reserved
+  // names are matched the same strict way rather than by substring.
+  if (typeof u.title !== 'string') return false
+  if (BUILTIN_TOOL_FQNS.has(u.title)) return true
+  for (const name of extraReservedToolNames ?? []) {
+    const [flat, dotted] = reservedToolFqns(name)
+    if (u.title === flat || u.title === dotted) return true
+  }
+  return false
 }
 
 /**
@@ -604,12 +642,13 @@ export function isBuiltinSystemToolCall(update: unknown): boolean {
  */
 export function isBuiltinSystemTool(
   params: RequestPermissionRequest,
-  correlatedToolCallIds?: ReadonlySet<string>
+  correlatedToolCallIds?: ReadonlySet<string>,
+  extraReservedToolNames?: ReadonlySet<string>
 ): boolean {
   const tc = params.toolCall
   if (typeof tc?.toolCallId === 'string' && correlatedToolCallIds?.has(tc.toolCallId)) return true
   const ids = [tc?.title, tc?.kind, tc?.toolCallId]
-  return ids.some((id) => typeof id === 'string' && containsBuiltinToolFqn(id))
+  return ids.some((id) => typeof id === 'string' && containsBuiltinToolFqn(id, extraReservedToolNames))
 }
 
 /** Codex ACP carries MCP approval through form elicitation when the client supports it. */
@@ -1653,6 +1692,10 @@ registerObservedChannels(discordObservedChannels)
 export class Daemon {
   private readonly evaluation: EvaluationEventEmitter
   private readonly evaluationProfile: EvaluationCapabilityProfile
+  /** Tool names THIS daemon serves on the reserved MCP server beyond the static
+   *  product registry (see the invariant above `reservedToolFqns`). Empty in
+   *  production — only an in-process evaluation environment populates it. */
+  private readonly evaluationToolNames: ReadonlySet<string>
   private store!: LocalStore
   private mcp!: McpControlServer
   // The agent memory provider. Per-agent: it dispatches each call to the agent's
@@ -2173,6 +2216,7 @@ export class Daemon {
     this.evaluationProfile = EvaluationCapabilityProfileSchema.parse(
       opts.evaluation?.capabilityProfile ?? { memory: 'configured', collaboration: 'configured' }
     )
+    this.evaluationToolNames = new Set((opts.evaluation?.environment?.tools ?? []).map((t) => t.descriptor.name))
     this.evaluation = new EvaluationEventEmitter({
       observer: opts.evaluation?.observer,
       runId: opts.evaluation?.runId,
@@ -14974,7 +15018,7 @@ export class Daemon {
     // have to approve them per call. Auto-allow without rendering a card. Non-system tools
     // (incl. the runtime's dangerous built-ins) fall through to the interactive policy below.
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
-    if (isBuiltinSystemTool(params, p?.builtinSystemToolCallIds)) {
+    if (isBuiltinSystemTool(params, p?.builtinSystemToolCallIds, this.evaluationToolNames)) {
       const allow = params.options.find((o) => o.kind === 'allow_always' || o.kind === 'allow_once')
       if (allow) {
         this.permissionEvaluationDetails.set(evaluationParams, { reason: 'agentconnect_system_tool' })
@@ -15467,7 +15511,8 @@ export class Daemon {
     // collector, or persisted transcript sees it. The tool callback independently
     // persists and streams the resulting session_info_update.
     const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : ''
-    if (toolCallId && isBuiltinSystemToolCall(update)) p.builtinSystemToolCallIds.add(toolCallId)
+    if (toolCallId && isBuiltinSystemToolCall(update, this.evaluationToolNames))
+      p.builtinSystemToolCallIds.add(toolCallId)
     if (isSessionTitleToolCall(update)) {
       if (toolCallId) p.hiddenSessionTitleToolCallIds.add(toolCallId)
       return

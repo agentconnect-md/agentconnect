@@ -236,6 +236,10 @@ before a single wave is injected (`preflightRealSubject` in
   corrupted `npx` cache produces exactly that, and the symptom without the check
   is a game that admits every wave, produces zero agent effects, and burns its
   whole deadline before writing an empty world.
+- **The template must use `permissionMode: default`.** A non-prompting mode
+  (`dontAsk`) makes the runtime deny every AgentConnect tool locally, before the
+  daemon ever sees a permission request, so no game action can land (§5.1).
+  `auto` stalls on the runtime's classifier.
 - **`AGENTCONNECT_DAEMON_ENTRY` must point at the built daemon bundle.** A real
   runtime reaches every AgentConnect tool through a `mcp-bridge` subprocess
   spawned from the daemon CLI; driving the arena from source makes
@@ -303,20 +307,47 @@ this environment"_ — and searched their own runtime's deferred tool list for
 fault; the run was `passed` with `acceptedActions: 0`. That is precisely the class
 of silent real-subject failure the preflight now refuses to let happen.
 
-**The §6 tools are visible to a real runtime but not auto-approved.** With the
-bridge entry corrected, the tools appear correctly as
-`mcp__agentconnect__vote` / `…__inspect` / `…__protect`, and the models reach for
-them. The calls are then refused by the runtime's own permission layer
-(`permissionMode: dontAsk` — "don't prompt, deny if not pre-approved"), and the
-models report that verbatim in the room. The daemon does auto-allow its own MCP
-tools without a card (`isBuiltinSystemTool`), but that set is built from the
-static product tool list (`ALL_TOOL_NAMES`), so a game's §6 tools are not in it
-and fall through to the interactive policy — which has no surface in a headless
-arena run. `permissionMode: auto` does not help: the run stalls on the
-classifier. **Consequence for the numbers above: the real-model measurement
-covers the sequential DISCUSSION only.** Every structured-action count
-(`votesCast`, `kills`, `inspections`, `protections`) is 0 in a real-subject run
-and those figures come from the scripted gate.
+**Why no real game could reach a winner, and what fixed it.** With the bridge
+entry corrected the tools appear correctly as `mcp__agentconnect__vote` /
+`…__inspect` / `…__protect`, and the models reach for them — then every call
+failed, so there was no lynch, no night kill, and no win condition
+(`acceptedActions: 0` in every trial).
+
+The mechanism, measured rather than assumed — and it is **not** the daemon's
+auto-allow set, which an earlier revision of this document wrongly blamed:
+
+- The daemon records **zero `permission.*` events** for an entire real run. The
+  ACP `session/request_permission` is never sent, so `isBuiltinSystemTool` is
+  never consulted at all.
+- Claude Code denies **locally, inside the runtime**, 24–31 times per run:
+  _"Permission to use `mcp__agentconnect__protect` has been denied because Claude
+  Code is running in don't ask mode."_ `dontAsk` means "do not prompt, DENY if
+  not pre-approved".
+
+Three subject-side pre-approvals were tried and all failed: workspace
+`.claude/settings.json` + `settings.local.json` (both rule shapes) are written
+and survive the run but are **not honored**; relocating the user tier with
+`CLAUDE_CONFIG_DIR` takes the runtime's authentication with it (`infra_error`,
+zero peer wakes); `permissionMode: auto` stalls on the classifier.
+
+So a headless real subject must run in `permissionMode: **default**`, where the
+request does reach the daemon — and the daemon must then be willing to approve a
+game's own tools without a card, because a headless run has no card surface (its
+fallback is to hold the request, which is what made `auto` hang).
+
+That is the one **daemon** change this work required
+(`isBuiltinSystemTool` / `isBuiltinSystemToolCall`): the auto-allow set is no
+longer the hardcoded product list but _the tools this daemon actually registered
+on its own reserved `agentconnect` MCP server for that session_. The scoping is
+the whole point and is pinned by tests:
+
+- the extra names come from `evaluation.environment.tools`, injected in-process
+  at Daemon construction — no wire, agent, peer, CP or config path can add one;
+- that registry is **empty in production**, so behavior there is unchanged;
+- a name only matches under the reserved `agentconnect` prefix, so the same name
+  on any other MCP server still gets its card (negative test);
+- startup already rejects an evaluation tool that shadows or duplicates a product
+  tool, and the runtime's dangerous built-ins (Bash/Edit/…) are not in the set.
 
 ### 5.2 Peer-driven counting (historical)
 
