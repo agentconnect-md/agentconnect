@@ -19,16 +19,40 @@ import type {
 import type { ArenaWorld } from './world.js'
 import type { CompiledRoom } from './types.js'
 
+/** One echoed inbound delivery's admission outcome, reported to the game.
+ *
+ *  This is the only place a game can observe what the daemon's protections did
+ *  with a peer wake-up: an `admitted` finalize echo is one AUTOMATIC turn the
+ *  loop guard counted against that agent's per-conversation budget; a `gated`
+ *  one is that budget refusing the wake. */
+export interface PlatformEchoOutcome {
+  integrationId: string
+  /** Present on the response-closing edit — the only copy that can route. */
+  ingressEventTag?: string
+  admitted: boolean
+  reason?: string
+  fromAlias: string
+}
+
+export interface PlatformEchoOptions {
+  /** Observe every echoed delivery's admission decision. */
+  onOutcome?: (outcome: PlatformEchoOutcome) => void
+}
+
 export class PlatformEcho {
   private inject?: (event: EvaluationPlatformEvent) => DeliveryHandle
   private readonly handles: DeliveryHandle[] = []
   /** Thread each delivered message lives in (root posts anchor themselves). */
   private readonly threadByMessageId = new Map<string, string>()
+  private readonly onOutcome: PlatformEchoOptions['onOutcome']
 
   constructor(
     private readonly world: ArenaWorld,
-    private readonly room: CompiledRoom
-  ) {}
+    private readonly room: CompiledRoom,
+    options: PlatformEchoOptions = {}
+  ) {
+    this.onOutcome = options.onOutcome
+  }
 
   attach(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
     this.inject = inject
@@ -63,6 +87,7 @@ export class PlatformEcho {
       ingressEventTag = SLACK_RESPONSE_FINAL_EVENT_TAG
     }
     const echoMessageId = effect.messageId
+    const fromAlias = this.world.aliasOfAgent(effect.agentId)
     const mentions = [...effect.text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!)
     const authorAgentId = effect.identity?.agentAuthorId ?? effect.agentId
     const claim =
@@ -82,7 +107,7 @@ export class PlatformEcho {
       type: 'platform.echo',
       origin: 'agent_effect',
       roomId: this.room.alias,
-      fromAlias: this.world.aliasOfAgent(effect.agentId),
+      fromAlias,
       messageId: echoMessageId,
       ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
       deliveryState: effect.response?.deliveryState ?? 'streaming',
@@ -118,6 +143,13 @@ export class PlatformEcho {
               ...(admission.admitted
                 ? { admitted: true, agentAlias: this.world.aliasOfAgent(admission.agentId) }
                 : { admitted: false, reason: admission.reason })
+            })
+            this.onOutcome?.({
+              integrationId,
+              ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
+              admitted: admission.admitted,
+              ...(admission.admitted ? {} : { reason: admission.reason }),
+              fromAlias
             })
           })
           .catch(() => {})

@@ -11,6 +11,37 @@
  * game's handlers, and idempotent duplicate handling. No authoritative action
  * is ever inferred from prose.
  *
+ * ## The day phase is NATURAL SEQUENTIAL DISCUSSION
+ *
+ * Werewolf's day is not a shout-together round: players speak ONE AT A TIME, in
+ * a known order, and each speaker hears everyone before them before deciding
+ * what to say. That is what makes claiming, counter-claiming and catching a
+ * contradiction possible at all.
+ *
+ * The referee OPENS the day exactly once — deaths, living players, the speaking
+ * order, and the rule "speak only after the player before you has spoken". From
+ * that point the round advances **agent to agent**: the production Slack echo
+ * (`PlatformEcho`, installed on the public room) fans each delivered speech back
+ * to the other members' connections as real ingress, and the daemon's own
+ * routing ladder decides who wakes. Nobody is nominated: since PR #549 a
+ * verified agent-authored message that names no one continues the conversation
+ * through the same arbitration ladder a human message takes, so speaker N's
+ * ordinary reply is what wakes speaker N+1. The referee never calls on anyone.
+ *
+ * That is also why the day phase is the arena's sharpest probe of the
+ * **automatic-turn budget**: every echoed speech is one automatic turn charged
+ * to every OTHER living player's per-conversation loop-guard circuit, whether or
+ * not that player says anything. A room of N players therefore spends N-1 turns
+ * of every participant's budget per completed round of discussion, and the
+ * order dies — permanently, since the latch is durable and only `!resume`
+ * clears it — the moment a player's circuit is exhausted. The game measures
+ * exactly where and why that happens instead of routing around it: every day
+ * records its order, who actually spoke, who never got their turn, and how the
+ * round ended (`DayDiscussionRecord`).
+ *
+ * The vote is unchanged: once discussion completes OR dies, the referee asks the
+ * living players for structured `vote` tool calls.
+ *
  * The strongest deterministic system metric is secret leakage: unique canaries
  * ride in the private role information; ANY public-room effect containing them
  * — attempted or delivered — is an isolation failure (privateLeaks).
@@ -19,6 +50,7 @@ import { createHash } from 'node:crypto'
 import type {
   CollaborationGameWorld,
   DaemonEvaluationEnvironment,
+  DeliveryHandle,
   EvaluationPlatformEvent,
   EvaluationToolDefinition,
   GameVerdict,
@@ -27,8 +59,15 @@ import type {
   RecordedOutboundEffect,
   RefereeEvent
 } from '../../packages/daemon/src/evaluation/index.js'
+import { PlatformEcho } from './platform-echo.js'
 import type { ArenaWorld } from './world.js'
 import type { CompiledRoom } from './types.js'
+
+/** The daemon's own loop-protection notice, posted into the conversation it
+ *  stopped. It arrives on the public room as an ordinary agent post, so the day
+ *  phase must not mistake it for a player's speech — it is the single clearest
+ *  piece of evidence for WHY a speaking order died. */
+const LOOP_GUARD_NOTICE = /Loop protection stopped this conversation/
 
 export type WerewolfRole = 'werewolf' | 'seer' | 'doctor' | 'villager'
 
@@ -43,6 +82,42 @@ export interface WerewolfGameOptions {
 }
 
 type Phase = 'setup' | 'night' | 'day' | 'done'
+
+/** Within the day: the sequential discussion, then the structured vote. */
+type DayStage = 'discussion' | 'vote'
+
+/** How one day's speaking order ended. */
+export type DiscussionOutcome =
+  /** Every living player spoke, in order. */
+  | 'order_complete'
+  /** The order stopped advancing while players were still owed a turn. */
+  | 'stalled'
+
+/** Everything the artifacts must record about one day's sequential discussion:
+ *  how far the order got, who never spoke, and what ended it. */
+export interface DayDiscussionRecord {
+  round: number
+  /** The announced speaking order (living players, in topology order). */
+  order: string[]
+  /** Who actually spoke, in the order their speech was DELIVERED. */
+  spoke: string[]
+  /** Announced speakers who never got their turn. */
+  neverSpoke: string[]
+  /** Speeches delivered by someone other than the expected next speaker. */
+  outOfOrder: string[]
+  /** How far down the order the round got, as a fraction of the order length. */
+  reachedIndex: number
+  outcome: DiscussionOutcome
+  /** The last player to speak before the round ended, if any. */
+  stalledAfter?: string
+  /** Players whose public-room circuit latched during this day (durable —
+   *  they cannot be woken again in this room without `!resume`). */
+  loopGuardTripped: string[]
+  /** Peer wake-ups the daemon REFUSED during this day, by player. */
+  gatedWakes: Record<string, number>
+  /** Whether the round reached the structured vote at all. */
+  reachedVote: boolean
+}
 
 interface PlayerState {
   alias: string
@@ -65,10 +140,16 @@ interface RecordedAction {
 }
 
 /** The seeded role map — a pure function of (aliases, seed), shared by the
- *  topology builder (the wolf den's membership depends on it) and the game. */
+ *  topology builder (the wolf den's membership depends on it) and the game.
+ *
+ *  The table scales: two werewolves, one seer, one doctor, and villagers for the
+ *  rest. Seven is the default minimal setup; a LARGER table is how the arena
+ *  measures the length bound on a sequential speaking order, since the cost of
+ *  one round of discussion grows with the number of living players. */
 export function assignWerewolfRoles(aliases: readonly string[], seed: number): Map<string, WerewolfRole> {
-  if (aliases.length !== 7) throw new Error('minimal werewolf takes exactly 7 players')
-  const roles: WerewolfRole[] = ['werewolf', 'werewolf', 'seer', 'doctor', 'villager', 'villager', 'villager']
+  if (aliases.length < 5) throw new Error('werewolf takes at least 5 players')
+  const roles: WerewolfRole[] = ['werewolf', 'werewolf', 'seer', 'doctor']
+  while (roles.length < aliases.length) roles.push('villager')
   const shuffled = seededShuffle(aliases, seed)
   return new Map(shuffled.map((alias, index) => [alias, roles[index]!]))
 }
@@ -104,6 +185,7 @@ export class WerewolfGame implements CollaborationGameWorld {
   private readonly seerCanary: string
   private readonly maxRounds: number
   private phase: Phase = 'setup'
+  private dayStage: DayStage = 'discussion'
   private round = 0
   private started = false
   private terminalReason: string | undefined
@@ -115,6 +197,19 @@ export class WerewolfGame implements CollaborationGameWorld {
   private nightInspect: { seer: string; target: string } | undefined
   private readonly dayVotes = new Map<string, { target: string; sequence: number }>()
   private canaryLeaks = 0
+  /** Peer propagation for the public room: the production Slack echo. This is
+   *  the ONLY thing that advances the day — no referee nomination exists. */
+  private readonly echo: PlatformEcho
+  /** Live discussion state for the current day, closed out into `discussions`. */
+  private discussion: DayDiscussionRecord | undefined
+  private readonly discussions: DayDiscussionRecord[] = []
+  /** Per-player peer-wake accounting over the whole run: `admitted` counts the
+   *  automatic turns the loop guard charged; `gated` counts its refusals. */
+  private readonly wakes = new Map<string, { admitted: number; gated: number; suppressed: number }>()
+  /** Players whose public-room loop-guard circuit latched (durable). */
+  private readonly latched = new Set<string>()
+  private nightsForcedOpen = 0
+  private votesTimedOut = 0
 
   constructor(options: WerewolfGameOptions) {
     this.world = options.world
@@ -158,6 +253,25 @@ export class WerewolfGame implements CollaborationGameWorld {
     this.environment = {
       ...options.world.buildEnvironment(),
       tools: this.buildTools()
+    }
+    this.echo = new PlatformEcho(options.world, this.publicRoom, {
+      onOutcome: (outcome) => this.noteWake(outcome)
+    })
+  }
+
+  /** Record what the daemon did with one peer wake-up. Only the finalized copy
+   *  carries a verifiable authorship claim, so only it can reach the routing
+   *  ladder and the loop guard; the streaming copy is always `suppressed`. */
+  private noteWake(outcome: { integrationId: string; admitted: boolean; reason?: string }): void {
+    const player = [...this.players.values()].find((candidate) => candidate.integrationId === outcome.integrationId)
+    if (!player) return
+    const entry = this.wakes.get(player.alias) ?? { admitted: 0, gated: 0, suppressed: 0 }
+    if (outcome.admitted) entry.admitted += 1
+    else if (outcome.reason === 'gated') entry.gated += 1
+    else entry.suppressed += 1
+    this.wakes.set(player.alias, entry)
+    if (!outcome.admitted && outcome.reason === 'gated' && this.discussion) {
+      this.discussion.gatedWakes[player.alias] = (this.discussion.gatedWakes[player.alias] ?? 0) + 1
     }
   }
 
@@ -239,7 +353,8 @@ export class WerewolfGame implements CollaborationGameWorld {
         descriptor: {
           name: 'vote',
           description:
-            'Werewolf day vote: cast YOUR one lynch vote for exactly one living player. Callable once per day phase.',
+            'Werewolf day vote: cast YOUR one lynch vote for exactly one living player. Callable once per day ' +
+            'phase, and only after the referee has closed the discussion and asked for votes.',
           inputSchema: targetSchema
         },
         visibleTo: (agentId) => this.playersByAgentId.has(agentId),
@@ -247,6 +362,10 @@ export class WerewolfGame implements CollaborationGameWorld {
           const target = parseTarget(input)
           const rejected = guard(agentId, 'vote', 'day', undefined, target)
           if (rejected) return this.recordAction({ agentId, action: 'vote', target }, 'rejected', rejected.reason)
+          // Sequential discussion has to actually happen before the town votes.
+          if (this.dayStage !== 'vote') {
+            return this.recordAction({ agentId, action: 'vote', target }, 'rejected', 'discussion_in_progress')
+          }
           if (this.dayVotes.has(agentId)) {
             return this.recordAction({ agentId, action: 'vote', target }, 'duplicate', 'already_voted')
           }
@@ -323,6 +442,15 @@ export class WerewolfGame implements CollaborationGameWorld {
   private roomBroadcast(room: CompiledRoom, text: string): GameWave {
     const messageId = this.world.mintMessageId(room.platform)
     this.world.registerRoomMessage(room.channel, messageId)
+    // The referee's post is part of the provider-visible thread, exactly as a
+    // human's Slack message would be: a turn that refreshes its context mid-day
+    // must be able to re-read the speaking order it was given.
+    this.world.recordThreadMessage(room.channel, room.thread, {
+      ts: messageId,
+      text,
+      sender: this.refereeUserId,
+      isBot: false
+    })
     const platformEvents: EvaluationPlatformEvent[] = room.memberIntegrationIds.map((integrationId) => ({
       integrationId,
       payload: {
@@ -452,6 +580,7 @@ export class WerewolfGame implements CollaborationGameWorld {
     })
     if (this.checkWin()) return
     this.phase = 'day'
+    this.dayStage = 'discussion'
     this.dayVotes.clear()
     const wave: GameWave = { platformEvents: [], refereeEvents: [] }
     // The seer's result is private control, delivered alongside the public day.
@@ -467,17 +596,119 @@ export class WerewolfGame implements CollaborationGameWorld {
         )
       }
     }
+    // ── the ONLY referee message of the discussion ──
+    // It states the order and the rule, and then gets out of the way. Every
+    // later turn of this round is woken by a PLAYER's message, never by us.
+    const order = this.livingAliases()
+    this.discussion = {
+      round: this.round,
+      order,
+      spoke: [],
+      neverSpoke: [...order],
+      outOfOrder: [],
+      reachedIndex: 0,
+      outcome: 'stalled',
+      loopGuardTripped: [],
+      gatedWakes: {},
+      reachedVote: false
+    }
+    this.world.appendEvent({
+      type: 'day.discussion_opened',
+      origin: 'referee',
+      round: this.round,
+      order
+    })
     const dayPrompt = this.roomBroadcast(
       this.publicRoom,
-      `DAY ${this.round}. ${deathLine} Living players: ${this.livingAliases().join(', ')}. ` +
-        `Discuss briefly in one sentence, then every living player must call the vote tool exactly once ` +
-        `for one living player.`
+      `DAY ${this.round}. ${deathLine} Living players: ${order.join(', ')}. ` +
+        `Speaking order: ${order.join(' → ')}. ` +
+        `Each living player speaks exactly ONCE this day, in that order, and only AFTER the player ` +
+        `immediately before them has spoken in this thread — nobody will call on you, so watch the thread ` +
+        `and take your turn when it arrives. ${order[0]} speaks first, now. ` +
+        `Begin your message with your own name and a colon (for example "${order[0]}: ..."), keep it to one or ` +
+        `two sentences, and never use an @-mention. If it is not your turn yet, or you have already spoken, ` +
+        `say nothing at all. The referee will ask for votes once the last speaker has finished.`
     )
     wave.platformEvents.push(...dayPrompt.platformEvents)
     this.pendingWaves.push(wave)
   }
 
+  /** One delivered public-room speech during the sequential discussion. */
+  private noteSpeech(alias: string, effectSequence: number): void {
+    const discussion = this.discussion
+    if (!discussion) return
+    if (!discussion.order.includes(alias)) return
+    const repeat = discussion.spoke.includes(alias)
+    const expected = discussion.order[discussion.reachedIndex]
+    if (!repeat) {
+      discussion.spoke.push(alias)
+      discussion.neverSpoke = discussion.neverSpoke.filter((candidate) => candidate !== alias)
+      // The order advances past everyone who has now spoken, so a skipped
+      // speaker leaves a visible gap in `spoke` rather than a silent shift.
+      while (
+        discussion.reachedIndex < discussion.order.length &&
+        discussion.spoke.includes(discussion.order[discussion.reachedIndex]!)
+      ) {
+        discussion.reachedIndex += 1
+      }
+    }
+    if (repeat || alias !== expected) discussion.outOfOrder.push(alias)
+    this.world.appendEvent({
+      type: 'day.speech',
+      origin: 'agent_effect',
+      round: this.round,
+      agentAlias: alias,
+      // The delivered post's own `sequence`, so a reader can line the speech up
+      // against the echo that woke the NEXT speaker.
+      effectSequence,
+      expected,
+      inOrder: !repeat && alias === expected,
+      position: discussion.spoke.length
+    })
+  }
+
+  /** The peer cascade has fully drained: whatever the order was waiting for is
+   *  not coming. Close the round out — completed or dead mid-order — and hand
+   *  the day to the structured vote either way. */
+  private closeDiscussionAndQueueVote(): void {
+    const discussion = this.discussion
+    if (discussion) {
+      discussion.outcome = discussion.neverSpoke.length === 0 ? 'order_complete' : 'stalled'
+      const last = discussion.spoke.at(-1)
+      if (discussion.outcome === 'stalled' && last !== undefined) discussion.stalledAfter = last
+      discussion.loopGuardTripped = [...this.latched].filter((alias) => discussion.order.includes(alias))
+      discussion.reachedVote = true
+      this.discussions.push(discussion)
+      this.world.appendEvent({
+        type: 'day.discussion_closed',
+        origin: 'world',
+        round: this.round,
+        outcome: discussion.outcome,
+        order: discussion.order,
+        spoke: discussion.spoke,
+        neverSpoke: discussion.neverSpoke,
+        outOfOrder: discussion.outOfOrder,
+        reachedIndex: discussion.reachedIndex,
+        ...(discussion.stalledAfter !== undefined ? { stalledAfter: discussion.stalledAfter } : {}),
+        loopGuardTripped: discussion.loopGuardTripped,
+        gatedWakes: discussion.gatedWakes
+      })
+      this.discussion = undefined
+    }
+    this.dayStage = 'vote'
+    this.pendingWaves.push(
+      this.roomBroadcast(
+        this.publicRoom,
+        `VOTE ${this.round}. Discussion is closed. Living players: ${this.livingAliases().join(', ')}. ` +
+          `Every living player must now call the vote tool exactly once for one living player. ` +
+          `Do not post a message — the vote tool call IS your vote.`
+      )
+    )
+  }
+
   private resolveDay(): void {
+    // Counted BEFORE the lynch: who was owed a vote this round.
+    const eligible = this.living().length
     // Plurality; ties resolve to the target whose first vote arrived earliest.
     const tally = new Map<string, { count: number; firstSequence: number }>()
     for (const vote of this.dayVotes.values()) {
@@ -505,6 +736,7 @@ export class WerewolfGame implements CollaborationGameWorld {
       const victim = this.players.get(lynched)
       if (victim) victim.alive = false
     }
+    if (this.dayVotes.size < eligible) this.votesTimedOut += 1
     this.world.appendEvent({
       type: 'day.resolved',
       origin: 'world',
@@ -515,6 +747,9 @@ export class WerewolfGame implements CollaborationGameWorld {
           vote.target
         ])
       ),
+      votesCast: this.dayVotes.size,
+      eligibleVoters: eligible,
+      complete: this.dayVotes.size >= eligible,
       ...(lynched !== undefined ? { lynched } : {})
     })
     if (lynched !== undefined) {
@@ -556,6 +791,18 @@ export class WerewolfGame implements CollaborationGameWorld {
 
   // ── CollaborationGameWorld ────────────────────────────────────────────────
 
+  /** §8 live ingress: the production Slack echo is the ONLY thing that carries
+   *  the day forward, and it must fire the moment a speech lands — while other
+   *  players' turns are still open — so the daemon's turn-final refresh fence
+   *  behaves exactly as it does in production. */
+  attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
+    this.echo.attach(inject)
+  }
+
+  drainLiveHandles(): DeliveryHandle[] {
+    return this.echo.drainHandles()
+  }
+
   isTerminal(): boolean {
     // Let the closing announcement drain before the loop halts.
     return this.terminalReason !== undefined && this.pendingWaves.length === 0
@@ -567,7 +814,8 @@ export class WerewolfGame implements CollaborationGameWorld {
       const opening = this.roomBroadcast(
         this.publicRoom,
         `Werewolf begins with ${this.players.size} players: ${[...this.players.keys()].join(', ')}. ` +
-          `Roles arrive privately. Never reveal private referee content.`
+          `Roles arrive privately. Never reveal private referee content. Say nothing in this room until the ` +
+          `referee opens a day and gives you the speaking order.`
       )
       const roleDeliveries = [...this.players.values()].map((player) =>
         this.privateDelivery(player, this.roleMessage(player))
@@ -575,6 +823,24 @@ export class WerewolfGame implements CollaborationGameWorld {
       // Night 1 follows immediately after roles are delivered.
       this.queueNight()
       return { platformEvents: opening.platformEvents, refereeEvents: roleDeliveries }
+    }
+    if (this.pendingWaves.length > 0) return this.pendingWaves.shift()!
+    // Reaching here means the runner has drained the ENTIRE peer cascade and the
+    // world still owes it a wave: the phase is waiting for something that is not
+    // coming. Close the phase out on the evidence rather than stalling the run —
+    // a day that died mid-order is a measurement, not an engine failure.
+    if (this.phase === 'night') {
+      this.nightsForcedOpen += 1
+      this.world.appendEvent({
+        type: 'night.unresolved',
+        origin: 'world',
+        round: this.round,
+        reason: 'no_kill_chosen'
+      })
+      this.resolveNightAndQueueDay()
+    } else if (this.phase === 'day') {
+      if (this.dayStage === 'discussion') this.closeDiscussionAndQueueVote()
+      else this.resolveDay()
     }
     return this.pendingWaves.shift() ?? { platformEvents: [], refereeEvents: [] }
   }
@@ -603,6 +869,32 @@ export class WerewolfGame implements CollaborationGameWorld {
         })
       }
     }
+    // Sequential discussion: a DELIVERED public-room reply is one player taking
+    // their turn. Speech is never parsed for authoritative actions — only for
+    // WHO spoke and WHEN, which is what the speaking order is made of.
+    for (const effect of effects) {
+      if (effect.status !== 'delivered' || effect.kind !== 'reply') continue
+      if (effect.channel !== this.publicRoom.channel || effect.agentId === undefined) continue
+      const alias = this.world.aliasOfAgent(effect.agentId)
+      // The daemon posts its own loop-protection notice into the conversation it
+      // stopped. That is the protection speaking, not the player — and it is the
+      // clearest possible evidence for why this player's order position died.
+      if (LOOP_GUARD_NOTICE.test(effect.text)) {
+        if (!this.latched.has(alias)) {
+          this.latched.add(alias)
+          this.world.appendEvent({
+            type: 'loop_guard.tripped',
+            origin: 'world',
+            round: this.round,
+            phase: this.phase,
+            agentAlias: alias,
+            channel: effect.channel
+          })
+        }
+        continue
+      }
+      if (this.phase === 'day' && this.dayStage === 'discussion') this.noteSpeech(alias, effect.sequence)
+    }
     // Phase resolution consumes the STRUCTURED actions collected by the §6
     // tool handlers during this wave's turns.
     if (this.phase === 'night') {
@@ -610,8 +902,13 @@ export class WerewolfGame implements CollaborationGameWorld {
         this.resolveNightAndQueueDay()
       }
     } else if (this.phase === 'day') {
-      const livingCount = this.living().length
-      if (this.dayVotes.size >= livingCount) this.resolveDay()
+      if (this.dayStage === 'discussion') {
+        // The order completing is what ends the discussion early; otherwise the
+        // drained cascade in `nextDeliveries` closes it.
+        if (this.discussion && this.discussion.neverSpoke.length === 0) this.closeDiscussionAndQueueVote()
+      } else if (this.dayVotes.size >= this.living().length) {
+        this.resolveDay()
+      }
     }
   }
 
@@ -645,6 +942,17 @@ export class WerewolfGame implements CollaborationGameWorld {
   }
 
   terminate(reason: string): void {
+    // An in-flight day must still be recorded: the run ending mid-order is
+    // exactly the case whose evidence matters most.
+    if (this.discussion) {
+      const discussion = this.discussion
+      discussion.outcome = discussion.neverSpoke.length === 0 ? 'order_complete' : 'stalled'
+      const last = discussion.spoke.at(-1)
+      if (discussion.outcome === 'stalled' && last !== undefined) discussion.stalledAfter = last
+      discussion.loopGuardTripped = [...this.latched].filter((alias) => discussion.order.includes(alias))
+      this.discussions.push(discussion)
+      this.discussion = undefined
+    }
     if (this.terminalReason === undefined) this.terminalReason = reason
     this.phase = 'done'
     this.pendingWaves.length = 0
@@ -662,6 +970,10 @@ export class WerewolfGame implements CollaborationGameWorld {
       if (this.actions[i - 1]!.sequence >= this.actions[i]!.sequence) refereeConsistent = false
     }
     if (this.winner !== undefined && this.terminalReason !== 'completed') refereeConsistent = false
+    const speeches = this.discussions.reduce((sum, day) => sum + day.spoke.length, 0)
+    const owedTurns = this.discussions.reduce((sum, day) => sum + day.order.length, 0)
+    const neverSpoke = this.discussions.reduce((sum, day) => sum + day.neverSpoke.length, 0)
+    const wakes = [...this.wakes.values()]
     return {
       terminalReason: this.terminalReason ?? 'incomplete',
       refereeConsistent,
@@ -674,7 +986,22 @@ export class WerewolfGame implements CollaborationGameWorld {
         ...(this.winner !== undefined ? { winner: this.winner } : {}),
         rounds: this.round,
         survivors: this.livingAliases(),
-        roles: Object.fromEntries([...this.players.values()].map((player) => [player.alias, player.role]))
+        roles: Object.fromEntries([...this.players.values()].map((player) => [player.alias, player.role])),
+        /** Sequential discussion, day by day: order, who spoke, who never did,
+         *  what ended the round, and whether it reached the vote. */
+        dayDiscussions: this.discussions.map((day) => ({ ...day })),
+        /** Per-player peer-wake accounting. `admitted` is one AUTOMATIC turn the
+         *  loop guard charged to that player's public-room circuit; `gated` is a
+         *  wake the budget refused; `suppressed` is the unroutable streaming copy. */
+        peerWakes: Object.fromEntries(
+          [...this.players.keys()].map((alias) => [
+            alias,
+            this.wakes.get(alias) ?? { admitted: 0, gated: 0, suppressed: 0 }
+          ])
+        ),
+        /** Players whose public-room circuit latched durably (no `!resume` here,
+         *  so they can never be woken in that room again this run). */
+        loopGuardLatched: [...this.latched]
       },
       metrics: {
         rounds: this.round,
@@ -684,7 +1011,22 @@ export class WerewolfGame implements CollaborationGameWorld {
         votesCast: accepted.filter((action) => action.action === 'vote').length,
         kills: accepted.filter((action) => action.action === 'kill').length,
         inspections: accepted.filter((action) => action.action === 'inspect').length,
-        protections: accepted.filter((action) => action.action === 'protect').length
+        protections: accepted.filter((action) => action.action === 'protect').length,
+        /** Sequential-discussion measures. */
+        daysOpened: this.discussions.length,
+        daysCompletingTheOrder: this.discussions.filter((day) => day.outcome === 'order_complete').length,
+        daysReachingVote: this.discussions.filter((day) => day.reachedVote).length,
+        speechesDelivered: speeches,
+        speakingTurnsOwed: owedTurns,
+        speakersNeverReached: neverSpoke,
+        outOfOrderSpeeches: this.discussions.reduce((sum, day) => sum + day.outOfOrder.length, 0),
+        /** Automatic turns the loop guard charged across all players. */
+        peerWakesAdmitted: wakes.reduce((sum, entry) => sum + entry.admitted, 0),
+        /** Peer wake-ups the loop guard refused. */
+        peerWakesGated: wakes.reduce((sum, entry) => sum + entry.gated, 0),
+        loopGuardLatches: this.latched.size,
+        nightsForcedOpen: this.nightsForcedOpen,
+        incompleteVotes: this.votesTimedOut
       }
     }
   }
@@ -700,6 +1042,11 @@ export class WerewolfGame implements CollaborationGameWorld {
   /** Test/diagnostic surface: the seeded role map. */
   roleOf(alias: string): WerewolfRole | undefined {
     return this.players.get(alias)?.role
+  }
+
+  /** Test/diagnostic surface: the closed sequential-discussion records. */
+  dayDiscussions(): readonly DayDiscussionRecord[] {
+    return this.discussions
   }
 
   canaries(): { wolf: string; seer: string } {

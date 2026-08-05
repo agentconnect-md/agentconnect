@@ -12,17 +12,46 @@
  * every admission and `sequence`-stamped effect so any run is explainable.
  */
 import { CollaborationGameRunner, type CollaborationGameResult } from '../../packages/daemon/src/evaluation/index.js'
+import { NO_RESPONSE_SENTINEL } from '../../packages/daemon/src/session/no-response.js'
 import { CountingGame, type CountingVariant } from './counting.js'
 import { CrossRoomCountingGame } from './cross-room-counting.js'
 import { callDaemonTool, daemonMcpBinding, type DaemonMcpBinding } from './mcp-client.js'
 import { QuotaCountingGame } from './quota-counting.js'
 import { assignWerewolfRoles, WerewolfGame } from './werewolf.js'
-import { prepareGameSubject, prepareScriptedSubject, type GameSubjectSpec } from './subject.js'
+import {
+  prepareGameSubject,
+  prepareScriptedSubject,
+  preflightRealSubject,
+  type GameSubjectSpec,
+  type PreparedGameSubject
+} from './subject.js'
 import { compileTopology } from './topology.js'
-import type { GameTopologyManifest } from './types.js'
+import type { CompiledTopology, GameTopologyManifest } from './types.js'
 import { ArenaWorld } from './world.js'
 
 export { prepareScriptedSubject as scaffoldSubject }
+
+/**
+ * Materialize the subject and — for a REAL one — prove its runtimes can start
+ * before a single wave is injected.
+ *
+ * A runtime that cannot launch does not fail the game; it makes the game
+ * silent. Every wave is admitted, no agent ever produces an effect, and the run
+ * burns its whole deadline before writing an empty world. That failure mode has
+ * happened for something as mundane as a corrupted npx cache, so the real-subject
+ * path pays a few seconds to turn it into one actionable error.
+ */
+async function prepareSubjectForRun(topology: CompiledTopology, spec: GameSubjectSpec): Promise<PreparedGameSubject> {
+  const subject = prepareGameSubject(topology, spec)
+  if (spec.kind !== 'real') return subject
+  try {
+    await preflightRealSubject(subject.root)
+  } catch (error) {
+    subject.cleanup()
+    throw error
+  }
+  return subject
+}
 
 export interface CountingGameRunOptions {
   seed?: number
@@ -225,14 +254,19 @@ export const WEREWOLF_PLAYERS = [
   'player-7'
 ] as const
 
+/** `player-1 … player-N`, the seat names a table of `count` players uses. */
+export function werewolfPlayers(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `player-${index + 1}`)
+}
+
 export function werewolfDmRoomAlias(playerAlias: string): string {
   return `dm-${playerAlias}`
 }
 
 /** The public room, each player's private referee DM, and a REAL private wolf
  *  den whose membership follows the seeded role assignment. */
-export function werewolfManifest(options: { seed: number }): GameTopologyManifest {
-  const players = [...WEREWOLF_PLAYERS]
+export function werewolfManifest(options: { seed: number; playerCount?: number }): GameTopologyManifest {
+  const players = options.playerCount === undefined ? [...WEREWOLF_PLAYERS] : werewolfPlayers(options.playerCount)
   const roles = assignWerewolfRoles(players, options.seed)
   const wolves = players.filter((alias) => roles.get(alias) === 'werewolf')
   return {
@@ -257,6 +291,20 @@ export function werewolfManifest(options: { seed: number }): GameTopologyManifes
  * role/partner learned from the private referee message; night actions and day
  * votes go through the REAL §6 evaluation tools over the daemon MCP socket;
  * public speech stays natural language and never repeats private content.
+ *
+ * The DAY is sequential and peer-driven. The referee announces the order once;
+ * after that this host decides purely from what it can SEE in the room:
+ *
+ *   speak  ⇔  I am in today's order, I have not spoken yet, and every player
+ *             ahead of me in the order has already spoken in this thread.
+ *
+ * There is no nomination and no external turn signal — the wake-up is the
+ * previous speaker's own echoed message arriving on this agent's connection. On
+ * every other activation the host returns the product's own silent branch
+ * (`AC_NO_RESPONSE`), which the Slack renderer drops before any post, so a
+ * player who is merely listening produces no room traffic. Those listening
+ * turns still cost each player one AUTOMATIC turn against the loop guard, which
+ * is precisely what the game measures.
  */
 export function scriptedWerewolfHostFactory(): (
   agent: { id: string; name?: string },
@@ -266,8 +314,21 @@ export function scriptedWerewolfHostFactory(): (
     let sessions = 0
     const bindings = new Map<string, DaemonMcpBinding>()
     const state: { role?: string; partner?: string; knownWolf?: string } = {}
+    /** Per-session view of the current day's sequential discussion. */
+    interface DayView {
+      round: number
+      order: string[]
+      /** Everyone this session has SEEN speak, including itself. */
+      spoke: Set<string>
+    }
+    const days = new Map<string, DayView>()
     const chunk = (sessionId: string, text: string) =>
       onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+    /** The product's silent branch: the renderer drops it before any post. */
+    const stayQuiet = (sessionId: string) => {
+      chunk(sessionId, NO_RESPONSE_SENTINEL)
+      return { stopReason: 'end_turn' as const }
+    }
     const listAfter = (text: string, label: string): string[] => {
       const match = new RegExp(`${label}:\\s*([^.\\n]+)`).exec(text)
       return match
@@ -324,8 +385,13 @@ export function scriptedWerewolfHostFactory(): (
           }
           return { stopReason: 'end_turn' }
         }
-        if (/DAY \d+/.test(text)) {
+        // ── the structured vote: a tool call, and no room speech ──
+        const vote = /VOTE (\d+)\./.exec(text)
+        if (vote) {
+          // The discussion this session was tracking is over.
+          days.delete(sessionId)
           const living = listAfter(text, 'Living players')
+          if (!living.includes(agent.name ?? '')) return stayQuiet(sessionId)
           const candidates = living.filter((alias) => alias !== agent.name)
           const target =
             state.knownWolf && living.includes(state.knownWolf)
@@ -333,15 +399,44 @@ export function scriptedWerewolfHostFactory(): (
               : state.role === 'werewolf'
                 ? candidates.find((alias) => alias !== state.partner)
                 : candidates[0]
-          if (!target) {
-            chunk(sessionId, 'abstaining')
-            return { stopReason: 'end_turn' }
-          }
-          const outcome = await act(sessionId, 'vote', target)
-          chunk(sessionId, `I suspect ${target}. (${outcome})`)
-          return { stopReason: 'end_turn' }
+          if (target) await act(sessionId, 'vote', target)
+          return stayQuiet(sessionId)
         }
-        chunk(sessionId, 'waiting')
+        // ── the sequential day ──
+        // The referee's opening carries the order; everything after it is a peer
+        // message and must be read for WHO has already spoken.
+        const opening = /DAY (\d+)\..*?Speaking order: ([^.\n]+)\./s.exec(text)
+        if (opening) {
+          days.set(sessionId, {
+            round: Number(opening[1]),
+            order: opening[2]!
+              .split('→')
+              .map((entry) => entry.trim())
+              .filter(Boolean),
+            spoke: new Set<string>()
+          })
+        }
+        const day = days.get(sessionId)
+        if (!day) return stayQuiet(sessionId)
+        // Every visible speech is "[<platform sender>] <alias>: …". Only the
+        // self-identifying prefix counts, so an alias named INSIDE a sentence
+        // ("I suspect player-4") never registers as that player having spoken.
+        for (const line of text.matchAll(/^(?:\[[^\]\n]*\]\s*)?([a-z0-9-]+):\s/gim)) day.spoke.add(line[1]!)
+        const me = agent.name ?? ''
+        const index = day.order.indexOf(me)
+        if (index < 0) return stayQuiet(sessionId)
+        // Natural sequencing, decided ONLY from what the room shows — never from
+        // a local "I already went" flag, which the daemon's turn-final
+        // regeneration fence would silently discard along with the draft speech:
+        //   go  ⇔  everyone ahead of me has spoken AND nobody behind me has.
+        // Once my successor speaks, that second clause retires me for the day.
+        if (!day.order.slice(0, index).every((alias) => day.spoke.has(alias))) return stayQuiet(sessionId)
+        if (day.order.slice(index + 1).some((alias) => day.spoke.has(alias))) return stayQuiet(sessionId)
+        const suspicion =
+          state.knownWolf && day.order.includes(state.knownWolf) && state.knownWolf !== me
+            ? `I have a bad feeling about ${state.knownWolf}.`
+            : 'nothing stands out to me yet.'
+        chunk(sessionId, `${me}: ${suspicion}`)
         return { stopReason: 'end_turn' }
       },
       cancel: async () => {},
@@ -353,6 +448,9 @@ export function scriptedWerewolfHostFactory(): (
 export interface WerewolfGameRunOptions {
   seed?: number
   artifactDir: string
+  /** Table size (default 7). A larger table lengthens the day's speaking order,
+   *  which is how the arena measures the order's length bound. */
+  playerCount?: number
   maxRounds?: number
   maxSteps?: number
   timeoutMs?: number
@@ -363,7 +461,9 @@ export interface WerewolfGameRunOptions {
 export async function runWerewolf(options: WerewolfGameRunOptions): Promise<CollaborationGameResult> {
   const seed = options.seed ?? 42
   const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
-  const topology = compileTopology(werewolfManifest({ seed }))
+  const topology = compileTopology(
+    werewolfManifest({ seed, ...(options.playerCount !== undefined ? { playerCount: options.playerCount } : {}) })
+  )
   const world = new ArenaWorld(topology)
   const game = new WerewolfGame({
     world,
@@ -372,7 +472,7 @@ export async function runWerewolf(options: WerewolfGameRunOptions): Promise<Coll
     dmRoomAliasFor: werewolfDmRoomAlias,
     ...(options.maxRounds !== undefined ? { maxRounds: options.maxRounds } : {})
   })
-  const subject = prepareGameSubject(topology, subjectSpec)
+  const subject = await prepareSubjectForRun(topology, subjectSpec)
   try {
     const runner = new CollaborationGameRunner({
       root: subject.root,
@@ -493,7 +593,7 @@ export async function runCrossRoomCounting(options: CrossRoomGameRunOptions): Pr
     ...(options.boundary !== undefined ? { boundary: options.boundary } : {}),
     ...(options.target !== undefined ? { target: options.target } : {})
   })
-  const subject = prepareGameSubject(topology, subjectSpec)
+  const subject = await prepareSubjectForRun(topology, subjectSpec)
   try {
     const runner = new CollaborationGameRunner({
       root: subject.root,
@@ -540,7 +640,7 @@ export async function runQuotaCounting(options: QuotaCountingRunOptions): Promis
   const topology = compileTopology(countingManifest({ seed, agents }))
   const world = new ArenaWorld(topology)
   const game = new QuotaCountingGame({ world, roomAlias: 'counting-room', quotaPerAgent })
-  const subject = prepareGameSubject(topology, subjectSpec)
+  const subject = await prepareSubjectForRun(topology, subjectSpec)
   try {
     const runner = new CollaborationGameRunner({
       root: subject.root,
@@ -579,7 +679,7 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
     variant,
     ...(options.target !== undefined ? { target: options.target } : {})
   })
-  const subject = prepareGameSubject(topology, subjectSpec)
+  const subject = await prepareSubjectForRun(topology, subjectSpec)
   try {
     const runner = new CollaborationGameRunner({
       root: subject.root,

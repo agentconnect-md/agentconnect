@@ -20,6 +20,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { collectObjectSecrets, environmentSecrets } from '../../packages/daemon/src/evaluation/index.js'
@@ -198,4 +199,149 @@ export function prepareRealSubject(
 
 export function prepareGameSubject(topology: CompiledTopology, spec: GameSubjectSpec): PreparedGameSubject {
   return spec.kind === 'scripted' ? prepareScriptedSubject(topology) : prepareRealSubject(topology, spec)
+}
+
+/** How long a runtime gets to prove it can start before the probe gives up and
+ *  calls it healthy. An ACP adapter over stdio stays alive and silent, so the
+ *  signal we are looking for is an EARLY non-zero exit. */
+const RUNTIME_PROBE_MS = 20_000
+
+/**
+ * Preflight for a REAL subject: actually launch each runtime the prepared agents
+ * reference and fail loudly if it cannot start.
+ *
+ * Without this, an unlaunchable runtime (the classic case is a corrupted npx
+ * cache, which makes `npx -y <adapter>` exit immediately) produces a game that
+ * simply never emits an effect: the runner burns its whole deadline, every wave
+ * stalls, and the artifacts record an empty world with no explanation. A
+ * two-second probe turns that into one actionable error naming the runtime, the
+ * command and the child's own stderr.
+ *
+ * The probe is deliberately shallow — it does not speak ACP, authenticate, or
+ * check a model. It answers exactly one question: does this command start?
+ */
+export async function preflightRealSubject(root: string, options: { probeMs?: number } = {}): Promise<void> {
+  const probeMs = options.probeMs ?? RUNTIME_PROBE_MS
+  const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8')) as {
+    runtimes?: Record<string, { command?: string; args?: string[]; env?: { name: string; value: string }[] }>
+  }
+  const runtimes = config.runtimes ?? {}
+  const needed = new Set<string>()
+  const agentsDir = join(root, 'agents')
+  for (const entry of readdirSync(agentsDir)) {
+    const agentPath = join(agentsDir, entry, 'agent.json')
+    if (!existsSync(agentPath)) continue
+    const agent = JSON.parse(readFileSync(agentPath, 'utf8')) as { runtime?: string }
+    if (typeof agent.runtime === 'string') needed.add(agent.runtime)
+  }
+  for (const name of needed) {
+    const definition = runtimes[name]
+    if (!definition?.command) {
+      throw new Error(
+        `game subject preflight: runtime "${name}" has no command in the template config.json — ` +
+          `the game would start and then stall with zero agent effects.`
+      )
+    }
+    await probeRuntime(name, definition, probeMs)
+  }
+  assertMcpBridgeEntry(root)
+}
+
+/**
+ * The second silent failure of the real-subject path: the MCP bridge entry.
+ *
+ * A real runtime reaches the daemon's tools through a `mcp-bridge` SUBPROCESS,
+ * spawned as `node <daemon CLI entry> mcp-bridge` (`daemonEntryForShims`). A
+ * scripted host never uses it — it speaks the control socket directly — so
+ * nothing in the scripted gate can catch a bad entry. When the entry is wrong,
+ * the bridge cannot start, and the ACP session silently comes up with NO
+ * AgentConnect tools at all: no `sendMessage`, and none of the §6 evaluation
+ * tools the game's rules are made of. The model then improvises in prose and the
+ * run looks like a model failure.
+ *
+ * `daemonEntryForShims` resolves `<root>/current/dist/index.js` and otherwise
+ * falls back to `process.argv[1]` — which, for anything driving the arena from
+ * source (a Vitest worker, `tsx`), is not the daemon CLI. Set
+ * `AGENTCONNECT_DAEMON_ENTRY` to the built daemon bundle for real-subject runs.
+ */
+function assertMcpBridgeEntry(root: string): void {
+  const override = process.env.AGENTCONNECT_DAEMON_ENTRY
+  const resolved = override ?? (existsSync(join(root, 'current', 'dist', 'index.js')) ? 'current' : process.argv[1])
+  const advice =
+    'Set AGENTCONNECT_DAEMON_ENTRY to the built daemon bundle ' +
+    '(packages/daemon/dist/index.js after `pnpm --filter @agentconnect.md/daemon build`).'
+  if (resolved === 'current') return
+  if (!resolved || !existsSync(resolved)) {
+    throw new Error(
+      `game subject preflight: the MCP bridge entry ${JSON.stringify(resolved ?? null)} does not exist, so a real ` +
+        `runtime would start with no AgentConnect tools (no sendMessage, no evaluation tools). ${advice}`
+    )
+  }
+  // A daemon bundle is the only thing that implements the `mcp-bridge` command.
+  // Anything else — a Vitest worker, a test runner shim — silently no-ops.
+  if (!readFileSync(resolved, 'utf8').includes('mcp-bridge')) {
+    throw new Error(
+      `game subject preflight: ${resolved} is not the AgentConnect daemon CLI (it has no "mcp-bridge" command), so ` +
+        `a real runtime would start with no AgentConnect tools (no sendMessage, no evaluation tools). ${advice}`
+    )
+  }
+}
+
+async function probeRuntime(
+  name: string,
+  definition: { command?: string; args?: string[]; env?: { name: string; value: string }[] },
+  probeMs: number
+): Promise<void> {
+  const command = definition.command!
+  const args = definition.args ?? []
+  const printable = [command, ...args].join(' ')
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const pair of definition.env ?? []) env[pair.name] = pair.value
+  await new Promise<void>((resolve, reject) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env })
+    } catch (error) {
+      reject(
+        new Error(
+          `game subject preflight: runtime "${name}" could not be spawned (${printable}): ${(error as Error).message}`
+        )
+      )
+      return
+    }
+    let stderr = ''
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill('SIGKILL')
+      if (error) reject(error)
+      else resolve()
+    }
+    const timer = setTimeout(() => finish(), probeMs)
+    // A long-lived stdio adapter never unrefs the test process on its own.
+    timer.unref?.()
+    child.stderr?.on('data', (data: Buffer) => {
+      stderr = `${stderr}${data.toString()}`.slice(-2000)
+    })
+    child.on('error', (error) =>
+      finish(
+        new Error(`game subject preflight: runtime "${name}" could not be spawned (${printable}): ${error.message}`)
+      )
+    )
+    child.on('exit', (code, signal) => {
+      if (settled) return
+      // Exiting at all this early means the runtime never came up. Even a clean
+      // exit is a failure: an ACP adapter must stay alive on stdio.
+      finish(
+        new Error(
+          `game subject preflight: runtime "${name}" exited immediately ` +
+            `(code=${code ?? 'null'} signal=${signal ?? 'null'}) running \`${printable}\`. ` +
+            `The game would stall with zero agent effects.` +
+            (stderr.trim() ? ` Child stderr: ${stderr.trim()}` : '')
+        )
+      )
+    })
+  })
 }

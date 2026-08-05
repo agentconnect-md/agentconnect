@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { countingManifest } from '../games/engine.js'
-import { prepareRealSubject, prepareScriptedSubject } from '../games/subject.js'
+import { prepareRealSubject, prepareScriptedSubject, preflightRealSubject } from '../games/subject.js'
 import { compileTopology } from '../games/topology.js'
 
 const scratchRoots: string[] = []
@@ -50,6 +50,16 @@ function template(): string {
 }
 
 const topology = compileTopology(countingManifest({ seed: 21, agents: ['agent-a', 'agent-b', 'agent-c'] }))
+
+/** A stand-in for the daemon CLI: the preflight's structural check is "does this
+ *  entry implement the `mcp-bridge` command", so the fixture only has to contain
+ *  that command name. Keeping it hermetic means the check is covered even when
+ *  the daemon bundle has not been built. */
+function daemonEntryStub(): string {
+  const path = join(scratch(), 'daemon-cli-stub.js')
+  writeFileSync(path, "// AgentConnect daemon CLI stub\nprogram.command('mcp-bridge')\n")
+  return path
+}
 
 describe('game subjects (§8.1/§14 step 4)', () => {
   it('scripted subject scaffolds one scripted agent per compiled uuid with no on-disk integrations', () => {
@@ -182,4 +192,80 @@ describe('game subjects (§8.1/§14 step 4)', () => {
       prepareRealSubject(topology, { kind: 'real', subjectRoot: linked, templateAgentIds: ['linked-agent'] })
     ).toThrow(/symbolic link/)
   })
+})
+
+describe('real-subject preflight — an unlaunchable runtime fails loudly, not silently', () => {
+  /** Materialize a real subject whose runtime is exactly `command` + `args`. */
+  function realSubjectWithRuntime(command: string, args: string[]) {
+    const root = scratch()
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({ version: 1, controlPlane: { enabled: false }, runtimes: { probe: { command, args } } })
+    )
+    const agentDir = join(root, 'agents', 'template-agent')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(
+      join(agentDir, 'agent.json'),
+      JSON.stringify({ id: 'template-agent', name: 'Template Agent', status: 'active', runtime: 'probe' })
+    )
+    const subject = prepareRealSubject(topology, {
+      kind: 'real',
+      subjectRoot: root,
+      templateAgentIds: ['template-agent']
+    })
+    scratchRoots.push(subject.root)
+    return subject
+  }
+
+  it('reports the runtime, the command and the child stderr when the runtime exits immediately', async () => {
+    // The real-world shape of this is a corrupted npx cache: the launcher exits
+    // at once, the daemon never produces an agent effect, and the game burns its
+    // whole deadline writing an empty world with no explanation.
+    const subject = realSubjectWithRuntime(process.execPath, [
+      '-e',
+      'process.stderr.write("npm error could not determine executable to run"); process.exit(1)'
+    ])
+    await expect(preflightRealSubject(subject.root)).rejects.toThrow(/runtime "probe" exited immediately/)
+    await expect(preflightRealSubject(subject.root)).rejects.toThrow(/could not determine executable to run/)
+    await expect(preflightRealSubject(subject.root)).rejects.toThrow(/stall with zero agent effects/)
+  }, 60_000)
+
+  it('reports a runtime whose command does not exist at all', async () => {
+    const subject = realSubjectWithRuntime('ac-no-such-runtime-binary', [])
+    await expect(preflightRealSubject(subject.root)).rejects.toThrow(/runtime "probe" could not be spawned/)
+  }, 60_000)
+
+  it('passes a runtime that stays alive on stdio, the way an ACP adapter does', async () => {
+    const subject = realSubjectWithRuntime(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
+    const previous = process.env.AGENTCONNECT_DAEMON_ENTRY
+    process.env.AGENTCONNECT_DAEMON_ENTRY = daemonEntryStub()
+    try {
+      await expect(preflightRealSubject(subject.root, { probeMs: 1_000 })).resolves.toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.AGENTCONNECT_DAEMON_ENTRY
+      else process.env.AGENTCONNECT_DAEMON_ENTRY = previous
+    }
+  }, 60_000)
+
+  it('refuses an MCP bridge entry that is not the daemon CLI — the silent no-tools failure', async () => {
+    // A real runtime reaches every AgentConnect tool through a `mcp-bridge`
+    // subprocess spawned from the daemon CLI. Point that at anything else and
+    // the ACP session comes up with no tools at all, which reads as the model
+    // improvising rather than as a harness fault.
+    const subject = realSubjectWithRuntime(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'])
+    const previous = process.env.AGENTCONNECT_DAEMON_ENTRY
+    const notTheCli = join(scratch(), 'not-the-cli.js')
+    writeFileSync(notTheCli, 'console.log("I am a test runner, not the daemon")\n')
+    try {
+      process.env.AGENTCONNECT_DAEMON_ENTRY = notTheCli
+      await expect(preflightRealSubject(subject.root, { probeMs: 500 })).rejects.toThrow(
+        /is not the AgentConnect daemon CLI/
+      )
+      process.env.AGENTCONNECT_DAEMON_ENTRY = join(scratch(), 'missing-entry.js')
+      await expect(preflightRealSubject(subject.root, { probeMs: 500 })).rejects.toThrow(/does not exist/)
+    } finally {
+      if (previous === undefined) delete process.env.AGENTCONNECT_DAEMON_ENTRY
+      else process.env.AGENTCONNECT_DAEMON_ENTRY = previous
+    }
+  }, 60_000)
 })

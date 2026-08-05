@@ -51,23 +51,22 @@ Beyond that boundary, two things are substituted, both at the edges:
   model credentials**. The identical game runs against a real ACP runtime by
   passing a subject template; the engine seam is the same either way.
 
-### 1.1 The platform echo (peer-driven counting and quota counting only)
+### 1.1 The platform echo (every game except cross-room counting)
 
-In the **echo-enabled** games — peer-driven counting and quota counting — every
-delivered agent post fans back to the other members' connections under the
-author's **real managed bot identity**, as a streaming post under its own message
-id plus a response-closing `message_changed` edit under the same msgId,
-distinguished by `ingressEventTag` and carrying the daemon-stamped authorship
-claim. Whether an echo activates anyone is the **daemon's** decision; the harness
-never editorializes, and chatter echoes exactly like a valid move, because
-production echoes everything.
+In the **echo-enabled** games — peer-driven counting, quota counting, and
+Werewolf's day phase — every delivered agent post fans back to the other members'
+connections under the author's **real managed bot identity**, as a streaming post
+under its own message id plus a response-closing `message_changed` edit under the
+same msgId, distinguished by `ingressEventTag` and carrying the daemon-stamped
+authorship claim. Whether an echo activates anyone is the **daemon's** decision;
+the harness never editorializes, and chatter echoes exactly like a valid move,
+because production echoes everything.
 
-**Werewolf and cross-room counting do not install the echo.** Their phases are
-referee-driven: waves come from human-sourced referee broadcasts and
-`deliverRefereeEvent`, so a delivered agent post there does not fan back as a
-production-style inbound event. That is why those two games do not exercise
-implicit continuation, and why their conversations are bounded by the referee's
-cadence rather than by the hop cap.
+**Cross-room counting does not install the echo.** Its phases are referee-driven:
+waves come from human-sourced referee broadcasts and `deliverRefereeEvent`, so a
+delivered agent post there does not fan back as a production-style inbound event.
+That game therefore says nothing about implicit continuation, and its
+conversation is bounded by the referee's cadence rather than by the protections.
 
 ## 2. The four routing acceptance cases
 
@@ -119,11 +118,33 @@ and consecutive posts rather than policing them.
 
 ### 3.3 Werewolf (§10.3)
 
-Seven agents, seeded roles (2 werewolves, 1 seer, 1 doctor, 3 villagers), a
-public room, a **real private wolf den**, and per-player referee DMs. Public
-discussion is ordinary natural-language speech; game-state mutations
-(`vote`, `inspect`, `protect`, `kill`) go through the §6 evaluation tool registry
-as structured actions over the real MCP socket.
+Seven agents by default, seeded roles (2 werewolves, 1 seer, 1 doctor, villagers
+for the rest — the table scales past seven), a public room, a **real private wolf
+den**, and per-player referee DMs. Public discussion is ordinary natural-language
+speech; game-state mutations (`vote`, `inspect`, `protect`, `kill`) go through the
+§6 evaluation tool registry as structured actions over the real MCP socket.
+
+**The day phase is sequential and peer-driven.** The referee opens each day
+exactly once — deaths, living players, the speaking order, and the rule "speak
+only after the player before you has spoken" — and then says nothing until the
+order is finished or dead. Every step after that is carried by the players
+themselves: a speech is delivered, the platform echo fans it to the other
+members' connections, and the daemon's own routing ladder decides who wakes.
+**No one is nominated.** Speaker N+1 is woken by speaker N's ordinary message,
+which is exactly the PR #549 behavior — a verified agent-authored message naming
+nobody continues the conversation through the arbitration ladder. Players who are
+merely listening answer with the product's own `AC_NO_RESPONSE` silent branch, so
+a listening turn produces no room traffic (but still costs a turn — see §6.5).
+
+Measured per day and recorded in `game-result.json` / `world-events.jsonl`: the
+announced order, who actually spoke and in what order, who never got their turn,
+out-of-order speeches, what ended the round (`order_complete` / `stalled`), which
+players' loop-guard circuits latched, per-player peer-wake accounting
+(`admitted` / `gated` / `suppressed`), and whether the round reached the vote.
+
+The vote is unchanged: once the discussion completes or dies, the referee asks
+the living players for structured `vote` tool calls, and a vote attempted during
+discussion is rejected with `discussion_in_progress`.
 
 The registry enforces at the daemon: startup name-collision rejection (an
 evaluation tool may never shadow a product tool), a per-agent visibility
@@ -159,7 +180,7 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 15 files, 99 tests
+pnpm eval:collab:contracts # 15 files, 107 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
@@ -172,6 +193,9 @@ npx vitest run evals/test/cross-room-counting.test.ts
 npx vitest run evals/test/game-runner.test.ts
 npx vitest run evals/test/routing-acceptance.test.ts
 
+# the sequential-discussion cases specifically
+npx vitest run evals/test/werewolf.test.ts -t "sequential discussion"
+
 # supporting suites
 pnpm eval:contracts # evidence schema, ATIF, permission, redaction
 pnpm eval:validate  # adapter/config validation + evals tsc
@@ -179,33 +203,126 @@ pnpm eval:validate  # adapter/config validation + evals tsc
 
 Full gate, measured on this branch:
 
-| Suite                                                  | Tests  |
-| ------------------------------------------------------ | ------ |
-| `evals/test/routing-acceptance.test.ts`                | 8      |
-| `evals/test/game-runner.test.ts`                       | 5      |
-| `evals/test/werewolf.test.ts`                          | 7      |
-| `evals/test/quota-counting.test.ts`                    | 8      |
-| `evals/test/cross-room-counting.test.ts`               | 6      |
-| `evals/test/counting.test.ts`                          | 11     |
-| `evals/test/world-authorization.test.ts`               | 10     |
-| `evals/test/collaboration-game-provider.test.ts`       | 9      |
-| `evals/test/game-result-assertion.test.ts`             | 7      |
-| `evals/test/game-subject.test.ts`                      | 6      |
-| `evals/test/connection-surface.test.ts`                | 5      |
-| `evals/test/topology.test.ts`                          | 5      |
-| `evals/test/virtual-connections.test.ts`               | 4      |
-| `packages/daemon/test/evaluation-game-ingress.test.ts` | 5      |
-| `packages/daemon/test/evaluation-game-tools.test.ts`   | 3      |
-| **Total**                                              | **99** |
+| Suite                                                  | Tests   |
+| ------------------------------------------------------ | ------- |
+| `evals/test/routing-acceptance.test.ts`                | 8       |
+| `evals/test/game-runner.test.ts`                       | 5       |
+| `evals/test/werewolf.test.ts`                          | 11      |
+| `evals/test/quota-counting.test.ts`                    | 8       |
+| `evals/test/cross-room-counting.test.ts`               | 6       |
+| `evals/test/counting.test.ts`                          | 11      |
+| `evals/test/world-authorization.test.ts`               | 10      |
+| `evals/test/collaboration-game-provider.test.ts`       | 9       |
+| `evals/test/game-result-assertion.test.ts`             | 7       |
+| `evals/test/game-subject.test.ts`                      | 10      |
+| `evals/test/connection-surface.test.ts`                | 5       |
+| `evals/test/topology.test.ts`                          | 5       |
+| `evals/test/virtual-connections.test.ts`               | 4       |
+| `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
+| `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
+| **Total**                                              | **107** |
 
 **0 expected-fail.** Every pin is an ordinary assertion.
 
+### 4.1 Running a game against a real ACP runtime
+
+The identical game runs against a real runtime by passing a subject template.
+Two things must be true first, and the **real-subject preflight** now checks both
+before a single wave is injected (`preflightRealSubject` in
+`evals/games/subject.ts`), because each of them otherwise fails silently:
+
+- **Every runtime in the template must actually launch.** The preflight spawns
+  each one and fails with the child's own stderr if it exits immediately. A
+  corrupted `npx` cache produces exactly that, and the symptom without the check
+  is a game that admits every wave, produces zero agent effects, and burns its
+  whole deadline before writing an empty world.
+- **`AGENTCONNECT_DAEMON_ENTRY` must point at the built daemon bundle.** A real
+  runtime reaches every AgentConnect tool through a `mcp-bridge` subprocess
+  spawned from the daemon CLI; driving the arena from source makes
+  `daemonEntryForShims` fall back to `process.argv[1]` (a Vitest worker), the
+  bridge cannot start, and the ACP session comes up with **no tools at all** —
+  no `sendMessage` and none of the §6 evaluation tools. Scripted hosts never use
+  the bridge (they speak the control socket directly), so nothing in the scripted
+  gate can catch it. This was measured, not theorized: see §5.1.
+
+```bash
+pnpm --filter @agentconnect.md/daemon build
+export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
+# then call runWerewolf({ subject: { kind: 'real', subjectRoot, templateAgentIds } })
+```
+
 ## 5. Real-model runs
+
+### 5.1 Sequential Werewolf, real local Claude Code
+
+Measured on this branch with real local Claude Code over ACP
+(`npx -y @agentclientprotocol/claude-agent-acp@0.64.0`, model pinned to sonnet,
+`permissionMode: dontAsk`, memory off, from-scratch workspace). Five players, one
+round, five trials. Real subjects get **observed reliability, never a
+reproducible single score** (§8.1), so all five trials are reported.
+
+| Trial | Seed | Order | Spoke | Outcome          | Out-of-order | Gated wakes | Latches |
+| ----- | ---- | ----- | ----- | ---------------- | ------------ | ----------- | ------- |
+| A     | 42   | 5     | **5** | `order_complete` | 0            | 0           | 0       |
+| B     | 42   | 5     | **1** | `stalled`        | 0            | 0           | 0       |
+| C     | 41   | 5     | **5** | `order_complete` | 0            | 0           | 0       |
+| D     | 42   | 5     | **5** | `order_complete` | 0            | 0           | 0       |
+| E     | 43   | 5     | **3** | `stalled`        | 0            | 0           | 0       |
+
+Two facts, and they should be read together.
+
+**The mechanism works, and works cleanly.** In every trial the referee opened the
+day once and then said nothing; every speech that happened was **in order**, by
+the announced next speaker, woken by the previous speaker's echoed post through
+the ordinary routing ladder. Across five trials there were **zero out-of-order
+speeches**, zero canary leaks, and zero unauthorized or wrong-room effects. The
+speeches genuinely built on each other — _"let's hear from player-3 and player-5
+before jumping to conclusions"_, _"I'd rather listen to player-5 and player-4
+before forming an opinion"_, _"Now it's my turn, since player-1, player-2, and
+player-3 have all spoken"_ — which is the behavior the sequential form exists to
+make possible and which the concurrent broadcast form cannot produce.
+
+**The order is not reliably carried to the end: 3 of 5 trials completed it.** The
+two stalls are **not** a protection: gated wakes and loop-guard latches were zero
+in every trial, and per-player admitted wakes stayed at 5–8, inside the budget
+(§6.5). The next speaker was woken and simply did not take its turn. That is a
+model-behavior result, not a system bound, and it is the one figure here that
+would move with a different model, prompt, or table size.
+
+For contrast, the scripted gate completes the order in **every** run at these
+table sizes — so the harness, the echo, and the routing ladder are not what
+varies.
+
+**Trial B also produced the §4.1 finding.** It came up with
+no AgentConnect tools at all: `AGENTCONNECT_DAEMON_ENTRY` was unset, so the
+`mcp-bridge` subprocess was spawned from the Vitest worker instead of the daemon
+CLI and never started. The models improvised in prose — _"There's no dedicated
+kill/night-action tool available to me"_, _"I don't have a vote tool available in
+this environment"_ — and searched their own runtime's deferred tool list for
+`inspect`/`protect`/`vote`, finding nothing. Nothing in the harness reported a
+fault; the run was `passed` with `acceptedActions: 0`. That is precisely the class
+of silent real-subject failure the preflight now refuses to let happen.
+
+**The §6 tools are visible to a real runtime but not auto-approved.** With the
+bridge entry corrected, the tools appear correctly as
+`mcp__agentconnect__vote` / `…__inspect` / `…__protect`, and the models reach for
+them. The calls are then refused by the runtime's own permission layer
+(`permissionMode: dontAsk` — "don't prompt, deny if not pre-approved"), and the
+models report that verbatim in the room. The daemon does auto-allow its own MCP
+tools without a card (`isBuiltinSystemTool`), but that set is built from the
+static product tool list (`ALL_TOOL_NAMES`), so a game's §6 tools are not in it
+and fall through to the interactive policy — which has no surface in a headless
+arena run. `permissionMode: auto` does not help: the run stalls on the
+classifier. **Consequence for the numbers above: the real-model measurement
+covers the sequential DISCUSSION only.** Every structured-action count
+(`votesCast`, `kills`, `inspections`, `protections`) is 0 in a real-subject run
+and those figures come from the scripted gate.
+
+### 5.2 Peer-driven counting (historical)
 
 > **Provenance — read before quoting these.** These numbers were measured on
 > **`main` @ 87d36bc** with real local Claude Code over ACP (model sonnet). They
-> are **carried forward unrefreshed**: no ACP adapter is installed in the current
-> environment, so they could not be re-measured.
+> are **carried forward unrefreshed**: they have not been re-measured since.
 >
 > They were also measured **when `MAX_AGENT_CALL_HOPS` was 8**. #628 has since
 > raised it to 20, so the depth-limited run below would terminate differently
@@ -213,7 +330,7 @@ Full gate, measured on this branch:
 > quality** figures (entropy, duplicates, regenerations) as the durable signal
 > and the **depth** figures as historical.
 >
-> Everything in §2, §3, §4 and §6 **was** measured on the current branch.
+> Everything in §2, §3, §4, §5.1 and §6 **was** measured on the current branch.
 
 Both runs use the peer-driven variant: one human-sourced start message, then a
 silent referee.
@@ -367,17 +484,79 @@ semantics (full addressing, channel-root scoring, canary isolation, completion
 reporting) remain covered by contract tests, so the scoring rules are ready if
 the capability lands.
 
-### 6.5 Scope limits of the harness itself
+### 6.5 A sequential speaking order is bounded at nine speakers per referee-opened round
+
+This is what sequential Werewolf measures, and it is a different bound from §6.1
+and §6.3 even though it comes out of the same budget.
+
+A day of sequential discussion costs every participant **one automatic turn per
+other participant's speech**, whether or not they say anything: the echo of each
+speech is real ingress on every other member's connection, and the listening
+turn — even one that answers `AC_NO_RESPONSE` and posts nothing — is charged to
+that member's loop-guard circuit. So the player at position _i_ in the order must
+absorb _i_ automatic turns before their own turn arrives.
+
+`MAX_AUTOMATIC_TURNS_PER_WINDOW` is **8**, so position 8 (the **ninth** speaker)
+is the last one the budget can carry, and position 9 is refused. Measured,
+scripted, seed 42, varying only the table size:
+
+| Players | Day-1 order | Speakers reached | Outcome          | Gated wakes | Circuits latched |
+| ------- | ----------- | ---------------- | ---------------- | ----------- | ---------------- |
+| 7       | 6           | 6                | `order_complete` | 0           | 0                |
+| 9       | 8           | 8                | `order_complete` | 0           | 0                |
+| 10      | 9           | 9                | `order_complete` | 8           | 1                |
+| 11      | 10          | **9**            | `stalled`        | 16          | 2                |
+| 12      | 11          | **9**            | `stalled`        | 24          | 3                |
+
+Nine is exact, not approximate, and the arithmetic is visible in the artifacts:
+**every latched player shows `admitted: 8` followed by `gated`**, never 7 and
+never 9. Seed 9 reproduces the 12-player row identically.
+
+Three consequences worth stating plainly:
+
+- **The bound is per ROUND, not per game.** A seven-player table absorbs 9–10
+  admitted automatic turns over a two-day game and is never refused once. That is
+  possible only because the referee's `DAY`/`VOTE` broadcasts are trusted **human**
+  turns, and a human turn RESETS the automatic counter to zero
+  (`recordLoopGuardTurn` in `packages/daemon/src/store/local-store.ts`: the
+  automatic count is cleared on any non-automatic admission). Each referee message
+  hands the room a fresh budget; what has to fit inside one budget is a single
+  round of discussion.
+- **The latch is durable and takes the player out of the game, not just the
+  round.** Only `!resume` clears it and nobody sends one, so a latched player
+  never speaks again — and cannot even be reached by the referee's `VOTE`
+  broadcast, because an open circuit blocks human turns too. The measured
+  consequence is `incompleteVotes`: the day still reaches a vote, with fewer
+  ballots than living players.
+- **Dead players consume the budget too.** They stay in the room's broadcast
+  membership (§3.3's pre-existing limitation), so they absorb every echo. In the
+  10-player row above, the single latched circuit belongs to the night-1 victim —
+  a player who had nothing left to say and burned its whole budget listening.
+
+None of this is a defect. It is the automatic-turn budget doing its job against a
+conversation shape that costs O(N) turns per participant per round. It does mean
+the arena cannot measure sequential-discussion quality in a room of more than
+nine active speakers per referee message.
+
+### 6.6 Scope limits of the harness itself
 
 - **The platform is virtual.** Real Slack rate limits, retries, event ordering
   under load, and partial outages are not exercised. The connection-surface guard
   bounds the drift but cannot eliminate it.
 - **Normalization is above the boundary** (§1). The arena starts at the
   normalized message, so it cannot catch a normalizer defect.
-- **Only two games install the echo** (§1.1). Werewolf and cross-room counting
-  are referee-driven and therefore say nothing about implicit continuation.
+- **Cross-room counting does not install the echo** (§1.1). It is referee-driven
+  and therefore says nothing about implicit continuation.
 - **Werewolf's dead players still participate in the conversation** (§3.3);
-  only authoritative state is protected.
+  only authoritative state is protected. Since the day phase became sequential,
+  that is no longer only a reporting caveat — a dead player absorbs the same
+  automatic-turn budget as a living one (§6.5).
+- **A sequential order longer than nine speakers cannot be measured** (§6.5).
+- **A real subject cannot call the §6 evaluation tools** (§5.1). They are listed
+  correctly, but the daemon's auto-allow set is the static product tool list, so
+  they fall through to an interactive permission policy that a headless run has
+  no surface for. Real-subject runs therefore measure conversation, not
+  structured game actions.
 - **Scripted hosts are not models.** They make the engine's outcome a
   reproducible CI gate; they say nothing about whether a real model coordinates
   well. Only the real-subject runs speak to that, and only as repeated trials —
@@ -412,22 +591,30 @@ before a future game depends on them:
 
 Stated explicitly, since several claims above are structural rather than observed:
 
-| Claim                                                       | Basis                                                                                                         |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| The 99 contract tests pass, credential-free                 | **Measured**, this branch                                                                                     |
-| The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                     |
-| Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                     |
-| Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                      |
-| Only counting/quota install the echo                        | **Measured** — `PlatformEcho` is constructed in `counting.ts` and `quota-counting.ts` only                    |
-| Werewolf visibility admits dead players                     | **Measured** — the `visibleTo` predicate tests configured membership, not aliveness                           |
-| Cross-room handoff is refused, naming `thread`              | **Measured**, this branch (assertion on the product's own error text)                                         |
-| Leaderless rooms overshoot the target                       | **Measured**, this branch (scripted, 3 × 6)                                                                   |
-| 4-bot quota counting stalls 0/8 at 29 accepted / 10 started | **Measured**, this branch (scripted)                                                                          |
-| A 2-agent chain stops at 16 edges, not the hop cap of 20    | **Measured**, this branch (scripted A→B→A chain)                                                              |
-| ...and the automatic-turn budget is what stops it           | **Measured by construction** — raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the same chain reach hop 20 |
-| Real-model 2 × 20 → 10, entropy 1.0                         | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                         |
-| Real-model 4 × 8 → 8/8, entropy 0.70                        | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                 |
-| The same real-model run would now stop at 16 edges          | **Inferred** from the scripted chain result; no real-model run has been done since #628                       |
-| A long leaderless count still cannot finish unaided         | **Inferred** from the 16-edge bound plus the absence of any override                                          |
-| No hop-cap or loop-guard override exists                    | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                  |
-| Participation unfairness under fan-out                      | **Measured** (agents that never spoke) — the _cause_ attributed to scheduling order is **inferred**           |
+| Claim                                                       | Basis                                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The 107 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
+| The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                                                         |
+| Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                                                         |
+| Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                                                          |
+| Only cross-room counting omits the echo                     | **Measured** — `PlatformEcho` is constructed in `counting.ts`, `quota-counting.ts` and `werewolf.ts`                                              |
+| Werewolf visibility admits dead players                     | **Measured** — the `visibleTo` predicate tests configured membership, not aliveness                                                               |
+| Cross-room handoff is refused, naming `thread`              | **Measured**, this branch (assertion on the product's own error text)                                                                             |
+| Leaderless rooms overshoot the target                       | **Measured**, this branch (scripted, 3 × 6)                                                                                                       |
+| 4-bot quota counting stalls 0/8 at 29 accepted / 10 started | **Measured**, this branch (scripted)                                                                                                              |
+| A 2-agent chain stops at 16 edges, not the hop cap of 20    | **Measured**, this branch (scripted A→B→A chain)                                                                                                  |
+| ...and the automatic-turn budget is what stops it           | **Measured by construction** — raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the same chain reach hop 20                                     |
+| Werewolf's day advances on peer messages, not the referee   | **Measured**, this branch — one referee event per day between open and close, each speech preceded by the previous speaker's echo                 |
+| A sequential order stops at exactly 9 speakers per round    | **Measured**, this branch (scripted, tables of 7/9/10/11/12, seeds 42 and 9)                                                                      |
+| ...because each latched player absorbed exactly 8 wakes     | **Measured** — every latched circuit reports `admitted: 8` then `gated`                                                                           |
+| A referee (human) message resets the automatic counter      | **Measured** — 7-player players absorb 9–10 admitted automatic turns across a game with zero refusals; confirmed by reading `recordLoopGuardTurn` |
+| A latched player cannot receive the referee's VOTE either   | **Measured** — `incompleteVotes ≥ 1` on every stalled table                                                                                       |
+| Real Claude Code speaks strictly in order when it speaks    | **Measured**, this branch — 0 out-of-order speeches across 5 trials (§5.1)                                                                        |
+| ...but carries the order to the end in only 3 of 5 trials   | **Measured**, this branch (§5.1); both stalls had 0 gated wakes and 0 latches, so no protection was involved                                      |
+| A real subject with a bad MCP bridge entry loses ALL tools  | **Measured**, this branch (§5.1 trial B) — now refused by the preflight                                                                           |
+| Real-model 2 × 20 → 10, entropy 1.0                         | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                                                             |
+| Real-model 4 × 8 → 8/8, entropy 0.70                        | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                                                     |
+| The same real-model run would now stop at 16 edges          | **Inferred** from the scripted chain result; no real-model run has been done since #628                                                           |
+| A long leaderless count still cannot finish unaided         | **Inferred** from the 16-edge bound plus the absence of any override                                                                              |
+| No hop-cap or loop-guard override exists                    | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                                                      |
+| Participation unfairness under fan-out                      | **Measured** (agents that never spoke) — the _cause_ attributed to scheduling order is **inferred**                                               |
