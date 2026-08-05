@@ -65,12 +65,12 @@ Each host keeps its own per-platform directory plus a static `registry.ts` —
 `components/`). The shared, pre-dispatch capability table is
 `packages/protocol/src/platform-manifest.ts` (§5).
 
-| Host          | Contract                                                         | What a module owns                                                                                                                              |
-| ------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| daemon        | three-facet adapter (connect/ingress/read port + turn output)    | connection, normalization hand-off, renderers, strategy functions                                                                               |
-| relay         | `platforms/contract.ts` — `RelayPlatformIngressPlugin`           | `buildIngest` per bot, demux hints, `verify` → `handle`, optional `egress` facet                                                                |
-| control plane | `platforms/provider.ts` — `CpPlatformProvider`                   | install routes at two mount scopes, credential schema + live validation, create tail, reapers, background loops, env keys, both wire projectors |
-| web           | `components/console/platforms/contract.ts` — `WebPlatformModule` | wizard body, settings fragments, `Mark`, api bindings, channel semantics, text renderer                                                         |
+| Host          | Contract                                                         | What a module owns                                                                                                                                                                                                                   |
+| ------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| daemon        | three-facet adapter (connect/ingress/read port + turn output)    | connection, normalization hand-off, renderers, strategy functions                                                                                                                                                                    |
+| relay         | `platforms/contract.ts` — `RelayPlatformIngressPlugin`           | `buildIngest` per bot, `installRoutes`, demux hints, `verify` → `handle`, optional `egress` facet                                                                                                                                    |
+| control plane | `platforms/provider.ts` — `CpPlatformProvider`                   | install routes at two mount scopes, credential schema + live validation, create tail, identity projection, reapers, background loops, env keys, the spec projector (bot-assign projector is optional — relay-ingress platforms only) |
+| web           | `components/console/platforms/contract.ts` — `WebPlatformModule` | wizard body, settings fragments, `Mark`, api bindings, channel semantics, text renderer                                                                                                                                              |
 
 **GitHub and GitLab are deliberately NOT platform modules.** They have no chat
 ingress, so they stay on the webhook / code-host seam (`relay/src/hooks/`,
