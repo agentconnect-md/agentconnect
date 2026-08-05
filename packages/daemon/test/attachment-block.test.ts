@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
-import { attachmentToBlock, buildAttachmentBlocks, attachmentMention } from '../src/session/attachment-block.js'
+import { WEBCHAT_IMAGE_MAX_BYTES } from '@agentconnect.md/protocol'
+import {
+  attachmentToBlock,
+  buildAttachmentBlocks,
+  attachmentMention,
+  hydrateTranscriptImage,
+  transcriptImageAttachments
+} from '../src/session/attachment-block.js'
 import type { Attachment } from '../src/messages/normalized.js'
 
 const att = (over: Partial<Attachment> = {}): Attachment => ({
@@ -103,6 +110,44 @@ describe('buildAttachmentBlocks', () => {
       supports: supportsAll
     })
     expect(blocks[0]).toMatchObject({ type: 'resource_link' })
+  })
+})
+
+describe('hydrateTranscriptImage', () => {
+  it('fetches a platform image once and memoizes it for the prompt blocks', async () => {
+    const bytes = Buffer.from('IMG')
+    const download = vi.fn(async () => bytes)
+    const attachments = [att({ size: bytes.length })]
+    await hydrateTranscriptImage(attachments, download)
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'a.png', mimeType: 'image/png', data: bytes.toString('base64') }
+    ])
+    // The prompt build reuses the memoized bytes rather than downloading again.
+    await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
+    expect(download).toHaveBeenCalledOnce()
+  })
+
+  it('leaves an oversized or non-image attachment alone (label-only replay)', async () => {
+    const download = vi.fn(async () => Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES + 1))
+    const big = [att({ size: WEBCHAT_IMAGE_MAX_BYTES + 1 })]
+    await hydrateTranscriptImage(big, download)
+    expect(download).not.toHaveBeenCalled() // known size over the cap ⇒ never fetched
+    const doc = [att({ name: 'd.pdf', mimeType: 'application/pdf' })]
+    await hydrateTranscriptImage(doc, download)
+    expect(download).not.toHaveBeenCalled()
+    // A file whose size the platform did not report is fetched, then rejected by size.
+    const unknown = [att()]
+    await hydrateTranscriptImage(unknown, download)
+    expect(download).toHaveBeenCalledOnce()
+    expect(transcriptImageAttachments(unknown)).toEqual([])
+  })
+
+  it('survives a failed download', async () => {
+    const attachments = [att()]
+    await hydrateTranscriptImage(attachments, async () => {
+      throw new Error('network')
+    })
+    expect(transcriptImageAttachments(attachments)).toEqual([])
   })
 })
 

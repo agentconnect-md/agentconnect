@@ -1,6 +1,7 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import {
   SessionImageAttachment as SessionImageAttachmentSchema,
+  WEBCHAT_IMAGE_MAX_BYTES,
   type SessionImageAttachment
 } from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
@@ -82,6 +83,29 @@ export async function buildAttachmentBlocks(attachments: Attachment[], deps: Att
       return attachmentToBlock(att, bytes, deps.supports)
     })
   )
+}
+
+/**
+ * Fetch the bytes of the first inline-able image so its transcript row can carry
+ * it for console replay. Webchat images arrive inline already; a platform
+ * attachment (Slack/Telegram/Discord/Feishu) is only an auth-gated URL, so
+ * without this the console can render nothing but the `[attached: …]` label.
+ * The bytes are memoized onto the attachment, so `buildAttachmentBlocks` reuses
+ * them and the turn still downloads the file exactly once.
+ *
+ * ponytail: one image, capped at the daemon→CP history-frame ceiling
+ * (WEBCHAT_IMAGE_MAX_BYTES). A bigger image (or a second one) keeps the label;
+ * showing those needs chunked/off-frame image reads, not a bigger cap.
+ */
+export async function hydrateTranscriptImage(
+  attachments: Attachment[] | undefined,
+  download: (att: Attachment) => Promise<Buffer | null>
+): Promise<void> {
+  const image = attachments?.find((att) => att.mimeType.startsWith('image/'))
+  if (!image || image.inlineData) return
+  if (typeof image.size === 'number' && image.size > WEBCHAT_IMAGE_MAX_BYTES) return
+  const bytes = await download(image).catch(() => null)
+  if (bytes && bytes.byteLength <= WEBCHAT_IMAGE_MAX_BYTES) image.inlineData = bytes
 }
 
 /** Keep a validated bounded inline image beside its daemon-local transcript row. */

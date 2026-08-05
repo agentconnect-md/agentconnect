@@ -13,7 +13,12 @@ import type { Agent } from '../agents/agent-schema.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { stableTurnId, type Attachment, type NormalizedMessage } from '../messages/normalized.js'
 import { messageOrderingFor } from '../platforms/message-ordering.js'
-import { buildAttachmentBlocks, attachmentMention, transcriptImageAttachments } from './attachment-block.js'
+import {
+  buildAttachmentBlocks,
+  attachmentMention,
+  hydrateTranscriptImage,
+  transcriptImageAttachments
+} from './attachment-block.js'
 import { EXPLICIT_MENTION_REMINDER, NO_RESPONSE_RULE, NO_RESPONSE_REMINDER } from './no-response.js'
 
 /** Metadata-only semantic lifecycle for one provider-neutral recall attempt. Query
@@ -446,7 +451,13 @@ export class SessionManager {
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
 
     // record the triggering message in the transcript (with an attachment mention
-    // for prompt replay; bounded inline webchat images remain daemon-local for UI replay)
+    // for prompt replay; a bounded inline image stays daemon-local for UI replay).
+    // A platform image is only an auth-gated URL, so fetch it here — the bytes are
+    // memoized on the attachment and reused by the prompt blocks below (one fetch).
+    await hydrateTranscriptImage(
+      msg.attachments,
+      (att) => this.deps.downloadAttachment?.(agentId, att) ?? Promise.resolve(null)
+    )
     const mention = attachmentMention(msg.attachments)
     const transcriptAttachments = transcriptImageAttachments(msg.attachments)
     const transcriptText = mention ? `${msg.text}\n${mention}`.trim() : msg.text
