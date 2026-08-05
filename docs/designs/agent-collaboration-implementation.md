@@ -271,8 +271,8 @@ resetting chain depth.
   daemon automatically sets outbound `hopCount = current turn hopCount + 1`.
   It ignores any agent-supplied value.
 - Queue replay restores the persisted turn hop; compaction cannot reset it.
-- The daemon rejects delivery above the shared `MAX_AGENT_CALL_HOPS` threshold
-  (currently 20).
+- The daemon rejects delivery at or above the shared `MAX_AGENT_CALL_HOPS`
+  threshold (currently 20), so 19 is the final admitted hop.
 - **Test:** omitting hop arguments or explicitly passing `hopCount:0` cannot reset chain depth; the daemon uses turn-bound hop + 1.
 
 ### 2.5 Authorization: The Directional Call Policy, Org-Scoped
@@ -745,18 +745,18 @@ For orchestration:
 
 This section lists collaboration-side mechanisms only. See [`loop-breaker-design.md`](loop-breaker-design.md) for unified platform feedback loops, durable latches, restart/replay, and recovery permissions.
 
-- **hopCount:** Increment every agent-to-agent delivery and reject above the shared `MAX_AGENT_CALL_HOPS` threshold, preventing an A <-> B wake loop.
+- **hopCount:** Increment every agent-to-agent delivery and reject at or above the shared `MAX_AGENT_CALL_HOPS` threshold, preventing an A <-> B wake loop.
 - **Orchestration depth limit:** Bound nested orchestration when a worker acts as a main agent, preventing exponential fan-out.
 - **Self-delivery protection:** Reject `messageAgent(toAgentId == self)` to avoid self-wake loops.
 
 ### 4.6 Current Surface and Remaining Limits
 
-| Layer  | Current behavior                                                                                                                                                                                                        |
-| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon | Atomic `sessionKey` admission serializes a conversation, caps its queue at 10, releases or fail-stops queued work on failure/cancel, enforces the shared `MAX_AGENT_CALL_HOPS` maximum (20), and rejects self-delivery. |
-| Tool   | Peer delivery reports typed outcomes including offline, queue-full, policy denial, and hop-limit failures.                                                                                                              |
-| Config | `maxAgents` bounds placed agent capacity and `maxConcurrentSessions` is part of daemon config; neither supplies the missing collaboration-specific per-agent turn limit or orchestration fan-out width described above. |
-| Tests  | Cover concurrent cold-session admission, queue ordering and failure, queue-full reporting, hop-limit rejection, and self-delivery rejection.                                                                            |
+| Layer  | Current behavior                                                                                                                                                                                                                   |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon | Atomic `sessionKey` admission serializes a conversation, caps its queue at 10, releases or fail-stops queued work on failure/cancel, enforces the shared `MAX_AGENT_CALL_HOPS` exclusive boundary (20), and rejects self-delivery. |
+| Tool   | Peer delivery reports typed outcomes including offline, queue-full, policy denial, and hop-limit failures.                                                                                                                         |
+| Config | `maxAgents` bounds placed agent capacity and `maxConcurrentSessions` is part of daemon config; neither supplies the missing collaboration-specific per-agent turn limit or orchestration fan-out width described above.            |
+| Tests  | Cover concurrent cold-session admission, queue ordering and failure, queue-full reporting, hop-limit rejection, and self-delivery rejection.                                                                                       |
 
 ---
 

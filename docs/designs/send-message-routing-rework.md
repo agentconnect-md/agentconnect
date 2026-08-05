@@ -314,7 +314,7 @@ The transition is enforced as follows:
 
 1. A missing, non-integer, negative, or otherwise unverifiable source depth is
    transcript-only; it cannot activate an AgentConnect agent.
-2. If `deliveryHopCount > MAX_AGENT_CALL_HOPS`, the edge records a `hop_limit`
+2. If `deliveryHopCount >= MAX_AGENT_CALL_HOPS`, the edge records a `hop_limit`
    rejection and does not dispatch.
 3. A direct daemon computes the transition and installs `deliveryHopCount` as
    trusted active-turn call metadata on the admitted target turn.
@@ -397,7 +397,7 @@ final platform event
 |- structural/chrome event -> drop
 |- verified AgentConnect author?
 |    |- target == author -> excluded everywhere
-|    |- source hop invalid or source hop + 1 exceeds cap -> transcript only (hop_limit)
+|    |- source hop invalid or source hop + 1 reaches/exceeds cap -> transcript only (hop_limit)
 |    |- paired `toAgent + channel` (agentCallDeliveryId) -> the agent the tool named
 |    `- any other reply -> the thread's PARTICIPANTS, author excluded
 |         (agents already in the thread + any the body newly names)
@@ -623,10 +623,11 @@ At minimum, cover:
 14. A cross-daemon `session-reply` refuses a target daemon that never advertised
     `headless-agent-delivery-v1` instead of letting it key the reply by
     coordinates.
-15. Direct and relay mention routing both admit source depth `MAX_AGENT_CALL_HOPS
-    - 1`as target depth`MAX_AGENT_CALL_HOPS`, reject source depth
-`MAX_AGENT_CALL_HOPS` because the next hop overflows, and reject invalid or
-      missing depth instead of resetting it to zero.
+15. Direct and relay mention routing both admit source depth
+    `MAX_AGENT_CALL_HOPS - 2` as target depth `MAX_AGENT_CALL_HOPS - 1`, reject
+    source depth `MAX_AGENT_CALL_HOPS - 1` because the next hop reaches the
+    exclusive boundary, and reject invalid or missing depth instead of resetting
+    it to zero.
 16. An A -> B -> A ordinary-mention chain installs and re-stamps monotonically
     increasing trusted depths, stops at the shared cap, and preserves its depth
     across queue replay/restart.
