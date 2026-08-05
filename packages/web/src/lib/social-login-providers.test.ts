@@ -29,6 +29,12 @@ describe('social login provider selection', () => {
     expect(targets(',,')).toEqual(['github', 'google', 'slack'])
   })
 
+  it('renders no social buttons for an explicit `none` (password-only deployments)', () => {
+    expect(parseEnabledTargets('none')).toEqual(new Set())
+    expect(targets('none')).toEqual([])
+    expect(targets('  none  ')).toEqual([])
+  })
+
   // The invariant this variable exists for: whatever the console offers must be
   // linkable. The CP deliberately does NOT re-derive this set -- it accepts any
   // connector slug and lets the tenant's connector list be the gate -- so no

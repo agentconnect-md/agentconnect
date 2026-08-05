@@ -19,9 +19,12 @@
 // Unset keeps the original GitHub / Google / Slack set. New providers are
 // opt-in because adding one to this catalog must not make an upgraded deployment
 // offer a button for a connector its Logto tenant does not have. `*` explicitly
-// opts into the whole catalog. A target whose connector the tenant has not
-// configured lands the user on Logto's error page, so deployments should name
-// exactly the connectors they offer.
+// opts into the whole catalog, and `none` explicitly opts out of social login
+// entirely (password-only deployments pair it with `PASSWORD_LOGIN=true`, which
+// renders the local-account entry instead — see lib/auth `passwordLoginEnabled`).
+// A target whose connector the tenant has not configured lands the user on
+// Logto's error page, so deployments should name exactly the connectors they
+// offer.
 
 /** Every target this console can render. Order is display order. */
 export const SOCIAL_LOGIN_CATALOG = [
@@ -43,11 +46,13 @@ const isRegionalProvider = (
 
 const DEFAULT_SOCIAL_LOGIN_TARGETS = new Set<SocialLoginTarget>(['github', 'google', 'slack'])
 
-/** Parse the configured target list. Unset / blank ⇒ legacy defaults; `*` ⇒ all. */
+/** Parse the configured target list. Unset / blank ⇒ legacy defaults; `*` ⇒ all;
+ * `none` ⇒ explicitly no social login (distinct from a typo, which falls back). */
 export function parseEnabledTargets(raw: string | undefined): Set<string> | null {
   const trimmed = raw?.trim()
   if (!trimmed) return new Set(DEFAULT_SOCIAL_LOGIN_TARGETS)
   if (trimmed === '*') return null
+  if (trimmed === 'none') return new Set()
   const entries = trimmed
     .split(',')
     .map((entry) => entry.trim())
@@ -61,6 +66,8 @@ export function parseEnabledTargets(raw: string | undefined): Set<string> | null
 export function selectEnabledProviders(raw: string | undefined): readonly SocialLoginProvider[] {
   const enabled = parseEnabledTargets(raw)
   if (!enabled) return SOCIAL_LOGIN_CATALOG
+  // Explicit `none` — the deployment offers another way in (password login).
+  if (enabled.size === 0) return []
   const selected = SOCIAL_LOGIN_CATALOG.filter((provider) => enabled.has(provider.target))
   // A value naming only unknown targets would otherwise leave the sign-in page
   // with no way in at all; retain the pre-Lark/Feishu defaults without assuming

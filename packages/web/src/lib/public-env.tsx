@@ -17,9 +17,13 @@ const KEYS = [
   'LOGTO_APP_ID',
   'LOGTO_API_RESOURCE',
   // Which social sign-in methods this deployment offers (comma-separated Logto
-  // connector targets; unset/`*` ⇒ all). The console is the only side that reads
-  // it — see lib/social-login-providers.
+  // connector targets; unset/`*` ⇒ all; `none` ⇒ no social login). The console is
+  // the only side that reads it — see lib/social-login-providers.
   'SOCIAL_PROVIDERS',
+  // Opt-in local username/password sign-in entry ('true'/'1'). The Logto
+  // tenant's sign-in experience must have the password method enabled — see
+  // lib/auth passwordLoginEnabled.
+  'PASSWORD_LOGIN',
   'CP_URL',
   'RELAY_URL',
   // Dedicated MCP origin (mirrors the CP's PUBLIC_MCP_URL). Unset ⇒ the console

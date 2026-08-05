@@ -57,6 +57,17 @@ export function isAuthConfigured(): boolean {
   return Boolean(endpoint && appId)
 }
 
+/** True when this deployment offers Logto's local username/password sign-in
+ *  (`PASSWORD_LOGIN=true|1`). Renders a password entry that starts the plain
+ *  hosted-experience flow — the tenant must have the password method enabled.
+ *  Pairs with `SOCIAL_PROVIDERS=none` for deployments without any social
+ *  connector. */
+export function passwordLoginEnabled(): boolean {
+  const src = typeof window === 'undefined' ? process.env : (window.__AC_ENV ?? {})
+  const raw = (src.PASSWORD_LOGIN || process.env.NEXT_PUBLIC_PASSWORD_LOGIN || '').trim().toLowerCase()
+  return raw === 'true' || raw === '1'
+}
+
 /** Public tenant values used by the browser-side Logto Account API client. */
 export function getLogtoPublicConfig(): { endpoint: string; appId: string } | undefined {
   const { endpoint, appId } = readConfig()

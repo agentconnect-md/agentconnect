@@ -165,9 +165,13 @@ services:
       - LOGTO_APP_ID
       - LOGTO_API_RESOURCE
       # Which social sign-in methods to offer (comma-separated Logto connector
-      # targets; unset => all of them). The console owns this decision; the
-      # control plane gates on whether the tenant has that connector.
+      # targets; unset => all of them; `none` => no social login). The console
+      # owns this decision; the control plane gates on whether the tenant has
+      # that connector.
       - SOCIAL_PROVIDERS
+      # Opt-in local username/password sign-in entry (Logto's built-in account
+      # system; the tenant's sign-in experience must enable the password method).
+      - PASSWORD_LOGIN
     healthcheck:
       test:
         - CMD

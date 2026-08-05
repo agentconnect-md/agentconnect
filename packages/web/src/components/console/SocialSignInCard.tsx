@@ -374,6 +374,10 @@ export default function SocialSignInCard({
     setPendingUnlink(undefined)
   }
 
+  // A deployment with no social login at all (`SOCIAL_PROVIDERS=none`) has
+  // nothing to link — drop the card instead of rendering an empty shell.
+  if (socialLoginProviders().length === 0) return null
+
   const shell = mobile
     ? 'overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)'
     : 'card mt-[22px]'
