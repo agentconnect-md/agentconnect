@@ -345,13 +345,29 @@ code reached only through a platform-specific entry point, i.e. a FILE-MOVE
 candidate (the mechanical relocation to `platforms/<id>/` that class (a)
 prescribes), not a dispatch fork:
 
-| sites                                                         | what                                                                                 | reached via                                                                                                           |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| 5 in `handleRelaySlackAction`                                 | shared-mode integration lookup, delivery-binding validation, foreign-session rejects | `platformActionDecoders['slack']` only                                                                                |
-| 1 in `handleRelayFeishuAction`                                | shared-mode integration lookup                                                       | `platformActionDecoders['feishu']` only                                                                               |
-| 2 in `isHttpSlackIntegration` / `isShareableSlackIntegration` | Slack shared-mode predicates over the frozen (#516) disk shape                       | Slack-only flows (relay-owned action ids, switch-agent gate)                                                          |
-| 2 in `setSlackTitleForBinding`                                | the Slack DM-title binding writer's own validation                                   | `dmSessionTitle` turn-chrome gate                                                                                     |
-| 1 in `isAgentBotMessage`                                      | managed-Slack-bot echo identity (`botSenderRouting`)                                 | ingress trust check, entangled with the CP collab snapshot's Slack app-id index — moves with the Slack ingress module |
+| sites                                                         | what                                                                                 | reached via                                                                                        |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| 5 in `handleRelaySlackAction`                                 | shared-mode integration lookup, delivery-binding validation, foreign-session rejects | `platformActionDecoders['slack']` only                                                             |
+| 1 in `handleRelayFeishuAction`                                | shared-mode integration lookup                                                       | `platformActionDecoders['feishu']` only                                                            |
+| 2 in `isHttpSlackIntegration` / `isShareableSlackIntegration` | Slack shared-mode predicates over the frozen (#516) disk shape                       | Slack-only flows (relay-owned action ids, switch-agent gate)                                       |
+| 2 in `setSlackTitleForBinding`                                | the Slack DM-title binding writer's own validation                                   | `dmSessionTitle` turn-chrome gate                                                                  |
+| 1 in `fetchThreadHistory`                                     | which app-id index vouches for a backfilled bot frame                                | the `getThreadReplies` duck-type gate — Slack is the only platform with a thread-history read port |
+
+**Amended (F19 fix).** §10.6 F19 found seven Slack-only branches this table did
+not account for — the agent-authorship cluster, compound-mention address
+extraction, and the collaboration close-response. All seven are now closed: the
+two authorship gates read the §5 manifest's `botSenderRouting`, the three
+directory keys (`isAgentBotApp`, the collaboration placement lookup, the
+verified target's integration lookup) come from the message's own platform,
+compound addresses are a §7.4 strategy (`platforms/mention-address.ts`), and
+the close-response is a `closeResponse` member on the §7.3 turn-output surface.
+
+One of the seven — `isAgentBotMessage` — was the eleventh row of this table,
+and it is gone. Its slot is taken by the one literal that fix RELOCATED rather
+than removed: `isManagedAgentBotIdentity` is now platform-parameterized, so its
+Slack-only caller `fetchThreadHistory` states `'slack'` itself. The count is
+still eleven, and the new row is the same file-move class as every other one
+here, not a dispatch fork.
 
 Non-branch platform code still in shared files, likewise pending file moves,
 not extraction: the per-platform connect/consolidate loops (`slackRetryTimers`

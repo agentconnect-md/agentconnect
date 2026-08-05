@@ -147,7 +147,13 @@ import { consolidateDiscord, discordConnKey, DiscordConnection } from './discord
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
 import { loopGuardScopesFor } from './platforms/loop-guard.js'
-import { integrationConfig, integrationCore, platformIntegrationConfig } from './platforms/integration-config.js'
+import {
+  integrationConfig,
+  integrationCore,
+  platformIds,
+  platformIntegrationConfig
+} from './platforms/integration-config.js'
+import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
 import { threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
@@ -158,6 +164,7 @@ import { sessionThreadUrlFor } from './platforms/session-links.js'
 import { offersReadPort } from './platforms/read-ports.js'
 import {
   observedChannelsFor,
+  observedMembershipPlatforms,
   registerObservedChannels,
   type ObservedChannelsHost
 } from './platforms/observed-channels.js'
@@ -177,7 +184,6 @@ import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
   resolveSlackMentionedAgents,
   slackTextAddressesAnyone,
-  slackMentionAddress,
   SLACK_RESPONSE_FINAL_EVENT_TAG
 } from '@agentconnect.md/message'
 import {
@@ -1818,6 +1824,8 @@ export class Daemon {
         createConverger: (ctx) => new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? []),
         initialTurnState: (): SlackTurnState => ({}),
         apply: (p, action) => this.applySlackAction(p, action as SlackAction),
+        // §5.5: re-stamp the delivered answer as this response's one `final` event.
+        closeResponse: (p) => this.closeSlackResponse(p),
         // Terminal settlement: retry stale footer removals the final attribution
         // action may have bypassed on failure/suppression.
         onSettle: async (p) => {
@@ -4103,9 +4111,10 @@ export class Daemon {
   }
 
   /**
-   * Observed-conversation discovery for Telegram, Discord, and Feishu. These platforms do
-   * not give us an authoritative set of chats the bot is engaged in, so stored
-   * session history is merged with explicitly-addressed Off conversations already
+   * Observed-conversation discovery for every platform the §5 manifest marks
+   * `membershipEnumeration: 'observed'` — today Telegram, Discord and Feishu. These
+   * platforms do not give us an authoritative set of chats the bot is engaged in, so
+   * stored session history is merged with explicitly-addressed Off conversations already
    * cached for the integration. Reports carry `authoritative:false`: the CP upserts
    * what we know but never treats an absent row as a leave.
    *
@@ -4119,7 +4128,7 @@ export class Daemon {
    */
   private refreshObservedChannels(): void {
     for (const agent of this.agents.values()) {
-      for (const platform of ['telegram', 'discord', 'feishu'] as const) {
+      for (const platform of observedMembershipPlatforms()) {
         const integrations = agent.integrations.filter((i) => i.platform === platform)
         if (integrations.length === 0) continue
         for (const integ of integrations) {
@@ -4971,6 +4980,23 @@ export class Daemon {
     return { host, configFileState }
   }
 
+  /**
+   * The platform half of the CP registration capability set — DERIVED from this
+   * daemon's platform registry, never hand-listed.
+   *
+   * It is load-bearing rather than diagnostic: the CP's pre-install gate
+   * (`integrationPlatformAvailability`) and the console's tile gating both read it, so
+   * a platform this daemon can serve but forgot to advertise is silently uninstallable.
+   * Derivation removes the forgetting.
+   *
+   * Order is the registry's, so the advertised value is unchanged from the hand list it
+   * replaces. Extracted as its own method so the drift test can read exactly what the
+   * handshake sends (see test/platform-registry-drift.test.ts).
+   */
+  private registrationPlatforms(): string[] {
+    return platformIds()
+  }
+
   private registrationFeatures(): string[] {
     // Remote-MCP eligibility is (validated adapter provenance) AND (probed HTTP
     // transport): the capability bit alone proves descriptor transport, not that
@@ -5807,21 +5833,37 @@ export class Daemon {
   // route an inbound Slack message
   private seenMsgIds = new Set<string>()
 
-  /** Platform messages from AgentConnect-managed Slack apps carry an AgentConnect
-   *  identity. Same-daemon bots use their resolved Slack identities; cross-daemon bots
-   *  use the CP collaboration snapshot's public Slack app ids. This says the SENDING APP
-   *  belongs to AgentConnect — it does not identify WHICH agent authored the message,
-   *  which is why {@link verifyAgentAuthor} needs the metadata claim as well. */
-  private isManagedSlackBotIdentity(channel: string, senderId: string, appId?: string): boolean {
+  /** Platform messages from AgentConnect-managed apps carry an AgentConnect identity.
+   *  Same-daemon bots use their resolved connection identities; cross-daemon bots use
+   *  the CP collaboration snapshot's public app ids, which are indexed per
+   *  (platform, channel) — so the caller states which platform's index to consult. This
+   *  says the SENDING APP belongs to AgentConnect — it does not identify WHICH agent
+   *  authored the message, which is why {@link verifyAgentAuthor} needs the metadata
+   *  claim as well. */
+  private isManagedAgentBotIdentity(platform: string, channel: string, senderId: string, appId?: string): boolean {
     const localIdentity = [...this.connByIntegration.values()].some(
       (conn) => (!!conn.botUserId && senderId === conn.botUserId) || (!!conn.botId && senderId === conn.botId)
     )
-    return localIdentity || (!!appId && this.cpCollab.isAgentBotApp('slack', channel, appId))
+    return localIdentity || (!!appId && this.cpCollab.isAgentBotApp(platform, channel, appId))
   }
 
+  /**
+   * Is this inbound a message one of OUR bots posted?
+   *
+   * Gated on the §5 manifest's `botSenderRouting`, the pre-dispatch fact for "may a
+   * bot-authored message enter the routing ladder on this platform at all" — the same
+   * field relay arbitration reads for third-party bots. Fail-closed by construction: an
+   * unknown platform admits no bot senders, so it can never take this Slack-shaped path.
+   * Only Slack answers `true` today, exactly the set the `platform !== 'slack'` literal
+   * this replaces admitted.
+   *
+   * Admission is NOT widened by the generalization: the identity check below still
+   * requires the sender to be a live local bot or a CP-advertised AgentConnect app in
+   * this conversation, which no third-party bot can satisfy.
+   */
   private isAgentBotMessage(msg: NormalizedMessage): boolean {
-    if (msg.source !== 'user' || msg.platform !== 'slack') return false
-    return this.isManagedSlackBotIdentity(msg.channel, msg.sender.id, msg.sender.appId)
+    if (msg.source !== 'user' || !manifestFor(msg.platform).botSenderRouting) return false
+    return this.isManagedAgentBotIdentity(msg.platform, msg.channel, msg.sender.id, msg.sender.appId)
   }
 
   /**
@@ -5833,7 +5875,7 @@ export class Daemon {
    *   1. the provider event is authentic (the transport verified it: Socket Mode's
    *      authenticated socket, or the relay's HMAC before it forwarded);
    *   2. the sending app/bot identity belongs to AgentConnect in this org and
-   *      conversation ({@link isManagedSlackBotIdentity});
+   *      conversation ({@link isManagedAgentBotIdentity});
    *   3. the claimed author is one of the agents THAT identity represents — checked
    *      against the collaboration snapshot's placement for this exact channel, so an
    *      AgentConnect app cannot claim authorship for an agent it does not back; and
@@ -5855,17 +5897,20 @@ export class Daemon {
     addressedAnyone: boolean
     agentCallDeliveryId?: string
   } | null {
-    if (msg.platform !== 'slack') return null
+    // Same pre-dispatch gate as {@link isAgentBotMessage}: a platform that admits no
+    // bot senders can produce no verified agent author either (§5 `botSenderRouting`,
+    // fail-closed for ids this build does not know).
+    if (!manifestFor(msg.platform).botSenderRouting) return null
     const claim = msg.agentAuthorship
     if (!claim || claim.deliveryState !== 'final') return null
-    if (!this.isManagedSlackBotIdentity(msg.channel, msg.sender.id, msg.sender.appId)) return null
+    if (!this.isManagedAgentBotIdentity(msg.platform, msg.channel, msg.sender.id, msg.sender.appId)) return null
     const orgId = this.cpCollab.orgForAgent(claim.authorAgentId)
     if (!orgId) return null
     // Condition 3. A SHARED app backs several agents, so "this app is ours" is not
     // enough — the author must be placed in THIS conversation under an app identity that
     // matches the sender. Without the placement check, one agent behind a shared bot
     // could author messages as any of its co-tenants.
-    const placement = this.cpCollab.resolve(orgId, 'slack', msg.channel, claim.authorAgentId)
+    const placement = this.cpCollab.resolve(orgId, msg.platform, msg.channel, claim.authorAgentId)
     if (!placement) return null
     if (msg.sender.appId !== undefined && placement.botAppId !== undefined && placement.botAppId !== msg.sender.appId) {
       return null
@@ -6023,22 +6068,21 @@ export class Daemon {
    * The splitter protects every self-delimiting `<…>` token on its own; it cannot know
    * that a bare word following a mention belongs to the address, because in any other
    * message it is ordinary prose. These are the ones the daemon can name from its own
-   * directory. Only compound (shared-bot) addresses are worth carrying — a dedicated
-   * bot's `<@U…>` is already indivisible by construction.
+   * directory. Which directory entries form a compound address — and how one is spelled —
+   * is the platform's own knowledge ({@link compoundMentionAddressesFor}); core supplies
+   * the conversation's directory and nothing else.
    *
-   * Empty off Slack, and empty with no collaboration snapshot: over-protecting nothing is
-   * the same behavior the splitter had before, whereas guessing would risk refusing to
-   * split a message for a boundary that is not really an address.
+   * Empty on a platform with no compound-address shape, and empty with no collaboration
+   * snapshot: over-protecting nothing is the same behavior the splitter had before,
+   * whereas guessing would risk refusing to split a message for a boundary that is not
+   * really an address.
    */
   private compoundMentionAddresses(agentId: string, msg: { platform: string; channel: string }): string[] {
-    if (msg.platform !== 'slack') return []
+    const compound = compoundMentionAddressesFor(msg.platform)
+    if (!compound) return []
     const orgId = this.cpCollab.orgForAgent(agentId)
     if (!orgId) return []
-    return this.cpCollab
-      .mentionDirectory(orgId, msg.platform, msg.channel)
-      .filter((entry) => entry.botShared)
-      .map((entry) => slackMentionAddress(entry))
-      .filter((address): address is string => address !== undefined)
+    return compound(this.cpCollab.mentionDirectory(orgId, msg.platform, msg.channel))
   }
 
   private agentConversationAdmits(agentId: string, msg: NormalizedMessage): boolean {
@@ -6092,7 +6136,7 @@ export class Daemon {
       return undefined
     }
     const platformMessageId = slackTsFromMsgId(msg.msgId)
-    const integrationId = this.resolveCpAgent(targetAgentId, 'slack')?.integrationId
+    const integrationId = this.resolveCpAgent(targetAgentId, msg.platform)?.integrationId
     if (!integrationId) return undefined
     // The key's transport component is the TARGET's own reply scope — NOT the scope of
     // the connection that happened to observe the post. Both halves of a paired delivery
@@ -10202,8 +10246,11 @@ export class Daemon {
           reply,
           // Slack metadata event names and payloads are app-defined. Trust AgentConnect
           // authorship/chrome only when the provider identity belongs to one of our local
-          // bots or to a CP-advertised AgentConnect app in this channel.
-          trustedAgentBot: reply.isBot && this.isManagedSlackBotIdentity(channel, reply.sender, reply.appId)
+          // bots or to a CP-advertised AgentConnect app in this channel. The platform is
+          // `'slack'` by construction — the `getThreadReplies` duck-type above is the
+          // Slack-only gate, so this literal is Slack-gated flow code (§9.2 file-move
+          // class), not a core branch.
+          trustedAgentBot: reply.isBot && this.isManagedAgentBotIdentity('slack', channel, reply.sender, reply.appId)
         }))
         // Skip daemon CHROME (status bar, progress/plan/reasoning, notices, cards). It is not
         // conversation and must not be re-ingested as a transcript text row. The legacy
@@ -13024,38 +13071,11 @@ export class Daemon {
       // Every section has now been delivered, so the complete logical response exists and
       // exactly one of its messages can be marked final (§5.5). Must run AFTER applyChain:
       // before it, the message being closed might not be the last one posted.
-      // §5.5: close the response with one content-preserving edit. Recipients come from
-      // the COMPLETE response and are resolved against the CONVERSATION's directory — the
-      // same bidirectional mapping the target will use — so author and target cannot
-      // disagree about who was addressed.
-      if (p.platform === 'slack' && p.conn) {
-        const orgId = this.cpCollab.orgForAgent(p.agentId)
-        const recipients = orgId
-          ? resolveSlackMentionedAgents(
-              p.replyText,
-              this.cpCollab.mentionDirectory(orgId, p.platform, p.channel)
-            ).filter((id) => id !== p.agentId)
-          : []
-        // Whether the answer addressed ANYONE is read from the complete reply text, not
-        // from the final section: §2.3 makes any address binding, and the splitter may
-        // have put the only mention in section one. Without this the same answer would
-        // wake a peer or not depending on where the cut landed.
-        const addressedAnyone = slackTextAddressesAnyone(p.replyText)
-        // What this response RESOLVED to, at the one place the author still knows it.
-        // Everything downstream (relay arbitration, the target's ladder) sees only the
-        // outcome, so without this a response that addressed a peer but resolved to no
-        // agent — a stale or unpopulated mention directory — is indistinguishable from
-        // one that addressed nobody, on either side of the wire.
-        const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.platform, p.channel) : []
-        this.log.debug(
-          `slack: finalizing response ${p.responseId} for "${p.agentId}" — recipients=[${recipients.join(',')}] ` +
-            `addressedAnyone=${addressedAnyone} text=${JSON.stringify(p.replyText.slice(0, 120))} ` +
-            `directory=[${mentionDir
-              .map((e) => `${e.agentId.slice(0, 8)}:${e.botUserId ?? 'NO-BOT-USER-ID'}${e.botShared ? '(shared)' : ''}`)
-              .join(' ')}]`
-        )
-        await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
-      }
+      //
+      // §7.3 `closeResponse`: exact lookup, so a webchat / hook / dream turn rendering
+      // through the core surface does not inherit its platform's closure, and a platform
+      // that cannot amend a sent message simply registers none.
+      await this.turnSurfaces.exact(p.platform)?.closeResponse?.(p)
       // The user-visible reply is now delivered. Enqueue provider work without
       // awaiting it: managed may distill, while external only commits its durable
       // capture outbox. Webchat carries the canonical per-turn id separately from
@@ -13542,6 +13562,44 @@ export class Daemon {
       kind: 'text',
       text
     })
+  }
+
+  /**
+   * Slack's §7.3 `closeResponse`: close this turn's logical response with one
+   * content-preserving edit (send-message-routing-rework.md §5.5). Reached only through
+   * the Slack turn-output surface, so the platform is Slack by construction.
+   *
+   * Recipients come from the COMPLETE response and are resolved against the
+   * CONVERSATION's directory — the same bidirectional mapping the target will use — so
+   * author and target cannot disagree about who was addressed.
+   */
+  private async closeSlackResponse(p: Pending): Promise<void> {
+    if (!p.conn) return
+    const orgId = this.cpCollab.orgForAgent(p.agentId)
+    const recipients = orgId
+      ? resolveSlackMentionedAgents(p.replyText, this.cpCollab.mentionDirectory(orgId, p.platform, p.channel)).filter(
+          (id) => id !== p.agentId
+        )
+      : []
+    // Whether the answer addressed ANYONE is read from the complete reply text, not
+    // from the final section: §2.3 makes any address binding, and the splitter may
+    // have put the only mention in section one. Without this the same answer would
+    // wake a peer or not depending on where the cut landed.
+    const addressedAnyone = slackTextAddressesAnyone(p.replyText)
+    // What this response RESOLVED to, at the one place the author still knows it.
+    // Everything downstream (relay arbitration, the target's ladder) sees only the
+    // outcome, so without this a response that addressed a peer but resolved to no
+    // agent — a stale or unpopulated mention directory — is indistinguishable from
+    // one that addressed nobody, on either side of the wire.
+    const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.platform, p.channel) : []
+    this.log.debug(
+      `slack: finalizing response ${p.responseId} for "${p.agentId}" — recipients=[${recipients.join(',')}] ` +
+        `addressedAnyone=${addressedAnyone} text=${JSON.stringify(p.replyText.slice(0, 120))} ` +
+        `directory=[${mentionDir
+          .map((e) => `${e.agentId.slice(0, 8)}:${e.botUserId ?? 'NO-BOT-USER-ID'}${e.botShared ? '(shared)' : ''}`)
+          .join(' ')}]`
+    )
+    await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
   }
 
   /** Slack's turn output lives in its platform module (§7.3) — and doubles as the
@@ -16890,7 +16948,11 @@ export class Daemon {
       // case is still a single frame per agent per pass.
       const groups = new Map<string, SessionPurgeRow[]>()
       for (const row of owed) {
-        const key = `${row.agentId} ${row.reason} ${row.purgedAt}`
+        // NUL separates the three parts because no field can contain it. Written as
+        // an escape, never as a literal NUL byte: one raw NUL anywhere in this file
+        // makes ripgrep treat the whole of it as binary and print no matches at all,
+        // which silently turns every `rg`-based sweep over daemon.ts into a pass.
+        const key = `${row.agentId}\0${row.reason}\0${row.purgedAt}`
         const bucket = groups.get(key)
         if (bucket) bucket.push(row)
         else groups.set(key, [row])
@@ -18871,7 +18933,7 @@ export class Daemon {
       heartbeatDefaultMs: cp.heartbeatMs,
       maxAgents: this.cfg.limits.maxAgents,
       capabilities: () => ({
-        platforms: ['slack', 'telegram', 'discord', 'feishu'],
+        platforms: this.registrationPlatforms(),
         // Report the human-facing tool name (e.g. "Claude Agent"), not the
         // registry id ("claude-acp"); fall back to the id for user-defined or
         // unnamed runtimes.
