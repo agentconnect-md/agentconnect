@@ -99,7 +99,7 @@ import {
   KNOWLEDGE_TOOLS
 } from './mcp/tools.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
-import { MEMORY_DISTILLATION_SYSTEM_PROMPT, trustedExtractionMode } from './agents/memory-distiller.js'
+import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './agents/memory-distiller.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
   DreamRunner,
@@ -5230,24 +5230,34 @@ export class Daemon {
     if (this.memoryExtractionUnavailable.has(host)) {
       throw new Error('memory extraction is unavailable for this runtime host')
     }
+    // Two independent trust dimensions, gated like a memory dream (#653):
+    // - HARD GATE (fail closed): the distilled turn is attacker-controlled, so a
+    //   read-only/plan permission mode is required or extraction never runs.
+    // - OBSERVED (not gated): when the runtime carries the system prompt via
+    //   `_meta.systemPrompt` the policy rides it; otherwise it is prepended inline
+    //   to the user prompt. Runtimes without an ACP system-prompt channel (Codex /
+    //   OpenCode) therefore distill too, instead of silently failing (#653).
+    const trusted = host.usesMetaSystemPrompt()
     let sessionId = this.memoryExtractionSessions.get(agentId)
     if (!sessionId || !host.hasSession(sessionId)) {
       const modes = host.permissionModeOptions()?.modes ?? []
-      const readOnlyMode = trustedExtractionMode(host.usesMetaSystemPrompt(), modes)
+      const readOnlyMode = readOnlyExtractionMode(modes)
       if (!readOnlyMode) {
         this.memoryExtractionUnavailable.add(host)
-        throw new Error('runtime lacks a trusted system prompt or verified read-only memory-extraction mode')
+        throw new Error('runtime lacks a verified read-only memory-extraction mode')
       }
       let cwd = this.memoryExtractionDirs.get(agentId)
       if (!cwd) {
         cwd = await mkdtemp(join(tmpdir(), 'agentconnect-memory-distill-'))
         this.memoryExtractionDirs.set(agentId, cwd)
       }
-      sessionId = await host.newSession(cwd, [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
+      sessionId = trusted
+        ? await host.newSession(cwd, [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
+        : await host.newSession(cwd, [])
       if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
         host.discardSession(sessionId)
         this.memoryExtractionUnavailable.add(host)
-        throw new Error('runtime lacks a trusted system prompt or verified read-only memory-extraction mode')
+        throw new Error('runtime lacks a verified read-only memory-extraction mode')
       }
       this.memoryExtractionSessions.set(agentId, sessionId)
     }
@@ -5259,7 +5269,10 @@ export class Daemon {
       // Extraction runs read-only and shouldn't touch the config files, but keep
       // the invariant uniform: every host.prompt is preceded by re-materialization.
       this.rematerializeConfigFiles(agentId)
-      await host.prompt(sessionId, [{ type: 'text', text: prompt }])
+      // Trusted runtimes received the policy as the session system prompt; for the
+      // rest, prepend it inline so the untrusted-data policy still leads the turn.
+      const text = trusted ? prompt : `${MEMORY_DISTILLATION_SYSTEM_PROMPT}\n\n${prompt}`
+      await host.prompt(sessionId, [{ type: 'text', text }])
       return chunks.join('')
     } catch (err) {
       if (this.memoryExtractionSessions.get(agentId) === sessionId) this.memoryExtractionSessions.delete(agentId)

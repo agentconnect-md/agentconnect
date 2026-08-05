@@ -678,8 +678,7 @@ export function MemoryPanel({
                     setProviderError(null)
                   }}
                 />
-                Automatically distill durable facts after each turn (uses an additional model call; currently Claude
-                runtimes only).
+                Automatically distill durable facts after each turn (uses an additional model call).
               </label>
             ) : null}
 

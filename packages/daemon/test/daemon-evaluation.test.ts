@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ORGANIZATION_SUGGESTION_REVIEW_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/agents/memory-distiller.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
@@ -627,5 +628,71 @@ describe('Daemon evaluation surface', () => {
     })
     await daemon.stop()
     collector.assertValid()
+  }, 15_000)
+})
+
+describe('managed memory auto-distillation runtime support (#653)', () => {
+  // A fake host whose distillation session emits the given JSON as its answer.
+  function distillHost(opts: { usesMetaSystemPrompt: boolean; modes?: string[] }) {
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'distill-session-1'),
+      hasSession: vi.fn(() => true),
+      usesMetaSystemPrompt: vi.fn(() => opts.usesMetaSystemPrompt),
+      modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
+      permissionModeOptions: vi.fn(() => ({ modes: opts.modes ?? ['read-only'] })),
+      setSessionPermissionMode: vi.fn(async () => true),
+      discardSession: vi.fn(),
+      prompt: vi.fn(async (sessionId: string) => {
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: '{"memories":[]}' }
+        })
+        return { stopReason: 'end_turn', usage: { totalTokens: 5, inputTokens: 4, outputTokens: 1 } }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent: unknown, update: (sessionId: string, update: unknown) => void) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    return { host, daemon }
+  }
+
+  it('distills on a runtime without an ACP system-prompt channel (Codex/OpenCode) via inline policy', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: false })
+    await daemon.start()
+    const out = await (daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')
+    expect(out).toBe('{"memories":[]}')
+    // Untrusted system-prompt channel: no system prompt at session creation…
+    expect(host.newSession).toHaveBeenCalledWith(expect.any(String), [])
+    // …the policy is prepended inline to the prompt instead, still leading the turn.
+    const text = host.prompt.mock.calls[0][1][0].text as string
+    expect(text.startsWith(MEMORY_DISTILLATION_SYSTEM_PROMPT)).toBe(true)
+    expect(text).toContain('DISTILL THIS')
+    await daemon.stop()
+  }, 15_000)
+
+  it('rides the trusted system-prompt channel when the runtime has one', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
+    await daemon.start()
+    await (daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')
+    expect(host.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
+    // Trusted: the prompt carries only the turn data, not the inline policy.
+    expect(host.prompt.mock.calls[0][1][0].text).toBe('DISTILL THIS')
+    await daemon.stop()
+  }, 15_000)
+
+  it('still fails closed when the runtime has no read-only/plan mode (the one hard gate)', async () => {
+    const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, modes: ['default', 'agent'] })
+    await daemon.start()
+    await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).rejects.toThrow(/read-only/)
+    expect(host.newSession).not.toHaveBeenCalled()
+    await daemon.stop()
   }, 15_000)
 })
