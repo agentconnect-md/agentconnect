@@ -542,7 +542,9 @@ Every session carries its own audience, independent from the Team visibility of 
 that owns it. Passing the Session audience grants access to that Session's metadata and
 transcript; it does not grant access to the Agent's page, configuration, workspace, or
 invocation controls. The Console may show the owning Agent's display name as Session
-context, but makes it a link only when the viewer can also see that Agent.
+context and as a Session-filter label, but makes it an Agent link only when the viewer
+can also see that Agent. Selecting the label scopes Session results; it grants no Agent
+access.
 
 Platform direct messages, Playground and webchat conversations, and sessions launched
 through the Web API default to **private**: only their owner can see them — deliberately no

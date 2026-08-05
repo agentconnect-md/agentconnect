@@ -38,11 +38,11 @@ This design adds **per-resource visibility**:
 
 ### Decided policy semantics
 
-| Decision                                   | Choice                                                                                                                                                                                 | Meaning                                                                                                               |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                           | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
-| Does an owner have a governance exception? | **No**                                                                                                                                                                                 | Organization ownership grants org administration, never access to another member's restricted resource.               |
-| Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source are independent.** Integration, Session, Usage, CronRun, and daemon API keys derive from a parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
+| Decision                                   | Choice                                                                                                                                                                                                                                                                                                              | Meaning                                                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| How is the access level determined?        | **Visibility first, then organization role**                                                                                                                                                                                                                                                                        | Everyone/Selected controls who can see a resource. Existing roles determine editing. There is no per-grant edit flag. |
+| Does an owner have a governance exception? | **No**                                                                                                                                                                                                                                                                                                              | Organization ownership grants org administration, never access to another member's restricted resource.               |
+| Which resource types carry visibility?     | **Agent, Daemon, Cron, MCP provider, and skill source carry Team visibility independently.** Session has a separate audience boundary. Integration derives from Agent; Usage intersects Agent visibility with Session audience; CronRun and daemon API keys derive from their parent. Bot is shared infrastructure. | See the taxonomy in section 2.                                                                                        |
 
 ### Authoritative predicates
 
@@ -87,14 +87,15 @@ Both are accepted under a model of collaborator trust within an organization.
 
 ## 2. Resource taxonomy
 
-| Category               | Resource                                                   | Own `visibility` and `sharedWith`? | Source                                               |
-| ---------------------- | ---------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------- |
-| **Visibility carrier** | `Agent`, `Daemon`, `CronDef`, `McpProvider`, `SkillSource` | Yes, independent columns           | Itself                                               |
-| **Derived**            | `Integration`                                              | No                                 | Its `Agent`                                          |
-| **Derived**            | `SessionMeta`, `SessionUsage`                              | No                                 | Its `Agent`                                          |
-| **Derived**            | `CronRun`                                                  | No                                 | Its `CronDef`                                        |
-| **Derived**            | daemon `ApiKey`                                            | No                                 | Its `Daemon`; key minting is a credential operation  |
-| **Infrastructure**     | `Bot`                                                      | No                                 | Always organization-visible and cannot be restricted |
+| Category                 | Resource                                                   | Own audience fields?                                        | Source                                               |
+| ------------------------ | ---------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
+| **Visibility carrier**   | `Agent`, `Daemon`, `CronDef`, `McpProvider`, `SkillSource` | `ResourceVisibility` + `sharedWith`                         | Itself                                               |
+| **Independent audience** | `SessionMeta`                                              | `SessionVisibility` + owner/external scope; no `sharedWith` | Itself; see `session-visibility.md`                  |
+| **Derived**              | `Integration`                                              | No                                                          | Its `Agent`                                          |
+| **Derived intersection** | `SessionUsage`                                             | No                                                          | Its `Agent` and `SessionMeta`                        |
+| **Derived**              | `CronRun`                                                  | No                                                          | Its `CronDef`                                        |
+| **Derived**              | daemon `ApiKey`                                            | No                                                          | Its `Daemon`; key minting is a credential operation  |
+| **Infrastructure**       | `Bot`                                                      | No                                                          | Always organization-visible and cannot be restricted |
 
 **Agent and daemon visibility are independent.** An agent may be visible while
 its hosting daemon is not; see section 7.
@@ -371,8 +372,12 @@ human principal.
 
 ## 7. Derived visibility and cascading rules
 
-- **Integration, Session, and Usage derive from Agent** and are filtered by a
-  parent relation or route-level `canView`.
+- **Integration derives from Agent** and is filtered by a parent relation or
+  route-level `canView`.
+- **Session is independent from Agent Team visibility** for human reads and
+  uses its own audience plus the active organization boundary.
+- **Usage is a resource-scoped intersection:** Agent visibility and the
+  corresponding Session audience both apply to session-backed aggregates.
 - **CronRun derives from CronDef** through `getOrgCron` or a nested relation.
 - **Daemon API keys derive from Daemon** through `canView` and `canEdit` in
   `keys.ts`.
@@ -597,7 +602,8 @@ handler.
 - **Locations:** agent creation in `AddAgentModal`; agent edit and detail in
   `EditAgentModal` and the General card; cron in `AddCronModal`, which is also
   the edit modal through its `cron?` prop and is opened by `ScheduleDetailView`;
-  daemon in the Details card. Sessions derive visibility and have no control.
+  daemon in the Details card. Sessions are outside these Team-sharing controls
+  and use the independent audience UI in `session-visibility.md`.
 - **Mobile:** modals use one responsive JSX tree, but the General and Details
   cards in `AgentDetailView` and `DaemonDetailView` have separate desktop and
   `isMobile` JSX branches; see `AgentDetailView.tsx:34,49` and `useIsMobile`.
@@ -623,16 +629,17 @@ while `visibilityWhere(undefined)` equals `{}`.
 3. An unshared organization owner receives the same hidden result as any other role.
 4. An authorized viewer gets 200 from GET and 403 from PATCH.
 5. A shared collaborator can edit content and sharing; a shared viewer cannot.
-6. Sessions from the **real fan-out route** and usage for a restricted agent do
-   not appear for a non-viewer; a restricted cron gates `CronRun` history.
+6. Session list/detail/body reads follow the Session audience even when the
+   owning Agent is restricted; usage for that Agent remains absent to an
+   unshared viewer, and a restricted cron gates `CronRun` history.
 7. SQL WHERE results equal `.filter(canView)` for a mixed viewer.
 8. After `migrate deploy`, existing rows have `visibility='org'` and
    `sharedWith=[]`.
 9. Unauthorized users get 404 from workspace `gitstatus` and `gitpull`.
 10. Removing a member repairs all five Selected audiences, preserves creator
     audit, and removes their ID from every `sharedWith` in the same transaction.
-11. `tool-body` returns 404 for both a cross-organization agent ID and a hidden
-    restricted agent in the same organization.
+11. `tool-body` returns 404 for both a cross-organization Session and a Session
+    outside the caller's audience.
 12. A restricted but active agent remains in the daemon reconciliation roster;
     `listForDaemon` and `reconcile` do not filter.
 13. Exercise Prisma `has:` against real Postgres for
@@ -641,8 +648,8 @@ while `visibilityWhere(undefined)` equals `{}`.
 14. `POST /api/v1/orgs/:orgId/agents/:agentId/webchat/token` returns 404 to an
     unauthorized collaborator for a restricted agent; no relay WebSocket
     credential is minted.
-15. A restricted agent's milestone does not appear in an unauthorized viewer's
-    SSE stream.
+15. SSE forwards a visible Session milestone even when its Agent is restricted,
+    while a Session outside the caller's audience remains absent.
 16. Cron-upsert `agentId`, integration-create `agentId`, and agent-create
     `daemonId` reject invisible targets in a way indistinguishable from missing
     IDs.

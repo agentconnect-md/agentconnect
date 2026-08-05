@@ -110,9 +110,9 @@ Consequences:
 - When identity linking ships for a platform, those sessions become visible
   to the mapped user **automatically**, with no backfill: the stored
   `ownerIdentity` is already correct; only the viewer's identity set grows.
-- The predicate is always additionally scoped by `orgId` and by agent
-  visibility, so an identity match can never reach across orgs; the workspace
-  segment above closes the remaining same-org, cross-tenant collision.
+- The predicate is always additionally scoped by `orgId`, but never by Agent
+  Team visibility. The organization boundary prevents cross-org access; the
+  workspace segment above closes the remaining same-org, cross-tenant collision.
 
 ## 3. Data-model changes (`packages/control-plane/prisma/schema.prisma`)
 
@@ -466,6 +466,11 @@ Session read surfaces use the Session predicate as their authorization boundary:
 | Usage                         | `http/routes/usage.ts`                                                                    | keep the resource-scoped analytics intersection: Agent visibility plus the Session predicate on every session-backed aggregate                                                       |
 
 Invariants preserved:
+
+- Agent facets return Session-scoped display labels only for Agents represented
+  by the visible facet result. A hidden Agent can therefore filter readable
+  Sessions without gaining an Agent link or exposing Agents with no readable
+  Session.
 
 - Console **authorization** stays a CP concern: internal/daemon read paths
   keep the deliberate fail-open (`visibilityWhere(undefined)` semantics), and

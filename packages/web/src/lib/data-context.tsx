@@ -258,7 +258,13 @@ const Ctx = createContext<ConsoleData | null>(null)
 const SESSION_EVENT_REFRESH_DEBOUNCE_MS = 500
 const DAEMON_REFRESH_MS = 15_000
 const RESOURCE_REFRESH_MS = 30_000
-const EMPTY_SESSION_FACETS: SessionFacets = { agentIds: [], integrations: [], channels: [], triggers: [] }
+const EMPTY_SESSION_FACETS: SessionFacets = {
+  agentIds: [],
+  agentNames: {},
+  integrations: [],
+  channels: [],
+  triggers: []
+}
 function settleInBackground(...tasks: Promise<unknown>[]): void {
   void Promise.allSettled(tasks)
 }

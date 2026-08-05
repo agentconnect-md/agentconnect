@@ -2389,6 +2389,9 @@ export const SessionDto = z.object({
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({
   agents: z.array(z.string()),
+  /** Session-scoped labels for the returned facet ids. They do not imply that
+   *  the corresponding Agent resource is visible. */
+  agentNames: z.record(z.string(), z.string()),
   integrations: z.array(z.string()),
   channels: z.array(
     z.object({

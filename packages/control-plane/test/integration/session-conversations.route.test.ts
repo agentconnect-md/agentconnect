@@ -188,6 +188,13 @@ describe('GET /sessions — grouped conversations', () => {
     const conv = body.conversations[0]!
     expect(conv.sessions.map((s) => s.sessionId)).toEqual(['sess-hidden', 'sess-vis'])
     expect(JSON.stringify(body)).toContain(AGENT_B)
+
+    const facets = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/facets` })
+    expect(facets.statusCode).toBe(200)
+    expect(facets.json()).toMatchObject({
+      agents: expect.arrayContaining([AGENT_A, AGENT_B]),
+      agentNames: { [AGENT_A]: 'agent-a1a1', [AGENT_B]: 'agent-b1b1' }
+    })
   })
 
   it('resolves one conversation by key, and a webchat conversation by its id', async () => {
@@ -452,13 +459,21 @@ describe('GET /sessions — multi-agent conversation filter', () => {
     await seedAgent(prisma, AGENT_A, { daemonId: DAEMON })
     running = buildHttpApp(prisma)
     await slackReport('sess-a', AGENT_A, 1_000)
+    const missingAgent = randomUUID()
 
     const res = await running.app.inject({
       method: 'GET',
-      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${randomUUID()}`
+      url: `${ORG}/sessions?view=flat&agentId=${AGENT_A}&agentId=${missingAgent}`
     })
     expect(res.statusCode).toBe(200)
     expect((res.json() as { sessions: unknown[]; total: number | null }).sessions).toHaveLength(0)
+
+    const facets = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions/facets?agentId=${missingAgent}`
+    })
+    expect(facets.statusCode).toBe(200)
+    expect(facets.json()).toMatchObject({ agents: [], agentNames: {} })
   })
 
   it('pages the grouped list without re-emitting a filtered conversation', async () => {

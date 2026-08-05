@@ -205,8 +205,13 @@ function sessionDisplayMetadata(
   }
 }
 
-function sessionFacets(index: SessionFacetIndex, hookMetadata: Map<string, HookSessionMetadata>) {
+function sessionFacets(
+  index: SessionFacetIndex,
+  hookMetadata: Map<string, HookSessionMetadata>,
+  agentNames: ReadonlyMap<string, string>
+) {
   const integrations = new Set<string>()
+  const facetAgentNames: Record<string, string> = {}
   const channels = new Map<
     string,
     { value: string; platform: string; integration: string; name: string | null; triggeredByName: string | null }
@@ -228,6 +233,10 @@ function sessionFacets(index: SessionFacetIndex, hookMetadata: Map<string, HookS
       b.startedAt.getTime() - a.startedAt.getTime() ||
       b.id.localeCompare(a.id)
   )
+  for (const agentId of index.agents) {
+    const name = agentNames.get(agentId)
+    if (name) facetAgentNames[agentId] = name
+  }
   for (const session of integrationRows) {
     const hook = hookMetadataForSession(hookMetadata, session)
     integrations.add(sessionIntegration(session, hook))
@@ -260,6 +269,7 @@ function sessionFacets(index: SessionFacetIndex, hookMetadata: Map<string, HookS
 
   return {
     agents: index.agents,
+    agentNames: facetAgentNames,
     integrations: [...integrations],
     channels: [...channels.values()],
     triggers: [...triggers.values()]
@@ -452,10 +462,12 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       },
       async (req) => {
-        const orgAgentIds = (await deps.repos.agent.list(orgOf(req))).map((agent) => agent.id)
+        const orgAgents = await deps.repos.agent.list(orgOf(req))
+        const orgAgentIds = orgAgents.map((agent) => agent.id)
+        const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
         const requested = requestedAgentIds(req.query)
         if (requested.some((id) => !new Set<string>(orgAgentIds).has(id))) {
-          return { agents: [], integrations: [], channels: [], triggers: [] }
+          return { agents: [], agentNames: {}, integrations: [], channels: [], triggers: [] }
         }
         const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
@@ -479,7 +491,7 @@ export function sessionRoutes(deps: HttpDeps) {
         const index = await deps.repos.session.listFacets({ ...query, viewer })
         const metadataRows = [...index.integrations, ...index.channels, ...index.triggers]
         const hookMetadata = await hookMetadataForSessions(deps, metadataRows, orgOf(req))
-        return sessionFacets(index, hookMetadata)
+        return sessionFacets(index, hookMetadata, agentNames)
       }
     )
 

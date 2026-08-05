@@ -389,6 +389,8 @@ export interface SessionDto {
 
 export interface SessionFacetsDto {
   agents: string[]
+  /** Session-scoped labels keyed by facet Agent id; absent on older CPs. */
+  agentNames?: Record<string, string>
   integrations: string[]
   channels: Array<{
     value: string
@@ -456,6 +458,7 @@ export interface SessionListFilters {
 
 export interface SessionFacets {
   agentIds: string[]
+  agentNames: Record<string, string>
   integrations: string[]
   channels: Array<{ value: string; label: string; platform: string }>
   triggers: Array<{
@@ -2115,6 +2118,7 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
   const facets = await apiGet<SessionFacetsDto>(`${orgBase(orgId)}/sessions/facets${suffix}`)
   return {
     agentIds: facets.agents,
+    agentNames: facets.agentNames ?? {},
     integrations: facets.integrations,
     channels: facets.channels.map((channel) => ({
       value: channel.value,

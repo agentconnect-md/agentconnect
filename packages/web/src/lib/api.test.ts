@@ -9,6 +9,7 @@ import {
   deleteOrgIcon,
   fetchAllGithubRepos,
   fetchConversations,
+  fetchSessionFacets,
   fetchGithubRepoRoster,
   fetchMySessionIdentity,
   fetchMemoryAdminSurface,
@@ -36,6 +37,37 @@ import {
   uploadMyProfilePicture,
   uploadOrgIcon
 } from './api'
+
+describe('session facet Agent labels', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('keeps Session-scoped labels for Agents outside the visible Agent roster', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              agents: ['agent-hidden'],
+              agentNames: { 'agent-hidden': 'Payments Agent' },
+              integrations: [],
+              channels: [],
+              triggers: []
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          )
+      )
+    )
+
+    await expect(fetchSessionFacets('org-1')).resolves.toEqual({
+      agentIds: ['agent-hidden'],
+      agentNames: { 'agent-hidden': 'Payments Agent' },
+      integrations: [],
+      channels: [],
+      triggers: []
+    })
+  })
+})
 
 describe('fmtCountCompact', () => {
   it.each([
