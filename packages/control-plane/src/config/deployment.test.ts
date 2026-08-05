@@ -32,6 +32,22 @@ function runtime(overrides: Partial<DeploymentConfigRuntime> = {}): DeploymentCo
 }
 
 describe('applyDeploymentEnvironment', () => {
+  it('canonicalizes a trailing-slash Web URL for the browser CORS origin', () => {
+    const base = runtime()
+    const env = applyDeploymentEnvironment(
+      bootstrap,
+      runtime({
+        values: {
+          ...base.values,
+          publicUrls: { ...base.values.publicUrls, web: 'https://console.example.test/' }
+        }
+      })
+    )
+
+    expect(env.PUBLIC_WEB_URL).toBe('https://console.example.test/')
+    expect(env.CORS_ORIGIN).toBe('https://console.example.test')
+  })
+
   it('lets a persisted row clear stale env configuration', () => {
     const config = loadConfig(
       applyDeploymentEnvironment(

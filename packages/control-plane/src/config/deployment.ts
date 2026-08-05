@@ -51,7 +51,7 @@ export function applyDeploymentEnvironment(
   set('PUBLIC_MCP_URL', values.publicUrls.mcp)
   // The deployment document has one browser origin in v1. Keep the existing
   // CORS machinery as the consumer rather than introducing a second policy.
-  set('CORS_ORIGIN', values.publicUrls.web)
+  set('CORS_ORIGIN', values.publicUrls.web ? new URL(values.publicUrls.web).origin : null)
 
   if (values.auth.mode === 'oidc') {
     set('OIDC_ISSUER', values.auth.issuer)
