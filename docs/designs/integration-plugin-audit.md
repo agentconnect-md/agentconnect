@@ -1762,6 +1762,13 @@ authority the contract's D2 note exists to prevent. The remaining literals in
 the file are the initial-platform default (`:196`) and the closed `BotPlatform`
 type the registry-derived list is cast into (`:92` — F15).
 
+> **Post-reconciliation note.** The nine surviving set enumerations behind the
+> "with exceptions" verdicts were closed by the four follow-up PRs listed in
+> §10.6, so the exceptions those verdicts name no longer hold as written. The
+> verdicts themselves are left at the pinned SHA rather than restated: re-earning
+> "met" is a claim about a tree nobody has re-swept, and this section's value is
+> that every sentence in it was verified once, at one commit.
+
 ### 10.2 Survivor table — all six packages
 
 Classes: **(i)** legitimate per-platform module code; **(ii)** documented host
@@ -1994,8 +2001,32 @@ equal by `platform-set.test.tsx`).
 
 ### 10.6 Findings
 
-Code defects and unearned survivors. **None of these were fixed** — this is a
-docs-only reconciliation.
+Code defects and unearned survivors. **None of these were fixed in this
+reconciliation** — it is docs-only. Each finding is left below exactly as it
+was written at the pinned SHA, so the disposition can be checked against the
+claim it answers.
+
+> **Disposition — all nineteen closed, 2026-08-05.** Four follow-up PRs, split
+> by file boundary so they could run in parallel: **#643** relay (F2–F7),
+> **#644** control plane (F8–F13), **#645** web (F14, F15, F18), **#646**
+> daemon (F1, F16, F17, F19). Three of them earned a new contract member rather
+> than a rewiring, each landing with the branch it retires per §5.2:
+> `RelayPlatformIngressPlugin.installRoutes` (F5 — the route surface already had
+> two implementers with an identical dep shape, so it was an unnamed seam, not a
+> missing one), the §5 manifest field `leaveGranularity` (F12 — a genuine
+> pre-dispatch read: the CP validates a leave request's shape before an owner
+> resolves), and `CpPlatformProvider.projectBotIdentity` (F13 — the D6 identity
+> dual-write, with Telegram's **absence** of the member as its declaration).
+> Two dispositions differ from the suggestion recorded here: F16 derives the
+> capability list from the config-schema registry rather than "the daemon's
+> platform registries" generally, because absence there is _total_ (an
+> unregistered id cannot be served at all) while absence from the turn-output
+> registry only falls back to the core surface; and F19's compound-mention site
+> became a §7.4 strategy rather than a manifest read, since that read happens at
+> turn setup and is therefore post-dispatch. F11 was decided in the widening
+> direction — waitlist intake now tracks the registry, so `POST /waitlist`
+> accepts `feishu`. F1's fix surfaced a line in `daemon.ts` that no `rg`-based
+> sweep had ever been able to see.
 
 1. **`packages/daemon/src/daemon.ts:16759` — literal NUL bytes make `rg` suppress
    every match in the file.** Two raw NUL characters are used as separators in a

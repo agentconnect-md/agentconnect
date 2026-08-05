@@ -333,17 +333,35 @@ and threads the raw platform string through session keying.
 interface IntegrationSpec {
   integrationId: string
   agentId: string
-  platformId: string
+  platform: string // open; `platformId` in an earlier draft of this section
   core: { bindRules; allowedUserIds; mutedChannels; gated; mode } // owned & read by core
-  config: unknown // opaque on the wire; validated by the platform module on the daemon
+  config?: unknown // opaque on the wire; validated by the platform module on the daemon
 }
 ```
 
-A legacy-emission shim (same pattern as the existing `codec.ts` down-level
-encodings) keeps old daemons receiving the nested per-platform shape until
-the fleet gate passes. The daemon-side agent-config schema
-(`agents/agent-schema.ts`) and the protocol `AgentSpec` union migrate
-together — they are the same closed union in two places today.
+The daemon-side agent-config schema (`agents/agent-schema.ts`) migrates with
+it — the same closed union lived in two places.
+
+**As shipped (#634), with three corrections to the sketch above.** The field
+is `platform`, not `platformId`: the wire spells this axis `platform`
+everywhere else, and renaming it here would have bought a second name for one
+concept. `core` is **required** and a core-less spec fails the frame — by the
+time this landed, an absent envelope could only come from a stale writer, and
+defaulting it would silently mint a rule-less integration. `config` is
+optional and is validated by the **reader**, not the frame: a spec whose
+config is missing or malformed is skipped with a warning rather than failing
+the whole `register/ok` snapshot it rides in. On the daemon side the migrated
+schema is `IntegrationSchema` in `agents/agent-schema.ts`; the protocol's
+`AgentSpec` is a different object and was not the union in question.
+
+**The legacy-emission shim was never built and is no longer reachable.** This
+section originally paired the flatten with a down-level encoding (the
+`codec.ts` pattern) so old daemons would keep receiving the nested
+per-platform shape until a fleet gate passed. That staging was overtaken: the
+deployment is pre-release with a self-controlled fleet, so #634 shipped a
+single-release cutover instead — a new CP skips specs an old daemon cannot
+read, and an old CP fails the handshake against a new daemon. See that PR's
+compatibility notes for the enumerated at-rest cases.
 
 ### 6.5 `NormalizedMessage`: generic thread coordinates + adapter extension
 
