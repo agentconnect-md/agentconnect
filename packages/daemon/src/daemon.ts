@@ -2879,7 +2879,10 @@ export class Daemon {
           runId: this.opts.evaluation?.runId ?? 'evaluation',
           agentId: ctx.agentId,
           sessionContext: ctx,
-          input: args
+          input: args,
+          // A façade tool compiles down to the real product tool on the SAME
+          // trusted context; it can reach nothing the caller could not.
+          callProductTool: (productName, productArgs) => this.mcp.executeProductTool(ctx, productName, productArgs)
         })
         return { result }
       },
@@ -3093,6 +3096,14 @@ export class Daemon {
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
         // by per-agent visibility (e.g. only living players see `vote`).
+        // Evaluation-only surface selection: withhold named product descriptors
+        // so an A/B arm presents exactly one surface for a capability. The tool
+        // itself stays executable (a façade compiles down to it).
+        const hidden = this.opts.evaluation?.environment?.hideProductTools
+        if (hidden?.length) {
+          const withheld = new Set(hidden)
+          tools = tools.filter((tool) => !withheld.has(tool.name))
+        }
         const evaluationTools = this.opts.evaluation?.environment?.tools
         if (evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
