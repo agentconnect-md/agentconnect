@@ -57,6 +57,29 @@ async function openTightenDialog(nativeMemory: boolean): Promise<string> {
 }
 
 describe('SessionVisibilityControl — tighten confirmation', () => {
+  it('holds the fail-closed audience in place while session access is loading', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => {
+      root?.render(
+        <SessionVisibilityControl
+          sessionId="pending-session"
+          visibility="private"
+          canChange={false}
+          loading
+          onChanged={() => {}}
+        />
+      )
+    })
+    expect(container.textContent).toContain('Private')
+    expect(container.querySelector('[data-testid="spinner"]')).not.toBeNull()
+    expect(container.querySelector<HTMLElement>('[aria-label="Session visibility: Private (loading)"]')?.title).toBe(
+      'Setting up session access'
+    )
+    expect(container.querySelector('button')).toBeNull()
+  })
+
   it('promises the memory boundary on an ordinary (gated) agent', async () => {
     const text = await openTightenDialog(false)
     expect(text).toContain('stops it from feeding shared agent memory')

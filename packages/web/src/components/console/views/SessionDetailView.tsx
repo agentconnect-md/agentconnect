@@ -2081,16 +2081,21 @@ export default function SessionDetailView() {
   }
 
   // Session visibility (session-visibility.md §4.3/§6). Rendered in the desktop
-  // header and the mobile meta strip; null only when no persisted visibility
-  // metadata is available (for example a synthetic Playground row).
+  // header and the mobile meta strip. Playground is fail-closed Private by
+  // contract, so hold that stable placeholder while its persisted detail row
+  // catches up instead of inserting the whole control later.
+  const visibilityLoading = focusedSession?.platform === 'playground' && !focusedSessionDetail
   const visibilityControl =
-    headerFocusSessionId && (focusedSessionDetail || focusedSession?.visibility) ? (
+    headerFocusSessionId && (focusedSessionDetail || focusedSession?.visibility || visibilityLoading) ? (
       <SessionVisibilityControl
         key={headerFocusSessionId}
         sessionId={headerFocusSessionId}
-        visibility={focusedSessionDetail?.visibility ?? focusedSession?.visibility}
+        visibility={
+          focusedSessionDetail?.visibility ?? focusedSession?.visibility ?? (visibilityLoading ? 'private' : undefined)
+        }
         state={focusedSessionDetail?.visibilityState}
         canChange={focusedSessionDetail?.canChangeVisibility === true}
+        loading={visibilityLoading}
         externalProvider={focusedSessionDetail?.externalProvider}
         externalResolution={focusedSessionDetail?.externalResolution}
         feishuRegion={focusedSessionDetail?.feishuRegion}

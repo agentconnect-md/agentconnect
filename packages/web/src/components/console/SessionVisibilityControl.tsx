@@ -32,6 +32,7 @@ export function SessionVisibilityControl({
   visibility,
   state,
   canChange,
+  loading = false,
   externalProvider,
   externalResolution,
   feishuRegion,
@@ -44,6 +45,10 @@ export function SessionVisibilityControl({
   /** §5.1 tighten cutover state; 'pending' renders the spinner pill. */
   state?: 'pending' | 'applied' | null
   canChange: boolean
+  /** The session exists locally, but its authoritative visibility row is not
+   *  readable yet. Keeps the fail-closed default in place without exposing a
+   *  control that would PUT against a session the server cannot resolve. */
+  loading?: boolean
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   feishuRegion?: 'feishu' | 'lark' | null
@@ -96,6 +101,21 @@ export function SessionVisibilityControl({
     // applies immediately.
     if (next === 'private') setConfirming(true)
     else void apply('org')
+  }
+
+  if (loading) {
+    const privateSession = effective === 'private'
+    return (
+      <span
+        title="Setting up session access"
+        aria-label={`Session visibility: ${privateSession ? 'Private' : 'Everyone'} (loading)`}
+        className="inline-flex h-[26px] flex-none items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)"
+      >
+        <Icon name={privateSession ? 'lock' : 'globe'} size={13} color="var(--text-tertiary)" />
+        {privateSession ? 'Private' : 'Everyone'}
+        <Spinner size={10} />
+      </span>
+    )
   }
 
   if (effective === 'external') {
