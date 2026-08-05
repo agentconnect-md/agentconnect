@@ -12,6 +12,7 @@ import {
   sessionAttributionAgentAuthors,
   sessionAttributionAgentId,
   sessionSenderLabel,
+  sessionTranscriptAgentIds,
   sessionTriggerFilterValue,
   sessionTriggerKind
 } from './session-trigger'
@@ -288,6 +289,24 @@ describe('legacy Slack Agent attribution', () => {
     expect(authors.get('U0BOTUSER')).toBe('review-id')
     expect(authors.has('B0SHARED')).toBe(false)
     expect(authors.has('B0UNTRUSTED')).toBe(false)
+  })
+
+  it('finds visible transcript authors from direct ids and trusted Slack attribution', () => {
+    const agents = new Set(['direct-id', 'review-id'])
+    const reviewFooter =
+      'done\nsent by <https://test.example.test/team/agents/review-id|review-bot> (Codex) · <https://test.example.test/sessions/1|open in session>'
+
+    expect([
+      ...sessionTranscriptAgentIds(
+        'slack',
+        [
+          { sender: 'direct-id', text: 'Direct A2A reply' },
+          { sender: 'B0REVIEW', text: reviewFooter, trustedAgentBot: true },
+          { sender: 'hidden-id', text: 'Not in the visible Agent directory' }
+        ],
+        agents
+      )
+    ]).toEqual(['direct-id', 'review-id'])
   })
 })
 

@@ -46,6 +46,24 @@ export function sessionAttributionAgentAuthors(
   return new Map([...candidates].flatMap(([sender, ids]) => (ids.size === 1 ? [[sender, [...ids][0]!] as const] : [])))
 }
 
+/** Visible Agents that authored rows in this transcript. Direct A2A deliveries
+ * carry the Agent id as `sender`; legacy Slack rows recover it from the same
+ * trusted attribution used by the message renderer. */
+export function sessionTranscriptAgentIds(
+  platform: string,
+  messages: readonly { sender: string; text: string; trustedAgentBot?: boolean }[],
+  agentIds: IdLookup
+): ReadonlySet<string> {
+  const attributed = sessionAttributionAgentAuthors(platform, messages, agentIds)
+  const authors = new Set<string>()
+  for (const message of messages) {
+    if (agentIds.has(message.sender)) authors.add(message.sender)
+    const attributedId = attributed.get(message.sender)
+    if (attributedId) authors.add(attributedId)
+  }
+  return authors
+}
+
 export function sessionTriggerFilterValue(trigger: {
   value: string
   hookKind?: 'webhook' | 'github'
