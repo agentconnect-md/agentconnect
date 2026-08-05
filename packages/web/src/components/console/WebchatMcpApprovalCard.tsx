@@ -8,6 +8,7 @@ import {
   listWebchatMcpOperations,
   type WebchatMcpOperationDto
 } from '@/lib/api'
+import { Button } from '@/components/ui'
 
 /** A decided (or decision-lost) operation the owner must still be able to see.
  *  `outcome` is the last DTO the CP returned; `null` means the decision response
@@ -50,11 +51,13 @@ function outcomeNote(entry: SettledOperation): string | null {
 export function WebchatMcpApprovalCard({
   orgId,
   agentId,
-  conversationId
+  conversationId,
+  className = ''
 }: {
   orgId: string
   agentId: string
   conversationId: string
+  className?: string
 }) {
   const { data, mutate } = useSWR(
     ['webchat-mcp-operations', orgId, agentId, conversationId] as const,
@@ -123,40 +126,52 @@ export function WebchatMcpApprovalCard({
   const dismiss = (entry: SettledOperation) => setSettled((current) => current.filter((existing) => existing !== entry))
 
   return (
-    <div className="grid gap-2" aria-live="polite">
+    // Capped so a pile of operations can never push the composer off-screen. The strip
+    // scrolls on Y only: an overflow-y-auto box computes overflow-x from visible to
+    // auto, which is how a wide row used to grow a scrollbar across the whole card.
+    <div className={`grid max-h-[34vh] gap-1.5 overflow-y-auto overflow-x-hidden ${className}`} aria-live="polite">
       {pending.map((operation) => (
+        // min-w-0: a grid item's auto min-width is its min-content width, so one long
+        // unbreakable arg string would widen the row past the strip — and the strip's
+        // overflow-y-auto turns that into a card-wide x scrollbar.
         <section
           key={operation.operationId}
-          className="rounded-lg border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)"
+          className="min-w-0 rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2 shadow-(--shadow-xs)"
         >
-          <div className="font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary)">
-            Approval required
+          {/* Buttons drop below the text on mobile (same as ApprovalRequestsCard): kept
+            on one row, their fixed width would be a min-content floor the strip has to
+            clip. */}
+          <div className="flex flex-col gap-2 desktop:flex-row desktop:items-center">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2">
+                <span className="font-mono text-[10px] font-semibold uppercase leading-normal tracking-[.08em] text-(--amber-600)">
+                  Approval required
+                </span>
+                <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                  {operation.toolName}
+                </span>
+              </div>
+              <div className="mt-[2px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                The agent requested this change. Only your approval can execute it.
+              </div>
+            </div>
+            <div className="flex flex-none items-center gap-2">
+              <Button
+                variant="secondary"
+                size="xs"
+                disabled={busy !== null}
+                onClick={() => void decide(operation, 'deny')}
+              >
+                {busy === `${operation.operationId}:deny` ? 'Denying…' : 'Deny'}
+              </Button>
+              <Button size="xs" disabled={busy !== null} onClick={() => void decide(operation, 'approve')}>
+                {busy === `${operation.operationId}:approve` ? 'Approving…' : 'Approve and run'}
+              </Button>
+            </div>
           </div>
-          <div className="mt-1 font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-            {operation.toolName}
-          </div>
-          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-(--surface-sunken) p-3 font-mono text-[11px] leading-[1.5] text-(--text-secondary)">
+          <pre className="mt-1 max-h-24 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all rounded-md bg-(--surface-sunken) p-2 font-mono text-[10.5px] leading-[1.45] text-(--text-secondary)">
             {JSON.stringify(operation.arguments, null, 2)}
           </pre>
-          <p className="mt-2 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-            The agent requested this change. Only your approval can execute it.
-          </p>
-          <div className="mt-3 flex justify-end gap-2">
-            <button
-              className="dsbtn dsbtn-secondary"
-              disabled={busy !== null}
-              onClick={() => void decide(operation, 'deny')}
-            >
-              {busy === `${operation.operationId}:deny` ? 'Denying…' : 'Deny'}
-            </button>
-            <button
-              className="dsbtn dsbtn-primary"
-              disabled={busy !== null}
-              onClick={() => void decide(operation, 'approve')}
-            >
-              {busy === `${operation.operationId}:approve` ? 'Approving…' : 'Approve and run'}
-            </button>
-          </div>
         </section>
       ))}
       {settled.map((entry) => {
@@ -165,34 +180,41 @@ export function WebchatMcpApprovalCard({
         return (
           <section
             key={entry.operation.operationId}
-            className="rounded-lg border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)"
+            className="min-w-0 rounded-lg border border-(--border-default) bg-(--surface-card) px-3 py-2 shadow-(--shadow-xs)"
           >
-            <div className="font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary)">
-              {outcomeLabel(entry)}
-            </div>
-            <div className="mt-1 font-sans text-[14px] font-semibold leading-normal text-(--text-primary)">
-              {entry.operation.toolName}
+            <div className="flex flex-col gap-2 desktop:flex-row desktop:items-center">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-2">
+                  <span className="font-mono text-[10px] font-semibold uppercase leading-normal tracking-[.08em] text-(--text-tertiary)">
+                    {outcomeLabel(entry)}
+                  </span>
+                  <span className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                    {entry.operation.toolName}
+                  </span>
+                </div>
+                {note && (
+                  <div className="mt-[2px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                    {note}
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-none items-center gap-2">
+                {unresolved ? (
+                  <Button variant="secondary" size="xs" disabled={busy !== null} onClick={() => void recheck(entry)}>
+                    {busy === `${entry.operation.operationId}:recheck` ? 'Checking…' : 'Check status'}
+                  </Button>
+                ) : (
+                  <Button variant="secondary" size="xs" onClick={() => dismiss(entry)}>
+                    Dismiss
+                  </Button>
+                )}
+              </div>
             </div>
             {entry.outcome?.result !== undefined && (
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-(--surface-sunken) p-3 font-mono text-[11px] leading-[1.5] text-(--text-secondary)">
+              <pre className="mt-1 max-h-24 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all rounded-md bg-(--surface-sunken) p-2 font-mono text-[10.5px] leading-[1.45] text-(--text-secondary)">
                 {JSON.stringify(entry.outcome.result, null, 2)}
               </pre>
             )}
-            {note && (
-              <p className="mt-2 font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">{note}</p>
-            )}
-            <div className="mt-3 flex justify-end gap-2">
-              {unresolved && (
-                <button className="dsbtn dsbtn-secondary" disabled={busy !== null} onClick={() => void recheck(entry)}>
-                  {busy === `${entry.operation.operationId}:recheck` ? 'Checking…' : 'Check status'}
-                </button>
-              )}
-              {!unresolved && (
-                <button className="dsbtn dsbtn-secondary" onClick={() => dismiss(entry)}>
-                  Dismiss
-                </button>
-              )}
-            </div>
           </section>
         )
       })}

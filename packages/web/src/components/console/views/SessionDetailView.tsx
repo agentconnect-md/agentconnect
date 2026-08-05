@@ -3410,14 +3410,6 @@ export default function SessionDetailView() {
           {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
           {isLive && (
             <>
-              {activeOrg && session.agentId && webchatConversationId && (
-                <WebchatMcpApprovalCard
-                  key={webchatConversationId}
-                  orgId={activeOrg.id}
-                  agentId={session.agentId}
-                  conversationId={webchatConversationId}
-                />
-              )}
               {pgBusy &&
                 (() => {
                   // Multi-agent conversations attribute the typing indicator to
@@ -3480,6 +3472,17 @@ export default function SessionDetailView() {
                   className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
                 />
                 {approvalCard('mb-2 max-desktop:rounded-lg')}
+                {/* Webchat MCP write approvals ride the same sticky footer as permission
+                  requests: always above the input, never scrolled away. */}
+                {activeOrg && session.agentId && webchatConversationId && (
+                  <WebchatMcpApprovalCard
+                    key={webchatConversationId}
+                    orgId={activeOrg.id}
+                    agentId={session.agentId}
+                    conversationId={webchatConversationId}
+                    className="mb-2"
+                  />
+                )}
                 {/* Queued messages (Claude Code-style): sends accepted while a turn was
                   still streaming wait here, dispatch in order as turns finish, and can
                   be cancelled individually before they go out. */}
