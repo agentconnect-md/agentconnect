@@ -304,10 +304,10 @@ export default function EditAgentModal({
   const daemonChanged = daemonId !== initialDaemonId.current
   const initialPlacement = daemonChanged && !initialDaemonId.current
   const placementRequested = daemonChanged || repairPlacement
-  // Placement consumes the durable agent definition. Pending configuration is
-  // therefore saved first so the selected runtime/model and access policy ride
-  // the target activation bundle; the user does not need to save, close, and
-  // reopen this dialog just to move the agent.
+  // Placement consumes the durable agent definition. Pending execution config
+  // is therefore saved first so the selected runtime/model and call policy ride
+  // the target activation bundle. Sharing is saved last because a valid edit may
+  // remove the current editor's own access.
   const selectedSandboxRequired = daemonChanged
     ? (daemon?.caps.features.includes('sandbox-required') ?? false)
     : sandboxRequired
@@ -516,13 +516,11 @@ export default function EditAgentModal({
       // (workspace dir, launch key) and is immutable in the console — only the
       // display name is renameable.
       // Description is edited on its own card (EditDescriptionModal) — never sent here.
-      // Save every central setting before placement so the target receives one
-      // current activation snapshot. These endpoints are intentionally durable:
-      // if placement later fails, the completed edits remain saved.
+      // Save daemon-affecting settings before placement so the target receives
+      // one current activation snapshot. These endpoints are intentionally
+      // durable: if placement later fails, the completed edits remain saved.
       if (hasSpecChanges) await updateAgent(agent.id, patch)
-      // Sharing and agent-call visibility ride their own endpoints. Sharing uses
-      // canManageSharing; call policy is a normal agent edit and uses canEdit.
-      if (hasSharingChanges) await saveSharing('agents', agent.id, sharing)
+      // Agent-call visibility is a normal agent edit and uses canEdit.
       if (hasCallPolicyChanges) {
         const body: AgentCallPolicyInput = {
           callPolicy: inboundMode,
@@ -533,6 +531,10 @@ export default function EditAgentModal({
         await saveAgentCallPolicy(agent.id, body)
       }
       if (placementRequested) await moveAgent(agent.id, daemonId, forceMove ? { force: true } : undefined)
+      // Sharing uses canManageSharing and may intentionally remove this editor's
+      // own visibility. Apply it only after every operation that still needs the
+      // editor's authorization, including placement.
+      if (hasSharingChanges) await saveSharing('agents', agent.id, sharing)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -993,7 +995,7 @@ export default function EditAgentModal({
                     are cancelled without a final reply. New messages start fresh on{' '}
                     <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the target daemon'}</span>.
                     Workspace, memory, and session history stay on the source and are not copied or replayed; GitHub
-                    workspaces are re-cloned. Any configuration edits in this dialog are saved first.
+                    workspaces are re-cloned. Other edits in this dialog are saved as part of the same operation.
                   </span>
                 ) : (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
