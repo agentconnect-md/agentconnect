@@ -830,7 +830,10 @@ export class PgSessionRepo implements SessionRepo {
           "session_meta"."permissionMode"
         ),
         "outputMode" = COALESCE(EXCLUDED."outputMode", "session_meta"."outputMode"),
-        "daemonId" = COALESCE(EXCLUDED."daemonId", "session_meta"."daemonId"),
+        -- Content ownership is pinned by the first authenticated daemon that
+        -- reports the session. A later milestone must not move daemon-local
+        -- transcript/worktree provenance when the agent itself is reassigned.
+        "daemonId" = COALESCE("session_meta"."daemonId", EXCLUDED."daemonId"),
         "workspaceIsolation" = COALESCE(
           EXCLUDED."workspaceIsolation",
           "session_meta"."workspaceIsolation"

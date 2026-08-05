@@ -31,6 +31,7 @@ afterEach(async () => {
 })
 
 const DAEMON = 'd0d0d0d0-dddd-4ddd-8ddd-dddddddddddd'
+const OTHER_DAEMON = 'e0e0e0e0-eeee-4eee-8eee-eeeeeeeeeeee'
 const AGENT = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const SESSION = '50505050-5555-4555-8555-555555555555'
 
@@ -59,11 +60,12 @@ class SpyControl {
 
 const emptyHist: SessionHistoryPage = { sessionId: SESSION, messages: [] }
 
-async function seedSession(agentId = AGENT): Promise<void> {
+async function seedSession(agentId = AGENT, daemonId?: string): Promise<void> {
   await prisma.sessionMeta.create({
     data: {
       id: SESSION,
       agentId,
+      ...(daemonId ? { daemonId } : {}),
       orgId: DEFAULT_ORG_ID,
       platform: 'slack',
       channel: '#deploys',
@@ -563,11 +565,11 @@ describe('GET /sessions (metadata list from CP DB)', () => {
   })
 })
 
-describe('GET /sessions/:id/messages (history pull via the owning agent)', () => {
-  it('resolves the owner from SessionMeta and proxies a page', async () => {
+describe('GET /sessions/:id/messages (history pull via the session daemon)', () => {
+  it('resolves the content owner from SessionMeta and proxies a page', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    await seedSession()
+    await seedSession(AGENT, DAEMON)
     const spy = new SpyControl(
       { sessions: [] },
       {
@@ -633,18 +635,33 @@ describe('GET /sessions/:id/messages (history pull via the owning agent)', () =>
     expect(res.statusCode).toBe(404)
   })
 
-  it('503s when the agent is unplaced (no live daemon)', async () => {
-    await seedAgent(prisma, AGENT) // no daemonId
+  it('reads from the recorded daemon after the agent moves elsewhere', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedDaemon(prisma, OTHER_DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: OTHER_DAEMON })
+    await seedSession(AGENT, DAEMON)
+    const spy = new SpyControl({ sessions: [] }, emptyHist)
+    running = buildHttpApp(prisma, undefined, LIVE, spy as unknown as ControlSender)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
+
+    expect(res.statusCode).toBe(200)
+    expect(spy.histCalls).toEqual([{ daemonId: DAEMON, req: { agentId: AGENT, sessionId: SESSION, limit: 50 } }])
+  })
+
+  it('503s when legacy session metadata has no recorded daemon', async () => {
+    await seedAgent(prisma, AGENT)
     await seedSession()
     running = buildHttpApp(prisma)
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${SESSION}/messages` })
     expect(res.statusCode).toBe(503)
+    expect(res.json()).toMatchObject({ message: 'session has no recorded daemon' })
   })
 
   it('503s when the owning daemon is offline (NoConnection → 503)', async () => {
     await seedDaemon(prisma, DAEMON)
     await seedAgent(prisma, AGENT, { daemonId: DAEMON })
-    await seedSession()
+    await seedSession(AGENT, DAEMON)
     const offline = new ControlSender(
       { get: () => undefined } as unknown as ConstructorParameters<typeof ControlSender>[0],
       { currentLaunch: async () => undefined } as unknown as ConstructorParameters<typeof ControlSender>[1]

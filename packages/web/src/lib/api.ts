@@ -2190,9 +2190,8 @@ export function putSessionExternalAccess(
   return apiPut<SessionExternalAccessDto>(`${orgBase(orgId)}/session-access/${provider}`, { enabled })
 }
 
-// One page of a session's transcript, proxied live from the owning daemon. The
-// CP resolves the owner and daemon from its SessionMeta row; 503 if that daemon
-// is offline or the owning agent is unplaced.
+// One page of a session's transcript, proxied live from the daemon recorded on
+// SessionMeta. Content ownership stays pinned there when the agent moves.
 export async function fetchSessionMessages(
   sessionId: string,
   options: { cursor?: string; after?: string; limit?: number } = {}

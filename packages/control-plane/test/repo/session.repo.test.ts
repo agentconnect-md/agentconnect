@@ -176,6 +176,18 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     expect(got?.daemonId).toBe(DAEMON)
   })
 
+  it('keeps the first reporting daemon as the immutable content owner', async () => {
+    await fixtures()
+    await seedDaemon(prisma, OTHER_DAEMON)
+    const repo = new PgSessionRepo(prisma)
+
+    await repo.recordMilestone(ev('start', { daemonId: DaemonId(DAEMON) }))
+    await repo.recordMilestone(ev('end', { daemonId: DaemonId(OTHER_DAEMON) }))
+
+    const row = await prisma.sessionMeta.findUnique({ where: { id: SESSION } })
+    expect(row?.daemonId).toBe(DAEMON)
+  })
+
   it('keeps the recorded execution config when a later milestone omits it', async () => {
     await fixtures()
     const repo = new PgSessionRepo(prisma)

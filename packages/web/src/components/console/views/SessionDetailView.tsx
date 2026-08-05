@@ -65,6 +65,7 @@ import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
+import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { consoleKeys } from '@/lib/swr-keys'
 import { sessionAttributionAgentAuthors, sessionAttributionAgentId, sessionSenderLabel } from '@/lib/session-trigger'
@@ -1348,9 +1349,10 @@ export default function SessionDetailView() {
       : sessionMerged
   // Session mode: does this session belong to a multi-participant conversation?
   // One bounded resolver probe per detail view (same SWR cache family as
-  // conversation mode); a hit redirects to the merged page (§5.3).
+  // conversation mode). A normal route redirects on a hit (§5.3); the diagnostic
+  // flat route stays put but still needs the full roster for safe resume gating.
   const selfKey = useMemo(() => {
-    if (flatView || conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') {
+    if (conversationKey || !currentSessionDetail || currentSessionDetail.platform === 'playground') {
       return null
     }
     return encodeConversationKey({
@@ -1359,8 +1361,8 @@ export default function SessionDetailView() {
       channel: currentSessionDetail.channel,
       thread: currentSessionDetail.thread
     })
-  }, [flatView, conversationKey, currentSessionDetail])
-  const { data: selfConversation } = useSWR(
+  }, [conversationKey, currentSessionDetail])
+  const { data: selfConversation, isLoading: selfConversationLoading } = useSWR(
     selfKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, selfKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
     { revalidateOnFocus: false }
@@ -2125,6 +2127,26 @@ export default function SessionDetailView() {
   const channelDisplay = sessionChannelDisplay(session, (id) => crons.find((c) => c.id === id)?.name)
   const usesIntegrationAvatar = session.platform === 'hook' && sessionIntegration === 'github'
   const isLive = isPg || isWebchat
+  const currentDaemonByAgent = new Map(
+    agents.map((agent) => [agent.id, agent.daemon === '—' ? undefined : agent.daemon])
+  )
+  const resumeConversationMembers = conversationKey ? conversationMembers : selfConversation?.sessions
+  const resumeConversationLookupPending = conversationKey
+    ? conversationLoading
+    : Boolean(selfKey && selfConversationLoading)
+  const resumeConversationLookupRequired = Boolean(conversationKey || selfKey)
+  const persistedResumeMembers = isWebchat
+    ? sessionResumeMembers(
+        resumeConversationMembers?.map((member) => ({ agentId: member.agentId, daemonId: member.daemonId })),
+        currentSessionDetail
+          ? { agentId: currentSessionDetail.agentId, daemonId: currentSessionDetail.daemonId }
+          : null,
+        resumeConversationLookupRequired,
+        resumeConversationLookupPending
+      )
+    : []
+  const resumeState = isPg ? 'available' : sessionResumeState(persistedResumeMembers, currentDaemonByAgent)
+  const resumeDisabled = isWebchat && resumeState !== 'available'
   // Composer state is per-session in the provider — bind it to THIS session's id so a
   // different live conversation streaming in the background can't disable or clear it.
   const pgBusy = sessionBusy
@@ -2166,6 +2188,12 @@ export default function SessionDetailView() {
       ).map((p) => ({ ...p, name: rosterParticipantName(p, agentById.get(p.agentId)) }))
     : []
   const multiLive = liveRoster.length > 1
+  const resumePlaceholder =
+    resumeState === 'checking'
+      ? 'Checking whether this conversation can continue…'
+      : multiLive
+        ? 'This conversation can’t continue because one or more agents moved to another daemon.'
+        : 'This conversation can’t continue because the agent moved to another daemon.'
 
   // Resume the webchat conversation by its id (session.channelId == the conversationId);
   // a synthetic playground turn omits it (the CP mints a fresh id).
@@ -3347,12 +3375,22 @@ export default function SessionDetailView() {
                   Details popover, not here. */}
                 <div
                   className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
+                  inert={resumeDisabled}
+                  aria-disabled={resumeDisabled}
                   onKeyDown={(event) => {
                     if (event.key !== 'Escape') return
                     setAttachMenuOpen(false)
                     setComposerMenuOpen(null)
                   }}
                 >
+                  {resumeDisabled && (
+                    <textarea
+                      className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
+                      aria-label="Conversation unavailable"
+                      placeholder={resumePlaceholder}
+                      disabled
+                    />
+                  )}
                   <input
                     ref={imageInputRef}
                     type="file"
