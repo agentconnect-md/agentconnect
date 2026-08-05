@@ -96,6 +96,7 @@ import {
   encode,
   MAX_FRAME_BYTES,
   SESSION_LIVE_TAIL_FEATURE,
+  SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE
 } from '@agentconnect.md/protocol'
@@ -544,6 +545,22 @@ export class CpClient {
   emitEventSession(event: EventSession): void {
     if (this.state !== 'READY' && this.state !== 'DRAINING') return
     this.transport?.send(encode(buildEnvelope('event/session', event)))
+  }
+
+  /**
+   * Persist one durable latest-wins session metadata snapshot (D→C
+   * `event/session-sync` REQ → `ack`). The daemon releases its local outbox row
+   * only after this resolves, so a disconnect or CP transaction failure is
+   * retried without blocking the turn that produced the snapshot.
+   */
+  async syncEventSession(event: EventSession): Promise<'acknowledged' | 'unsupported'> {
+    this.requireReady('event/session-sync')
+    if (!this.supportsServerFeature(SESSION_METADATA_ACK_FEATURE)) return 'unsupported'
+    const rep = await this.request('event/session-sync', event)
+    if (rep.type !== 'ack' || rep.payload.ok !== true) {
+      throw new WireError('INTERNAL', `expected event/session-sync ack, got ${rep.type}`, false)
+    }
+    return 'acknowledged'
   }
 
   /**

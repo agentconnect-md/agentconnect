@@ -5,7 +5,7 @@ import { existsSync, readFileSync, type Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
-import { sessionRetentionMs, type RuntimeDef } from './config/config-schema.js'
+import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
 import { cpRuntimeEnv } from './agents/cp-overlay.js'
@@ -287,6 +287,7 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
+  SESSION_METADATA_ACK_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
@@ -299,7 +300,8 @@ import {
   MAX_AGENT_CALL_HOPS,
   manifestFor,
   originKindOf,
-  SessionPurgeReason
+  SessionPurgeReason,
+  EventSession as EventSessionSchema
 } from '@agentconnect.md/protocol'
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
@@ -749,6 +751,16 @@ const MAX_TOTAL_TURNS_PER_WINDOW = 60
 // several CP retries, so admitting an unbounded retained backlog at reconnect
 // would turn a long outage into a memory/socket fan-out spike.
 const MAX_HOOK_REPORT_INFLIGHT = 100
+
+/** Backoff after a session-metadata persistence request fails while the socket
+ * remains READY. Reconnect also kicks the durable drain immediately. */
+const SESSION_METADATA_RETRY_MS = 5_000
+
+function configuredControlPlane(
+  controlPlane: Config['controlPlane']
+): controlPlane is Config['controlPlane'] & { url: string; key: string } {
+  return controlPlane.enabled && !!controlPlane.url && !!controlPlane.key
+}
 
 /** Thrown to a `dispatch()` caller when the per-session admission queue is at its depth
  *  cap (§4.4 backpressure): the message is fast-failed, not buffered. Carries a stable
@@ -2080,6 +2092,10 @@ export class Daemon {
   // Single-flight for the purge-receipt drain (#485): the sweep and a CP reconnect
   // can both trigger it, and each batch awaits a correlated ACK.
   private sessionPurgeDrainInFlight = false
+  // One-at-a-time durable session metadata sync. Sequential ACKs provide natural
+  // CP/DB backpressure after an outage; the promise is joined during shutdown.
+  private sessionMetadataDrain?: Promise<void>
+  private sessionMetadataRetryTimer?: TimerHandle
   // §7.3 force-cancel backstops, keyed by (agentId, acpSessionId); cleared at turn end.
   private cancelTimers = new Map<string, TimerHandle>()
   // Backstop for an interrupt that lands before a Pending/ACP session id exists
@@ -13712,7 +13728,11 @@ export class Daemon {
     model?: string | null
     permissionMode?: string
   }): void {
-    if (!this.cpClient) return
+    const cpClient = this.cpClient
+    // Session work may begin during startup before startCpClient() runs. Persist
+    // that obligation whenever this daemon is configured to connect; only the
+    // live send still depends on a constructed client.
+    if (!cpClient && !configuredControlPlane(this.cfg.controlPlane)) return
     const now = new Date(this.clock.now()).toISOString()
     const row = this.sessionListProjection(input.sessionId, input.agentId)
     const key = row?.sessionKey
@@ -13809,11 +13829,125 @@ export class Daemon {
     const outputMode = (storeKey ? this.store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode
     if (outputMode !== undefined) event.outputMode = outputMode
 
+    const snapshot = this.convergedPendingSessionMetadataSnapshot(event)
+    let pending = false
     try {
-      this.cpClient.emitEventSession(event)
+      // A lifecycle milestone creates the durable obligation. `plan` is title /
+      // display-name enrichment: it updates an already-pending snapshot but does
+      // not turn a historical session into upgrade-time replay work.
+      pending =
+        this.store.saveSessionMetadataSnapshot(
+          input.agentId,
+          input.sessionId,
+          JSON.stringify(snapshot),
+          input.phase !== 'plan',
+          this.clock.now()
+        ) !== undefined
+    } catch (err) {
+      // Preserve the pre-outbox behavior if the local write fails: a live CP may
+      // still accept the best-effort event, and the turn itself must not fail.
+      this.log.warn(`event/session outbox persist failed (session ${input.sessionId}): ${formatErr(err)}`)
+    }
+
+    if (!cpClient) return
+    if (pending && cpClient.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)) {
+      void this.drainSessionMetadataSnapshots()
+      return
+    }
+    try {
+      cpClient.emitEventSession(event)
     } catch (err) {
       this.log.debug(`event/session emit failed (session ${input.sessionId}): ${(err as Error).message}`)
     }
+  }
+
+  /** Keep a terminal milestone in an unacknowledged latest-wins snapshot while
+   * title/name enrichment updates its remaining fields. Otherwise a post-turn
+   * `plan` update could erase the only durable copy of the missing `end`. */
+  private convergedPendingSessionMetadataSnapshot(next: EventSession): EventSession {
+    if (next.phase !== 'plan') return next
+    const pending = this.store.pendingSessionMetadataSnapshot(next.agentId, next.sessionId)
+    if (!pending) return next
+    try {
+      const parsed = EventSessionSchema.safeParse(JSON.parse(pending.snapshot))
+      const previous = parsed.success ? parsed.data : undefined
+      if (
+        previous?.agentId === next.agentId &&
+        previous.sessionId === next.sessionId &&
+        (previous.phase === 'end' || previous.phase === 'problem')
+      ) {
+        return { ...next, phase: previous.phase, ts: previous.ts }
+      }
+    } catch {
+      // A newly generated valid snapshot replaces corrupt local state below.
+    }
+    return next
+  }
+
+  /** Start or join the sequential durable metadata drain. One correlated request
+   * at a time is intentional backpressure: reconnect cannot fan a backlog into
+   * the CP's database pool. */
+  private drainSessionMetadataSnapshots(): Promise<void> {
+    if (this.sessionMetadataDrain) return this.sessionMetadataDrain
+    const cp = this.cpClient
+    if (
+      this.draining ||
+      !cp ||
+      (cp.state !== 'READY' && cp.state !== 'DRAINING') ||
+      !cp.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE)
+    ) {
+      return Promise.resolve()
+    }
+    const drain = this.runSessionMetadataDrain(cp).finally(() => {
+      if (this.sessionMetadataDrain === drain) this.sessionMetadataDrain = undefined
+      // Close the empty-read/new-write race: a producer that observed the old
+      // in-flight promise relies on this final check to refill the drain.
+      try {
+        if (
+          !this.draining &&
+          this.cpClient?.supportsServerFeature?.(SESSION_METADATA_ACK_FEATURE) &&
+          this.store.hasPendingSessionMetadata()
+        ) {
+          this.scheduleSessionMetadataRetry(0)
+        }
+      } catch (err) {
+        this.log.warn(`event/session outbox refill check failed (${formatErr(err)})`)
+      }
+    })
+    this.sessionMetadataDrain = drain
+    return drain
+  }
+
+  private async runSessionMetadataDrain(cp: CpClient): Promise<void> {
+    while (!this.draining && (cp.state === 'READY' || cp.state === 'DRAINING')) {
+      try {
+        const row = this.store.nextSessionMetadataSnapshot()
+        if (!row) return
+        const parsed = EventSessionSchema.safeParse(JSON.parse(row.snapshot))
+        if (!parsed.success || parsed.data.agentId !== row.agentId || parsed.data.sessionId !== row.sessionId) {
+          this.log.warn(`event/session outbox dropped an invalid snapshot for session ${row.sessionId}`)
+          this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
+          continue
+        }
+        const result = await cp.syncEventSession(parsed.data)
+        if (result === 'unsupported') return
+        // Revision fencing: an event produced while this request was in flight
+        // remains pending instead of being cleared by the older ACK.
+        this.store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision)
+      } catch (err) {
+        this.log.debug(`event/session snapshot retained for retry (${formatErr(err)})`)
+        this.scheduleSessionMetadataRetry()
+        return
+      }
+    }
+  }
+
+  private scheduleSessionMetadataRetry(delayMs = SESSION_METADATA_RETRY_MS): void {
+    if (this.draining || this.sessionMetadataRetryTimer !== undefined) return
+    this.sessionMetadataRetryTimer = this.clock.setTimeout(() => {
+      this.sessionMetadataRetryTimer = undefined
+      void this.drainSessionMetadataSnapshots()
+    }, delayMs)
   }
 
   private emitSessionMetadataSnapshotsForDisplayName(id: string): void {
@@ -18641,7 +18775,7 @@ export class Daemon {
 
   private startCpClient(root: string): void {
     const cp = this.cfg.controlPlane
-    if (!cp?.enabled || !cp.url || !cp.key) {
+    if (!configuredControlPlane(cp)) {
       this.log.info('cp: not connecting (disabled or missing url/token) — running local')
       return
     }
@@ -18767,6 +18901,9 @@ export class Daemon {
         this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
         this.replayChannelSnapshots()
+        // Only snapshots written to the durable outbox by this build are
+        // replayed. Historical session rows are never scanned or backfilled.
+        void this.drainSessionMetadataSnapshots()
         // Replay remote MCP revocations that could not reach the CP (revokes
         // queued while disconnected or left over from a previous process).
         void this.drainWebchatMcpRevocations()
@@ -19278,6 +19415,10 @@ export class Daemon {
       this.clock.clearTimeout(this.hookReportRetryTimer)
       this.hookReportRetryTimer = undefined
     }
+    if (this.sessionMetadataRetryTimer !== undefined) {
+      this.clock.clearTimeout(this.sessionMetadataRetryTimer)
+      this.sessionMetadataRetryTimer = undefined
+    }
     // Clear any live orchestration deadline timers so they don't hold the process open
     // (the durable `orchestration.deadline` epoch re-arms them on the next startup).
     for (const t of this.orchestrationDeadlines.values()) this.clock.clearTimeout(t)
@@ -19313,6 +19454,7 @@ export class Daemon {
     // proceeds without losing the revocation obligation.
     await this.revokeAllRemoteWebchatGrants('session_closed')
     await Promise.resolve(this.cpClient?.stop()).catch((e) => errors.push(e))
+    await Promise.resolve(this.sessionMetadataDrain).catch((e) => errors.push(e))
     // The closed CP transport cannot admit another lifecycle frame. Drain every
     // remove/upsert/move already published into its per-agent queue before any
     // store or registry it may still touch is closed.

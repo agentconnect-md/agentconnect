@@ -3,7 +3,7 @@ import type { AnyFrame } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { SessionMetaRecord, SessionMilestoneResult } from '../../persistence/ports.js'
-import { handleEventSession } from './event-session.js'
+import { handleEventSession, handleEventSessionSync } from './event-session.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const AGENT_ID = 'a0a0a0a0-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -22,12 +22,12 @@ function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   } as unknown as DaemonWsDeps
 }
 
-function eventSessionFrame(): AnyFrame {
+function eventSessionFrame(type: 'event/session' | 'event/session-sync' = 'event/session'): AnyFrame {
   return {
     v: 1,
     id: crypto.randomUUID(),
     ts: '2026-07-10T00:00:00.000Z',
-    type: 'event/session',
+    type,
     payload: {
       sessionId: 'session-407',
       agentId: AGENT_ID,
@@ -50,6 +50,60 @@ function recorded(session: Partial<SessionMetaRecord> = {}): SessionMilestoneRes
 }
 
 describe('handleEventSession', () => {
+  it('ACKs a durable snapshot only after its metadata transaction commits', async () => {
+    const order: string[] = []
+    let finishPersist!: () => void
+    const recordMilestone = vi.fn(() => {
+      order.push('persist:start')
+      return new Promise<SessionMilestoneResult>((resolve) => {
+        finishPersist = () => {
+          order.push('persist:finish')
+          resolve(recorded())
+        }
+      })
+    })
+    const replyTo = vi.fn(() => order.push('ack'))
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      events: { publish: vi.fn(() => order.push('publish')) }
+    })
+    const frame = eventSessionFrame('event/session-sync')
+    const conn = {
+      daemonId: DAEMON_ID,
+      replyTo,
+      sendError: vi.fn()
+    } as unknown as DaemonConnection
+
+    const handling = handleEventSessionSync(frame, conn, deps)
+    await vi.waitFor(() => expect(order).toEqual(['persist:start']))
+    expect(replyTo).not.toHaveBeenCalled()
+
+    finishPersist()
+    await handling
+
+    expect(order).toEqual(['persist:start', 'persist:finish', 'publish', 'ack'])
+    expect(replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
+  })
+
+  it('keeps a durable snapshot retryable when persistence fails', async () => {
+    const frame = eventSessionFrame('event/session-sync')
+    const replyTo = vi.fn()
+    const sendError = vi.fn()
+    const deps = scopedDeps({
+      session: { recordMilestone: vi.fn().mockRejectedValue(new Error('db unavailable')) },
+      events: { publish: vi.fn() }
+    })
+
+    await handleEventSessionSync(
+      frame,
+      { daemonId: DAEMON_ID, replyTo, sendError } as unknown as DaemonConnection,
+      deps
+    )
+
+    expect(replyTo).not.toHaveBeenCalled()
+    expect(sendError).toHaveBeenCalledWith(frame.id, 'INTERNAL', expect.any(String), true)
+  })
+
   it('publishes the milestone only after it has been persisted', async () => {
     const order: string[] = []
     let finishPersist!: () => void

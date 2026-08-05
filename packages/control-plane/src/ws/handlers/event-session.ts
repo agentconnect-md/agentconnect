@@ -1,10 +1,12 @@
 /**
  * `event/session` handler — session metadata sync (dashboard + deep links).
  *
- * A fire-and-forget EVT (no reply). Sessions are created on the Slack/Discord→
- * daemon path; the daemon reports each one's converged milestone here (start /
- * plan / problem / end + the sessionKey echo) and the CP upserts one `SessionMeta`
- * row per `sessionId` (latest-wins, idempotent). This is what makes a session
+ * `event/session` remains the rolling-compatible fire-and-forget EVT;
+ * `event/session-sync` is the same latest-wins payload as a correlated request
+ * whose ACK means the metadata transaction committed. Sessions are created on
+ * the Slack/Discord→daemon path; the daemon reports each one's converged
+ * milestone here and the CP upserts one `SessionMeta` row per `sessionId`.
+ * This is what makes a session
  * deep-link (`…/sessions/:id`) resolvable from CP-stored metadata, even when the
  * daemon is offline. Metadata only — list/detail fields and sessionKey echo —
  * never the message stream (that stays daemon-local, §1/§12).
@@ -148,64 +150,97 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
   }
 }
 
+async function recordEventSession(
+  p: EventSession,
+  agentId: AgentId,
+  daemonId: DaemonId,
+  deps: DaemonWsDeps
+): Promise<void> {
+  const [classification, candidate] = await Promise.all([
+    classifyMilestone(p, agentId, deps),
+    externalCandidate(p, agentId, deps)
+  ])
+  const { recorded, session, settled } = await deps.session.recordMilestone({
+    sessionId: SessionId(p.sessionId),
+    ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
+    agentId,
+    ...(p.launchId !== undefined ? { launchId: LaunchId(p.launchId) } : {}),
+    phase: p.phase,
+    ...(p.platform !== undefined ? { platform: p.platform } : {}),
+    ...(p.channel !== undefined ? { channel: p.channel } : {}),
+    ...(p.thread !== undefined ? { thread: p.thread } : {}),
+    ...(p.link !== undefined ? { link: p.link } : {}),
+    ...(p.summary !== undefined ? { summary: p.summary } : {}),
+    ...(p.title !== undefined ? { title: p.title } : {}),
+    ...(p.status !== undefined ? { status: p.status } : {}),
+    ...(p.lastActivityAt !== undefined ? { lastActivityAt: new Date(p.lastActivityAt) } : {}),
+    ...(p.triggeredBy !== undefined ? { triggeredBy: p.triggeredBy } : {}),
+    ...(p.channelName !== undefined ? { channelName: p.channelName } : {}),
+    ...(p.triggeredByName !== undefined ? { triggeredByName: p.triggeredByName } : {}),
+    ...(p.threadUrl !== undefined ? { threadUrl: p.threadUrl } : {}),
+    ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
+    ...(p.observedModel !== undefined ? { model: p.observedModel } : p.model !== undefined ? { model: p.model } : {}),
+    ...(p.effort !== undefined ? { effort: p.effort } : {}),
+    ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
+    ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
+    ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
+    ...(p.workspaceIsolation !== undefined ? { workspaceIsolation: p.workspaceIsolation } : {}),
+    ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
+    ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
+    ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
+    ...(candidate ? { externalCandidate: candidate } : {}),
+    classification,
+    // The reporting daemon comes from the AUTHENTICATED connection, not the
+    // frame payload.
+    daemonId,
+    at: new Date(p.ts)
+  })
+  if (!recorded) return
+  // Confirm the capture gate for the rows whose privacy the daemon cannot
+  // infer locally (§5.1): an A2A child always starts excluded and only a
+  // CP-confirmed `org` state may open it, and a settled child's tier is by
+  // definition news to the daemon that runs it. The ack watermark keeps this
+  // to one push per revision — later milestones of the same session are silent.
+  const confirm = [...settled, ...(session?.parentSessionId ? [session] : [])].filter(
+    (s) => s.visibilityAckedRev < s.visibilityRev
+  )
+  if (confirm.length > 0) void deps.visibilityPush?.notifySessions(confirm)
+  // Publish only after the metadata commit. Browser subscribers use this as an
+  // invalidation signal and immediately re-read `/sessions`; publishing first
+  // would race that GET against the upsert and leave the new row invisible.
+  deps.events.publish(daemonId, p)
+}
+
 export const handleEventSession: Handler = async (frame, conn, deps) => {
   if (!isFrame('event/session')(frame)) return
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
-  await runForReportingAgent(agentId, daemonId, deps, async () => {
-    const [classification, candidate] = await Promise.all([
-      classifyMilestone(p, agentId, deps),
-      externalCandidate(p, agentId, deps)
-    ])
-    const { recorded, session, settled } = await deps.session.recordMilestone({
-      sessionId: SessionId(p.sessionId),
-      ...(p.parentSessionId !== undefined ? { parentSessionId: SessionId(p.parentSessionId) } : {}),
-      agentId,
-      ...(p.launchId !== undefined ? { launchId: LaunchId(p.launchId) } : {}),
-      phase: p.phase,
-      ...(p.platform !== undefined ? { platform: p.platform } : {}),
-      ...(p.channel !== undefined ? { channel: p.channel } : {}),
-      ...(p.thread !== undefined ? { thread: p.thread } : {}),
-      ...(p.link !== undefined ? { link: p.link } : {}),
-      ...(p.summary !== undefined ? { summary: p.summary } : {}),
-      ...(p.title !== undefined ? { title: p.title } : {}),
-      ...(p.status !== undefined ? { status: p.status } : {}),
-      ...(p.lastActivityAt !== undefined ? { lastActivityAt: new Date(p.lastActivityAt) } : {}),
-      ...(p.triggeredBy !== undefined ? { triggeredBy: p.triggeredBy } : {}),
-      ...(p.channelName !== undefined ? { channelName: p.channelName } : {}),
-      ...(p.triggeredByName !== undefined ? { triggeredByName: p.triggeredByName } : {}),
-      ...(p.threadUrl !== undefined ? { threadUrl: p.threadUrl } : {}),
-      ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
-      ...(p.observedModel !== undefined ? { model: p.observedModel } : p.model !== undefined ? { model: p.model } : {}),
-      ...(p.effort !== undefined ? { effort: p.effort } : {}),
-      ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
-      ...(p.permissionMode !== undefined ? { permissionMode: p.permissionMode } : {}),
-      ...(p.outputMode !== undefined ? { outputMode: p.outputMode } : {}),
-      ...(p.workspaceIsolation !== undefined ? { workspaceIsolation: p.workspaceIsolation } : {}),
-      ...(p.conversationKind !== undefined ? { conversationKind: p.conversationKind } : {}),
-      ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
-      ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
-      ...(candidate ? { externalCandidate: candidate } : {}),
-      classification,
-      // The reporting daemon comes from the AUTHENTICATED connection, not the
-      // frame payload.
-      daemonId,
-      at: new Date(p.ts)
-    })
-    if (!recorded) return
-    // Confirm the capture gate for the rows whose privacy the daemon cannot
-    // infer locally (§5.1): an A2A child always starts excluded and only a
-    // CP-confirmed `org` state may open it, and a settled child's tier is by
-    // definition news to the daemon that runs it. The ack watermark keeps this
-    // to one push per revision — later milestones of the same session are silent.
-    const confirm = [...settled, ...(session?.parentSessionId ? [session] : [])].filter(
-      (s) => s.visibilityAckedRev < s.visibilityRev
-    )
-    if (confirm.length > 0) void deps.visibilityPush?.notifySessions(confirm)
-    // Publish only after the metadata commit. Browser subscribers use this as an
-    // invalidation signal and immediately re-read `/sessions`; publishing first
-    // would race that GET against the upsert and leave the new row invisible.
-    deps.events.publish(daemonId, p)
-  })
+  await runForReportingAgent(agentId, daemonId, deps, () => recordEventSession(p, agentId, daemonId, deps))
+}
+
+/** Durable variant. Lease contention is retryable; a deleted/moved agent is a
+ * permanent rejection and is ACKed so the old daemon can collect its outbox. */
+export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
+  if (!isFrame('event/session-sync')(frame)) return
+  const p = frame.payload
+  const agentId = AgentId(p.agentId)
+  const daemonId = DaemonId(conn.daemonId)
+  const release = deps.agentMutations.tryBeginMutation(agentId)
+  if (!release) {
+    conn.sendError(frame.id, 'INTERNAL', 'agent placement is mutating; retry the session snapshot', true)
+    return
+  }
+  try {
+    const agent = await deps.agent.get(agentId)
+    if (agent?.daemonId === daemonId) await recordEventSession(p, agentId, daemonId, deps)
+    // ACK only after recordEventSession's transaction has committed. An agent
+    // placed elsewhere (or deleted) can never accept this daemon's stale row, so
+    // retaining it forever would be worse than collecting it.
+    conn.replyTo(frame, 'ack', { ok: true })
+  } catch {
+    conn.sendError(frame.id, 'INTERNAL', 'session metadata snapshot failed to persist', true)
+  } finally {
+    release()
+  }
 }

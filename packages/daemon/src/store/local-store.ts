@@ -408,6 +408,15 @@ export interface SessionPurgeRow {
   purgedAt: number
 }
 
+/** One latest-wins session metadata snapshot awaiting the CP's commit ACK. */
+export interface SessionMetadataOutboxRow {
+  agentId: string
+  sessionId: string
+  revision: number
+  snapshot: string
+  queuedAt: number
+}
+
 /**
  * One daemon-local external-memory capture. The conversation body never leaves
  * this table except through the selected plugin data plane; CP frames and logs
@@ -605,6 +614,19 @@ export class LocalStore {
         cpRev INTEGER NOT NULL DEFAULT 0,
         updatedAt INTEGER
       );
+      -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
+      -- This is deliberately separate from sessions: an upgrade starts with an
+      -- empty outbox and never treats historical session rows as pending work.
+      CREATE TABLE IF NOT EXISTS session_metadata_outbox (
+        agentId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        snapshot TEXT NOT NULL,
+        queuedAt INTEGER NOT NULL,
+        PRIMARY KEY (agentId, sessionId)
+      );
+      CREATE INDEX IF NOT EXISTS session_metadata_outbox_fifo
+        ON session_metadata_outbox (queuedAt);
       -- Retention-GC receipts (#485): sessions this daemon has already deleted
       -- locally, still owed to the CP as an event/session-purged report. Durable
       -- because the local row is GONE — unlike every other D→C report, an
@@ -2419,6 +2441,12 @@ export class LocalStore {
       this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       this.db.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
+        // Once the local session content is gone, creating a new CP metadata row
+        // from an unacknowledged snapshot would race its purge receipt. Drop the
+        // obsolete snapshot; an existing CP row is handled by session_purges.
+        this.db
+          .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
+          .run(rec.agentId, rec.acpSessionId)
         // session_gates is keyed by the ACP id ALONE, and ACP ids are runtime-local
         // — another agent's still-live `acp-1` may share the key. Drop the gate only
         // once no surviving session references it (the sessions row above is already
@@ -2439,6 +2467,72 @@ export class LocalStore {
       throw err
     }
     return true
+  }
+
+  /**
+   * Save the latest metadata snapshot. Lifecycle milestones create an outbox
+   * row; enrichment-only updates merely coalesce into a row that is already
+   * pending, so startup name refreshes never backfill historical sessions.
+   * Returns the revision when a durable row exists after the write.
+   */
+  saveSessionMetadataSnapshot(
+    agentId: string,
+    sessionId: string,
+    snapshot: string,
+    enqueue: boolean,
+    queuedAt: number
+  ): number | undefined {
+    const row = enqueue
+      ? (this.db
+          .prepare(
+            `INSERT INTO session_metadata_outbox (agentId, sessionId, revision, snapshot, queuedAt)
+             VALUES (?, ?, 1, ?, ?)
+             ON CONFLICT (agentId, sessionId) DO UPDATE SET
+               revision = session_metadata_outbox.revision + 1,
+               snapshot = excluded.snapshot,
+               queuedAt = excluded.queuedAt
+             RETURNING revision`
+          )
+          .get(agentId, sessionId, snapshot, queuedAt) as { revision: number } | undefined)
+      : (this.db
+          .prepare(
+            `UPDATE session_metadata_outbox
+             SET revision = revision + 1, snapshot = ?, queuedAt = ?
+             WHERE agentId = ? AND sessionId = ?
+             RETURNING revision`
+          )
+          .get(snapshot, queuedAt, agentId, sessionId) as { revision: number } | undefined)
+    return row?.revision
+  }
+
+  pendingSessionMetadataSnapshot(agentId: string, sessionId: string): SessionMetadataOutboxRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT agentId, sessionId, revision, snapshot, queuedAt
+         FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?`
+      )
+      .get(agentId, sessionId) as unknown as SessionMetadataOutboxRow | undefined
+  }
+
+  nextSessionMetadataSnapshot(): SessionMetadataOutboxRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT agentId, sessionId, revision, snapshot, queuedAt
+         FROM session_metadata_outbox ORDER BY queuedAt ASC LIMIT 1`
+      )
+      .get() as unknown as SessionMetadataOutboxRow | undefined
+  }
+
+  hasPendingSessionMetadata(): boolean {
+    return this.db.prepare('SELECT 1 AS pending FROM session_metadata_outbox LIMIT 1').get() !== undefined
+  }
+
+  /** Clear exactly the revision the CP ACKed. A newer coalesced snapshot wins. */
+  acknowledgeSessionMetadataSnapshot(agentId: string, sessionId: string, revision: number): boolean {
+    const result = this.db
+      .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ? AND revision = ?')
+      .run(agentId, sessionId, revision)
+    return result.changes === 1
   }
 
   /** Retention-GC receipts still owed to the CP, oldest purge first, bounded.
