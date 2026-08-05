@@ -1,9 +1,8 @@
 /**
- * §13 adapter-level behavioral validation harness for remote MCP admission
+ * §13 adapter-level compatibility harness for remote MCP delivery
  * (docs/designs/webchat-preset-agentconnect-mcp.md).
  *
- * Runs the REAL validated adapter launch (the exact command/args
- * `isValidatedRemoteMcpRuntime` admits) against a live local MCP endpoint that
+ * Runs a REAL supported adapter launch against a live local MCP endpoint that
  * records every request, and asserts — non-vacuously, failing closed on any
  * inconclusive step — the properties the bearer-bearing descriptor depends on:
  *
@@ -42,9 +41,8 @@
  *   REMOTE_MCP_ADAPTER_IT=claude-acp,codex-acp,opencode,grok-build \
  *     pnpm vitest run test/remote-mcp-adapter-behavior.it.test.ts
  *
- * CI skips it (no env). The validation record in src/mcp/remote-mcp-runtimes.ts
- * names the exact launches this harness was last run against; that table is an
- * exact allowlist, so a new adapter release requires a fresh run here.
+ * CI skips it (no env). This is a release compatibility check, never a daemon
+ * admission allowlist: preset descriptor attachment is attempted independently.
  */
 import { describe, it, expect } from 'vitest'
 import { createServer, type Server } from 'node:http'
@@ -62,10 +60,7 @@ const TARGETS = (process.env.REMOTE_MCP_ADAPTER_IT ?? '')
   .filter(Boolean)
 
 /**
- * Candidate launches. Every entry admitted by VALIDATED_REMOTE_MCP_LAUNCHES
- * must appear here byte-identically and must PASS; an entry may also be listed
- * while it is only a candidate, so a future release can be re-validated here
- * before being admitted.
+ * Supported launches exercised by the opt-in compatibility suite.
  */
 const ADAPTERS: Record<string, { command: string; args: string[] }> = {
   'claude-acp': { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'] },
@@ -180,9 +175,8 @@ async function waitFor(predicate: () => boolean, ms: number, what: string): Prom
 const settle = (ms = 4_000) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
- * The validated launch, wrapped so the adapter's stderr can be asserted on.
- * `exec` replaces the shell, so the process actually running is the validated
- * artifact with the validated argument vector — only fd 2 is redirected.
+ * The selected launch, wrapped so the adapter's stderr can be asserted on.
+ * `exec` replaces the shell, so only fd 2 is redirected.
  */
 function captureStderrLaunch(adapter: { command: string; args: string[] }, logPath: string): RuntimeDef {
   // Mirror AcpHost's production resolution of registry commands such as

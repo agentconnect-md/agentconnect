@@ -50,13 +50,13 @@ export type RegisterReq = z.infer<typeof RegisterReq>
  * D→C EVT (`capabilities/update`) — hot full-replace of the connection's
  * `RegisterReq.capabilities`. `register` computes the feature set before the
  * reconcile roster lands and before the runtime probe sweep runs, so a feature
- * derived from either (e.g. `webchat_remote_mcp_v1`, which needs the synced
- * builtin agent / probed MCP transport) would otherwise stay hidden until the
- * next reconnect. The daemon re-announces whenever its computed capability set
- * changes mid-connection; the CP treats it exactly like the register value it
- * refreshes. An older CP replies `error{UNKNOWN_FRAME}`, which the daemon
- * ignores — the feature then simply waits for the next register, the pre-frame
- * behavior.
+ * derived from either would otherwise stay hidden until the next reconnect.
+ * `webchat_remote_mcp_v1` is not one of those dynamic features: it reflects the
+ * daemon's confidential grant-delivery implementation, independently of roster,
+ * runtime probe, and sandbox state. The daemon re-announces whenever its computed
+ * capability set changes mid-connection; the CP treats it exactly like the register
+ * value it refreshes. An older CP replies `error{UNKNOWN_FRAME}`, which the daemon
+ * ignores — the feature then simply waits for the next register, the pre-frame behavior.
  */
 export const CapabilitiesUpdate = z.object({
   capabilities: RegisterReq.shape.capabilities

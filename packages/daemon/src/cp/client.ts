@@ -449,8 +449,8 @@ export class CpClient {
    * changed since this connection's register (D→C `capabilities/update` EVT,
    * fire-and-forget, full-replace on the CP). Register runs before the agent
    * roster is applied and before the runtime probe sweep, so features derived
-   * from either (e.g. `webchat_remote_mcp_v1`) appear only via this refresh on
-   * a fresh connection. Cheap when nothing changed (serialized compare ⇒
+   * from either appear only via this refresh on a fresh connection. Cheap when
+   * nothing changed (serialized compare ⇒
    * no-op), so callers fire it after every agent reconcile / probe sweep. An
    * older CP answers `error{UNKNOWN_FRAME}`, which lands in dispatchControl's
    * default no-op — the feature then simply waits for the next register.

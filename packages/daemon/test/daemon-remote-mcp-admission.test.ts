@@ -1,34 +1,35 @@
-import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { WebchatDone, WebchatOutput } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { RemoteWebchatGrantManager } from '../src/mcp/remote-webchat-grant.js'
-import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 
 /**
- * §13 integration coverage for remote MCP admission: the bearer-bearing
- * descriptor is attached through the REAL webchat dispatch path only when the
- * agent's runtime resolves to a validated adapter id with daemon-owned
- * catalog provenance — never inferred from a user-configured launch line,
- * even one shadowing the canonical id.
+ * Integration coverage for preset admin-MCP delivery through the real webchat
+ * dispatch path. Runtime identity, launch provenance, ACP probe results, and OS
+ * sandbox policy are deliberately absent from admission: the executable is
+ * already inside the configured runtime boundary. The trusted preset marker and
+ * CP-issued conversation entitlement are the only local attachment conditions.
  */
 
 const AGENT_ID = 'bot-a'
 const CONV = '88888888-8888-4888-8888-888888888888'
 const AUTHORITY = '11111111-1111-4111-8111-111111111111'
 const GRANT = '33333333-3333-4333-8333-333333333333'
+const TOKEN = 'secret-token-that-is-longer-than-thirty-two-bytes'
 
-function scaffold(runtimeId = 'claude-acp'): string {
+function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-rmcp-'))
   writeFileSync(
     join(root, 'config.json'),
     JSON.stringify({
       version: 1,
       controlPlane: { enabled: false },
-      // A user-configured runtime that SHADOWS the validated canonical id: the
-      // resolver marks it source 'user', which must never receive the bearer.
-      runtimes: { 'claude-acp': { command: 'node', args: ['unused'] } }
+      // An arbitrary user-defined ACP runtime proves descriptor delivery is not
+      // inferred from a canonical id, package, version, provenance, or probe.
+      runtimes: { 'arbitrary-acp': { command: 'node', args: ['unused'] } }
     })
   )
   const adir = join(root, 'agents', AGENT_ID)
@@ -39,7 +40,9 @@ function scaffold(runtimeId = 'claude-acp'): string {
       id: AGENT_ID,
       name: AGENT_ID,
       status: 'active',
-      runtime: runtimeId,
+      runtime: 'arbitrary-acp',
+      builtin: opts.builtin,
+      runInSandbox: opts.runInSandbox,
       workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
       integrations: [],
       output: { mode: 'medium' }
@@ -48,11 +51,17 @@ function scaffold(runtimeId = 'claude-acp'): string {
   return root
 }
 
-function fakeHost() {
-  let onUpdate!: (sid: string, u: unknown) => void
+function fakeHost(rejectAdminDescriptor = false) {
+  let onUpdate!: (sid: string, update: unknown) => void
+  const selectedAgents: Array<{ builtin: boolean; runInSandbox: boolean; runtime: string }> = []
   const host = {
     start: vi.fn(async () => {}),
-    newSession: vi.fn(async () => 'acp-rmcp-1'),
+    newSession: vi.fn(async (_cwd: string, mcpServers: Array<{ name?: string }>) => {
+      if (rejectAdminDescriptor && mcpServers.some((server) => server.name === 'agentconnect-admin')) {
+        throw new Error('runtime rejected HTTP MCP descriptor')
+      }
+      return 'acp-rmcp-1'
+    }),
     modelOptions: vi.fn(() => null),
     hasSession: vi.fn(() => true),
     prompt: vi.fn(async (sid: string) => {
@@ -63,11 +72,15 @@ function fakeHost() {
     forgetSession: vi.fn(),
     stop: vi.fn(async () => {})
   }
-  const factory = (_agent: unknown, cb: (sid: string, u: unknown) => void) => {
-    onUpdate = cb
+  const factory = (
+    agent: { builtin: boolean; runInSandbox: boolean; runtime: string },
+    callback: (sid: string, update: unknown) => void
+  ) => {
+    selectedAgents.push(agent)
+    onUpdate = callback
     return host as never
   }
-  return { factory, host }
+  return { factory, host, selectedAgents }
 }
 
 function fakeGrantClient() {
@@ -76,7 +89,7 @@ function fakeGrantClient() {
       ...input,
       grantId: GRANT,
       grantRevision: 1,
-      token: 'secret-token-that-is-longer-than-thirty-two-bytes',
+      token: TOKEN,
       expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
       mcpUrl: 'https://cp.example/api/v1/mcp'
     })),
@@ -85,98 +98,105 @@ function fakeGrantClient() {
   }
 }
 
-async function runTurn(
-  source: 'user' | 'registry',
-  opts: { runtimeId?: 'claude-acp' | 'opencode'; probedVersion?: string } = {}
-) {
-  const runtimeId = opts.runtimeId ?? 'claude-acp'
-  const { factory, host } = fakeHost()
-  const daemon = new Daemon({ root: scaffold(runtimeId), hostFactory: factory })
+async function runTurn(opts: { builtin: boolean; runInSandbox: boolean; rejectAdminDescriptor?: boolean }) {
+  const { factory, host, selectedAgents } = fakeHost(opts.rejectAdminDescriptor)
+  const daemon = new Daemon({ root: scaffold(opts), hostFactory: factory as never })
   await daemon.start()
   const client = fakeGrantClient()
   const anyDaemon = daemon as never as Record<string, any>
   anyDaemon.remoteWebchatGrants = new RemoteWebchatGrantManager(client as never)
-  anyDaemon.runtimeMcpCaps.set(runtimeId, { http: true, sse: false })
-  if (opts.probedVersion) anyDaemon.runtimeProbedVersions.set(runtimeId, opts.probedVersion)
-  // Inject the resolved catalog state deterministically: installed-runtime
-  // discovery on a clean host may drop the config-defined entry entirely, and
-  // the gate must be exercised against an explicit registry-shaped definition
-  // (the validated npx artifact), not whatever this host happens to have.
-  const runtime =
-    source === 'user'
-      ? { command: 'node', args: ['unused'], env: [] }
-      : runtimeId === 'opencode'
-        ? { command: './opencode', args: ['acp'], env: [] }
-        : { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp@0.64.0'], env: [] }
-  const version = runtimeId === 'opencode' ? '1.18.10' : '0.64.0'
-  anyDaemon.runtimeCatalog.entries[runtimeId] = { runtime, source, name: runtimeId, version }
-  anyDaemon.runtimeCatalog.runtimes[runtimeId] = runtime
-  anyDaemon.runtimes[runtimeId] = runtime
 
   const outputs: WebchatOutput[] = []
   const dones: WebchatDone[] = []
   const turnId = '77777777-7777-4777-8777-777777777777'
-  const msg = {
-    msgId: `webchat:${CONV}:${turnId}`,
-    traceId: turnId,
-    source: 'user' as const,
-    platform: 'webchat' as const,
-    channel: CONV,
-    sender: { id: 'alice', isBot: false },
-    text: 'go',
-    mentionedBots: [] as string[],
-    isDm: true,
-    trigger: 'dm' as const
-  }
-  await anyDaemon.dispatch(AGENT_ID, msg, undefined, {
-    conversationId: CONV,
-    turnId,
-    sink: { output: (o: WebchatOutput) => outputs.push(o), done: (d: WebchatDone) => dones.push(d) },
-    remoteMcp: {
-      authorityId: AUTHORITY,
-      authorityGeneration: 1,
-      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString()
+  await anyDaemon.dispatch(
+    AGENT_ID,
+    {
+      msgId: `webchat:${CONV}:${turnId}`,
+      traceId: turnId,
+      source: 'user',
+      platform: 'webchat',
+      channel: CONV,
+      sender: { id: 'alice', isBot: false },
+      text: 'go',
+      mentionedBots: [],
+      isDm: true,
+      trigger: 'dm'
+    },
+    undefined,
+    {
+      conversationId: CONV,
+      turnId,
+      sink: { output: (output: WebchatOutput) => outputs.push(output), done: (done: WebchatDone) => dones.push(done) },
+      remoteMcp: {
+        authorityId: AUTHORITY,
+        authorityGeneration: 1,
+        expiresAt: new Date(Date.now() + 60 * 60_000).toISOString()
+      }
     }
-  })
+  )
   await daemon.stop().catch(() => {})
-  return { client, host, dones }
+  return { client, host, selectedAgents, dones }
 }
 
-describe('remote MCP admission through the webchat dispatch path (§13)', () => {
-  it('refuses the bearer for a user-configured runtime shadowing the validated id', async () => {
-    const { client, host, dones } = await runTurn('user')
-    expect(dones.length).toBe(1)
+function adminDescriptor(host: ReturnType<typeof fakeHost>['host']) {
+  const mcpServers = (host.newSession.mock.calls[0]?.[1] ?? []) as Array<{
+    name?: string
+    headers?: Array<{ name: string; value: string }>
+  }>
+  return mcpServers.find((server) => server.name === 'agentconnect-admin')
+}
+
+describe('preset admin MCP through the webchat dispatch path', () => {
+  it.each([
+    ['without an OS sandbox', false],
+    ['with an OS sandbox', true]
+  ] as const)(
+    'attaches to an arbitrary preset runtime %s',
+    async (_label, runInSandbox) => {
+      const { client, host, selectedAgents, dones } = await runTurn({ builtin: true, runInSandbox })
+
+      expect(dones).toHaveLength(1)
+      expect(selectedAgents[0]).toMatchObject({
+        builtin: true,
+        runInSandbox,
+        runtime: 'arbitrary-acp'
+      })
+      expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+      expect(client.acceptWebchatMcpGrant).toHaveBeenCalledTimes(1)
+      expect(adminDescriptor(host)?.headers).toEqual([{ name: 'Authorization', value: `Bearer ${TOKEN}` }])
+      // The credential is ACP session configuration, never model prompt text.
+      expect(JSON.stringify(host.prompt.mock.calls)).not.toContain(TOKEN)
+    },
+    20_000
+  )
+
+  it('does not attach when a non-preset agent is handed a forged entitlement', async () => {
+    const { client, host, dones } = await runTurn({ builtin: false, runInSandbox: false })
+
+    expect(dones).toHaveLength(1)
     expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
-    const mcpServers = (host.newSession.mock.calls[0]?.[1] ?? []) as Array<{ name?: string }>
-    expect(mcpServers.some((s) => s?.name === 'agentconnect-admin')).toBe(false)
+    expect(adminDescriptor(host)).toBeUndefined()
   }, 20_000)
 
-  it('attaches the session-scoped descriptor only under daemon-owned registry provenance', async () => {
-    const { client, host, dones } = await runTurn('registry')
-    expect(dones.length).toBe(1)
-    expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
-    expect(client.acceptWebchatMcpGrant).toHaveBeenCalledTimes(1)
-    const mcpServers = (host.newSession.mock.calls[0]?.[1] ?? []) as Array<{
-      name?: string
-      headers?: Array<{ name: string; value: string }>
-    }>
-    const descriptor = mcpServers.find((s) => s?.name === 'agentconnect-admin')
-    expect(descriptor).toBeDefined()
-    expect(descriptor?.headers?.[0]?.name).toBe('Authorization')
-    // The descriptor rides ACP session configuration for the exact webchat
-    // session — never prompt text (the fake host records the prompt input).
-    const promptArgs = JSON.stringify(host.prompt.mock.calls)
-    expect(promptArgs).not.toContain('secret-token-that-is-longer-than-thirty-two-bytes')
-  }, 20_000)
-
-  it('refuses OpenCode when the executed ACP version differs from the validated registry release', async () => {
-    const { client, host, dones } = await runTurn('registry', {
-      runtimeId: 'opencode',
-      probedVersion: '1.17.18'
+  it('keeps ordinary preset webchat running when the runtime rejects the admin descriptor', async () => {
+    const { client, host, dones } = await runTurn({
+      builtin: true,
+      runInSandbox: true,
+      rejectAdminDescriptor: true
     })
-    expect(dones.length).toBe(1)
-    expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
-    const mcpServers = (host.newSession.mock.calls[0]?.[1] ?? []) as Array<{ name?: string }>
-    expect(mcpServers.some((server) => server.name === 'agentconnect-admin')).toBe(false)
+
+    expect(dones).toHaveLength(1)
+    expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(
+      ((host.newSession.mock.calls[0]?.[1] ?? []) as Array<{ name?: string }>).some(
+        (server) => server.name === 'agentconnect-admin'
+      )
+    ).toBe(true)
+    const fallbackServers = (host.newSession.mock.calls[1]?.[1] ?? []) as Array<{ name?: string }>
+    expect(fallbackServers.some((server) => server.name === 'agentconnect')).toBe(true)
+    expect(fallbackServers.some((server) => server.name === 'agentconnect-admin')).toBe(false)
+    expect(host.prompt).toHaveBeenCalledTimes(1)
   }, 20_000)
 })

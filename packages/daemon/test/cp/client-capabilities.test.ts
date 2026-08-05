@@ -2,8 +2,8 @@
  * `capabilities/update` (D→C EVT) — the mid-connection capability refresh.
  *
  * `register` runs before the agent roster is applied and before the runtime
- * probe sweep, so a feature derived from either (`webchat_remote_mcp_v1`)
- * would stay hidden until the next reconnect without this frame. The client
+ * probe sweep, so a feature derived from either would stay hidden until the
+ * next reconnect without this frame. The client
  * must re-announce ONLY when the computed set actually changed, and never
  * before the connection is READY.
  */

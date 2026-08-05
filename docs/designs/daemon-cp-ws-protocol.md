@@ -199,12 +199,10 @@ defined in `packages/protocol/src/frames/register.ts`.
 A fire-and-forget full-replace of the connection's registered
 `RegisterReq.capabilities`. `register` computes the daemon's feature set
 _before_ the reconcile roster is applied and _before_ the background runtime
-probe sweep runs, so a feature derived from either — e.g.
-`webchat_remote_mcp_v1`, gated on the synced builtin preset agent or on probed
-MCP transport — would otherwise stay hidden until the next reconnect. The
-daemon re-announces whenever its computed capability set changes
-mid-connection (after an agent reconcile or a probe sweep; suppressed when
-nothing changed); the CP replaces its live-index copy and the durable C4 row,
+probe sweep runs, so any feature derived from either would otherwise stay
+hidden until the next reconnect. The daemon re-announces whenever its computed
+capability set changes mid-connection (after an agent reconcile or a probe sweep;
+suppressed when nothing changed); the CP replaces its live-index copy and the durable C4 row,
 exactly like the register value it refreshes. An older CP answers
 `error{UNKNOWN_FRAME}`, which the daemon ignores — the feature then simply
 waits for the next register.
