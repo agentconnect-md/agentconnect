@@ -601,7 +601,6 @@ export function buildTenantAdminServer(
       const put = localAuthLogtoPut(
         { values: current?.values ?? DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1 },
         {
-          ...localAuthBootstrap,
           managementAppId: parsed.data.managementAppId,
           managementAppSecret: parsed.data.managementAppSecret,
           socialProvider: parsed.data.socialProvider
