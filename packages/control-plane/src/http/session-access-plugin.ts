@@ -5,7 +5,7 @@ import type { ExternalScopeRecord } from '../persistence/ports.js'
 export interface SessionAccessIssue {
   provider: string
   region?: string
-  reason: 'authorization' | 'unavailable'
+  reason: 'authorization' | 'quota' | 'unavailable'
 }
 
 export interface SessionAccessViewer {

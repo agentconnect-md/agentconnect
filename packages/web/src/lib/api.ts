@@ -423,7 +423,7 @@ export interface ConversationDto {
 export interface SessionAccessIssue {
   provider: string
   region?: string
-  reason: 'authorization' | 'unavailable'
+  reason: 'authorization' | 'quota' | 'unavailable'
 }
 
 export interface SessionListPageDto {

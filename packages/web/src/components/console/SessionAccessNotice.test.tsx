@@ -30,4 +30,18 @@ describe('SessionAccessNotice', () => {
     expect(html).toContain('Affected sessions are hidden until access can be verified.')
     expect(html).not.toContain('Reconnect')
   })
+
+  it('turns exhausted Lark quota into an administrator action', () => {
+    const html = renderToStaticMarkup(
+      <SessionAccessNotice
+        degraded
+        issues={[{ provider: 'feishu', region: 'lark', reason: 'quota' }]}
+        impact="sessions"
+      />
+    )
+
+    expect(html).toContain('Lark API quota is exhausted.')
+    expect(html).toContain('Open Lark Admin')
+    expect(html).toContain('https://www.larksuite.com/admin')
+  })
 })

@@ -103,6 +103,28 @@ describe('FeishuSessionAccessService', () => {
     expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get('authorization')).toBe('Bearer tenant-token')
   })
 
+  it('coalesces concurrent viewers into one shared Bot chat member snapshot', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.endsWith('/tenant_access_token/internal')
+        ? json({ code: 0, tenant_access_token: 'tenant-token' })
+        : json({
+            code: 0,
+            data: { items: [{ member_id: 'on_member' }, { member_id: 'on_other' }], has_more: false }
+          })
+    )
+    const resolver = service(fetchImpl)
+
+    const [member, other] = await Promise.all([
+      resolver.resolve([scope()], viewer(['on_member'])),
+      resolver.resolve([scope()], viewer(['on_other']))
+    ])
+    await resolver.resolve([scope()], viewer(['on_member']))
+
+    expect(member.allowedScopes).toHaveLength(1)
+    expect(other.allowedScopes).toHaveLength(1)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
   it('denies when the viewer union_id is not in the chat', async () => {
     await expect(
       service(async (url) =>
@@ -135,6 +157,32 @@ describe('FeishuSessionAccessService', () => {
       degraded: true,
       accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'unavailable' }]
     })
+  })
+
+  it('classifies exhausted tenant quota and backs off other chats in the same organization', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.endsWith('/tenant_access_token/internal')
+        ? json({ code: 0, tenant_access_token: 'tenant-token' })
+        : json({ code: 99991403, msg: "This month's API call quota has been exceeded" }, 429)
+    )
+    const resolver = service(fetchImpl)
+    const anotherScope = {
+      ...scope(),
+      id: '22222222-2222-4222-8222-222222222222',
+      resourceKey: 'oc_another_chat'
+    }
+
+    await expect(resolver.resolve([scope()], viewer())).resolves.toEqual({
+      allowedScopes: [],
+      degraded: true,
+      accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'quota' }]
+    })
+    await expect(resolver.resolve([anotherScope], viewer())).resolves.toEqual({
+      allowedScopes: [],
+      degraded: true,
+      accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'quota' }]
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 
   it('rejects a scope whose realm does not match its custom Bot app', async () => {
