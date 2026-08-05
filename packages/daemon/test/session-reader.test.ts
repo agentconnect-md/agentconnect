@@ -412,6 +412,52 @@ describe('SessionReader', () => {
     s.close()
   })
 
+  it('keeps the label for files it could not inline beside the one image it did', () => {
+    // Only the first small image is stored; the PDF and the over-cap second image must
+    // still be visible as their labels rather than vanishing with the whole suffix.
+    const s = store()
+    seedHistorySession(s)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'review these\n[attached: small.png (image/png), report, final.pdf (application/pdf), huge.png (image/png)]',
+      attachments: [{ name: 'small.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      // The comma inside `report, final.pdf` is part of the file NAME, not a separator.
+      expect.objectContaining({
+        text: 'review these\n[attached: report, final.pdf (application/pdf), huge.png (image/png)]',
+        attachments: [{ name: 'small.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+      })
+    ])
+    s.close()
+  })
+
+  it('leaves the row alone when the label names nothing the attachment matches', () => {
+    const s = store()
+    seedHistorySession(s)
+    s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'see\n[attached: other.pdf (application/pdf)]',
+      attachments: [{ name: 'shot.png', mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    })
+
+    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 }).messages).toEqual([
+      expect.objectContaining({ text: 'see\n[attached: other.pdf (application/pdf)]' })
+    ])
+    s.close()
+  })
+
   it('carries daemon-verified Slack bot provenance to the session DTO', () => {
     const s = store()
     seedHistorySession(s)
