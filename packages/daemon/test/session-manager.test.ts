@@ -1220,6 +1220,60 @@ describe('SessionManager', () => {
     store.close()
   })
 
+  it('reports the additional descriptor attached when failed loads recreate a session with it', async () => {
+    const store = newStore()
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
+
+    const ordinary = { type: 'stdio', name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] } as const
+    const admin = {
+      type: 'http',
+      name: 'agentconnect-admin',
+      url: 'https://cp.example/api/v1/mcp',
+      headers: [{ name: 'Authorization', value: 'Bearer test-token' }]
+    } as const
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      hasSession: () => false,
+      loadSupported: () => true,
+      loadSession: vi.fn(async () => {
+        throw new Error('session not found')
+      })
+    } as any
+    const sm2 = new SessionManager({
+      store,
+      hostFor: async () => host2,
+      agentById: () => agent,
+      memory,
+      mcpServersFor: () => [ordinary]
+    })
+
+    const result = await sm2.handle(
+      'bot-a',
+      msg({ ts: '100.2', text: 'second turn' }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { additionalMcpServers: [admin] }
+    )
+
+    expect(result).toMatchObject({
+      sessionId: 'acp-2',
+      created: true,
+      additionalMcpServersAttached: true
+    })
+    expect(host2.loadSession).toHaveBeenCalledTimes(2)
+    expect(host2.newSession).toHaveBeenCalledTimes(1)
+    expect((host2.newSession.mock.calls[0]?.[1] as Array<{ name?: string }>).map((server) => server.name)).toEqual([
+      'ordinary',
+      'agentconnect-admin'
+    ])
+    store.close()
+  })
+
   it('recreates a resumed session when revoked metadata cannot be replaced by an idempotent reload', async () => {
     const store = newStore()
     const host1 = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any

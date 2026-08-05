@@ -12184,7 +12184,7 @@ export class Daemon {
       await (this.memoryPostTurnChains.get(agentId) ?? Promise.resolve())
       // Remote administration uses only the standard ACP HTTPS MCP descriptor.
       // Authorization and write-operation idempotency are both CP-owned. The
-      // The runtime is already arbitrary executable code inside its configured
+      // runtime is already arbitrary executable code inside its configured
       // process boundary, so artifact/provenance/version/probe gates do not add
       // an enforceable security boundary. For a CP-authorized preset turn, try
       // the standard ACP descriptor regardless of runtime or sandbox mode.

@@ -617,8 +617,9 @@ export class SessionManager {
         return await primary()
       } catch (error) {
         if (signal?.aborted || !fallback) throw error
+        const result = await fallback()
         additionalMcpServersAttached = false
-        return fallback()
+        return result
       }
     }
     const newRuntimeSession = async (
