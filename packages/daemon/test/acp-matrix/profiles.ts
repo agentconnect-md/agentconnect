@@ -70,6 +70,8 @@ export interface ExpectedCaps {
   permissionModes: string[] | null
   /** Whether `prompt()` should return a `usage` object. */
   usage: boolean
+  /** Audited identity accepted by the daemon's exact bundled skills CLI. */
+  skillsAgentId: string | null
 }
 
 export interface Profile {
@@ -118,7 +120,8 @@ export const PROFILES: Profile[] = [
       promptImage: true,
       models: ['opus', 'sonnet', 'haiku'],
       permissionModes: ['default', 'plan'],
-      usage: true
+      usage: true,
+      skillsAgentId: 'claude-code'
     }
   },
   {
@@ -143,7 +146,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['gpt-5-codex', 'gpt-5'],
       permissionModes: ['agent', 'read-only'],
-      usage: true
+      usage: true,
+      skillsAgentId: 'codex'
     }
   },
   {
@@ -161,7 +165,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: null,
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: 'pi'
     }
   },
   {
@@ -183,7 +188,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['cursor-fast', 'cursor-max'],
       permissionModes: null,
-      usage: true
+      usage: true,
+      skillsAgentId: 'cursor'
     }
   },
   {
@@ -207,7 +213,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['anthropic/sonnet', 'openai/gpt-5'],
       permissionModes: ['build', 'plan'],
-      usage: false
+      usage: false,
+      skillsAgentId: 'opencode'
     }
   },
   {
@@ -228,7 +235,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['claude-sonnet', 'deepseek'],
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: 'cline'
     }
   },
   {
@@ -255,7 +263,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: null,
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: 'devin'
     }
   },
   {
@@ -277,7 +286,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['grok-code', 'grok-4'],
       permissionModes: null,
-      usage: true
+      usage: true,
+      skillsAgentId: 'grok'
     }
   },
   {
@@ -298,7 +308,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['claude-sonnet', 'openrouter/auto'],
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: 'hermes-agent'
     }
   },
   {
@@ -319,7 +330,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['openai/gpt-5', 'anthropic/sonnet'],
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: null
     }
   },
   {
@@ -342,7 +354,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['auto', 'claude-sonnet'],
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: 'kiro-cli'
     }
   },
   {
@@ -361,7 +374,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: null,
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: null
     }
   },
   {
@@ -379,7 +393,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: null,
       permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: null
     }
   },
   {
@@ -405,7 +420,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: ['anthropic/sonnet', 'openai/gpt-5'],
       permissionModes: ['default', 'plan'],
-      usage: true
+      usage: true,
+      skillsAgentId: null
     }
   },
   {
@@ -425,26 +441,8 @@ export const PROFILES: Profile[] = [
       promptImage: false,
       models: null,
       permissionModes: null,
-      usage: false
-    }
-  },
-  {
-    // Qoder CN CLI (@qodercn-ai/qoderclicn) — same fork/brand for the China
-    // region via `qoderclicn --acp`; identical managed-only contract.
-    id: 'qoder-cli-cn',
-    registryId: 'qoder-cli-cn',
-    memory: {
-      runtime: runtime('qoderclicn', ['--acp']),
-      expected: { managed: true, none: false, native: false }
-    },
-    scenario: { agentCapabilities: {}, prompt: {} },
-    caps: {
-      loadSession: false,
-      mcp: { http: false, sse: false },
-      promptImage: false,
-      models: null,
-      permissionModes: null,
-      usage: false
+      usage: false,
+      skillsAgentId: 'qoder'
     }
   }
 ]

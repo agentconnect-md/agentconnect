@@ -1,5 +1,5 @@
 // Drive a REAL installed agent through a full Daemon over the daemon's REAL Slack send
-// path, and collect what the daemon observes for each of the 9 matrix feature dimensions.
+// path, and collect what the daemon observes for each matrix feature dimension.
 //
 // Nothing here talks to AcpHost directly and nothing hand-posts the agent's words: the
 // agent is bound to a shared-mode Slack integration (send-only Web-API client, no socket),
@@ -15,10 +15,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebClient } from '@slack/web-api'
 import { Daemon } from '../../../src/daemon.js'
+import { detectSandbox } from '../../../src/acp/sandbox.js'
 import { sessionKey } from '../../../src/store/local-store.js'
 import { normalizeSlackEvent } from '../../../src/slack/normalize.js'
 import { decodePermValue, PERMISSION_ACTION_PREFIX } from '../../../src/slack/render.js'
 import type { RuntimeDef } from '../../../src/config/config-schema.js'
+import { skillsAgentIdForRuntime } from '../../../src/runtimes/skills-capability.js'
 import type { FeatureId } from '../support-matrix.js'
 import type { SlackCreds } from './slack-live-harness.js'
 
@@ -71,7 +73,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ])
 }
 
-function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds): string {
+function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds, runInSandbox: boolean): string {
   const dir = mkdtempSync(join(tmpdir(), `ac-live-${id}-`))
   writeFileSync(
     join(dir, 'config.json'),
@@ -86,6 +88,7 @@ function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds): string {
       name: AGENT,
       status: 'active',
       runtime: id,
+      runInSandbox,
       workspace: { mode: 'from-scratch', path: join(adir, 'ws') },
       output: { mode: 'medium' },
       // Shared mode → the daemon opens a send-only Web-API client (no Socket Mode, no
@@ -107,8 +110,9 @@ function scaffold(id: string, rt: RuntimeDef, creds: SlackCreds): string {
  *  real Slack send path (the daemon posts the agent's replies + status bars to the thread). */
 export async function driveAgentThroughDaemon(id: string, rt: RuntimeDef, ctx: SlackCtx): Promise<AgentResult> {
   const res: AgentResult = { id, reachable: false, features: {} }
+  const sandboxMechanism = detectSandbox()
   const daemon = new Daemon({
-    root: scaffold(id, rt, ctx.creds),
+    root: scaffold(id, rt, ctx.creds, sandboxMechanism !== undefined),
     probeRuntimes: async () => []
   })
   const d = daemon as any
@@ -188,6 +192,17 @@ export async function driveAgentThroughDaemon(id: string, rt: RuntimeDef, ctx: S
       status: 'ok',
       detail: `${models.length} models, ${modes.length} permission modes, loadSession=${res.loadSession}, mcp=http:${res.mcp.http}/sse:${res.mcp.sse}`
     }
+    res.features.sandbox = sandboxMechanism
+      ? { status: 'ok', detail: `lifecycle turn completed inside the daemon ${sandboxMechanism} sandbox` }
+      : { status: 'degrade', detail: 'host has no supported sandbox mechanism; daemon ran unconfined' }
+    res.features.mcp =
+      res.mcp.http || res.mcp.sse
+        ? { status: 'ok', detail: `remote transports: http=${res.mcp.http}, sse=${res.mcp.sse}` }
+        : { status: 'degrade', detail: 'no remote MCP transport advertised; stdio remains available' }
+    const skillsAgentId = skillsAgentIdForRuntime(id, rt)
+    res.features.skills = skillsAgentId
+      ? { status: 'ok', detail: `audited skills CLI identity: ${skillsAgentId}` }
+      : { status: 'degrade', detail: 'runtime has not passed skills CLI compatibility admission' }
     const used = cap?.totalTokens
     res.usageTokens = used
     res.usageCost = cap?.costAmount
@@ -259,13 +274,6 @@ export async function driveAgentThroughDaemon(id: string, rt: RuntimeDef, ctx: S
         status: 'na',
         detail: `perm turn: ${(e as Error).message.slice(0, 80)}`
       }
-    }
-
-    // ── elicitation: real agents don't emit elicitation/create on cue; the daemon's
-    //    Slack elicitation card path is covered by the fixture matrix. ─────────────
-    res.features.elicitation = {
-      status: 'na',
-      detail: 'agents do not elicit on cue — card path covered by fixture matrix'
     }
 
     // ── load-resume: evict the live host, then dispatch again; the daemon resumes
