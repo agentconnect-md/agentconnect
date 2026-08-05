@@ -525,12 +525,15 @@ export interface OpsDeps {
   /** The agent memory provider — backs the `readMemory`/`writeMemory` tools.
    *  Universal (every agent has memory), independent of the platform. */
   memory: MemoryProvider
-  /** Session-isolation gate for the explicit memory-tool path. Agent memory is
-   *  shared across users, so an isolated session may neither recall nor mutate
-   *  it. Automatic recall, post-turn capture, and Dream selection are gated at
-   *  their own boundaries. Checked at CALL time so a mid-session policy change
-   *  takes effect immediately. Absent ⇒ allowed (e.g. in unit fixtures). */
-  memoryAccessAllowed?: (ctx: SessionContext) => boolean
+  /** Session-isolation gate for the explicit memory-tool path, by operation
+   *  (#653). Agent memory is shared across users: every session may READ it
+   *  (read/search/get), but only a non-isolated session may WRITE it
+   *  (write/save/update/delete), so a private DM/A2A turn cannot push its content
+   *  into shared memory. Automatic recall is always allowed; post-turn capture and
+   *  Dream selection are gated at their own boundaries. Checked at CALL time so a
+   *  mid-session policy change takes effect immediately. Absent ⇒ allowed (e.g. in
+   *  unit fixtures). */
+  memoryAccessAllowed?: (ctx: SessionContext, mode: 'read' | 'write') => boolean
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
    *  Returns undefined when `name` is not an evaluation tool. Visibility and
    *  role-aware authorization live behind this seam (the daemon guarantees
@@ -680,7 +683,8 @@ export async function executeTool(
   // Memory tools are universal (every agent has memory) and daemon-local — handle
   // them before the platform-gateway gate so an agent with no platform integration works.
   if (name === 'readMemory' || name === 'writeMemory') {
-    if (deps.memoryAccessAllowed?.(ctx) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
+    const mode = name === 'writeMemory' ? 'write' : 'read'
+    if (deps.memoryAccessAllowed?.(ctx, mode) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const scope = { agentId: ctx.agentId }
     try {
       if (name === 'readMemory') {
@@ -734,7 +738,8 @@ export async function executeTool(
   // provider on every call so a stale session tool cannot cross a provider or
   // capability change. The trusted agent scope is always ctx.agentId.
   if (['searchMemory', 'saveMemory', 'getMemory', 'updateMemory', 'deleteMemory'].includes(name)) {
-    if (deps.memoryAccessAllowed?.(ctx) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
+    const mode = name === 'searchMemory' || name === 'getMemory' ? 'read' : 'write'
+    if (deps.memoryAccessAllowed?.(ctx, mode) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
     if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
     const scope = { agentId: ctx.agentId }

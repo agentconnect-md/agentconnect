@@ -301,7 +301,10 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('resumes automatic recall after the CP publishes a private DM to the org', async () => {
+  // Reads are always allowed (#653): automatic recall runs even for a private DM
+  // or an A2A child. Only WRITES (memory write tools + post-turn distillation) stay
+  // gated for isolated sessions.
+  it('runs automatic recall for a private DM (reads are always allowed, #653)', async () => {
     const { factory } = replyingHost('here is my answer')
     const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
     await daemon.start()
@@ -309,16 +312,12 @@ describe('Daemon transcript records the agent reply', () => {
     const recallForTurn = vi.spyOn((daemon as any).memory, 'recallForTurn').mockResolvedValue([])
 
     await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
-    expect(recallForTurn).not.toHaveBeenCalled()
-    expect((daemon as any).store.applyCpCaptureGate('acp-1', false, 1)).toBe('applied')
-
-    await (daemon as any).dispatch('bot-a', dm('200', 'shared follow-up'), 'int-a')
 
     expect(recallForTurn).toHaveBeenCalledOnce()
     await daemon.stop()
   }, 15_000)
 
-  it('resumes automatic recall after the CP confirms an A2A child is org-visible', async () => {
+  it('runs automatic recall for an A2A child (reads are always allowed, #653)', async () => {
     const { factory } = replyingHost('here is my answer')
     const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
     await daemon.start()
@@ -327,10 +326,6 @@ describe('Daemon transcript records the agent reply', () => {
     const callMeta = (deliveryId: string) => ({ callFrom: 'caller-agent', hopCount: 1, deliveryId })
 
     await (daemon as any).dispatch('bot-a', agentMsg('100', 'delegated task'), 'int-a', undefined, callMeta('d1'))
-    expect(recallForTurn).not.toHaveBeenCalled()
-    expect((daemon as any).store.applyCpCaptureGate('acp-1', false, 1)).toBe('applied')
-
-    await (daemon as any).dispatch('bot-a', agentMsg('200', 'delegated follow-up'), 'int-a', undefined, callMeta('d2'))
 
     expect(recallForTurn).toHaveBeenCalledOnce()
     await daemon.stop()
