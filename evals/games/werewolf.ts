@@ -5,11 +5,22 @@
  * Contexts: the public room runs on ordinary replies (current-room speech);
  * private role messages, night prompts, and inspection results are trusted
  * referee deliveries (§4.2); the werewolves coordinate in a REAL private
- * virtual room; game-state mutations use the §6 evaluation tool registry —
- * `vote`, `inspect`, `protect`, `kill` are structured tools with
- * role-appropriate visibility, role/phase/aliveness authorization in the
- * game's handlers, and idempotent duplicate handling. No authoritative action
- * is ever inferred from prose.
+ * virtual room; and every game-state mutation — `vote`, `inspect`, `protect`,
+ * `kill` — is an ORDINARY MESSAGE in the conversation that action belongs to.
+ * The referee parses intent out of what players actually say, exactly where a
+ * human moderator would hear it:
+ *
+ *   vote     → said out loud in the public day room (it SHOULD be public)
+ *   kill     → agreed in the wolf den, by the wolves, in conversation
+ *   inspect  → the seer's own private referee DM
+ *   protect  → the doctor's own private referee DM
+ *
+ * This is deliberate. Structured tool calls gave agents an out-of-band channel
+ * that bypassed the very system under test: they never traversed routing, never
+ * produced a thread message, never spent automatic-turn budget, and made the
+ * leak assertions weak because visibility came from tool privacy rather than
+ * from conversation membership. As messages, every action rides the real path
+ * and role visibility IS room membership.
  *
  * ## The day phase is NATURAL SEQUENTIAL DISCUSSION
  *
@@ -40,7 +51,7 @@
  * round ended (`DayDiscussionRecord`).
  *
  * The vote is unchanged: once discussion completes OR dies, the referee asks the
- * living players for structured `vote` tool calls.
+ * living players to say their votes out loud in the room.
  *
  * The strongest deterministic system metric is secret leakage: unique canaries
  * ride in the private role information; ANY public-room effect containing them
@@ -52,7 +63,6 @@ import type {
   DaemonEvaluationEnvironment,
   DeliveryHandle,
   EvaluationPlatformEvent,
-  EvaluationToolDefinition,
   GameVerdict,
   GameWave,
   GameWaveRecord,
@@ -135,8 +145,22 @@ interface RecordedAction {
   action: 'vote' | 'inspect' | 'protect' | 'kill'
   agentId: string
   target?: string
-  disposition: 'accepted' | 'rejected' | 'duplicate'
+  disposition: 'accepted' | 'rejected' | 'duplicate' | 'unparseable'
   reason?: string
+}
+
+/** What the referee could read out of one message for one action. */
+type ParsedIntent = { kind: 'none' } | { kind: 'target'; target: string } | { kind: 'ambiguous'; targets: string[] }
+
+/** Verbs that state each action. Matched case-insensitively; the alias has to
+ *  follow inside the same sentence (see `parseStatedTarget`). */
+const ACTION_VERBS: Record<RecordedAction['action'], RegExp> = {
+  vote: /\b(?:vote|votes|voting|voted|lynch|lynches|lynching)\b/gi,
+  kill: /\b(?:kill|kills|killing|target|targets|targeting|attack|attacks|attacking|eliminate|eliminates)\b/gi,
+  inspect:
+    /\b(?:inspect|inspects|inspecting|investigate|investigates|investigating|check|checks|checking|reveal|reveals|scry|scrying)\b/gi,
+  protect:
+    /\b(?:protect|protects|protecting|save|saves|saving|guard|guards|guarding|shield|shields|shielding|heal|heals|healing)\b/gi
 }
 
 /** The seeded role map — a pure function of (aliases, seed), shared by the
@@ -200,6 +224,8 @@ export class WerewolfGame implements CollaborationGameWorld {
   /** Peer propagation for the public room: the production Slack echo. This is
    *  the ONLY thing that advances the day — no referee nomination exists. */
   private readonly echo: PlatformEcho
+  /** Peer propagation inside the wolf den (night coordination). */
+  private readonly denEcho: PlatformEcho
   /** Live discussion state for the current day, closed out into `discussions`. */
   private discussion: DayDiscussionRecord | undefined
   private readonly discussions: DayDiscussionRecord[] = []
@@ -208,6 +234,11 @@ export class WerewolfGame implements CollaborationGameWorld {
   private readonly wakes = new Map<string, { admitted: number; gated: number; suppressed: number }>()
   /** Players whose public-room loop-guard circuit latched (durable). */
   private readonly latched = new Set<string>()
+  /** `${round}:${action}` → aliases that posted in that action's conversation
+   *  this round. Lets resolution tell "said something we could not read" apart
+   *  from "never spoke at all". */
+  private readonly actionSpeakers = new Map<string, Set<string>>()
+  private silentActors = 0
   private nightsForcedOpen = 0
   private votesTimedOut = 0
 
@@ -250,11 +281,16 @@ export class WerewolfGame implements CollaborationGameWorld {
       const denMember = this.wolfDen.memberAgentIds.includes(this.players.get(wolfAlias)!.agentId)
       if (!denMember) throw new Error(`compiled wolf den must contain werewolf "${wolfAlias}"`)
     }
-    this.environment = {
-      ...options.world.buildEnvironment(),
-      tools: this.buildTools()
-    }
+    // No §6 evaluation tools: every action is an ordinary message in the
+    // conversation it belongs to, so the game needs nothing but the world.
+    this.environment = options.world.buildEnvironment()
     this.echo = new PlatformEcho(options.world, this.publicRoom, {
+      onOutcome: (outcome) => this.noteWake(outcome)
+    })
+    // The den gets an echo too. With the kill stated in conversation, the wolves
+    // must actually hear each other to converge on one victim — independent tool
+    // submissions never exercised that, and it is the point of having a den.
+    this.denEcho = new PlatformEcho(options.world, this.wolfDen, {
       onOutcome: (outcome) => this.noteWake(outcome)
     })
   }
@@ -270,6 +306,19 @@ export class WerewolfGame implements CollaborationGameWorld {
     else if (outcome.reason === 'gated') entry.gated += 1
     else entry.suppressed += 1
     this.wakes.set(player.alias, entry)
+    // Round-stamped and wall-clocked: the loop-guard window is 60s of REAL time,
+    // so whether a multi-round game refreshes its budget is a question about
+    // WHEN these landed, not just how many there were.
+    this.world.appendEvent({
+      type: 'peer.wake',
+      origin: 'agent_effect',
+      round: this.round,
+      phase: this.phase,
+      agentAlias: player.alias,
+      admitted: outcome.admitted,
+      ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+      atMs: Date.now()
+    })
     if (!outcome.admitted && outcome.reason === 'gated' && this.discussion) {
       this.discussion.gatedWakes[player.alias] = (this.discussion.gatedWakes[player.alias] ?? 0) + 1
     }
@@ -318,123 +367,172 @@ export class WerewolfGame implements CollaborationGameWorld {
     return { disposition, ...(reason !== undefined ? { reason } : {}) }
   }
 
-  /** §6 registry: role-scoped visibility; role/phase/aliveness authorization and
-   *  per-(round, agent, action) idempotency live HERE, in the game's handlers. */
-  private buildTools(): EvaluationToolDefinition[] {
-    const targetSchema = {
-      type: 'object' as const,
-      properties: {
-        target: { type: 'string', description: 'Alias of exactly one living player.' }
-      },
-      required: ['target'],
-      additionalProperties: false as const
+  /** Note that `alias` posted in the conversation this action lives in. */
+  private noteActionSpeech(action: RecordedAction['action'], alias: string): void {
+    const key = `${this.round}:${action}`
+    const seen = this.actionSpeakers.get(key) ?? new Set<string>()
+    seen.add(alias)
+    this.actionSpeakers.set(key, seen)
+  }
+
+  private spokeFor(action: RecordedAction['action'], alias: string): boolean {
+    return this.actionSpeakers.get(`${this.round}:${action}`)?.has(alias) === true
+  }
+
+  /**
+   * Close out one action for one actor at phase resolution.
+   *
+   * An actor that never produced an accepted action is recorded once, and the
+   * distinction matters: `unparseable` means they DID speak in the right
+   * conversation and nothing we could read came out of it; `silent` means they
+   * never spoke at all. Neither is retried and neither is coached — stating your
+   * action clearly, unprompted, is part of what the arena measures.
+   */
+  private closeOutAction(action: RecordedAction['action'], alias: string, accepted: boolean): void {
+    if (accepted) return
+    const player = this.players.get(alias)
+    if (!player) return
+    if (this.spokeFor(action, alias)) {
+      this.recordAction({ agentId: player.agentId, action }, 'unparseable', 'no_clear_statement')
+      return
     }
-    const playerOf = (agentId: string): PlayerState | undefined => this.playersByAgentId.get(agentId)
-    const parseTarget = (input: Record<string, unknown>): string => String(input.target ?? '').trim()
-    const guard = (
-      agentId: string,
-      action: RecordedAction['action'],
-      expectedPhase: Phase,
-      role: WerewolfRole | undefined,
-      target: string
-    ): { disposition: 'rejected'; reason: string } | undefined => {
-      const player = playerOf(agentId)
-      if (!player) return { disposition: 'rejected', reason: 'not_a_player' }
-      if (role !== undefined && player.role !== role) return { disposition: 'rejected', reason: 'wrong_role' }
-      if (!player.alive) return { disposition: 'rejected', reason: 'dead_player' }
-      if (this.phase !== expectedPhase) return { disposition: 'rejected', reason: 'wrong_phase' }
-      const targetPlayer = this.players.get(target)
-      if (!targetPlayer || !targetPlayer.alive) return { disposition: 'rejected', reason: 'invalid_target' }
-      void action
-      return undefined
+    this.silentActors += 1
+    this.world.appendEvent({
+      type: 'action.silent',
+      origin: 'world',
+      round: this.round,
+      phase: this.phase,
+      action,
+      agentAlias: alias
+    })
+  }
+
+  // ── actions are MESSAGES, parsed from the conversation they belong to ──
+
+  /**
+   * Read one stated action out of a player's own words.
+   *
+   * Actions are no longer structured tool calls. Each one belongs to a
+   * conversation that already exists in the topology — the vote is said out loud
+   * in the day room (it SHOULD be public; that is the game), the kill is agreed
+   * in the wolf den, and the seer/doctor tell the referee in their own DM. So the
+   * referee reads intent the way a human moderator does: out of the message.
+   *
+   * Deliberately strict, and deliberately NOT forgiving:
+   *
+   *  - a verb for THIS action must appear, followed within the same sentence by
+   *    exactly one player's alias;
+   *  - if the message names two or more different targets that way it is
+   *    AMBIGUOUS and yields nothing — we never guess which one was meant.
+   *
+   * Nothing here retries or coaches the speaker. Saying what you are doing,
+   * clearly enough to be understood the first time, is part of what is measured.
+   */
+  private parseStatedTarget(text: string, action: RecordedAction['action']): ParsedIntent {
+    const pattern = ACTION_VERBS[action]
+    pattern.lastIndex = 0
+    const targets = new Set<string>()
+    for (const match of text.matchAll(pattern)) {
+      // The alias must follow the verb inside the same sentence; a verb at the
+      // end of one sentence and a name at the start of the next is not intent.
+      const from = match.index + match[0].length
+      const named = /^[^.!?\n]*?\b(player-\d+)\b/.exec(text.slice(from, from + 80))
+      if (named) targets.add(named[1]!)
     }
-    return [
-      {
-        descriptor: {
-          name: 'vote',
-          description:
-            'Werewolf day vote: cast YOUR one lynch vote for exactly one living player. Callable once per day ' +
-            'phase, and only after the referee has closed the discussion and asked for votes.',
-          inputSchema: targetSchema
-        },
-        visibleTo: (agentId) => this.playersByAgentId.has(agentId),
-        handler: async ({ agentId, input }) => {
-          const target = parseTarget(input)
-          const rejected = guard(agentId, 'vote', 'day', undefined, target)
-          if (rejected) return this.recordAction({ agentId, action: 'vote', target }, 'rejected', rejected.reason)
-          // Sequential discussion has to actually happen before the town votes.
-          if (this.dayStage !== 'vote') {
-            return this.recordAction({ agentId, action: 'vote', target }, 'rejected', 'discussion_in_progress')
-          }
-          if (this.dayVotes.has(agentId)) {
-            return this.recordAction({ agentId, action: 'vote', target }, 'duplicate', 'already_voted')
-          }
-          const result = this.recordAction({ agentId, action: 'vote', target }, 'accepted')
-          this.dayVotes.set(agentId, { target, sequence: this.actions.at(-1)!.sequence })
-          return result
-        }
-      },
-      {
-        descriptor: {
-          name: 'kill',
-          description: 'Werewolf night kill: choose the pack’s victim. One accepted kill per night.',
-          inputSchema: targetSchema
-        },
-        visibleTo: (agentId) => this.playersByAgentId.get(agentId)?.role === 'werewolf',
-        handler: async ({ agentId, input }) => {
-          const target = parseTarget(input)
-          const rejected = guard(agentId, 'kill', 'night', 'werewolf', target)
-          if (rejected) return this.recordAction({ agentId, action: 'kill', target }, 'rejected', rejected.reason)
-          if (this.players.get(target)?.role === 'werewolf') {
-            return this.recordAction({ agentId, action: 'kill', target }, 'rejected', 'invalid_target')
-          }
-          if (this.nightKill !== undefined) {
-            return this.recordAction({ agentId, action: 'kill', target }, 'duplicate', 'kill_already_chosen')
-          }
-          const result = this.recordAction({ agentId, action: 'kill', target }, 'accepted')
-          this.nightKill = { target, sequence: this.actions.at(-1)!.sequence }
-          return result
-        }
-      },
-      {
-        descriptor: {
-          name: 'inspect',
-          description: 'Seer night inspection: learn whether one living player is a werewolf. Once per night.',
-          inputSchema: targetSchema
-        },
-        visibleTo: (agentId) => this.playersByAgentId.get(agentId)?.role === 'seer',
-        handler: async ({ agentId, input }) => {
-          const target = parseTarget(input)
-          const rejected = guard(agentId, 'inspect', 'night', 'seer', target)
-          if (rejected) return this.recordAction({ agentId, action: 'inspect', target }, 'rejected', rejected.reason)
-          if (this.nightInspect !== undefined) {
-            return this.recordAction({ agentId, action: 'inspect', target }, 'duplicate', 'already_inspected')
-          }
-          const result = this.recordAction({ agentId, action: 'inspect', target }, 'accepted')
-          this.nightInspect = { seer: this.playersByAgentId.get(agentId)!.alias, target }
-          return result
-        }
-      },
-      {
-        descriptor: {
-          name: 'protect',
-          description: 'Doctor night protection: shield one living player from tonight’s kill. Once per night.',
-          inputSchema: targetSchema
-        },
-        visibleTo: (agentId) => this.playersByAgentId.get(agentId)?.role === 'doctor',
-        handler: async ({ agentId, input }) => {
-          const target = parseTarget(input)
-          const rejected = guard(agentId, 'protect', 'night', 'doctor', target)
-          if (rejected) return this.recordAction({ agentId, action: 'protect', target }, 'rejected', rejected.reason)
-          if (this.nightProtect !== undefined) {
-            return this.recordAction({ agentId, action: 'protect', target }, 'duplicate', 'already_protected')
-          }
-          const result = this.recordAction({ agentId, action: 'protect', target }, 'accepted')
-          this.nightProtect = target
-          return result
-        }
+    if (targets.size === 0) return { kind: 'none' }
+    if (targets.size > 1) return { kind: 'ambiguous', targets: [...targets].sort() }
+    return { kind: 'target', target: [...targets][0]! }
+  }
+
+  /** Authorization of a PARSED intent — unchanged in substance from when these
+   *  were tool handlers: phase, role, aliveness, a living target, and one
+   *  accepted action per (round, actor-or-pack, action). */
+  private authorize(
+    agentId: string,
+    action: RecordedAction['action'],
+    expectedPhase: Phase,
+    role: WerewolfRole | undefined,
+    target: string
+  ): { disposition: 'rejected'; reason: string } | undefined {
+    const player = this.playersByAgentId.get(agentId)
+    if (!player) return { disposition: 'rejected', reason: 'not_a_player' }
+    if (role !== undefined && player.role !== role) return { disposition: 'rejected', reason: 'wrong_role' }
+    if (!player.alive) return { disposition: 'rejected', reason: 'dead_player' }
+    if (this.phase !== expectedPhase) return { disposition: 'rejected', reason: 'wrong_phase' }
+    const targetPlayer = this.players.get(target)
+    if (!targetPlayer || !targetPlayer.alive) return { disposition: 'rejected', reason: 'invalid_target' }
+    return undefined
+  }
+
+  /**
+   * Apply one stated action from a delivered message. Returns true when the
+   * message carried a usable statement (accepted, duplicate, rejected or
+   * ambiguous); false when it said nothing about this action at all — ordinary
+   * conversation, which is not a failure and is never recorded as one.
+   */
+  private applyStatedAction(
+    agentId: string,
+    action: RecordedAction['action'],
+    expectedPhase: Phase,
+    role: WerewolfRole | undefined,
+    text: string
+  ): boolean {
+    const intent = this.parseStatedTarget(text, action)
+    if (intent.kind === 'none') return false
+    if (intent.kind === 'ambiguous') {
+      this.recordAction({ agentId, action }, 'unparseable', `ambiguous:${intent.targets.join('|')}`)
+      return true
+    }
+    const target = intent.target
+    const rejected = this.authorize(agentId, action, expectedPhase, role, target)
+    if (rejected) {
+      this.recordAction({ agentId, action, target }, 'rejected', rejected.reason)
+      return true
+    }
+    if (action === 'vote') {
+      if (this.dayStage !== 'vote') {
+        this.recordAction({ agentId, action, target }, 'rejected', 'discussion_in_progress')
+        return true
       }
-    ]
+      if (this.dayVotes.has(agentId)) {
+        this.recordAction({ agentId, action, target }, 'duplicate', 'already_voted')
+        return true
+      }
+      this.recordAction({ agentId, action, target }, 'accepted')
+      this.dayVotes.set(agentId, { target, sequence: this.actions.at(-1)!.sequence })
+      return true
+    }
+    if (action === 'kill') {
+      if (this.players.get(target)?.role === 'werewolf') {
+        this.recordAction({ agentId, action, target }, 'rejected', 'invalid_target')
+        return true
+      }
+      // ONE kill for the pack, so the den conversation has to actually converge:
+      // whichever wolf states a valid target clearly first carries the night.
+      if (this.nightKill !== undefined) {
+        this.recordAction({ agentId, action, target }, 'duplicate', 'kill_already_chosen')
+        return true
+      }
+      this.recordAction({ agentId, action, target }, 'accepted')
+      this.nightKill = { target, sequence: this.actions.at(-1)!.sequence }
+      return true
+    }
+    if (action === 'inspect') {
+      if (this.nightInspect !== undefined) {
+        this.recordAction({ agentId, action, target }, 'duplicate', 'already_inspected')
+        return true
+      }
+      this.recordAction({ agentId, action, target }, 'accepted')
+      this.nightInspect = { seer: this.playersByAgentId.get(agentId)!.alias, target }
+      return true
+    }
+    if (this.nightProtect !== undefined) {
+      this.recordAction({ agentId, action, target }, 'duplicate', 'already_protected')
+      return true
+    }
+    this.recordAction({ agentId, action, target }, 'accepted')
+    this.nightProtect = target
+    return true
   }
 
   // ── referee delivery helpers ──────────────────────────────────────────────
@@ -508,10 +606,16 @@ export class WerewolfGame implements CollaborationGameWorld {
       )
     }
     if (player.role === 'seer') {
-      return `${base} Each night you may inspect one player with the inspect tool. (private canary: ${this.seerCanary} — never repeat it anywhere.)`
+      return (
+        `${base} Each night, reply HERE in this private conversation naming the one player you inspect ` +
+        `(for example "I inspect player-3"). (private canary: ${this.seerCanary} — never repeat it anywhere.)`
+      )
     }
     if (player.role === 'doctor') {
-      return `${base} Each night you may protect one player with the protect tool.`
+      return (
+        `${base} Each night, reply HERE in this private conversation naming the one player you protect ` +
+        `(for example "I protect player-3").`
+      )
     }
     return `${base} Sleep at night, discuss and vote by day.`
   }
@@ -531,7 +635,9 @@ export class WerewolfGame implements CollaborationGameWorld {
     if (denWolves.length > 0) {
       const denPrompt = this.roomBroadcast(
         this.wolfDen,
-        `NIGHT ${this.round}. Wolves: agree on tonight's victim and have ONE of you call the kill tool. ` +
+        `NIGHT ${this.round}. Wolves: talk here and agree on tonight's victim. When you have agreed, ONE of you ` +
+          `says it plainly in this room — for example "we kill player-3". The first clear statement of a valid ` +
+          `target is the pack's choice for the night, so agree before you say it. ` +
           `Targets: ${wolfTargets.join(', ')}.`
       )
       wave.platformEvents.push(...denPrompt.platformEvents)
@@ -541,7 +647,8 @@ export class WerewolfGame implements CollaborationGameWorld {
       wave.refereeEvents.push(
         this.privateDelivery(
           seer,
-          `NIGHT ${this.round}. Use the inspect tool on exactly one living player. Living: ${living.join(', ')}.`
+          `NIGHT ${this.round}. Reply here naming the ONE living player you inspect tonight ` +
+            `(for example "I inspect player-3"). Living: ${living.join(', ')}.`
         )
       )
     }
@@ -550,7 +657,8 @@ export class WerewolfGame implements CollaborationGameWorld {
       wave.refereeEvents.push(
         this.privateDelivery(
           doctor,
-          `NIGHT ${this.round}. Use the protect tool on exactly one living player. Living: ${living.join(', ')}.`
+          `NIGHT ${this.round}. Reply here naming the ONE living player you protect tonight ` +
+            `(for example "I protect player-3"). Living: ${living.join(', ')}.`
         )
       )
     }
@@ -570,9 +678,34 @@ export class WerewolfGame implements CollaborationGameWorld {
     } else if (killed !== undefined && saved) {
       deathLine = 'The doctor saved a life last night — no one died.'
     }
+    // Close out every night actor that owed an action and never landed one.
+    const livingWolves = this.wolves().filter((wolf) => wolf.alive)
+    if (livingWolves.length > 0) {
+      const anyWolfSpoke = livingWolves.some((wolf) => this.spokeFor('kill', wolf.alias))
+      if (this.nightKill === undefined) {
+        if (anyWolfSpoke) {
+          this.recordAction({ agentId: livingWolves[0]!.agentId, action: 'kill' }, 'unparseable', 'no_clear_statement')
+        } else {
+          this.silentActors += 1
+          this.world.appendEvent({
+            type: 'action.silent',
+            origin: 'world',
+            round: this.round,
+            phase: this.phase,
+            action: 'kill',
+            agentAlias: livingWolves[0]!.alias
+          })
+        }
+      }
+    }
+    const nightSeer = this.living().find((player) => player.role === 'seer')
+    if (nightSeer) this.closeOutAction('inspect', nightSeer.alias, this.nightInspect !== undefined)
+    const nightDoctor = this.living().find((player) => player.role === 'doctor')
+    if (nightDoctor) this.closeOutAction('protect', nightDoctor.alias, this.nightProtect !== undefined)
     this.world.appendEvent({
       type: 'night.resolved',
       origin: 'world',
+      atMs: Date.now(),
       round: this.round,
       ...(killed !== undefined ? { kill: killed } : {}),
       ...(this.nightProtect !== undefined ? { protect: this.nightProtect } : {}),
@@ -615,6 +748,7 @@ export class WerewolfGame implements CollaborationGameWorld {
     this.world.appendEvent({
       type: 'day.discussion_opened',
       origin: 'referee',
+      atMs: Date.now(),
       round: this.round,
       order
     })
@@ -682,6 +816,7 @@ export class WerewolfGame implements CollaborationGameWorld {
       this.world.appendEvent({
         type: 'day.discussion_closed',
         origin: 'world',
+        atMs: Date.now(),
         round: this.round,
         outcome: discussion.outcome,
         order: discussion.order,
@@ -700,8 +835,8 @@ export class WerewolfGame implements CollaborationGameWorld {
       this.roomBroadcast(
         this.publicRoom,
         `VOTE ${this.round}. Discussion is closed. Living players: ${this.livingAliases().join(', ')}. ` +
-          `Every living player must now call the vote tool exactly once for one living player. ` +
-          `Do not post a message — the vote tool call IS your vote.`
+          `Every living player now says their vote OUT LOUD in this room, exactly once — for example ` +
+          `"I vote for player-3". Name exactly one living player; naming more than one does not count as a vote.`
       )
     )
   }
@@ -736,10 +871,14 @@ export class WerewolfGame implements CollaborationGameWorld {
       const victim = this.players.get(lynched)
       if (victim) victim.alive = false
     }
+    for (const voter of this.living()) {
+      this.closeOutAction('vote', voter.alias, this.dayVotes.has(voter.agentId))
+    }
     if (this.dayVotes.size < eligible) this.votesTimedOut += 1
     this.world.appendEvent({
       type: 'day.resolved',
       origin: 'world',
+      atMs: Date.now(),
       round: this.round,
       votes: Object.fromEntries(
         [...this.dayVotes.entries()].map(([agentId, vote]) => [
@@ -782,7 +921,13 @@ export class WerewolfGame implements CollaborationGameWorld {
     }
     this.phase = 'done'
     this.terminalReason = 'completed'
-    this.world.appendEvent({ type: 'game.won', origin: 'world', winner: this.winner, round: this.round })
+    this.world.appendEvent({
+      type: 'game.won',
+      origin: 'world',
+      atMs: Date.now(),
+      winner: this.winner,
+      round: this.round
+    })
     this.pendingWaves.push(
       this.roomBroadcast(this.publicRoom, `The game is over: the ${this.winner} win. Thank you for playing.`)
     )
@@ -797,10 +942,11 @@ export class WerewolfGame implements CollaborationGameWorld {
    *  behaves exactly as it does in production. */
   attachLiveIngress(inject: (event: EvaluationPlatformEvent) => DeliveryHandle): void {
     this.echo.attach(inject)
+    this.denEcho.attach(inject)
   }
 
   drainLiveHandles(): DeliveryHandle[] {
-    return this.echo.drainHandles()
+    return [...this.echo.drainHandles(), ...this.denEcho.drainHandles()]
   }
 
   isTerminal(): boolean {
@@ -869,13 +1015,35 @@ export class WerewolfGame implements CollaborationGameWorld {
         })
       }
     }
-    // Sequential discussion: a DELIVERED public-room reply is one player taking
-    // their turn. Speech is never parsed for authoritative actions — only for
-    // WHO spoke and WHEN, which is what the speaking order is made of.
+    // Every DELIVERED reply is read in the conversation it belongs to: the day
+    // room carries speech and the public vote, the den carries the pack's kill,
+    // and a player's own referee DM carries the seer/doctor night action. This
+    // is the whole point of the natural-language variant — an action has to
+    // travel the same message path as anything else the agent says.
     for (const effect of effects) {
       if (effect.status !== 'delivered' || effect.kind !== 'reply') continue
-      if (effect.channel !== this.publicRoom.channel || effect.agentId === undefined) continue
+      if (effect.agentId === undefined) continue
+      const speaker = this.playersByAgentId.get(effect.agentId)
       const alias = this.world.aliasOfAgent(effect.agentId)
+
+      // ── the wolf den: the pack states its victim ──
+      if (effect.channel === this.wolfDen.channel) {
+        if (this.phase === 'night' && speaker) {
+          this.noteActionSpeech('kill', alias)
+          this.applyStatedAction(effect.agentId, 'kill', 'night', 'werewolf', effect.text)
+        }
+        continue
+      }
+      // ── a player's own referee DM: seer and doctor state their night action ──
+      if (speaker && effect.channel === speaker.dm.channel) {
+        if (this.phase === 'night' && (speaker.role === 'seer' || speaker.role === 'doctor')) {
+          const action = speaker.role === 'seer' ? 'inspect' : 'protect'
+          this.noteActionSpeech(action, alias)
+          this.applyStatedAction(effect.agentId, action, 'night', speaker.role, effect.text)
+        }
+        continue
+      }
+      if (effect.channel !== this.publicRoom.channel) continue
       // The daemon posts its own loop-protection notice into the conversation it
       // stopped. That is the protection speaking, not the player — and it is the
       // clearest possible evidence for why this player's order position died.
@@ -894,9 +1062,13 @@ export class WerewolfGame implements CollaborationGameWorld {
         continue
       }
       if (this.phase === 'day' && this.dayStage === 'discussion') this.noteSpeech(alias, effect.sequence)
+      // ── the day room: the vote is said OUT LOUD, which is the game ──
+      if (this.phase === 'day' && this.dayStage === 'vote' && speaker) {
+        this.noteActionSpeech('vote', alias)
+        this.applyStatedAction(effect.agentId, 'vote', 'day', undefined, effect.text)
+      }
     }
-    // Phase resolution consumes the STRUCTURED actions collected by the §6
-    // tool handlers during this wave's turns.
+    // Phase resolution consumes the actions parsed out of this wave's messages.
     if (this.phase === 'night') {
       if (this.nightKill !== undefined || this.living().every((player) => player.role !== 'werewolf')) {
         this.resolveNightAndQueueDay()
@@ -963,6 +1135,7 @@ export class WerewolfGame implements CollaborationGameWorld {
     const accepted = this.actions.filter((action) => action.disposition === 'accepted')
     const duplicates = this.actions.filter((action) => action.disposition === 'duplicate')
     const rejected = this.actions.filter((action) => action.disposition === 'rejected')
+    const unparseable = this.actions.filter((action) => action.disposition === 'unparseable')
     // Referee self-check: every accepted action belongs to a live-at-the-time
     // caller of the right role, and sequences are strictly increasing.
     let refereeConsistent = true
@@ -1008,6 +1181,11 @@ export class WerewolfGame implements CollaborationGameWorld {
         acceptedActions: accepted.length,
         duplicateActions: duplicates.length,
         rejectedActions: rejected.length,
+        /** Statements in the right conversation that yielded no single clear
+         *  target — ambiguous, or nothing readable at all. Never retried. */
+        unparseableActions: unparseable.length,
+        /** Actors that owed an action and never spoke in its conversation. */
+        silentActors: this.silentActors,
         votesCast: accepted.filter((action) => action.action === 'vote').length,
         kills: accepted.filter((action) => action.action === 'kill').length,
         inspections: accepted.filter((action) => action.action === 'inspect').length,

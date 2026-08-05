@@ -120,9 +120,33 @@ and consecutive posts rather than policing them.
 
 Seven agents by default, seeded roles (2 werewolves, 1 seer, 1 doctor, villagers
 for the rest — the table scales past seven), a public room, a **real private wolf
-den**, and per-player referee DMs. Public discussion is ordinary natural-language
-speech; game-state mutations (`vote`, `inspect`, `protect`, `kill`) go through the
-§6 evaluation tool registry as structured actions over the real MCP socket.
+den**, and per-player referee DMs.
+
+**Every action is an ordinary message in the conversation it belongs to.** The
+game registers no evaluation tools at all; the referee parses intent out of what
+players actually say, where a human moderator would hear it:
+
+| Action              | Conversation                  |
+| ------------------- | ----------------------------- |
+| `vote`              | the public day room, out loud |
+| `kill`              | the wolf den, by the wolves   |
+| `inspect`/`protect` | the actor's own referee DM    |
+
+This replaced structured MCP tool calls, and the reason is that the tool channel
+was **out of band with respect to the system under test**: a tool call never
+traversed routing, produced no thread message, spent no automatic-turn budget,
+and made the leak assertions weak because role visibility came from tool privacy
+rather than from conversation membership. As messages, every action rides the
+real path, and _a non-wolf literally cannot state a kill_ — the world's §7.2
+authorization refuses the post before any parsing happens.
+
+Parsing is deliberately strict and never coached: an action verb must be followed
+by exactly one player alias inside the same sentence. Two different targets is
+**ambiguous** and yields nothing. An actor that spoke in the right conversation
+but never stated a readable action is recorded `unparseable`; one that never
+spoke is `silent`. Neither is retried — stating your action clearly the first
+time is part of what is measured. Authorization (phase, role, aliveness, one per
+round) is unchanged, applied to the parsed intent.
 
 **The day phase is sequential and peer-driven.** The referee opens each day
 exactly once — deaths, living players, the speaking order, and the rule "speak
@@ -142,16 +166,14 @@ out-of-order speeches, what ended the round (`order_complete` / `stalled`), whic
 players' loop-guard circuits latched, per-player peer-wake accounting
 (`admitted` / `gated` / `suppressed`), and whether the round reached the vote.
 
-The vote is unchanged: once the discussion completes or dies, the referee asks
-the living players for structured `vote` tool calls, and a vote attempted during
-discussion is rejected with `discussion_in_progress`.
+Once discussion completes or dies, the referee asks the living players to say
+their votes out loud. Reasoning about voting _during_ discussion is ordinary
+conversation and is not counted — the referee only reads votes once it has asked
+for them.
 
-The registry enforces at the daemon: startup name-collision rejection (an
-evaluation tool may never shadow a product tool), a per-agent visibility
-predicate, and dispatch on the **trusted token-bound** `SessionContext` — never
-tool-input-supplied identity. Role-appropriate authorization, aliveness, phase
-correctness, and idempotence per `(round, action)` are the game's job in the
-handler.
+The §6 evaluation tool registry still exists as a product capability and is
+still covered by `packages/daemon/test/evaluation-game-tools.test.ts` — Werewolf
+simply no longer uses it.
 
 **Aliveness is enforced in the handler, not in visibility.** The current
 `visibleTo` predicate admits every configured player, and dead players remain in
@@ -180,7 +202,7 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 15 files, 109 tests
+pnpm eval:collab:contracts # 15 files, 113 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
@@ -207,7 +229,7 @@ Full gate, measured on this branch:
 | ------------------------------------------------------ | ------- |
 | `evals/test/routing-acceptance.test.ts`                | 8       |
 | `evals/test/game-runner.test.ts`                       | 5       |
-| `evals/test/werewolf.test.ts`                          | 12      |
+| `evals/test/werewolf.test.ts`                          | 16      |
 | `evals/test/quota-counting.test.ts`                    | 8       |
 | `evals/test/cross-room-counting.test.ts`               | 6       |
 | `evals/test/counting.test.ts`                          | 11      |
@@ -220,7 +242,7 @@ Full gate, measured on this branch:
 | `evals/test/virtual-connections.test.ts`               | 4       |
 | `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
 | `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
-| **Total**                                              | **109** |
+| **Total**                                              | **113** |
 
 **0 expected-fail.** Every pin is an ordinary assertion.
 
@@ -412,6 +434,76 @@ confirm no private content reached the public room.
 admitted automatic turns and trial 3 spent 48 — far past the 8-per-window budget
 — with **zero** gated wakes, because each round's referee `DAY`/`VOTE` broadcast
 is a trusted human turn that resets the automatic counter (§6.5).
+
+### 5.4 Natural-language actions, and the 60-second window
+
+Actions became messages (§3.3). That doubles what a day costs the public room —
+the discussion AND the votes now travel it — so the automatic-turn budget was
+expected to bind much harder. It does, but **only in scripted runs**, and the
+reason is timing rather than design.
+
+**Scripted, 7 players, seed 42 — collapses.** Every circuit latches at exactly
+`admitted: 8`, and rounds 2+ are empty: `votesCast: 0`, every actor `silent`,
+`terminalReason: round_limit`, no winner. The two wolves absorb more (14) because
+they hold **two** circuits — the public room and the den are different channels,
+so different loop-guard scopes.
+
+**Real local Claude Code, 7 players — both trials complete.**
+
+| Trial | Seed | Winner         | Rounds | Admitted | **Gated** | Latches | Unparseable | Leaks |
+| ----- | ---- | -------------- | ------ | -------- | --------- | ------- | ----------- | ----- |
+| 1     | 201  | **werewolves** | 2      | 91       | **0**     | **0**   | **0**       | 0     |
+| 2     | 211  | **werewolves** | 2      | 95       | **0**     | **0**   | **0**       | 0     |
+
+The difference from scripted is the **60-second window**, and the per-round wall
+clock shows it directly:
+
+| Trial | Round | Wall-clock span | Admitted per player | Gated |
+| ----- | ----- | --------------- | ------------------- | ----- |
+| 1     | 1     | t = 0–90 s      | 7–11                | 0     |
+| 1     | 2     | t = 105–135 s   | 3–5                 | 0     |
+| 2     | 1     | t = 0–128 s     | 6–**14**            | 0     |
+| 2     | 2     | t = 143–176 s   | 1–5                 | 0     |
+
+Round 1 spans 90 s in trial 1 and **128 s** in trial 2 — longer than the window,
+so it rolls over _inside_ the round. That is why players absorbed **11** and
+**14** admitted automatic turns without ever being gated, against a nominal
+budget of 8. Each round 2 then starts on a fresh window. A scripted game does the
+same work in about two seconds, so all of it lands in one window and the budget
+never refreshes.
+
+**Conclusion: the natural-language design works in real time.** The scripted
+collapse is an artifact of scripted speed, not a limit of the design. It is still
+pinned as a test (`SCRIPTED BOUNDARY: a seven-player game exhausts the budget
+inside one 60s window`) because it is a real property of the gate — a scripted
+7-player game cannot be used to measure multi-round play, and the 5-player
+scripted game is the one that plays through to a winner.
+
+**Real agents state their actions clearly enough to parse: `unparseableActions: 0`.**
+Night actions arrived as _"I inspect player-1."_ and _"I protect player-4."_ in
+the actor's own DM; votes as _"player-7: I vote for player-2."_ in the room.
+
+**The wolves genuinely coordinated**, which the tool path could never show —
+independent submissions never had to agree. Night 1 in the den:
+
+> **player-6:** I'll go with player-3, they seem like a likely threat — thoughts?
+> **player-1:** Works for me — we kill player-3.
+> **player-6:** Agreed, we kill player-3.
+
+Night 2 opens with a rationale drawn from the day: _"Player-4 was quiet during the
+day and could be dangerous later — I'd suggest we kill player-4. Any objections?"_
+→ _"No objection, we kill player-4."_ The redundant confirmations are exactly the
+4 `duplicateActions`: the pack gets one kill, and the first clear statement
+carries.
+
+What did **not** go cleanly, stated plainly, because it is the honest limit here:
+both trials left votes on the table (`silentActors: 3` and `incompleteVotes: 1`
+in each; 3 and 2 votes cast of 6 eligible). Trial 2's day-1 speaking order also
+stalled at 3 of 6 speakers. **None of that was a protection** — zero gated wakes
+and zero latches in both runs — so it is model behavior: players finish the
+discussion and then simply never say a vote. Sequential order quality is
+reliable _when players speak_ (0 out-of-order across both trials); whether every
+player speaks at all is not.
 
 ### 5.3 Peer-driven counting (historical)
 
@@ -688,7 +780,7 @@ Stated explicitly, since several claims above are structural rather than observe
 
 | Claim                                                       | Basis                                                                                                                                             |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The 109 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
+| The 113 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
 | The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                                                         |
 | Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                                                         |
 | Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                                                          |
@@ -711,6 +803,13 @@ Stated explicitly, since several claims above are structural rather than observe
 | A 5-player table can end at night 1 with no day at all      | **Measured** (§5.2 trial 2) — 2 wolves vs 3 others, one kill makes it 2-vs-2                                                                      |
 | The per-round budget reset carries a multi-round game       | **Measured** — 48–96 admitted automatic turns per game, 0 gated                                                                                   |
 | A real subject's tool calls were denied INSIDE the runtime  | **Measured** — the denial text names `don't ask mode`, and the daemon logs zero `permission.*` events for the whole run                           |
+| Werewolf's actions are messages, parsed per conversation    | **Measured**, this branch — the game registers no evaluation tools at all                                                                         |
+| A non-wolf cannot even post a kill statement in the den     | **Measured** — the world's §7.2 authorization rejects the post before parsing                                                                     |
+| Real agents state actions clearly enough to parse           | **Measured** — `unparseableActions: 0` in both real 7p trials                                                                                     |
+| The wolves actually negotiate in the den                    | **Measured** — proposal → rationale → "any objections?" → agreement, with the redundant confirmations deduped                                     |
+| Scripted 7p collapses inside ONE 60s loop-guard window      | **Measured**, this branch — every circuit latches at `admitted: 8`                                                                                |
+| ...and that is scripted SPEED, not the design               | **Measured** — real 7p rounds span 90 s and 128 s, the window rolls, and both trials complete with 0 gated                                        |
+| Real games still leave votes uncast                         | **Measured** — 3 and 2 votes of 6 eligible, with 0 gated and 0 latches, so model behavior not protection                                          |
 | ...so the daemon's auto-allow set was never the blocker     | **Measured** — an earlier revision of this document claimed it was; the request never reaches the daemon at all                                   |
 | Workspace `.claude/settings.json` pre-approval is ignored   | **Measured** — files written and confirmed surviving the run, tools still denied                                                                  |
 | `CLAUDE_CONFIG_DIR` relocation breaks the runtime's auth    | **Measured** — `infra_error`, 0 peer wakes, 32s collapse                                                                                          |
