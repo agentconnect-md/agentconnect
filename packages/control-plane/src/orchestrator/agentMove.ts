@@ -1,17 +1,18 @@
 /**
- * Cold agent movement between daemons.
+ * Hard-cutover agent movement between daemons.
  *
- * The source daemon first ACKs `agent/detach`, which drains the running turn and
- * archives the complete agent root out of the active tree. Only then does the CP
- * compare-and-set `Agent.daemonId`. The target is bootstrapped from the durable CP
- * definition and activated last. A failed target bootstrap is compensated by
- * detaching the partial target, moving the DB placement back, and reactivating the
- * source archive.
+ * The source daemon first ACKs `agent/detach`, which gates new admission, cancels
+ * running turns, and archives the complete agent root out of the active tree. It
+ * does not wait for old turns to finish or migrate their session state. Only then
+ * does the CP compare-and-set `Agent.daemonId`. The target is bootstrapped from the
+ * durable CP definition and activated last. A failed target bootstrap is
+ * compensated by detaching the partial target, moving the DB placement back, and
+ * reactivating the source archive.
  *
  * An explicit force reassign may continue without the source ACK only when
  * the HTTP edge has proved the source unavailable and the operator accepted the
  * split-brain risk. It still attempts the detach so a source that reconnects in
- * the race can quiesce normally. This is deliberately a cold reprovision, not
+ * the race can quiesce normally. This is deliberately a hard cutover, not
  * state migration: workspace, transcript, and memory bytes remain daemon-local.
  */
 import { randomUUID } from 'node:crypto'
@@ -436,11 +437,11 @@ export class AgentMoveService {
 
     if (sourceDaemonId) {
       try {
-        requireAck('source detach', await this.detach(sourceDaemonId, agent.id))
+        requireAck('source cutover', await this.detach(sourceDaemonId, agent.id, { discardActiveTurns: true }))
       } catch (err) {
         if (sourceDetachMode === 'required') {
           if (err instanceof AgentMoveFailed) throw err
-          throw new AgentMoveFailed('source daemon detach failed', err)
+          throw new AgentMoveFailed('source daemon cutover failed', err)
         }
         this.deps.log?.warn(
           { err, agentId: agent.id, sourceDaemonId, targetDaemonId },
@@ -696,8 +697,16 @@ export class AgentMoveService {
     throw new AgentMoveFailClosed('agent placement changed during move; target was detached and the move stopped')
   }
 
-  private detach(daemonId: DaemonId, agentId: AgentId, moveId = randomUUID()): Promise<Ack> {
-    return this.deps.control.agentDetach(daemonId, { agentId, moveId })
+  private detach(
+    daemonId: DaemonId,
+    agentId: AgentId,
+    options: { moveId?: string; discardActiveTurns?: boolean } = {}
+  ): Promise<Ack> {
+    return this.deps.control.agentDetach(daemonId, {
+      agentId,
+      moveId: options.moveId ?? randomUUID(),
+      ...(options.discardActiveTurns ? { discardActiveTurns: true } : {})
+    })
   }
 
   private async rollback(
@@ -756,7 +765,7 @@ export class AgentMoveService {
     // definition. Activate persists, exact-prunes, reconciles, and warms this
     // complete snapshot synchronously while the staging tombstone remains armed.
     const moveId = randomUUID()
-    requireAck(`${label} staging detach`, await this.detach(daemonId, agent.id, moveId))
+    requireAck(`${label} staging detach`, await this.detach(daemonId, agent.id, { moveId }))
     requireAck(
       `${label} activate`,
       await this.deps.control.agentActivate(daemonId, {

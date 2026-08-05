@@ -1874,7 +1874,7 @@ export function agentRoutes(deps: HttpDeps) {
       }
     )
 
-    // Cold-reprovision an agent on another daemon. The explicit action keeps
+    // Hard-cut an agent over to another daemon. The explicit action keeps
     // destructive/local-state semantics out of generic spec PATCH. A safe move
     // requires both source and target READY; an explicit force reassign may
     // bypass only the unavailable source ACK. The target always receives the
@@ -1886,7 +1886,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Agents],
           summary: 'Move an agent to another daemon',
           description:
-            'Cold-reprovision an agent on another READY daemon. The active turn is drained for a safe move; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated.',
+            'Hard-cut an agent over to another READY daemon. Active source turns are cancelled without a final reply, and subsequent messages start fresh on the target; force is an explicit disaster-recovery option when the source is unavailable. Daemon-local workspace, memory, and transcript data are not migrated or replayed.',
           operationId: 'moveAgentDaemon',
           params: IdParam,
           body: SetAgentDaemonBody,
@@ -2003,7 +2003,7 @@ export function agentRoutes(deps: HttpDeps) {
 
         // A move takes NO external-memory mutation scope: its connection work is
         // staging pushes (no connection row writes), and it can outlive any
-        // transactional lock while a daemon drains. A connection mutation that
+        // transactional lock while a daemon cuts over. A connection mutation that
         // lands mid-move can leave the target holding a stale spec only until
         // the post-commit re-push below / the usage-checked removal in the
         // finally / the daemon reconnect snapshot converge it — and a connection
