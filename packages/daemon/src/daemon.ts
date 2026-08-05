@@ -2987,10 +2987,13 @@ export class Daemon {
       cancelOrchestration: (req) => Promise.resolve(this.cancelOrchestrationForOwner(req)),
       submitGithubReview: (req) => this.submitGithubReview(req),
       memory: this.memory,
-      // The same isolation verdict gates explicit recall and mutation of shared
-      // agent memory. Resolve it from trusted session coords at call time so a
-      // policy change takes effect for an already-running ACP session.
-      memoryAccessAllowed: (ctx) => !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
+      // Every session may READ shared agent memory; only a non-isolated session
+      // may WRITE it, so a private DM/A2A turn can use existing memory but cannot
+      // push its own content into the cross-user store (#653; capture stays gated
+      // like post-turn distillation). Resolved from trusted session coords at call
+      // time so a policy change takes effect for an already-running ACP session.
+      memoryAccessAllowed: (ctx, mode) =>
+        mode === 'read' || !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -12380,14 +12383,10 @@ export class Daemon {
         callMeta?.needsReply,
         {
           initializeOnly,
-          sharedMemoryExcluded:
-            webchat?.evaluation !== true &&
-            (persistedSessionId != null
-              ? this.store.isCaptureExcluded(persistedSessionId)
-              : callMeta !== undefined ||
-                msg.isDm ||
-                msg.platform === 'webchat' ||
-                this.pendingLaunchCorrelation.has(agentId)),
+          // Memory READS (index injection + auto-recall) are no longer session-
+          // gated — every session may use shared memory (#653). WRITES stay gated
+          // (memory write tools via memoryAccessAllowed; post-turn distillation via
+          // isCaptureExcluded at recordTurnForBinding).
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(webchat?.worktree !== undefined
             ? { workspaceIsolation: webchat.worktree ? ('session' as const) : ('shared' as const) }

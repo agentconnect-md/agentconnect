@@ -1,10 +1,12 @@
 /**
- * The tool half of the shared-memory isolation gate.
+ * The tool half of the shared-memory isolation gate (#653).
  *
- * Automatic post-turn distillation is gated in the daemon, but agent memory is
- * shared across users and the agent can also write it EXPLICITLY — the session
- * prompt actively encourages recording durable facts. A private session must not
- * be able to reach shared memory by either route.
+ * Agent memory is shared across users. Every session may READ it (the agent can
+ * use what it already knows anywhere), but only a non-isolated session may WRITE
+ * it — automatic post-turn distillation is gated in the daemon, and the explicit
+ * write tools are gated here, so a private session cannot push its content into
+ * shared memory by either route. The gate is queried per operation (`read` vs
+ * `write`); this suite mirrors the daemon wiring where reads are always allowed.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { executeTool, MEMORY_ACCESS_BLOCKED, type OpsDeps, type SessionContext } from '../src/mcp/ops.js'
@@ -18,13 +20,15 @@ const ctx = (): SessionContext => ({
   tools: []
 })
 
-function deps(allowed: boolean, over: Partial<OpsDeps> = {}): OpsDeps {
+// Mirror the daemon: reads are always allowed; writes are gated on the session's
+// isolation verdict.
+function deps(writeAllowed: boolean, over: Partial<OpsDeps> = {}): OpsDeps {
   return {
     memory: {
       read: vi.fn(async () => ({ content: 'existing' })),
       write: vi.fn(async () => ({ ok: true }))
     },
-    memoryAccessAllowed: () => allowed,
+    memoryAccessAllowed: (_ctx, mode) => mode === 'read' || writeAllowed,
     ...over
   } as unknown as OpsDeps
 }
@@ -36,10 +40,10 @@ describe('file memory under the session-isolation gate', () => {
     expect(d.memory.write).not.toHaveBeenCalled()
   })
 
-  it('refuses reads from an isolated session, without touching the provider', async () => {
+  it('allows a read from an isolated session — every session can use shared memory (#653)', async () => {
     const d = deps(false)
-    await expect(executeTool(ctx(), 'readMemory', {}, d)).rejects.toThrow(MEMORY_ACCESS_BLOCKED)
-    expect(d.memory.read).not.toHaveBeenCalled()
+    await executeTool(ctx(), 'readMemory', {}, d)
+    expect(d.memory.read).toHaveBeenCalled()
   })
 
   it('allows the write when the session is org-visible', async () => {
@@ -56,7 +60,7 @@ describe('file memory under the session-isolation gate', () => {
 })
 
 describe('record-memory mutations under the same gate', () => {
-  const recordDeps = (allowed: boolean): OpsDeps => {
+  const recordDeps = (writeAllowed: boolean): OpsDeps => {
     const surface = {
       shape: 'records' as const,
       capabilities: new Set(['recall', 'create', 'update', 'delete', 'get']),
@@ -67,19 +71,17 @@ describe('record-memory mutations under the same gate', () => {
     }
     return {
       memory: { adminSurface: () => surface, adminSurfaceForAgent: () => surface },
-      memoryAccessAllowed: () => allowed
+      memoryAccessAllowed: (_ctx: SessionContext, mode: 'read' | 'write') => mode === 'read' || writeAllowed
     } as unknown as OpsDeps
   }
 
-  it('refuses saveMemory from a private session', async () => {
+  it('refuses saveMemory (a write) from a private session', async () => {
     await expect(
       executeTool(ctx(), 'saveMemory', { content: 'secret', metadata: {} }, recordDeps(false))
     ).rejects.toThrow(MEMORY_ACCESS_BLOCKED)
   })
 
-  it('refuses searchMemory from an isolated session', async () => {
-    await expect(executeTool(ctx(), 'searchMemory', { query: 'deploys' }, recordDeps(false))).rejects.toThrow(
-      MEMORY_ACCESS_BLOCKED
-    )
+  it('allows searchMemory (a read) from an isolated session (#653)', async () => {
+    await expect(executeTool(ctx(), 'searchMemory', { query: 'deploys' }, recordDeps(false))).resolves.toBeDefined()
   })
 })
