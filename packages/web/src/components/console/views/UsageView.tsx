@@ -287,7 +287,6 @@ export default function UsageView() {
       {data?.series &&
         (() => {
           const pts = data.series.points
-          const maxSpend = Math.max(...pts.map((p) => p.costAmount), 0)
           const labelEvery = Math.max(1, Math.ceil(pts.length / 8))
           const gap = pts.length > 40 ? 2 : pts.length > 14 ? 4 : 10
           const unit = (currency ?? 'USD').toUpperCase()
@@ -295,6 +294,62 @@ export default function UsageView() {
           // this zone, so tell the viewer. Client-only: the chart never renders on
           // the server (data is client-fetched), so no hydration mismatch.
           const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+          // Stacked breakdown, following the table's group-by. Buckets carry
+          // byAgent/byModel from the CP; runtime rolls byAgent through the
+          // console's agent list. Absent on an older CP → flat brand bars.
+          const hasBreakdown = pts.some((p) => p.byAgent || p.byModel)
+          const agentMeta = new Map(enriched.map((e) => [e.agentId, e]))
+          const recs = pts.map((p) => {
+            if (!hasBreakdown) return { '': p.costAmount }
+            if (groupBy === 'model') return p.byModel ?? {}
+            if (groupBy === 'agent') return p.byAgent ?? {}
+            const rec: Record<string, number> = {}
+            for (const [id, v] of Object.entries(p.byAgent ?? {})) {
+              const rt = agentMeta.get(id)?.runtime || 'unknown'
+              rec[rt] = (rec[rt] ?? 0) + v
+            }
+            return rec
+          })
+          // Fixed hue assignment: top-6 keys by range spend get --chart-1..6 in
+          // order, the tail folds into a gray "Other" (hues are never cycled).
+          const OTHER = '\0other'
+          const totalsByKey = new Map<string, number>()
+          for (const rec of recs)
+            for (const [k, v] of Object.entries(rec)) totalsByKey.set(k, (totalsByKey.get(k) ?? 0) + v)
+          const rankedKeys = [...totalsByKey.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+          const topKeys = rankedKeys.slice(0, 6)
+          const stackKeys = rankedKeys.length > 6 ? [...topKeys, OTHER] : topKeys
+          const keyName = (k: string) => {
+            if (k === OTHER) return 'Other'
+            if (!hasBreakdown) return ''
+            if (groupBy === 'model') return modelLabel(k)
+            if (groupBy === 'runtime') return runtimeLabel(k)
+            const meta = agentMeta.get(k)
+            return meta ? meta.name : k.length > 12 ? k.slice(0, 8) : k
+          }
+          const keyColor = (k: string) =>
+            !hasBreakdown
+              ? 'var(--brand)'
+              : k === OTHER
+                ? 'var(--chart-other)'
+                : `var(--chart-${topKeys.indexOf(k) + 1})`
+          // Per-bucket stack, bottom-up in stackKeys order. Negative deltas
+          // (downward corrections) can't render as height — clamp to 0; the
+          // bucket's tooltip total still reports the true net figure.
+          const stacks = recs.map((rec) => {
+            const segs = stackKeys
+              .map((k) => ({
+                k,
+                v:
+                  k === OTHER
+                    ? Object.entries(rec).reduce((s, [kk, vv]) => (topKeys.includes(kk) ? s : s + Math.max(0, vv)), 0)
+                    : Math.max(0, rec[k] ?? 0)
+              }))
+              .filter((s) => s.v > 0)
+            return { segs, total: segs.reduce((s, x) => s + x.v, 0) }
+          })
+          const maxSpend = Math.max(...stacks.map((s) => s.total), 0)
           return (
             <div className="card mb-[18px] max-desktop:mx-4 max-desktop:mb-3 max-desktop:rounded-lg">
               <div className="cardhead">
@@ -304,19 +359,59 @@ export default function UsageView() {
                   {unit} / {data.series.bucket}
                 </span>
               </div>
+              {hasBreakdown && stackKeys.length >= 2 && (
+                <div className="flex flex-wrap gap-x-3 gap-y-1 px-[18px] pt-3">
+                  {stackKeys.map((k) => (
+                    <span
+                      key={k}
+                      className="flex items-center gap-[5px] font-sans text-[11px] leading-normal text-(--text-secondary)"
+                    >
+                      <span
+                        className="h-[9px] w-[9px] flex-none rounded-[3px]"
+                        style={{ backgroundColor: keyColor(k) }}
+                      />
+                      {keyName(k)}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="flex h-[180px] items-end px-[18px] pb-[14px] pt-5" style={{ gap }}>
                 {pts.map((p, i) => {
                   const label = bucketLabel(p.start, data.series.bucket)
+                  const { segs, total } = stacks[i]!
+                  const tip = hasBreakdown
+                    ? [
+                        `${label} · ${fmtCost(p.costAmount, currency)}`,
+                        ...[...segs].reverse().map((s) => `${keyName(s.k)}: ${fmtCost(s.v, currency)}`)
+                      ].join('\n')
+                    : `${label} · ${fmtCost(p.costAmount, currency)}`
                   return (
                     <div
                       key={p.start}
                       className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-2"
-                      title={`${label} · ${fmtCost(p.costAmount, currency)}`}
+                      title={tip}
                     >
+                      {/* Stack renders DOM top→bottom = reverse of stackKeys, so the
+                          largest key sits on the baseline. flex-grow splits the
+                          bucket height after the 2px surface gaps between segments. */}
                       <div
-                        className="w-full max-w-[46px] rounded-t-[5px] bg-(--brand)"
-                        style={{ height: `${maxSpend > 0 ? (p.costAmount / maxSpend) * 100 : 0}%`, minHeight: 4 }}
-                      />
+                        className="flex w-full max-w-[46px] flex-col gap-[2px] overflow-hidden rounded-t-[5px]"
+                        style={{ height: `${maxSpend > 0 ? (total / maxSpend) * 100 : 0}%`, minHeight: 4 }}
+                      >
+                        {segs.length === 0 ? (
+                          <div className="h-full w-full bg-(--surface-active)" />
+                        ) : (
+                          [...segs].reverse().map((s) => (
+                            <div
+                              key={s.k}
+                              className="min-h-0 w-full"
+                              // grow values normalized to sum 1 — raw costs can sum
+                              // below 1, which would leave the bar under-filled.
+                              style={{ flexGrow: s.v / total, backgroundColor: keyColor(s.k) }}
+                            />
+                          ))
+                        )}
+                      </div>
                       <span
                         className={`mono whitespace-nowrap text-[10.5px] leading-none text-(--text-tertiary) ${
                           i % labelEvery === 0 ? '' : 'select-none'

@@ -2843,8 +2843,18 @@ export interface UsageDto {
   agents: UsageAgentDto[]
   models: UsageModelDto[]
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
-  // empty buckets filled to 0. `start` is a UTC-aligned ISO instant.
-  series: { bucket: 'hour' | 'day'; points: { start: string; costAmount: number }[] }
+  // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
+  // `byModel` split each bucket's total for the grouped/stacked view (model key
+  // ''=unreported); optional so a CP predating them degrades to flat bars.
+  series: {
+    bucket: 'hour' | 'day'
+    points: {
+      start: string
+      costAmount: number
+      byAgent?: Record<string, number>
+      byModel?: Record<string, number>
+    }[]
+  }
 }
 
 export async function fetchUsage(range: UsageRange, orgId?: string): Promise<UsageDto> {

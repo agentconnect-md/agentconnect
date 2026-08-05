@@ -2973,10 +2973,19 @@ export const UsageDto = z.object({
   agents: z.array(UsageAgentDto),
   models: z.array(UsageModelDto),
   // Spend-over-time chart: cost bucketed by hour (d1) or day (longer ranges),
-  // empty buckets filled to 0. `start` is a UTC-aligned ISO instant.
+  // empty buckets filled to 0. `start` is a UTC-aligned ISO instant. `byAgent`/
+  // `byModel` split each bucket's total for the grouped/stacked chart (model
+  // key ''=unreported; only non-zero deltas get a key).
   series: z.object({
     bucket: z.enum(['hour', 'day']),
-    points: z.array(z.object({ start: z.string(), costAmount: z.number() }))
+    points: z.array(
+      z.object({
+        start: z.string(),
+        costAmount: z.number(),
+        byAgent: z.record(z.string(), z.number()),
+        byModel: z.record(z.string(), z.number())
+      })
+    )
   })
 })
 

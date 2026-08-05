@@ -1577,10 +1577,14 @@ export interface ModelUsageAggregate {
 }
 
 /** One spend-over-time bucket: total cost of sessions whose last activity fell in
- *  `[start, start + one bucket)`. `start` is a UTC-aligned ISO instant. */
+ *  `[start, start + one bucket)`. `start` is a UTC-aligned ISO instant.
+ *  `byAgent`/`byModel` split the same total for the console's grouped/stacked
+ *  chart (model key ''=unreported); only non-zero deltas get a key. */
 export interface SpendBucket {
   start: string
   costAmount: number
+  byAgent: Record<string, number>
+  byModel: Record<string, number>
 }
 
 /** Org-wide usage aggregate for a range: workspace totals + agent/model breakdowns.

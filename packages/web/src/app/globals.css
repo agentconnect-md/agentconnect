@@ -110,6 +110,17 @@
   --border-inverse: rgba(255, 255, 255, 0.1);
   --border-focus: var(--magenta-500);
 
+  /* Chart categorical series (usage stacked bars) — fixed assignment order,
+     CVD-validated against the light card surface; dark theme remaps its own
+     steps below. --chart-other is the fold-the-tail bucket (never a hue). */
+  --chart-1: var(--magenta-500);
+  --chart-2: var(--gold-500);
+  --chart-3: var(--indigo-500);
+  --chart-4: var(--teal-500);
+  --chart-5: var(--coral-500);
+  --chart-6: var(--purple-500);
+  --chart-other: var(--gray-400);
+
   /* Brand / primary actions */
   --brand: var(--magenta-500);
   --brand-hover: var(--magenta-600);
@@ -214,6 +225,15 @@
   --border-strong: #493a5d;
   --border-inverse: rgba(255, 255, 255, 0.09);
   --border-focus: #c62a78;
+
+  /* Chart categorical series — dark-surface steps (validated vs --surface-card). */
+  --chart-1: #d6488d;
+  --chart-2: #b8840a;
+  --chart-3: #6f72e8;
+  --chart-4: #0f9c93;
+  --chart-5: #e05a41;
+  --chart-6: #9d6ad8;
+  --chart-other: #58616d;
 
   /* Brand / primary actions */
   --brand: #c62a78;
