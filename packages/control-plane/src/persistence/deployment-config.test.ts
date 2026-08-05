@@ -18,7 +18,9 @@ const base: DeploymentConfigValuesV1 = {
   logto: {
     managementEndpoint: 'https://login.example.test',
     managementAppId: 'm2m-1',
-    managementResource: 'https://default.logto.app/api'
+    managementResource: 'https://default.logto.app/api',
+    browser: null,
+    githubConnector: null
   }
 }
 
@@ -32,6 +34,15 @@ describe('deploymentSecretsRequiringRefresh', () => {
       })
     ).toEqual([])
     expect(deploymentSecretsRequiringRefresh(base, { ...base, github: null })).toEqual([])
+    expect(
+      deploymentSecretsRequiringRefresh(base, {
+        ...base,
+        logto: {
+          ...base.logto!,
+          githubConnector: { appId: 3, slug: 'agentconnect-login', clientId: 'Iv1.login' }
+        }
+      })
+    ).toEqual(['logto.githubConnectorClientSecret'])
 
     expect(
       deploymentSecretsRequiringRefresh(base, {

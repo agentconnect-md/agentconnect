@@ -121,7 +121,7 @@ npx -y @agentconnect.md/setup init local-auth
 docker compose -f compose.yaml -f compose.logto.yaml up -d postgres logto
 ```
 
-Continue with the copy-paste Logto application settings and DB-backed config in
+Continue with the one-time Logto Management credential and DB-backed config in
 the [`@agentconnect.md/setup` walkthrough](packages/setup/README.md). The
 default no-auth Compose command above is unchanged.
 

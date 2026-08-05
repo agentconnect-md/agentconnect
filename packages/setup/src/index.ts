@@ -7,13 +7,22 @@ import {
   applyDeploymentConfig,
   DEFAULT_TENANT_ADMIN_URL,
   githubDeploymentPut,
+  logtoGithubConnectorPut,
   readDeploymentConfigPut,
   slackDeploymentPut,
   TenantAdminClient,
-  type DeploymentConfigAdmin
+  TenantAdminRequestError,
+  type DeploymentConfigAdmin,
+  type LogtoReconcileResult
 } from './deployment-config-client.js'
 import { inspectEnvFile, preflightEnvFile, readEnvFileValues, writeEnvFile } from './env-file.js'
-import { convertGithubManifest, GITHUB_DEPLOYMENT_ENV_KEYS, startGithubManifestFlow } from './github-app.js'
+import {
+  convertGithubManifest,
+  GITHUB_DEPLOYMENT_ENV_KEYS,
+  startGithubLoginManifestFlow,
+  startGithubManifestFlow
+} from './github-app.js'
+import { LOGTO_GITHUB_CONNECTOR_ID } from './admin/logto-management.js'
 import { parseOutputFormat, renderReport, reportExitCode } from './report.js'
 import {
   auditSlackManifest,
@@ -76,15 +85,12 @@ program
       if (mode === 'local-auth') {
         console.log('Next: docker compose -f compose.yaml -f compose.logto.yaml up -d postgres logto')
         console.log(
-          'In Logto, create one SPA with redirect URIs http://localhost:3000/auth/callback and http://localhost:8091/auth/callback, plus matching CORS origins.'
-        )
-        console.log(
-          'Create one Management API M2M app with `all` access to https://default.logto.app/api; the setup README has the copy-paste deployment document.'
+          'In Logto, create only the initial admin and one Management API M2M app with `all` access to https://default.logto.app/api.'
         )
         console.log(
           'Then start temporary admin: docker compose -f compose.yaml -f compose.logto.yaml --profile admin up -d tenant-admin'
         )
-        console.log('Configure with `config apply`; run `create github|slack` as needed; then run `check logto`.')
+        console.log('Save the README deployment document, then run `create logto` and `check logto`.')
         console.log('Finally stop tenant-admin, restart the stack, and run `check deployment`.')
         return
       }
@@ -187,7 +193,113 @@ configCommand
     console.log(JSON.stringify(await applyDeploymentConfig(tenantAdminClient(), input), null, 2))
   })
 
-const create = program.command('create').description('Create a deployment-owned provider App once')
+const create = program.command('create').description('Create or reconcile deployment integrations')
+
+create
+  .command('logto')
+  .description('Create or reconcile the Logto browser app, login connector, and ADMIN role')
+  .option('--name <name>', 'login-only GitHub App name', 'AgentConnect Login')
+  .option('--github-org <login>', 'create the login GitHub App under this GitHub organization')
+  .option('--format <format>', 'table or json', 'table')
+  .action(async (options: { name: string; githubOrg?: string; format: string }) => {
+    const format = parseOutputFormat(options.format)
+    const admin = tenantAdminClient()
+    let githubApp: { id: string; slug: string; settingsUrl: string } | null = null
+    let result: LogtoReconcileResult
+    try {
+      result = await admin.reconcileLogto()
+    } catch (error) {
+      if (!(error instanceof TenantAdminRequestError) || error.code !== 'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED') {
+        throw error
+      }
+
+      const current = await admin.get()
+      const logto = current.values.logto
+      const browser =
+        logto?.browser ??
+        (current.values.auth.mode === 'oidc'
+          ? {
+              endpoint: current.values.auth.browserClient.endpoint,
+              applicationName: 'AgentConnect',
+              apiResource: current.values.auth.browserClient.apiResource,
+              socialProviders: current.values.auth.socialProviders
+            }
+          : null)
+      const webUrl = current.values.publicUrls.web
+      if (!logto || !browser || !webUrl || !browser.socialProviders.includes('github')) throw error
+      if (logto.githubConnector) {
+        throw new Error('the login GitHub App identity is configured but its write-only client secret is unavailable')
+      }
+
+      const flow = await startGithubLoginManifestFlow(
+        { webUrl, logtoEndpoint: browser.endpoint, connectorId: LOGTO_GITHUB_CONNECTOR_ID },
+        options.name,
+        options.githubOrg
+      )
+      const browserPrompt = `Open this local URL in a browser to review and create the login-only GitHub App:\n  ${flow.startUrl}`
+      if (format === 'json') console.error(browserPrompt)
+      else console.log(browserPrompt)
+
+      let code: string
+      try {
+        code = await flow.code
+      } finally {
+        await flow.close()
+      }
+      const credentials = await convertGithubManifest(code).catch((conversionError: unknown) => {
+        throw new Error(
+          `GitHub confirmed login App creation, but credential conversion failed: ${(conversionError as Error).message}. Delete any orphan before retrying`
+        )
+      })
+      const settingsUrl = options.githubOrg
+        ? `https://github.com/organizations/${options.githubOrg}/settings/apps/${credentials.slug}`
+        : `https://github.com/settings/apps/${credentials.slug}`
+
+      try {
+        const latest = await admin.get()
+        const latestBrowser = latest.values.logto?.browser
+        if (latest.values.logto?.githubConnector) {
+          throw new Error('another login GitHub App was configured while this App was being created')
+        }
+        if (
+          latest.values.publicUrls.web !== webUrl ||
+          (latestBrowser?.endpoint ??
+            (latest.values.auth.mode === 'oidc' ? latest.values.auth.browserClient.endpoint : null)) !==
+            browser.endpoint
+        ) {
+          throw new Error('the Web or Logto endpoint changed while this App was being created')
+        }
+        await admin.put(logtoGithubConnectorPut(latest, credentials), latest.revision)
+      } catch {
+        throw new Error(
+          `Login GitHub App ${credentials.slug} was created, but its credentials could not be saved; delete the App before retrying`
+        )
+      }
+      githubApp = { id: credentials.appId, slug: credentials.slug, settingsUrl }
+      result = await admin.reconcileLogto()
+    }
+
+    if (format === 'json') {
+      console.log(JSON.stringify({ ...result, githubApp }, null, 2))
+      return
+    }
+    if (githubApp) {
+      console.log(`Created login-only GitHub App ${githubApp.slug} (${githubApp.id}).`)
+      console.log(`Settings: ${githubApp.settingsUrl}`)
+    }
+    if (!result.changed && !githubApp) {
+      console.log('Logto already matches the deployment configuration; nothing changed.')
+      return
+    }
+    console.log(
+      `${result.application.created ? 'Created' : result.application.changed ? 'Updated' : 'Verified'} Logto SPA ${result.application.id}.`
+    )
+    for (const connector of result.connectors) {
+      console.log(`${connector.created ? 'Created' : 'Verified'} Logto ${connector.target} connector ${connector.id}.`)
+    }
+    console.log(`Saved deployment configuration revision ${result.revision}.`)
+    console.log('Next: sign in to Tenant Admin, claim ADMIN, then restart AgentConnect.')
+  })
 
 create
   .command('github')

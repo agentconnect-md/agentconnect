@@ -34,6 +34,7 @@ export const DEFAULT_TENANT_ADMIN_URL = 'http://127.0.0.1:8091'
 export const TENANT_ADMIN_ID_TOKEN_ENV = 'TENANT_ADMIN_ID_TOKEN'
 export const DEPLOYMENT_CONFIG_PATH = '/api/v1/deployment-config'
 export const LOGTO_CHECK_PATH = '/api/v1/check/logto'
+export const LOGTO_RECONCILE_PATH = '/api/v1/reconcile/logto'
 
 export const DeploymentConfigPutSchema = z.strictObject({
   values: DeploymentConfigValuesV1Schema,
@@ -67,7 +68,16 @@ export const DeploymentConfigAdminSchema = z.strictObject({
 export type DeploymentConfigAdmin = z.infer<typeof DeploymentConfigAdminSchema>
 
 const LogtoCheckFindingSchema = z.strictObject({
-  id: z.enum(['logto.configuration', 'logto.client_credentials', 'logto.roles_read', 'logto.admin_role']),
+  id: z.enum([
+    'logto.configuration',
+    'logto.client_credentials',
+    'logto.roles_read',
+    'logto.admin_role',
+    'logto.setup_configuration',
+    'logto.application',
+    'logto.connectors',
+    'logto.sign_in_experience'
+  ]),
   status: z.enum(['pass', 'fail', 'unknown']),
   message: z.string().min(1)
 })
@@ -92,6 +102,40 @@ export const LogtoCheckResultSchema = z
     }
   })
 export type LogtoCheckResult = z.infer<typeof LogtoCheckResultSchema>
+
+export const LogtoReconcileResultSchema = z.strictObject({
+  schemaVersion: z.literal('1'),
+  operation: z.literal('create.logto'),
+  changed: z.boolean(),
+  revision: z.number().int().nonnegative(),
+  restartRequired: z.boolean(),
+  application: z.strictObject({
+    id: z.string().min(1),
+    created: z.boolean(),
+    changed: z.boolean()
+  }),
+  connectors: z.array(
+    z.strictObject({
+      target: z.string().min(1),
+      id: z.string().min(1),
+      created: z.boolean()
+    })
+  ),
+  signInExperienceChanged: z.boolean(),
+  adminRoleCreated: z.boolean()
+})
+export type LogtoReconcileResult = z.infer<typeof LogtoReconcileResultSchema>
+
+export class TenantAdminRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message)
+    this.name = 'TenantAdminRequestError'
+  }
+}
 
 export interface TenantAdminClientOptions {
   fetch?: typeof fetch
@@ -154,8 +198,12 @@ export class TenantAdminClient {
     return this.request('GET', LOGTO_CHECK_PATH, LogtoCheckResultSchema)
   }
 
+  reconcileLogto(): Promise<LogtoReconcileResult> {
+    return this.request('POST', LOGTO_RECONCILE_PATH, LogtoReconcileResultSchema)
+  }
+
   private async request<T>(
-    method: 'GET' | 'PUT',
+    method: 'GET' | 'PUT' | 'POST',
     path: string,
     responseSchema: z.ZodType<T>,
     body?: DeploymentConfigRequest
@@ -181,15 +229,27 @@ export class TenantAdminClient {
     if (!response.ok) {
       // Never echo a response body: it is outside this client's redacted schema
       // and could contain provider or proxy diagnostics.
+      const errorBody = (await response.json().catch(() => null)) as { code?: unknown } | null
+      const code = errorBody && typeof errorBody.code === 'string' ? errorBody.code : undefined
       if (response.status === 401) {
-        throw new Error(`tenant-admin ${method} ${path} returned HTTP 401; set or refresh ${TENANT_ADMIN_ID_TOKEN_ENV}`)
-      }
-      if (response.status === 403) {
-        throw new Error(
-          `tenant-admin ${method} ${path} returned HTTP 403; ${TENANT_ADMIN_ID_TOKEN_ENV} must identify a deployment admin`
+        throw new TenantAdminRequestError(
+          `tenant-admin ${method} ${path} returned HTTP 401; set or refresh ${TENANT_ADMIN_ID_TOKEN_ENV}`,
+          response.status,
+          code
         )
       }
-      throw new Error(`tenant-admin ${method} ${path} returned HTTP ${response.status}`)
+      if (response.status === 403) {
+        throw new TenantAdminRequestError(
+          `tenant-admin ${method} ${path} returned HTTP 403; ${TENANT_ADMIN_ID_TOKEN_ENV} must identify a deployment admin`,
+          response.status,
+          code
+        )
+      }
+      throw new TenantAdminRequestError(
+        `tenant-admin ${method} ${path} returned HTTP ${response.status}`,
+        response.status,
+        code
+      )
     }
     let value: unknown
     try {
@@ -330,6 +390,32 @@ export function githubDeploymentPut(
       'github.webhookSecret': credentials.webhookSecret,
       'github.clientSecret': credentials.clientSecret
     }
+  })
+}
+
+export interface LogtoGithubConnectorCredentials {
+  appId: string
+  slug: string
+  clientId: string
+  clientSecret: string
+}
+
+export function logtoGithubConnectorPut(
+  current: DeploymentConfigAdmin,
+  credentials: LogtoGithubConnectorCredentials
+): DeploymentConfigPut {
+  if (!current.values.logto) throw new Error('save Logto configuration before creating its GitHub connector App')
+  const appId = Number(credentials.appId)
+  if (!Number.isSafeInteger(appId) || appId <= 0) throw new Error('GitHub App creation returned an invalid app id')
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      logto: {
+        ...current.values.logto,
+        githubConnector: { appId, slug: credentials.slug, clientId: credentials.clientId }
+      }
+    },
+    secrets: { 'logto.githubConnectorClientSecret': credentials.clientSecret }
   })
 }
 

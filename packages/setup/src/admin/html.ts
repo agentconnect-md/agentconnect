@@ -49,7 +49,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     let currentRevision = 0;
     const secretKeys = [
       'github.privateKeyB64', 'github.webhookSecret', 'github.clientSecret',
-      'slack.clientSecret', 'slack.signingSecret', 'logto.managementAppSecret'
+      'slack.clientSecret', 'slack.signingSecret', 'logto.managementAppSecret',
+      'logto.githubConnectorClientSecret'
     ];
     const el = (id) => document.getElementById(id);
     const message = (text, error = false) => {

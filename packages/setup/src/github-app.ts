@@ -36,6 +36,12 @@ export interface GithubConversionOptions {
   timeoutMs?: number
 }
 
+export interface GithubLoginAppConfig {
+  webUrl: string
+  logtoEndpoint: string
+  connectorId: string
+}
+
 const GITHUB_ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
 
 function appendPath(base: string, path: string): string {
@@ -116,6 +122,28 @@ export function buildGithubAppManifest(
   }
 }
 
+/** A login-only GitHub App: no repository permissions, installation, or webhook. */
+export function buildGithubLoginAppManifest(
+  config: GithubLoginAppConfig,
+  name: string,
+  redirectUrl: string
+): Record<string, unknown> {
+  return {
+    name: name.trim() || 'AgentConnect Login',
+    description: 'Sign in to AgentConnect with GitHub.',
+    url: config.webUrl,
+    redirect_url: redirectUrl,
+    callback_urls: [
+      appendPath(config.logtoEndpoint, `/callback/${config.connectorId}`),
+      appendPath(config.logtoEndpoint, `/account/callback/social/${config.connectorId}`)
+    ],
+    public: true,
+    request_oauth_on_install: false,
+    default_permissions: { emails: 'read' },
+    default_events: []
+  }
+}
+
 function closeServer(server: Server): Promise<void> {
   if (!server.listening) return Promise.resolve()
   return new Promise((resolve, reject) => {
@@ -123,13 +151,11 @@ function closeServer(server: Server): Promise<void> {
   })
 }
 
-export async function startGithubManifestFlow(
-  config: ProviderAppConfig,
-  name: string,
+async function startGithubManifestRegistration(
+  buildManifest: (redirectUrl: string) => Record<string, unknown>,
   githubOrg?: string,
   options: GithubManifestFlowOptions = {}
 ): Promise<GithubManifestFlow> {
-  requireProviderAppEndpoints(config)
   const state = randomBytes(32).toString('base64url')
   const startToken = randomBytes(24).toString('base64url')
   const scriptNonce = randomBytes(18).toString('base64url')
@@ -150,7 +176,7 @@ export async function startGithubManifestFlow(
     if (request.method === 'GET' && requestUrl.pathname === `/start/${startToken}`) {
       const address = server.address() as AddressInfo
       const redirectUrl = `http://127.0.0.1:${address.port}/callback`
-      const manifest = buildGithubAppManifest(config, name, redirectUrl)
+      const manifest = buildManifest(redirectUrl)
       const body = `<!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Create AgentConnect GitHub App</title>
 <body><p>Continuing to GitHub…</p>
@@ -236,6 +262,33 @@ export async function startGithubManifestFlow(
       await closeServer(server)
     }
   }
+}
+
+export function startGithubManifestFlow(
+  config: ProviderAppConfig,
+  name: string,
+  githubOrg?: string,
+  options: GithubManifestFlowOptions = {}
+): Promise<GithubManifestFlow> {
+  requireProviderAppEndpoints(config)
+  return startGithubManifestRegistration(
+    (redirectUrl) => buildGithubAppManifest(config, name, redirectUrl),
+    githubOrg,
+    options
+  )
+}
+
+export function startGithubLoginManifestFlow(
+  config: GithubLoginAppConfig,
+  name: string,
+  githubOrg?: string,
+  options: GithubManifestFlowOptions = {}
+): Promise<GithubManifestFlow> {
+  return startGithubManifestRegistration(
+    (redirectUrl) => buildGithubLoginAppManifest(config, name, redirectUrl),
+    githubOrg,
+    options
+  )
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

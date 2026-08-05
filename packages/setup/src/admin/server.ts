@@ -29,7 +29,12 @@ import {
 } from './auth.js'
 import { loadTenantAdminProcessConfig } from './config.js'
 import { TENANT_ADMIN_HTML } from './html.js'
-import { LogtoAdminClaimClient, LogtoManagementError, type LogtoManagementConfig } from './logto-management.js'
+import {
+  LogtoAdminClaimClient,
+  LogtoManagementError,
+  type LogtoManagementConfig,
+  type LogtoSetupDesired
+} from './logto-management.js'
 
 const PutDeploymentConfigBody = z.strictObject({
   expectedRevision: z.number().int().nonnegative(),
@@ -50,7 +55,8 @@ export interface TenantAdminServerDeps {
   makeLogtoClaimClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'assignAdmin'>
   makeLogtoCheckClient?: (
     config: LogtoManagementConfig
-  ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole'>
+  ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
+  makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
   now?: () => Date
   /** Compose-only: host publishing is loopback and the admin bridge is isolated. */
   allowContainerLoopbackProxy?: boolean
@@ -152,6 +158,7 @@ function checkReport(findings: CheckFinding[], now: () => Date) {
 }
 
 function logtoUpstreamStatus(error: unknown): 'fail' | 'unknown' {
+  if (error instanceof LogtoManagementError && error.code !== 'LOGTO_UNAVAILABLE') return 'fail'
   const status = error instanceof LogtoManagementError ? error.status : undefined
   return status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429 ? 'fail' : 'unknown'
 }
@@ -168,6 +175,55 @@ function logtoConfig(record: DeploymentConfigRuntime | null): LogtoManagementCon
   }
 }
 
+interface ResolvedLogtoSetup {
+  desired: LogtoSetupDesired
+  endpoint: string
+  apiResource: string | null
+  socialProviders: string[]
+}
+
+function appendPath(origin: string, path: string): string {
+  return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
+}
+
+function logtoSetup(record: DeploymentConfigRuntime, tenantAdminUrl: string): ResolvedLogtoSetup | null {
+  const { auth, logto, publicUrls } = record.values
+  if (!logto || !publicUrls.web) return null
+  const browser =
+    logto.browser ??
+    (auth.mode === 'oidc'
+      ? {
+          endpoint: auth.browserClient.endpoint,
+          applicationName: 'AgentConnect',
+          apiResource: auth.browserClient.apiResource,
+          socialProviders: auth.socialProviders
+        }
+      : null)
+  if (!browser) return null
+
+  const githubSecret = record.secrets['logto.githubConnectorClientSecret']
+  const applicationId =
+    auth.mode === 'oidc' && auth.browserClient.endpoint === browser.endpoint ? auth.browserClient.appId : undefined
+  const webOrigin = new URL(publicUrls.web).origin
+  const adminOrigin = new URL(tenantAdminUrl).origin
+  return {
+    endpoint: browser.endpoint,
+    apiResource: browser.apiResource,
+    socialProviders: [...browser.socialProviders],
+    desired: {
+      ...(applicationId ? { applicationId } : {}),
+      applicationName: browser.applicationName,
+      redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
+      postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
+      corsAllowedOrigins: [...new Set([webOrigin, adminOrigin])],
+      socialProviders: [...browser.socialProviders],
+      ...(logto.githubConnector && githubSecret
+        ? { github: { clientId: logto.githubConnector.clientId, clientSecret: githubSecret } }
+        : {})
+    }
+  }
+}
+
 /** Build the thin UI/API over the shared typed deployment-config service. */
 export function buildTenantAdminServer(
   deps: TenantAdminServerDeps,
@@ -181,11 +237,11 @@ export function buildTenantAdminServer(
     deps.verifyOidcToken
   )
   const discovery = new Map<string, Promise<OidcDiscovery>>()
-  let claimTail: Promise<void> = Promise.resolve()
+  let mutationTail: Promise<void> = Promise.resolve()
 
-  const serializeClaim = <T>(operation: () => Promise<T>): Promise<T> => {
-    const result = claimTail.then(operation)
-    claimTail = result.then(
+  const serializeMutation = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = mutationTail.then(operation)
+    mutationTail = result.then(
       () => undefined,
       () => undefined
     )
@@ -242,7 +298,8 @@ export function buildTenantAdminServer(
       return problem(reply, 409, error.message, error.code)
     }
     if (error instanceof LogtoManagementError) {
-      const status = error.code === 'ADMIN_ROLE_TYPE_INVALID' ? 409 : 502
+      const status =
+        error.code === 'LOGTO_UNAVAILABLE' ? 502 : error.code === 'SOCIAL_CONNECTOR_UNSUPPORTED' ? 400 : 409
       return problem(reply, status, error.message, error.code)
     }
     request.log.error({ err: error }, 'tenant-admin request failed')
@@ -292,6 +349,53 @@ export function buildTenantAdminServer(
     }
   })
 
+  app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
+    serializeMutation(async () => {
+      const runtime = await deps.store.getRuntime(['logto.managementAppSecret', 'logto.githubConnectorClientSecret'])
+      const config = logtoConfig(runtime)
+      if (!runtime || !config) {
+        return problem(reply, 409, 'save the Logto Management API configuration before creating Logto resources')
+      }
+      const setup = logtoSetup(runtime, deps.publicUrl)
+      if (!setup) {
+        return problem(reply, 409, 'save Logto browser desired state before creating Logto resources')
+      }
+
+      const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
+      const reconciled = await client.reconcileSetup(setup.desired)
+      const auth = {
+        mode: 'oidc' as const,
+        issuer: appendPath(setup.endpoint, '/oidc'),
+        audience: setup.apiResource ?? reconciled.application.id,
+        browserClient: {
+          endpoint: setup.endpoint,
+          appId: reconciled.application.id,
+          apiResource: setup.apiResource
+        },
+        socialProviders: setup.socialProviders
+      }
+      const configChanged = JSON.stringify(runtime.values.auth) !== JSON.stringify(auth)
+      const saved = configChanged
+        ? await deps.store.replace({
+            expectedRevision: runtime.revision,
+            values: { ...runtime.values, auth }
+          })
+        : null
+      const changed = reconciled.changed || configChanged
+      return {
+        schemaVersion: '1' as const,
+        operation: 'create.logto' as const,
+        changed,
+        revision: saved?.revision ?? runtime.revision,
+        restartRequired: changed,
+        application: reconciled.application,
+        connectors: reconciled.connectors,
+        signInExperienceChanged: reconciled.signInExperienceChanged,
+        adminRoleCreated: reconciled.adminRoleCreated
+      }
+    })
+  )
+
   app.get('/api/v1/check/logto', { preHandler: requireDiagnosticAccess }, async () => {
     const findings: CheckFinding[] = []
     const report = () => checkReport(findings, deps.now ?? (() => new Date()))
@@ -329,6 +433,7 @@ export function buildTenantAdminServer(
     })
     const config = logtoConfig(runtime)!
     const client = deps.makeLogtoCheckClient?.(config) ?? new LogtoAdminClaimClient(config)
+    const setup = logtoSetup(runtime, deps.publicUrl)
 
     try {
       await client.verifyClientCredentials()
@@ -388,6 +493,73 @@ export function buildTenantAdminServer(
               : 'The exact global User role ADMIN does not exist; claim it from the local Tenant Admin UI.'
           }
     )
+    if (!setup) {
+      findings.push({
+        id: 'logto.setup_configuration',
+        status: 'fail',
+        message: 'Logto browser desired state is missing.'
+      })
+      return report()
+    }
+    let setupInspection: Awaited<ReturnType<LogtoAdminClaimClient['inspectSetup']>>
+    try {
+      setupInspection = await client.inspectSetup(setup.desired)
+    } catch (error) {
+      const status = logtoUpstreamStatus(error)
+      findings.push({
+        id: 'logto.setup_configuration',
+        status,
+        message:
+          status === 'fail'
+            ? 'Logto browser resources are invalid or ambiguous.'
+            : 'Logto browser resources could not be checked because Logto or the network is unavailable.'
+      })
+      return report()
+    }
+    findings.push(
+      setupInspection.application.exists && setupInspection.application.matches
+        ? {
+            id: 'logto.application',
+            status: 'pass',
+            message: `Logto SPA ${setupInspection.application.id} has the expected redirects and CORS origins.`
+          }
+        : {
+            id: 'logto.application',
+            status: 'fail',
+            message: setupInspection.application.exists
+              ? 'The selected Logto SPA does not match the expected redirects and CORS origins.'
+              : 'The AgentConnect Logto SPA does not exist.'
+          }
+    )
+    const missingConnectors = setupInspection.connectors
+      .filter((connector) => !connector.exists)
+      .map((connector) => connector.target)
+    findings.push(
+      missingConnectors.length === 0
+        ? {
+            id: 'logto.connectors',
+            status: 'pass',
+            message: 'All configured Logto social connectors exist.'
+          }
+        : {
+            id: 'logto.connectors',
+            status: 'fail',
+            message: `Missing Logto social connectors: ${missingConnectors.join(', ')}.`
+          }
+    )
+    findings.push(
+      setupInspection.signInExperienceMatches
+        ? {
+            id: 'logto.sign_in_experience',
+            status: 'pass',
+            message: 'Logto sign-in methods match the deployment configuration.'
+          }
+        : {
+            id: 'logto.sign_in_experience',
+            status: 'fail',
+            message: 'Logto sign-in methods do not match the deployment configuration.'
+          }
+    )
     return report()
   })
 
@@ -396,7 +568,7 @@ export function buildTenantAdminServer(
   // absent) and assigns the current operator. Every ordinary config route
   // continues to require a fresh token carrying roles:[..., "ADMIN"].
   app.post('/api/v1/bootstrap/claim', { preHandler: requireLocal }, async (request, reply) =>
-    serializeClaim(async () => {
+    serializeMutation(async () => {
       const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
       if (!runtime || runtime.values.auth.mode !== 'oidc' || !runtime.values.logto) {
         return problem(reply, 409, 'save OIDC and Logto Management API configuration before claiming ADMIN')

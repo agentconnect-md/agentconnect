@@ -4,12 +4,13 @@ Small setup and readiness tooling for AgentConnect self-hosting. This is the
 only published operator package: the normal CLI and the temporary Tenant Admin
 server are two modes of the same `agentconnect-setup` binary.
 
-The MVP has five command groups:
+The setup package exposes these command groups:
 
 ```bash
 npx -y @agentconnect.md/setup init [local | local-auth | external]
 npx -y @agentconnect.md/setup config [get | apply]
 npx -y @agentconnect.md/setup check [deployment | logto]
+npx -y @agentconnect.md/setup create logto
 npx -y @agentconnect.md/setup create github
 npx -y @agentconnect.md/setup create slack
 npx -y @agentconnect.md/setup serve
@@ -47,18 +48,11 @@ npx -y @agentconnect.md/setup init local-auth
 docker compose -f compose.yaml -f compose.logto.yaml up -d postgres logto
 ```
 
-Open `http://admin.agentconnect.localhost:3002`, create the initial Logto admin,
-then create:
-
-1. a GitHub social connector; and
-2. one single-page application with both redirect URIs
-   `http://localhost:3000/auth/callback` and
-   `http://localhost:8091/auth/callback`, post-sign-out redirect URI
-   `http://localhost:3000/login`, and both CORS origins
-   `http://localhost:3000` and `http://localhost:8091`; and
-3. a bootstrap Management API M2M application with the `all` permission for
-   resource `https://default.logto.app/api`. Tenant Admin uses it only to check
-   Management API access and create/assign the non-default `ADMIN` User role.
+Open `http://admin.agentconnect.localhost:3002` and create the initial Logto
+admin. The only Logto resource created manually is a bootstrap Management API
+M2M application with the `all` permission for resource
+`https://default.logto.app/api`. A tenant cannot authorize its own first
+Management API client.
 
 Start the temporary Tenant Admin and save those values in the DB-backed
 deployment document. Its bootstrap flow lets the first local operator claim the
@@ -70,7 +64,7 @@ Admin writes require it.
 docker compose -f compose.yaml -f compose.logto.yaml --profile admin up -d tenant-admin
 ```
 
-The safest manual path is to paste the `values` object below into Tenant Admin's
+Paste the `values` object below into Tenant Admin's
 Desired configuration editor and enter the M2M secret in its write-only
 `logto.managementAppSecret` field. For CLI automation, the complete document
 below can be saved as `deployment-config.json`, but it contains a plaintext
@@ -87,23 +81,20 @@ audience in this minimal profile.
       "web": "http://localhost:3000",
       "mcp": null
     },
-    "auth": {
-      "mode": "oidc",
-      "issuer": "http://login.agentconnect.localhost:3001/oidc",
-      "audience": "<LOGTO_SPA_APP_ID>",
-      "browserClient": {
-        "endpoint": "http://login.agentconnect.localhost:3001",
-        "appId": "<LOGTO_SPA_APP_ID>",
-        "apiResource": null
-      },
-      "socialProviders": ["github"]
-    },
+    "auth": { "mode": "none" },
     "github": null,
     "slack": null,
     "logto": {
       "managementEndpoint": "http://login.agentconnect.localhost:3001",
       "managementAppId": "<LOGTO_M2M_APP_ID>",
-      "managementResource": "https://default.logto.app/api"
+      "managementResource": "https://default.logto.app/api",
+      "browser": {
+        "endpoint": "http://login.agentconnect.localhost:3001",
+        "applicationName": "AgentConnect",
+        "apiResource": null,
+        "socialProviders": ["github"]
+      },
+      "githubConnector": null
     },
     "features": {
       "presetAgentsEnabled": true,
@@ -120,7 +111,15 @@ Apply it:
 
 ```bash
 npx -y @agentconnect.md/setup config apply --file deployment-config.json
+npx -y @agentconnect.md/setup create logto
 ```
+
+`create logto` creates or adopts the AgentConnect SPA, sets the Web and Tenant
+Admin redirects/CORS origins, creates the GitHub social connector, enables the
+configured sign-in methods, and creates the shared `ADMIN` role. On a fresh
+tenant it prints a loopback URL for reviewing a login-only GitHub App manifest;
+the resulting client secret is sealed directly into the deployment document.
+It does not request repository access, install the App, or enable a webhook.
 
 Then open `http://localhost:8091`, sign in, claim `ADMIN`, and sign in once more
 so the new role appears in the ID token. Finally run the read-only Logto check;
@@ -244,8 +243,9 @@ current revision and attaches it to PUT; retry after a conflict instead of
 overwriting another operator's change.
 
 `check logto` asks Tenant Admin to verify its stored Logto Management API
-configuration, client-credentials grant, role-read permission, and the exact
-global `ADMIN` role. The CLI does not read or decrypt Logto credentials itself.
+configuration, client-credentials grant, SPA redirects/CORS, social connectors,
+enabled sign-in methods, role-read permission, and the exact global `ADMIN`
+role. The CLI does not read or decrypt Logto credentials itself.
 It exits `1` for a definite failure, `2` when the only non-pass result is
 `unknown`, and `0` when all findings pass.
 
@@ -259,13 +259,25 @@ access token and has no command-line flag.
 
 ## Create provider Apps
 
-Both commands refuse a partial existing configuration and never silently
-replace an existing provider App. By default they read the redacted deployment
-document through the temporary Tenant Admin and atomically write the new App
-identity and sealed credentials back to Postgres. When OIDC is enabled, export
-the short-lived Tenant Admin ID token as `TENANT_ADMIN_ID_TOKEN` while using
-these CLI commands. Secret values are never accepted as command flags, written
-to setup YAML, returned by Tenant Admin, or printed.
+`create logto` is the local-auth bootstrap described above:
+
+```bash
+npx -y @agentconnect.md/setup create logto
+npx -y @agentconnect.md/setup create logto --format json
+```
+
+It is safe to rerun. It preserves unrelated Logto applications, connectors,
+and sign-in-experience fields, and never deletes a tenant resource. The selected
+social targets themselves are reconciled exactly. A missing configured provider
+other than GitHub is reported explicitly instead of guessed.
+
+The GitHub and Slack commands refuse a partial existing configuration and never
+silently replace an existing provider App. By default they read the redacted
+deployment document through the temporary Tenant Admin and atomically write the
+new App identity and sealed credentials back to Postgres. When OIDC is enabled,
+export the short-lived Tenant Admin ID token as `TENANT_ADMIN_ID_TOKEN` while
+using these CLI commands. Secret values are never accepted as command flags,
+written to setup YAML, returned by Tenant Admin, or printed.
 
 The default DB-backed provider-create flow requires saved HTTPS Web, Control
 Plane, and Relay URLs because both generated Apps include callback ingress. It
@@ -326,5 +338,5 @@ create APIs do not offer an idempotency key.
 
 The Relay URL is optional when no selected capability needs inbound callbacks.
 DNS, TLS, reverse proxies, Cloudflare Tunnel, external databases, provider App
-distribution, Logto connector setup, and Logto upgrades remain operator-owned in
-this MVP.
+distribution, unsupported social-provider registration, and Logto upgrades
+remain operator-owned in this MVP.

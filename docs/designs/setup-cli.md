@@ -1,9 +1,11 @@
 # Setup and Integration Diagnostics CLI
 
-> **Status:** Accepted and implemented through Phase 1.2. The MVP has one
+> **Status:** Accepted and implemented through Phase 1.3. The MVP has one
 > published operator package with the CLI, narrow GitHub/Slack App bootstrap,
 > DB-backed deployment settings, and an explicit temporary Tenant Admin
-> (`agentconnect-setup serve`). Full provider reconciliation remains planned.
+> (`agentconnect-setup serve`). It also ships the minimal Logto browser-app
+> reconciliation needed by the OSS install flow; general provider plan/apply
+> remains planned.
 >
 > **Related designs:**
 >
@@ -18,9 +20,9 @@
 `@agentconnect.md/setup` is the only operator npm package for bootstrapping and
 auditing an AgentConnect deployment. Its normal CLI is the primary interface;
 the same binary can temporarily serve the Tenant Admin API and thin browser UI.
-The current MVP creates GitHub and Slack Apps, checks Logto Management access,
-and bootstraps a shared Logto `ADMIN` role. Full Logto reconciliation and
-installed-integration audits are later phases.
+The current MVP creates GitHub and Slack Apps, reconciles the Logto browser SPA,
+GitHub login connector, sign-in targets, and shared `ADMIN` role, and audits the
+result. Broader Logto policy and installed-integration audits are later phases.
 
 The package should make a fresh OSS installation materially more
 out-of-the-box without sharing credentials from AgentConnect Cloud. Every
@@ -36,7 +38,7 @@ deployment still owns its provider applications and secrets.
    `agentconnect`, which manages one daemon host rather than deployment-wide
    resources.
 2. **One small current command vocabulary.** The MVP ships `init`,
-   `config get|apply`, `create github|slack`, `check`, and `serve`. Explicit
+   `config get|apply`, `create logto|github|slack`, `check`, and `serve`. Explicit
    provider creation avoids building a generic reconciliation framework before
    it is earned. Later `plan`/`apply` reconcilers live behind registered
    contributors rather than more top-level provider commands.
@@ -57,9 +59,11 @@ deployment still owns its provider applications and secrets.
    Admin reads expose only configured state, fingerprints, and timestamps. Raw
    values remain absent from YAML, plans, JSON responses, logs, and URLs.
 7. **Logto is a first-class deployment dependency.** The typed deployment
-   document covers its OIDC and Management API settings. The MVP checks the M2M
-   grant and exact non-default `ADMIN` User role; SPA, connector, and sign-in
-   reconciliation remain Phase 2.
+   document covers its OIDC, browser-app, login-connector, and Management API
+   settings. The MVP checks the M2M grant and idempotently reconciles the SPA,
+   redirects/CORS, configured connector targets, sign-in methods, and exact
+   non-default `ADMIN` User role. Account API, email, API-resource, and general
+   tenant policy remain Phase 2.
 8. **Deployment creation precedes tenant installation.** Setup creates the
    deployment GitHub/Slack Apps before startup; each organization installs
    those Apps only after its first user signs in. The two stages are never
@@ -90,7 +94,8 @@ deployment still owns its provider applications and secrets.
 The CLI must:
 
 - create or adopt the deployment GitHub App and Slack App;
-- check Logto Management access and bootstrap the shared `ADMIN` role;
+- reconcile the minimum Logto browser/login resources and bootstrap the shared
+  `ADMIN` role;
 - offer an optional localhost Logto overlay without changing the default
   no-auth Compose command;
 - persist typed deployment settings and sealed provider secrets without making
@@ -145,6 +150,7 @@ setup init local-auth
   -> create the initial Logto administrator
   -> create a bootstrap Logto Management API credential
   -> start temporary Tenant Admin and save the deployment document
+  -> setup create logto
   -> setup check logto and claim ADMIN
   -> stop Tenant Admin and start the complete stack
   -> setup check deployment
@@ -176,6 +182,7 @@ clone and select an AgentConnect release
   -> create a bootstrap Logto Management API M2M credential
   -> start agentconnect-setup serve (or the Compose admin profile)
   -> setup config apply
+  -> setup create logto
   -> setup create github / setup create slack
   -> sign in locally, claim ADMIN, sign in again, and run final checks
   -> stop Tenant Admin
@@ -236,6 +243,7 @@ npx -y @agentconnect.md/setup init external --control-plane-url <url>
 npx -y @agentconnect.md/setup serve
 npx -y @agentconnect.md/setup config get
 npx -y @agentconnect.md/setup config apply --file <json|->
+npx -y @agentconnect.md/setup create logto [--github-org <login>]
 npx -y @agentconnect.md/setup create github [--github-org <login>]
 npx -y @agentconnect.md/setup create slack
 npx -y @agentconnect.md/setup check deployment
@@ -250,7 +258,7 @@ package. The default endpoint is loopback `http://127.0.0.1:8091`.
 
 `config get` returns only the typed document and redacted secret status.
 `config apply` replaces that document and applies a write-only secret patch;
-changed results set `restartRequired: true`. Both provider `create` commands
+changed results set `restartRequired: true`. The GitHub and Slack `create` commands
 require an external profile with an HTTPS Relay URL and use that DB sink by
 default. Passing `--env-file` explicitly selects the owner-only legacy file
 sink. GitHub uses its browser-assisted App Manifest flow; Slack reads a
@@ -534,33 +542,37 @@ workspace through AgentConnect. `check` validates:
 A scope present in the current manifest but absent from an already-installed
 bot token is a failure with a reinstall remediation, not a pass.
 
-### 7.3 Logto (current bootstrap and future Phase 2 reconciliation)
+### 7.3 Logto (minimal shipped reconciliation and future Phase 2 scope)
 
-The shipped MVP reads the explicit Management API endpoint/resource, verifies
-the M2M `all` grant, checks that `ADMIN` is a non-default User role, and creates
-or assigns that role during the local claim flow. The reconciliation behavior
-below is the accepted Phase 2 design and is not yet exposed by the CLI.
+The shipped `create logto` command reads the explicit Management API
+endpoint/resource, verifies the M2M `all` grant, and idempotently creates or
+adopts the AgentConnect SPA. It reconciles Web and Tenant Admin redirects, the
+Web post-logout redirect, CORS origins, selected social connector targets, the
+sign-in experience, and the exact non-default `ADMIN` User role. It writes the
+created SPA id back into the deployment document's OIDC projection.
 
 The operator must supply one existing Logto Management API M2M credential with
 the permissions required to manage the selected tenant. This is the unavoidable
 bootstrap step: a tenant cannot call its Management API before an authorized
-client exists. Under the current Logto
-Management API contract, both the bootstrap credential and the generated
-runtime M2M role need the Management API's `all` permission; `check` verifies
-the effective grant instead of trusting the role name.
+client exists. Under the current Logto Management API contract, the bootstrap
+credential needs the Management API's `all` permission; `check` verifies the
+effective grant instead of trusting the role name.
 
-After bootstrap, `apply` uses the Logto Management API to create or adopt and
-reconcile:
+For a fresh GitHub-only login tenant, `create logto` may also launch the
+official GitHub App Manifest flow for a separate login-only App. That App asks
+only for read access to email addresses, has no webhook or repository
+permissions, and registers the normal and Account API Logto callbacks. Its
+client secret is sealed as write-only deployment state. If a GitHub connector
+already exists, setup adopts it and does not create another App.
 
-- the AgentConnect single-page application;
-- sign-in and sign-out redirect URIs;
+The broader Phase 2 reconciler will additionally manage:
+
 - the API resource whose indicator becomes both `LOGTO_API_RESOURCE` and
   `OIDC_AUDIENCE`;
 - the runtime Management API M2M application and its role assignment;
 - Account API enablement and Social identities `Edit` permission when profile
   linking is enabled;
-- selected social connector existence and non-secret configuration;
-- the sign-in experience so it exposes exactly the selected connectors; and
+- provider-specific connector configuration beyond the shipped GitHub path;
 - optional email connector and required templates for profile-linking flows.
 
 It writes the browser, Control Plane, and Management API settings to the typed
@@ -584,14 +596,19 @@ The operational GitHub and Slack Apps are not implicitly reused as Logto
 social-connector applications. An operator may explicitly reference the same
 client credentials, but setup does not silently merge those trust boundaries.
 
-`check` validates at least:
+The shipped `check logto` validates:
+
+- SPA type, redirect URIs, and post-logout URIs;
+- Management API token acquisition and effective role permissions;
+- `SOCIAL_PROVIDERS`, connector targets, and sign-in experience parity;
+- connector existence; and
+- the exact non-default global User role `ADMIN`.
+
+Phase 2 extends those checks with:
 
 - OIDC discovery and exact issuer match;
-- SPA type, redirect URIs, and post-logout URIs;
 - exact API resource indicator / token audience parity;
-- Management API token acquisition and effective role permissions;
 - Account API social-identity policy;
-- `SOCIAL_PROVIDERS`, connector targets, and sign-in experience parity;
 - connector status and required non-secret configuration;
 - email connector and template readiness when required; and
 - regional Lark/Feishu permission-app and third-party-token prerequisites when
@@ -611,13 +628,16 @@ The current self-hosted flow is therefore:
 
 1. start Logto and its database using the operator's chosen deployment method;
 2. create a bootstrap Management API M2M credential in Logto;
-3. start temporary Tenant Admin and save the Logto/OIDC deployment settings;
-4. sign in locally, claim `ADMIN`, and run `check logto`;
-5. stop Tenant Admin and restart Control Plane, Relay, and Web; and
-6. run `check deployment` before admitting users.
+3. start temporary Tenant Admin and save the Logto browser/Management desired
+   state;
+4. run `create logto`;
+5. sign in locally, claim `ADMIN`, and run `check logto`;
+6. stop Tenant Admin and restart Control Plane, Relay, and Web; and
+7. run `check deployment` before admitting users.
 
-The MVP does not own Logto tenant reconciliation, process lifecycle, database,
-SMTP service, TLS, backups, or upgrades.
+The MVP owns only the browser/login resources listed above. It does not own the
+Logto process lifecycle, database migration, SMTP service, TLS, backups,
+upgrades, or unrelated tenant policy.
 
 ## 8. Installed-integration diagnostics
 
@@ -819,14 +839,24 @@ The report is still written on exit 1 or 2 so CI can archive it.
   only through Compose's loopback `admin` profile; and
 - report restart-required state explicitly instead of implementing hot reload.
 
+### Phase 1.3: minimal Logto reconciliation
+
+- add idempotent `create logto` through Tenant Admin so write-only Management
+  and connector credentials never return to the CLI;
+- create or adopt the SPA and reconcile redirects, CORS, social connector
+  targets, sign-in methods, and `ADMIN` without deleting unrelated resources;
+- create a separate login-only GitHub App through the browser manifest flow
+  only when a fresh GitHub connector needs credentials; and
+- extend `check logto` to report drift across the same shipped resource set.
+
 ### Phase 2: deployment providers
 
 - add `plan` and `apply`, secret sources/sinks, redaction, and provider
   dependency ordering with the first real provider implementation;
 - extend GitHub App handling with adopt/update/check;
 - extend Slack App handling with adopt/update/check; and
-- implement Logto plan/apply/check against the DB-backed deployment document and the
-  explicit Management API bootstrap handoff.
+- extend Logto reconciliation to API resources, Account API policy, arbitrary
+  connectors, email/templates, and redacted plan output.
 
 ### Phase 3: effective integration audit
 
@@ -862,10 +892,12 @@ future phases named in section 11.
 4. `check deployment` fails when the database-backed Control Plane readiness,
    Relay readiness, configured auth mode, OIDC issuer, or JWKS is wrong, and it
    never mutates the deployment.
-5. A networked OSS operator can create deployment GitHub and Slack Apps, verify
-   an existing Logto Management API credential, and bootstrap `ADMIN` without
-   printing generated secrets. The same check/claim path works against Logto
-   Cloud and a reachable self-hosted Logto endpoint.
+5. An OSS operator can create deployment GitHub and Slack Apps, verify an
+   existing Logto Management API credential, reconcile the Logto SPA/login
+   resources, and bootstrap `ADMIN` without printing generated secrets. The
+   same Logto path works against Logto Cloud and a reachable self-hosted Logto
+   endpoint; the localhost profile can create its login-only GitHub App without
+   public DNS or TLS.
 6. The only published setup artifact provides both the CLI and `serve`; Compose
    runs that same self-contained dist from the Control Plane image, behind an
    explicit profile bound to `127.0.0.1:8091`.

@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildInstallManifest } from '../../control-plane/src/http/slack-manifest.js'
 import { createSetupConfig } from '../src/config.js'
-import { buildGithubAppManifest, convertGithubManifest, startGithubManifestFlow } from '../src/github-app.js'
+import {
+  buildGithubAppManifest,
+  buildGithubLoginAppManifest,
+  convertGithubManifest,
+  startGithubManifestFlow
+} from '../src/github-app.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -124,5 +129,32 @@ describe('GitHub App bootstrap', () => {
       'https://api.github.com/app-manifests/one-time%2Fcode/conversions',
       expect.objectContaining({ method: 'POST' })
     )
+  })
+
+  it('builds a login-only App with Logto callbacks and only email read access', () => {
+    expect(
+      buildGithubLoginAppManifest(
+        {
+          webUrl: 'http://localhost:3000',
+          logtoEndpoint: 'http://login.agentconnect.localhost:3001',
+          connectorId: 'agentconnect-github'
+        },
+        'AgentConnect Login',
+        'http://127.0.0.1:1234/callback'
+      )
+    ).toEqual({
+      name: 'AgentConnect Login',
+      description: 'Sign in to AgentConnect with GitHub.',
+      url: 'http://localhost:3000',
+      redirect_url: 'http://127.0.0.1:1234/callback',
+      callback_urls: [
+        'http://login.agentconnect.localhost:3001/callback/agentconnect-github',
+        'http://login.agentconnect.localhost:3001/account/callback/social/agentconnect-github'
+      ],
+      public: true,
+      request_oauth_on_install: false,
+      default_permissions: { emails: 'read' },
+      default_events: []
+    })
   })
 })

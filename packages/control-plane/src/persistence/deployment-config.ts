@@ -78,6 +78,19 @@ const AuthSchema = z.discriminatedUnion('mode', [
   })
 ])
 
+const LogtoBrowserSchema = z.strictObject({
+  endpoint: SecureOriginUrlSchema,
+  applicationName: z.string().trim().min(1).default('AgentConnect'),
+  apiResource: NullableUrlSchema.default(null),
+  socialProviders: z.array(z.string().trim().min(1)).min(1)
+})
+
+const LogtoGithubConnectorSchema = z.strictObject({
+  appId: z.number().int().positive(),
+  slug: z.string().trim().min(1),
+  clientId: z.string().trim().min(1)
+})
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
@@ -100,7 +113,11 @@ export const DeploymentConfigValuesV1Schema = z
       .strictObject({
         managementEndpoint: SecureOriginUrlSchema,
         managementAppId: z.string().trim().min(1),
-        managementResource: HttpUrlSchema
+        managementResource: HttpUrlSchema,
+        /** Desired browser app state; `create logto` projects it into `auth`. */
+        browser: LogtoBrowserSchema.nullable().default(null),
+        /** Login-only GitHub App identity. Its client secret stays write-only. */
+        githubConnector: LogtoGithubConnectorSchema.nullable().default(null)
       })
       .nullable(),
     features: z.strictObject({
@@ -186,7 +203,8 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'github.clientSecret',
   'slack.clientSecret',
   'slack.signingSecret',
-  'logto.managementAppSecret'
+  'logto.managementAppSecret',
+  'logto.githubConnectorClientSecret'
 ] as const
 
 export const DeploymentSecretKeySchema = z.enum(DEPLOYMENT_SECRET_KEYS)
@@ -339,12 +357,17 @@ export function deploymentSecretsRequiringRefresh(
     next.logto &&
     (previous?.logto?.managementEndpoint !== next.logto.managementEndpoint ||
       previous?.logto?.managementAppId !== next.logto.managementAppId)
+  const logtoGithubConnectorChanged =
+    next.logto?.githubConnector &&
+    (previous?.logto?.githubConnector?.appId !== next.logto.githubConnector.appId ||
+      previous?.logto?.githubConnector?.clientId !== next.logto.githubConnector.clientId)
 
   return [
     ...(githubAppChanged ? (['github.privateKeyB64', 'github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
-    ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : [])
+    ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
+    ...(logtoGithubConnectorChanged ? (['logto.githubConnectorClientSecret'] as const) : [])
   ]
 }
 
@@ -352,7 +375,8 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
   return [
     ...(values.github ? (['github.privateKeyB64', 'github.webhookSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
-    ...(values.logto ? (['logto.managementAppSecret'] as const) : [])
+    ...(values.logto ? (['logto.managementAppSecret'] as const) : []),
+    ...(values.logto?.githubConnector ? (['logto.githubConnectorClientSecret'] as const) : [])
   ]
 }
 

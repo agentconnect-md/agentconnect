@@ -6,6 +6,7 @@ import {
   DEPLOYMENT_SECRET_KEYS,
   DeploymentConfigPutSchema,
   githubDeploymentPut,
+  logtoGithubConnectorPut,
   readDeploymentConfigPut,
   slackDeploymentPut,
   TenantAdminClient,
@@ -109,6 +110,24 @@ describe('tenant-admin deployment config client', () => {
     })
     await expect(client.get()).rejects.not.toThrow(secretDiagnostic)
     expect(() => new TenantAdminClient('http://admin.example.test', { idToken: 'token' })).toThrow(/HTTPS/)
+  })
+
+  it('preserves only the stable error code needed for login App bootstrap', async () => {
+    const client = new TenantAdminClient(undefined, {
+      fetch: async () =>
+        json(
+          {
+            code: 'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED',
+            message: 'provider detail that must not be surfaced'
+          },
+          409
+        )
+    })
+
+    await expect(client.reconcileLogto()).rejects.toMatchObject({
+      status: 409,
+      code: 'GITHUB_CONNECTOR_CREDENTIALS_REQUIRED'
+    })
   })
 
   it('allows no-token bootstrap and explains the token requirement after a 401', async () => {
@@ -260,6 +279,42 @@ describe('provider desired-state merges', () => {
       'github.webhookSecret': 'webhook-secret',
       'github.clientSecret': 'client-secret'
     })
+  })
+
+  it('stores the login GitHub App identity separately from its write-only client secret', () => {
+    const current = admin({
+      configured: true,
+      revision: 2,
+      values: {
+        ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+        logto: {
+          managementEndpoint: 'http://login.agentconnect.localhost:3001',
+          managementAppId: 'management-app',
+          managementResource: 'https://default.logto.app/api',
+          browser: {
+            endpoint: 'http://login.agentconnect.localhost:3001',
+            applicationName: 'AgentConnect',
+            apiResource: null,
+            socialProviders: ['github']
+          },
+          githubConnector: null
+        }
+      }
+    })
+
+    const put = logtoGithubConnectorPut(current, {
+      appId: '123',
+      slug: 'agentconnect-login',
+      clientId: 'login-client',
+      clientSecret: 'login-secret'
+    })
+
+    expect(put.values.logto?.githubConnector).toEqual({
+      appId: 123,
+      slug: 'agentconnect-login',
+      clientId: 'login-client'
+    })
+    expect(put.secrets).toEqual({ 'logto.githubConnectorClientSecret': 'login-secret' })
   })
 
   it('merges Slack metadata and credentials without replacing GitHub state', () => {

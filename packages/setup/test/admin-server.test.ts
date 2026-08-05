@@ -29,7 +29,9 @@ const oidcValues: DeploymentConfigValuesV1 = {
   logto: {
     managementEndpoint: 'https://login.example.test',
     managementAppId: 'management-app-id',
-    managementResource: 'https://login.example.test/api'
+    managementResource: 'https://login.example.test/api',
+    browser: null,
+    githubConnector: null
   }
 }
 
@@ -163,6 +165,91 @@ describe('tenant-admin server boundary', () => {
     expect(staleShape.statusCode).toBe(400)
     expect(saved.statusCode).toBe(200)
     expect(saved.json().revision).toBe(2)
+  })
+
+  it('reconciles Logto through write-only runtime secrets and projects the created SPA into auth', async () => {
+    const values: DeploymentConfigValuesV1 = {
+      ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
+      auth: { mode: 'none' },
+      logto: {
+        managementEndpoint: 'http://login.agentconnect.localhost:3001',
+        managementAppId: 'management-app',
+        managementResource: 'https://default.logto.app/api',
+        browser: {
+          endpoint: 'http://login.agentconnect.localhost:3001',
+          applicationName: 'AgentConnect',
+          apiResource: null,
+          socialProviders: ['github']
+        },
+        githubConnector: {
+          appId: 123,
+          slug: 'agentconnect-login',
+          clientId: 'github-client'
+        }
+      }
+    }
+    const runtime: DeploymentConfigRuntime = {
+      schemaVersion: 1,
+      revision: 1,
+      values,
+      secrets: {
+        'logto.managementAppSecret': 'management-secret',
+        'logto.githubConnectorClientSecret': 'github-secret'
+      },
+      updatedAt
+    }
+    const deploymentStore = store(admin(values), runtime)
+    let desired: unknown
+    const app = buildTenantAdminServer({
+      store: deploymentStore,
+      publicUrl: 'http://localhost:8091',
+      makeLogtoSetupClient: () => ({
+        reconcileSetup: async (input) => {
+          desired = input
+          return {
+            changed: true,
+            application: { id: 'browser-app', created: true, changed: true },
+            connectors: [{ target: 'github', id: 'agentconnect-github', created: true }],
+            signInExperienceChanged: true,
+            adminRoleCreated: true
+          }
+        }
+      })
+    })
+    const result = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reconcile/logto',
+      headers: { host: 'localhost:8091' }
+    })
+    await app.close()
+
+    expect(result.statusCode).toBe(200)
+    expect(result.json()).toMatchObject({
+      operation: 'create.logto',
+      changed: true,
+      revision: 2,
+      application: { id: 'browser-app', created: true },
+      connectors: [{ target: 'github', id: 'agentconnect-github', created: true }]
+    })
+    expect(desired).toMatchObject({
+      redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
+      postLogoutRedirectUris: ['http://localhost:3000/login'],
+      corsAllowedOrigins: ['http://localhost:3000', 'http://localhost:8091'],
+      github: { clientId: 'github-client', clientSecret: 'github-secret' }
+    })
+    expect((await deploymentStore.getAdmin())?.values.auth).toEqual({
+      mode: 'oidc',
+      issuer: 'http://login.agentconnect.localhost:3001/oidc',
+      audience: 'browser-app',
+      browserClient: {
+        endpoint: 'http://login.agentconnect.localhost:3001',
+        appId: 'browser-app',
+        apiResource: null
+      },
+      socialProviders: ['github']
+    })
+    expect(result.body).not.toContain('management-secret')
+    expect(result.body).not.toContain('github-secret')
   })
 
   it('lets any verified local operator claim the shared ADMIN role', async () => {
@@ -301,7 +388,12 @@ describe('tenant-admin server boundary', () => {
       verifyOidcToken: async () => ({ sub: 'admin', roles: ['ADMIN'] }),
       makeLogtoCheckClient: () => ({
         verifyClientCredentials: async () => undefined,
-        inspectAdminRole: async () => ({ exists: true, type: 'User', isDefault: false })
+        inspectAdminRole: async () => ({ exists: true, type: 'User', isDefault: false }),
+        inspectSetup: async () => ({
+          application: { id: 'browser-app-id', exists: true, matches: true },
+          connectors: [{ target: 'github', id: 'github-connector', exists: true }],
+          signInExperienceMatches: true
+        })
       })
     })
     const result = await app.inject({
@@ -323,9 +415,24 @@ describe('tenant-admin server boundary', () => {
           message: 'Logto accepted the Management API client_credentials grant with scope all.'
         },
         { id: 'logto.roles_read', status: 'pass', message: 'The Management API application can read Logto roles.' },
-        { id: 'logto.admin_role', status: 'pass', message: 'The exact non-default global User role ADMIN exists.' }
+        { id: 'logto.admin_role', status: 'pass', message: 'The exact non-default global User role ADMIN exists.' },
+        {
+          id: 'logto.application',
+          status: 'pass',
+          message: 'Logto SPA browser-app-id has the expected redirects and CORS origins.'
+        },
+        {
+          id: 'logto.connectors',
+          status: 'pass',
+          message: 'All configured Logto social connectors exist.'
+        },
+        {
+          id: 'logto.sign_in_experience',
+          status: 'pass',
+          message: 'Logto sign-in methods match the deployment configuration.'
+        }
       ],
-      summary: { pass: 4, fail: 0, unknown: 0 }
+      summary: { pass: 7, fail: 0, unknown: 0 }
     })
     expect(result.body).not.toContain('management-secret')
   })
@@ -349,7 +456,10 @@ describe('tenant-admin server boundary', () => {
         verifyClientCredentials: async () => {
           throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'upstream failure', statusCode)
         },
-        inspectAdminRole: async () => ({ exists: false, type: null, isDefault: null })
+        inspectAdminRole: async () => ({ exists: false, type: null, isDefault: null }),
+        inspectSetup: async () => {
+          throw new Error('not used')
+        }
       })
     })
     const result = await app.inject({

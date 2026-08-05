@@ -100,7 +100,9 @@ describe('applyDeploymentEnvironment', () => {
             logto: {
               managementEndpoint: 'https://login.example.test',
               managementAppId: 'm2m-app',
-              managementResource: 'https://login.example.test/api'
+              managementResource: 'https://login.example.test/api',
+              browser: null,
+              githubConnector: null
             },
             features: { presetAgentsEnabled: false, waitlistMode: true }
           },
