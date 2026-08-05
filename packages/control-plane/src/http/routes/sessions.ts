@@ -779,8 +779,9 @@ export function sessionRoutes(deps: HttpDeps) {
     )
 
     // Replay view: proxy a page of the session's chat history live from the
-    // owning daemon. CP stores list/detail metadata only, not transcript bodies.
-    // 503 if the agent is unplaced or its daemon is offline (the list still works).
+    // session-recorded daemon. CP stores list/detail metadata only, not transcript
+    // bodies. Agent placement may have changed since this session ran; content
+    // stays on its original daemon and does not follow that move.
     r.get(
       '/sessions/:id/messages',
       {
@@ -788,7 +789,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get session messages',
           description:
-            "Proxies a page of the session's chat history live from the owning daemon (resolved via the row's agentId); 503 if the agent is unplaced or its daemon is offline.",
+            "Proxies a page of the session's chat history live from the daemon recorded on the session; 503 if that daemon is unknown or offline.",
           operationId: 'getSessionMessages',
           params: IdParam,
           querystring: SessionHistoryQueryDto,
@@ -800,7 +801,7 @@ export function sessionRoutes(deps: HttpDeps) {
         if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
-        const { session, agent } = owned
+        const { session } = owned
         // Retention GC (#485): the daemon deleted this session's local content, so
         // there is provably nothing to proxy. Answer the empty page directly rather
         // than round-tripping to a daemon that would return the same thing — and
@@ -810,14 +811,14 @@ export function sessionRoutes(deps: HttpDeps) {
         if (session.contentPurgedAt) {
           return { sessionId: session.id, messages: [], nextCursor: null, liveCursor: null, liveMore: false }
         }
-        if (!agent.daemonId) {
+        if (!session.daemonId) {
           return reply
             .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'session has no recorded daemon' })
         }
 
         try {
-          const page = await deps.control.sessionHistory(agent.daemonId, {
+          const page = await deps.control.sessionHistory(session.daemonId, {
             agentId: session.agentId,
             sessionId: session.id,
             ...(req.query.cursor !== undefined ? { cursor: req.query.cursor } : {}),
@@ -847,10 +848,9 @@ export function sessionRoutes(deps: HttpDeps) {
       }
     )
 
-    // Full-body view: proxy one byte slice of a tool call's untruncated ToolBody
-    // JSON live from the owning daemon (resolved from SessionMeta, same as /messages).
-    // The console pages by offset until nextOffset is null. 503 if the agent is
-    // unplaced or its daemon is offline.
+    // Full-body view follows the same immutable session-content owner as history.
+    // The console pages by offset until nextOffset is null. 503 if the recorded
+    // daemon is unknown or offline.
     r.get(
       '/sessions/:id/tool-body',
       {
@@ -858,7 +858,7 @@ export function sessionRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Get a tool-call body',
           description:
-            "Proxies one byte slice of a tool call's untruncated ToolBody JSON live from the owning daemon; the console pages by offset until nextOffset is null. 503 if the agent is unplaced or its daemon is offline.",
+            "Proxies one byte slice of a tool call's untruncated ToolBody JSON live from the daemon recorded on the session; the console pages by offset until nextOffset is null. 503 if that daemon is unknown or offline.",
           operationId: 'getSessionToolBody',
           params: IdParam,
           querystring: SessionToolBodyQueryDto,
@@ -870,15 +870,15 @@ export function sessionRoutes(deps: HttpDeps) {
         if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
         }
-        const { session, agent } = owned
-        if (!agent.daemonId) {
+        const { session } = owned
+        if (!session.daemonId) {
           return reply
             .code(503)
-            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'session has no recorded daemon' })
         }
 
         try {
-          const chunk = await deps.control.sessionToolBody(agent.daemonId, {
+          const chunk = await deps.control.sessionToolBody(session.daemonId, {
             agentId: session.agentId,
             sessionId: session.id,
             toolCallId: req.query.toolCallId,

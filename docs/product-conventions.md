@@ -74,6 +74,16 @@ copies daemon-local workspace, memory, transcripts, or attachments. A source tha
 reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 
+Historical session content remains owned by the daemon that created the session.
+Session transcript and tool-detail reads use that recorded daemon, not the Agent's
+current placement, so moving an Agent does not make its old sessions appear empty.
+Those reads remain available while the recorded daemon is online. A webchat session
+cannot resume after its Agent moves because the ACP state did not move with it; the
+Console keeps the transcript readable but replaces the composer with a disabled
+explanation. In a multi-Agent webchat conversation, every participating Agent must
+still be on the daemon that owns its corresponding session or the shared composer is
+disabled.
+
 ## Where a streamed reply may be split
 
 A long reply may be delivered as more than one chat message, but a split must always fall
