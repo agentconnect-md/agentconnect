@@ -536,7 +536,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ['AGENTCONNECT_PUBLIC_CP_URL', services.controlPlane],
         ['AGENTCONNECT_PUBLIC_RELAY_URL', services.relay],
         ['AGENTCONNECT_PUBLIC_WEB_URL', services.web],
-        ['LOGTO_ENDPOINT', bootstrapInfo.logtoEndpoint]
+        ['LOGTO_ENDPOINT', bootstrapInfo.logtoEndpoint],
+        ['LOGTO_MANAGEMENT_ENDPOINT', bootstrapInfo.logtoManagementEndpoint]
       ];
       el('startup-environment').textContent = environment
         .filter(([, value]) => value)
@@ -551,7 +552,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       renderStartupEnvironment();
 
       const logto = values.logto;
-      text('logto-management-endpoint', logto && bootstrapInfo.logtoEndpoint);
+      text('logto-management-endpoint', logto && bootstrapInfo.logtoManagementEndpoint);
       text('logto-management-id', logto && logto.managementAppId);
       text('logto-management-resource', logto && logto.managementResource);
       secretText('logto-management-secret-display', byKey, 'logto.managementAppSecret', Boolean(logto));

@@ -72,11 +72,13 @@ export interface DeploymentEnvironment {
     relay: string
   }
   issuer: string
+  managementEndpoint: string
 }
 
 export function loadDeploymentEnvironment(environment: Environment = process.env): DeploymentEnvironment {
   const logtoEndpoint = environmentValue(environment, 'LOGTO_ENDPOINT')
   const logtoOrigin = logtoEndpoint ? new URL(OriginSchema.parse(logtoEndpoint)).origin : undefined
+  const defaultLogtoOrigin = 'http://login.agentconnect.localhost:3001'
   return {
     services: {
       web: OriginSchema.parse(
@@ -90,8 +92,13 @@ export function loadDeploymentEnvironment(environment: Environment = process.env
       )
     },
     issuer: IssuerSchema.parse(
-      environmentValue(environment, 'OIDC_ISSUER') ??
-        (logtoOrigin ? `${logtoOrigin}/oidc` : 'http://login.agentconnect.localhost:3001/oidc')
+      environmentValue(environment, 'OIDC_ISSUER') ?? `${logtoOrigin ?? defaultLogtoOrigin}/oidc`
+    ),
+    managementEndpoint: OriginSchema.parse(
+      environmentValue(environment, 'LOGTO_MANAGEMENT_ENDPOINT') ??
+        environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ??
+        logtoOrigin ??
+        defaultLogtoOrigin
     )
   }
 }

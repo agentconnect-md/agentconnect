@@ -149,6 +149,7 @@ export interface TenantAdminServerDeps {
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
   localAuthBootstrap?: {
     issuer: string
+    managementEndpoint?: string
     adminEndpoint?: string
     services: { web: string; controlPlane: string; relay: string }
   }
@@ -377,10 +378,12 @@ export function buildTenantAdminServer(
   const defaultEnvironment = loadDeploymentEnvironment({})
   const localAuthBootstrap = deps.localAuthBootstrap ?? {
     issuer: defaultEnvironment.issuer,
+    managementEndpoint: defaultEnvironment.managementEndpoint,
     adminEndpoint: 'http://admin.agentconnect.localhost:3002',
     services: defaultEnvironment.services
   }
   const logtoEndpoint = new URL(localAuthBootstrap.issuer).origin
+  const logtoManagementEndpoint = localAuthBootstrap.managementEndpoint ?? logtoEndpoint
   const logtoAdminEndpoint =
     localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://admin.agentconnect.localhost:3002'
   const githubFlows = new Map<
@@ -560,6 +563,7 @@ export function buildTenantAdminServer(
     return {
       services: localAuthBootstrap.services,
       logtoEndpoint,
+      logtoManagementEndpoint,
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
@@ -1101,7 +1105,7 @@ export function buildTenantAdminServer(
         'github.clientSecret'
       ] as const
       const initialRuntime = await deps.store.getRuntime(secretKeys)
-      const config = logtoConfig(initialRuntime, logtoEndpoint)
+      const config = logtoConfig(initialRuntime, logtoManagementEndpoint)
       if (!initialRuntime || !config) {
         return problem(reply, 409, 'save the Logto Management API configuration before creating Logto resources')
       }
@@ -1212,7 +1216,7 @@ export function buildTenantAdminServer(
       status: 'pass',
       message: 'Logto Management API configuration is complete.'
     })
-    const config = logtoConfig(runtime, logtoEndpoint)!
+    const config = logtoConfig(runtime, logtoManagementEndpoint)!
     const client = deps.makeLogtoCheckClient?.(config) ?? new LogtoAdminClaimClient(config)
     const setup = logtoSetup(runtime, deps.publicUrl, localAuthBootstrap.services, logtoEndpoint)
 
@@ -1379,13 +1383,13 @@ export function buildTenantAdminServer(
       const logto = runtime.values.logto
       const claimClient =
         deps.makeLogtoClaimClient?.({
-          endpoint: logtoEndpoint,
+          endpoint: logtoManagementEndpoint,
           appId: logto.managementAppId,
           appSecret: managementSecret,
           resource: logto.managementResource
         }) ??
         new LogtoAdminClaimClient({
-          endpoint: logtoEndpoint,
+          endpoint: logtoManagementEndpoint,
           appId: logto.managementAppId,
           appSecret: managementSecret,
           resource: logto.managementResource
@@ -1428,6 +1432,7 @@ export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Pr
       allowContainerLoopbackProxy: config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY,
       localAuthBootstrap: {
         issuer: deploymentEnvironment.issuer,
+        managementEndpoint: deploymentEnvironment.managementEndpoint,
         adminEndpoint: config.LOGTO_ADMIN_ENDPOINT,
         services: deploymentEnvironment.services
       }
