@@ -418,6 +418,13 @@ export function scriptedWerewolfHostFactory(): (
         }
         const day = days.get(sessionId)
         if (!day) return stayQuiet(sessionId)
+        // A latched circuit makes the daemon post its own loop-protection notice
+        // into the room, which echoes and wakes the peers — including a player
+        // who has already spoken and whose successor has not yet gone. Under the
+        // visible-transcript rule below that wake looks exactly like "my turn",
+        // so the notice would buy a second speech. It is not conversation; treat
+        // it as no activation at all.
+        if (/Loop protection stopped this conversation/.test(text)) return stayQuiet(sessionId)
         // Every visible speech is "[<platform sender>] <alias>: …". Only the
         // self-identifying prefix counts, so an alias named INSIDE a sentence
         // ("I suspect player-4") never registers as that player having spoken.

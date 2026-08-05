@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { countingManifest } from '../games/engine.js'
@@ -245,6 +246,44 @@ describe('real-subject preflight — an unlaunchable runtime fails loudly, not s
       if (previous === undefined) delete process.env.AGENTCONNECT_DAEMON_ENTRY
       else process.env.AGENTCONNECT_DAEMON_ENTRY = previous
     }
+  }, 60_000)
+
+  it('terminates the whole process tree, not just an npx-style wrapper', async () => {
+    // Measured hazard: `npx -y <adapter>` runs the REAL adapter as a GRANDCHILD of
+    // the npm wrapper. Killing only the direct child leaves that grandchild alive,
+    // reparented to pid 1, holding its inherited pipes open — every preflight then
+    // leaks another adapter. `AcpHost` spawns detached and signals the group for
+    // this exact reason; the probe must too. The grandchild here ignores stdin, so
+    // an adapter that happens to exit on EOF cannot mask the leak.
+    const marker = `ac-preflight-tree-${process.pid}-${Date.now()}`
+    const root = scratch()
+    const grandchild = join(root, `${marker}-grandchild.mjs`)
+    const wrapper = join(root, `${marker}-wrapper.mjs`)
+    writeFileSync(grandchild, 'setInterval(() => {}, 1000)\n')
+    writeFileSync(
+      wrapper,
+      `import { spawn } from 'node:child_process'\n` +
+        `spawn(process.execPath, [${JSON.stringify(grandchild)}], { stdio: 'inherit' })\n` +
+        `setInterval(() => {}, 1000)\n`
+    )
+    const subject = realSubjectWithRuntime(process.execPath, [wrapper])
+    const previous = process.env.AGENTCONNECT_DAEMON_ENTRY
+    process.env.AGENTCONNECT_DAEMON_ENTRY = daemonEntryStub()
+    try {
+      await expect(preflightRealSubject(subject.root, { probeMs: 1_500 })).resolves.toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.AGENTCONNECT_DAEMON_ENTRY
+      else process.env.AGENTCONNECT_DAEMON_ENTRY = previous
+    }
+    // Give the SIGTERM→SIGKILL escalation time to reach the whole group.
+    await new Promise((resolve) => setTimeout(resolve, 3_000))
+    const survivors = execFileSync('/bin/sh', [
+      '-c',
+      `ps -eo pid,args | grep ${marker}-grandchild | grep -v grep || true`
+    ])
+      .toString()
+      .trim()
+    expect(survivors, `preflight orphaned a grandchild:\n${survivors}`).toBe('')
   }, 60_000)
 
   it('refuses an MCP bridge entry that is not the daemon CLI — the silent no-tools failure', async () => {

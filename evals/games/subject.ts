@@ -300,7 +300,18 @@ async function probeRuntime(
   await new Promise<void>((resolve, reject) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], env })
+      child = spawn(command, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env,
+        // Own process group (POSIX) for exactly the reason `AcpHost` spawns its
+        // adapter detached: an npx-distributed runtime runs the REAL adapter as a
+        // grandchild of the npm wrapper, so killing the direct child orphans it —
+        // measured: the grandchild survives, reparented to pid 1, holding its
+        // inherited pipes and a credentialed process open. The group id (= child
+        // pid) lets the probe signal wrapper + adapter together. Some adapters
+        // happen to exit on stdin EOF and hide this; that is luck, not cleanup.
+        detached: process.platform !== 'win32'
+      })
     } catch (error) {
       reject(
         new Error(
@@ -309,13 +320,45 @@ async function probeRuntime(
       )
       return
     }
+    // Signal the child's whole group when it has one; fall back to the direct
+    // child on win32, or once the group is gone (ESRCH).
+    const killTree = (signal: NodeJS.Signals) => {
+      if (child.pid !== undefined && process.platform !== 'win32') {
+        try {
+          process.kill(-child.pid, signal)
+          return
+        } catch {
+          /* group already gone — fall through to the direct child */
+        }
+      }
+      try {
+        child.kill(signal)
+      } catch {
+        /* already reaped */
+      }
+    }
+    // Sweep group survivors the moment the leader exits, while its pgid provably
+    // cannot have been recycled (a pgid stays reserved while any member lives).
+    child.once('exit', () => {
+      if (child.pid !== undefined && process.platform !== 'win32') {
+        try {
+          process.kill(-child.pid, 'SIGKILL')
+        } catch {
+          /* group already empty */
+        }
+      }
+    })
     let stderr = ''
     let settled = false
     const finish = (error?: Error) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      child.kill('SIGKILL')
+      // Graceful first, then escalate — a wrapper that traps SIGTERM must not be
+      // able to keep the probe's adapter alive past the run.
+      killTree('SIGTERM')
+      const escalation = setTimeout(() => killTree('SIGKILL'), 2_000)
+      escalation.unref?.()
       if (error) reject(error)
       else resolve()
     }
