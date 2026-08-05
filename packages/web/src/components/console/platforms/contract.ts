@@ -362,15 +362,15 @@ export interface WebWizardFacet {
 }
 
 /**
- * Copy the Settings → Bots card writes into chrome the HOST owns — the two
- * sentences on a bot row that describe a PROVIDER's model rather than
- * AgentConnect's. Deliberately NOT {@link WebBotSettingsFragments.botCard}
- * components: the host renders the `revoked` badge and the Sharable cell and
- * owns the conditions under which each appears, so what a module supplies here
- * is the wording, not the element.
+ * Copy the Settings → Bots card writes into chrome the HOST owns — the words on
+ * a bot row that describe a PROVIDER's model rather than AgentConnect's.
+ * Deliberately NOT {@link WebBotSettingsFragments.botCard} components: the host
+ * renders the `revoked` badge, the Sharable cell and the card's own headings,
+ * and owns the conditions under which each appears, so what a module supplies
+ * here is the wording, not the element.
  *
- * Both members are optional and both host defaults are provider-free, because
- * both strings shipped as Slack's model rendered for EVERY platform: the badge
+ * Every member is optional and every host default is provider-free, because
+ * these strings shipped as Slack's model rendered for EVERY platform: the badge
  * tooltip named a "Slack workspace" over a Telegram bot, and the toggle told a
  * Discord bot to switch to a transport Discord does not have.
  */
@@ -401,6 +401,18 @@ export interface WebBotCardCopy {
    * — and two different sentences would promise that switching transport helps.
    */
   shareHint?: { available: string; unavailable: string }
+  /**
+   * What this platform calls the identity a bot row IS: Slack installs an
+   * "app", every other platform registers a "bot". The host writes it into its
+   * own card chrome — the first column's heading, the delete button's tooltip
+   * and the empty-state sentence (SettingsView) — which is why it is copy here
+   * and not a fragment.
+   *
+   * Lower-case singular: the heading uppercases through `.row.h`, and the
+   * sentences read "Delete app" / "No apps yet". Absent ⇒ `'bot'`, the noun
+   * four of the console's five bot tabs already used.
+   */
+  identityNoun?: string
 }
 
 /**

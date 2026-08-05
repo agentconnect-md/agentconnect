@@ -63,7 +63,8 @@ export const DEFAULT_BOT_CARD_COPY: Required<WebBotCardCopy> = {
   shareHint: {
     available: 'Sharing one bot across several agents isn’t available on this platform',
     unavailable: 'Sharing one bot across several agents isn’t available on this platform'
-  }
+  },
+  identityNoun: 'bot'
 }
 
 /**
@@ -77,7 +78,8 @@ export function botCardCopy(platformId?: string): Required<WebBotCardCopy> {
   const copy = platformId ? platformRegistry.get(platformId)?.settingsFragments?.copy : undefined
   return {
     revokedHint: copy?.revokedHint ?? DEFAULT_BOT_CARD_COPY.revokedHint,
-    shareHint: copy?.shareHint ?? DEFAULT_BOT_CARD_COPY.shareHint
+    shareHint: copy?.shareHint ?? DEFAULT_BOT_CARD_COPY.shareHint,
+    identityNoun: copy?.identityNoun ?? DEFAULT_BOT_CARD_COPY.identityNoun
   }
 }
 

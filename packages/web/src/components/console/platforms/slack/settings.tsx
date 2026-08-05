@@ -341,11 +341,17 @@ export const slackSettingsFragments: WebBotSettingsFragments = {
   // and the only one where sharing is real and gated on transport — the
   // socket↔http axis is immutable post-create, so "switch to HTTP" means
   // recreating the app, which is exactly what the CP's 409 says.
+  //
+  // `identityNoun` is Slack's for the same reason its wizard says "manifest":
+  // what you install in a Slack workspace is an APP. It was the `noun: 'app'`
+  // column of the host's hand-written tab table until the table became a
+  // registry projection (audit §10.6 F14).
   copy: {
     revokedHint: 'The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect',
     shareHint: {
       available: 'Allow several agents to share this bot across channels',
       unavailable: 'HTTP transport required to share'
-    }
+    },
+    identityNoun: 'app'
   }
 }

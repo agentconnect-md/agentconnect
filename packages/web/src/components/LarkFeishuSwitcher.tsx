@@ -5,6 +5,18 @@ const BRAND_LABEL: Record<LarkFeishuTarget, 'Lark' | 'Feishu'> = {
   feishu: 'Feishu'
 }
 
+/**
+ * One cloud's brand word. This is the REGION axis's vocabulary, not the
+ * platform's: `lib/platform-labels.ts` answers for the platform id `feishu`
+ * with the international brand ("Lark") on purpose, so a surface that renders
+ * one row PER CLOUD cannot get its words from there. It gets them from here —
+ * beside the switcher that is the region axis's host chrome — rather than
+ * re-spelling them (Settings → Bots' platform tabs, audit §10.6 F14).
+ */
+export function larkFeishuBrand(target: LarkFeishuTarget): string {
+  return BRAND_LABEL[target]
+}
+
 export default function LarkFeishuSwitcher({
   value,
   onSwitch,

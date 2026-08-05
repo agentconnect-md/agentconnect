@@ -2941,8 +2941,28 @@
   }
 }
 
-/* Config-token hover popover (design: .cfgtok / .cfgtok-pop) — sits above the
-   "Open Slack app config tokens" button with a downward caret. */
+/* ─── OWNED BY THE SLACK PLATFORM MODULE ──────────────────────────────────────
+   `.cfgtok`, `.cfgtok-pop`, the `cfgScroll` / `cfgClickA` / `cfgClickB`
+   keyframes and their `.cfg-scroll` / `.cfg-click-a` / `.cfg-click-b` classes
+   further down have exactly ONE consumer between them:
+   `components/console/platforms/slack/{Body,previews}.tsx`. Nothing else in the
+   console references them, so they belong to that module — change them with it,
+   delete them with it.
+
+   They sit in the HOST stylesheet anyway, and that is deliberate rather than
+   leftover: the console has one stylesheet by design (D1 keeps modules inside
+   the web tree precisely so Tailwind v4's automatic content detection covers
+   them without per-directory `@source` bookkeeping), and a module-local
+   stylesheet would reintroduce exactly that bookkeeping for five rules. The
+   audit records this as a documentation gap, not a relocation
+   (integration-plugin-audit.md §10.6 F18) — this note IS the fix.
+
+   NOT in this set: `.step-blink` / `.step-pulse` below. Four modules share that
+   pair, so it is host-owned like the rest of this file.
+
+   Config-token hover popover (design: .cfgtok / .cfgtok-pop) — sits above the
+   "Open Slack app config tokens" button with a downward caret.
+   ─────────────────────────────────────────────────────────────────────────── */
 .cfgtok {
   position: relative;
 }
@@ -3062,7 +3082,11 @@
 /* Plain animation classes — reference the keyframes above from WITHIN this file so the
    CSS optimizer keeps them. Tailwind arbitrary `animate-[name_…]` utilities live in a
    separate output the optimizer can't see as a reference, so it would otherwise prune
-   these @keyframes and the animations would silently not play. */
+   these @keyframes and the animations would silently not play.
+
+   The three `.cfg-*` classes are the Slack module's (see the ownership note on
+   `.cfgtok` above); `.step-blink` / `.step-pulse` are shared by four modules and
+   stay host-owned. */
 .cfg-scroll {
   animation: cfgScroll 4.6s ease-in-out infinite;
 }

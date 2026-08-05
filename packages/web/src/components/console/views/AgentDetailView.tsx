@@ -61,7 +61,8 @@ import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
 import { AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
-import { PLATFORMS, type Platform } from '@/components/console/modals/AddIntegrationModal'
+import type { Platform } from '@/components/console/modals/AddIntegrationModal'
+import { INTEGRATION_BLURB, PLATFORMS } from '@/components/console/platforms/host-projections'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -99,18 +100,11 @@ import {
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
 
-// One-liners for the empty-integrations tiles. The tile SET is derived from the
-// owning daemon's advertised adapters (below) — never hard-coded — so a tile
-// can't promise a platform the Add-integration modal would swap out from under
-// the click. webhook/github are relay/CP-backed triggers: always offered.
-const INTEGRATION_BLURB: Record<Platform, string> = {
-  slack: 'Reply in channels & DMs',
-  telegram: 'Reply in groups & chats',
-  discord: 'Reply in servers',
-  feishu: 'Reply in groups & chats',
-  github: 'React to issues & PRs',
-  webhook: 'Trigger by posting a URL'
-}
+// The tile SET is derived from the owning daemon's advertised adapters (below)
+// — never hard-coded — so a tile can't promise a platform the Add-integration
+// modal would swap out from under the click. webhook/github are relay/CP-backed
+// triggers: always offered. Their one-liners (`INTEGRATION_BLURB`) are a host
+// projection over the same axis, drift-tested beside the picker's tiles.
 const HOOK_RUN_REFRESH_MS = 10_000
 
 function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 'platform' | 'region'> }) {
