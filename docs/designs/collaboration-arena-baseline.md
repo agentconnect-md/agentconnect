@@ -448,12 +448,13 @@ reason is timing rather than design.
 they hold **two** circuits — the public room and the den are different channels,
 so different loop-guard scopes.
 
-**Real local Claude Code, 7 players — both trials complete.**
+**Real local Claude Code, 7 players — all three trials complete.**
 
 | Trial | Seed | Winner         | Rounds | Admitted | **Gated** | Latches | Unparseable | Leaks |
 | ----- | ---- | -------------- | ------ | -------- | --------- | ------- | ----------- | ----- |
 | 1     | 201  | **werewolves** | 2      | 91       | **0**     | **0**   | **0**       | 0     |
 | 2     | 211  | **werewolves** | 2      | 95       | **0**     | **0**   | **0**       | 0     |
+| 3     | 212  | **werewolves** | 3      | 117      | **0**     | **0**   | **0**       | 0     |
 
 The difference from scripted is the **60-second window**, and the per-round wall
 clock shows it directly:
@@ -464,8 +465,11 @@ clock shows it directly:
 | 1     | 2     | t = 105–135 s   | 3–5                 | 0     |
 | 2     | 1     | t = 0–128 s     | 6–**14**            | 0     |
 | 2     | 2     | t = 143–176 s   | 1–5                 | 0     |
+| 3     | 1     | t = 0–115 s     | 8–11                | 0     |
+| 3     | 2     | t = 139–223 s   | 5–9                 | 0     |
+| 3     | 3     | t = 251–266 s   | 2                   | 0     |
 
-Round 1 spans 90 s in trial 1 and **128 s** in trial 2 — longer than the window,
+Round 1 spans 90 s, **128 s** and 115 s across the three trials — longer than the window,
 so it rolls over _inside_ the round. That is why players absorbed **11** and
 **14** admitted automatic turns without ever being gated, against a nominal
 budget of 8. Each round 2 then starts on a fresh window. A scripted game does the
