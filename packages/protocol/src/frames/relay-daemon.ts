@@ -460,7 +460,7 @@ export type RdAgentMsgDeliveryKind = z.infer<typeof RdAgentMsgDeliveryKind>
  * forwards a TRUSTED claim (`RdAgentMsgFwd.trustedFromAgentId`) to the owning daemon.
  *
  * `deliveryId` is stable end-to-end (dedup at each hop, §6.3/§6.7). `hopCount` is
- * the depth of the SOURCE turn; the relay/target reject `hopCount+1 > cap` (§2.4).
+ * the depth of the SOURCE turn; the relay/target reject `hopCount + 1 >= cap` (§2.4).
  */
 export const RdAgentMsg = z.object({
   claimedFromAgentId: z.string().uuid(), // UNTRUSTED self-claim — relay validates against the socket daemonId

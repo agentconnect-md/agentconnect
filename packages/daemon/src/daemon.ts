@@ -7716,7 +7716,7 @@ export class Daemon {
       return ack
     }
 
-    // Hop cap (§2.4): the relay already incremented; reject over the cap.
+    // Hop cap (§2.4): the relay already incremented; reject at or above the cap.
     if (hasReachedAgentCallHopLimit(msg.hopCount)) return record(nak('hop_limit'))
 
     const { platform, channel, thread } = msg.coords
