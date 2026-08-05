@@ -915,7 +915,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
     expect(forwards[0].integrationId).toBe('00000000-0000-0000-0000-0000000000f2')
   })
 
-  it('hop cap: inbound hopCount at the cap → NAK hop_limit', async () => {
+  it('hop cap: a next delivery at the cap → NAK hop_limit', async () => {
     const router = new CollaborationRouter()
     router.replace(snap())
     const forwards: RdAgentMsgFwd[] = []
@@ -924,7 +924,7 @@ describe('relay rd/agentmsg routing + auth (agent-collaboration P2)', () => {
       daemons: () => fakeDaemons({ deliveryId: 'd-1', delivered: true }, forwards),
       log: noopLog
     })
-    const ack = await route(D1, baseMsg({ hopCount: MAX_AGENT_CALL_HOPS, deliveryId: 'd-hop' }))
+    const ack = await route(D1, baseMsg({ hopCount: MAX_AGENT_CALL_HOPS - 1, deliveryId: 'd-hop' }))
     expect(ack.delivered).toBe(false)
     expect(ack.reason).toBe('hop_limit')
     expect(forwards).toHaveLength(0)

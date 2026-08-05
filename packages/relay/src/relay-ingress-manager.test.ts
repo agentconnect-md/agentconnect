@@ -999,15 +999,17 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       expect(second).not.toHaveBeenCalled()
     })
 
-    it('admits the last source depth under the cap and rejects the cap because its next hop overflows', async () => {
+    it('admits a delivery below the cap and rejects one that reaches the cap', async () => {
       // §10 case 15 — the boundary the whole hop transition exists to hold. Derived from
       // MAX_AGENT_CALL_HOPS so retuning the budget cannot leave this transport behind.
       const admitted = managerWith()
-      await admitted.internals.forward(BOT_ID, agentFinal({ hopCount: MAX_AGENT_CALL_HOPS - 1 }))
-      expect(admitted.sendMsg.mock.calls[0]![0]).toMatchObject({ trustedDeliveryHopCount: MAX_AGENT_CALL_HOPS })
+      await admitted.internals.forward(BOT_ID, agentFinal({ hopCount: MAX_AGENT_CALL_HOPS - 2 }))
+      expect(admitted.sendMsg.mock.calls[0]![0]).toMatchObject({
+        trustedDeliveryHopCount: MAX_AGENT_CALL_HOPS - 1
+      })
 
       const rejected = managerWith()
-      await rejected.internals.forward(BOT_ID, agentFinal({ hopCount: MAX_AGENT_CALL_HOPS }))
+      await rejected.internals.forward(BOT_ID, agentFinal({ hopCount: MAX_AGENT_CALL_HOPS - 1 }))
       expect(rejected.sendMsg).not.toHaveBeenCalled()
     })
 

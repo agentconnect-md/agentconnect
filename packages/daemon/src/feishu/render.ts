@@ -203,7 +203,8 @@ function attributionFooter(info: ReplyAttributionInfo): string {
     agent: botUrl ? `[${botName}](${botUrl})` : botName,
     runtime: escapeFooterText(info.runtime),
     model: escapeFooterText(info.model),
-    renderSession: sessionUrl ? (label) => `[${escapeFooterText(label)}](${sessionUrl})` : undefined
+    renderSession: sessionUrl ? (label) => `[${escapeFooterText(label)}](${sessionUrl})` : undefined,
+    notice: info.notice ? escapeFooterText(info.notice) : undefined
   })
 }
 

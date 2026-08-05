@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
 import { stableTurnId } from '../src/messages/normalized.js'
@@ -353,6 +354,42 @@ describe('Daemon transcript records the agent reply', () => {
     // Only the reply, never the footer chrome, is in the transcript.
     const botRows = transcript(daemon).filter((r) => r.sender === 'bot-a')
     expect(botRows.map((r) => r.text)).toEqual(['the answer'])
+    await daemon.stop()
+  }, 15_000)
+
+  it('marks the last admitted agent turn in the attached Slack footer', async () => {
+    const { factory } = replyingHost('the final autonomous answer')
+    const daemon = new Daemon({ root: scaffold('medium'), hostFactory: factory })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', agentMsg('100', 'continue'), 'int-a', undefined, {
+      callFrom: 'caller-agent',
+      hopCount: MAX_AGENT_CALL_HOPS - 1,
+      deliveryId: 'last-hop'
+    })
+
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'the final autonomous answer', 'T1', {
+      username: 'bot-a',
+      agentAuthorId: 'bot-a',
+      response: streamingResponse(MAX_AGENT_CALL_HOPS - 1),
+      trailingBlocks: [
+        expect.objectContaining({
+          type: 'context',
+          elements: [
+            expect.objectContaining({
+              text: expect.stringContaining(
+                `Agent conversation stopped after reaching the ${MAX_AGENT_CALL_HOPS}-hop limit.`
+              )
+            })
+          ]
+        })
+      ]
+    })
+    const separateNotice = conn.postMessage.mock.calls.find(
+      (call) => call[1] === `Agent conversation stopped after reaching the ${MAX_AGENT_CALL_HOPS}-hop limit.`
+    )
+    expect(separateNotice).toBeUndefined()
     await daemon.stop()
   }, 15_000)
 

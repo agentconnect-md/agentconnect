@@ -29,6 +29,18 @@
  */
 export const MAX_AGENT_CALL_HOPS = 20
 
+/**
+ * Whether an agent-to-agent delivery has reached the exclusive hop boundary.
+ *
+ * A delivery at the boundary is not admitted: when the cap is 20, hop 19 is the
+ * last agent turn that may run and its reply closes the autonomous exchange.
+ * Keeping the comparison beside the shared constant prevents daemon and relay
+ * admission paths from drifting on the boundary semantics.
+ */
+export function hasReachedAgentCallHopLimit(deliveryHopCount: number): boolean {
+  return deliveryHopCount >= MAX_AGENT_CALL_HOPS
+}
+
 /** The daemon↔CP WebSocket subprotocol negotiated on `ClientTransport.dial`. */
 export const CP_SUBPROTOCOL = 'agentconnect.v1'
 

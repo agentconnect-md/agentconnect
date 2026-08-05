@@ -178,6 +178,13 @@ Every agent-to-agent delivery — internal call or platform mention, same daemon
 a relay — spends exactly one hop from the same shared budget, so a mention chain cannot
 outlive the limit an internal call chain gets.
 
+The hop limit is an exclusive delivery boundary: a candidate delivery whose depth is
+greater than or equal to the configured cap is not admitted. The preceding agent reply
+is therefore the last visible response in the autonomous exchange. When reply footers
+are enabled, that final response's footer says that the agent conversation stopped after
+reaching the hop limit; the warning follows the platform's existing footer placement and
+is never posted as a separate Slack message.
+
 ### What `sendMessage` is for
 
 `sendMessage` covers what the ordinary reply cannot do: a different conversation, a

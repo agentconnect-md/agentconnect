@@ -15,7 +15,11 @@
  * on an un-mentioned follow-up it has no cached affinity for, it PULLS the persisted
  * owner from the CP (`rc/thread-lookup`) rather than dropping the message.
  */
-import { MAX_AGENT_CALL_HOPS, RD_AGENT_IMPLICIT_ROUTING_V1 } from '@agentconnect.md/protocol'
+import {
+  hasReachedAgentCallHopLimit,
+  MAX_AGENT_CALL_HOPS,
+  RD_AGENT_IMPLICIT_ROUTING_V1
+} from '@agentconnect.md/protocol'
 import type {
   RdMsgIm,
   RcBotChannels,
@@ -655,8 +659,8 @@ export class RelayIngressManager {
     // would, ONCE, and forwards the result. The target terminal-verifies its range and
     // installs it WITHOUT incrementing again.
     const trustedDeliveryHopCount = claim.hopCount + 1
-    if (trustedDeliveryHopCount > MAX_AGENT_CALL_HOPS) {
-      return drop(`hop_limit: ${claim.hopCount} + 1 exceeds ${MAX_AGENT_CALL_HOPS}`)
+    if (hasReachedAgentCallHopLimit(trustedDeliveryHopCount)) {
+      return drop(`hop_limit: ${claim.hopCount} + 1 reaches ${MAX_AGENT_CALL_HOPS}`)
     }
     // The recipient set the author resolved is NOT consulted for delivery: a verified
     // agent message goes to whoever this bot's ordinary arbitration selects, the author

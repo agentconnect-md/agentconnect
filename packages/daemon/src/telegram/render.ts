@@ -434,7 +434,7 @@ export class TelegramConverger {
   }
 
   /** Turn end: flush remaining body; in medium/high append a done footer with the deep link. */
-  onFinal(link?: string): TelegramAction[] {
+  onFinal(link?: string, notice?: string): TelegramAction[] {
     // A bare response-control marker (or a non-compliant explanation ending in a bare marker
     // line) means this message wasn't for the agent:
     // suppress everything across all modes (body, reasoning, footer, and minimal mode's
@@ -454,7 +454,13 @@ export class TelegramConverger {
     }
     const reasoning = this.drainReasoning()
     const footer: TelegramAction[] = link
-      ? [{ kind: 'notice', text: `✅ done — <a href="${escapeHtml(link)}">details</a>`, parseMode: 'HTML' }]
+      ? [
+          {
+            kind: 'notice',
+            text: `✅ done — <a href="${escapeHtml(link)}">details</a>${notice ? ` · ${escapeHtml(notice)}` : ''}`,
+            parseMode: 'HTML'
+          }
+        ]
       : []
     const posts = this.flush(true)
     return [...reasoning, ...posts, ...this.trailingHint(posts), ...footer]
