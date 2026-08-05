@@ -291,13 +291,13 @@ export class ControlSender {
     c.conn.send('agent/remove', r, { epoch: c.sessionEpoch, agentId: r.agentId })
   }
 
-  /** Quiesce and archive an agent before a cold daemon move (REQ → ack). */
+  /** Fence and archive an agent before a daemon move or workspace edit (REQ → ack). */
   async agentDetach(daemonId: string, d: AgentDetach): Promise<Ack> {
     const c = this.must(daemonId)
     return c.conn.request<Ack>('agent/detach', d, { epoch: c.sessionEpoch, agentId: d.agentId })
   }
 
-  /** Activate a fully bootstrapped/restored agent after a cold daemon move (REQ → ack). */
+  /** Activate a fully bootstrapped/restored agent after a daemon move (REQ → ack). */
   async agentActivate(daemonId: string, a: AgentActivate): Promise<Ack> {
     let c = await this.activationConnection(daemonId)
     for (let connectionTry = 1; ; connectionTry += 1) {

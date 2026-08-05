@@ -2933,8 +2933,8 @@ export async function setAgentWorkspace(agentId: string, input: SetAgentWorkspac
   return agentFromDto(await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace`, input))
 }
 
-// Cold-move an agent to another daemon. A normal move coordinates an
-// acknowledged source detach and destination activation; `force` is the
+// Hard-cut an agent over to another daemon. A normal move coordinates an
+// acknowledged source fence/cancel and destination activation; `force` is the
 // explicit recovery path when the source cannot ACK. This stays separate from
 // the ordinary spec PATCH because placement changes have runtime side effects.
 export async function moveAgent(agentId: string, daemonId: string, options: { force?: boolean } = {}): Promise<Agent> {

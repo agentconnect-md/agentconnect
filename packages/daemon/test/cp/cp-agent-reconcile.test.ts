@@ -270,6 +270,40 @@ describe('Daemon CP agent → memory + reconcile', () => {
     await daemon.stop()
   })
 
+  it('hard cutover uses immediate quiescence instead of the graceful drain', async () => {
+    const root = root1()
+    writeAgent(root, 'bot-a')
+    const { daemon } = makeDaemon(root)
+    await daemon.start()
+    await seam(daemon).applyAgentUpsert({
+      agentId: 'bot-a',
+      spec: { name: 'bot-a', runtime: 'claude' } as AgentSpec
+    })
+    const drain = vi.spyOn(daemon as any, 'drainScope')
+    const interrupt = vi.spyOn(daemon as any, 'interruptAgentTurns')
+    let releaseRevoke!: () => void
+    let markRevokeStarted!: () => void
+    const revokeBlocked = new Promise<void>((resolve) => (releaseRevoke = resolve))
+    const revokeStarted = new Promise<void>((resolve) => (markRevokeStarted = resolve))
+    vi.spyOn(daemon as any, 'revokeRemoteWebchatGrantsForAgent').mockImplementationOnce(async () => {
+      markRevokeStarted()
+      await revokeBlocked
+    })
+
+    const detaching = seam(daemon).applyAgentDetach({
+      agentId: 'bot-a',
+      moveId: MOVE_ID,
+      discardActiveTurns: true
+    })
+    await revokeStarted
+
+    expect(drain).not.toHaveBeenCalled()
+    expect(interrupt).toHaveBeenCalledWith('bot-a', 'stop')
+    releaseRevoke()
+    await expect(detaching).resolves.toEqual({ ok: true })
+    await daemon.stop()
+  })
+
   it('rejects scratch conversion when the drained workspace is non-empty and reopens the agent gate', async () => {
     const root = root1()
     writeAgent(root, 'bot-a')

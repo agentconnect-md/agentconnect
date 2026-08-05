@@ -47,7 +47,7 @@ export interface ConfigApply {
   applyAgentUpsert(upsert: AgentUpsert): Promise<Ack>
   /** Drop a CP agent spec (agent/remove EVT). */
   applyAgentRemove(agentId: string): void | Promise<void>
-  /** Quiesce + archive an agent for a safe cold move (agent/detach REQ). */
+  /** Fence + archive an agent for a move or workspace edit (agent/detach REQ). */
   applyAgentDetach(detach: AgentDetach): Promise<Ack>
   /** Restore/reconcile an agent and verify it is servable (agent/activate REQ). */
   applyAgentActivate(activate: AgentActivate): Promise<Ack>

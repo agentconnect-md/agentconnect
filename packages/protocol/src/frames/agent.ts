@@ -424,15 +424,20 @@ export const AgentRemove = z.object({
 export type AgentRemove = z.infer<typeof AgentRemove>
 
 /**
- * Safe cold-move lifecycle (C→D REQ → generic `ack`). `agent/detach`
- * quiesces the agent and archives its daemon-local root; `agent/activate`
- * atomically applies the authoritative spec/integration/cron bundle, restores
- * and exact-prunes an archive when present, then makes the agent servable.
+ * Safe move lifecycle (C→D REQ → generic `ack`). `agent/detach` fences the
+ * source or stages the target and archives any daemon-local root;
+ * `agent/activate` atomically applies the authoritative spec/integration/cron
+ * bundle, restores and exact-prunes an archive when present, then makes the
+ * agent servable.
  */
 export const AgentDetach = z.object({
   agentId: z.string().uuid(),
   /** Fences late lifecycle retries from a superseded move operation. */
   moveId: z.string().uuid(),
+  /** Source-side hard cutover. Cancel already-admitted turns instead of waiting
+   *  for them to drain; their sessions remain daemon-local and are not replayed
+   *  after activation on the target. */
+  discardActiveTurns: z.boolean().optional(),
   /** Scratch→GitHub conversion guard. The daemon drains the agent first, then
    *  ACKs only when the live scratch working directory is still empty. */
   requireEmptyWorkspace: z.boolean().optional()

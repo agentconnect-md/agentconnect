@@ -187,7 +187,7 @@ interface ConsoleData {
   deleteAgent: (agentId: string) => Promise<void>
   /** Edit an agent's spec (PATCH), then re-pull. */
   updateAgent: (agentId: string, patch: UpdateAgentInput) => Promise<void>
-  /** Cold-move or explicitly recover an agent, then refresh placement-derived views. */
+  /** Hard-cut over or explicitly recover an agent, then refresh placement-derived views. */
   moveAgent: (agentId: string, daemonId: string, options?: { force?: boolean }) => Promise<void>
   /** Install a Slack integration (POST /integrations), then re-pull. */
   createIntegration: (input: CreateIntegrationInput) => Promise<void>

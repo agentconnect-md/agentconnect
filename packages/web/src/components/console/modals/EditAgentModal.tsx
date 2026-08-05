@@ -290,7 +290,7 @@ export default function EditAgentModal({
   }, [loaded])
 
   // Placement choices are operational: only a READY daemon that advertises the
-  // acknowledged cold-move protocol can become a new target. The current daemon
+  // acknowledged move protocol can become a new target. The current daemon
   // stays selectable even when it has gone offline (selecting it is a no-op), and
   // a hidden/deleted current daemon gets a synthetic option instead of silently
   // falling back to the first visible machine.
@@ -304,14 +304,10 @@ export default function EditAgentModal({
   const daemonChanged = daemonId !== initialDaemonId.current
   const initialPlacement = daemonChanged && !initialDaemonId.current
   const placementRequested = daemonChanged || repairPlacement
-  // A cold move or a repair rewrites daemon-local state, so it stays a solo
-  // action — configuration edits must be saved separately. An INITIAL placement
-  // has no source daemon and nothing to drain, and the CP refuses to place an
-  // agent whose runtime is still unset (preset-agents.md §3.2) — the general
-  // preset ships exactly that way — so the exec config rides along with it here,
-  // committed just before the placement (§3.4's "the picker bundles the runtime
-  // choice", on this surface).
-  const soloPlacement = placementRequested && !initialPlacement
+  // Placement consumes the durable agent definition. Pending configuration is
+  // therefore saved first so the selected runtime/model and access policy ride
+  // the target activation bundle; the user does not need to save, close, and
+  // reopen this dialog just to move the agent.
   const selectedSandboxRequired = daemonChanged
     ? (daemon?.caps.features.includes('sandbox-required') ?? false)
     : sandboxRequired
@@ -513,12 +509,6 @@ export default function EditAgentModal({
       setErr('The current daemon must be online and upgraded before this agent can be repaired.')
       return
     }
-    if (soloPlacement && (hasSpecChanges || hasSharingChanges || hasCallPolicyChanges)) {
-      setErr(
-        'Move or repair the agent separately from configuration changes. Save those changes first, then reopen it.'
-      )
-      return
-    }
     setSaving(true)
     setErr(null)
     try {
@@ -526,16 +516,14 @@ export default function EditAgentModal({
       // (workspace dir, launch key) and is immutable in the console — only the
       // display name is renameable.
       // Description is edited on its own card (EditDescriptionModal) — never sent here.
-      // Spec first: an initial placement needs the runtime committed before the
-      // CP will accept the daemon (a solo move/repair carries no spec diff at all
-      // — the guard above rejected one).
-      if (hasSpecChanges && !soloPlacement) await updateAgent(agent.id, patch)
-      if (placementRequested) await moveAgent(agent.id, daemonId, forceMove ? { force: true } : undefined)
+      // Save every central setting before placement so the target receives one
+      // current activation snapshot. These endpoints are intentionally durable:
+      // if placement later fails, the completed edits remain saved.
+      if (hasSpecChanges) await updateAgent(agent.id, patch)
       // Sharing and agent-call visibility ride their own endpoints. Sharing uses
       // canManageSharing; call policy is a normal agent edit and uses canEdit.
-      // Only write when they actually changed, and never during a move.
-      if (!soloPlacement && hasSharingChanges) await saveSharing('agents', agent.id, sharing)
-      if (!soloPlacement && hasCallPolicyChanges) {
+      if (hasSharingChanges) await saveSharing('agents', agent.id, sharing)
+      if (hasCallPolicyChanges) {
         const body: AgentCallPolicyInput = {
           callPolicy: inboundMode,
           allowedCallerAgentIds: inboundMode === 'selected' ? normalizeSelected(agent.id, inboundSelected) : [],
@@ -544,6 +532,7 @@ export default function EditAgentModal({
         }
         await saveAgentCallPolicy(agent.id, body)
       }
+      if (placementRequested) await moveAgent(agent.id, daemonId, forceMove ? { force: true } : undefined)
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -997,15 +986,14 @@ export default function EditAgentModal({
                   </span>
                 ) : daemonChanged ? (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    This is a cold move and must be saved separately from configuration edits. Current turns are
-                    drained. Workspace and memory on{' '}
+                    This is a hard cutover. Current turns on{' '}
                     <span className="font-semibold text-(--text-primary)">
                       {sourceDaemon?.name ?? 'the current daemon'}
                     </span>{' '}
-                    stay archived there and are not copied to{' '}
+                    are cancelled without a final reply. New messages start fresh on{' '}
                     <span className="font-semibold text-(--text-primary)">{daemon?.name ?? 'the target daemon'}</span>.
-                    Existing session history remains only on the source and is unavailable in the console after the
-                    move; GitHub workspaces are re-cloned.
+                    Workspace, memory, and session history stay on the source and are not copied or replayed; GitHub
+                    workspaces are re-cloned. Any configuration edits in this dialog are saved first.
                   </span>
                 ) : (
                   <span className="font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">

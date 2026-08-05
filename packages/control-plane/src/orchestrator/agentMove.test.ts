@@ -283,7 +283,7 @@ describe('AgentMoveService', () => {
     expect(t.activations[0]?.reconcileWorkspace).toBe(true)
   })
 
-  it('detaches source, bootstraps the complete target bundle, and activates last', async () => {
+  it('hard-cuts the source, bootstraps the complete target bundle, and activates last', async () => {
     const t = make()
     const moved = await t.service.move(t.current(), TARGET)
     expect(moved.daemonId).toBe(TARGET)
@@ -302,6 +302,7 @@ describe('AgentMoveService', () => {
       integrations: [{ integrationId: INTEGRATION, agentId: AGENT }],
       crons: [{ cronId: CRON, agentId: AGENT }]
     })
+    expect(t.detaches[0]).toMatchObject({ agentId: AGENT, discardActiveTurns: true })
     expect(t.detaches[1]?.moveId).toBe(t.activations[0]?.moveId)
     expect(t.releasedLive).toEqual([SESSION_KEY])
   })

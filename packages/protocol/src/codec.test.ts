@@ -398,12 +398,18 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
     if (rm.ok && isFrame('agent/remove')(rm.frame)) expect(rm.frame.payload.agentId).toBe(AGENT_ID)
   })
 
-  it('agent/detach and agent/activate decode for acknowledged cold moves', () => {
+  it('agent/detach and agent/activate decode for acknowledged moves', () => {
     const detach = decodeEnvelope(
-      envelope('agent/detach', { agentId: AGENT_ID, moveId: MOVE_ID, requireEmptyWorkspace: true })
+      envelope('agent/detach', {
+        agentId: AGENT_ID,
+        moveId: MOVE_ID,
+        discardActiveTurns: true,
+        requireEmptyWorkspace: true
+      })
     )
     expect(detach.ok).toBe(true)
     if (!detach.ok || !isFrame('agent/detach')(detach.frame)) throw new Error('expected agent/detach')
+    expect(detach.frame.payload.discardActiveTurns).toBe(true)
     expect(detach.frame.payload.agentId).toBe(AGENT_ID)
     expect(detach.frame.payload.requireEmptyWorkspace).toBe(true)
 

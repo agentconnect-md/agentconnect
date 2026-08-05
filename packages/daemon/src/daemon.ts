@@ -18269,11 +18269,16 @@ export class Daemon {
           })
           this.moveStagedAgents.add(agentId)
           this.drainingAgents.add(agentId)
+          // A placement cutover does not preserve the old execution context.
+          // Start cancellation before any remote cleanup await, then wait only
+          // for runtime authority to stop. Workspace edits keep the graceful
+          // drain because they resume the same local agent after mutating files.
+          if (detach.discardActiveTurns) await this.quiesceAgentWorkspaceAuthority(agentId)
           // Placement is revalidated by the CP for every remote-MCP request.
           // Clearing the memory-only descriptors prevents local reuse while the
           // durable revocation sweep converges.
           await this.revokeRemoteWebchatGrantsForAgent(agentId, 'agent_detached')
-          await this.stopAgent(agentId)
+          if (!detach.discardActiveTurns) await this.stopAgent(agentId)
           const fence = this.moveStageMetadata.get(agentId)
           if (fence?.moveId !== moveId || fence.state !== 'staging') {
             return { ok: false, reason: 'agent/detach: move was superseded' }

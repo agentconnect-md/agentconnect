@@ -55,11 +55,15 @@ did not return then reads `offline`.
 
 ## Moving an agent from an unavailable daemon
 
-A normal agent move is the safe default: the current daemon must confirm that it has
-stopped the existing copy before another daemon activates it. When the current daemon
-is offline, the agent Configuration page and placement editor must say that safe move
-is unavailable and name the daemon the operator needs to bring online. The target
-picker must not lead to a request that can only fail without explaining this first.
+A normal agent move is the safe default and uses a hard cutover. The current daemon
+must first close admission, cancel already-admitted turns without waiting for a final
+reply, and confirm that the old runtime authority has stopped. The Control Plane then
+releases old session affinity and activates the new copy. Subsequent messages start a
+fresh session on the target; no ACP session state is copied or replayed. When the
+current daemon is offline, the agent Configuration page and placement editor must say
+that safe move is unavailable and name the daemon the operator needs to bring online.
+The target picker must not lead to a request that can only fail without explaining this
+first.
 
 A force reassign is disaster recovery, not another ordinary move mode. Offer it
 only after the operator chooses an online, compatible target while the current daemon
@@ -74,15 +78,14 @@ copies daemon-local workspace, memory, transcripts, or attachments. A source tha
 reconnects after a force reassign is told to detach the stale local copy during
 placement reconciliation.
 
-Historical session content remains owned by the daemon that created the session.
-Session transcript and tool-detail reads use that recorded daemon, not the Agent's
-current placement, so moving an Agent does not make its old sessions appear empty.
-Those reads remain available while the recorded daemon is online. A webchat session
-cannot resume after its Agent moves because the ACP state did not move with it; the
-Console keeps the transcript readable but replaces the composer with a disabled
-explanation. In a multi-Agent webchat conversation, every participating Agent must
-still be on the daemon that owns its corresponding session or the shared composer is
-disabled.
+Historical session content remains owned by the daemon that created the session. The
+move itself neither copies nor replays that content, and the target never loads it as
+conversation context. Read-only transcript and tool-detail requests may still use the
+recorded source daemon while it is online. A webchat session cannot resume after its
+Agent moves because the ACP state did not move with it; the Console keeps any readable
+transcript but replaces the composer with a disabled explanation. In a multi-Agent
+webchat conversation, every participating Agent must still be on the daemon that owns
+its corresponding session or the shared composer is disabled.
 
 ## Where a streamed reply may be split
 
