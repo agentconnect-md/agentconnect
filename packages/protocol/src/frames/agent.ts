@@ -365,9 +365,9 @@ export const AgentSpec = z.object({
   // on-disk agent.json value alone; a brand-new agent defaults to false.
   runInSandbox: z.boolean().optional(),
   // True when this agent is an org built-in preset (preset-agents.md §3.1): a
-  // `preset_agent` row references it. Replicated so the daemon can gate
-  // preset-only capabilities locally (e.g. advertising `webchat_remote_mcp_v1`
-  // without waiting for a runtime probe). Optional so an older CP's spec leaves
+  // `preset_agent` row references it. Replicated so the daemon can gate preset-only
+  // behavior locally, including attaching `agentconnect-admin` only when the CP
+  // supplies the conversation entitlement. Optional so an older CP's spec leaves
   // the on-disk value alone; a current CP always ships it.
   builtin: z.boolean().optional(),
   // Monotonic revision of this agent's fully resolved CP-owned configuration

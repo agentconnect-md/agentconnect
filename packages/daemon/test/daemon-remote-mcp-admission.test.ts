@@ -51,12 +51,17 @@ function scaffold(opts: { builtin: boolean; runInSandbox: boolean }): string {
   return root
 }
 
-function fakeHost() {
+function fakeHost(rejectAdminDescriptor = false) {
   let onUpdate!: (sid: string, update: unknown) => void
   const selectedAgents: Array<{ builtin: boolean; runInSandbox: boolean; runtime: string }> = []
   const host = {
     start: vi.fn(async () => {}),
-    newSession: vi.fn(async () => 'acp-rmcp-1'),
+    newSession: vi.fn(async (_cwd: string, mcpServers: Array<{ name?: string }>) => {
+      if (rejectAdminDescriptor && mcpServers.some((server) => server.name === 'agentconnect-admin')) {
+        throw new Error('runtime rejected HTTP MCP descriptor')
+      }
+      return 'acp-rmcp-1'
+    }),
     modelOptions: vi.fn(() => null),
     hasSession: vi.fn(() => true),
     prompt: vi.fn(async (sid: string) => {
@@ -93,8 +98,8 @@ function fakeGrantClient() {
   }
 }
 
-async function runTurn(opts: { builtin: boolean; runInSandbox: boolean }) {
-  const { factory, host, selectedAgents } = fakeHost()
+async function runTurn(opts: { builtin: boolean; runInSandbox: boolean; rejectAdminDescriptor?: boolean }) {
+  const { factory, host, selectedAgents } = fakeHost(opts.rejectAdminDescriptor)
   const daemon = new Daemon({ root: scaffold(opts), hostFactory: factory as never })
   await daemon.start()
   const client = fakeGrantClient()
@@ -172,5 +177,26 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     expect(dones).toHaveLength(1)
     expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
     expect(adminDescriptor(host)).toBeUndefined()
+  }, 20_000)
+
+  it('keeps ordinary preset webchat running when the runtime rejects the admin descriptor', async () => {
+    const { client, host, dones } = await runTurn({
+      builtin: true,
+      runInSandbox: true,
+      rejectAdminDescriptor: true
+    })
+
+    expect(dones).toHaveLength(1)
+    expect(client.issueWebchatMcpGrant).toHaveBeenCalledTimes(1)
+    expect(host.newSession).toHaveBeenCalledTimes(2)
+    expect(
+      ((host.newSession.mock.calls[0]?.[1] ?? []) as Array<{ name?: string }>).some(
+        (server) => server.name === 'agentconnect-admin'
+      )
+    ).toBe(true)
+    const fallbackServers = (host.newSession.mock.calls[1]?.[1] ?? []) as Array<{ name?: string }>
+    expect(fallbackServers.some((server) => server.name === 'agentconnect')).toBe(true)
+    expect(fallbackServers.some((server) => server.name === 'agentconnect-admin')).toBe(false)
+    expect(host.prompt).toHaveBeenCalledTimes(1)
   }, 20_000)
 })

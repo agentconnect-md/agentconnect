@@ -409,6 +409,10 @@ export class SessionManager {
     contextEventTs?: string[]
     /** Incremental provider read checkpoint associated with the assembled snapshot. */
     providerCheckpoint?: string
+    /** False when session creation/loading rejected the trusted additional MCP
+     * descriptors and the runtime session succeeded only after retrying with
+     * the ordinary server set. Absent when no additional descriptors existed. */
+    additionalMcpServersAttached?: boolean
   }> {
     const agent = this.deps.agentById(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
@@ -604,13 +608,33 @@ export class SessionManager {
         sessionKey: key,
         isolation: workspaceIsolation
       })
-    const newRuntimeSession = async (cwd: string, mcpServers: McpServer[], systemAppend?: string): Promise<string> => {
+    let additionalMcpServersAttached = options.additionalMcpServers?.length ? true : undefined
+    const withAdditionalMcpFallback = async <T>(
+      primary: () => Promise<T>,
+      fallback: (() => Promise<T>) | undefined
+    ): Promise<T> => {
+      try {
+        return await primary()
+      } catch (error) {
+        if (signal?.aborted || !fallback) throw error
+        additionalMcpServersAttached = false
+        return fallback()
+      }
+    }
+    const newRuntimeSession = async (
+      cwd: string,
+      mcpServers: McpServer[],
+      systemAppend?: string,
+      fallbackMcpServers?: McpServer[]
+    ): Promise<string> => {
       const additionalDirectories = runtimeWorkspaceDirectories(cwd)
       while (true) {
         const selected = sessionStartEffort()
-        const sessionId = await abortable(
-          () => host.newSession(cwd, mcpServers, selected.value, systemAppend, additionalDirectories),
-          signal
+        const create = (servers: McpServer[]) =>
+          abortable(() => host.newSession(cwd, servers, selected.value, systemAppend, additionalDirectories), signal)
+        const sessionId = await withAdditionalMcpFallback(
+          () => create(mcpServers),
+          fallbackMcpServers ? () => create(fallbackMcpServers) : undefined
         )
         if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return sessionId
         host.discardSession(sessionId)
@@ -620,13 +644,19 @@ export class SessionManager {
       sessionId: string,
       cwd: string,
       mcpServers: McpServer[],
-      systemAppend?: string
+      systemAppend?: string,
+      fallbackMcpServers?: McpServer[]
     ): Promise<boolean> => {
       const selected = sessionStartEffort()
       const additionalDirectories = runtimeWorkspaceDirectories(cwd)
-      await abortable(
-        () => host.loadSession(sessionId, cwd, mcpServers, selected.value, systemAppend, additionalDirectories),
-        signal
+      const load = (servers: McpServer[]) =>
+        abortable(
+          () => host.loadSession(sessionId, cwd, servers, selected.value, systemAppend, additionalDirectories),
+          signal
+        )
+      await withAdditionalMcpFallback(
+        () => load(mcpServers),
+        fallbackMcpServers ? () => load(fallbackMcpServers) : undefined
       )
       if (!selected.chatSelected || this.deps.agentById(agentId)?.allowRuntimeChangesInChat === true) return true
       // The pinned Claude adapter treats a repeated load of the same session/cwd/MCP
@@ -846,8 +876,8 @@ export class SessionManager {
             prepareWorkspace(agent),
           signal
         ))
-      const mcpServers = [
-        ...(this.deps.mcpServersFor?.({
+      const ordinaryMcpServers =
+        this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
           channel: msg.channel,
@@ -855,10 +885,14 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
-        }) ?? []),
-        ...(options.additionalMcpServers ?? [])
-      ]
-      const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
+        }) ?? []
+      const mcpServers = [...ordinaryMcpServers, ...(options.additionalMcpServers ?? [])]
+      const acpSessionId = await newRuntimeSession(
+        cwd,
+        mcpServers,
+        metaContext,
+        options.additionalMcpServers?.length ? ordinaryMcpServers : undefined
+      )
       created = true
       rec = {
         key,
@@ -908,8 +942,8 @@ export class SessionManager {
       // Resolved once, shared by both paths: session/load must re-attach the same
       // MCP servers a fresh session would get (the agent doesn't persist them
       // across processes), and resolving twice would register two bridge tokens.
-      const mcpServers = [
-        ...(this.deps.mcpServersFor?.({
+      const ordinaryMcpServers =
+        this.deps.mcpServersFor?.({
           agent,
           platform: msg.platform,
           channel: msg.channel,
@@ -917,9 +951,9 @@ export class SessionManager {
           ...(integrationId !== undefined ? { integrationId } : {}),
           ...(transportScope !== undefined ? { transportScope } : {}),
           isDm: msg.isDm
-        }) ?? []),
-        ...(options.additionalMcpServers ?? [])
-      ]
+        }) ?? []
+      const mcpServers = [...ordinaryMcpServers, ...(options.additionalMcpServers ?? [])]
+      const fallbackMcpServers = options.additionalMcpServers?.length ? ordinaryMcpServers : undefined
       let resumed = false
       if (host.loadSupported?.()) {
         // §7.3 closed/evicted → resuming: mark the re-attach so a TTL-closed session
@@ -930,7 +964,8 @@ export class SessionManager {
             persistedSessionId,
             cwd,
             mcpServers,
-            usesMeta ? resumeSystemContext : undefined
+            usesMeta ? resumeSystemContext : undefined,
+            fallbackMcpServers
           )
         } catch {
           if (signal?.aborted) throw interrupted(signal)
@@ -938,7 +973,7 @@ export class SessionManager {
         }
       }
       if (!resumed) {
-        const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext)
+        const acpSessionId = await newRuntimeSession(cwd, mcpServers, metaContext, fallbackMcpServers)
         // A fresh ACP id the CP has never seen (the persisted one couldn't be resumed),
         // so this counts as a create for `event/session`. A resumed session (loadSession
         // above) keeps its id — the CP already knows it — so `created` stays false there.
@@ -956,7 +991,13 @@ export class SessionManager {
       rec.state = 'idle'
       rec.updatedAt = Date.now()
       this.deps.store.upsertSession(rec)
-      return { sessionId: rec.acpSessionId!, blocks: [], created, initializedOnly: true }
+      return {
+        sessionId: rec.acpSessionId!,
+        blocks: [],
+        created,
+        initializedOnly: true,
+        ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {})
+      }
     }
 
     // This platform's message-ordering strategy (platforms/message-ordering.ts).
@@ -1099,7 +1140,13 @@ export class SessionManager {
           // (and any resume) carries the directive.
           if (needsReplyToParent) rec.needsParentReply = 1
           this.deps.store.upsertSession(rec)
-          return { sessionId: rec.acpSessionId!, blocks: [], created, skipped: true }
+          return {
+            sessionId: rec.acpSessionId!,
+            blocks: [],
+            created,
+            skipped: true,
+            ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {})
+          }
         }
         const head =
           elided > 0
@@ -1301,6 +1348,7 @@ export class SessionManager {
       turnId,
       contextRevision,
       contextEventTs,
+      ...(additionalMcpServersAttached !== undefined ? { additionalMcpServersAttached } : {}),
       ...(snapshotCutoffTs ? { providerCheckpoint: snapshotCutoffTs } : {})
     }
   }

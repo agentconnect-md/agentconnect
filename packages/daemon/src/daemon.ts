@@ -12173,6 +12173,7 @@ export class Daemon {
       contextRevision?: number
       contextEventTs?: string[]
       providerCheckpoint?: string
+      additionalMcpServersAttached?: boolean
     }
     const persistedSessionId = this.store.getSession(key)?.acpSessionId
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
@@ -12238,6 +12239,9 @@ export class Daemon {
           ...reviewWorkspace
         }
       )
+      if (remoteMcpServer && handled.additionalMcpServersAttached === false) {
+        this.log.warn('remote MCP descriptor was rejected by the runtime; ordinary webchat continued without it')
+      }
     } catch (err) {
       this.finishSessionInitialization(agentId)
       restoreDeliveryBinding()

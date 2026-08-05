@@ -729,12 +729,15 @@ code inside its configured boundary, so those properties are compatibility facts
 not an additional security boundary. AgentConnect defines no private ACP
 capability or runtime-generated retry header.
 
-On success, daemon registration advertises `webchat_remote_mcp_v1`. The relay
-delivers only a non-secret entitlement. The daemon obtains a short-lived opaque
-grant from the CP over revision-fenced issue/accept/activate control frames, then
-attaches the CP MCP URL and active Bearer grant to `session/new` or `session/load`
-as structured runtime configuration. It does not put the grant in the prompt,
-proxy MCP requests, mint per-request assertions, or run an administrative broker.
+Daemon registration advertises `webchat_remote_mcp_v1` whenever confidential
+remote-grant delivery is active. The relay delivers only a non-secret entitlement.
+The daemon obtains a short-lived opaque grant from the CP over revision-fenced
+issue/accept/activate control frames, then first attempts the CP MCP URL and active
+Bearer grant on `session/new` or `session/load` as structured runtime configuration.
+If the runtime rejects that session configuration, the daemon retries without the
+additional descriptor so ordinary webchat can continue. It does not put the grant
+in the prompt, proxy MCP requests, mint per-request assertions, or run an
+administrative broker.
 
 The runtime calls the standard CP `POST /api/v1/mcp` endpoint directly. The CP
 derives the actor from the stored grant and durable webchat owner, re-runs live
@@ -746,11 +749,12 @@ the durable execution identity. Tool catalog execution is therefore a control op
 `session/update` streams remain on the relay↔daemon/daemon-local data path and
 never cross the CP.
 
-Admission fails closed. An unsupported runtime, stale or expired generation,
-unavailable CP, or invalid grant produces no `agentconnect-admin` descriptor or a
-bounded tool error. Ordinary webchat and daemon-local MCP tools continue; the
-daemon never falls back to its shared MCP socket, daemon API key, organization
-principal, user API key, or system-prompt secret.
+Administration fails closed. A runtime that rejects the descriptor is retried
+without it; a stale or expired generation, unavailable CP, or invalid grant produces
+no `agentconnect-admin` descriptor or a bounded tool error. Ordinary webchat and
+daemon-local MCP tools continue when the runtime can create or load a descriptor-free
+session. The daemon never falls back to its shared MCP socket, daemon API key,
+organization principal, user API key, or system-prompt secret.
 
 ---
 
