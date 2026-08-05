@@ -12,15 +12,19 @@ import type {
 } from '@agentconnect.md/protocol'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
+import { RelayIngressManager, type RelayIngressManagerDeps } from './relay-ingress-manager.js'
+// The dedup-id minters belong to their platform plugins (§8: the plugin mints
+// the identity, core owns the table). This suite was the last importer of the
+// core re-export shim that outlived the #571 route migration (audit F7).
 import {
-  RelayIngressManager,
-  type RelayIngressManagerDeps,
-  httpFeishuActionMsgId,
+  forwardSessionAction,
+  forwardSessionShortcut,
   httpSlackActionMsgId,
   httpSlackShortcutMsgId
-} from './relay-ingress-manager.js'
-import { forwardSessionAction, forwardSessionShortcut } from './platforms/slack/ingress-plugin.js'
-import { forwardFeishuCardAction } from './platforms/feishu/ingress-plugin.js'
+} from './platforms/slack/ingress-plugin.js'
+import { forwardFeishuCardAction, httpFeishuActionMsgId } from './platforms/feishu/ingress-plugin.js'
+import { DemuxIndex, relayIngressPlugins } from './platforms/registry.js'
+import type { RelayBotIngress, RelayPlatformIngressPlugin } from './platforms/contract.js'
 import { BotArbitrationRouter, mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
 import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './platforms/slack/http-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
@@ -84,17 +88,22 @@ const action = (over: Partial<HttpSlackSessionAction> = {}): HttpSlackSessionAct
     ...over
   }) as HttpSlackSessionAction
 
+/** One platform's ingest pool, as the reach-in view exposes it. `set` is
+ *  deliberately permissive: these tests plant purpose-built stand-ins that
+ *  implement only the facets the path under test touches. */
+interface PoolView {
+  set(botId: string, ingest: object): void
+  get(botId: string): Record<string, unknown> | undefined
+}
+
 interface ManagerInternals {
   router: BotArbitrationRouter
-  slackPool: {
-    set(
-      botId: string,
-      ingest: {
-        lookupUserName(u: string): Promise<string | undefined>
-        postText(c: string, t: string, th?: string): Promise<void>
-      }
-    ): void
-  }
+  slackPool: PoolView
+  feishuPool: PoolView
+  slackDemux: DemuxIndex
+  /** Any registered platform's entry — the same lookup every lifecycle edge in
+   *  the manager now performs. */
+  entryFor(platformId: string): { pool: PoolView; demux: DemuxIndex }
   reportChannels(snapshot: RcBotChannels): void
   reportRevoked(m: { botId: string; reason: 'app_uninstalled' | 'tokens_revoked'; credentialRevision?: number }): void
   selectThreadAgent(botId: string, channelId: string, threadTs: string, agentId: string): void
@@ -102,12 +111,46 @@ interface ManagerInternals {
   forward(botId: string, msg: WireNormalizedMessage): Promise<void>
 }
 
+/**
+ * Reach-in view of the manager's privates.
+ *
+ * `slackPool` / `feishuPool` / `slackDemux` are the plugin REGISTRY's entries
+ * for those ids, not fields: the manager's hand-named twin pools went away with
+ * audit F2/F4/F6, which is what made teardown registry-driven. The tests now
+ * read exactly the structure the manager does.
+ */
+const internalsOf = (manager: RelayIngressManager): ManagerInternals => {
+  const priv = manager as unknown as {
+    ingressPlugins: Map<string, { pool: PoolView; demux: DemuxIndex }>
+  } & Omit<ManagerInternals, 'slackPool' | 'feishuPool' | 'slackDemux'>
+  const entry = (platformId: string) => {
+    const found = priv.ingressPlugins.get(platformId)
+    if (!found) throw new Error(`no relay ingress plugin registered for '${platformId}'`)
+    return found
+  }
+  return {
+    router: priv.router,
+    slackPool: entry('slack').pool,
+    feishuPool: entry('feishu').pool,
+    slackDemux: entry('slack').demux,
+    entryFor: entry,
+    reportChannels: (snapshot) => priv.reportChannels(snapshot),
+    reportRevoked: (m) => priv.reportRevoked(m),
+    selectThreadAgent: (botId, channelId, threadTs, agentId) =>
+      priv.selectThreadAgent(botId, channelId, threadTs, agentId),
+    get ingressHost() {
+      return priv.ingressHost
+    },
+    forward: (botId, msg) => priv.forward(botId, msg)
+  }
+}
+
 describe('RelayIngressManager HTTP Slack session actions', () => {
   it('rebinds the current thread immediately when the inline selector changes agent', () => {
     const setChannelAgent = vi.fn()
     const reportThreadAssign = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ setChannelAgent, reportThreadAssign }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const assigned = assignment()
     assigned.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
     assigned.agents.push({ agentId: OTHER_AGENT_ID, name: 'Review Agent' })
@@ -160,7 +203,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(assignment())
 
     const delivered = action()
@@ -190,7 +233,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(assignment())
     internals.router.setAffinity(BOT_ID, 'C123/T1', {
       agentId: AGENT_ID,
@@ -230,7 +273,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(assignment())
 
     const attributed = action({ userId: 'U-ALICE' })
@@ -267,7 +310,7 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection, log: { ...silentLog, warn } })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(assignment())
 
     forwardSessionAction(
@@ -301,7 +344,7 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert({
       botId: BOT_ID,
       platform: 'feishu',
@@ -369,7 +412,7 @@ describe('RelayIngressManager HTTP Lark / Feishu card actions', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert({
       botId: BOT_ID,
       platform: 'feishu',
@@ -437,7 +480,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const reportThreadAssign = vi.fn(() => true)
     const { daemon, sendMsg } = online()
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(channelOwned())
 
     // Root message is an @-mention (channel-owner rung) → reports + seeds affinity.
@@ -462,7 +505,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const manager = new RelayIngressManager(
       deps({ getDaemon: () => daemon, reportThreadAssign, reportThreadParticipant })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(channelAutoOwned())
 
     await internals.forward(BOT_ID, followUp({ msgId: 'slack:C123:1720000000.000100' }))
@@ -489,7 +532,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
           id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined
       })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     // The named primary is selected by an AUTO owner, not a mention rule. A human
     // still addressed this bot explicitly, so that target must get mention semantics.
     const shared = channelAutoOwned()
@@ -528,7 +571,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       return appId === 'AMANAGED'
     })
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign, isAgentBotApp }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const shared = channelAutoOwned()
     shared.members[0]!.agentIds.push(OTHER_AGENT_ID)
     shared.agents.push({ agentId: OTHER_AGENT_ID, name: 'Other' })
@@ -607,7 +650,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
           ...over
         })
       )
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       internals.router.upsert(channelAutoOwned())
       return { internals, sendMsg }
     }
@@ -776,7 +819,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
           isAgentBotApp: vi.fn(() => true)
         })
       )
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const shared = assignment()
       shared.botUserId = 'UBOT'
       shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
@@ -856,7 +899,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
           isAgentBotApp: vi.fn(() => true)
         })
       )
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const shared = assignment()
       shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
       shared.agents.push({
@@ -913,7 +956,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
           reportThreadParticipant
         })
       )
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const shared = assignment()
       shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
       shared.agents.push({
@@ -983,7 +1026,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     const reportThreadAssign = vi.fn(() => ready) // false ⇒ "link not READY, dropped"
     const { daemon } = online()
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, reportThreadAssign }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(channelOwned())
 
     // Link down: the root mention routes+delivers, but the report is dropped + stashed.
@@ -1002,7 +1045,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     let ready = false
     const reportBotChannels = vi.fn(() => ready)
     const manager = new RelayIngressManager(deps({ reportBotChannels }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const first = { botId: BOT_ID, channels: [{ id: 'C123', name: 'first' }] } satisfies RcBotChannels
     const latest = { botId: BOT_ID, channels: [{ id: 'C456', name: 'latest' }] } satisfies RcBotChannels
 
@@ -1029,7 +1072,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       let committed = false
       const reportBotRevoked = vi.fn(async () => committed)
       const manager = new RelayIngressManager(deps({ reportBotRevoked }))
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const report = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 3 }
 
       // The CP answers a retryable error (transient DB failure) but the socket
@@ -1063,7 +1106,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
         return commitNext
       })
       const manager = new RelayIngressManager(deps({ reportBotRevoked }))
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const current = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2 }
       const delayed = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
 
@@ -1098,7 +1141,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       let commitNext = false
       const reportBotRevoked = vi.fn(async () => commitNext)
       const manager = new RelayIngressManager(deps({ reportBotRevoked }))
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       // The auth.test dead-credential backstop: exact current revision, NO
       // eventAtMs — "dead NOW", unconditional on the CP's time arm.
       const probe = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2 }
@@ -1137,7 +1180,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     try {
       const reportBotRevoked = vi.fn(async () => false) // keep everything queued
       const manager = new RelayIngressManager(deps({ reportBotRevoked }))
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const newer = { botId: BOT_ID, reason: 'tokens_revoked' as const, credentialRevision: 2, eventAtMs: 2_000 }
       const older = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 2, eventAtMs: 1_000 }
 
@@ -1161,7 +1204,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       const resolvers: Array<(v: boolean) => void> = []
       const reportBotRevoked = vi.fn(() => new Promise<boolean>((resolve) => resolvers.push(resolve)))
       const manager = new RelayIngressManager(deps({ reportBotRevoked }))
-      const internals = manager as unknown as ManagerInternals
+      const internals = internalsOf(manager)
       const first = { botId: BOT_ID, reason: 'app_uninstalled' as const, credentialRevision: 1 }
       // A reinstall bumped the generation and a SECOND revoke observed it — this
       // replaces the queue entry while the first report is still in flight.
@@ -1201,7 +1244,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     }))
     const reportThreadAssign = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread, reportThreadAssign }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(channelOwned())
     // Remove the channel-owner rule so an un-mentioned follow-up misses local arbitration.
     internals.router.updateRoutes(BOT_ID, {
@@ -1245,7 +1288,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
           id === DAEMON_ID ? daemon(first) : id === OTHER_DAEMON_ID ? daemon(second as typeof first) : undefined
       })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const shared = assignment()
     shared.members.push({ daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] })
     shared.agents.push({
@@ -1288,7 +1331,7 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     }))
     const { daemon, sendMsg } = online()
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(channelOwned())
     internals.router.updateRoutes(BOT_ID, {
       members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
@@ -1346,7 +1389,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   it('reports an unrouted gated DM as a kind:im conversation and notices once per conversation', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(gatedAssignment())
     const ingest = fakeIngest()
     internals.slackPool.set(BOT_ID, ingest)
@@ -1367,7 +1410,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
 
   it('a first gated DM on a NON-authority pod still posts (single event copy, receiving pod owns it)', async () => {
     const manager = new RelayIngressManager(deps({ selfRelayId: () => PEER_RELAY }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY, not this pod
     const ingest = fakeIngest()
     internals.slackPool.set(BOT_ID, ingest)
@@ -1378,7 +1421,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
 
   it('a DM whose notice was already DELIVERED (noticedDmConversations) is latched on EVERY pod', async () => {
     const manager = new RelayIngressManager(deps())
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const a = gatedAssignment()
     a.noticedDmConversations = ['D42'] // delivery reported + re-stamped by the CP
     internals.router.upsert(a)
@@ -1395,7 +1438,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const manager = new RelayIngressManager(
       deps({ reportNoticePosted, getDaemon: () => daemon as unknown as RelayDaemonConnection })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const a = gatedAssignment()
     // Mixed bot: OTHER is org-visible and catches the DM as the group default.
     a.members = [
@@ -1440,7 +1483,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   it('reports a gated DM even when a non-gated default agent WINS the routing (mixed bot)', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const a = gatedAssignment()
     // OTHER is org-visible and catches every unslugged DM as the group default.
     a.members = [
@@ -1478,7 +1521,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   it('resets the DM-report latch when the install set changes (new install needs its row)', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const a = gatedAssignment()
     internals.router.upsert(a)
     internals.slackPool.set(BOT_ID, fakeIngest())
@@ -1521,7 +1564,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     let ready = false
     const reportBotConversation = vi.fn(() => ready)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(gatedAssignment())
     internals.slackPool.set(BOT_ID, fakeIngest())
 
@@ -1537,7 +1580,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   it('an unrouted @mention in a channel gets the notice but NO conversation report', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     internals.router.upsert(gatedAssignment())
     const ingest = fakeIngest()
     internals.slackPool.set(BOT_ID, ingest)
@@ -1556,7 +1599,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const manager = new RelayIngressManager(
       deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection })
     )
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const assigned: BotAssignment = {
       botId: BOT_ID,
       platform: 'feishu',
@@ -1619,7 +1662,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   /** Two manager instances = two relay pods; only the authority pod may post. */
   const pod = (authority: boolean) => {
     const manager = new RelayIngressManager(deps({ selfRelayId: () => (authority ? SELF_RELAY : PEER_RELAY) }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const ingest = fakeIngest()
     internals.router.upsert(gatedAssignment()) // noticeAuthority = SELF_RELAY
     internals.slackPool.set(BOT_ID, ingest)
@@ -1692,7 +1735,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
     const sendMsg = vi.fn(async (msg: RdMsgIm): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
     const daemon = { sendMsg } as unknown as RelayDaemonConnection
     const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, selfRelayId: () => SELF_RELAY }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const ingest = fakeIngest()
     internals.slackPool.set(BOT_ID, ingest)
     internals.router.upsert({
@@ -1737,7 +1780,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   it('no authority stamped (old CP / empty roster): no pod posts; DM discovery still reports', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation, selfRelayId: () => SELF_RELAY }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const a = gatedAssignment()
     delete a.noticeAuthority
     internals.router.upsert(a)
@@ -1754,7 +1797,7 @@ describe('RelayIngressManager conversation gating (resource-visibility §14.3)',
   it('reports a public DM even when the bot has no gated members, without a notice', async () => {
     const reportBotConversation = vi.fn(() => true)
     const manager = new RelayIngressManager(deps({ reportBotConversation }))
-    const internals = manager as unknown as ManagerInternals
+    const internals = internalsOf(manager)
     const a = gatedAssignment()
     a.gatedAgentIds = []
     internals.router.upsert(a)
@@ -1794,19 +1837,6 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
   const sigFor = (secret: string, raw: Buffer) =>
     `v0=${createHmac('sha256', secret).update(`v0:${ts}:${raw}`).digest('hex')}`
 
-  interface DemuxInternals {
-    router: BotArbitrationRouter
-    slackPool: {
-      set(
-        botId: string,
-        ingest: { signingSecret: string; stop(): Promise<void>; handleEvent(e?: unknown, at?: number): Promise<void> }
-      ): void
-      get(botId: string): { signingSecret: string } | undefined
-    }
-    feishuPool: { get(botId: string): unknown }
-    slackDemux: import('./platforms/registry.js').DemuxIndex
-  }
-
   /** Register a bot the way `assign()` would, minus the network-touching ingest
    *  start: router assignment + a secret-bearing ingest stand-in + (for a
    *  team-scoped bot) the assign-derived composite index entries. */
@@ -1816,7 +1846,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     signingSecret: string,
     opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
   ) => {
-    const internals = manager as unknown as DemuxInternals
+    const internals = internalsOf(manager)
     internals.slackPool.set(botId, {
       signingSecret,
       stop: async () => {},
@@ -1863,7 +1893,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2' })
 
-    const internals = manager as unknown as DemuxInternals
+    const internals = internalsOf(manager)
     await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).resolves.toBe(BOT_T1)
     await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).resolves.toBe(BOT_T2)
   })
@@ -1876,7 +1906,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1', indexed: false })
     addBot(manager, BOT_T2, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T2', indexed: false })
 
-    const internals = manager as unknown as DemuxInternals
+    const internals = internalsOf(manager)
     await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T2' })).resolves.toBe(BOT_T2)
     // The scan hit must not poison the app-only learned map for a team-scoped bot.
     expect(internals.slackDemux.indexes.byApp.has(PLATFORM_APP)).toBe(false)
@@ -1895,7 +1925,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
     addBot(manager, BOT_LEGACY, 'legacy-secret', {}) // no app id stamped — scan learns it
 
-    const internals = manager as unknown as DemuxInternals
+    const internals = internalsOf(manager)
     await expect(resolve(manager, { apiAppId: 'ALEGACY', secret: 'legacy-secret' })).resolves.toBe(BOT_LEGACY)
     expect(internals.slackDemux.indexes.byApp.get('ALEGACY')).toBe(BOT_LEGACY)
     // A team-scoped envelope still resolves the legacy bot (guard only skips
@@ -1910,7 +1940,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
   // release would tear down the ingest of a credential it never described.
   it('unassign carrying an OLDER generation than the held assignment is ignored', async () => {
     const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
-    const internals = manager as unknown as DemuxInternals
+    const internals = internalsOf(manager)
     internals.slackPool.set(BOT_T1, { signingSecret: SHARED_SECRET, stop: async () => {} })
     internals.router.upsert({
       ...assignment(),
@@ -1940,9 +1970,145 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     addBot(manager, BOT_T1, SHARED_SECRET, { apiAppId: PLATFORM_APP, teamId: 'T1' })
 
     await manager.unassign(BOT_T1)
-    const internals = manager as unknown as DemuxInternals
+    const internals = internalsOf(manager)
     expect(internals.slackDemux.indexes.byAppTenant.size).toBe(0)
     // The reverse map is DemuxIndex-internal now; an empty composite index IS the proof.
     await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * A THIRD platform, registered only here.
+ *
+ * The lifecycle findings (audit F2/F3/F4) were all hand lists of `slack` +
+ * `feishu` — and for exactly those two ids a hand list is COMPLETE, so a suite
+ * built from the real platforms passes against the broken code and proves
+ * nothing. Only an id the hand list does not name can tell the two versions
+ * apart. This fixture is that id: it implements the §8 contract and nothing
+ * else, with no credentials, no HTTP, and no I/O.
+ */
+const SYNTHETIC = 'synthetic'
+
+interface SyntheticIngest extends RelayBotIngress {
+  /** Bumped by `stop()`. Teardown must reach it, and reach it exactly once. */
+  stops: number
+}
+
+/** @param built Every ingest this plugin has been asked to build, in order. */
+const syntheticPlugin = (built: SyntheticIngest[]): RelayPlatformIngressPlugin => ({
+  platformId: SYNTHETIC,
+  installRoutes: () => {},
+  buildIngest: () => {
+    const ingest: SyntheticIngest = {
+      stops: 0,
+      stop: () => {
+        ingest.stops += 1
+      }
+    }
+    built.push(ingest)
+    return ingest
+  },
+  extractDemuxHints: () => ({}),
+  verify: () => undefined,
+  handle: async () => ({})
+})
+
+/** An assignment for the synthetic platform, carrying a tenant-scoped identity
+ *  so the COMPOSITE index entry — the one whose survival is the cross-tenant
+ *  delivery hazard `DemuxIndex` exists to prevent — actually gets written. */
+const syntheticAssignment = (over: Partial<BotAssignment> = {}): BotAssignment => ({
+  ...assignment(),
+  platform: SYNTHETIC,
+  secrets: { verificationToken: 'synthetic-token' },
+  apiAppId: 'SYNTH_APP',
+  teamId: 'SYNTH_TENANT',
+  ...over
+})
+
+describe('RelayIngressManager lifecycle is registry-driven (a third platform)', () => {
+  const build = () => {
+    const built: SyntheticIngest[] = []
+    const manager = new RelayIngressManager(deps(), [...relayIngressPlugins, syntheticPlugin(built)])
+    return { built, manager, internals: internalsOf(manager) }
+  }
+
+  it('registers beside the real platforms rather than replacing them', () => {
+    const { internals } = build()
+    expect(internals.entryFor('slack')).toBeDefined()
+    expect(internals.entryFor('feishu')).toBeDefined()
+    expect(internals.entryFor(SYNTHETIC)).toBeDefined()
+  })
+
+  it('unassign stops the ingest, drops the pool entry, and forgets the demux entries', async () => {
+    const { built, manager, internals } = build()
+    await manager.assign(syntheticAssignment())
+
+    const entry = internals.entryFor(SYNTHETIC)
+    expect(entry.pool.get(BOT_ID)).toBeDefined()
+    expect(entry.demux.indexes.byAppTenant.size).toBe(1)
+
+    await manager.unassign(BOT_ID)
+
+    // Named-pool teardown reached none of these: the ingest kept running, its
+    // pool entry leaked, and the composite entry outlived the assignment that
+    // derived it.
+    expect(built[0]?.stops).toBe(1)
+    expect(entry.pool.get(BOT_ID)).toBeUndefined()
+    expect(entry.demux.indexes.byAppTenant.size).toBe(0)
+    expect(entry.demux.indexes.byApp.size).toBe(0)
+  })
+
+  it('re-assign stops the previous ingest instead of rebuilding beside it', async () => {
+    const { built, manager, internals } = build()
+    await manager.assign(syntheticAssignment())
+    await manager.assign(syntheticAssignment({ credentialRevision: 2 }))
+
+    expect(built).toHaveLength(2)
+    expect(built[0]?.stops).toBe(1)
+    expect(built[1]?.stops).toBe(0)
+    // Exactly one live instance, and it is the rebuild.
+    expect(internals.entryFor(SYNTHETIC).pool.get(BOT_ID)).toBe(built[1])
+  })
+
+  it('re-assign forgets the previous identity before indexing the new one', async () => {
+    const { manager, internals } = build()
+    await manager.assign(syntheticAssignment())
+    // This install lost its tenant scope AND moved app id. Both old entries
+    // must go, or a stale one keeps resolving deliveries onto this bot.
+    await manager.assign(syntheticAssignment({ apiAppId: 'SYNTH_APP_2', teamId: undefined }))
+
+    const { demux } = internals.entryFor(SYNTHETIC)
+    expect(demux.indexes.byAppTenant.size).toBe(0)
+    expect(demux.resolve({ appId: 'SYNTH_APP' })).toBeUndefined()
+    expect(demux.resolve({ appId: 'SYNTH_APP_2' })).toBe(BOT_ID)
+  })
+
+  it('stopAll closes a third platform’s ingests', async () => {
+    const { built, manager, internals } = build()
+    await manager.assign(syntheticAssignment())
+
+    await manager.stopAll()
+
+    expect(built[0]?.stops).toBe(1)
+    expect(internals.entryFor(SYNTHETIC).pool.get(BOT_ID)).toBeUndefined()
+  })
+
+  it('leaves a real platform’s teardown unchanged', async () => {
+    const { manager, internals } = build()
+    // Feishu rides the same registry-driven teardown. Its ingest is a pure
+    // decoder, so "nothing to stop, only to drop" is now its own `stop()`'s
+    // business rather than a per-platform comment in core.
+    await manager.assign({
+      ...assignment(),
+      platform: 'feishu',
+      secrets: { verificationToken: 'verify-token' },
+      apiAppId: 'cli_example'
+    })
+    expect(internals.feishuPool.get(BOT_ID)).toBeDefined()
+    expect(internals.entryFor('feishu').demux.indexes.byApp.size).toBe(1)
+
+    await manager.unassign(BOT_ID)
+    expect(internals.feishuPool.get(BOT_ID)).toBeUndefined()
+    expect(internals.entryFor('feishu').demux.indexes.byApp.size).toBe(0)
   })
 })

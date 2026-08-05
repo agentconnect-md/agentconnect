@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { SHARED_AGENT_SELECT_ACTION_ID } from '@agentconnect.md/protocol'
-import { registerSlackHttpIngress, type SlackIngestResolver } from './http-ingress.js'
+import { registerSlackHttpIngress } from './http-ingress.js'
+import type { RelayInboundSeam } from '../contract.js'
 
 const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 
@@ -27,7 +28,7 @@ function makeHarness(): Harness {
     inboundCalls: []
   }
   const seenEventIds = new Set<string>()
-  const resolver: SlackIngestResolver = {
+  const resolver: RelayInboundSeam = {
     handleInbound: async (platformId, _rawBody, body, headers) => {
       const b = body as {
         type?: string

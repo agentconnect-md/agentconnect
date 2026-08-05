@@ -46,6 +46,7 @@
  * (`credentialRevision`), and event-identity dedup STORAGE — the plugin mints
  * the dedup id (it derives from parsed action semantics); core owns the table.
  */
+import type { FastifyInstance } from 'fastify'
 import type { RcBotChannels, RdAck, RdMsgPlatformAction, WireNormalizedMessage } from '@agentconnect.md/protocol'
 import type { BotAssignment, RouteTarget } from '../bot-arbitration.js'
 import type { Logger } from '../log.js'
@@ -74,7 +75,15 @@ export interface RelayBotIngress {
   /** Open long-lived resources (Slack resolves its bot user id lazily; a pure
    *  HTTP decoder has nothing to open). Absent ⇒ nothing to start. */
   start?(): Promise<void>
-  /** Release everything. Idempotent — assign rebuilds call it first. */
+  /**
+   * Release everything. Idempotent — assign rebuilds call it first.
+   *
+   * REQUIRED, not optional, and that is the point: teardown iterates the
+   * registry and cannot know which platforms have resources to release, so
+   * "nothing to stop, only to drop" is THIS method's business — a pure decoder
+   * implements it as a no-op. Core naming the platforms that need stopping is
+   * how a third platform's ingest came to leak (audit F2).
+   */
   stop(): Promise<void> | void
   /**
    * OPTIONAL relay-side egress/read facet (§8: "Slack performs relay-side
@@ -194,6 +203,27 @@ export interface HandledDelivery {
   syncResponse?: unknown
 }
 
+/** The relay-core INBOUND seam a platform's HTTP route drives: demux + verify
+ *  + handle in one core-owned ladder (satisfied by `RelayIngressManager`), with
+ *  the plugin owning the cryptography and everything after authentication.
+ *  `undefined` ⇒ no assigned bot owns the delivery, and the route answers 401. */
+export interface RelayInboundSeam {
+  handleInbound(
+    platformId: string,
+    rawBody: Buffer,
+    body: unknown,
+    headers: Record<string, string | string[] | undefined>
+  ): Promise<HandledDelivery | undefined>
+}
+
+/** What {@link RelayPlatformIngressPlugin.installRoutes} is handed. `manager` is
+ *  LATE-BOUND deliberately: routes must register before `listen()`, while the
+ *  manager is constructed alongside the rd/* server that comes after it. */
+export interface RelayIngressRouteDeps {
+  manager: () => RelayInboundSeam | undefined
+  log: Logger
+}
+
 /**
  * One platform's relay ingress plugin — stateless, per-platform, registered
  * once. Adding a platform registers one of these; no manager fork grows.
@@ -209,6 +239,27 @@ export interface HandledDelivery {
 export interface RelayPlatformIngressPlugin<TIngest extends RelayBotIngress = RelayBotIngress, TVerified = unknown> {
   /** Platform id (§6.1 vocabulary). Never parsed. */
   readonly platformId: string
+  /**
+   * Mount this platform's PUBLIC HTTP callback routes. Closes §6 item 12's
+   * "route mounting by name" blind spot (audit F5) the way the CP closed its
+   * twin in #605 (`installRoutes(scope)`): the bootstrap asks every registered
+   * plugin instead of calling `registerSlackHttpIngress` /
+   * `registerFeishuHttpIngress` by name, so adding a platform stops requiring
+   * an edit to `index.ts`.
+   *
+   * THE PLUGIN DECLARES ITS OWN PATHS, which is what makes the move a no-op:
+   * public callback URLs are EXTERNAL contracts — baked into a platform app's
+   * event-subscription config and into the deployment gateway's routing, and
+   * this repo has already been bitten by a public/internal prefix mismatch
+   * turning a live callback into a 404. `platforms/route-mounts.test.ts` pins
+   * the resulting table by enumeration.
+   *
+   * Called once, before `listen()`. The plugin owns its own isolated Fastify
+   * scope: both live ingests need raw-buffer content-type parsers (the HMAC is
+   * over the exact request bytes) that must never leak onto the relay's other
+   * JSON surfaces.
+   */
+  installRoutes(app: FastifyInstance, deps: RelayIngressRouteDeps): void
   /**
    * Validate the assignment's secrets / ingress identity and build the bot's
    * ingest instance. `undefined` = incomplete assignment (log-and-skip; the CP

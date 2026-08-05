@@ -29,9 +29,7 @@ import type {
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
 import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
-import { SlackHttpIngest } from './platforms/slack/http-ingest.js'
-import { FeishuHttpIngest } from './platforms/feishu/http-ingest.js'
-import { DemuxIndex, IngressPool } from './platforms/registry.js'
+import { DemuxIndex, IngressPool, relayIngressPlugins } from './platforms/registry.js'
 import type {
   HandledDelivery,
   RelayBotIngress,
@@ -39,8 +37,6 @@ import type {
   RelayPlatformIngressPlugin
 } from './platforms/contract.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
-import { slackIngressPlugin } from './platforms/slack/ingress-plugin.js'
-import { feishuIngressPlugin } from './platforms/feishu/ingress-plugin.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 
 /** Cap on the learned `api_app_id → botId` demux index before it is flushed. */
@@ -127,50 +123,36 @@ export interface RelayIngressManagerDeps {
   log: Logger
 }
 
-// The interaction dedup-id minters moved into their platform plugins (§8: the
-// plugin mints the dedup id; core owns the table). Re-exported for existing
-// importers until the route files migrate.
-export { httpSlackActionMsgId, httpSlackShortcutMsgId } from './platforms/slack/ingress-plugin.js'
-export { httpFeishuActionMsgId } from './platforms/feishu/ingress-plugin.js'
+/** One registered platform's live state: its plugin, its pool of per-bot
+ *  ingests, and its demux identity index. The pool holds ONLY ingests this
+ *  plugin built, which is what lets core hand a pooled ingest straight back to
+ *  `plugin.verify` / `plugin.handle` through the erased `RelayBotIngress`
+ *  bound — core never reads a `TIngest`'s internals (§8). */
+interface RelayPlatformEntry {
+  plugin: RelayPlatformIngressPlugin
+  pool: IngressPool<RelayBotIngress>
+  demux: DemuxIndex
+}
 
 export class RelayIngressManager {
   private readonly router = new BotArbitrationRouter()
-  /** §8 registry (S3): one pool of per-bot ingests per platform, and one demux
-   *  identity index beside each pool. The index owns the composite/app-only
-   *  decision per ASSIGNMENT shape (tenant-scoped ⇒ composite only, never
-   *  learned; app-only ⇒ learnable) — see platforms/registry.ts. */
-  private readonly slackPool = new IngressPool<SlackHttpIngest>('slack')
-  private readonly feishuPool = new IngressPool<FeishuHttpIngest>('feishu')
-  private readonly slackDemux = new DemuxIndex()
-  private readonly feishuDemux = new DemuxIndex()
-  /** §8 plugin registry: adding a platform adds one entry — assign() never
-   *  grows a branch. The typed pools above stay for the typed read sites
-   *  (resolveVerified pair), aliased into the entries here. */
-  private readonly ingressPlugins = new Map<
-    string,
-    {
-      plugin: RelayPlatformIngressPlugin<SlackHttpIngest | FeishuHttpIngest, unknown>
-      pool: IngressPool<SlackHttpIngest | FeishuHttpIngest>
-      demux: DemuxIndex
-    }
-  >([
-    [
-      'slack',
-      {
-        plugin: slackIngressPlugin as never,
-        pool: this.slackPool as IngressPool<SlackHttpIngest | FeishuHttpIngest>,
-        demux: this.slackDemux
-      }
-    ],
-    [
-      'feishu',
-      {
-        plugin: feishuIngressPlugin as never,
-        pool: this.feishuPool as IngressPool<SlackHttpIngest | FeishuHttpIngest>,
-        demux: this.feishuDemux
-      }
-    ]
-  ])
+  /**
+   * §8 registry (S3): one entry per REGISTERED platform — its plugin, one pool
+   * of per-bot ingests, and one demux identity index. Adding a platform adds
+   * one line to `platforms/registry.ts`; no method here grows a branch, and no
+   * method here names a platform.
+   *
+   * Every lifecycle edge reads this map: assign builds through it, inbound
+   * demuxes through it, and teardown/shutdown iterate it (audit F2/F3/F4 —
+   * before that, three of them named `slackPool`/`feishuPool` directly and a
+   * third platform's ingest was never stopped, its pool entry never dropped,
+   * and its demux entries never forgotten).
+   *
+   * The index owns the composite/app-only decision per ASSIGNMENT shape
+   * (tenant-scoped ⇒ composite only, never learned; app-only ⇒ learnable) —
+   * see platforms/registry.ts.
+   */
+  private readonly ingressPlugins: ReadonlyMap<string, RelayPlatformEntry>
   /** Core's side of the §8 contract — what a plugin's ingest may call back
    *  into. Every member maps onto the same manager/router machinery the
    *  pre-plugin callbacks used; nothing here is platform-shaped. */
@@ -262,7 +244,24 @@ export class RelayIngressManager {
     }
   }
 
-  constructor(private readonly deps: RelayIngressManagerDeps) {}
+  /**
+   * @param plugins The platform set this manager serves. Defaults to the static
+   *   registry — production never passes it. Tests inject a synthetic platform
+   *   to prove the lifecycle is registry-driven rather than slack+feishu-shaped,
+   *   which is the only way to catch an F2/F3/F4 regression: a suite built from
+   *   the two real platforms passes against the hand-named version too.
+   */
+  constructor(
+    private readonly deps: RelayIngressManagerDeps,
+    plugins: readonly RelayPlatformIngressPlugin[] = relayIngressPlugins
+  ) {
+    this.ingressPlugins = new Map(
+      plugins.map((plugin) => [
+        plugin.platformId,
+        { plugin, pool: new IngressPool<RelayBotIngress>(plugin.platformId), demux: new DemuxIndex() }
+      ])
+    )
+  }
 
   /** Emit a thread-assign report; on a non-READY CP link stash it for retry. */
   private report(m: RcThreadAssign): void {
@@ -405,8 +404,7 @@ export class RelayIngressManager {
     this.router.upsert(a)
     // Rebuild the ingest (secrets or transport may have rotated). Idempotent.
     await this.stopIngest(a.botId)
-    this.slackDemux.forget(a.botId)
-    this.feishuDemux.forget(a.botId)
+    this.forgetDemux(a.botId)
 
     // §8 plugin registry: the platform's plugin validates the assignment shape
     // and builds the per-bot ingest; the demux index derives the identity scope
@@ -467,8 +465,7 @@ export class RelayIngressManager {
       return
     }
     this.clearConversationReportLatches(botId)
-    this.slackDemux.forget(botId)
-    this.feishuDemux.forget(botId)
+    this.forgetDemux(botId)
     this.router.remove(botId)
     await this.stopIngest(botId)
   }
@@ -535,12 +532,6 @@ export class RelayIngressManager {
     return entry.plugin.handle(hit.ingest, hit.verified, this.ingressHost)
   }
 
-  /** Test/inspection view of the demux indexes (no secret material). */
-  get demuxIndexes(): { byApiApp: ReadonlyMap<string, string>; byAppTeam: ReadonlyMap<string, string> } {
-    const { byApp, byAppTenant } = this.slackDemux.indexes
-    return { byApiApp: byApp, byAppTeam: byAppTenant }
-  }
-
   /** Make the inline selector effective for the current Slack thread immediately.
    *  The CP channel-owner update remains the durable/default side of the same choice;
    *  local affinity closes the gap for ordinary, un-mentioned follow-up messages. */
@@ -558,20 +549,16 @@ export class RelayIngressManager {
     this.report({ botId, sessionKey, agentId: route.agentId, daemonId: route.daemonId })
   }
 
-  /** Close every ingest (relay shutdown). */
+  /** Close every ingest (relay shutdown) — across every REGISTERED platform,
+   *  not the union of two named pools (audit F4). */
   async stopAll(): Promise<void> {
     if (this.revokeRetryTimer) {
       clearTimeout(this.revokeRetryTimer)
       this.revokeRetryTimer = undefined
     }
-    await Promise.all(
-      [
-        ...new Set([
-          ...[...this.slackPool.entries()].map(([id]) => id),
-          ...[...this.feishuPool.entries()].map(([id]) => id)
-        ])
-      ].map((id) => this.stopIngest(id))
-    )
+    const bots = new Set<string>()
+    for (const { pool } of this.ingressPlugins.values()) for (const [botId] of pool.entries()) bots.add(botId)
+    await Promise.all([...bots].map((id) => this.stopIngest(id)))
   }
 
   /** The bot's live ingest, found through its ASSIGNMENT's platform entry —
@@ -583,14 +570,35 @@ export class RelayIngressManager {
     return entry?.pool.get(botId)
   }
 
+  /**
+   * Tear `botId`'s ingest down wherever it lives (audit F2).
+   *
+   * EVERY pool is asked rather than the one its assignment names, and that is
+   * required, not defensive: `unassign` removes the routing entry BEFORE
+   * calling this, so by now there is no assignment left to look the platform up
+   * from. It is also what the two hand-named pools did, in this same order.
+   *
+   * Per pool the order is unchanged — drop the entry FIRST, then stop — so a
+   * concurrent inbound delivery can never demux onto an ingest that is closing.
+   * "Nothing to stop, only to drop" stopped being core's business here: it is
+   * `RelayBotIngress.stop()`'s, and a pure decoder implements it as a no-op.
+   */
   private async stopIngest(botId: string): Promise<void> {
-    const cur = this.slackPool.get(botId)
-    if (cur) {
-      this.slackPool.delete(botId)
+    for (const { pool } of this.ingressPlugins.values()) {
+      const cur = pool.get(botId)
+      if (!cur) continue
+      pool.delete(botId)
       await cur.stop()
     }
-    // A Feishu ingest is a pure decoder — nothing to stop, only to drop.
-    this.feishuPool.delete(botId)
+  }
+
+  /** Drop every demux entry for `botId`, through the registry rather than a
+   *  hand list of two (audit F3). A surviving composite entry is exactly the
+   *  cross-tenant delivery hazard {@link DemuxIndex} exists to prevent, so no
+   *  platform may be left out of the sweep; `forget` evicts BOTH the composite
+   *  entry and every app-only entry pointing at the bot. */
+  private forgetDemux(botId: string): void {
+    for (const { demux } of this.ingressPlugins.values()) demux.forget(botId)
   }
 
   private isAgentBotMessage(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): boolean {

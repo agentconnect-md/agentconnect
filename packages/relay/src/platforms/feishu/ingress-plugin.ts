@@ -29,6 +29,7 @@ import {
   type WireFeishuCardActionEvent
 } from '@agentconnect.md/protocol'
 import { FeishuHttpIngest, type FeishuCallbackHeaders, type VerifiedFeishuCallback } from './http-ingest.js'
+import { registerFeishuHttpIngress } from './http-ingress.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
 
@@ -93,6 +94,10 @@ export async function forwardFeishuCardAction(
 
 export const feishuIngressPlugin: RelayPlatformIngressPlugin<FeishuHttpIngest, VerifiedFeishuCallback> = {
   platformId: 'feishu',
+
+  // `POST /feishu/events`, declared by the module that owns it — the bootstrap
+  // no longer imports this by name (audit F5).
+  installRoutes: registerFeishuHttpIngress,
 
   buildIngest(a: BotAssignment, host: RelayIngressHost): FeishuHttpIngest | undefined {
     if (!a.apiAppId || !('verificationToken' in a.secrets)) {

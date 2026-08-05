@@ -27,6 +27,7 @@ import {
   type SlackInteractiveBody,
   type SlackMessageEvent
 } from './http-ingest.js'
+import { registerSlackHttpIngress } from './http-ingress.js'
 import { verifySlackSignature } from '../../hooks/signature.js'
 import { sessionKeyOf } from '../../bot-arbitration.js'
 import type { BotAssignment } from '../../bot-arbitration.js'
@@ -180,6 +181,10 @@ function headerString(v: string | string[] | undefined): string | undefined {
 
 export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, SlackVerifiedDelivery> = {
   platformId: 'slack',
+
+  // `POST /slack/events` + `POST /slack/interactions`, declared by the module
+  // that owns them — the bootstrap no longer imports this by name (audit F5).
+  installRoutes: registerSlackHttpIngress,
 
   buildIngest(a: BotAssignment, host: RelayIngressHost): SlackHttpIngest | undefined {
     if (!('botToken' in a.secrets)) {
