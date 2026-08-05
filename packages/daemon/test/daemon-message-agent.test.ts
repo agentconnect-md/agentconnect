@@ -248,7 +248,7 @@ describe('messageAgent: same-daemon delivery', () => {
     expect(msg.thread).toBe('100.1')
     expect(msg.sender).toEqual({ id: 'bot-a', isBot: true })
     // The delivered text names the caller (an isolated callee sees only this).
-    expect(msg.text).toBe('@bot-a: do the thing')
+    expect(msg.text).toBe('From bot-a: do the thing')
     expect(msg.msgId).toMatch(/^agentcall:C1:\d+$/)
     expect(callMeta).toMatchObject({ callFrom: 'bot-a' })
     expect(callMeta.deliveryId).toBe(msg.msgId.split(':').pop())

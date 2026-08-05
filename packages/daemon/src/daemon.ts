@@ -7941,7 +7941,7 @@ export class Daemon {
       channel: sessionChannel,
       ...(thread !== undefined ? { thread } : {}),
       sender: { id: msg.trustedFromAgentId, isBot: true },
-      // The forwarded text already names the caller (`@caller: …`, built on the caller's
+      // The forwarded text already names the caller (`From <caller>: …`, built on the caller's
       // daemon in prepareAgentDelivery) — deliver it as-is. Re-wrapping it here would
       // double-frame it AND leak the caller's raw agentId, which the caller can't resolve
       // for a remote peer anyway.
@@ -8028,7 +8028,10 @@ export class Daemon {
     text: string
   } {
     const callerLabel = this.agentDisplayLabel(req.callerAgentId)
-    const deliverText = `@${callerLabel}: ${req.text}`
+    // `@Caller:` reads like an instruction addressed TO the caller and can make
+    // the callee's no-response rule suppress a legitimate direct call. Use an
+    // explicit sender label instead; trusted CallMeta remains the authority.
+    const deliverText = `From ${callerLabel}: ${req.text}`
     const deliveryId = monotonicTs()
     const thread = req.thread ?? deliveryId
     return { deliveryId, thread, text: deliverText }

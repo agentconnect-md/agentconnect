@@ -53,6 +53,16 @@ export const EXPLICIT_MENTION_REMINDER =
   `do not return ${NO_RESPONSE_SENTINEL} merely because of that ID mismatch.\n` +
   `</system-reminder>`
 
+/** Trusted routing context for a daemon-delivered agent call. The payload may
+ * quote or discuss any agent, so the model must not reinterpret names in the
+ * body as evidence that the activation belongs to someone else. */
+export const DIRECT_AGENT_CALL_REMINDER =
+  `<system-reminder>\n` +
+  `Routing fact: This activation is a trusted direct agent call addressed to you. A leading ` +
+  `\`From <agent>:\` label identifies the caller; it does not address that agent. Follow the request and respond ` +
+  `normally. Do not return ${NO_RESPONSE_SENTINEL} merely because the body names or discusses another agent.\n` +
+  `</system-reminder>`
+
 /** True while `trimmedBody` could still become the bare sentinel as more chunks stream
  *  in — i.e. it is a prefix of (or exactly) the sentinel. Convergers use this to HOLD
  *  buffered body instead of posting it, so a streamed sentinel never leaks a partial

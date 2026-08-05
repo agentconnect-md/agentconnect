@@ -11,6 +11,12 @@ import type { PrismaLike } from '../prisma.js'
 import type { WebchatConversationBinding, WebchatConversationRepo, WebchatParticipant } from '../ports.js'
 import { AgentId, type OrgId } from '../../domain/ids.js'
 
+/** CP-minted webchat conversation ids are UUIDs. Daemon-local A2A children can
+ * retain `platform: webchat` while using an `a2a:<caller>` channel; repository
+ * reads must treat that synthetic coordinate as a miss instead of handing it to
+ * a UUID-backed Prisma column. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export class PgWebchatConversationRepo implements WebchatConversationRepo {
   constructor(private readonly db: PrismaLike) {}
 
@@ -51,6 +57,7 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
   }
 
   async participants(conversationId: string): Promise<WebchatParticipant[]> {
+    if (!UUID_RE.test(conversationId)) return []
     const rows = await this.db.webchatConversationAgent.findMany({
       where: { conversationId },
       orderBy: { ord: 'asc' },
@@ -81,6 +88,7 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
   }
 
   async findOwner(conversationId: string, agentId: AgentId): Promise<string | null> {
+    if (!UUID_RE.test(conversationId)) return null
     const row = await this.db.webchatConversation.findFirst({
       where: {
         id: conversationId,
