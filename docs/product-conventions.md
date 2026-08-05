@@ -140,9 +140,10 @@ ladder as any other message**, with the author removed from the candidate set:
 - each participant is an independent delivery with its own session and its own `!stop`.
   A participant you stopped stays stopped, and still records the conversation for
   catch-up;
-- **an author is never the target**, on any path. This is the one absolute: an agent's
-  own reply always matches its own rule, so self-activation would be unconditional
-  rather than merely loop-prone;
+- **an ordinary reply never targets its author.** An agent's own reply always matches its
+  own rule, so routing provider echoes back to the author would be unconditional rather
+  than merely loop-prone. The explicit `toAgent` channel-root form below is the bounded
+  exception: its one paired internal wake activates the new child exactly once;
 - agent-authored text cannot issue control commands (`!stop`, `!resume`, configuration
   actions);
 - a third-party bot is unchanged: where supported, it may activate an agent only through
@@ -214,7 +215,7 @@ visible in-thread form** — every visible send lands at the channel **root**:
   or addressing a human, as in case 2a / case 3.
 
 The visible post is suppressed when the wake would be refused for a locally-decidable
-reason (capability disabled, invalid target id, self, hop limit, or a local target that
+reason (capability disabled, invalid target id, a postless self-call, hop limit, or a local target that
 disallows the caller), so a rejected hand-off leaves no misleading post. One accepted
 best-effort edge: a target on another daemon whose call policy terminally rejects the
 caller can still leave a visible post, because that policy verdict is only known on the
@@ -232,6 +233,12 @@ The session starts idle, retains its parent-session lineage, and records the roo
 transcript display. The first real reply in that thread receives the root as preceding
 context before the new message. Session initialization itself produces no agent output,
 tool calls, memory recall or capture, turn evaluation, or token usage.
+
+When the post instead carries `toAgent`, it is an explicit activation even when the
+target is the posting agent itself. The visible root and internal wake remain one paired
+delivery, so the new child runs exactly once; the platform's echo is only the second
+observation of that delivery. A postless self-call remains invalid because it has no new
+conversation boundary and can recurse without producing a user-visible hand-off.
 
 ## A parent-session reply is injected, and the parent answers normally
 

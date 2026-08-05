@@ -438,7 +438,7 @@ export interface OpsDeps {
   messageAgent: (req: MessageAgentReq) => Promise<MessageAgentResult>
   /** Side-effect-free preflight for a peer wake: returns a typed rejection reason if
    *  {@link messageAgent} would refuse this wake for a locally-decidable reason (capability
-   *  disabled, invalid target id, self, hop-limit, caller outbound policy, or a LOCAL
+   *  disabled, invalid target id, a postless self-call, hop-limit, caller outbound policy, or a LOCAL
    *  target's inbound policy/channel membership), else null. `sendMessage` uses it to skip the visible channel post for a
    *  `toAgent`+`channel` wake that will not be delivered. Absent in the chat CLI / tests with
    *  no daemon ⇒ the post is not gated (treated as null). */
@@ -980,8 +980,8 @@ export async function executeTool(
           }
         : undefined
     // PREFLIGHT (side-effect-free): would messageAgent refuse this wake for a locally-decidable
-    // reason (capability off / bad target id / self / hop-limit / a local target that disallows
-    // this caller)? If so we must NOT leave a misleading public post for a peer that is never
+    // reason (capability off / bad target id / postless self-call / hop-limit / a local target
+    // that disallows this caller)? If so we must NOT leave a misleading public post for a peer that is never
     // woken — so the post below is gated on `wakeRejection === null`. The wake itself still runs
     // through messageAgent (it re-checks, emits the evaluation event, and returns the typed
     // reason). A REMOTE target's call-policy can't be preflighted here (that verdict lives on the
@@ -1010,6 +1010,10 @@ export async function executeTool(
     // (undefined if no real ts came back — the peer then falls back to messageAgent's
     // default thread).
     let postedThread: string | undefined
+    // A provider-issued id proves that the visible root has a stable conversation
+    // boundary. `post.ts` may still use a synthetic local id for display/recording when
+    // a best-effort gateway returns no id; that fallback must not authorize a paired wake.
+    let providerPostId: string | undefined
     // §3.2: the daemon-minted id that makes the visible post and the internal wake ONE
     // logical delivery. Minted before the post so both halves carry it, and only for the
     // paired form — an ordinary channel post has no wake to pair with, and stamping one
@@ -1087,7 +1091,8 @@ export async function executeTool(
             }
           : {})
       }
-      const ts = (await gw.postMessage(postChannel, body, undefined, identity)) ?? `local-${deps.now()}`
+      providerPostId = await gw.postMessage(postChannel, body, undefined, identity)
+      const ts = providerPostId ?? `local-${deps.now()}`
       // Whether the target is a DM decides the thread key on the platforms that keep a DM as one
       // continuous conversation, and no id carries that — ask the platform, once, and only where
       // the answer can change the key. A failed lookup falls back to the non-DM conversation
@@ -1096,7 +1101,10 @@ export async function executeTool(
         wantPlatform === 'telegram' || wantPlatform === 'feishu'
           ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
           : false
-      postedThread = ts.startsWith('local-') ? undefined : threadKeyForPost(wantPlatform, postChannel, ts, isDmTarget)
+      postedThread =
+        providerPostId === undefined
+          ? undefined
+          : threadKeyForPost(wantPlatform, postChannel, providerPostId, isDmTarget)
       // Record the post in the thread it BELONGS to — the one it just created for a root post,
       // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
       // row to coords that match no session at all). It is also what resolves a later reply to
@@ -1186,10 +1194,10 @@ export async function executeTool(
       wake = await deps.messageAgent({
         ...baseWakeReq,
         ...(threadForWake !== undefined ? { thread: threadForWake } : {}),
-        ...(channel !== undefined && post !== undefined ? { transcriptTs: post.ts } : {}),
+        ...(channel !== undefined && providerPostId !== undefined ? { transcriptTs: providerPostId } : {}),
         // §3.2: the SAME id the visible post carries, so the target's rendezvous can
         // recognize the two as one delivery whichever arrives first.
-        ...(agentCallDeliveryId !== undefined && post !== undefined ? { agentCallDeliveryId } : {})
+        ...(agentCallDeliveryId !== undefined && providerPostId !== undefined ? { agentCallDeliveryId } : {})
       })
     }
 

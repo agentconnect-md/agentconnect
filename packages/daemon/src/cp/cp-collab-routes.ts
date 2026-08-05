@@ -159,7 +159,8 @@ export class CpCollabRoutes {
     if (caller.orgId !== target.orgId) return false
     // A caller always resolves ITSELF: an agent with outboundPolicy 'selected' does
     // not normally list itself in its own allow-list, yet it must still see itself in
-    // a directory listing. (A self-WAKE is rejected earlier, with reason 'self'.)
+    // a directory listing. Postless self-wakes are rejected by the delivery path; a
+    // paired channel-root self-wake intentionally uses this self admission.
     if (callerAgentId === targetAgentId) return true
     if (caller.outboundPolicy === 'selected' && !caller.allowedTargetAgentIds.includes(targetAgentId)) return false
     if (target.callPolicy === 'selected' && !target.allowedCallerAgentIds.includes(callerAgentId)) return false

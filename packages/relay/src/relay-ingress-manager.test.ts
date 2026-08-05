@@ -788,6 +788,29 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
       })
     })
 
+    it('forwards a PAIRED self observation before ordinary author exclusion', async () => {
+      const { internals, sendMsg } = managerWith({ admitsAgentCall: vi.fn(() => false) })
+      const selfOwned = channelAutoOwned()
+      selfOwned.routes[selfOwned.routes.length - 1]!.agentId = AUTHOR_ID
+      internals.router.upsert(selfOwned)
+
+      await internals.forward(
+        BOT_ID,
+        agentFinal(
+          { mentionedAgentIds: [AUTHOR_ID], agentCallDeliveryId: 'd-self' },
+          { text: 'continue here', mentionedBots: [] }
+        )
+      )
+
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      expect(sendMsg.mock.calls[0]![0]).toMatchObject({
+        agentId: AUTHOR_ID,
+        trustedFromAgentId: AUTHOR_ID,
+        trustedRecipientAgentIds: [AUTHOR_ID],
+        trustedAgentCallDeliveryId: 'd-self'
+      })
+    })
+
     it('always reports the delivery as implicitly selected', async () => {
       // Every agent-authored forward is arbitration-selected now, mention in the body or
       // not — the target needs that fact to apply its `!stop` gate correctly.
