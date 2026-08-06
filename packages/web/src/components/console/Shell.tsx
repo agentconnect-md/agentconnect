@@ -752,7 +752,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
                   </button>
                 )}
                 <div className="flex-none">
-                  <NotificationBell />
+                  <NotificationBell placement="top-left" />
                 </div>
                 {/* Same 22px box as the brand row's search button, and the same 2px
               inset from the rail's edge — the two sit on one vertical centre line. */}

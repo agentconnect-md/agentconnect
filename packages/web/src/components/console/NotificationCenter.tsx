@@ -30,7 +30,7 @@ function SeverityIcon({ severity }: { severity: NotificationSeverity }) {
   }
 }
 
-export function NotificationBell() {
+export function NotificationBell({ placement = 'bottom-right' }: { placement?: 'bottom-right' | 'top-left' }) {
   const { notifications, unreadCount, markAllAsRead, clearAll, markAsRead } = useNotifications()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
@@ -50,6 +50,9 @@ export function NotificationBell() {
 
   const items = filter === 'unread' ? notifications.filter((n) => !n.read) : notifications
 
+  const dropdownPositionCls =
+    placement === 'top-left' ? 'absolute bottom-[calc(100%_+_8px)] left-0 z-50' : 'absolute right-0 top-10 z-50'
+
   return (
     <div ref={menuRef} className="relative inline-block">
       <button
@@ -61,14 +64,16 @@ export function NotificationBell() {
       >
         <Icon name="bell" size={16} />
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-(--magenta-600) px-1 text-[10px] font-semibold leading-none text-white shadow-xs">
+          <span className="absolute -top-1 -right-1 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-(--magenta-600) px-1 text-[10px] font-semibold leading-none text-white shadow-(--shadow-xs)">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-10 z-50 w-[360px] max-w-[calc(100vw-32px)] rounded-lg border border-(--border-default) bg-(--surface-card) p-0 shadow-(--shadow-md)">
+        <div
+          className={`${dropdownPositionCls} w-[360px] max-w-[calc(100vw-32px)] rounded-lg border border-(--border-default) bg-(--surface-card) p-0 shadow-(--shadow-md)`}
+        >
           {/* Header */}
           <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">
             <div className="flex items-center gap-2">
@@ -109,7 +114,7 @@ export function NotificationBell() {
               type="button"
               className={`rounded-xs px-2 py-1 text-[12px] font-medium ${
                 filter === 'all'
-                  ? 'bg-(--surface-card) text-(--text-primary) shadow-xs'
+                  ? 'bg-(--surface-card) text-(--text-primary) shadow-(--shadow-xs)'
                   : 'text-(--text-tertiary) hover:text-(--text-primary)'
               }`}
               onClick={() => setFilter('all')}
@@ -120,7 +125,7 @@ export function NotificationBell() {
               type="button"
               className={`rounded-xs px-2 py-1 text-[12px] font-medium ${
                 filter === 'unread'
-                  ? 'bg-(--surface-card) text-(--text-primary) shadow-xs'
+                  ? 'bg-(--surface-card) text-(--text-primary) shadow-(--shadow-xs)'
                   : 'text-(--text-tertiary) hover:text-(--text-primary)'
               }`}
               onClick={() => setFilter('unread')}
@@ -184,24 +189,26 @@ export function NotificationToastContainer() {
   return (
     <div className="fixed top-4 right-4 z-50 flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2 pointer-events-none">
       {toasts.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)} />
+        <ToastItem key={toast.id} toast={toast} onDismiss={dismissToast} />
       ))}
     </div>
   )
 }
 
-function ToastItem({ toast, onDismiss }: { toast: NotificationItem; onDismiss: () => void }) {
+function ToastItem({ toast, onDismiss }: { toast: NotificationItem; onDismiss: (id: string) => void }) {
+  const id = toast.id
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      onDismiss()
+      onDismiss(id)
     }, 6000)
     return () => clearTimeout(timer)
-  }, [onDismiss])
+  }, [id, onDismiss])
 
   return (
     <div
       role={toast.severity === 'error' || toast.severity === 'warning' ? 'alert' : 'status'}
-      className="pointer-events-auto flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) transition-all animate-in fade-in slide-in-from-top-2"
+      className="pointer-events-auto flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) transition-all duration-200 ease-out"
     >
       <SeverityIcon severity={toast.severity} />
       <div className="min-w-0 flex-1">
@@ -216,7 +223,7 @@ function ToastItem({ toast, onDismiss }: { toast: NotificationItem; onDismiss: (
         type="button"
         className="iconbtn -m-1 h-6 w-6 flex-none items-center justify-center rounded-xs text-(--text-tertiary) hover:text-(--text-primary)"
         aria-label="Dismiss toast"
-        onClick={onDismiss}
+        onClick={() => onDismiss(id)}
       >
         <Icon name="x" size={14} />
       </button>

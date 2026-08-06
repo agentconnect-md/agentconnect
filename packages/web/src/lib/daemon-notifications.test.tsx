@@ -5,20 +5,19 @@ import { NotificationProvider, useNotifications } from '@/lib/notifications'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useEffect } from 'react'
 
-function TestComponent({
+function TestNotifierComponent({
   daemons,
-  onNotifyCount
+  onNotify
 }: {
   daemons: DaemonRow[]
-  onNotifyCount: (count: number, lastTitle?: string, lastSeverity?: string) => void
+  onNotify: (notifications: ReturnType<typeof useNotifications>['notifications']) => void
 }) {
   const notif = useNotifications()
   useDaemonNotifier(daemons)
 
   useEffect(() => {
-    const last = notif.notifications[0]
-    onNotifyCount(notif.notifications.length, last?.title, last?.severity)
-  }, [notif.notifications, onNotifyCount])
+    onNotify(notif.notifications)
+  }, [notif.notifications, onNotify])
 
   return null
 }
@@ -61,7 +60,7 @@ describe('useDaemonNotifier', () => {
     let count = 0
     const html = renderToStaticMarkup(
       <NotificationProvider>
-        <TestComponent daemons={[daemon]} onNotifyCount={(c) => (count = c)} />
+        <TestNotifierComponent daemons={[daemon]} onNotify={(n) => (count = n.length)} />
       </NotificationProvider>
     )
     expect(html).toBe('')
@@ -70,7 +69,7 @@ describe('useDaemonNotifier', () => {
 })
 
 describe('notifySessionRetentionResult', () => {
-  it('adds success notification for session cleanup', () => {
+  it('adds success notification for session cleanup with purged count', () => {
     const addNotif = vi.fn()
     notifySessionRetentionResult(addNotif, {
       daemonId: 'd1',
@@ -85,6 +84,24 @@ describe('notifySessionRetentionResult', () => {
         severity: 'info',
         title: 'Session Cleanup Completed',
         message: 'Daemon "Worker 1" cleaned up 5 expired session(s).'
+      })
+    )
+  })
+
+  it('adds success notification for session cleanup without purged count', () => {
+    const addNotif = vi.fn()
+    notifySessionRetentionResult(addNotif, {
+      daemonId: 'd1',
+      daemonName: 'Worker 1',
+      success: true
+    })
+
+    expect(addNotif).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'session_retention',
+        severity: 'info',
+        title: 'Session Cleanup Completed',
+        message: 'Daemon "Worker 1" completed session retention cleanup.'
       })
     )
   })

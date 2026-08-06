@@ -30,13 +30,17 @@ interface NotificationContextValue {
 
 const NotificationContext = createContext<NotificationContextValue | null>(null)
 
-const STORAGE_KEY = 'agentconnect_notifications_v1'
+const BASE_STORAGE_KEY = 'agentconnect_notifications_v1'
 const MAX_NOTIFICATIONS = 50
 
-function loadStoredNotifications(): NotificationItem[] {
+function getStorageKey(orgId?: string | null): string {
+  return orgId ? `${BASE_STORAGE_KEY}_${orgId}` : BASE_STORAGE_KEY
+}
+
+function loadStoredNotifications(orgId?: string | null): NotificationItem[] {
   if (typeof window === 'undefined') return []
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(getStorageKey(orgId))
     if (!raw) return []
     const parsed = JSON.parse(raw) as NotificationItem[]
     return Array.isArray(parsed) ? parsed : []
@@ -45,30 +49,30 @@ function loadStoredNotifications(): NotificationItem[] {
   }
 }
 
-function saveStoredNotifications(items: NotificationItem[]): void {
+function saveStoredNotifications(items: NotificationItem[], orgId?: string | null): void {
   if (typeof window === 'undefined') return
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items.slice(0, MAX_NOTIFICATIONS)))
+    localStorage.setItem(getStorageKey(orgId), JSON.stringify(items.slice(0, MAX_NOTIFICATIONS)))
   } catch {
     // Ignore storage quota / privacy mode errors
   }
 }
 
-export function NotificationProvider({ children }: { children: ReactNode }) {
+export function NotificationProvider({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [toasts, setToasts] = useState<NotificationItem[]>([])
   const [initialized, setInitialized] = useState(false)
 
   useEffect(() => {
-    setNotifications(loadStoredNotifications())
+    setNotifications(loadStoredNotifications(orgId))
     setInitialized(true)
-  }, [])
+  }, [orgId])
 
   useEffect(() => {
     if (initialized) {
-      saveStoredNotifications(notifications)
+      saveStoredNotifications(notifications, orgId)
     }
-  }, [notifications, initialized])
+  }, [notifications, initialized, orgId])
 
   const addNotification = useCallback((item: Omit<NotificationItem, 'id' | 'timestamp' | 'read'>) => {
     const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`

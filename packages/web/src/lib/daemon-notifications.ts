@@ -2,19 +2,21 @@ import { useEffect, useRef } from 'react'
 import type { DaemonRow } from '@/lib/data'
 import { useNotifications } from '@/lib/notifications'
 
+// Global set of lifecycle op IDs that have already triggered a notification in this session
+const notifiedLifecycleOpIds = new Set<string>()
+
 /**
  * Monitors daemon state updates (polling / SWR refreshes) and automatically
  * triggers notification toasts and history entries for:
- * 1. Daemon Upgrade / Restart success or failure (lifecycleOp status transitions)
- * 2. Daemon session retention cleanup success
- * 3. Daemon session retention cleanup failure
+ * 1. Daemon Upgrade / Restart success or failure (lifecycleOp status transitions,
+ *    including when first observed in a terminal state).
+ * 2. Daemon session retention cleanup success.
+ * 3. Daemon session retention cleanup failure.
  */
 export function useDaemonNotifier(daemons: DaemonRow[]) {
   const { addNotification } = useNotifications()
   // Track previous lifecycle op status by op id: opId -> status
   const prevOpStatuses = useRef<Map<string, string>>(new Map())
-  // Track initial load to avoid notifying on past already-settled ops when mounting
-  const isInitialLoad = useRef(true)
 
   useEffect(() => {
     if (!daemons || daemons.length === 0) return
@@ -30,13 +32,14 @@ export function useDaemonNotifier(daemons: DaemonRow[]) {
       const prevStatus = prevOpStatuses.current.get(op.id)
       const daemonName = daemon.name || daemon.host || daemon.daemonId
 
-      // On initial load, populate map without firing notifications for historic settled ops,
-      // UNLESS the op was pending when first seen and now settled.
-      if (isInitialLoad.current) {
-        continue
-      }
+      // If the op was pending and is now succeeded/failed OR if it's the first time
+      // we observe this op and it has reached a terminal status and hasn't been notified yet:
+      const isTransitionFromPending = prevStatus === 'pending'
+      const isUnnotifiedTerminal = !prevStatus && !notifiedLifecycleOpIds.has(op.id)
 
-      if (prevStatus === 'pending') {
+      if ((isTransitionFromPending || isUnnotifiedTerminal) && op.status !== 'pending') {
+        notifiedLifecycleOpIds.add(op.id)
+
         if (op.status === 'succeeded') {
           const opLabel = op.op === 'upgrade' ? 'Upgrade' : 'Restart'
           const targetStr = op.targetVersion ? ` to ${op.targetVersion}` : ''
@@ -64,9 +67,6 @@ export function useDaemonNotifier(daemons: DaemonRow[]) {
     }
 
     prevOpStatuses.current = currentStatuses
-    if (isInitialLoad.current) {
-      isInitialLoad.current = false
-    }
   }, [daemons, addNotification])
 }
 
@@ -85,7 +85,7 @@ export function notifySessionRetentionResult(
 ) {
   if (params.success) {
     const countText =
-      params.purgedCount !== undefined
+      params.purgedCount !== undefined && params.purgedCount > 0
         ? `cleaned up ${params.purgedCount} expired session(s)`
         : 'completed session retention cleanup'
     addNotification({
