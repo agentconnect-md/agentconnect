@@ -186,7 +186,7 @@ installation from GitHub and updates stored facts from that authenticated API
 response. The webhook payload is not the source of truth.
 
 The route accepts JSON with a 1 MiB request limit and never logs the payload.
-If the webhook secret is absent, the route is not registered.
+If the webhook secret is absent, the handler returns 404.
 
 ### Supported Events and Matching
 
