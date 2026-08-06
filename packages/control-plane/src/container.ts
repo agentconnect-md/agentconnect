@@ -817,10 +817,6 @@ export function buildContainer(
       ? {
           deploymentRevision: opts.deploymentConfig.revision,
           publicRuntimeConfig: {
-            apiUrl: config.PUBLIC_CP_URL ? `${config.PUBLIC_CP_URL.replace(/\/$/, '')}/api/v1` : null,
-            relayUrl: config.PUBLIC_RELAY_URL ?? null,
-            webUrl: config.PUBLIC_WEB_URL ?? null,
-            mcpUrl: config.PUBLIC_MCP_URL ?? null,
             auth:
               opts.deploymentConfig.values.auth.mode === 'oidc' && config.OIDC_ISSUER
                 ? {

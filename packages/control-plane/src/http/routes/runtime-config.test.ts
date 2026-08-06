@@ -4,17 +4,13 @@ import { installZod } from '../plugins/zod.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
 
 describe('runtime config route', () => {
-  it('returns only the explicit secret-free startup projection', async () => {
+  it('returns only the explicit secret-free auth projection', async () => {
     const app = Fastify()
     installZod(app)
     await app.register(
       runtimeConfigRoutes({
         deploymentRevision: 7,
         publicRuntimeConfig: {
-          apiUrl: 'https://api.example.test/api/v1',
-          relayUrl: 'https://relay.example.test',
-          webUrl: 'https://console.example.test',
-          mcpUrl: null,
           auth: {
             endpoint: 'https://login.example.test',
             issuer: 'https://login.example.test/oidc',
@@ -33,10 +29,6 @@ describe('runtime config route', () => {
       schemaVersion: '1',
       revision: 7,
       config: {
-        apiUrl: 'https://api.example.test/api/v1',
-        relayUrl: 'https://relay.example.test',
-        webUrl: 'https://console.example.test',
-        mcpUrl: null,
         auth: {
           endpoint: 'https://login.example.test',
           issuer: 'https://login.example.test/oidc',

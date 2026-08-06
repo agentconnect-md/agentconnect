@@ -19,10 +19,6 @@ export const RuntimeConfigDto = z
     revision: z.number().int().positive().nullable(),
     config: z
       .object({
-        apiUrl: z.string().url().nullable(),
-        relayUrl: z.string().url().nullable(),
-        webUrl: z.string().url().nullable(),
-        mcpUrl: z.string().url().nullable(),
         auth: PublicBrowserAuth.nullable()
       })
       .strict()
@@ -33,12 +29,12 @@ export const RuntimeConfigDto = z
 export type RuntimeConfigDto = z.infer<typeof RuntimeConfigDto>
 
 export interface RuntimeConfigRouteDeps {
-  /** One immutable public projection from the process startup snapshot. */
+  /** Immutable DB-owned browser auth state loaded at process startup. */
   publicRuntimeConfig?: RuntimeConfigDto['config']
   deploymentRevision?: number
 }
 
-/** Public, secret-free config consumed by the prebuilt Web image at startup. */
+/** Public, secret-free auth config consumed by the prebuilt Web image at startup. */
 export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
   return async function runtimeConfigRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
@@ -49,7 +45,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
           tags: [Tag.Deployment],
           summary: 'Get public runtime configuration',
           description:
-            'Returns the secret-free browser configuration loaded for this process. A deployment change takes effect after restart.',
+            'Returns the secret-free browser authentication configuration loaded for this process. A deployment change takes effect after restart.',
           operationId: 'getRuntimeConfig',
           response: { 200: RuntimeConfigDto }
         }
