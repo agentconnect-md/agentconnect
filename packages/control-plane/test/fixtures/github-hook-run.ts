@@ -45,6 +45,8 @@ export function githubHookRun(input: HookRunFixtureInput): HookRunRecord {
     reviewEvent: null,
     verdict: null,
     reviewCommitId: null,
+    publishedCommentKind: null,
+    publishedCommentId: null,
     status: 'running',
     durationMs: null,
     sessionId: null,

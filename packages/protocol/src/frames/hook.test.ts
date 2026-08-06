@@ -87,6 +87,35 @@ describe('R1/R2a hook control schemas', () => {
       HookReport.safeParse({
         hookId: HOOK_ID,
         agentId: AGENT_ID,
+        deliveryKey: 'delivery-2',
+        event: 'pull_request:synchronize',
+        github,
+        ...snapshot,
+        status: 'success',
+        publishedComment: { kind: 'issue_comment', commentId: '5199581711' }
+      }).success
+    ).toBe(true)
+    expect(
+      HookReport.safeParse({
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'delivery-3',
+        status: 'success',
+        reviewAttemptId: ATTEMPT_ID,
+        reviewResult: {
+          state: 'submitted',
+          reviewId: '9007199254740993',
+          event: 'APPROVE',
+          verdict: 'pass',
+          commitId: github.headSha
+        },
+        publishedComment: { kind: 'issue_comment', commentId: '5199581711' }
+      }).success
+    ).toBe(false)
+    expect(
+      HookReport.safeParse({
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
         deliveryKey: 'delivery-1',
         event: 'pull_request:synchronize',
         github,

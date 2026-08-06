@@ -1611,6 +1611,8 @@ model HookRun {
   reviewEvent               String?
   verdict                   String?
   reviewCommitId            String?
+  publishedCommentKind      String?
+  publishedCommentId        String?
   status                    CronRunStatus      @default(running)
   durationMs                Int?
   sessionId                 String? // ACP session id (console deep-link); null while running

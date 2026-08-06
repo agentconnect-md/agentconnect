@@ -444,6 +444,7 @@ import type {
   RdChatEvent,
   HookConfigSnapshot,
   GithubHookMetadata,
+  GithubPublishedComment,
   GitCommitIdentity,
   GithubReviewAuthorized,
   HookReviewResult,
@@ -1091,6 +1092,8 @@ interface HookDispatchContext {
    * proved no-effect reservation is released to permit a corrected retry. */
   reviewReportAttemptId?: string
   reviewReportResult?: HookReviewResult
+  /** Exact body-free identity of the fallback comment published for this turn. */
+  publishedComment?: GithubPublishedComment
 }
 
 type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
@@ -11345,7 +11348,8 @@ export class Daemon {
       status,
       durationMs: Number.isFinite(start) ? Math.max(0, this.clock.now() - start) : 0,
       ...extra,
-      ...(review ? { reviewAttemptId: review.attemptId, reviewResult: review.result } : {})
+      ...(review ? { reviewAttemptId: review.attemptId, reviewResult: review.result } : {}),
+      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {})
     }
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
@@ -13338,7 +13342,10 @@ export class Daemon {
                 return false
               }
             },
-            endPublish: () => this.persistHookState(entry, 'settled'),
+            endPublish: (publishedComment) => {
+              if (publishedComment && hookContext) hookContext.publishedComment = publishedComment
+              this.persistHookState(entry, 'settled')
+            },
             warn: (message) => this.log.warn(message)
           },
           p,

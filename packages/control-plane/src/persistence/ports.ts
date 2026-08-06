@@ -24,6 +24,7 @@ import type {
   AgentIcon,
   AgentMemoryBinding,
   ApprovalsReviewer,
+  GithubPublishedComment,
   OrganizationSuggestionInfo
 } from '@agentconnect.md/protocol'
 import type {
@@ -1963,6 +1964,8 @@ export interface HookRunRecord {
   reviewEvent: HookReviewEvent | null
   verdict: HookReviewVerdict | null
   reviewCommitId: string | null
+  publishedCommentKind: GithubPublishedComment['kind'] | null
+  publishedCommentId: string | null
   status: 'running' | 'success' | 'failed'
   durationMs: number | null
   sessionId: string | null
@@ -2101,6 +2104,7 @@ export interface HookReportInput {
   reviewEvent?: HookReviewEvent
   verdict?: HookReviewVerdict
   reviewCommitId?: string
+  publishedComment?: GithubPublishedComment
   /** Optional reporter convergence folded into the same transaction as the
    *  terminal HookRun update; applied only through the bound generation CAS. */
   projectionDesiredState?: string

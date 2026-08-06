@@ -41,6 +41,7 @@
  * human, so the ordinary final must be suppressed) is decided by core from hook
  * state and passed in as one boolean — the surface never inspects hook context.
  */
+import type { GithubPublishedComment } from '@agentconnect.md/protocol'
 import type { GithubFinalPoster, GithubReplyCollector } from '../../github/poster.js'
 
 /** GitHub's per-turn state (§7.3). Held in the turn's final-surface slot, which
@@ -85,8 +86,8 @@ export interface GithubTurnHost {
   /** Record the durable `in_flight` barrier. `false` means the write could not
    *  be made durable, and the caller must NOT perform the public POST. */
   beginPublish(): boolean
-  /** Record the durable `settled` state after the POST attempt returns. */
-  endPublish(): void
+  /** Record the durable `settled` state and any exact public comment identity. */
+  endPublish(publishedComment?: GithubPublishedComment): void
   warn(message: string): void
 }
 
@@ -147,10 +148,9 @@ export async function finalizeGithubTurn<TTurn extends GithubTurn>(
   if (!host.beginPublish()) return
   // publish() is time-bounded and degrading — a failure here must not strand the
   // turn, so it is logged and the hook still settles.
-  await state.poster
-    .publish(final)
-    .catch((err) =>
-      host.warn(`github poster: final publish failed (${err instanceof Error ? err.message : String(err)})`)
-    )
-  host.endPublish()
+  const publishedComment = await state.poster.publish(final).catch((err) => {
+    host.warn(`github poster: final publish failed (${err instanceof Error ? err.message : String(err)})`)
+    return undefined
+  })
+  host.endPublish(publishedComment)
 }

@@ -152,6 +152,8 @@ function toRunRecord(r: HookRun): HookRunRecord {
     reviewEvent: r.reviewEvent as HookRunRecord['reviewEvent'],
     verdict: r.verdict as HookRunRecord['verdict'],
     reviewCommitId: r.reviewCommitId,
+    publishedCommentKind: r.publishedCommentKind as HookRunRecord['publishedCommentKind'],
+    publishedCommentId: r.publishedCommentId,
     status: r.status,
     durationMs: r.durationMs,
     sessionId: r.sessionId,
@@ -275,7 +277,9 @@ function isSideEffectFreeFailedDeliveryStage(run: HookRun): boolean {
     run.reviewId === null &&
     run.reviewEvent === null &&
     run.verdict === null &&
-    run.reviewCommitId === null
+    run.reviewCommitId === null &&
+    run.publishedCommentKind === null &&
+    run.publishedCommentId === null
   )
 }
 
@@ -851,6 +855,8 @@ export class PgHookRepo implements HookRepo {
             reviewEvent: null,
             verdict: null,
             reviewCommitId: null,
+            publishedCommentKind: null,
+            publishedCommentId: null,
             status: 'running',
             durationMs: null,
             sessionId: null,
@@ -1180,7 +1186,9 @@ export class PgHookRepo implements HookRepo {
             reviewId: null,
             reviewEvent: null,
             verdict: null,
-            reviewCommitId: null
+            reviewCommitId: null,
+            publishedCommentKind: null,
+            publishedCommentId: null
           },
           data: {
             status: 'running',
@@ -1513,6 +1521,12 @@ export class PgHookRepo implements HookRepo {
             durationMs: r.durationMs ?? null,
             sessionId: r.sessionId ?? null,
             reason: r.reason ?? null,
+            ...(r.publishedComment
+              ? {
+                  publishedCommentKind: r.publishedComment.kind,
+                  publishedCommentId: r.publishedComment.commentId
+                }
+              : {}),
             ...(r.reviewAttemptId
               ? r.reviewAttemptState === 'released'
                 ? {
@@ -1627,7 +1641,9 @@ export class PgHookRepo implements HookRepo {
               reviewId: null,
               reviewEvent: null,
               verdict: null,
-              reviewCommitId: null
+              reviewCommitId: null,
+              publishedCommentKind: null,
+              publishedCommentId: null
             },
             data: {
               event: r.event ?? run.event,
@@ -1656,6 +1672,12 @@ export class PgHookRepo implements HookRepo {
               durationMs: r.durationMs ?? null,
               sessionId: r.sessionId ?? null,
               reason: r.reason ?? null,
+              ...(r.publishedComment
+                ? {
+                    publishedCommentKind: r.publishedComment.kind,
+                    publishedCommentId: r.publishedComment.commentId
+                  }
+                : {}),
               redeliveryNextAttemptAt: null
             }
           })
@@ -1755,6 +1777,12 @@ export class PgHookRepo implements HookRepo {
             durationMs: r.durationMs ?? null,
             sessionId: r.sessionId ?? run.sessionId,
             reason: r.reason ?? null,
+            ...(r.publishedComment
+              ? {
+                  publishedCommentKind: r.publishedComment.kind,
+                  publishedCommentId: r.publishedComment.commentId
+                }
+              : {}),
             ...(r.reviewAttemptId
               ? r.reviewAttemptState === 'released'
                 ? {
@@ -1852,6 +1880,8 @@ export class PgHookRepo implements HookRepo {
           row.reviewEvent === null &&
           row.verdict === null &&
           row.reviewCommitId === null &&
+          row.publishedCommentKind === null &&
+          row.publishedCommentId === null &&
           row.redeliveryLastRequestedAt === null &&
           row.redeliveryNextAttemptAt === null
       )
