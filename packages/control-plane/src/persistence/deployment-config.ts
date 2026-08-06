@@ -101,7 +101,8 @@ const SlackAppConfiguredUrlsSchema = z.strictObject({
   oauthRedirectUrl: SecureHttpUrlSchema,
   eventsUrl: SecureHttpUrlSchema,
   interactionsUrl: SecureHttpUrlSchema,
-  loginRedirectUrl: SecureHttpUrlSchema.optional()
+  loginRedirectUrl: SecureHttpUrlSchema.optional(),
+  socialLinkRedirectUrl: SecureHttpUrlSchema.optional()
 })
 
 const RegionalLoginAppSchema = z.strictObject({

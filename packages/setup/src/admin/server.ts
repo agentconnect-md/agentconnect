@@ -287,10 +287,11 @@ function appendPath(origin: string, path: string): string {
   return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
 }
 
-function googleRedirectUris(endpoint: string, connectorId: string): string[] {
+function googleRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
   return [
     appendPath(endpoint, `/callback/${connectorId}`),
-    appendPath(endpoint, `/account/callback/social/${connectorId}`)
+    appendPath(endpoint, `/account/callback/social/${connectorId}`),
+    appendPath(webUrl, '/auth/social/callback')
   ]
 }
 
@@ -514,7 +515,8 @@ export function buildTenantAdminServer(
             origins: [logtoEndpoint],
             redirects: googleRedirectUris(
               logtoEndpoint,
-              values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
+              values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID,
+              localAuthBootstrap.services.web
             )
           }
         : { origins: [], redirects: [] }
@@ -626,7 +628,7 @@ export function buildTenantAdminServer(
     const current = await deps.store.getAdmin()
     const googleConnectorId = current?.values.logto?.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
     const slackConnectorId = current?.values.logto?.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID
-    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId)
+    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
       current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
@@ -829,7 +831,7 @@ export function buildTenantAdminServer(
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
       const connectorId =
         parsed.data.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
-      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId)
+      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
         ...(parsed.data.connectorId ? { connectorId: parsed.data.connectorId } : {}),
         clientId: parsed.data.clientId,
@@ -1087,9 +1089,9 @@ export function buildTenantAdminServer(
     if (!confirmed) {
       unverified.push('setup_url', 'callback_urls', 'webhook_active')
       diff.push(
-        { field: 'Setup URL', current: 'Not verified', expected: expectedUrls.setupUrl },
-        { field: 'Callback URLs', current: 'Not verified', expected: expectedUrls.callbackUrls },
-        { field: 'Webhook active', current: 'Not verified', expected: expectedUrls.webhookActive }
+        { field: 'Setup URL', current: "Can't verify automatically", expected: expectedUrls.setupUrl },
+        { field: 'Callback URLs', current: "Can't verify automatically", expected: expectedUrls.callbackUrls },
+        { field: 'Webhook active', current: "Can't verify automatically", expected: expectedUrls.webhookActive }
       )
     } else {
       if (confirmed.setupUrl !== expectedUrls.setupUrl) {
@@ -1113,7 +1115,7 @@ export function buildTenantAdminServer(
       diff,
       expected: expectedUrls,
       settingsUrl: audited.app.settingsUrl,
-      note: 'GitHub exposes permissions, events, external URL, and webhook URL to this check. Callback, setup, and webhook-active settings require operator confirmation.'
+      note: "GitHub exposes permissions, events, external URL, and webhook URL to this check. Callback, setup, and webhook-active settings can't be verified automatically."
     }
   })
 
@@ -1434,6 +1436,20 @@ export function buildTenantAdminServer(
         ]
       })
       return report()
+    }
+    const resolvedValues = withResolvedConnectorIds(
+      runtime.values,
+      setupInspection.connectors.flatMap((connector) =>
+        connector.id ? [{ target: connector.target, id: connector.id }] : []
+      )
+    )
+    if (JSON.stringify(resolvedValues) !== JSON.stringify(runtime.values)) {
+      await serializeMutation(() => deps.store.replace({ expectedRevision: runtime.revision, values: resolvedValues }))
+      findings.push({
+        id: 'logto.connector_references',
+        status: 'pass',
+        message: 'Tenant Admin adopted the existing Logto connector IDs.'
+      })
     }
     findings.push(
       setupInspection.application.exists && setupInspection.application.matches

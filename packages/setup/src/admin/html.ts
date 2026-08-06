@@ -640,7 +640,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? expected.slack
           ? objectDiff(slack.configuredUrls, expected.slack, {
               oauthRedirectUrl: 'OAuth redirect URL', eventsUrl: 'Events request URL',
-              interactionsUrl: 'Interactivity request URL', loginRedirectUrl: 'Logto redirect URL'
+              interactionsUrl: 'Interactivity request URL', loginRedirectUrl: 'Logto redirect URL',
+              socialLinkRedirectUrl: 'Account linking redirect URL'
             })
           : [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'HTTPS Web, API, and ingress URLs' }]
         : [];
@@ -1104,10 +1105,10 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('github-settings').hidden = false;
       const confirmationFields = result.unverified || [];
       el('confirm-github').hidden = ![...result.missing, ...confirmationFields].some((field) => field === 'callback_urls' || field === 'setup_url' || field === 'webhook_active');
-      const label = result.missing.length ? 'Update required' : 'Not verified';
+      const label = result.missing.length ? 'Update required' : "Can't verify automatically";
       showDiff('github-drift', result.diff || [], label);
       match('github-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : label);
-      message(result.status === 'pass' ? 'GitHub App matches the expected integration manifest.' : result.missing.length ? 'GitHub App settings need an update.' : 'Confirm the callback, setup, and webhook-active settings in GitHub.', result.status === 'fail');
+      message(result.status === 'pass' ? 'GitHub App matches the expected integration manifest.' : result.missing.length ? 'GitHub App settings need an update.' : "GitHub can't expose callback, setup, or webhook-active settings through its API; check them in GitHub.", result.status === 'fail');
     }
 
     async function connectGithubLogin() {
@@ -1263,6 +1264,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
     async function checkLogto() {
       const report = await json(await fetch(api + '/check/logto', { headers: bearer() }));
+      await load();
       const failures = report.findings.filter((finding) => finding.status !== 'pass');
       el('logto-status').textContent = failures.length === 0
         ? 'SPA redirects, CORS, connectors, and social-only sign-in match.'

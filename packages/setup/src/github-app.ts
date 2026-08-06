@@ -117,7 +117,8 @@ export function buildGithubAppManifest(
       ? {
           callback_urls: [
             appendPath(login.logtoEndpoint, `/callback/${login.connectorId}`),
-            appendPath(login.logtoEndpoint, `/account/callback/social/${login.connectorId}`)
+            appendPath(login.logtoEndpoint, `/account/callback/social/${login.connectorId}`),
+            appendPath(login.webUrl, '/auth/social/callback')
           ]
         }
       : {}),

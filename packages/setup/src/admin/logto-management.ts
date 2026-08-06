@@ -206,6 +206,21 @@ function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof 
   )
 }
 
+function selectConnector(
+  connectors: readonly LogtoConnector[],
+  target: string,
+  preferredId?: string
+): LogtoConnector | undefined {
+  const matches = connectors.filter((connector) => connector.target === target)
+  if (matches.length <= 1) return matches[0]
+  const preferred = preferredId ? matches.find((connector) => connector.id === preferredId) : undefined
+  if (preferred) return preferred
+  throw new LogtoManagementError(
+    'SOCIAL_CONNECTOR_AMBIGUOUS',
+    `Logto has more than one social connector for target ${target}`
+  )
+}
+
 export class LogtoAdminClaimClient {
   private readonly base: string
   private readonly resource: string
@@ -276,7 +291,6 @@ export class LogtoAdminClaimClient {
         desired.corsAllowedOrigins,
         sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
       )
-      addDiff(applicationDiff, 'AgentConnect managed application', hasManagedTag(application), true)
     }
     const signInExperienceDiff: LogtoConfigurationDiff[] = []
     addDiff(signInExperienceDiff, 'Sign-in methods', signInExperience.signIn.methods ?? null, [])
@@ -306,15 +320,8 @@ export class LogtoAdminClaimClient {
         diff: applicationDiff
       },
       connectors: desired.socialProviders.map((target) => {
-        const matches = connectors.filter((connector) => connector.target === target)
-        if (matches.length > 1) {
-          throw new LogtoManagementError(
-            'SOCIAL_CONNECTOR_AMBIGUOUS',
-            `Logto has more than one social connector for target ${target}`
-          )
-        }
-        const connector = matches[0]
         if (!isManagedConnectorTarget(target)) {
+          const connector = selectConnector(connectors, target)
           return {
             target,
             id: connector?.id ?? null,
@@ -324,11 +331,11 @@ export class LogtoAdminClaimClient {
           }
         }
         const expected = desiredConnector(target, desired)
+        const connector = selectConnector(connectors, target, expected.id)
         const diff: LogtoConfigurationDiff[] = []
         if (!connector) {
           diff.push({ field: `${target} connector`, current: 'Missing', expected: expected.id })
         } else {
-          addDiff(diff, `${target} connector ID`, connector.id, expected.id)
           addDiff(diff, `${target} connector type`, connector.connectorId, expected.connectorId)
           addDiff(diff, `${target} client ID`, connector.config.clientId ?? null, expected.config.clientId ?? null)
           if (target === 'slack') {
@@ -342,7 +349,7 @@ export class LogtoAdminClaimClient {
           target,
           id: connector?.id ?? null,
           exists: connector !== undefined,
-          matches: connector ? connector.id === expected.id && connectorMatches(connector, expected) : false,
+          matches: connector ? connectorMatches(connector, expected) : false,
           diff
         }
       }),
@@ -494,7 +501,7 @@ export class LogtoAdminClaimClient {
   private applicationMatches(application: LogtoApplication, desired: LogtoSetupDesired): boolean {
     return (
       application.type === 'SPA' &&
-      hasManagedTag(application) &&
+      (application.id === desired.applicationId || hasManagedTag(application)) &&
       sameStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris) &&
       sameStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris) &&
       sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
@@ -519,40 +526,35 @@ export class LogtoAdminClaimClient {
     const existing = await this.listConnectors()
     const result: Array<{ target: string; id: string; created: boolean; changed: boolean }> = []
     for (const target of desired.socialProviders) {
-      const matches = existing.filter((connector) => connector.target === target)
-      if (matches.length > 1) {
-        throw new LogtoManagementError(
-          'SOCIAL_CONNECTOR_AMBIGUOUS',
-          `Logto has more than one social connector for target ${target}`
-        )
-      }
       if (!isManagedConnectorTarget(target)) {
-        if (!matches[0]) {
+        const connector = selectConnector(existing, target)
+        if (!connector) {
           throw new LogtoManagementError(
             'SOCIAL_CONNECTOR_UNSUPPORTED',
             `automatic creation is not supported for the missing Logto social connector ${target}`
           )
         }
-        result.push({ target, id: matches[0].id, created: false, changed: false })
+        result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
       const expected = desiredConnector(target, desired)
-      if (matches[0] && connectorMatches(matches[0], expected)) {
-        result.push({ target, id: matches[0].id, created: false, changed: false })
+      const connector = selectConnector(existing, target, expected.id)
+      if (connector && connectorMatches(connector, expected)) {
+        result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
-      if (matches[0]) {
-        const response = await this.request(`/api/connectors/${encodeURIComponent(matches[0].id)}`, {
+      if (connector) {
+        const response = await this.request(`/api/connectors/${encodeURIComponent(connector.id)}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ config: expected.config, syncProfile: true })
         })
-        const connector = parseConnector(await response.json().catch(() => null))
-        if (!connector || connector.target !== target) {
+        const updated = parseConnector(await response.json().catch(() => null))
+        if (!updated || updated.target !== target) {
           throw new LogtoManagementError('LOGTO_UNAVAILABLE', `Logto returned an invalid ${target} connector`)
         }
-        existing.splice(existing.indexOf(matches[0]), 1, connector)
-        result.push({ target, id: connector.id, created: false, changed: true })
+        existing.splice(existing.indexOf(connector), 1, updated)
+        result.push({ target, id: updated.id, created: false, changed: true })
         continue
       }
       const response = await this.request('/api/connectors', {
@@ -565,16 +567,16 @@ export class LogtoAdminClaimClient {
           syncProfile: true
         })
       })
-      const connector = parseConnector(await response.json().catch(() => null))
-      if (!connector || connector.target !== target) {
+      const created = parseConnector(await response.json().catch(() => null))
+      if (!created || created.target !== target) {
         throw new LogtoManagementError(
           'LOGTO_UNAVAILABLE',
           `Logto returned an invalid ${target} connector`,
           response.status
         )
       }
-      existing.push(connector)
-      result.push({ target, id: connector.id, created: true, changed: true })
+      existing.push(created)
+      result.push({ target, id: created.id, created: true, changed: true })
     }
     return result
   }

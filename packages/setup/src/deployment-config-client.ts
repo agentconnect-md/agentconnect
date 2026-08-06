@@ -165,6 +165,7 @@ export interface SlackConfiguredUrls {
   eventsUrl: string
   interactionsUrl: string
   loginRedirectUrl?: string
+  socialLinkRedirectUrl?: string
 }
 
 export function slackDeploymentPut(
