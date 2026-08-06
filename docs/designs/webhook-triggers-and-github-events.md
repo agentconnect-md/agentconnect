@@ -165,9 +165,11 @@ agent environment.
 
 ### Signature and Attribution
 
-`POST /webhooks/github` is registered only when
-`GITHUB_APP_WEBHOOK_SECRET` is configured on the relay. Every request requires a
-valid timing-safe `X-Hub-Signature-256` comparison over the raw body.
+`POST /webhooks/github` returns 404 unless the Relay's startup snapshot contains
+the webhook secret opened from the deployment-wide GitHub App configuration.
+The Control Plane supplies that snapshot when the Relay connects. Every enabled
+request requires a valid timing-safe `X-Hub-Signature-256` comparison over the raw
+body.
 
 After signature verification:
 

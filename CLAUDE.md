@@ -191,18 +191,23 @@ Tests never call `index.ts`; they call `buildApp(...)` with the Testcontainers
 
 ## Human auth (Web UI) — opt-in OIDC
 
-Console sign-in is **opt-in social login** (GitHub/Google via Logto), off by default.
+Console sign-in is optional social login through Logto. Tenant Admin owns the
+browser application, API Resource, enabled sign-in methods, Management API
+application, and provider connectors in the typed deployment document; provider
+secrets are write-only entries in the deployment secret store.
 
 - **CP** is a provider-agnostic OIDC resource server: `http/plugins/auth.ts` verifies the
   bearer JWT (JWKS via OIDC discovery) and JIT-provisions a local user from the token's
-  `sub` (`persistence/repositories/user.repo.ts`). **Unset `OIDC_ISSUER` ⇒ devAuth stub
-  (admits all)** — the no-auth default; `OIDC_AUDIENCE` must match the token `aud`.
+  `sub` (`persistence/repositories/user.repo.ts`). The issuer and service origins are
+  startup topology; the required token audience comes from the persisted browser auth
+  configuration. The base Compose stack stays in loopback-only no-auth mode until
+  Tenant Admin bootstraps sign-in.
 - **Web** uses `@logto/browser` (`src/lib/auth.ts`); the login UI is social-only
   (`src/components/Auth.tsx`), redirect landing at `src/app/auth/callback`.
-- **Runtime config (gotcha):** `NEXT_PUBLIC_*` is inlined at `next build`, so Logto config
-  is injected at request time instead — the server reads plain `LOGTO_*` env in
-  `src/lib/public-env.tsx` (root layout is `force-dynamic`) and emits `window.__AC_ENV`;
-  `src/lib/auth.ts` reads that, with `NEXT_PUBLIC_*` as a local-dev fallback.
+- **Runtime config:** `src/lib/public-env.tsx` reads the Control Plane's
+  `/api/v1/runtime-config` snapshot at request time and emits `window.__AC_ENV`, so a
+  prebuilt Web image receives the persisted auth state without build-time tenant
+  configuration. `CP_INTERNAL_URL` and public service routes remain process topology.
 
 ## OpenAPI docs
 
