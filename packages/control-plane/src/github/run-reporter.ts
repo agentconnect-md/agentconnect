@@ -99,6 +99,7 @@ interface CheckAction {
 interface CheckPresentation {
   detailsUrl?: string
   agentUrl?: string
+  publication?: { pullNumber: number; url: string }
   skippedLabel?: string
   /** Markdown appended to the summary; Checks-tab only, unlike the title. */
   skippedGuidance?: string
@@ -646,7 +647,9 @@ export class GithubRunReporter {
       (projection.desiredState === 'skipped' || projection.desiredState === 'failure')
         ? true
         : undefined
+    const publication = run ? checkPublication(projection.repoFullName, run) : undefined
     const fallback = {
+      ...(publication ? { publication } : {}),
       ...(skippedLabel ? { skippedLabel } : {}),
       ...(skippedGuidance ? { skippedGuidance } : {}),
       ...(requestReviewAction ? { requestReviewAction } : {})
@@ -991,6 +994,31 @@ function legacyCheckName(projection: HookReviewProjectionRecord): string {
   return `${LEGACY_CHECK_NAME_PREFIX}${projection.hookId}`
 }
 
+function checkPublication(repoFullName: string, run: HookRunRecord): CheckPresentation['publication'] | undefined {
+  if (run.pullNumber === null) return undefined
+  const [owner, repo, extra] = repoFullName.split('/')
+  if (!owner || !repo || extra !== undefined) return undefined
+
+  let fragment: string | undefined
+  if (run.reviewAttemptState === 'submitted' && run.reviewId && /^\d+$/.test(run.reviewId)) {
+    fragment = `pullrequestreview-${run.reviewId}`
+  } else if (run.publishedCommentId && /^\d+$/.test(run.publishedCommentId)) {
+    if (run.publishedCommentKind === 'issue_comment') fragment = `issuecomment-${run.publishedCommentId}`
+    if (run.publishedCommentKind === 'review_comment') fragment = `discussion_r${run.publishedCommentId}`
+  }
+  if (!fragment) return undefined
+
+  return {
+    pullNumber: run.pullNumber,
+    url: `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pull/${run.pullNumber}#${fragment}`
+  }
+}
+
+function pullRequestLabel(subject: HookReviewSubjectRecord, publication?: CheckPresentation['publication']): string {
+  if (!publication || publication.pullNumber !== subject.pullNumber) return `#${subject.pullNumber}`
+  return `[#${subject.pullNumber}](<${publication.url}>)`
+}
+
 function checkPayload(
   projection: HookReviewProjectionRecord,
   marker: string,
@@ -1016,7 +1044,9 @@ function checkPayload(
     ...(agentLabel ? [`Agent: ${agentLabel}`] : []),
     `Revision: ${projection.reportSha}`,
     ...(openSubjects.length > 0
-      ? [`Pull requests: ${openSubjects.map((subject) => `#${subject.pullNumber}`).join(', ')}`]
+      ? [
+          `Pull requests: ${openSubjects.map((subject) => pullRequestLabel(subject, presentation.publication)).join(', ')}`
+        ]
       : []),
     ...(associationError ? [`Association: ${associationError}`] : []),
     ...(guidance ? ['', guidance, ''] : []),

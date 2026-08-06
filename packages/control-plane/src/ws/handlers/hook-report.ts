@@ -65,6 +65,7 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
       ...(p.durationMs !== undefined ? { durationMs: p.durationMs } : {}),
       ...(p.sessionId ? { sessionId: p.sessionId } : {}),
       ...(p.reason ? { reason: p.reason } : {}),
+      ...(p.publishedComment ? { publishedComment: p.publishedComment } : {}),
       ...(p.reviewAttemptId && p.reviewResult
         ? {
             reviewAttemptId: p.reviewAttemptId,

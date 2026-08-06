@@ -124,7 +124,9 @@ function isClaimedOfflineRecoveryCandidate(run: HookRunRecord): boolean {
     run.reviewId === null &&
     run.reviewEvent === null &&
     run.verdict === null &&
-    run.reviewCommitId === null
+    run.reviewCommitId === null &&
+    run.publishedCommentKind === null &&
+    run.publishedCommentId === null
   )
 }
 

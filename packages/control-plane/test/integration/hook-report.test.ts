@@ -649,6 +649,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
           reportSha: 'a'.repeat(40),
           isDraft: false,
           baseChanged: false,
+          publishedComment: { kind: 'issue_comment', commentId: '5199581711' },
           projectionDesiredState: 'neutral',
           projectionNextAttemptAt: new Date(firedAt.getTime() + 2_000)
         },
@@ -658,6 +659,10 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(await repo().getReviewProjection(projection.id)).toMatchObject({
       desiredState: 'neutral',
       sealedThrough: projection.generation
+    })
+    expect(await repo().getRun(HookId(hookId), 'projection-before-recovery')).toMatchObject({
+      publishedCommentKind: 'issue_comment',
+      publishedCommentId: '5199581711'
     })
   })
 

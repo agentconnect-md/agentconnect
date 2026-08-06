@@ -326,7 +326,9 @@ describe('Daemon rd/msg hook fires', () => {
       })
     }
     ;(daemon as never as { cpClient: unknown }).cpClient = cp
-    const poster = { publish: vi.fn(async () => {}) }
+    const poster = {
+      publish: vi.fn(async () => ({ kind: 'review_comment' as const, commentId: '3566000000' }))
+    }
     const makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
     ;(daemon as never as { makeGithubReply: typeof makeGithubReply }).makeGithubReply = makeGithubReply
 
@@ -391,6 +393,9 @@ describe('Daemon rd/msg hook fires', () => {
       'acp-inline-reply'
     )
     expect(poster.publish).toHaveBeenCalledWith('Inline answer.')
+    expect(cp.hookReports[0]).toMatchObject({
+      publishedComment: { kind: 'review_comment', commentId: '3566000000' }
+    })
     await daemon.stop()
   }, 15_000)
 
