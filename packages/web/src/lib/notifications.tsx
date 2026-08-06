@@ -127,7 +127,7 @@ export function syncNotificationSourceSnapshot(
 ): { state: NotificationStoreState; added: NotificationItem[] } {
   const previousKeys = new Set(state.activeSources[scope])
   const nextItems = new Map(items.map((item) => [item.sourceKey, item]))
-  let notifications = state.notifications.map((item) => ({ ...item }))
+  const notifications = state.notifications.map((item) => ({ ...item }))
   const added: NotificationItem[] = []
 
   for (const [sourceKey, input] of nextItems) {
