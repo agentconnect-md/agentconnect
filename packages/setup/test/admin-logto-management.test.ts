@@ -211,10 +211,9 @@ describe('Logto setup reconciliation', () => {
       redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
       postLogoutRedirectUris: ['http://localhost:3000/login'],
       socialProviders: ['github', 'google', 'slack'],
-      github: { connectorId: 'agentconnect-github', clientId: 'github-client', clientSecret: 'github-secret' },
-      google: { connectorId: 'agentconnect-google', clientId: 'google-client', clientSecret: 'google-secret' },
+      github: { clientId: 'github-client', clientSecret: 'github-secret' },
+      google: { clientId: 'google-client', clientSecret: 'google-secret' },
       slack: {
-        connectorId: 'agentconnect-slack',
         clientId: 'slack-client',
         clientSecret: 'slack-secret',
         scope: 'openid profile email'

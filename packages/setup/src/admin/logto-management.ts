@@ -1,4 +1,5 @@
 /** Minimal Logto Management API client for setup reconciliation and ADMIN claim. */
+import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
 import { ADMIN_ROLE } from './auth.js'
 
 const MANAGED_APP_TAG = 'agentconnectSetup'
@@ -17,9 +18,9 @@ export interface LogtoSetupDesired {
   redirectUris: readonly string[]
   postLogoutRedirectUris: readonly string[]
   socialProviders: readonly string[]
-  github?: { connectorId: string; clientId: string; clientSecret: string }
-  google?: { connectorId: string; clientId: string; clientSecret: string }
-  slack?: { connectorId: string; clientId: string; clientSecret: string; scope: string }
+  github?: { clientId: string; clientSecret: string }
+  google?: { clientId: string; clientSecret: string }
+  slack?: { clientId: string; clientSecret: string; scope: string }
 }
 
 interface LogtoRole {
@@ -88,6 +89,11 @@ export interface LogtoSetupReconcileResult {
   connectors: Array<{ target: string; id: string; created: boolean; changed: boolean }>
   signInExperienceChanged: boolean
   adminRoleCreated: boolean
+}
+
+export interface LogtoSetupReconcileOptions {
+  /** Explicit secret replacement cannot be verified through Logto's masked read response. */
+  refreshConnectorSecrets?: boolean
 }
 
 export class LogtoManagementError extends Error {
@@ -179,8 +185,7 @@ function desiredConnector(
         'the Logto GitHub connector needs the deployment GitHub App client id and secret'
       )
     }
-    const { connectorId: id, ...config } = desired.github
-    return { id, connectorId: 'github-universal', config }
+    return { id: LOGTO_GITHUB_CONNECTOR_ID, connectorId: 'github-universal', config: desired.github }
   }
   if (target === 'google') {
     if (!desired.google) {
@@ -189,8 +194,7 @@ function desiredConnector(
         'the Logto Google connector needs a Google OAuth client id and secret'
       )
     }
-    const { connectorId: id, ...config } = desired.google
-    return { id, connectorId: 'google-universal', config }
+    return { id: LOGTO_GOOGLE_CONNECTOR_ID, connectorId: 'google-universal', config: desired.google }
   }
   if (target === 'slack') {
     if (!desired.slack) {
@@ -199,27 +203,22 @@ function desiredConnector(
         'the Logto Slack connector needs the deployment Slack App client id and secret'
       )
     }
-    const { connectorId: id, ...config } = desired.slack
-    return { id, connectorId: 'slack-universal', config }
+    return { id: LOGTO_SLACK_CONNECTOR_ID, connectorId: 'slack-universal', config: desired.slack }
   }
   throw new Error(`unsupported managed Logto connector target: ${target}`)
 }
 
 function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof desiredConnector>): boolean {
   return (
-    connector.connectorId === desired.connectorId && JSON.stringify(connector.config) === JSON.stringify(desired.config)
+    connector.connectorId === desired.connectorId &&
+    connector.config.clientId === desired.config.clientId &&
+    (desired.connectorId !== 'slack-universal' || connector.config.scope === desired.config.scope)
   )
 }
 
-function selectConnector(
-  connectors: readonly LogtoConnector[],
-  target: string,
-  preferredId?: string
-): LogtoConnector | undefined {
+function selectConnector(connectors: readonly LogtoConnector[], target: string): LogtoConnector | undefined {
   const matches = connectors.filter((connector) => connector.target === target)
   if (matches.length <= 1) return matches[0]
-  const preferred = preferredId ? matches.find((connector) => connector.id === preferredId) : undefined
-  if (preferred) return preferred
   throw new LogtoManagementError(
     'SOCIAL_CONNECTOR_AMBIGUOUS',
     `Logto has more than one social connector for target ${target}`
@@ -253,6 +252,17 @@ export class LogtoAdminClaimClient {
   /** Validate only the M2M grant. Never returns the access token. */
   async verifyClientCredentials(): Promise<void> {
     await this.accessToken()
+  }
+
+  /** Resolve provider callback IDs from Logto. These are remote identities, not deployment configuration. */
+  async resolveConnectorIds(targets: readonly string[]): Promise<Record<string, string>> {
+    const connectors = await this.listConnectors()
+    return Object.fromEntries(
+      targets.flatMap((target) => {
+        const connector = selectConnector(connectors, target)
+        return connector ? [[target, connector.id]] : []
+      })
+    )
   }
 
   /** Read roles without mutating Logto and report the exact ADMIN role. */
@@ -323,7 +333,7 @@ export class LogtoAdminClaimClient {
           }
         }
         const expected = desiredConnector(target, desired)
-        const connector = selectConnector(connectors, target, expected.id)
+        const connector = selectConnector(connectors, target)
         const diff: LogtoConfigurationDiff[] = []
         if (!connector) {
           diff.push({ field: `${target} connector`, current: 'Missing', expected: expected.id })
@@ -350,9 +360,12 @@ export class LogtoAdminClaimClient {
     }
   }
 
-  async reconcileSetup(desired: LogtoSetupDesired): Promise<LogtoSetupReconcileResult> {
+  async reconcileSetup(
+    desired: LogtoSetupDesired,
+    options: LogtoSetupReconcileOptions = {}
+  ): Promise<LogtoSetupReconcileResult> {
     const application = await this.ensureApplication(desired)
-    const connectors = await this.ensureConnectors(desired)
+    const connectors = await this.ensureConnectors(desired, options.refreshConnectorSecrets ?? false)
     const signInExperienceChanged = await this.ensureSignInExperience(desired.socialProviders)
     const adminRoleCreated = (await this.ensureAdminRole()).created
     return {
@@ -510,7 +523,8 @@ export class LogtoAdminClaimClient {
   }
 
   private async ensureConnectors(
-    desired: LogtoSetupDesired
+    desired: LogtoSetupDesired,
+    refreshSecrets: boolean
   ): Promise<Array<{ target: string; id: string; created: boolean; changed: boolean }>> {
     const existing = await this.listConnectors()
     const result: Array<{ target: string; id: string; created: boolean; changed: boolean }> = []
@@ -527,8 +541,8 @@ export class LogtoAdminClaimClient {
         continue
       }
       const expected = desiredConnector(target, desired)
-      const connector = selectConnector(existing, target, expected.id)
-      if (connector && connectorMatches(connector, expected)) {
+      const connector = selectConnector(existing, target)
+      if (connector && connectorMatches(connector, expected) && !refreshSecrets) {
         result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
