@@ -22,11 +22,12 @@ The mobile trigger uses the mobile app-bar button contract. Both variants open t
 
 ## Notification Model
 
-Access notifications add the `session_access` category and require:
+Access notifications add the `session_access` category. Every item requires:
 
 - a stable `sourceKey` built from the surface (`sessions` or `usage`), provider, region, and failure reason;
-- a serializable link action with a label, URL, and external-navigation flag;
 - `resolvedAt` when the condition is no longer active.
+
+Classified quota and authorization items also require a serializable link action with a label, URL, and external-navigation flag. Generic unavailable items have no action.
 
 Serializable actions preserve local-storage compatibility. Quota notifications link to the relevant Lark or Feishu administration site. Classified authorization failures link to the organization Profile reauthorization target. Unclassified failures have no action.
 
@@ -38,7 +39,7 @@ Each normalized issue is one notification. Mixed reasons and regions do not inhe
 | `authorization` | `Refresh your <Region> sign-in`                                          | `warning` | Refresh the identity in Profile to restore the affected Session or Usage access.           | `Refresh <Region>` to the organization Profile page |
 | `unavailable`   | `Session access checks unavailable` or `Usage access checks unavailable` | `warning` | Access stays fail-closed for Sessions, or Usage stays under-counted, until checks recover. | None                                                |
 
-`Region` is `Lark` or `Feishu` for classified Feishu-provider issues. Unsupported providers and missing regions use the surface-level `unavailable` notification and are collapsed into one generic source per surface.
+`Region` is `Lark` or `Feishu` for classified Feishu-provider issues. Unsupported providers and missing regions use the surface-level `unavailable` notification and are collapsed into the canonical `<surface>:generic:unavailable` source key.
 
 ## Synchronization and Deduplication
 
