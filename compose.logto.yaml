@@ -2,18 +2,10 @@ services:
   control-plane:
     environment:
       - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
-      - OIDC_INTERNAL_ENDPOINT=${OIDC_INTERNAL_ENDPOINT:-http://logto:3001/oidc}
-      - LOGTO_MGMT_ENDPOINT=${LOGTO_INTERNAL_ENDPOINT:-http://logto:3001}
 
   web:
     environment:
       - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
-
-  tenant-admin:
-    environment:
-      - OIDC_INTERNAL_ENDPOINT=${OIDC_INTERNAL_ENDPOINT:-http://logto:3001/oidc}
-      - LOGTO_MGMT_ENDPOINT=${LOGTO_MGMT_ENDPOINT:-http://localhost:3001}
-      - LOGTO_INTERNAL_ENDPOINT=${LOGTO_INTERNAL_ENDPOINT:-http://logto:3001}
 
   logto-db-init:
     image: postgres:18-alpine

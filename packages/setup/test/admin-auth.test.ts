@@ -1,15 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { TenantAdminAuthenticator, oidcUrlAt } from '../src/admin/auth.js'
+import { TenantAdminAuthenticator } from '../src/admin/auth.js'
 
 const oidc = { issuer: 'https://login.example.test/oidc', audience: 'agentconnect' }
 
 describe('tenant-admin auth boundary', () => {
-  it('keeps OIDC paths while translating between public and container origins', () => {
-    expect(
-      oidcUrlAt('http://localhost:3001/oidc/jwks', 'http://localhost:3001/oidc', 'http://logto:3001/oidc').href
-    ).toBe('http://logto:3001/oidc/jwks')
-  })
-
   it('accepts a verified ADMIN and rejects a valid non-admin identity', async () => {
     const config = { get: async () => oidc }
     const admin = new TenantAdminAuthenticator(config, async () => ({ sub: 'admin-1', roles: ['USER', 'ADMIN'] }))

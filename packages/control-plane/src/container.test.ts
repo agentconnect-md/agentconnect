@@ -26,14 +26,12 @@ describe('httpServerConfigFrom', () => {
       appConfig({
         PUBLIC_WEB_URL: 'https://console.example.test',
         PUBLIC_CP_URL: 'https://api.example.test',
-        OIDC_ISSUER: 'https://auth.example.test',
-        OIDC_INTERNAL_ENDPOINT: 'http://logto:3001/oidc'
+        OIDC_ISSUER: 'https://auth.example.test'
       }),
       EXTRAS
     )
     expect(projected.PUBLIC_WEB_URL).toBe('https://console.example.test')
     expect(projected.PUBLIC_CP_URL).toBe('https://api.example.test')
     expect(projected.OIDC_ISSUER).toBe('https://auth.example.test')
-    expect(projected.OIDC_INTERNAL_ENDPOINT).toBe('http://logto:3001/oidc')
   })
 })

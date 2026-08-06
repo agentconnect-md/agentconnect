@@ -1544,7 +1544,6 @@ export function httpServerConfigFrom(
     ...(config.PUBLIC_MCP_URL ? { PUBLIC_MCP_URL: config.PUBLIC_MCP_URL } : {}),
     ...(config.DAEMON_DIST_TAG ? { DAEMON_DIST_TAG: config.DAEMON_DIST_TAG } : {}),
     ...(config.OIDC_ISSUER ? { OIDC_ISSUER: config.OIDC_ISSUER } : {}),
-    ...(config.OIDC_INTERNAL_ENDPOINT ? { OIDC_INTERNAL_ENDPOINT: config.OIDC_INTERNAL_ENDPOINT } : {}),
     ...(config.OIDC_AUDIENCE ? { OIDC_AUDIENCE: config.OIDC_AUDIENCE } : {}),
     WAITLIST_MODE: config.WAITLIST_MODE,
     ...(config.CORS_ORIGIN !== undefined ? { CORS_ORIGIN: config.CORS_ORIGIN } : {}),

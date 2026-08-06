@@ -22,19 +22,6 @@ const OriginSchema = z
     }
   })
 
-const InternalOriginSchema = z
-  .string()
-  .url()
-  .superRefine((value, ctx) => {
-    const url = new URL(value)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
-    }
-    if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-      ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
-    }
-  })
-
 const IssuerSchema = z
   .string()
   .url()
@@ -48,19 +35,6 @@ const IssuerSchema = z
     }
     if (!url.pathname.replace(/\/$/, '').endsWith('/oidc')) {
       ctx.addIssue({ code: 'custom', message: 'must end in /oidc' })
-    }
-  })
-
-const InternalIssuerSchema = z
-  .string()
-  .url()
-  .superRefine((value, ctx) => {
-    const url = new URL(value)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
-    }
-    if (url.username || url.password || url.search || url.hash) {
-      ctx.addIssue({ code: 'custom', message: 'must not contain credentials, query, or fragment' })
     }
   })
 
@@ -96,17 +70,13 @@ export interface DeploymentEnvironment {
     relay: string
   }
   issuer: string
-  internalOidcEndpoint?: string
   managementEndpoint: string
-  internalManagementEndpoint?: string
 }
 
 export function loadDeploymentEnvironment(environment: Environment = process.env): DeploymentEnvironment {
   const logtoEndpoint = environmentValue(environment, 'LOGTO_ENDPOINT')
   const logtoOrigin = logtoEndpoint ? new URL(OriginSchema.parse(logtoEndpoint)).origin : undefined
   const defaultLogtoOrigin = 'http://localhost:3001'
-  const internalOidcEndpoint = environmentValue(environment, 'OIDC_INTERNAL_ENDPOINT')
-  const internalManagementEndpoint = environmentValue(environment, 'LOGTO_INTERNAL_ENDPOINT')
   return {
     services: {
       web: OriginSchema.parse(
@@ -122,12 +92,8 @@ export function loadDeploymentEnvironment(environment: Environment = process.env
     issuer: IssuerSchema.parse(
       environmentValue(environment, 'OIDC_ISSUER') ?? `${logtoOrigin ?? defaultLogtoOrigin}/oidc`
     ),
-    ...(internalOidcEndpoint ? { internalOidcEndpoint: InternalIssuerSchema.parse(internalOidcEndpoint) } : {}),
     managementEndpoint: OriginSchema.parse(
       environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ?? logtoOrigin ?? defaultLogtoOrigin
-    ),
-    ...(internalManagementEndpoint
-      ? { internalManagementEndpoint: InternalOriginSchema.parse(internalManagementEndpoint) }
-      : {})
+    )
   }
 }
