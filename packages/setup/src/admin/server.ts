@@ -75,10 +75,15 @@ const PutDeploymentConfigBody = z.strictObject({
   secrets: DeploymentSecretPatchSchema.optional()
 })
 
+const ManagementApiResourceSchema = z
+  .string()
+  .trim()
+  .pipe(DeploymentConfigValuesV1Schema.shape.logto.unwrap().shape.managementResource)
+
 const BootstrapLogtoBody = z.strictObject({
   managementAppId: z.string().trim().min(1).max(200),
   managementAppSecret: z.string().min(1).max(10_000),
-  managementResource: z.string().url().optional(),
+  managementResource: ManagementApiResourceSchema.optional(),
   socialProvider: z.enum(['github', 'google', 'slack']).optional()
 })
 
