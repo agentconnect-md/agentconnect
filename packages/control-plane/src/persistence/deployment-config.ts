@@ -101,7 +101,8 @@ const SlackAppConfiguredUrlsSchema = z.strictObject({
   oauthRedirectUrl: SecureHttpUrlSchema,
   eventsUrl: SecureHttpUrlSchema,
   interactionsUrl: SecureHttpUrlSchema,
-  loginRedirectUrl: SecureHttpUrlSchema.optional()
+  loginRedirectUrl: SecureHttpUrlSchema.optional(),
+  socialLinkRedirectUrl: SecureHttpUrlSchema.optional()
 })
 
 const RegionalLoginAppSchema = z.strictObject({
@@ -117,7 +118,9 @@ export const DeploymentConfigValuesV1Schema = z
         appId: z.number().int().positive(),
         slug: z.string().trim().min(1),
         clientId: z.string().trim().min(1).nullable(),
-        /** Provider settings last created or explicitly confirmed by setup. */
+        /** Whether Relay should accept GitHub webhook delivery for this App. Omitted means enabled. */
+        webhookEnabled: z.boolean().optional(),
+        /** Provider URL settings submitted by setup during GitHub App Manifest creation. Never live verification. */
         configuredUrls: GithubAppConfiguredUrlsSchema.optional()
       })
       .nullable(),
@@ -350,9 +353,7 @@ export function deploymentSecretsRequiringRefresh(
   const githubAppChanged = next.github && previous?.github?.appId !== next.github.appId
   const githubClientChanged =
     next.github !== null && next.github.clientId !== null && previous?.github?.clientId !== next.github.clientId
-  const githubWebhookEnabled = next.github?.configuredUrls?.webhookActive !== false
-  const githubWebhookActivated =
-    next.github !== null && githubWebhookEnabled && previous?.github?.configuredUrls?.webhookActive === false
+  const githubWebhookEnabled = next.github !== null && next.github.webhookEnabled !== false
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
@@ -366,9 +367,7 @@ export function deploymentSecretsRequiringRefresh(
     next.logto?.googleConnector && previous?.logto?.googleConnector?.clientId !== next.logto.googleConnector.clientId
   return [
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
-    ...(next.github && githubWebhookEnabled && (githubAppChanged || githubWebhookActivated)
-      ? (['github.webhookSecret'] as const)
-      : []),
+    ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
@@ -382,9 +381,7 @@ export function deploymentSecretsRequiringRefresh(
 function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[] {
   return [
     ...(values.github ? (['github.privateKeyB64'] as const) : []),
-    ...(values.github && values.github.configuredUrls?.webhookActive !== false
-      ? (['github.webhookSecret'] as const)
-      : []),
+    ...(values.github && values.github.webhookEnabled !== false ? (['github.webhookSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),

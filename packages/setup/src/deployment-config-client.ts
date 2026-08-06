@@ -47,6 +47,7 @@ export function githubDeploymentPut(
         appId,
         slug: credentials.slug,
         clientId: credentials.clientId,
+        webhookEnabled: options.configuredUrls?.webhookActive ?? true,
         ...(options.configuredUrls ? { configuredUrls: options.configuredUrls } : {})
       },
       ...(connectLogto
@@ -165,6 +166,7 @@ export interface SlackConfiguredUrls {
   eventsUrl: string
   interactionsUrl: string
   loginRedirectUrl?: string
+  socialLinkRedirectUrl?: string
 }
 
 export function slackDeploymentPut(
