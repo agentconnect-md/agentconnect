@@ -1259,12 +1259,22 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       return json(await fetch(api + '/reconcile/logto', { method: 'POST', headers: bearer() }));
     }
 
+    async function refreshDeploymentConfig() {
+      const status = await json(await fetch(api + '/deployment-config', { headers: bearer() }));
+      el('access').hidden = true;
+      el('admin').hidden = false;
+      el('editor').hidden = false;
+      currentRevision = status.revision;
+      renderApps(status);
+      return status;
+    }
+
     async function checkLogto() {
       const report = await json(await fetch(api + '/check/logto', { headers: bearer() }));
-      await load();
+      await refreshDeploymentConfig();
       const failures = report.findings.filter((finding) => finding.status !== 'pass');
       el('logto-status').textContent = failures.length === 0
-        ? 'SPA redirects, CORS, connectors, and social-only sign-in match.'
+        ? 'SPA redirects, connectors, and social-only sign-in match.'
         : failures.map((finding) => finding.message).join(' ');
       el('logto-status').className = failures.length === 0 ? 'ok' : 'warn';
       match('logto-match', failures.length === 0 ? 'pass' : 'warn', failures.length === 0 ? 'Matches' : 'Update required');
@@ -1346,12 +1356,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       }
       try {
         await loadBootstrapInfo();
-        const status = await json(await fetch(api + '/deployment-config', { headers: bearer() }));
-        el('access').hidden = true;
-        el('admin').hidden = false;
-        el('editor').hidden = false;
-        currentRevision = status.revision;
-        renderApps(status);
+        await refreshDeploymentConfig();
         message(notice);
         checkLogto().catch((error) => {
           el('logto-status').textContent = error.message;
