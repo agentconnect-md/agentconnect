@@ -10,7 +10,7 @@
 // only — no top bar, no breadcrumb, no back-link. Mobile keeps its own app bar
 // (`.mtop`), which is where the section/entity title still shows.
 
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, Fragment, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { SiModelcontextprotocol } from 'react-icons/si'
 import { SWRConfig, type SWRConfiguration } from 'swr'
 import Link from 'next/link'
@@ -44,15 +44,22 @@ interface NavItem {
   icon: string
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { href: '/home', label: 'Home', icon: 'house' },
-  { href: '/agents', label: 'Agents', icon: 'bot' },
-  { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
-  { href: '/daemons', label: 'Daemons', icon: 'server' },
-  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
-  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
+// The rail's destinations, in groups separated by a rule: what the organization
+// runs (agents and the surfaces they answer on) first, then the fleet the work
+// runs on. Daemons sits alone at the bottom because it is infrastructure — you
+// visit it when something is wrong, not to get work done.
+const NAV_GROUPS: NavItem[][] = [
+  [
+    { href: '/home', label: 'Home', icon: 'house' },
+    { href: '/agents', label: 'Agents', icon: 'bot' },
+    { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
+    { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
+    { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
+    { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
+    { href: '/integrations', label: 'Integrations', icon: 'plug' },
+    { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
+  ],
+  [{ href: '/daemons', label: 'Daemons', icon: 'server' }]
 ]
 
 // Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
@@ -70,10 +77,11 @@ const MOBILE_NAV: NavItem[] = [
 // bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
 // prepended separately, in the sheet itself.
 const MORE_ROWS: NavItem[] = [
-  { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
   { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
+  { href: '/integrations', label: 'Integrations', icon: 'plug' },
+  { href: '/daemons', label: 'Daemons', icon: 'server' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
 
@@ -133,6 +141,7 @@ const SECTIONS: { prefix: string; label: string }[] = [
   { prefix: '/daemons', label: 'Daemons' },
   { prefix: '/tools', label: 'Tools & Skills' },
   { prefix: '/knowledge', label: 'Knowledge' },
+  { prefix: '/integrations', label: 'Integrations' },
   { prefix: '/usage', label: 'Analytics' },
   { prefix: '/settings', label: 'Settings' },
   { prefix: '/profile', label: 'Profile' }
@@ -712,21 +721,26 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 <Icon name="search" size={18} />
                 <span>Search</span>
               </button>
-              {NAV_ITEMS.map((item) => {
-                const on = isActive(barePath, item.href)
-                return (
-                  <Link
-                    key={item.href}
-                    href={orgPath(item.href)}
-                    title={railCollapsed ? item.label : undefined}
-                    className={on ? 'navitem on' : 'navitem'}
-                  >
-                    {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
-                    <Icon name={item.icon} size={18} />
-                    <span>{item.label}</span>
-                  </Link>
-                )
-              })}
+              {NAV_GROUPS.map((group, groupIndex) => (
+                <Fragment key={group[0]?.href ?? groupIndex}>
+                  {groupIndex > 0 && <div className="navsep" />}
+                  {group.map((item) => {
+                    const on = isActive(barePath, item.href)
+                    return (
+                      <Link
+                        key={item.href}
+                        href={orgPath(item.href)}
+                        title={railCollapsed ? item.label : undefined}
+                        className={on ? 'navitem on' : 'navitem'}
+                      >
+                        {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
+                        <Icon name={item.icon} size={18} />
+                        <span>{item.label}</span>
+                      </Link>
+                    )
+                  })}
+                </Fragment>
+              ))}
               {/* Rail footer. In auth mode this is the account block: avatar + name +
             active org, whose menu carries everything the deleted top bar used to —
             org switching, Profile, Settings, the theme toggle, sign-out. No-auth has

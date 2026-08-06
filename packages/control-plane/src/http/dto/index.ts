@@ -1968,6 +1968,7 @@ const RESERVED_SLUGS = new Set([
   'daemons',
   'crons',
   'knowledge',
+  'integrations',
   'usage',
   'settings',
   'profile',

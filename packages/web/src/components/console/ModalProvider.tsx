@@ -12,6 +12,7 @@ import type { CronDto, HookDto } from '@/lib/api'
 import AddAgentModal from './modals/AddAgentModal'
 import AddDaemonModal from './modals/AddDaemonModal'
 import AddIntegrationModal, {
+  AddIntegrationForOrgModal,
   type FeishuRegion,
   type Platform as IntegrationPlatform
 } from './modals/AddIntegrationModal'
@@ -132,14 +133,24 @@ export function ModalProvider({ children }: { children: ReactNode }) {
                 registerDismiss={registerDismiss}
               />
             )}
-            {open.kind === 'integration' && open.target && (
-              <AddIntegrationModal
-                agent={open.target as Agent}
-                initialPlatform={open.opts?.platform}
-                initialFeishuRegion={open.opts?.feishuRegion}
-                onClose={close}
-              />
-            )}
+            {/* With a target the agent is fixed (opened from an agent); without one
+                — the Integrations page's Add button — the same dialog picks the
+                agent inside. */}
+            {open.kind === 'integration' &&
+              (open.target ? (
+                <AddIntegrationModal
+                  agent={open.target as Agent}
+                  initialPlatform={open.opts?.platform}
+                  initialFeishuRegion={open.opts?.feishuRegion}
+                  onClose={close}
+                />
+              ) : (
+                <AddIntegrationForOrgModal
+                  initialPlatform={open.opts?.platform}
+                  initialFeishuRegion={open.opts?.feishuRegion}
+                  onClose={close}
+                />
+              ))}
             {open.kind === 'deleteIntegration' && open.target && (
               <DeleteIntegrationModal integration={open.target as IntegrationRow} onClose={close} />
             )}
