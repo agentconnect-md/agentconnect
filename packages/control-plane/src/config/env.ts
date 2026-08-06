@@ -277,10 +277,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (!logtoEndpoint) return AppConfigChecked.parse(env)
 
   const logtoOrigin = new URL(SecureOriginSchema.parse(logtoEndpoint)).origin
+  const logtoMgmtEndpoint = env.LOGTO_MGMT_ENDPOINT?.trim()
+  const hasLogtoMgmtCredentials = Boolean(env.LOGTO_MGMT_APP_ID?.trim() || env.LOGTO_MGMT_APP_SECRET?.trim())
   return AppConfigChecked.parse({
     ...env,
     OIDC_ISSUER: env.OIDC_ISSUER?.trim() || `${logtoOrigin}/oidc`,
-    LOGTO_MGMT_ENDPOINT: env.LOGTO_MGMT_ENDPOINT?.trim() || logtoOrigin
+    LOGTO_MGMT_ENDPOINT: logtoMgmtEndpoint || (hasLogtoMgmtCredentials ? logtoOrigin : undefined)
   })
 }
 

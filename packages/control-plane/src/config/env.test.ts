@@ -18,7 +18,7 @@ describe('loadBootstrapConfig', () => {
 })
 
 describe('loadConfig', () => {
-  it('derives canonical Logto topology from the documented trailing-slash endpoint', () => {
+  it('derives login topology without enabling an unconfigured Management API', () => {
     const config = loadConfig({
       DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
       API_KEY_PEPPER: 'a'.repeat(32),
@@ -26,6 +26,18 @@ describe('loadConfig', () => {
     })
 
     expect(config.OIDC_ISSUER).toBe('https://tenant.example.com/oidc')
+    expect(config.LOGTO_MGMT_ENDPOINT).toBeUndefined()
+  })
+
+  it('derives the Management API endpoint when its credentials are configured', () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+      API_KEY_PEPPER: 'a'.repeat(32),
+      LOGTO_ENDPOINT: 'https://tenant.example.com/',
+      LOGTO_MGMT_APP_ID: 'client-id',
+      LOGTO_MGMT_APP_SECRET: 'client-secret'
+    })
+
     expect(config.LOGTO_MGMT_ENDPOINT).toBe('https://tenant.example.com')
   })
 })
