@@ -34,45 +34,7 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { applyTheme, clearThemeAttr, getStoredTheme, type Theme } from '@/lib/theme'
 import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
-
-interface NavItem {
-  href: string
-  label: string
-  icon: string
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { href: '/home', label: 'Home', icon: 'house' },
-  { href: '/agents', label: 'Agents', icon: 'bot' },
-  { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
-  { href: '/daemons', label: 'Daemons', icon: 'server' },
-  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
-  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
-]
-
-// Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
-// destinations as equal columns plus a "More" slot that opens a bottom sheet.
-// (Schedules uses `alarm-clock` per the design, not `calendar-clock`.)
-const MOBILE_NAV: NavItem[] = [
-  { href: '/home', label: 'Home', icon: 'house' },
-  { href: '/agents', label: 'Agents', icon: 'bot' },
-  { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' }
-]
-
-// The "More" sheet's destinations — Analytics / Tools & Skills / Settings (the desktop rail
-// items beyond the 4 primary tabs). Profile is NOT here: it lives in the mobile app
-// bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
-// prepended separately, in the sheet itself.
-const MORE_ROWS: NavItem[] = [
-  { href: '/daemons', label: 'Daemons', icon: 'server' },
-  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
-  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
-  { href: '/settings', label: 'Settings', icon: 'settings' }
-]
+import { MOBILE_NAV, MORE_ROWS, NAV_ITEMS, SECTIONS } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
@@ -117,23 +79,6 @@ const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
   '/crons': 'cron',
   '/daemons': 'daemon'
 }
-
-// Section label for the mobile app bar, matched by path prefix. (Desktop has no
-// title strip — the rail's active row says where you are.)
-const SECTIONS: { prefix: string; label: string }[] = [
-  { prefix: '/home', label: 'Home' },
-  { prefix: '/agents', label: 'Agents' },
-  { prefix: '/sessions', label: 'Sessions' },
-  // Merged conversation pages live in the Sessions section (§5.3).
-  { prefix: '/conversations', label: 'Sessions' },
-  { prefix: '/crons', label: 'Schedules' },
-  { prefix: '/daemons', label: 'Daemons' },
-  { prefix: '/tools', label: 'Tools & Skills' },
-  { prefix: '/knowledge', label: 'Knowledge' },
-  { prefix: '/usage', label: 'Analytics' },
-  { prefix: '/settings', label: 'Settings' },
-  { prefix: '/profile', label: 'Profile' }
-]
 
 const isActive = (pathname: string, href: string) =>
   pathname === href ||

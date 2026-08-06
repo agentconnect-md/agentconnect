@@ -1,11 +1,13 @@
 'use client'
 
 // The console's unified search (design: the top-bar `sr.*` box + `.srpanel`).
-// One box searches agents, daemons, schedules and sessions BY NAME; results are
-// grouped (each capped at 3, with the full match count shown), keyboard-navigable
-// (↑↓ move · ↵ open · esc close), and ⌘K focuses it from anywhere. Selecting a
-// result routes to that entity's page. Everything runs client-side over the
-// already-loaded read models — no new CP endpoint, no extra fetch.
+// One box searches agents, daemons, schedules and sessions BY NAME, plus the
+// console's own pages and settings (the static SEARCH_PAGES index — labels and
+// on-page feature keywords); results are grouped (each capped at 3, with the full
+// match count shown), keyboard-navigable (↑↓ move · ↵ open · esc close), and ⌘K
+// focuses it from anywhere. Selecting a result routes to that entity's page.
+// Everything runs client-side over the already-loaded read models — no new CP
+// endpoint, no extra fetch.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
@@ -13,11 +15,13 @@ import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { agentLabel, effectiveAgentStatus, presentedDaemonStatus, status } from '@/lib/data'
 import { cronHuman } from '@/lib/cron'
+import { isAuthConfigured } from '@/lib/auth'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
+import { SEARCH_PAGES, type ConsolePage } from './nav'
 
-type SearchKind = 'agent' | 'daemon' | 'schedule' | 'session'
+type SearchKind = 'agent' | 'daemon' | 'schedule' | 'session' | 'page' | 'setting'
 
 interface SearchItem {
   key: string
@@ -31,6 +35,8 @@ interface SearchItem {
   icon?: AgentIcon | null
   model?: string
   runtime?: string
+  /** Icon-well glyph for page/setting results (the entry's nav icon). */
+  iconName?: string
   /** Org-scoped navigation target for this result. */
   href: string
 }
@@ -49,6 +55,15 @@ type TypeFilter = 'all' | SearchKind
 // Per-group result cap (design shows the first 3, with the total count beside the
 // label so a wider match set is still discoverable).
 const CAP = 3
+
+// Icon-well glyph for every non-agent kind (agents render their avatar instead).
+// Page/setting results carry their own nav icon on the item.
+const wellIcon = (it: SearchItem): string => {
+  if (it.kind === 'daemon') return 'server'
+  if (it.kind === 'schedule') return 'alarm-clock'
+  if (it.kind === 'session') return 'message-square-text'
+  return it.iconName ?? 'panel-left'
+}
 
 export function GlobalSearch({
   autoFocus = false,
@@ -76,6 +91,14 @@ export function GlobalSearch({
 
   const daemonById = useMemo(() => new Map(daemons.map((d) => [d.daemonId, d])), [daemons])
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
+
+  // Settings/Profile only exist in authed mode — no-auth deployments bounce those
+  // routes to /home (see Shell), so hide their search entries there. Detected
+  // post-mount (like `isMac` above) because the runtime config lives on `window`.
+  const [authed, setAuthed] = useState(false)
+  useEffect(() => {
+    setAuthed(isAuthConfigured())
+  }, [])
 
   const groups = useMemo<SearchGroup[]>(() => {
     // `hit('')` matches everything, so an empty query yields every entity. That's
@@ -148,15 +171,42 @@ export function GlobalSearch({
       href: orgPath(`/sessions/${s.id}`)
     }))
 
-    // Keep all four groups (even empty ones) so the chip row can show every
-    // type's count; the visible list filters empties + the active type below.
+    // Console pages and settings — the static SEARCH_PAGES index. Matches on the
+    // label or any keyword (route aliases + the settings that live on the page).
+    const pageHit = (p: ConsolePage) => hit(p.label) || (p.keywords ?? []).some(hit)
+    const toItem = (p: ConsolePage): SearchItem => ({
+      key: `${p.kind}:${p.href}`,
+      kind: p.kind,
+      title: p.label,
+      meta: p.href,
+      aux: '',
+      iconName: p.icon,
+      href: orgPath(p.href)
+    })
+    const pageMatches = SEARCH_PAGES.filter((p) => p.kind === 'page' && pageHit(p))
+    const settingMatches = authed ? SEARCH_PAGES.filter((p) => p.kind === 'setting' && pageHit(p)) : []
+
+    // Keep all groups (even empty ones) so the chip row can show every type's
+    // count; the visible list filters empties + the active type below.
     return [
       { kind: 'agent' as const, label: 'Agents', count: agentMatches.length, items: agentItems },
       { kind: 'daemon' as const, label: 'Daemons', count: daemonMatches.length, items: daemonItems },
       { kind: 'schedule' as const, label: 'Schedules', count: cronMatches.length, items: cronItems },
-      { kind: 'session' as const, label: 'Sessions', count: sessionMatches.length, items: sessionItems }
+      { kind: 'session' as const, label: 'Sessions', count: sessionMatches.length, items: sessionItems },
+      {
+        kind: 'page' as const,
+        label: 'Pages',
+        count: pageMatches.length,
+        items: pageMatches.slice(0, CAP).map(toItem)
+      },
+      {
+        kind: 'setting' as const,
+        label: 'Settings',
+        count: settingMatches.length,
+        items: settingMatches.slice(0, CAP).map(toItem)
+      }
     ]
-  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath])
+  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
   // Chips: "All" + every kind with at least one match.
@@ -269,10 +319,9 @@ export function GlobalSearch({
           {it.dot && <span className="srdot" style={{ background: it.dot }} />}
         </span>
       )
-    const icon = it.kind === 'daemon' ? 'server' : it.kind === 'schedule' ? 'alarm-clock' : 'message-square-text'
     return (
       <span className="srwell">
-        <Icon name={icon} size={14} />
+        <Icon name={wellIcon(it)} size={14} />
       </span>
     )
   }
@@ -281,8 +330,6 @@ export function GlobalSearch({
   // Owns the whole screen — search bar + inline results — so it doesn't inherit the
   // desktop 340px box / ⌘K hint / floating dropdown chrome.
   if (mobile) {
-    const wellIcon = (k: SearchKind) =>
-      k === 'daemon' ? 'server' : k === 'schedule' ? 'alarm-clock' : 'message-square-text'
     const close = () => {
       reset()
       onClose?.()
@@ -360,7 +407,7 @@ export function GlobalSearch({
         <div className="flex-1 overflow-y-auto pb-6">
           {query === '' && (
             <div className="px-4 py-6 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              Type to search agents, daemons, schedules and sessions by name.
+              Type to search agents, daemons, schedules and sessions by name, or jump to a page or setting.
             </div>
           )}
           {isEmpty && (
@@ -369,7 +416,7 @@ export function GlobalSearch({
                 No results for “{q.trim()}”
               </div>
               <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                Search matches agent, daemon, schedule and session names.
+                Search matches agent, daemon, schedule and session names, plus console pages and settings.
               </div>
             </div>
           )}
@@ -406,7 +453,7 @@ export function GlobalSearch({
                     </span>
                   ) : (
                     <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) text-(--text-secondary)">
-                      <Icon name={wellIcon(it.kind)} size={16} />
+                      <Icon name={wellIcon(it)} size={16} />
                     </span>
                   )}
                   <span className="flex min-w-0 flex-1 flex-col gap-[1px]">
@@ -474,7 +521,7 @@ export function GlobalSearch({
             {typeChipRow}
             {isHint && (
               <div className="px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                Type to search agents, daemons, schedules and sessions by name.
+                Type to search agents, daemons, schedules and sessions by name, or jump to a page or setting.
               </div>
             )}
             {isEmpty && (
@@ -483,7 +530,7 @@ export function GlobalSearch({
                   No results for “{q.trim()}”
                 </div>
                 <div className="mt-1 font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  Search matches agent, daemon, schedule and session names.
+                  Search matches agent, daemon, schedule and session names, plus console pages and settings.
                 </div>
               </div>
             )}
