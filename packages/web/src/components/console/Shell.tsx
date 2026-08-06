@@ -220,9 +220,7 @@ export default function ConsoleShell({ children }: { children: ReactNode }) {
         <ConsoleDataProvider>
           <PlaygroundProvider>
             <ModalProvider>
-              <NotificationProvider>
-                <ShellChrome>{children}</ShellChrome>
-              </NotificationProvider>
+              <ShellChrome>{children}</ShellChrome>
             </ModalProvider>
           </PlaygroundProvider>
         </ConsoleDataProvider>
@@ -647,383 +645,385 @@ function ShellChrome({ children }: { children: ReactNode }) {
   }
 
   return (
-    <MobileFilterContext.Provider value={{ filter: mobileFilter, register: setMobileFilter }}>
-      <MobileActionContext.Provider value={{ action: mobileAction, register: setMobileAction }}>
-        <CrumbContext.Provider value={{ register: setCrumbSlot }}>
-          <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
-            {/* ===== RAIL =====
+    <NotificationProvider orgId={activeOrg?.id}>
+      <MobileFilterContext.Provider value={{ filter: mobileFilter, register: setMobileFilter }}>
+        <MobileActionContext.Provider value={{ action: mobileAction, register: setMobileAction }}>
+          <CrumbContext.Provider value={{ register: setCrumbSlot }}>
+            <div className={`app${isListRoute ? '' : ' pushed'}${mounted ? ' mounted' : ''}`}>
+              {/* ===== RAIL =====
           Only collapsed, icon-only controls get titles; the global layer turns
           those titles into the console's themed tooltips. */}
-            <aside className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
-              <div className="railbrand">
-                <Link
-                  href={orgPath('/home')}
-                  className="railbrand-logo cursor-pointer select-none"
-                  aria-label="Go to Home"
-                >
-                  <LogoMark size={24} />
-                  <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
-                    Agent<span className="text-(--magenta-300)">Connect</span>
-                  </span>
-                </Link>
-                <button
-                  type="button"
-                  onClick={toggleRail}
-                  className="railiconbtn railtoggle"
-                  // No `title`: the icon already reads as the collapse/expand affordance,
-                  // and a tooltip on the collapsed rail's own toggle is noise. Screen
-                  // readers still get the state from aria-label.
-                  aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                >
-                  <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
-                </button>
-                {/* Search sits at the rail's outer edge, permanently visible — with no
+              <aside className={`rail${railCollapsed ? ' collapsed' : ''}${railAnim ? ' rail-anim' : ''}`}>
+                <div className="railbrand">
+                  <Link
+                    href={orgPath('/home')}
+                    className="railbrand-logo cursor-pointer select-none"
+                    aria-label="Go to Home"
+                  >
+                    <LogoMark size={24} />
+                    <span className="brandword font-sans text-[16px] font-semibold leading-normal tracking-[-.02em] text-white">
+                      Agent<span className="text-(--magenta-300)">Connect</span>
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={toggleRail}
+                    className="railiconbtn railtoggle"
+                    // No `title`: the icon already reads as the collapse/expand affordance,
+                    // and a tooltip on the collapsed rail's own toggle is noise. Screen
+                    // readers still get the state from aria-label.
+                    aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                  >
+                    <Icon name={railCollapsed ? 'panel-left-open' : 'panel-left-close'} size={16} />
+                  </button>
+                  {/* Search sits at the rail's outer edge, permanently visible — with no
               top bar it is the console's only search affordance, so unlike the
               collapse toggle beside it, it never hides. Collapsed, CSS swaps it for
               the `.railsrnav` row below. */}
+                  <button
+                    type="button"
+                    onClick={openSearch}
+                    className="railiconbtn railsrbtn"
+                    title="Search"
+                    aria-label="Search"
+                  >
+                    <Icon name="search" size={16} />
+                  </button>
+                </div>
+                {/* The search dialog itself. It renders in the rail so the trigger and the
+            dialog share one component; `rail` re-seats the open state as a centred
+            command palette (globals.css `.railsr`). */}
+                <GlobalSearch rail />
                 <button
                   type="button"
                   onClick={openSearch}
-                  className="railiconbtn railsrbtn"
+                  className="navitem railsrnav"
                   title="Search"
                   aria-label="Search"
                 >
-                  <Icon name="search" size={16} />
+                  <Icon name="search" size={18} />
+                  <span>Search</span>
                 </button>
-              </div>
-              {/* The search dialog itself. It renders in the rail so the trigger and the
-            dialog share one component; `rail` re-seats the open state as a centred
-            command palette (globals.css `.railsr`). */}
-              <GlobalSearch rail />
-              <button
-                type="button"
-                onClick={openSearch}
-                className="navitem railsrnav"
-                title="Search"
-                aria-label="Search"
-              >
-                <Icon name="search" size={18} />
-                <span>Search</span>
-              </button>
-              {NAV_ITEMS.map((item) => {
-                const on = isActive(barePath, item.href)
-                return (
-                  <Link
-                    key={item.href}
-                    href={orgPath(item.href)}
-                    title={railCollapsed ? item.label : undefined}
-                    className={on ? 'navitem on' : 'navitem'}
-                  >
-                    {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
-                    <Icon name={item.icon} size={18} />
-                    <span>{item.label}</span>
-                  </Link>
-                )
-              })}
-              {/* Rail footer. In auth mode this is the account block: avatar + name +
+                {NAV_ITEMS.map((item) => {
+                  const on = isActive(barePath, item.href)
+                  return (
+                    <Link
+                      key={item.href}
+                      href={orgPath(item.href)}
+                      title={railCollapsed ? item.label : undefined}
+                      className={on ? 'navitem on' : 'navitem'}
+                    >
+                      {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
+                      <Icon name={item.icon} size={18} />
+                      <span>{item.label}</span>
+                    </Link>
+                  )
+                })}
+                {/* Rail footer. In auth mode this is the account block: avatar + name +
             active org, whose menu carries everything the deleted top bar used to —
             org switching, Profile, Settings, the theme toggle, sign-out. No-auth has
             no identity and one implicit org, so it keeps just the theme toggle. The
             Help menu shows in both modes — the docs links are useful either way. */}
-              <div className="railfoot">
-                {authOn ? (
-                  <RailAccount
-                    display={display}
-                    collapsed={railCollapsed}
-                    orgs={orgs}
-                    activeOrg={activeOrg}
-                    setActiveOrg={setActiveOrg}
-                    orgPath={orgPath}
-                    openModal={openModal}
-                    canCreateOrg={canCreateOrg}
-                    theme={theme}
-                    onToggleTheme={toggleTheme}
-                    onSignOut={signOut}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={toggleTheme}
-                    className="railiconbtn"
-                    title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                    aria-label="Toggle theme"
-                  >
-                    <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-                  </button>
-                )}
-                <div className="flex-none">
-                  <NotificationBell placement="top-left" />
-                </div>
-                {/* Same 22px box as the brand row's search button, and the same 2px
-              inset from the rail's edge — the two sit on one vertical centre line. */}
-                <div className="railhelp relative mr-[2px] flex-none">
-                  <button
-                    type="button"
-                    onClick={() => setHelpMenu((v) => !v)}
-                    className="railiconbtn"
-                    title="Help & resources"
-                    aria-label="Help & resources"
-                  >
-                    <Icon name="circle-question-mark" size={16} color={helpMenu ? 'var(--brand)' : undefined} />
-                  </button>
-                  {helpMenu && (
-                    <>
-                      <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
-                      <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
-                        {/* The desktop way back to a skipped checklist, both auth modes — the
-                          pill has no other desktop re-entry point. */}
-                        <button
-                          className="dmi"
-                          onClick={() => {
-                            setHelpMenu(false)
-                            openGettingStarted()
-                          }}
-                        >
-                          <Icon name="rocket" size={15} color="var(--text-tertiary)" />
-                          Getting started
-                        </button>
-                        <button
-                          className="dmi"
-                          onClick={() => {
-                            setHelpMenu(false)
-                            setConnectAiOpen(true)
-                          }}
-                        >
-                          <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
-                          Connect your AI
-                        </button>
-                        <a
-                          className="dmi no-underline"
-                          href={help.docs}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() => setHelpMenu(false)}
-                        >
-                          <Icon name="book-open" size={15} color="var(--text-tertiary)" />
-                          Documentation
-                        </a>
-                        <div className="dmsep" />
-                        <button
-                          className="dmi"
-                          onClick={() => {
-                            setHelpMenu(false)
-                            setShortcutsOpen(true)
-                          }}
-                        >
-                          <Icon name="command" size={15} color="var(--text-tertiary)" />
-                          Keyboard shortcuts
-                        </button>
-                        <a
-                          className="dmi no-underline"
-                          href={help.releases}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={() => setHelpMenu(false)}
-                        >
-                          <Icon name="gift" size={15} color="var(--text-tertiary)" />
-                          What&rsquo;s new
-                        </a>
-                        <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
-                          <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
-                          Help &amp; support
-                        </a>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            </aside>
-
-            {/* ===== MAIN =====
-          Desktop has NO top bar (design v2 is a pure left/right split): no breadcrumb,
-          no parent back-link, no title strip. The rail states where you are, and each
-          detail view owns its own heading. Mobile still needs one — `.mtop` below. */}
-            <div className="main">
-              {githubNotice && (
-                <div
-                  role={githubNotice.tone === 'warning' ? 'alert' : 'status'}
-                  className="fixed top-[72px] right-4 left-4 z-50 flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) desktop:top-4 desktop:left-auto desktop:w-[460px]"
-                >
-                  <Icon
-                    name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-alert'}
-                    size={16}
-                    color={githubNotice.tone === 'success' ? 'var(--status-online)' : 'var(--amber-500)'}
-                    className="mt-[1px] flex-none"
-                  />
-                  <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-                    {githubNotice.message}
-                  </span>
+                <div className="railfoot">
                   {authOn ? (
-                    <Link
-                      href={orgPath('/settings')}
-                      className="lnk flex-none text-[12px]"
-                      onClick={() => setGithubNotice(null)}
-                    >
-                      Settings
-                    </Link>
+                    <RailAccount
+                      display={display}
+                      collapsed={railCollapsed}
+                      orgs={orgs}
+                      activeOrg={activeOrg}
+                      setActiveOrg={setActiveOrg}
+                      orgPath={orgPath}
+                      openModal={openModal}
+                      canCreateOrg={canCreateOrg}
+                      theme={theme}
+                      onToggleTheme={toggleTheme}
+                      onSignOut={signOut}
+                    />
                   ) : (
                     <button
                       type="button"
-                      className="lnk flex-none text-[12px]"
-                      onClick={() => {
-                        setGithubNotice(null)
-                        openModal('agent')
-                      }}
+                      onClick={toggleTheme}
+                      className="railiconbtn"
+                      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                      aria-label="Toggle theme"
                     >
-                      Add agent
+                      <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="iconbtn -m-1 h-7 w-7 flex-none"
-                    aria-label="Dismiss GitHub installation notice"
-                    onClick={() => setGithubNotice(null)}
-                  >
-                    <Icon name="x" size={14} />
-                  </button>
-                </div>
-              )}
-              {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
-              <header className="mtop">
-                {isListRoute ? (
-                  <>
-                    <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label="Go to Home">
-                      <LogoMark />
-                    </Link>
-                    <span className="mtop-title">{crumb}</span>
-                    {addKind && (
-                      <button className="mappbtn" aria-label="Add" onClick={() => openModal(addKind)}>
-                        <Icon name="circle-plus" size={22} />
-                      </button>
-                    )}
-                    {/* Sessions registers a filter slot; surface it as an app-bar button
-                  with a dot when any filter is active (design's Sessions tab). */}
-                    {barePath === '/sessions' && mobileFilter && (
-                      <button className="mappbtn relative" aria-label="Filter sessions" onClick={mobileFilter.open}>
-                        <Icon name="sliders-horizontal" size={20} />
-                        {mobileFilter.active && (
-                          <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
-                        )}
-                      </button>
-                    )}
-                    <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
-                      <Icon name="search" size={20} />
-                    </button>
-                    <NotificationBell />
+                  <div className="flex-none">
+                    <NotificationBell placement="top-left" />
+                  </div>
+                  {/* Same 22px box as the brand row's search button, and the same 2px
+              inset from the rail's edge — the two sit on one vertical centre line. */}
+                  <div className="railhelp relative mr-[2px] flex-none">
                     <button
-                      className="mappbtn"
-                      aria-label="Toggle theme"
-                      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-                      onClick={toggleTheme}
+                      type="button"
+                      onClick={() => setHelpMenu((v) => !v)}
+                      className="railiconbtn"
+                      title="Help & resources"
+                      aria-label="Help & resources"
                     >
-                      <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
+                      <Icon name="circle-question-mark" size={16} color={helpMenu ? 'var(--brand)' : undefined} />
                     </button>
-                    {authOn && (
-                      <Link
-                        href={orgPath('/profile')}
-                        aria-label="Profile"
-                        title="Profile"
-                        className="ml-[2px] flex-none leading-[0]"
-                      >
-                        <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
-                      </Link>
+                    {helpMenu && (
+                      <>
+                        <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
+                        <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
+                          {/* The desktop way back to a skipped checklist, both auth modes — the
+                          pill has no other desktop re-entry point. */}
+                          <button
+                            className="dmi"
+                            onClick={() => {
+                              setHelpMenu(false)
+                              openGettingStarted()
+                            }}
+                          >
+                            <Icon name="rocket" size={15} color="var(--text-tertiary)" />
+                            Getting started
+                          </button>
+                          <button
+                            className="dmi"
+                            onClick={() => {
+                              setHelpMenu(false)
+                              setConnectAiOpen(true)
+                            }}
+                          >
+                            <SiModelcontextprotocol className="text-(--text-tertiary)" aria-hidden />
+                            Connect your AI
+                          </button>
+                          <a
+                            className="dmi no-underline"
+                            href={help.docs}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setHelpMenu(false)}
+                          >
+                            <Icon name="book-open" size={15} color="var(--text-tertiary)" />
+                            Documentation
+                          </a>
+                          <div className="dmsep" />
+                          <button
+                            className="dmi"
+                            onClick={() => {
+                              setHelpMenu(false)
+                              setShortcutsOpen(true)
+                            }}
+                          >
+                            <Icon name="command" size={15} color="var(--text-tertiary)" />
+                            Keyboard shortcuts
+                          </button>
+                          <a
+                            className="dmi no-underline"
+                            href={help.releases}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => setHelpMenu(false)}
+                          >
+                            <Icon name="gift" size={15} color="var(--text-tertiary)" />
+                            What&rsquo;s new
+                          </a>
+                          <a className="dmi no-underline" href={help.support} onClick={() => setHelpMenu(false)}>
+                            <Icon name="life-buoy" size={15} color="var(--text-tertiary)" />
+                            Help &amp; support
+                          </a>
+                        </div>
+                      </>
                     )}
-                  </>
-                ) : (
-                  <>
-                    <button className="mappbtn" aria-label="Back" onClick={goBack}>
-                      <Icon name="arrow-left" size={20} />
-                    </button>
-                    <span className="mtop-title">{pushTitle}</span>
-                    {mobileAction && (
-                      <button
-                        className={`mappbtn${mobileAction.active ? ' text-(--brand)' : ''}`}
-                        aria-label={mobileAction.label}
-                        aria-expanded={mobileAction.active}
-                        onClick={mobileAction.onClick}
+                  </div>
+                </div>
+              </aside>
+
+              {/* ===== MAIN =====
+          Desktop has NO top bar (design v2 is a pure left/right split): no breadcrumb,
+          no parent back-link, no title strip. The rail states where you are, and each
+          detail view owns its own heading. Mobile still needs one — `.mtop` below. */}
+              <div className="main">
+                {githubNotice && (
+                  <div
+                    role={githubNotice.tone === 'warning' ? 'alert' : 'status'}
+                    className="fixed top-[72px] right-4 left-4 z-50 flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) desktop:top-4 desktop:left-auto desktop:w-[460px]"
+                  >
+                    <Icon
+                      name={githubNotice.tone === 'success' ? 'circle-check' : 'triangle-alert'}
+                      size={16}
+                      color={githubNotice.tone === 'success' ? 'var(--status-online)' : 'var(--amber-500)'}
+                      className="mt-[1px] flex-none"
+                    />
+                    <span className="min-w-0 flex-1 font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                      {githubNotice.message}
+                    </span>
+                    {authOn ? (
+                      <Link
+                        href={orgPath('/settings')}
+                        className="lnk flex-none text-[12px]"
+                        onClick={() => setGithubNotice(null)}
                       >
-                        <Icon
-                          name={mobileAction.icon}
-                          size={20}
-                          color={mobileAction.active ? 'var(--brand)' : undefined}
-                        />
+                        Settings
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        className="lnk flex-none text-[12px]"
+                        onClick={() => {
+                          setGithubNotice(null)
+                          openModal('agent')
+                        }}
+                      >
+                        Add agent
                       </button>
                     )}
-                    {isSessionDetail && (
+                    <button
+                      type="button"
+                      className="iconbtn -m-1 h-7 w-7 flex-none"
+                      aria-label="Dismiss GitHub installation notice"
+                      onClick={() => setGithubNotice(null)}
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                )}
+                {/* ===== MOBILE APP BAR (hidden ≥ tablet) — list-tab vs push variant ===== */}
+                <header className="mtop">
+                  {isListRoute ? (
+                    <>
+                      <Link href={orgPath('/home')} className="mtop-logo select-none" aria-label="Go to Home">
+                        <LogoMark />
+                      </Link>
+                      <span className="mtop-title">{crumb}</span>
+                      {addKind && (
+                        <button className="mappbtn" aria-label="Add" onClick={() => openModal(addKind)}>
+                          <Icon name="circle-plus" size={22} />
+                        </button>
+                      )}
+                      {/* Sessions registers a filter slot; surface it as an app-bar button
+                  with a dot when any filter is active (design's Sessions tab). */}
+                      {barePath === '/sessions' && mobileFilter && (
+                        <button className="mappbtn relative" aria-label="Filter sessions" onClick={mobileFilter.open}>
+                          <Icon name="sliders-horizontal" size={20} />
+                          {mobileFilter.active && (
+                            <span className="absolute top-[9px] right-[10px] h-[7px] w-[7px] rounded-full border-[1.5px] border-(--surface-card) bg-(--brand)" />
+                          )}
+                        </button>
+                      )}
+                      <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
+                        <Icon name="search" size={20} />
+                      </button>
+                      <NotificationBell />
                       <button
                         className="mappbtn"
-                        aria-label={linkCopied ? 'Link copied' : 'Copy link'}
-                        onClick={copyLink}
+                        aria-label="Toggle theme"
+                        title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                        onClick={toggleTheme}
                       >
-                        <Icon
-                          name={linkCopied ? 'check' : 'link'}
-                          size={20}
-                          color={linkCopied ? 'var(--brand)' : undefined}
-                        />
+                        <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={20} />
                       </button>
-                    )}
-                  </>
-                )}
-              </header>
+                      {authOn && (
+                        <Link
+                          href={orgPath('/profile')}
+                          aria-label="Profile"
+                          title="Profile"
+                          className="ml-[2px] flex-none leading-[0]"
+                        >
+                          <Avatar src={display.picture} initials={display.initials} size={30} fontSize={11} />
+                        </Link>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <button className="mappbtn" aria-label="Back" onClick={goBack}>
+                        <Icon name="arrow-left" size={20} />
+                      </button>
+                      <span className="mtop-title">{pushTitle}</span>
+                      {mobileAction && (
+                        <button
+                          className={`mappbtn${mobileAction.active ? ' text-(--brand)' : ''}`}
+                          aria-label={mobileAction.label}
+                          aria-expanded={mobileAction.active}
+                          onClick={mobileAction.onClick}
+                        >
+                          <Icon
+                            name={mobileAction.icon}
+                            size={20}
+                            color={mobileAction.active ? 'var(--brand)' : undefined}
+                          />
+                        </button>
+                      )}
+                      {isSessionDetail && (
+                        <button
+                          className="mappbtn"
+                          aria-label={linkCopied ? 'Link copied' : 'Copy link'}
+                          onClick={copyLink}
+                        >
+                          <Icon
+                            name={linkCopied ? 'check' : 'link'}
+                            size={20}
+                            color={linkCopied ? 'var(--brand)' : undefined}
+                          />
+                        </button>
+                      )}
+                    </>
+                  )}
+                </header>
 
-              <div className="content">
-                <SearchOpenContext.Provider value={openSearch}>{children}</SearchOpenContext.Provider>
+                <div className="content">
+                  <SearchOpenContext.Provider value={openSearch}>{children}</SearchOpenContext.Provider>
+                </div>
+
+                {/* ===== MOBILE BOTTOM NAV — 4 tabs + More, hidden on push screens ===== */}
+                {isListRoute && (
+                  <nav className="mnav">
+                    <div className="mnav-tabs">
+                      {MOBILE_NAV.map((item) => {
+                        const on = isActive(barePath, item.href)
+                        return (
+                          <Link key={item.href} href={orgPath(item.href)} className={on ? 'mnavitem on' : 'mnavitem'}>
+                            <Icon name={item.icon} size={20} color={on ? 'var(--magenta-300)' : undefined} />
+                            <span>{item.label}</span>
+                          </Link>
+                        )
+                      })}
+                      <button type="button" className="mnavitem" onClick={() => setMobileSheet('more')}>
+                        <Icon name="ellipsis" size={20} />
+                        <span>More</span>
+                      </button>
+                    </div>
+                    <div className="mnav-home">
+                      <span className="home-pill" />
+                    </div>
+                  </nav>
+                )}
               </div>
 
-              {/* ===== MOBILE BOTTOM NAV — 4 tabs + More, hidden on push screens ===== */}
-              {isListRoute && (
-                <nav className="mnav">
-                  <div className="mnav-tabs">
-                    {MOBILE_NAV.map((item) => {
-                      const on = isActive(barePath, item.href)
-                      return (
-                        <Link key={item.href} href={orgPath(item.href)} className={on ? 'mnavitem on' : 'mnavitem'}>
-                          <Icon name={item.icon} size={20} color={on ? 'var(--magenta-300)' : undefined} />
-                          <span>{item.label}</span>
-                        </Link>
-                      )
-                    })}
-                    <button type="button" className="mnavitem" onClick={() => setMobileSheet('more')}>
-                      <Icon name="ellipsis" size={20} />
-                      <span>More</span>
-                    </button>
-                  </div>
-                  <div className="mnav-home">
-                    <span className="home-pill" />
-                  </div>
-                </nav>
+              {/* ===== MOBILE SHEETS + full-screen search (mobile-only; opened from the nav) ===== */}
+              {mobileSheet && (
+                <MobileSheets
+                  which={mobileSheet}
+                  authOn={authOn}
+                  orgPath={orgPath}
+                  orgs={orgs}
+                  activeOrg={activeOrg}
+                  setActiveOrg={setActiveOrg}
+                  openModal={openModal}
+                  canCreateOrg={canCreateOrg}
+                  onOpenOrg={() => setMobileSheet('org')}
+                  onClose={closeSheets}
+                />
               )}
-            </div>
-
-            {/* ===== MOBILE SHEETS + full-screen search (mobile-only; opened from the nav) ===== */}
-            {mobileSheet && (
-              <MobileSheets
-                which={mobileSheet}
-                authOn={authOn}
-                orgPath={orgPath}
-                orgs={orgs}
-                activeOrg={activeOrg}
-                setActiveOrg={setActiveOrg}
-                openModal={openModal}
-                canCreateOrg={canCreateOrg}
-                onOpenOrg={() => setMobileSheet('org')}
-                onClose={closeSheets}
-              />
-            )}
-            {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
-            {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-            {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
-            {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
+              {mobileSearch && <GlobalSearch mobile autoFocus onClose={() => setMobileSearch(false)} />}
+              {shortcutsOpen && <KeyboardShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+              {connectAiOpen && <ConnectAiModal onClose={() => setConnectAiOpen(false)} moreUrl={help.mcp} />}
+              {/* Getting-started pill + drawer (design 1a/1b): a corner checklist derived from
           live state, self-gated (desktop, setup-started, incomplete). */}
-            <GettingStarted />
-            {/* Renders every `title` in the console on the design system's timing
+              <GettingStarted />
+              {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
-            <NotificationToastContainer />
-            <TooltipLayer />
-          </div>
-        </CrumbContext.Provider>
-      </MobileActionContext.Provider>
-    </MobileFilterContext.Provider>
+              <NotificationToastContainer />
+              <TooltipLayer />
+            </div>
+          </CrumbContext.Provider>
+        </MobileActionContext.Provider>
+      </MobileFilterContext.Provider>
+    </NotificationProvider>
   )
 }
 

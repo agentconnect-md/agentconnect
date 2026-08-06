@@ -8,10 +8,9 @@ const notifiedLifecycleOpIds = new Set<string>()
 /**
  * Monitors daemon state updates (polling / SWR refreshes) and automatically
  * triggers notification toasts and history entries for:
- * 1. Daemon Upgrade / Restart success or failure (lifecycleOp status transitions,
- *    including when first observed in a terminal state).
- * 2. Daemon session retention cleanup success.
- * 3. Daemon session retention cleanup failure.
+ * 1. Daemon Upgrade / Restart success or failure (live pending -> succeeded/failed
+ *    transitions).
+ * 2. Daemon session retention cleanup outcomes.
  */
 export function useDaemonNotifier(daemons: DaemonRow[]) {
   const { addNotification } = useNotifications()
@@ -32,36 +31,37 @@ export function useDaemonNotifier(daemons: DaemonRow[]) {
       const prevStatus = prevOpStatuses.current.get(op.id)
       const daemonName = daemon.name || daemon.host || daemon.daemonId
 
-      // If the op was pending and is now succeeded/failed OR if it's the first time
-      // we observe this op and it has reached a terminal status and hasn't been notified yet:
-      const isTransitionFromPending = prevStatus === 'pending'
-      const isUnnotifiedTerminal = !prevStatus && !notifiedLifecycleOpIds.has(op.id)
+      // Only notify when an in-flight op observed as 'pending' transitions to terminal state ('succeeded'/'failed').
+      // This prevents old historic lifecycle ops from firing toast notifications on fresh page reloads.
+      const isLiveTransition = prevStatus === 'pending'
 
-      if ((isTransitionFromPending || isUnnotifiedTerminal) && op.status !== 'pending') {
-        notifiedLifecycleOpIds.add(op.id)
+      if (op.status !== 'pending' && isLiveTransition) {
+        if (!notifiedLifecycleOpIds.has(op.id)) {
+          notifiedLifecycleOpIds.add(op.id)
 
-        if (op.status === 'succeeded') {
-          const opLabel = op.op === 'upgrade' ? 'Upgrade' : 'Restart'
-          const targetStr = op.targetVersion ? ` to ${op.targetVersion}` : ''
-          addNotification({
-            category: 'daemon_lifecycle',
-            severity: 'success',
-            title: `Daemon ${opLabel} Succeeded`,
-            message: `Daemon "${daemonName}" successfully completed ${op.op}${targetStr}.`,
-            daemonId: daemon.daemonId,
-            daemonName
-          })
-        } else if (op.status === 'failed') {
-          const opLabel = op.op === 'upgrade' ? 'Upgrade' : 'Restart'
-          const detail = op.outcome ? `: ${op.outcome}` : ''
-          addNotification({
-            category: 'daemon_lifecycle',
-            severity: 'error',
-            title: `Daemon ${opLabel} Failed`,
-            message: `Daemon "${daemonName}" ${op.op} failed${detail}.`,
-            daemonId: daemon.daemonId,
-            daemonName
-          })
+          if (op.status === 'succeeded') {
+            const opLabel = op.op === 'upgrade' ? 'Upgrade' : 'Restart'
+            const targetStr = op.targetVersion ? ` to ${op.targetVersion}` : ''
+            addNotification({
+              category: 'daemon_lifecycle',
+              severity: 'success',
+              title: `Daemon ${opLabel} Succeeded`,
+              message: `Daemon "${daemonName}" successfully completed ${op.op}${targetStr}.`,
+              daemonId: daemon.daemonId,
+              daemonName
+            })
+          } else if (op.status === 'failed') {
+            const opLabel = op.op === 'upgrade' ? 'Upgrade' : 'Restart'
+            const detail = op.outcome ? `: ${op.outcome}` : ''
+            addNotification({
+              category: 'daemon_lifecycle',
+              severity: 'error',
+              title: `Daemon ${opLabel} Failed`,
+              message: `Daemon "${daemonName}" ${op.op} failed${detail}.`,
+              daemonId: daemon.daemonId,
+              daemonName
+            })
+          }
         }
       }
     }
