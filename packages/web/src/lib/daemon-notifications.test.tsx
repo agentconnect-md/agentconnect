@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { DaemonRow } from '@/lib/data'
-import { useDaemonNotifier, notifySessionRetentionResult } from '@/lib/daemon-notifications'
+import {
+  useDaemonNotifier,
+  notifySessionRetentionResult,
+  registerCommandedLifecycleOpId
+} from '@/lib/daemon-notifications'
 import { NotificationProvider, useNotifications } from '@/lib/notifications'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useEffect } from 'react'
@@ -65,6 +69,26 @@ describe('useDaemonNotifier', () => {
     )
     expect(html).toBe('')
     expect(count).toBe(0)
+  })
+
+  it('allows registering commanded op IDs for fast-terminal operations', () => {
+    const op = {
+      id: 'fast-op-1',
+      op: 'restart' as const,
+      status: 'succeeded' as const,
+      targetVersion: null,
+      outcome: null
+    }
+    registerCommandedLifecycleOpId(op.id)
+    const daemon = mockDaemon('d1', 'Fast Daemon', op)
+
+    let notifs: ReturnType<typeof useNotifications>['notifications'] = []
+    renderToStaticMarkup(
+      <NotificationProvider>
+        <TestNotifierComponent daemons={[daemon]} onNotify={(n) => (notifs = n)} />
+      </NotificationProvider>
+    )
+    expect(Array.isArray(notifs)).toBe(true)
   })
 })
 

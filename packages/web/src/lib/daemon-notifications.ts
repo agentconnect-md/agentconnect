@@ -5,11 +5,20 @@ import { useNotifications } from '@/lib/notifications'
 // Global set of lifecycle op IDs that have already triggered a notification in this session
 const notifiedLifecycleOpIds = new Set<string>()
 
+// Set of op IDs commanded locally in the current browser session
+const commandedLifecycleOpIds = new Set<string>()
+
+export function registerCommandedLifecycleOpId(id: string) {
+  if (id) {
+    commandedLifecycleOpIds.add(id)
+  }
+}
+
 /**
  * Monitors daemon state updates (polling / SWR refreshes) and automatically
  * triggers notification toasts and history entries for:
  * 1. Daemon Upgrade / Restart success or failure (live pending -> succeeded/failed
- *    transitions).
+ *    transitions or fast locally-commanded operations).
  * 2. Daemon session retention cleanup outcomes.
  */
 export function useDaemonNotifier(daemons: DaemonRow[]) {
@@ -31,11 +40,13 @@ export function useDaemonNotifier(daemons: DaemonRow[]) {
       const prevStatus = prevOpStatuses.current.get(op.id)
       const daemonName = daemon.name || daemon.host || daemon.daemonId
 
-      // Only notify when an in-flight op observed as 'pending' transitions to terminal state ('succeeded'/'failed').
-      // This prevents old historic lifecycle ops from firing toast notifications on fresh page reloads.
+      // Notify if:
+      // 1) Op was observed as 'pending' and now transitioned to terminal ('succeeded'/'failed'), OR
+      // 2) Op was commanded locally in this browser session (even if first observed as terminal).
       const isLiveTransition = prevStatus === 'pending'
+      const isCommandedLocally = commandedLifecycleOpIds.has(op.id)
 
-      if (op.status !== 'pending' && isLiveTransition) {
+      if (op.status !== 'pending' && (isLiveTransition || isCommandedLocally)) {
         if (!notifiedLifecycleOpIds.has(op.id)) {
           notifiedLifecycleOpIds.add(op.id)
 

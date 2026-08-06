@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
 import { getDaemonLifecycleOp, type DaemonLifecycleOpDto } from '@/lib/api'
 import type { DaemonRow } from '@/lib/data'
+import { registerCommandedLifecycleOpId } from '@/lib/daemon-notifications'
 import { Button, Icon } from '@/components/ui'
 import { Spinner } from '@/components/marks'
 
@@ -75,6 +76,7 @@ export default function DaemonLifecycleModal({
     try {
       const op =
         mode === 'upgrade' ? await upgradeDaemon(daemon.daemonId, version) : await restartDaemon(daemon.daemonId)
+      registerCommandedLifecycleOpId(op.id)
       setTracked(op) // may already be terminal (fast restart settled during the ACK)
       refresh()
     } catch (e) {
