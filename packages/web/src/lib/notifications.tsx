@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error'
 export type NotificationCategory = 'daemon_lifecycle' | 'session_retention'
@@ -59,20 +59,21 @@ function saveStoredNotifications(items: NotificationItem[], orgId?: string | nul
 }
 
 export function NotificationProvider({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
-  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [notifications, setNotifications] = useState<NotificationItem[]>(() => loadStoredNotifications(orgId))
   const [toasts, setToasts] = useState<NotificationItem[]>([])
-  const [initialized, setInitialized] = useState(false)
+  const activeOrgRef = useRef(orgId)
 
   useEffect(() => {
+    activeOrgRef.current = orgId
     setNotifications(loadStoredNotifications(orgId))
-    setInitialized(true)
+    setToasts([])
   }, [orgId])
 
   useEffect(() => {
-    if (initialized) {
+    if (activeOrgRef.current === orgId) {
       saveStoredNotifications(notifications, orgId)
     }
-  }, [notifications, initialized, orgId])
+  }, [notifications, orgId])
 
   const addNotification = useCallback((item: Omit<NotificationItem, 'id' | 'timestamp' | 'read'>) => {
     const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
