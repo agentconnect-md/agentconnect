@@ -124,7 +124,8 @@ type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 // used as a background, which is what lets one hex read correctly in both themes and
 // makes a new hue cost one array entry instead of a second colour table. The `var()`
 // fallback matters — an invalid var() inside color-mix drops the whole declaration,
-// so a turn with no accent gets a brand-tinted bubble, never an invisible one.
+// so a turn with no accent gets an indigo-tinted bubble, never an invisible one
+// (not --brand: magenta's tint reads as a warning/error banner, see agent-tone.ts).
 // AGENT_NAME pulls that accent 62% toward the text colour: gold or green at full
 // strength fails contrast on the light surface.
 // SELF_BUBBLE is the reader's own, deliberately neutral, tail corner mirrored.
@@ -133,9 +134,9 @@ type ComposerMenuKey = 'permission' | 'model' | 'effort' | 'addAgent'
 // stops a long agent bubble short of where the reader's own avatar sits, so the two
 // columns of bubbles share one right edge instead of the bot side running under it.
 const AGENT_BUBBLE =
-  'w-fit max-w-[calc(100%-35px)] rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_var(--bubble-tint),var(--surface-card))]'
+  'w-fit max-w-[calc(100%-35px)] rounded-[12px_12px_12px_4px] border px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary) border-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-edge),var(--surface-card))] bg-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_var(--bubble-tint),var(--surface-card))]'
 const AGENT_NAME =
-  'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--brand))_62%,var(--text-primary))]'
+  'font-sans text-[13px] font-semibold leading-normal text-[color:color-mix(in_oklab,var(--agent-accent,var(--indigo-500))_62%,var(--text-primary))]'
 const SELF_BUBBLE =
   'max-w-full rounded-[12px_12px_4px_12px] border border-(--bubble-self-edge) bg-(--bubble-self) px-3 py-[9px] font-sans text-[13.5px] font-normal leading-[1.55] text-(--text-primary)'
 
