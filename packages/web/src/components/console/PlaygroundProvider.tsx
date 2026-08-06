@@ -198,7 +198,7 @@ type WebchatEvent =
   | { kind: 'message'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_call'; toolCallId: string; title: string; status: string }
-  | { kind: 'tool_update'; toolCallId: string; status: string }
+  | { kind: 'tool_update'; toolCallId: string; status: string; title?: string }
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
 
@@ -489,10 +489,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           return [...steps, lane({ kind: 'plan', text: ev.text })]
         }
         if (ev.kind === 'tool_call') {
-          return [...steps, lane({ kind: 'tool', text: ev.title || 'tool call' })]
+          return [
+            ...steps,
+            lane({ kind: 'tool', text: ev.title || 'tool call', toolCallId: ev.toolCallId, toolStatus: ev.status })
+          ]
         }
         if (ev.kind === 'tool_update' && last?.kind === 'tool') {
-          return replaceAt(laneIndex, { ...last, observedAtMs })
+          return replaceAt(laneIndex, {
+            ...last,
+            toolStatus: ev.status,
+            ...(ev.title ? { text: ev.title } : {}),
+            observedAtMs
+          })
         }
         return steps // tool_update: status-only, nothing to render for now
       })

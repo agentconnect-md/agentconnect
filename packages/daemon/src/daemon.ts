@@ -15554,13 +15554,19 @@ export class Daemon {
           status: String(update.status ?? 'pending')
         })
         return
-      case 'tool_call_update':
+      case 'tool_call_update': {
+        // A later update can retitle the call (e.g. Codex web_search starts generic,
+        // then reports the actual query) — forward it so the live view retitles in
+        // place instead of being stuck on the first `tool_call`'s placeholder title.
+        const title = typeof update.title === 'string' ? update.title : undefined
         emit({
           kind: 'tool_update',
           toolCallId: String(update.toolCallId ?? ''),
-          status: String(update.status ?? '')
+          status: String(update.status ?? ''),
+          ...(title !== undefined ? { title } : {})
         })
         return
+      }
       case 'session_info_update': {
         // The runtime's auto-generated title (already persisted via setSessionTitle
         // above). Stream it so the live playground session renames in place. Slack
