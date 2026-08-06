@@ -44,11 +44,11 @@ import EditMemberModal, { type MemberTarget } from '@/components/console/modals/
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
 
-// A session-access row shows only the effect of the current setting ("People with
-// Slack access" / "Agent viewers"). What the toggle means at all is said once, in
-// the card header; the per-platform detail — which conversations qualify, what
-// turning it off does NOT undo — hangs off the row's info button, so every row
-// stays one line.
+// A session-access row is a platform name and its switch. What the switch does is
+// said once, in the card header — restating it per row ("People with Slack access"
+// beside an on switch in a row already labelled Slack) is the same sentence three
+// times. Only EXCEPTIONS get words: a chip when the setting cannot be used or is
+// not fully taking effect, and the per-platform detail on the row's info button.
 //
 // "New sessions" is load-bearing in the Off half: turning the policy off stops
 // NEW sessions binding to platform access, it does not unbind the ones already
@@ -63,8 +63,6 @@ const SESSION_ACCESS_COPY: Record<
     label: string
     details: string
     unavailable: string
-    enabled: string
-    disabled: string
     unresolved: (count: number) => string
     degraded: string
   }
@@ -78,9 +76,7 @@ const SESSION_ACCESS_COPY: Record<
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
       'Turning this off leaves already-synced sessions following Slack.'
     ].join('\n'),
-    unavailable: 'Needs sign-in and linked Slack identities',
-    enabled: 'People with Slack access',
-    disabled: 'Agent viewers',
+    unavailable: 'Needs OIDC sign-in and linked Slack identities before it can follow Slack access.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted Slack scope.`,
     degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
   },
@@ -93,9 +89,7 @@ const SESSION_ACCESS_COPY: Record<
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
       'Turning this off leaves already-synced sessions following GitHub.'
     ].join('\n'),
-    unavailable: 'Needs sign-in and GitHub access checks',
-    enabled: 'People with GitHub access',
-    disabled: 'Agent viewers',
+    unavailable: 'Needs OIDC sign-in and GitHub access checks before it can follow repository access.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   },
@@ -108,9 +102,7 @@ const SESSION_ACCESS_COPY: Record<
       'User-built apps with a different App ID keep the ordinary organization visibility model.',
       'Turning this off leaves already-synced sessions following Feishu / Lark.'
     ].join('\n'),
-    unavailable: 'Needs sign-in and a linked Feishu / Lark profile',
-    enabled: 'People with Feishu / Lark access',
-    disabled: 'Agent viewers',
+    unavailable: 'Needs OIDC sign-in, a linked Feishu / Lark profile, and the matching platform app.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
     degraded: 'Feishu / Lark scopes stopped resolving — new sessions are being hidden.'
   }
@@ -155,10 +147,6 @@ function SessionAccessRow({
   }
 
   const unavailable = access?.available === false && !access.enabled
-  // The effective answer to "who can see these sessions" — the only sentence the
-  // row spends space on. Blank until the row has loaded, so it never states a
-  // policy the org may not be on.
-  const value = !access ? '' : unavailable ? copy.unavailable : access.enabled ? copy.enabled : copy.disabled
 
   return (
     <div className={`flex items-center gap-3 px-4 py-[15px] ${bordered ? 'border-t border-(--border-subtle)' : ''}`}>
@@ -180,13 +168,6 @@ function SessionAccessRow({
             <Icon name="info" size={13} />
           </button>
         </div>
-        {/* Desktop keeps the effect in its own column; on a phone there is no room
-            beside the toggle, so it drops under the platform name. */}
-        {value && (
-          <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary) desktop:hidden">
-            {value}
-          </div>
-        )}
         {(currentActionError || loadError) && (
           <div role="alert" className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
             {currentActionError ?? `Could not load ${copy.name} session access.`}
@@ -214,9 +195,10 @@ function SessionAccessRow({
           <span className="sr-only">{copy.unresolved(hiddenSessions)}</span>
         </span>
       )}
-      {value && (
-        <span className="hidden font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:block">
-          {value}
+      {unavailable && (
+        <span className="badge flex-none bg-(--surface-sunken) text-(--text-tertiary)" title={copy.unavailable}>
+          <span aria-hidden="true">Needs sign-in</span>
+          <span className="sr-only">{copy.unavailable}</span>
         </span>
       )}
       <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
