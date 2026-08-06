@@ -180,6 +180,22 @@ model DeletedIdentityCutoff {
   @@map("deleted_identity_cutoff")
 }
 
+// One row per deleted organization, recording that its transit key should be
+// destroyed (docs/designs/per-org-secret-encryption.md §6). Written inside the
+// same transaction that deletes the org, so the intent survives whatever
+// happens next; drained by the operator-run `secrets:shred` CLI, which is the
+// ONLY thing that ever deletes a key — the CP process cannot.
+//
+// Deliberately NO foreign key: the row's entire purpose is to outlive the
+// organization it names. The org id is enough to derive the key name, which is
+// why the shredder never has to enumerate keys.
+model PendingKeyShred {
+  orgId     String   @id // the deleted org; the key name derives from it
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("pending_key_shred")
+}
+
 // Console roles (§3.2): owner = edit everything + manage members/org info (an
 // org can have several owners); collaborator = create/edit/run agents, manage
 // sessions; viewer = read-only.

@@ -1,6 +1,12 @@
 # Per-Org Secret Encryption and Crypto-Shredding
 
-> Status: Proposed. Extends
+> Status: Implemented. `SecretCipher` carries a scope, org keys derive from the
+> deployment key, organization deletion records a shred intent, and
+> `secrets/shred-cli.ts` drains it. What remains is operational: granting the
+> Vault policies of §6 and running the §7 rewrap sweep per environment, without
+> which the shred guarantee is not yet true.
+>
+> Extends
 > [`secret-store-seams.md`](./secret-store-seams.md), which established the
 > single `SecretCipher` seam and the Vault Transit implementation. This document
 > adds a **scope** to that seam so each organization's secrets are encrypted
@@ -336,7 +342,9 @@ The order is therefore:
 1. Deploy. New writes seal under org keys; legacy values keep reading.
 2. Run the rewrap sweep (`secrets/rewrap.ts`) per environment. It resolves each
    row's scope and re-seals under the correct key.
-3. Only then is per-organization shredding a claim that holds.
+3. Only then is per-organization shredding a claim that holds. Until step 2
+   completes, deleting an organization destroys a key that some of its values
+   were never sealed under — the deletion is real, the guarantee is partial.
 
 **Known rolling-update window — accepted, and only safe pre-release.** The
 envelope tag is new, so a binary from before this change does not recognize it:

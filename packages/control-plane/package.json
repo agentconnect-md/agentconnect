@@ -65,6 +65,7 @@
     "prepack": "pnpm run prisma:generate && pnpm run build",
     "prisma:generate": "prisma generate",
     "secrets:rewrap": "tsx --env-file-if-exists=../../.env src/secrets/rewrap-cli.ts",
+    "secrets:shred": "tsx --env-file-if-exists=../../.env src/secrets/shred-cli.ts",
     "start": "node dist/index.js",
     "test": "pnpm run test:unit && pnpm run test:int",
     "test:int": "vitest run --project integration",
