@@ -134,6 +134,16 @@ describe('computeGettingStarted', () => {
     expect(keys.indexOf('github-profile')).toBe(keys.indexOf('github') + 1)
   })
 
+  it('hides both GitHub steps when the deployment has no GitHub App provider', () => {
+    const keys = (githubEnabled?: boolean, githubLinked?: boolean) =>
+      computeGettingStarted({ ...empty, githubEnabled, githubLinked }).items.map((i) => i.key)
+    expect(keys(false)).not.toContain('github')
+    expect(keys(false, false)).not.toContain('github-profile')
+    // undefined (probe in flight / failed) keeps the step — the hosted default
+    expect(keys(undefined)).toContain('github')
+    expect(keys(true)).toContain('github')
+  })
+
   it('reaches allDone with a full ring when every signal is satisfied', () => {
     const gs = computeGettingStarted({
       agents: [agent({ workspace: { mode: 'github', repo: 'acme/x' } as Agent['workspace'], hookKinds: ['github'] })],
