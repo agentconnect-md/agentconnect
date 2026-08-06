@@ -82,9 +82,20 @@ function asStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
-/** Returns stable field names only; it never includes provider response values. */
-export function auditSlackManifest(actual: SlackManifest, expected: SlackManifest): string[] {
-  const missing: string[] = []
+function sameStrings(left: unknown, right: unknown): boolean {
+  return JSON.stringify([...asStrings(left)].sort()) === JSON.stringify([...asStrings(right)].sort())
+}
+
+export interface SlackManifestDiff {
+  id: string
+  field: string
+  current: unknown
+  expected: unknown
+}
+
+/** Returns only public App settings; secrets never appear in this diff. */
+export function diffSlackManifest(actual: SlackManifest, expected: SlackManifest): SlackManifestDiff[] {
+  const diff: SlackManifestDiff[] = []
   const actualOauth = asRecord(actual.oauth_config)
   const expectedOauth = asRecord(expected.oauth_config)
   const actualScopes = asRecord(actualOauth.scopes)
@@ -97,29 +108,46 @@ export function auditSlackManifest(actual: SlackManifest, expected: SlackManifes
   const expectedInteractivity = asRecord(expectedSettings.interactivity)
 
   for (const scope of asStrings(asRecord(expectedScopes).bot)) {
-    if (!asStrings(asRecord(actualScopes).bot).includes(scope)) missing.push(`scope:${scope}`)
+    if (!asStrings(asRecord(actualScopes).bot).includes(scope)) {
+      diff.push({ id: `scope:${scope}`, field: `Bot scope: ${scope}`, current: 'Missing', expected: 'Required' })
+    }
   }
   for (const event of asStrings(expectedEvents.bot_events)) {
-    if (!asStrings(actualEvents.bot_events).includes(event)) missing.push(`event:${event}`)
+    if (!asStrings(actualEvents.bot_events).includes(event)) {
+      diff.push({ id: `event:${event}`, field: `Bot event: ${event}`, current: 'Missing', expected: 'Required' })
+    }
   }
-  for (const [field, expectedValue] of [
-    ['oauth_config.redirect_urls', expectedOauth.redirect_urls],
-    ['settings.event_subscriptions.request_url', expectedEvents.request_url],
-    ['settings.interactivity.request_url', expectedInteractivity.request_url],
-    ['settings.interactivity.message_menu_options_url', expectedInteractivity.message_menu_options_url],
-    ['settings.socket_mode_enabled', expectedSettings.socket_mode_enabled]
+  for (const [id, field, expectedValue] of [
+    ['oauth_config.redirect_urls', 'OAuth redirect URLs', expectedOauth.redirect_urls],
+    ['settings.event_subscriptions.request_url', 'Events request URL', expectedEvents.request_url],
+    ['settings.interactivity.request_url', 'Interactivity request URL', expectedInteractivity.request_url],
+    [
+      'settings.interactivity.message_menu_options_url',
+      'Message menu options URL',
+      expectedInteractivity.message_menu_options_url
+    ],
+    ['settings.socket_mode_enabled', 'Socket Mode enabled', expectedSettings.socket_mode_enabled]
   ] as const) {
     const actualValue =
-      field === 'oauth_config.redirect_urls'
+      id === 'oauth_config.redirect_urls'
         ? actualOauth.redirect_urls
-        : field === 'settings.event_subscriptions.request_url'
+        : id === 'settings.event_subscriptions.request_url'
           ? actualEvents.request_url
-          : field === 'settings.interactivity.request_url'
+          : id === 'settings.interactivity.request_url'
             ? actualInteractivity.request_url
-            : field === 'settings.interactivity.message_menu_options_url'
+            : id === 'settings.interactivity.message_menu_options_url'
               ? actualInteractivity.message_menu_options_url
               : actualSettings.socket_mode_enabled
-    if (JSON.stringify(actualValue) !== JSON.stringify(expectedValue)) missing.push(field)
+    const matches =
+      id === 'oauth_config.redirect_urls'
+        ? sameStrings(actualValue, expectedValue)
+        : JSON.stringify(actualValue) === JSON.stringify(expectedValue)
+    if (!matches) diff.push({ id, field, current: actualValue ?? null, expected: expectedValue ?? null })
   }
-  return missing
+  return diff
+}
+
+/** Returns stable field names only; it never includes provider response values. */
+export function auditSlackManifest(actual: SlackManifest, expected: SlackManifest): string[] {
+  return diffSlackManifest(actual, expected).map((item) => item.id)
 }

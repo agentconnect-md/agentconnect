@@ -40,6 +40,13 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     textarea { width: min(720px, 100%); min-height: 100px; padding: 7px; box-sizing: border-box; }
     .uris { margin: 8px 0; padding-left: 20px; } .uris code { user-select: all; }
     .notice { border-left: 4px solid #d99b13; padding: 8px 12px; background: #d99b1315; }
+    .diff-title { display: block; margin-bottom: 8px; }
+    .config-diff { display: grid; gap: 1px; border: 1px solid #8884; border-radius: 6px; overflow: hidden; background: #8884; }
+    .diff-row { display: grid; grid-template-columns: minmax(140px, .8fr) minmax(0, 1.2fr) minmax(0, 1.2fr); background: Canvas; }
+    .diff-row > * { min-width: 0; padding: 7px 9px; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .diff-head { font-size: 12px; font-weight: 600; color: #777; }
+    .diff-field { font-weight: 600; }
+    .diff-value { font-family: ui-monospace, monospace; font-size: 13px; }
     pre { padding: 12px; border-radius: 6px; background: #8881; overflow-x: auto; user-select: all; }
     #message { white-space: pre-wrap; padding: 10px 0; min-height: 1.5em; }
     .error { color: #c33; } .ok { color: #198754; } .warn { color: #a66b00; }
@@ -56,6 +63,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       .admin-nav { position: static; display: flex; overflow-x: auto; }
       .credentials { grid-template-columns: 1fr; gap: 2px; }
       .credentials dd { margin-bottom: 8px; }
+      .diff-row { grid-template-columns: 1fr; }
+      .diff-head { display: none; }
+      .diff-value::before { display: block; margin-bottom: 2px; color: #777; font: 11px/1.4 system-ui, sans-serif; }
+      .diff-current::before { content: 'Current'; }
+      .diff-expected::before { content: 'Expected'; }
     }
     [hidden] { display: none !important; }
   </style>
@@ -171,6 +183,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <div class="row"><button id="save-logto-configuration">Save configuration</button><button id="cancel-logto-configuration">Cancel</button></div>
         </div>
         <p id="logto-status" class="muted">Checking redirects and sign-in settings…</p>
+        <div id="logto-drift" class="notice" hidden></div>
         <div class="row">
           <button id="check-logto">Check match</button>
           <button id="reconcile-logto">Apply expected settings</button>
@@ -190,6 +203,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <dt>App ID</dt><dd class="value-line"><code id="github-app-id">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>App slug</dt><dd class="value-line"><code id="github-app-slug">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Client ID</dt><dd class="value-line"><code id="github-client-id">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
+          <dt>Logto connector ID</dt><dd class="value-line"><code id="github-logto-connector-id">Not enabled</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="github-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.clientSecret" data-secret-display="github-client-secret-display">Edit</button></dd>
           <dt>Private key</dt><dd class="secret-line"><span id="github-private-key-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.privateKeyB64" data-secret-display="github-private-key-display">Edit</button></dd>
           <dt>Webhook secret</dt><dd class="secret-line"><span id="github-webhook-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.webhookSecret" data-secret-display="github-webhook-secret-display">Edit</button></dd>
@@ -202,6 +216,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <label class="field">App ID<input id="github-edit-app-id" inputmode="numeric" autocomplete="off"></label>
           <label class="field">App slug<input id="github-edit-slug" autocomplete="off"></label>
           <label class="field">Client ID<input id="github-edit-client-id" autocomplete="off"></label>
+          <label id="github-edit-connector-id-field" class="field" hidden>Logto connector ID<input id="github-edit-connector-id" autocomplete="off"></label>
           <label class="field">New client secret<input id="github-edit-client-secret" type="password" autocomplete="new-password" placeholder="Required when App or Client ID changes"></label>
           <label class="field">New private key (base64)<textarea id="github-edit-private-key" autocomplete="off" placeholder="Required when App ID changes"></textarea></label>
           <label class="field">New webhook secret<input id="github-edit-webhook-secret" type="password" autocomplete="new-password" placeholder="Required when an active webhook App ID changes"></label>
@@ -233,6 +248,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <dl class="credentials">
           <dt>App ID</dt><dd class="value-line"><code id="slack-app-id">Not configured</code><button class="edit-configuration" data-provider="slack">Edit</button></dd>
           <dt>Client ID</dt><dd class="value-line"><code id="slack-client-id">Not configured</code><button class="edit-configuration" data-provider="slack">Edit</button></dd>
+          <dt>Logto connector ID</dt><dd class="value-line"><code id="slack-logto-connector-id">Not enabled</code><button class="edit-configuration" data-provider="slack">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="slack-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="slack.clientSecret" data-secret-display="slack-client-secret-display">Edit</button></dd>
           <dt>Signing secret</dt><dd class="secret-line"><span id="slack-signing-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="slack.signingSecret" data-secret-display="slack-signing-secret-display">Edit</button></dd>
           <dt>Logto sign-in</dt><dd id="slack-logto-status">Not configured</dd>
@@ -243,6 +259,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <h3>Edit Slack App identity</h3>
           <label class="field">App ID<input id="slack-edit-app-id" autocomplete="off"></label>
           <label class="field">Client ID<input id="slack-edit-client-id" autocomplete="off"></label>
+          <label id="slack-edit-connector-id-field" class="field" hidden>Logto connector ID<input id="slack-edit-connector-id" autocomplete="off"></label>
           <label class="field">New client secret<input id="slack-edit-client-secret" type="password" autocomplete="new-password" placeholder="Required when identity changes"></label>
           <label class="field">New signing secret<input id="slack-edit-signing-secret" type="password" autocomplete="new-password" placeholder="Required when identity changes"></label>
           <div class="row"><button id="save-slack-configuration">Save configuration</button><button id="cancel-slack-configuration">Cancel</button></div>
@@ -267,6 +284,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         </div>
         <dl class="credentials">
           <dt>Client ID</dt><dd class="value-line"><code id="google-client-id">Not configured</code><button class="edit-configuration" data-provider="google">Edit</button></dd>
+          <dt>Logto connector ID</dt><dd class="value-line"><code id="google-connector-id">Not configured</code><button class="edit-configuration" data-provider="google">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="google-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="logto.googleConnectorClientSecret" data-secret-display="google-client-secret-display">Edit</button></dd>
         </dl>
         <p id="google-status" class="muted"></p>
@@ -276,6 +294,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <div class="row"><a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google Auth Platform</a></div>
         <div id="google-config-controls" class="subsection">
           <label class="field">Client ID<input id="google-id" autocomplete="off"></label>
+          <label class="field">Logto connector ID<input id="google-connector-id-input" autocomplete="off"></label>
           <label id="google-initial-secret-field" class="field">Client secret<input id="google-secret" type="password" autocomplete="new-password" placeholder="Required when Client ID changes"></label>
         </div>
         <div class="row"><button id="save-google">Save Google client</button><button id="cancel-google-configuration" hidden>Cancel</button><button id="check-google" hidden>Check match</button><button id="clear-google" class="danger" hidden>Clear configuration</button></div>
@@ -479,15 +498,55 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       return { owner: 'organization', organization };
     }
 
-    function fieldsChanged(actual, expected) {
-      if (!actual) return Object.keys(expected);
-      return Object.keys(expected).filter((key) => Array.isArray(expected[key]) ? !same(actual[key], expected[key]) : actual[key] !== expected[key]);
+    function valuesMatch(current, expected) {
+      if (Array.isArray(expected)) return same(current, expected);
+      return JSON.stringify(current) === JSON.stringify(expected);
     }
 
-    function showDrift(id, fields, expected) {
+    function objectDiff(current, expected, labels = {}) {
+      if (!expected) return [];
+      return Object.keys(expected)
+        .filter((key) => !current || !valuesMatch(current[key], expected[key]))
+        .map((key) => ({
+          field: labels[key] || key,
+          current: current ? current[key] : 'Not verified',
+          expected: expected[key]
+        }));
+    }
+
+    function formatDiffValue(value) {
+      if (value === null || value === undefined || value === '') return 'Not configured';
+      if (Array.isArray(value)) return value.length ? value.map(formatDiffValue).join('\n') : '[]';
+      if (typeof value === 'object') {
+        return Object.entries(value).map(([key, item]) => key + ': ' + (Array.isArray(item) ? item.join(', ') : formatDiffValue(item))).join('\n');
+      }
+      return String(value);
+    }
+
+    function showDiff(id, rows, label = 'Update required') {
       const box = el(id);
-      box.hidden = fields.length === 0;
-      box.textContent = fields.length === 0 ? '' : 'Update required: ' + fields.join(', ') + '. Expected values: ' + JSON.stringify(expected);
+      box.hidden = rows.length === 0;
+      box.replaceChildren();
+      if (rows.length === 0) return;
+      const title = document.createElement('strong');
+      title.className = 'diff-title';
+      title.textContent = label;
+      const grid = document.createElement('div');
+      grid.className = 'config-diff';
+      const head = document.createElement('div');
+      head.className = 'diff-row diff-head';
+      for (const text of ['Field', 'Current', 'Expected']) {
+        const cell = document.createElement('span'); cell.textContent = text; head.append(cell);
+      }
+      grid.append(head);
+      for (const item of rows) {
+        const row = document.createElement('div'); row.className = 'diff-row';
+        const field = document.createElement('span'); field.className = 'diff-field'; field.textContent = item.field;
+        const current = document.createElement('span'); current.className = 'diff-value diff-current'; current.textContent = formatDiffValue(item.current);
+        const expected = document.createElement('span'); expected.className = 'diff-value diff-expected'; expected.textContent = formatDiffValue(item.expected);
+        row.append(field, current, expected); grid.append(row);
+      }
+      box.append(title, grid);
     }
 
     function renderStartupEnvironment() {
@@ -536,6 +595,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       text('github-app-id', github && github.appId);
       text('github-app-slug', github && github.slug);
       text('github-client-id', github && github.clientId);
+      text('github-logto-connector-id', values.logto && values.logto.githubConnector && values.logto.githubConnector.connectorId);
       el('github-edit-controls').hidden = true;
       showIdentityEditors('github', Boolean(github));
       secretText('github-client-secret-display', byKey, 'github.clientSecret', Boolean(github));
@@ -546,19 +606,28 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? github.slug + ' is configured. Webhook secret: ' + (webhookStored ? 'stored' : webhookInactive ? 'not required yet' : 'missing') + '.' +
           (webhookInactive ? ' Webhook delivery is not registered until HTTPS ingress is configured.' : '')
         : 'Creates the complete App used for repository installation, webhooks, and optional GitHub sign-in.';
-      const githubDrift = github ? (expected.github ? fieldsChanged(github.configuredUrls, expected.github) : ['startup public URLs']) : [];
-      match('github-match', !github ? '' : githubDrift.length ? 'warn' : '', !github ? 'Not configured' : githubDrift.length ? 'Update required' : 'Ready to check');
+      const githubDrift = github
+        ? expected.github
+          ? objectDiff(github.configuredUrls, expected.github, {
+              externalUrl: 'Homepage URL', setupUrl: 'Setup URL', webhookUrl: 'Webhook URL',
+              webhookActive: 'Webhook active', callbackUrls: 'Callback URLs'
+            })
+          : [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'Valid Web, API, and ingress URLs' }]
+        : [];
+      const githubVerified = Boolean(github && github.configuredUrls);
+      match('github-match', !github ? '' : !githubVerified || githubDrift.length ? 'warn' : '', !github ? 'Not configured' : !githubVerified ? 'Not verified' : githubDrift.length ? 'Update required' : 'Ready to check');
       el('github-create-controls').hidden = Boolean(github);
       el('create-github').hidden = Boolean(github);
       el('clear-github').hidden = !github;
       el('connect-github-login').hidden = !github || !values.logto || Boolean(values.logto.githubConnector);
       el('check-github').hidden = !github;
-      if (github) showDrift('github-drift', githubDrift, expected.github || {});
+      if (github) showDiff('github-drift', githubDrift, githubVerified ? 'Update required' : 'Not verified');
       else el('github-drift').hidden = true;
 
       const slack = values.slack;
       text('slack-app-id', slack && slack.appId);
       text('slack-client-id', slack && slack.clientId);
+      text('slack-logto-connector-id', values.logto && values.logto.slackConnector && values.logto.slackConnector.connectorId);
       el('slack-edit-controls').hidden = true;
       showIdentityEditors('slack', Boolean(slack));
       secretText('slack-client-secret-display', byKey, 'slack.clientSecret', Boolean(slack));
@@ -567,8 +636,16 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? 'Enabled; reuses the Slack client secret above.'
         : 'Not enabled.';
       el('slack-status').textContent = slack ? slack.appId + ' is configured.' : 'Creates the default AgentConnect integration manifest.';
-      const slackDrift = slack ? (expected.slack ? fieldsChanged(slack.configuredUrls, expected.slack) : ['startup public URLs']) : [];
-      match('slack-match', !slack ? '' : slackDrift.length ? 'warn' : '', !slack ? 'Not configured' : slackDrift.length ? 'Update required' : 'Ready to check');
+      const slackDrift = slack
+        ? expected.slack
+          ? objectDiff(slack.configuredUrls, expected.slack, {
+              oauthRedirectUrl: 'OAuth redirect URL', eventsUrl: 'Events request URL',
+              interactionsUrl: 'Interactivity request URL', loginRedirectUrl: 'Logto redirect URL'
+            })
+          : [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'HTTPS Web, API, and ingress URLs' }]
+        : [];
+      const slackVerified = Boolean(slack && slack.configuredUrls);
+      match('slack-match', !slack ? '' : !slackVerified || slackDrift.length ? 'warn' : '', !slack ? 'Not configured' : !slackVerified ? 'Not verified' : slackDrift.length ? 'Update required' : 'Ready to check');
       el('slack-name-field').hidden = Boolean(slack);
       el('create-slack').hidden = Boolean(slack);
       el('connect-slack-login').hidden = !slack || !values.logto || Boolean(values.logto.slackConnector) || !bootstrapInfo?.slackAvailable;
@@ -577,7 +654,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('slack-settings').hidden = !slack;
       if (slack) {
         el('slack-settings').href = 'https://api.slack.com/apps/' + encodeURIComponent(slack.appId);
-        showDrift('slack-drift', slackDrift, expected.slack || {});
+        showDiff('slack-drift', slackDrift, slackVerified ? 'Update required' : 'Not verified');
       } else el('slack-drift').hidden = true;
 
       const google = values.logto && values.logto.googleConnector;
@@ -586,12 +663,16 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       renderUriList('google-origins', expectedGoogle.origins);
       renderUriList('google-redirects', expectedGoogle.redirects);
       text('google-client-id', google && google.clientId);
+      text('google-connector-id', google && google.connectorId);
       secretText('google-client-secret-display', byKey, 'logto.googleConnectorClientSecret', Boolean(google));
       showIdentityEditors('google', Boolean(google));
       el('google-id').value = google ? google.clientId : '';
+      el('google-connector-id-input').value = google ? google.connectorId : bootstrapInfo.googleConnectorId;
       el('google-status').textContent = google ? 'Google OAuth client is configured.' : 'Create a Web application OAuth client manually, then save it here.';
-      const googleDrift = google && !same(google.configuredRedirectUris, expectedGoogle.redirects) ? ['authorized redirect URIs'] : [];
-      showDrift('google-drift', googleDrift, expectedGoogle);
+      const googleDrift = google && !same(google.configuredRedirectUris, expectedGoogle.redirects)
+        ? [{ field: 'Authorized redirect URIs', current: google.configuredRedirectUris, expected: expectedGoogle.redirects }]
+        : [];
+      showDiff('google-drift', googleDrift);
       match('google-match', !google || !googleSecret ? '' : googleDrift.length ? 'warn' : '', !google ? 'Not configured' : !googleSecret ? 'Missing secret' : googleDrift.length ? 'Update required' : 'Ready to check');
       el('google-initial-secret-field').hidden = googleSecret;
       el('save-google').textContent = google ? 'Confirm callback settings' : 'Save Google client';
@@ -671,6 +752,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         el('github-edit-app-id').value = String(github.appId);
         el('github-edit-slug').value = github.slug;
         el('github-edit-client-id').value = github.clientId || '';
+        const githubConnector = values.logto && values.logto.githubConnector;
+        el('github-edit-connector-id').value = githubConnector ? githubConnector.connectorId : '';
+        el('github-edit-connector-id-field').hidden = !githubConnector;
         for (const id of ['github-edit-client-secret', 'github-edit-private-key', 'github-edit-webhook-secret', 'github-edit-logto-secret']) el(id).value = '';
         el('github-edit-logto-secret-field').hidden = !githubConnectorUsesDeployment(values);
         el('github-edit-controls').hidden = false;
@@ -681,6 +765,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         if (!slack) return;
         el('slack-edit-app-id').value = slack.appId;
         el('slack-edit-client-id').value = slack.clientId;
+        const slackConnector = values.logto && values.logto.slackConnector;
+        el('slack-edit-connector-id').value = slackConnector ? slackConnector.connectorId : '';
+        el('slack-edit-connector-id-field').hidden = !slackConnector;
         el('slack-edit-client-secret').value = '';
         el('slack-edit-signing-secret').value = '';
         el('slack-edit-controls').hidden = false;
@@ -690,6 +777,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         const google = values.logto && values.logto.googleConnector;
         if (!google) return;
         el('google-id').value = google.clientId;
+        el('google-connector-id-input').value = google.connectorId;
         el('google-secret').value = '';
         el('google-config-controls').hidden = false;
         el('google-initial-secret-field').hidden = false;
@@ -766,6 +854,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const appChanged = appId !== previous.appId;
       const clientChanged = clientId !== previous.clientId;
       const connectorReused = githubConnectorUsesDeployment(values);
+      const connectorId = connectorReused ? requiredInput('github-edit-connector-id', 'the Logto connector ID') : null;
       const clientSecret = el('github-edit-client-secret').value;
       const privateKey = el('github-edit-private-key').value.trim();
       const webhookSecret = el('github-edit-webhook-secret').value;
@@ -780,7 +869,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       if (webhookSecret) secrets['github.webhookSecret'] = webhookSecret;
       if (connectorSecret) secrets['logto.githubConnectorClientSecret'] = connectorSecret;
       const nextLogto = connectorReused && values.logto
-        ? { ...values.logto, githubConnector: { appId, slug, clientId } }
+        ? { ...values.logto, githubConnector: { ...values.logto.githubConnector, connectorId, appId, slug, clientId } }
         : values.logto;
       await replaceConfiguration(
         {
@@ -800,6 +889,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const appId = requiredInput('slack-edit-app-id', 'the Slack App ID');
       const clientId = requiredInput('slack-edit-client-id', 'the Slack Client ID');
       const changed = appId !== previous.appId || clientId !== previous.clientId;
+      const connectorId = values.logto && values.logto.slackConnector
+        ? requiredInput('slack-edit-connector-id', 'the Logto connector ID')
+        : null;
       const clientSecret = el('slack-edit-client-secret').value;
       const signingSecret = el('slack-edit-signing-secret').value;
       if (changed && (!clientSecret || !signingSecret)) throw new Error('Enter both the new Slack client secret and signing secret');
@@ -807,7 +899,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       if (clientSecret) secrets['slack.clientSecret'] = clientSecret;
       if (signingSecret) secrets['slack.signingSecret'] = signingSecret;
       const nextLogto = values.logto && values.logto.slackConnector
-        ? { ...values.logto, slackConnector: { appId, clientId } }
+        ? { ...values.logto, slackConnector: { ...values.logto.slackConnector, connectorId, appId, clientId } }
         : values.logto;
       await replaceConfiguration(
         {
@@ -1010,10 +1102,12 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const result = await json(await fetch(api + '/check/github', { headers: bearer() }));
       el('github-settings').href = result.settingsUrl;
       el('github-settings').hidden = false;
-      el('confirm-github').hidden = !result.missing.some((field) => field === 'callback_urls' || field === 'setup_url' || field === 'webhook_active');
-      showDrift('github-drift', result.missing, result.expected);
-      match('github-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : 'Update required');
-      message(result.status === 'pass' ? 'GitHub App matches the expected integration manifest.' : 'GitHub App settings need an update.', result.status !== 'pass');
+      const confirmationFields = result.unverified || [];
+      el('confirm-github').hidden = ![...result.missing, ...confirmationFields].some((field) => field === 'callback_urls' || field === 'setup_url' || field === 'webhook_active');
+      const label = result.missing.length ? 'Update required' : 'Not verified';
+      showDiff('github-drift', result.diff || [], label);
+      match('github-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : label);
+      message(result.status === 'pass' ? 'GitHub App matches the expected integration manifest.' : result.missing.length ? 'GitHub App settings need an update.' : 'Confirm the callback, setup, and webhook-active settings in GitHub.', result.status === 'fail');
     }
 
     async function connectGithubLogin() {
@@ -1038,7 +1132,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
             browser: logto.browser
               ? { ...logto.browser, socialProviders: [...new Set([...logto.browser.socialProviders, 'slack'])] }
               : logto.browser,
-            slackConnector: { appId: slack.appId, clientId: slack.clientId }
+            slackConnector: {
+              connectorId: bootstrapInfo.slackConnectorId,
+              appId: slack.appId,
+              clientId: slack.clientId
+            }
           }
         },
         undefined,
@@ -1057,14 +1155,14 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     }
 
     async function checkSlack() {
-      const token = el('slack-token').value;
+      const token = requiredInput('slack-token', 'the temporary Slack App configuration token');
       const result = await json(await fetch(api + '/check/slack', {
         method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({ configToken: token })
       }));
       el('slack-token').value = '';
       if (result.status === 'pass') await load();
-      showDrift('slack-drift', result.missing, result.expected);
+      showDiff('slack-drift', result.diff || []);
       match('slack-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : 'Update required');
       message(result.status === 'pass' ? 'Slack App matches the default integration manifest.' : 'Slack App settings need an update.', result.status !== 'pass');
     }
@@ -1076,6 +1174,18 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const expected = currentStatus ? currentStatus.providerExpectations.google : { redirects: [] };
       const callbacksMatch = google && same(google.configuredRedirectUris, expected.redirects);
       const passed = connector && connector.status === 'pass' && callbacksMatch;
+      const connectorDiff = connector && connector.diff
+        ? connector.diff.filter((item) => item.field.toLowerCase().startsWith('google'))
+        : [];
+      showDiff(
+        'google-drift',
+        [
+          ...connectorDiff,
+          ...(callbacksMatch || !google
+            ? []
+            : [{ field: 'Authorized redirect URIs', current: google.configuredRedirectUris, expected: expected.redirects }])
+        ]
+      );
       match('google-match', passed ? 'pass' : 'warn', passed ? 'Matches' : 'Update required');
       message(passed ? 'Google callbacks and the Logto connector match.' : 'Google or its Logto connector needs an update.', !passed);
     }
@@ -1091,7 +1201,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const secret = el('google-secret').value;
       await json(await fetch(api + '/configure/google', {
         method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
-        body: JSON.stringify({ clientId: el('google-id').value, ...(secret ? { clientSecret: secret } : {}) })
+        body: JSON.stringify({
+          connectorId: requiredInput('google-connector-id-input', 'the Logto connector ID'),
+          clientId: el('google-id').value,
+          ...(secret ? { clientSecret: secret } : {})
+        })
       }));
       el('google-secret').value = '';
       await reconcileLogto();
@@ -1155,6 +1269,12 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         : failures.map((finding) => finding.message).join(' ');
       el('logto-status').className = failures.length === 0 ? 'ok' : 'warn';
       match('logto-match', failures.length === 0 ? 'pass' : 'warn', failures.length === 0 ? 'Matches' : 'Update required');
+      showDiff(
+        'logto-drift',
+        failures.flatMap((finding) => finding.diff && finding.diff.length
+          ? finding.diff
+          : [{ field: finding.id.replace(/^logto\./, '').replaceAll('_', ' '), current: finding.message, expected: 'Matches expected configuration' }])
+      );
       el('logto-settings').hidden = failures.length === 0;
       return report;
     }

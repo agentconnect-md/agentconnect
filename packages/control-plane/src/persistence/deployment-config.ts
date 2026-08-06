@@ -70,18 +70,21 @@ const LogtoBrowserSchema = z.strictObject({
 })
 
 const LogtoGithubConnectorSchema = z.strictObject({
+  connectorId: z.string().trim().min(1).default('agentconnect-github'),
   appId: z.number().int().positive(),
   slug: z.string().trim().min(1),
   clientId: z.string().trim().min(1)
 })
 
 const LogtoGoogleConnectorSchema = z.strictObject({
+  connectorId: z.string().trim().min(1).default('agentconnect-google'),
   clientId: z.string().trim().min(1),
   /** Provider-console callbacks last confirmed by the operator. */
   configuredRedirectUris: z.array(SecureHttpUrlSchema).min(1)
 })
 
 const LogtoSlackConnectorSchema = z.strictObject({
+  connectorId: z.string().trim().min(1).default('agentconnect-slack'),
   appId: z.string().trim().min(1),
   clientId: z.string().trim().min(1)
 })

@@ -32,7 +32,12 @@ describe('deploymentSecretsRequiringRefresh', () => {
         ...base,
         logto: {
           ...base.logto!,
-          githubConnector: { appId: 3, slug: 'agentconnect-login', clientId: 'Iv1.login' }
+          githubConnector: {
+            connectorId: 'agentconnect-github',
+            appId: 3,
+            slug: 'agentconnect-login',
+            clientId: 'Iv1.login'
+          }
         }
       })
     ).toEqual(['logto.githubConnectorClientSecret'])
@@ -42,6 +47,7 @@ describe('deploymentSecretsRequiringRefresh', () => {
         logto: {
           ...base.logto!,
           googleConnector: {
+            connectorId: 'agentconnect-google',
             clientId: 'google-client',
             configuredRedirectUris: ['https://login.example.test/callback/agentconnect-google']
           }
@@ -53,7 +59,7 @@ describe('deploymentSecretsRequiringRefresh', () => {
         ...base,
         logto: {
           ...base.logto!,
-          slackConnector: { appId: 'A1', clientId: '1.1' }
+          slackConnector: { connectorId: 'agentconnect-slack', appId: 'A1', clientId: '1.1' }
         }
       })
     ).toEqual([])
