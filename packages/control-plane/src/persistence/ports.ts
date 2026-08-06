@@ -1242,9 +1242,20 @@ export interface SessionRepo {
    *  this compact index to the HTTP layer. */
   listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex>
   list(q: SessionQuery): Promise<SessionListRecord[]>
-  get(id: SessionId): Promise<SessionMetaRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. The only session
+   *  read the HTTP/MCP surface may use. Visibility (`canViewSession`, the
+   *  identity set, the external-access policy) stays at the route — the fence
+   *  here is tenancy only (§8). */
+  get(orgId: OrgId, id: SessionId): Promise<SessionMetaRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — a daemon proving it owns
+   *  the parent of a child session it is reporting. Never call this from the
+   *  HTTP surface; lint enforces it (§6). */
+  getUnscoped(id: SessionId): Promise<SessionMetaRecord | null>
   /** Fail-closed proof that the durable webchat session for this conversation
-   * remains private before a remote administrative MCP invocation executes. */
+   * remains private before a remote administrative MCP invocation executes.
+   * System-tier (§3.4): fenced by the conversation's own `agentId`, which the
+   * MCP authority has already bound to the delegated agent. */
   hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean>
   /** Distinct settled scopes referenced by external rows matching the non-page
    *  filters. Called before ORDER/LIMIT so membership filtering is pagination-safe. */
@@ -1267,7 +1278,9 @@ export interface SessionRepo {
   }>
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
    *  deliberately not foreign-keyed, so this remains a metadata query. `viewer`
-   *  applies the same session predicate as the list (absent ⇒ internal fail-open). */
+   *  applies the same session predicate as the list (absent ⇒ internal fail-open).
+   *  System-tier (§3.4): `agentIds` is the caller's own org roster, so the query
+   *  is already org-fenced on a stronger axis than the parent id. */
   listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],
@@ -1278,6 +1291,7 @@ export interface SessionRepo {
    *  privacy wins) under the lock-then-scan-to-fixpoint protocol of §4.5. Every
    *  rewritten row's `visibilityRev` is bumped in the same transaction. */
   setVisibility(
+    orgId: OrgId,
     sessionId: SessionId,
     visibility: SessionVisibility,
     /** Re-checked against the LOCKED row, closing the gap between the route's
@@ -1304,7 +1318,8 @@ export interface SessionRepo {
    *  bounded snapshot could not carry them all (never a silent truncation). */
   countUnackedVisibility(daemonId: DaemonId, includeExternal?: boolean): Promise<number>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
-   *  the detail view's cutover state covers the whole subtree, not just the root. */
+   *  the detail view's cutover state covers the whole subtree, not just the root.
+   *  System-tier: driven by the visibility-push orchestrator from a row it holds. */
   visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
   /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
    *  keyed there whose agent still has an active integration for that bot and a current daemon
@@ -1339,17 +1354,21 @@ export interface WebchatConversationRepo {
    *  at creation). Conversation + participant rows commit atomically. */
   create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
   /** The conversation's full roster (primary first, then pick order). Empty
-   *  for an unknown conversation — callers fail closed. */
-  participants(conversationId: string): Promise<WebchatParticipant[]>
+   *  for an unknown conversation — callers fail closed. Org-fenced
+   *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same
+   *  empty roster as an unknown one, so it fails closed identically. */
+  participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]>
   /** Append one member to an existing conversation's roster (mid-conversation
    *  join, webchat-multi-agents.md §3.1). Idempotent — re-adding an existing
    *  participant is a no-op. Authorization (owner, canView, capability, cap)
    *  belongs to the caller. */
-  addParticipant(conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
+  addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
   /** The owning console user of a conversation, for session-visibility ingest
    *  (§4.2). Scoped to a PARTICIPANT agent (any roster role); unknown and
    *  foreign bindings both return null (the caller fails closed). */
   findOwner(conversationId: string, agentId: AgentId): Promise<string | null>
+  /* ^ System-tier (§3.4): fenced by the participant `agentId`, which session
+   *   ingest has already bound to the reporting daemon's own agent. */
   /** Exact owner check for resume via the legacy per-agent mint path (the
    *  asserted agent must be the conversation's primary). Unknown and foreign
    *  bindings both return false. */

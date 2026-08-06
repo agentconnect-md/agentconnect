@@ -152,7 +152,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
       })
     )
 
-    const got = await repo.get(SessionId(SESSION))
+    const got = await repo.getUnscoped(SessionId(SESSION))
     expect(got).not.toBeNull()
     expect(got?.phase).toBe('start')
     expect(got?.launchId).toBe(LAUNCH)
@@ -197,7 +197,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     )
     await repo.recordMilestone(ev('end')) // e.g. an old daemon's refresh — no exec-config echo
 
-    const got = await repo.get(SessionId(SESSION))
+    const got = await repo.getUnscoped(SessionId(SESSION))
     expect(got?.runtime).toBe('claude')
     expect(got?.model).toBe('opus')
     expect(got?.effort).toBe('high')
@@ -206,7 +206,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
 
     // A later snapshot CAN move them (e.g. in-session model switch on the next turn).
     await repo.recordMilestone(ev('end', { model: 'sonnet', fastMode: false }))
-    const moved = await repo.get(SessionId(SESSION))
+    const moved = await repo.getUnscoped(SessionId(SESSION))
     expect(moved?.model).toBe('sonnet')
     expect(moved?.fastMode).toBe(false)
 
@@ -214,7 +214,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     // that omits model still preserves that null rather than reviving config.
     await repo.recordMilestone(ev('end', { model: null }))
     await repo.recordMilestone(ev('end'))
-    expect((await repo.get(SessionId(SESSION)))?.model).toBeNull()
+    expect((await repo.getUnscoped(SessionId(SESSION)))?.model).toBeNull()
   })
 
   it('advances phase on subsequent milestones (upsert on sessionId)', async () => {
@@ -225,7 +225,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     await repo.recordMilestone(ev('plan', { summary: 'planning' }))
     await repo.recordMilestone(ev('end', { link: 'https://done' }))
 
-    const got = await repo.get(SessionId(SESSION))
+    const got = await repo.getUnscoped(SessionId(SESSION))
     expect(got?.phase).toBe('end')
     expect(got?.summary).toBe('planning') // last non-empty summary retained
     expect(got?.link).toBe('https://done')
@@ -257,7 +257,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
       ).recorded
     ).toBe(false)
 
-    const got = await repo.get(SessionId(SESSION))
+    const got = await repo.getUnscoped(SessionId(SESSION))
     expect(got?.agentId).toBe(AGENT)
     expect(got?.title).toBe('Original')
     expect(got?.phase).toBe('start')
@@ -281,7 +281,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     ])
 
     expect(accepted.filter((result) => result.recorded)).toHaveLength(1)
-    const got = await repo.get(SessionId(SESSION))
+    const got = await repo.getUnscoped(SessionId(SESSION))
     if (accepted[0]!.recorded) {
       expect(got).toMatchObject({ agentId: AGENT, title: 'Agent A', phase: 'start' })
     } else {
@@ -297,7 +297,7 @@ describe('SessionRepo.recordMilestone — milestone-only (real Postgres)', () =>
     await repo.recordMilestone(ev('end', { status: 'idle' }))
     await repo.recordMilestone(ev('plan', { title: 'Runtime title', status: 'idle', channelName: 'deploys' }))
 
-    const got = await repo.get(SessionId(SESSION))
+    const got = await repo.getUnscoped(SessionId(SESSION))
     expect(got?.phase).toBe('end')
     expect(got?.title).toBe('Runtime title')
     expect(got?.status).toBe('idle')
@@ -467,12 +467,12 @@ describe('SessionRepo.markContentPurged — retention-GC receipt (#485)', () => 
     expect(first.marked).toEqual([SessionId(SESSION)])
     expect(first.alreadyPurged).toBe(1)
 
-    const row = await repo.get(SessionId(SESSION))
+    const row = await repo.getUnscoped(SessionId(SESSION))
     expect(row?.contentPurgedAt).toEqual(purgedAt)
     expect(row?.contentPurgedReason).toBe('retention')
     // The metadata row survives the purge — it is the whole remaining record.
     expect(row?.title).toBe('nightly review')
-    expect((await repo.get(SessionId(OTHER_SESSION)))?.contentPurgedAt).toBeNull()
+    expect((await repo.getUnscoped(SessionId(OTHER_SESSION)))?.contentPurgedAt).toBeNull()
 
     // At-least-once redelivery must not move the date the content went away.
     const again = await repo.markContentPurged(
@@ -482,7 +482,7 @@ describe('SessionRepo.markContentPurged — retention-GC receipt (#485)', () => 
       new Date('2026-09-01T00:00:00.000Z')
     )
     expect(again.marked).toEqual([])
-    expect((await repo.get(SessionId(SESSION)))?.contentPurgedAt).toEqual(purgedAt)
+    expect((await repo.getUnscoped(SessionId(SESSION)))?.contentPurgedAt).toEqual(purgedAt)
   })
 
   it('is a no-op for an unknown session and for an empty report', async () => {

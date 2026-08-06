@@ -515,7 +515,9 @@ export class PgSessionRepo implements SessionRepo {
             SELECT "visibility", "ownerIdentity", "visibilitySource",
                    "externalProvider", "externalScopeId", "externalResolution",
                    "legacyUnresolved", "classifiedPolicyRev"
-            FROM "session_meta" WHERE "id" = ${ev.parentSessionId} FOR SHARE
+            FROM "session_meta"
+            WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
+            FOR SHARE
           `
         )
       : []
@@ -583,6 +585,7 @@ export class PgSessionRepo implements SessionRepo {
           "visibilityRev" = "visibilityRev" + 1,
           "updatedAt" = CURRENT_TIMESTAMP
         WHERE "parentSessionId" = ANY(${frontier}::text[])
+          AND "orgId" = ${parent.orgId}
           AND "visibilitySource" = 'inherited_pending'::"VisibilitySource"
         RETURNING *
       `)
@@ -609,11 +612,12 @@ export class PgSessionRepo implements SessionRepo {
       WITH RECURSIVE descendants AS (
         SELECT child."id"
         FROM "session_meta" child
-        WHERE child."parentSessionId" = ${parent.id}
+        WHERE child."parentSessionId" = ${parent.id} AND child."orgId" = ${parent.orgId}
         UNION
         SELECT child."id"
         FROM "session_meta" child
         JOIN descendants prior ON child."parentSessionId" = prior."id"
+        WHERE child."orgId" = ${parent.orgId}
       )
       UPDATE "session_meta" s SET
         "visibility" = ${parent.visibility}::"SessionVisibility",
@@ -639,14 +643,23 @@ export class PgSessionRepo implements SessionRepo {
    * we re-check. Same CAS, so it is a no-op once anything else has settled the
    * row. Runs in its own transaction after the milestone commits.
    */
-  private async settleFromParent(sessionId: SessionId, parentSessionId: SessionId): Promise<SessionMetaRecord[]> {
+  private async settleFromParent(
+    orgId: OrgId,
+    sessionId: SessionId,
+    parentSessionId: SessionId
+  ): Promise<SessionMetaRecord[]> {
     return withAmbientTx(this.db, async (tx) => {
+      // Same-org hop (see `setVisibility`): a parent claimed across the tenancy
+      // boundary reads as absent, which is exactly the "parent not here yet"
+      // case this settlement already handles by staying pending.
       const parent = await tx.$queryRaw<Array<ResolvedSessionClassification & { visibilitySource: string }>>(
         Prisma.sql`
           SELECT "visibility", "ownerIdentity", "visibilitySource",
                  "externalProvider", "externalScopeId", "externalResolution",
                  "legacyUnresolved", "classifiedPolicyRev"
-          FROM "session_meta" WHERE "id" = ${parentSessionId} FOR SHARE
+          FROM "session_meta"
+          WHERE "id" = ${parentSessionId} AND "orgId" = ${orgId}
+          FOR SHARE
         `
       )
       // Nothing to settle from a parent that is itself still waiting.
@@ -667,6 +680,7 @@ export class PgSessionRepo implements SessionRepo {
           "visibilityRev" = "visibilityRev" + 1,
           "updatedAt" = CURRENT_TIMESTAMP
         WHERE "id" = ${sessionId}
+          AND "orgId" = ${orgId}
           AND "visibilitySource" = 'inherited_pending'::"VisibilitySource"
         RETURNING *
       `)
@@ -684,7 +698,11 @@ export class PgSessionRepo implements SessionRepo {
     // Settling ourselves can in turn settle descendants that were waiting on us,
     // so they join the set the caller owes a §5.1 gate push.
     if (result.session.visibilitySource === 'inherited_pending' && result.session.parentSessionId) {
-      const [self, ...descendants] = await this.settleFromParent(result.session.id, result.session.parentSessionId)
+      const [self, ...descendants] = await this.settleFromParent(
+        result.session.orgId,
+        result.session.id,
+        result.session.parentSessionId
+      )
       if (self) return { ...result, session: self, settled: [...result.settled, ...descendants] }
     }
     return result
@@ -1212,7 +1230,14 @@ export class PgSessionRepo implements SessionRepo {
     return this.hydrate(rows)
   }
 
-  async get(id: SessionId): Promise<SessionMetaRecord | null> {
+  async get(orgId: OrgId, id: SessionId): Promise<SessionMetaRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const s = await this.db.sessionMeta.findUnique({ where: { id, orgId } })
+    return s ? toRecord(s) : null
+  }
+
+  async getUnscoped(id: SessionId): Promise<SessionMetaRecord | null> {
     const s = await this.db.sessionMeta.findUnique({ where: { id } })
     return s ? toRecord(s) : null
   }
@@ -1461,6 +1486,7 @@ export class PgSessionRepo implements SessionRepo {
    * mid-level parent could commit a stale `org` snapshot after the scan passed.
    */
   async setVisibility(
+    orgId: OrgId,
     sessionId: SessionId,
     visibility: SessionVisibility,
     authorize?: (row: {
@@ -1474,8 +1500,12 @@ export class PgSessionRepo implements SessionRepo {
         Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
       >(Prisma.sql`
         SELECT "visibility", "ownerIdentity", "externalProvider"
-        FROM "session_meta" WHERE "id" = ${sessionId} FOR UPDATE
+        FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
       `)
+      // The org fence rides the row-lock read, so a cross-org id takes the same
+      // silent no-op exit as a missing row — never the `forbidden: true` the
+      // immutable-audience guard below would answer, which would confirm it
+      // exists (org-scoped-data-layer.md §3).
       if (locked.length !== 1) return { affected: [] }
       const current = {
         visibility: locked[0]!.visibility as SessionVisibility,
@@ -1499,7 +1529,7 @@ export class PgSessionRepo implements SessionRepo {
           "visibilitySource" = 'explicit'::"VisibilitySource",
           "visibilityRev" = "visibilityRev" + 1,
           "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "id" = ${sessionId}
+        WHERE "id" = ${sessionId} AND "orgId" = ${orgId}
         RETURNING *
       `)
       const affected = target.map(toRecord)
@@ -1510,9 +1540,14 @@ export class PgSessionRepo implements SessionRepo {
       while (frontier.length > 0) {
         // Lock this level's children BEFORE reading them as a set to update: a
         // concurrent child insert either waits here or is caught by the re-scan.
+        // `parentSessionId` is a daemon-reported free string with NO foreign key,
+        // so a session in another organization can name this one as its parent.
+        // Every lineage hop is therefore confined to the root's org: without it a
+        // tighten here would lock, rewrite, and push another tenant's row
+        // (org-scoped-data-layer.md §3 — the fence is per-hop, not just per-root).
         const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id" FROM "session_meta"
-          WHERE "parentSessionId" = ANY(${frontier}::text[])
+          WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
           ORDER BY "id"
           FOR UPDATE
         `)
@@ -1541,6 +1576,7 @@ export class PgSessionRepo implements SessionRepo {
             "visibilityRev" = "visibilityRev" + 1,
             "updatedAt" = CURRENT_TIMESTAMP
           WHERE "id" = ANY(${next}::text[])
+            AND "orgId" = ${orgId}
             AND (
               ("externalProvider" IS NULL AND "visibility" <> 'private'::"SessionVisibility")
               OR ("externalProvider" IS NULL AND "ownerIdentity" IS DISTINCT FROM ${ownerIdentity})
@@ -1612,8 +1648,10 @@ export class PgSessionRepo implements SessionRepo {
       WITH RECURSIVE subtree AS (
         SELECT * FROM "session_meta" WHERE "id" = ${sessionId}
         UNION
+        -- Same-org hop only: parentSessionId carries no foreign key, so an
+        -- unconstrained walk would hand the visibility push another tenant's rows.
         SELECT child.* FROM "session_meta" child
-        JOIN subtree ON child."parentSessionId" = subtree."id"
+        JOIN subtree ON child."parentSessionId" = subtree."id" AND child."orgId" = subtree."orgId"
       )
       SELECT * FROM subtree LIMIT ${limit}
     `)

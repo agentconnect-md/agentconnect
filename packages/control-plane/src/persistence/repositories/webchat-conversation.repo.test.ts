@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, OrgId } from '../../domain/ids.js'
 import { PgWebchatConversationRepo } from './webchat-conversation.repo.js'
 
 describe('PgWebchatConversationRepo synthetic coordinates', () => {
@@ -12,7 +12,7 @@ describe('PgWebchatConversationRepo synthetic coordinates', () => {
     } as never)
     const channel = 'a2a:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
-    await expect(repo.participants(channel)).resolves.toEqual([])
+    await expect(repo.participants(OrgId('org-1'), channel)).resolves.toEqual([])
     await expect(repo.findOwner(channel, AgentId('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'))).resolves.toBeNull()
     expect(findMany).not.toHaveBeenCalled()
     expect(findFirst).not.toHaveBeenCalled()

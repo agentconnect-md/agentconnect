@@ -110,7 +110,7 @@ export function streamRoutes(deps: HttpDeps) {
         // single-flight) and the unlink path invalidates that cache, so the
         // revocation lands on the next event, not the next connection.
         const canSeeSession = async (agentId: string, sessionId: string, ctx: ViewCtx): Promise<boolean> => {
-          const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
+          const session = await deps.repos.session.get(orgId, SessionId(sessionId)).catch(() => null)
           if (!session || session.agentId !== agentId) return false
           const access = await sessionAccess.forSessions(req, [session]).catch(() => null)
           return !!access && canStreamSession(session, orgId, ctx, access.identitySet, access.externalAccess)

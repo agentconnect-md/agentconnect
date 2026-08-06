@@ -24,9 +24,11 @@ import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 import { PgMcpProviderRepo } from '../../src/persistence/repositories/mcp.repo.js'
 import { PgSkillSourceRepo } from '../../src/persistence/repositories/skill-source.repo.js'
 import { PgOrganizationKnowledgeRepo } from '../../src/persistence/repositories/organization-knowledge.repo.js'
+import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
+import { PgWebchatConversationRepo } from '../../src/persistence/repositories/webchat-conversation.repo.js'
 import { AgentMissing, BotMissing, CronMissing, HookMissing } from '../../src/persistence/errors.js'
-import { AgentId, BotId, CronId, DaemonId, HookId, IntegrationId, OrgId } from '../../src/domain/ids.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { AgentId, BotId, CronId, DaemonId, HookId, IntegrationId, OrgId, SessionId } from '../../src/domain/ids.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 /** The revision tables constrain `digest` to `sha256:<64 hex>`. */
@@ -48,6 +50,7 @@ let foreignCronId: string
 let ownCronId: string
 let foreignHookId: string
 let foreignHookRunId: string
+let foreignProjectionId: string
 let foreignProviderId: string
 let ownProviderId: string
 let foreignSkillSourceId: string
@@ -55,6 +58,9 @@ let ownSkillSourceId: string
 let foreignKnowledgeId: string
 let ownKnowledgeId: string
 let foreignManagedSkillId: string
+let foreignSessionId: string
+let ownSessionId: string
+let foreignConversationId: string
 
 afterEach(async () => {
   await running?.close()
@@ -188,6 +194,27 @@ beforeEach(async () => {
       status: 'success'
     }
   })
+  // A durable Check projection too. `HookRepo.remove` tombstones these on its way
+  // to deleting the definition, so a foreign DELETE has an external-effect row to
+  // damage — and only seeding one can show it comes back untouched.
+  foreignProjectionId = randomUUID()
+  await prisma.hookReviewProjection.create({
+    data: {
+      id: foreignProjectionId,
+      hookId: foreignHookId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      repoId: 4242n,
+      repoFullName: 'example-org/foreign-repo',
+      headSha: 'a'.repeat(40),
+      reportSha: 'a'.repeat(40),
+      projectionEpoch: 1n,
+      externalId: `ext-${randomUUID()}`,
+      mode: 'check',
+      gateMode: 'informational',
+      desiredState: 'in_progress'
+    }
+  })
 
   // Shareable org registries: an MCP provider and a skill source per org.
   ownProviderId = randomUUID()
@@ -262,6 +289,47 @@ beforeEach(async () => {
       }
     }
   })
+
+  // Sessions and a webchat conversation whose roster is a pure child table.
+  ownSessionId = randomUUID()
+  await prisma.sessionMeta.create({
+    data: {
+      id: ownSessionId,
+      orgId: DEFAULT_ORG_ID,
+      agentId: ownAgentId,
+      platform: 'slack',
+      channel: '#own',
+      phase: 'start',
+      lastActivityAt: new Date()
+    }
+  })
+  foreignSessionId = randomUUID()
+  await prisma.sessionMeta.create({
+    data: {
+      id: foreignSessionId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      platform: 'slack',
+      channel: '#foreign',
+      phase: 'start',
+      visibility: 'org',
+      lastActivityAt: new Date()
+    }
+  })
+  foreignConversationId = randomUUID()
+  await prisma.webchatConversation.create({
+    data: {
+      id: foreignConversationId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      // The seeded owner is the only real app_user row; the conversation's ORG
+      // is what this block fences on, not who owns it.
+      userId: DEFAULT_OWNER_ID,
+      participants: {
+        create: { agentId: foreignAgentId, role: 'primary', ord: 0, addedByUserId: DEFAULT_OWNER_ID }
+      }
+    }
+  })
 })
 
 function build(): HttpApp {
@@ -318,6 +386,14 @@ async function foreignHookUnmodified(): Promise<void> {
   expect(row!.enabled).toBe(true)
   // The run row hangs off the hook; a removal would have tombstoned it too.
   expect(await prisma.hookRun.findUnique({ where: { id: foreignHookRunId } })).not.toBeNull()
+  // And the durable Check projection. `remove` runs the tombstones and the delete
+  // in ONE transaction, so the refusal — the typed `HookMissing` from the early
+  // fence, or the delete's own P2025 if it ever regressed to fencing only there —
+  // rolls the tombstones back either way. This asserts that end state directly.
+  const projection = await prisma.hookReviewProjection.findUnique({ where: { id: foreignProjectionId } })
+  expect(projection).not.toBeNull()
+  expect(projection!.tombstonedAt).toBeNull()
+  expect(projection!.desiredState).toBe('in_progress')
 }
 
 async function foreignRegistriesUnmodified(): Promise<void> {
@@ -344,6 +420,14 @@ async function foreignKnowledgeUnmodified(): Promise<void> {
   expect(await prisma.organizationKnowledgeRevision.count({ where: { knowledgeId: foreignKnowledgeId } })).toBe(1)
   const skill = await prisma.managedSkill.findUnique({ where: { id: foreignManagedSkillId } })
   expect(skill!.archivedAt).toBeNull()
+}
+
+async function foreignSessionUnmodified(): Promise<void> {
+  const row = await prisma.sessionMeta.findUnique({ where: { id: foreignSessionId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.visibility).toBe('org')
+  expect(row!.visibilityRev).toBe(0)
 }
 
 async function foreignBotUnmodified(): Promise<void> {
@@ -1031,5 +1115,150 @@ describe('tenant isolation — MCP, skill-source and knowledge fences under the 
     await expect(repo.setManagedSkillArchived(CALLER_ORG, foreignManagedSkillId, true)).rejects.toThrow()
 
     await foreignKnowledgeUnmodified()
+  })
+})
+
+describe('tenant isolation — Session and webchat conversation over the REST surface', () => {
+  it('point-GET of a foreign session id reads as absent (404)', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${foreignSessionId}` })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('the visibility write on a foreign session id is 404 and never bumps its revision', async () => {
+    const app = build()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/sessions/${foreignSessionId}/visibility`,
+      payload: { visibility: 'private' }
+    })
+    expect(res.statusCode).toBe(404)
+    await foreignSessionUnmodified()
+  })
+
+  it('the proxied transcript and tool-body reads of a foreign session id are 404', async () => {
+    const app = build()
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/sessions/${foreignSessionId}/messages` })).statusCode
+    ).toBe(404)
+    expect(
+      (
+        await app.app.inject({
+          method: 'GET',
+          url: `${ORG}/sessions/${foreignSessionId}/tool-body?toolCallId=t1`
+        })
+      ).statusCode
+    ).toBe(404)
+  })
+
+  it('the sessions list never contains a foreign row', async () => {
+    const app = build()
+    // `view=flat` is the ungrouped shape; the default groups rows by conversation.
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
+    expect(res.statusCode).toBe(200)
+    const ids = (res.json() as { sessions?: Array<{ sessionId: string }> }).sessions?.map((s) => s.sessionId) ?? []
+    expect(ids).toContain(ownSessionId)
+    expect(ids).not.toContain(foreignSessionId)
+  })
+})
+
+describe('tenant isolation — SessionRepo and WebchatConversationRepo fences under the routes', () => {
+  it('session reads and the visibility write treat a cross-org id exactly like a missing row', async () => {
+    const repo = new PgSessionRepo(prisma)
+
+    expect(await repo.get(CALLER_ORG, SessionId(foreignSessionId))).toBeNull()
+    expect(await repo.get(CALLER_ORG, SessionId(randomUUID()))).toBeNull()
+    expect(await repo.get(CALLER_ORG, SessionId(ownSessionId))).not.toBeNull()
+
+    // The fence rides the row-lock read, so a cross-org id takes the SILENT
+    // no-op exit — not the `forbidden: true` the immutable-audience guard just
+    // below would answer, which would confirm the foreign row exists.
+    expect(await repo.setVisibility(CALLER_ORG, SessionId(foreignSessionId), 'private')).toEqual({ affected: [] })
+    await foreignSessionUnmodified()
+
+    // The unscoped read is the daemon escape hatch: `session/child-status`
+    // resolves the parent a reporting daemon claims, then proves it owns it.
+    expect(await repo.getUnscoped(SessionId(foreignSessionId))).not.toBeNull()
+  })
+
+  it('a tighten never follows session lineage across the tenancy boundary', async () => {
+    const repo = new PgSessionRepo(prisma)
+    // `parentSessionId` is a daemon-reported free string with NO foreign key, so
+    // a session in ANOTHER org can name one of ours as its parent. Nothing stops
+    // the claim from being made; what must hold is that our cascade ignores it.
+    const rootId = randomUUID()
+    await prisma.sessionMeta.create({
+      data: {
+        id: rootId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: ownAgentId,
+        platform: 'slack',
+        channel: '#lineage',
+        phase: 'start',
+        visibility: 'org',
+        lastActivityAt: new Date()
+      }
+    })
+    const ownChildId = randomUUID()
+    await prisma.sessionMeta.create({
+      data: {
+        id: ownChildId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: ownAgentId,
+        parentSessionId: rootId,
+        platform: 'slack',
+        channel: '#lineage',
+        phase: 'start',
+        visibility: 'org',
+        lastActivityAt: new Date()
+      }
+    })
+    const impostorChildId = randomUUID()
+    await prisma.sessionMeta.create({
+      data: {
+        id: impostorChildId,
+        orgId: foreignOrgId,
+        agentId: foreignAgentId,
+        parentSessionId: rootId, // the cross-org claim
+        platform: 'slack',
+        channel: '#lineage',
+        phase: 'start',
+        visibility: 'org',
+        lastActivityAt: new Date()
+      }
+    })
+
+    const { affected } = await repo.setVisibility(CALLER_ORG, SessionId(rootId), 'private')
+    const affectedIds = affected.map((a) => a.id)
+    expect(affectedIds).toContain(rootId)
+    expect(affectedIds).toContain(ownChildId) // the real descendant IS rewritten
+    expect(affectedIds).not.toContain(impostorChildId)
+
+    // The impostor keeps its own audience and revision — it was neither rewritten
+    // nor handed to the foreign org's daemon as a visibility push.
+    const impostor = await prisma.sessionMeta.findUnique({ where: { id: impostorChildId } })
+    expect(impostor!.visibility).toBe('org')
+    expect(impostor!.visibilityRev).toBe(0)
+    expect(impostor!.ownerIdentity).toBeNull()
+
+    // The subtree the orchestrator pushes is confined the same way.
+    const subtree = (await repo.visibilitySubtree(SessionId(rootId), 50)).map((row) => row.id)
+    expect(subtree).toEqual(expect.arrayContaining([rootId, ownChildId]))
+    expect(subtree).not.toContain(impostorChildId)
+  })
+
+  it('a foreign webchat conversation’s roster reads empty — the child fences through its parent', async () => {
+    const repo = new PgWebchatConversationRepo(prisma)
+
+    // Roster rows carry no org, so the fence is the relational filter on the
+    // owning conversation. Empty is exactly what an unknown id returns, and
+    // every caller fails closed on it.
+    expect(await repo.participants(CALLER_ORG, foreignConversationId)).toEqual([])
+    expect(await repo.participants(OrgId(foreignOrgId), foreignConversationId)).toHaveLength(1)
+
+    // The mid-conversation join writes nothing for a cross-org id.
+    await repo.addParticipant(CALLER_ORG, foreignConversationId, AgentId(ownAgentId), 'attacker')
+    expect(await repo.participants(OrgId(foreignOrgId), foreignConversationId)).toHaveLength(1)
+    expect(await prisma.webchatConversationAgent.count({ where: { conversationId: foreignConversationId } })).toBe(1)
   })
 })

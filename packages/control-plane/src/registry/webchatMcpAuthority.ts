@@ -60,7 +60,7 @@ export async function resolveLiveWebchatMcpAuthority(
   // mid-conversation suspends the catalog on the very next request, without
   // waiting for grant expiry. An empty roster is a pre-backfill conversation
   // and stays admissible (the single-agent shape).
-  const roster = await deps.conversations.participants(input.conversationId)
+  const roster = await deps.conversations.participants(OrgId(input.orgId), input.conversationId)
   if (roster.length > 1) return { ok: false, reason: 'multi_agent_conversation' }
 
   const role = await deps.orgs.roleOf(input.orgId, owner)

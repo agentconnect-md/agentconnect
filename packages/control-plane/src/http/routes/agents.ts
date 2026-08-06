@@ -521,7 +521,7 @@ export function agentRoutes(deps: HttpDeps) {
       sessionId: string | undefined
     ): Promise<boolean> => {
       if (!sessionId) return true
-      const session = await deps.repos.session.get(SessionId(sessionId))
+      const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
       if (
         !session ||
         session.agentId !== agentId ||

@@ -69,7 +69,12 @@ describe('stream route × viewer identity (live unlink)', () => {
       repos: {
         org: { roleOf: async () => 'collaborator' },
         session: {
-          get: async (id: string) => sessions[id] ?? null,
+          // Org-fenced read: a row of another org is absent, exactly like an
+          // unknown id (org-scoped-data-layer.md §3).
+          get: async (orgId: string, id: string) => {
+            const row = sessions[id]
+            return row && row.orgId === orgId ? row : null
+          },
           getExternalScopes: async () => [],
           getExternalAccessPolicy: async () => null
         }

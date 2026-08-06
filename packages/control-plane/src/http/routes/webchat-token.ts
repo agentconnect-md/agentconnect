@@ -65,7 +65,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       orgId: OrgId,
       ctx: ReturnType<typeof ctxOf>
     ): Promise<boolean> => {
-      const roster = await deps.repos.webchatConversation.participants(conversationId)
+      const roster = await deps.repos.webchatConversation.participants(orgId, conversationId)
       for (const p of roster) {
         const member = await deps.repos.agent.get(orgId, p.agentId)
         if (!member || !canView(member, ctx)) return false
@@ -254,9 +254,9 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
-        const roster = await deps.repos.webchatConversation.participants(conversationId)
+        const roster = await deps.repos.webchatConversation.participants(orgId, conversationId)
         const respond = async () => {
-          const updated = await deps.repos.webchatConversation.participants(conversationId)
+          const updated = await deps.repos.webchatConversation.participants(orgId, conversationId)
           return reply.send({
             participants: updated.map((p) => ({
               agentId: p.agentId,
@@ -286,7 +286,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
             })
           }
         }
-        await deps.repos.webchatConversation.addParticipant(conversationId, agent.id, userId)
+        await deps.repos.webchatConversation.addParticipant(orgId, conversationId, agent.id, userId)
         return respond()
       }
     )
