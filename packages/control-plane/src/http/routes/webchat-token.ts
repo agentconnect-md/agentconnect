@@ -17,9 +17,9 @@ import { z } from 'zod'
 import { WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, type OrgId } from '../../domain/ids.js'
 import { canView } from '../../authorization/policy.js'
-import { ctxOf } from '../rbac.js'
+import { ctxOf, orgOf } from '../rbac.js'
 import { ErrorDto } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 
@@ -62,13 +62,13 @@ export function webchatTokenRoutes(deps: HttpDeps) {
      *  since the minted token exposes and targets the full roster. */
     const allParticipantsViewable = async (
       conversationId: string,
-      orgId: string,
+      orgId: OrgId,
       ctx: ReturnType<typeof ctxOf>
     ): Promise<boolean> => {
       const roster = await deps.repos.webchatConversation.participants(conversationId)
       for (const p of roster) {
-        const member = await deps.repos.agent.get(p.agentId)
-        if (!member || member.orgId !== orgId || !canView(member, ctx)) return false
+        const member = await deps.repos.agent.get(orgId, p.agentId)
+        if (!member || !canView(member, ctx)) return false
       }
       return true
     }
@@ -96,8 +96,8 @@ export function webchatTokenRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'webchat relay pool not configured' })
         }
         // Cross-org id OR a restricted agent the caller can't see both read as absent.
-        const agent = await deps.repos.agent.get(AgentId(req.params.agentId))
-        if (!agent || agent.orgId !== req.orgCtx!.orgId || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         const userId = req.principal!.userId
@@ -162,7 +162,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           // EVERY participant must still be viewable — the minted token exposes
           // and targets the full roster, so losing access to one restricted
           // member revokes resume for the whole conversation.
-          const primary = await deps.repos.agent.get(owned.primaryAgentId)
+          const primary = await deps.repos.agent.get(orgOf(req), owned.primaryAgentId)
           if (
             !primary ||
             primary.orgId !== orgId ||
@@ -184,8 +184,8 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         const agentIds = [...new Set(req.body.agentIds!)]
         const agents = []
         for (const id of agentIds) {
-          const agent = await deps.repos.agent.get(AgentId(id))
-          if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+          const agent = await deps.repos.agent.get(orgOf(req), AgentId(id))
+          if (!agent || !canView(agent, ctxOf(req))) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
           }
           agents.push(agent)
@@ -250,8 +250,8 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         if (!owned) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'conversation not found' })
         }
-        const agent = await deps.repos.agent.get(AgentId(req.body.agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         const roster = await deps.repos.webchatConversation.participants(conversationId)
@@ -273,7 +273,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         // (webchat-multi-agents.md §6.3, enforced at each growth point).
         const rosterAgents = [agent]
         for (const p of roster) {
-          const existing = await deps.repos.agent.get(p.agentId)
+          const existing = await deps.repos.agent.get(orgOf(req), p.agentId)
           if (existing) rosterAgents.push(existing)
         }
         for (const member of rosterAgents) {

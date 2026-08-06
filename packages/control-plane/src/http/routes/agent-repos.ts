@@ -52,8 +52,8 @@ export function agentRepoRoutes(deps: HttpDeps) {
     // Same no-oracle rule as `GET /agents/:agentId/hooks`: cross-org, unknown,
     // and not-viewable agents all read 404.
     const getViewableAgent = async (req: FastifyRequest, agentId: string): Promise<AgentRecord | null> => {
-      const agent = await deps.repos.agent.get(AgentId(agentId))
-      if (!agent || agent.orgId !== orgOf(req) || !canView(agent, ctxOf(req))) return null
+      const agent = await deps.repos.agent.get(orgOf(req), AgentId(agentId))
+      if (!agent || !canView(agent, ctxOf(req))) return null
       return agent
     }
     /** Lazily pin a legacy github workspace to its rename-proof numeric id.
@@ -71,7 +71,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
       const ref = await deps.github.repoRefFor(installation, owner, repo)
       if (!ref) return undefined
       if (await deps.repos.agent.setWorkspaceRepoId(agent.id, ref.repoId)) return ref.repoId
-      return (await deps.repos.agent.get(agent.id))?.workspaceRepoId
+      return (await deps.repos.agent.get(agent.orgId, agent.id))?.workspaceRepoId
     }
     const agentNotFound = (reply: FastifyReply) =>
       reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })

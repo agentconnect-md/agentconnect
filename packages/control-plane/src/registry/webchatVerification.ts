@@ -15,7 +15,7 @@ interface VerificationDaemon {
 
 export interface WebchatVerificationDeps {
   tokens: Pick<WebchatTokenService, 'verify'>
-  agents: { get(agentId: AgentId): Promise<{ orgId: string; daemonId: string | null } | null> }
+  agents: { getUnscoped(agentId: AgentId): Promise<{ orgId: string; daemonId: string | null } | null> }
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
   conversations: {
@@ -38,7 +38,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
   return async (token) => {
     const claims = await deps.tokens.verify(token)
     if (!claims) return { ok: false, reason: 'invalid token' }
-    const agent = await deps.agents.get(AgentId(claims.agentId))
+    const agent = await deps.agents.getUnscoped(AgentId(claims.agentId))
     if (!agent || agent.orgId !== claims.orgId) return { ok: false, reason: 'invalid token' }
     if (!agent.daemonId) return { ok: false, reason: 'agent unplaced' }
     const daemon = deps.daemons.get(agent.daemonId)
@@ -54,7 +54,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
         participants.push({ agentId: p.agentId, daemonId: agent.daemonId, primary: true })
         continue
       }
-      const member = await deps.agents.get(p.agentId)
+      const member = await deps.agents.getUnscoped(p.agentId)
       const memberDaemon =
         member && member.orgId === claims.orgId && member.daemonId ? deps.daemons.get(member.daemonId) : undefined
       participants.push({

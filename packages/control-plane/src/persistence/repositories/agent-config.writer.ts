@@ -40,7 +40,7 @@ import type {
   UpdateAgentInput
 } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
-import type { AgentId } from '../../domain/ids.js'
+import type { AgentId, OrgId } from '../../domain/ids.js'
 import { PgAgentRepo } from './agent.repo.js'
 import { applySealedSecretPatch, sealSecretPatch } from './agent-secret.repo.js'
 import { assertEnvironmentAdmissible, snapshotAgentEnvironments } from './organization-environment-fence.js'
@@ -76,6 +76,7 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
   }
 
   async update(
+    orgId: OrgId,
     agentId: AgentId,
     patch: UpdateAgentInput,
     secrets?: Record<string, string | null>,
@@ -98,8 +99,9 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
       // The row update last: it stamps lastModifiedAt, advances configRevision, and
       // runs the fence over the definition INCLUDING the secrets above — so the
       // audit advance, the secret rows, and the validation commit (or roll back) as
-      // one edit.
-      return new PgAgentRepo(tx).update(agentId, patch, opts)
+      // one edit. Its org fence also unwinds the secret rows above for a
+      // cross-org id (AgentMissing aborts the transaction).
+      return new PgAgentRepo(tx).update(orgId, agentId, patch, opts)
     })
   }
 }

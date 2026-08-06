@@ -31,7 +31,7 @@ import { toDbPlatform } from '../persistence/platform.js'
 
 /** The narrow agent read the compiler needs (placement lookup). */
 export interface HookAgentReads {
-  get(agentId: AgentId): Promise<AgentRecord | null>
+  getUnscoped(agentId: AgentId): Promise<AgentRecord | null>
 }
 
 export interface HookServiceLog {
@@ -62,7 +62,7 @@ export class HookService {
    */
   async compile(hook: HookRecord): Promise<RcHookAssign | null> {
     if (!hook.enabled || !hook.agentId) return null
-    const agent = await this.agents.get(hook.agentId)
+    const agent = await this.agents.getUnscoped(hook.agentId)
     if (!agent?.daemonId) return null
     const snapshot =
       typeof hook.configRevision === 'bigint' &&

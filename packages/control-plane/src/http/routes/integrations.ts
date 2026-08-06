@@ -24,7 +24,7 @@ import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import type { AgentRecord, BotRecord, IntegrationRecord, IntegrationChannelRecord } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
-import { denyViewerWrite, ctxOf } from '../rbac.js'
+import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { pickChannelOwner } from '../../orchestrator/httpBot.js'
@@ -86,7 +86,7 @@ export function integrationRoutes(deps: HttpDeps) {
     // The caller's active org — every read/write below is scoped to it.
     const orgIdOf = (req: { orgCtx?: { orgId: OrgId } }) => req.orgCtx!.orgId
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.id)
+      const current = await deps.repos.agent.get(observed.orgId, observed.id)
       if (
         !current ||
         current.daemonId !== observed.daemonId ||
@@ -108,7 +108,7 @@ export function integrationRoutes(deps: HttpDeps) {
       const [secret, channels, owner, bot] = await Promise.all([
         deps.repos.botSecret.get(i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id),
-        deps.repos.agent.get(i.agentId),
+        deps.repos.agent.get(i.orgId, i.agentId),
         deps.repos.bot.get(i.botId)
       ])
       if (!secret || !bot) return
@@ -194,11 +194,11 @@ export function integrationRoutes(deps: HttpDeps) {
         // The composed body's `platform` enum IS the registry's id set, so a
         // parsed body always names a registered provider.
         const provider = deps.platforms.get(req.body.platform)!
-        let agent = await deps.repos.agent.get(AgentId(req.body.agentId))
+        let agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
         // Derived visibility: installing an integration edits the agent's setup, so
         // a restricted agent the caller can't see 404s, and one they can see but not
         // edit 403s.
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         if (!canEdit(agent, ctxOf(req))) {
@@ -561,7 +561,7 @@ export function integrationRoutes(deps: HttpDeps) {
               channels[0]
             if (channel) {
               const persistedOwner = channels.some((row) => row.agentId === owner.agentId)
-              const ownerAgent = persistedOwner ? null : await deps.repos.agent.get(owner.agentId)
+              const ownerAgent = persistedOwner ? null : await deps.repos.agent.get(orgOf(req), owner.agentId)
               effective.set(`${state.botId}\u0000${channelId}`, {
                 ...channel,
                 agentId: owner.agentId,
@@ -601,7 +601,7 @@ export function integrationRoutes(deps: HttpDeps) {
         reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         return null
       }
-      const agent = await deps.repos.agent.get(integration.agentId)
+      const agent = await deps.repos.agent.get(orgIdOf(req as never), integration.agentId)
       if (!agent || !canView(agent, ctxOf(req as never))) {
         reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         return null
@@ -719,7 +719,7 @@ export function integrationRoutes(deps: HttpDeps) {
         installs,
         channelRows.filter((candidate) => candidate.kind === 'channel' && candidate.channelId === channelId)
       )
-      const ownerAgent = owner ? await deps.repos.agent.get(owner.agentId) : null
+      const ownerAgent = owner ? await deps.repos.agent.get(owner.orgId, owner.agentId) : null
       if (!ownerAgent) {
         return {
           ok: false,
@@ -762,7 +762,7 @@ export function integrationRoutes(deps: HttpDeps) {
         // Derived visibility: gate on the parent agent — a restricted agent the
         // caller can't see 404s (hiding the integration too), one they can see but
         // not edit 403s.
-        let agent = await deps.repos.agent.get(integration.agentId)
+        let agent = await deps.repos.agent.get(orgIdOf(req as never), integration.agentId)
         if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         }
@@ -798,9 +798,11 @@ export function integrationRoutes(deps: HttpDeps) {
             installs,
             channelRows.filter((channel) => channel.kind === 'channel' && channel.channelId === req.params.channelId)
           )
-          effectiveOwner = owner ? await deps.repos.agent.get(owner.agentId) : null
+          effectiveOwner = owner ? await deps.repos.agent.get(orgOf(req), owner.agentId) : null
           selectedOwner =
-            req.body.agentId !== undefined ? await deps.repos.agent.get(AgentId(req.body.agentId)) : effectiveOwner
+            req.body.agentId !== undefined
+              ? await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+              : effectiveOwner
           if (!effectiveOwner || !selectedOwner) {
             return reply.code(409).send({
               error: 'Conflict',
@@ -1145,7 +1147,7 @@ export function integrationRoutes(deps: HttpDeps) {
         }
         // Derived visibility: gate on the parent agent (a restricted agent the caller
         // can't see 404s; can-see-but-not-edit 403s) before removing its integration.
-        let agent = await deps.repos.agent.get(existing.agentId)
+        let agent = await deps.repos.agent.get(orgOf(req), existing.agentId)
         if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         }

@@ -24,7 +24,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
-import { denyViewerWrite, ctxOf } from '../rbac.js'
+import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { buildInstallManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
@@ -102,8 +102,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message: 'authentication required' })
         }
         const orgId = orgIdOf(req)
-        const agent = await deps.repos.agent.get(AgentId(req.body.agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         if (!canEdit(agent, ctxOf(req))) {
@@ -339,8 +339,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           }
         }
         // Re-check the agent: it could have been deleted / unplaced during the funnel.
-        let agent = await deps.repos.agent.get(row.agentId)
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        let agent = await deps.repos.agent.get(orgOf(req), row.agentId)
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         if (!canEdit(agent, ctxOf(req))) {
@@ -384,7 +384,7 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           // Token verification and capability checks above can take long enough
           // for placement to change. Re-read after taking the mutation side of
           // the move gate so the bot cannot be installed onto a stale daemon.
-          const current = await deps.repos.agent.get(agent.id)
+          const current = await deps.repos.agent.get(orgOf(req), agent.id)
           if (
             !current ||
             current.daemonId !== agent.daemonId ||

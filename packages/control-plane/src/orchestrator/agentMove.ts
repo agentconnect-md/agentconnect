@@ -209,7 +209,7 @@ export class AgentMoveService {
   }
 
   private async reloadAfterGate(observed: AgentRecord): Promise<AgentRecord> {
-    const current = await this.deps.agents.get(observed.id)
+    const current = await this.deps.agents.getUnscoped(observed.id)
     if (!current) throw new AgentMoveConflict('agent was deleted while preparing the move; refresh and retry')
     if (
       current.daemonId !== observed.daemonId ||
@@ -233,7 +233,7 @@ export class AgentMoveService {
   private async recoverStagedOnce(agentId: AgentId, daemonId: DaemonId, moveId: string): Promise<void> {
     const release = await this.deps.mutations.beginMoveWhenIdle(agentId)
     try {
-      const current = await this.deps.agents.get(agentId)
+      const current = await this.deps.agents.getUnscoped(agentId)
       if (!current || current.daemonId !== daemonId) return
 
       const candidate = await this.snapshotOwned(agentId, daemonId)
@@ -247,7 +247,7 @@ export class AgentMoveService {
       if (resumed.ok) {
         const observed = await this.snapshotOwned(agentId, daemonId)
         if (candidate.fingerprint === observed.fingerprint) {
-          const confirmed = await this.deps.agents.get(agentId)
+          const confirmed = await this.deps.agents.getUnscoped(agentId)
           if (!confirmed || confirmed.daemonId !== daemonId) return this.failClosedOwnership(agentId, daemonId)
           stable = { ...observed, agent: confirmed }
         } else {
@@ -311,6 +311,7 @@ export class AgentMoveService {
       let converted: AgentRecord | null = null
       try {
         converted = await this.deps.agents.setWorkspace(
+          agent.orgId,
           agent.id,
           agent.lastModifiedAt,
           agent.workspace.mode,
@@ -319,7 +320,7 @@ export class AgentMoveService {
           editor
         )
       } catch (err) {
-        const observed = await this.deps.agents.get(agent.id).catch(() => null)
+        const observed = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
         if (observed?.daemonId === null && sameWorkspace(observed, workspace, workspaceRepoId)) {
           converted = observed
         } else if (err instanceof AgentWorkspaceIntegrationConflict) {
@@ -353,6 +354,7 @@ export class AgentMoveService {
     let persistenceError: unknown
     try {
       converted = await this.deps.agents.setWorkspace(
+        agent.orgId,
         agent.id,
         agent.lastModifiedAt,
         agent.workspace.mode,
@@ -366,7 +368,7 @@ export class AgentMoveService {
     if (!converted) {
       let observed: AgentRecord | null
       try {
-        observed = await this.deps.agents.get(agent.id)
+        observed = await this.deps.agents.getUnscoped(agent.id)
       } catch (readError) {
         // The write may have committed even though its response was lost. Keep
         // the daemon fenced until a retry can prove which definition owns it.
@@ -528,6 +530,7 @@ export class AgentMoveService {
     let restored: AgentRecord | null
     try {
       restored = await this.deps.agents.restoreWorkspace(
+        converted.orgId,
         converted.id,
         converted.lastModifiedAt,
         converted.workspace,
@@ -639,7 +642,7 @@ export class AgentMoveService {
   }
 
   private async snapshotOwned(agentId: AgentId, targetDaemonId: DaemonId): Promise<ActivationSnapshot> {
-    const agent = await this.deps.agents.get(agentId)
+    const agent = await this.deps.agents.getUnscoped(agentId)
     if (!agent || agent.daemonId !== targetDaemonId) {
       return this.failClosedOwnership(agentId, targetDaemonId)
     }
@@ -672,7 +675,7 @@ export class AgentMoveService {
       if (candidate.fingerprint === observed.fingerprint) {
         // Explicit final ownership read: an agent deleted or re-placed after the
         // ACK must never leave this target serving an orphaned copy.
-        const confirmed = await this.deps.agents.get(agentId)
+        const confirmed = await this.deps.agents.getUnscoped(agentId)
         if (!confirmed || confirmed.daemonId !== targetDaemonId) {
           return this.failClosedOwnership(agentId, targetDaemonId)
         }
@@ -747,7 +750,7 @@ export class AgentMoveService {
     bundle: MoveBundle
   ): Promise<void> {
     if (!sourceDaemonId) return
-    const current = await this.deps.agents.get(agent.id).catch(() => null)
+    const current = await this.deps.agents.getUnscoped(agent.id).catch(() => null)
     if (current?.daemonId !== sourceDaemonId) return
     await this.bestEffortBootstrap('source bootstrap after CAS failure', sourceDaemonId, agent, bundle)
   }

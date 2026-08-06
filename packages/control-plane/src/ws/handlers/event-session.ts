@@ -237,7 +237,7 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    const agent = await deps.agent.get(agentId)
+    const agent = await deps.agent.getUnscoped(agentId)
     if (agent?.daemonId === daemonId) await recordEventSession(p, agentId, daemonId, deps)
     // ACK only after recordEventSession's transaction has committed. An agent
     // placed elsewhere (or deleted) can never accept this daemon's stale row, so

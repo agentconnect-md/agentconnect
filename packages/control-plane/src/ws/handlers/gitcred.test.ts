@@ -40,7 +40,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       access: 'read' as const
     }))
     const deps = {
-      agent: { get: async () => PLACED_AGENT },
+      agent: { getUnscoped: async () => PLACED_AGENT },
       github: { mintForAgent }
     } as unknown as DaemonWsDeps
     const conn = fakeConn()
@@ -79,7 +79,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
       access: 'read' as const
     }))
     const deps = {
-      agent: { get: async () => PLACED_AGENT },
+      agent: { getUnscoped: async () => PLACED_AGENT },
       hook: {
         get: async () => ({
           agentId: AGENT_ID,
@@ -122,7 +122,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
   it('denies a GithubPoster mint when no enabled hook watches the requested repo', async () => {
     const mintForHookReply = vi.fn()
     const deps = {
-      agent: { get: async () => PLACED_AGENT },
+      agent: { getUnscoped: async () => PLACED_AGENT },
       hook: { get: async () => null },
       github: { mintForHookReply }
     } as unknown as DaemonWsDeps
@@ -147,7 +147,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
   it('denies a malformed GithubPoster capability request before minting', async () => {
     const deps = {
-      agent: { get: async () => PLACED_AGENT },
+      agent: { getUnscoped: async () => PLACED_AGENT },
       github: { mintForHookReply: vi.fn() }
     } as unknown as DaemonWsDeps
     const conn = fakeConn()
@@ -170,7 +170,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
 
   it('maps a GitCredDeniedError onto a correlated error REP (code + retryable preserved)', async () => {
     const deps = {
-      agent: { get: async () => PLACED_AGENT },
+      agent: { getUnscoped: async () => PLACED_AGENT },
       github: {
         mintForAgent: vi.fn(async () => {
           throw new GitCredDeniedError('acme/tools is not authorized for this agent', 'SCOPE_DENIED', false)

@@ -286,7 +286,7 @@ export class HttpBotOrchestrator {
     // assignment, so a stale teardown can never kill a live ingest.
     await this.unassign(bot, { credentialRevision: bot.credentialRevision })
     for (const integration of installs) {
-      const agent = await this.agents.get(integration.agentId)
+      const agent = await this.agents.getUnscoped(integration.agentId)
       if (!agent?.daemonId) continue
       try {
         await this.control.integrationRemove(agent.daemonId, { integrationId: integration.id })
@@ -432,7 +432,7 @@ export class HttpBotOrchestrator {
    *  target is always allowed; a gated target needs its install's row for this
    *  conversation to be enabled (trigger ≠ off). Fail-closed on missing rows. */
   private async threadTargetAllowed(botId: string, channel: string, agentId: string): Promise<boolean> {
-    const agent = await this.agents.get(AgentId(agentId))
+    const agent = await this.agents.getUnscoped(AgentId(agentId))
     if (!agent) return false
     if (!isGatedAgent(agent)) return true
     const installs = await this.integrations.listForBot(BotId(botId))
@@ -478,7 +478,7 @@ export class HttpBotOrchestrator {
     for (const integration of installs) {
       // Conversation gating (§14): a gated install's fresh channels start Off — an
       // editor must enable them in the console before the compiler emits a route.
-      const owner = await this.agents.get(integration.agentId)
+      const owner = await this.agents.getUnscoped(integration.agentId)
       const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
       await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
     }
@@ -536,7 +536,7 @@ export class HttpBotOrchestrator {
     }
     const installs = await this.integrations.listForBot(bot.id)
     for (const install of installs) {
-      const agent = await this.agents.get(install.agentId)
+      const agent = await this.agents.getUnscoped(install.agentId)
       if (!agent) continue
       const kind = conversation.kind === 'mpim' ? ('mpim' as const) : ('im' as const)
       await this.channels.upsertConversation(
@@ -591,7 +591,7 @@ export class HttpBotOrchestrator {
         ? (rows.find((row) => row.agentId === currentOwner.agentId) ??
           rows.find((row) => row.integrationId === currentOwner.id))
         : undefined
-      const targetAgent = options.source === 'slack' ? await this.agents.get(owner.agentId) : null
+      const targetAgent = options.source === 'slack' ? await this.agents.getUnscoped(owner.agentId) : null
       let updated = await this.persistChannelOwner(installs, channelId, owner)
       const trigger =
         targetAgent && isGatedAgent(targetAgent)
@@ -644,7 +644,7 @@ export class HttpBotOrchestrator {
     channelId: string,
     owner: IntegrationRecord
   ): Promise<IntegrationChannelRecord> {
-    const ownerAgent = await this.agents.get(owner.agentId)
+    const ownerAgent = await this.agents.getUnscoped(owner.agentId)
     const defaultTrigger = ownerAgent && isGatedAgent(ownerAgent) ? ('off' as const) : undefined
     const updated = await this.channels.upsertAgent(
       owner.id,
@@ -713,7 +713,7 @@ export class HttpBotOrchestrator {
         channelRows.find((row) => row.integrationId === owner.id)?.trigger ??
         channelRows[0]?.trigger
       if (!persistedOwner) {
-        const ownerAgent = await this.agents.get(owner.agentId)
+        const ownerAgent = await this.agents.getUnscoped(owner.agentId)
         if (ownerAgent && isGatedAgent(ownerAgent)) trigger = 'off'
       }
       const canonical = channelRows.some((row) => row.integrationId === owner.id && row.agentId === owner.agentId)
@@ -732,7 +732,7 @@ export class HttpBotOrchestrator {
     await this.ensureChannelOwners(bot.id, integrations)
     const agentById = new Map<string, AgentRecord>()
     for (const i of integrations) {
-      const a = await this.agents.get(i.agentId)
+      const a = await this.agents.getUnscoped(i.agentId)
       if (a) agentById.set(i.agentId, a)
     }
     // Only agents currently PLACED on a daemon can receive traffic.

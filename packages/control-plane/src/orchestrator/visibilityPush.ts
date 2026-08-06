@@ -117,7 +117,7 @@ export class SessionVisibilityPushService {
     const byAgent = new Map<string, string | null>()
     for (const s of sessions) {
       if (!byAgent.has(s.agentId)) {
-        const agent = await this.deps.repos.agent.get(s.agentId)
+        const agent = await this.deps.repos.agent.getUnscoped(s.agentId)
         byAgent.set(s.agentId, agent?.daemonId ?? null)
       }
       const daemonId = byAgent.get(s.agentId)
@@ -283,7 +283,7 @@ export class SessionVisibilityPushService {
     for (const s of sessions) {
       if (s.visibilitySource === 'default' && s.visibilityRev === 0) continue // initial classification — nothing staged
       if (s.visibilityAckedRev >= s.visibilityRev) continue
-      const agent = await this.deps.repos.agent.get(s.agentId)
+      const agent = await this.deps.repos.agent.getUnscoped(s.agentId)
       if (!agent?.daemonId) continue // unplaced: no daemon runs it, nothing to stop
       return false
     }

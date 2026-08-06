@@ -88,13 +88,18 @@ describe('AgentConfigWriter — agent row + secret rows commit atomically (real 
     await seedAgent(prisma, AGENT)
     const writer = new PgAgentConfigWriter(prisma, new PlaintextSecretCipher())
     const store = new PgAgentSecretStore(prisma, new PlaintextSecretCipher())
-    await writer.update(AgentId(AGENT), {}, { API_KEY: 'sk-1' })
+    await writer.update(OrgId(DEFAULT_ORG_ID), AgentId(AGENT), {}, { API_KEY: 'sk-1' })
 
     // The secret merge applies FIRST inside the transaction; the row update then
     // fails on the app_user FK (unknown editor id), which must take the already-
     // applied merge down with it.
     await expect(
-      writer.update(AgentId(AGENT), { lastModifiedByUserId: 'no-such-user' }, { API_KEY: 'sk-2' })
+      writer.update(
+        OrgId(DEFAULT_ORG_ID),
+        AgentId(AGENT),
+        { lastModifiedByUserId: 'no-such-user' },
+        { API_KEY: 'sk-2' }
+      )
     ).rejects.toThrow()
     expect(await store.get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' })
   })

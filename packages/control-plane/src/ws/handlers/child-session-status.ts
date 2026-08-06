@@ -47,7 +47,7 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
 
   // (b) Resolve the child agent's placement. Cross-org is refused outright: a status read must
   // never cross an org boundary even when both daemons are reachable.
-  const childAgent = await deps.agent.get(AgentId(childAgentId))
+  const childAgent = await deps.agent.getUnscoped(AgentId(childAgentId))
   if (!childAgent || childAgent.orgId !== daemon.orgId || !childAgent.daemonId) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return

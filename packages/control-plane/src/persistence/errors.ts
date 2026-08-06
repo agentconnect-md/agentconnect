@@ -27,6 +27,21 @@ export class OwnerConflict extends Error {
 export const PG_UNIQUE_VIOLATION = '23505'
 
 /**
+ * Thrown by org-fenced agent mutations (docs/designs/org-scoped-data-layer.md
+ * §3) when the addressed row does not exist in the caller's organization — a
+ * cross-org id is deliberately indistinguishable from a missing row. Routes
+ * pre-check with the org-fenced `get`, so reaching this mid-request means a
+ * delete race (previously Prisma's P2025) or a bypassed pre-check.
+ */
+export class AgentMissing extends Error {
+  readonly code = 'AGENT_MISSING' as const
+  constructor(readonly agentId: string) {
+    super(`agent ${agentId} not found in this organization`)
+    this.name = 'AgentMissing'
+  }
+}
+
+/**
  * Thrown by `BotRepo.setShareable(false)` when the row-locked recount still sees
  * more than one ACTIVE install — disabling sharing then would orphan the others'
  * routes. The recount runs under the same bot-row lock `IntegrationRepo.
