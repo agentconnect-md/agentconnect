@@ -632,7 +632,8 @@ export const EXTERNAL_MEMORY_TOOL_NAMES = new Set(
  * with; channel membership is only an optional filter on that answer. Waking a peer is
  * no longer a separate tool: it is `sendMessage` with `toAgent` (session-concept §4).
  * The requesting agent's identity is injected by the daemon from the session context —
- * it is NOT a tool input.
+ * it is NOT a tool input. Fan-out is likewise not a separate tool: the orchestration
+ * triple is retired, see {@link RETIRED_ORCHESTRATION_TOOLS}.
  */
 const LIST_AGENTS_INPUT_SCHEMA = () =>
   obj({
@@ -691,7 +692,30 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
       },
       ['sessionId']
     )
-  },
+  }
+]
+
+/**
+ * RETIRED from the advertised tool surface — kept here, and still dispatchable by
+ * `executeTool`, but injected into NO agent's tool set.
+ *
+ * Why: the send half duplicated `sendMessage`. A fan-out to N workers is N
+ * `sendMessage({ toAgent: { agentId, needsReply: true } })` calls, and status lookup is
+ * `viewSessionStatus`. Offering both made "give work to another agent" ambiguous, so the
+ * orchestration triple is no longer offered.
+ *
+ * What is NOT retired: the daemon-side machinery behind these names — the durable
+ * orchestration/subtask records, correlation recording on worker reports, and the one-shot
+ * session-anchored DEADLINE WAKE (re-armed from the store on daemon startup). That deadline
+ * is the one capability `sendMessage(needsReply)` cannot express today (it has no timeout),
+ * and it is kept intact so `needsReply` can gain an optional deadline on top of it.
+ *
+ * These descriptors stay dispatchable and stay in {@link ALL_TOOL_NAMES} on purpose: an ACP
+ * session that went warm with the old descriptors, and any orchestration record that is
+ * still in flight, must keep resolving. Re-enabling is a one-line move back into
+ * {@link COLLABORATION_TOOLS}.
+ */
+export const RETIRED_ORCHESTRATION_TOOLS: ToolDescriptor[] = [
   {
     name: 'startOrchestration',
     description:
@@ -816,6 +840,10 @@ export const ALL_TOOL_NAMES = [
       ...KNOWLEDGE_TOOLS,
       ...Object.values(EXTERNAL_MEMORY_TOOLS),
       ...COLLABORATION_TOOLS,
+      // Retired from injection but still dispatched by `executeTool`, so the name stays
+      // reserved (no evaluation tool may shadow it) and auto-allowed (a session warm with
+      // the old descriptor, or an in-flight orchestration, must not start hitting approval).
+      ...RETIRED_ORCHESTRATION_TOOLS,
       ...GITHUB_REVIEW_TOOLS
     ].map((t) => t.name)
   )

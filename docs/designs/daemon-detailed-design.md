@@ -971,12 +971,23 @@ send-only SDK client under `src/feishu/`; see
 
 ACP can only reply to the current thread. Daemon's **MCP Tool Server** adds proactive platform send / agent calls. Declare it in `session/new.mcpServers`; platform tokens remain in the connection and invisible to the agent.
 
-Implemented tools in `src/mcp/tools.ts`: `sendPlatformMessage`; collaboration
-`listAgents` (deprecated alias `listChannelAgents`) / `messageAgent`; channel/user information
+Implemented tools in `src/mcp/tools.ts`: the unified `sendMessage` (which absorbed the
+former `sendPlatformMessage` and `messageAgent`); collaboration `listAgents` (deprecated
+alias `listChannelAgents`) and `viewSessionStatus`; channel/user information
 `getCurrentChannel`, `listChannels`, `listKnownUsers`, `listChannelMembers`,
 `getUserProfile`; attachment readers `readSlackFile`, `readTelegramFile`;
-memory `readMemory`, `writeMemory`, `searchMemory`; orchestration
-`startOrchestration`, `getOrchestration`, `cancelOrchestration`; and others.
+memory `readMemory`, `writeMemory`, `searchMemory`; and others.
+
+The orchestration triple `startOrchestration` / `getOrchestration` /
+`cancelOrchestration` is **retired from the injected tool surface**: its send half
+duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with
+`toAgent.needsReply`) and its status half duplicated `viewSessionStatus`. The descriptors
+live on in `RETIRED_ORCHESTRATION_TOOLS` and `executeTool` still dispatches them, so
+sessions already warm with the old descriptors and still-open orchestration records keep
+resolving — but no agent is offered them. The daemon-side machinery below (durable
+records, correlation recording, the re-armed deadline wake) is unchanged; the deadline is
+the one capability `sendMessage(needsReply)` cannot yet express and is kept so
+`needsReply` can gain an optional deadline on top of it.
 
 `listAgents` is **org**-scoped, not channel-scoped: it issues `channel/agents` with
 no channel and gets back every peer in the organization that the directional call

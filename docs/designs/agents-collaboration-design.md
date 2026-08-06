@@ -114,9 +114,11 @@ There are two interaction paradigms. **Decision: combine them; support both.**
 **Key insight:** the planner model is a **subset** of the multi-agent model. It
 does not need to be a special agent type: define an ordinary agent named
 `planner`, tell it which peers exist, and require it to plan before calling
-them. First-class `startOrchestration`, `getOrchestration`, and
-`cancelOrchestration` tools provide the durable fan-out and collection
-mechanics; see §3 of
+them. Fan-out and collection are ordinary `sendMessage` calls with
+`toAgent.needsReply` plus `viewSessionStatus`; the first-class
+`startOrchestration` / `getOrchestration` / `cancelOrchestration` tools that once
+provided them are retired from the agent tool surface (their durable machinery is
+retained daemon-side) — see §3 of
 [`agent-collaboration-implementation.md`](agent-collaboration-implementation.md).
 
 **Unresolved:** we still lack a genuinely complex, highly dynamic real-world case that demonstrates the incremental value of a planner over pure peer-to-peer calls. Most internal cases so far have relatively fixed workflows.

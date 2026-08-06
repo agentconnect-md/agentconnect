@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { toolsForIntegrations, ALL_TOOL_NAMES, GITHUB_REVIEW_TOOLS, externalMemoryTools } from '../src/mcp/tools.js'
+import {
+  toolsForIntegrations,
+  ALL_TOOL_NAMES,
+  COLLABORATION_TOOLS,
+  GITHUB_REVIEW_TOOLS,
+  RETIRED_ORCHESTRATION_TOOLS,
+  externalMemoryTools
+} from '../src/mcp/tools.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
 const slackInt: Integration = {
@@ -298,14 +305,27 @@ describe('toolsForIntegrations', () => {
       // still offered under the old name, for sessions already warm with it
       'listChannelAgents',
       'viewSessionStatus',
-      'startOrchestration',
-      'getOrchestration',
-      'cancelOrchestration',
       'sendMessage'
     ])
   })
 
-  it('removes peer/orchestration targets for a collaboration-off treatment while preserving platform sends', () => {
+  it('never advertises the retired orchestration tools to any agent', () => {
+    const retired = ['startOrchestration', 'getOrchestration', 'cancelOrchestration']
+    const surfaces = [
+      toolsForIntegrations([]),
+      toolsForIntegrations([slackInt, telegramInt, discordInt], { sessionTitle: true, organizationKnowledge: true }),
+      toolsForIntegrations([slackInt], { collaboration: false })
+    ]
+    for (const tools of surfaces) {
+      for (const name of retired) expect(tools.map((t) => t.name)).not.toContain(name)
+    }
+    // The descriptors themselves are deliberately KEPT (the deadline machinery behind them
+    // is still live and re-armable), just detached from every injected surface.
+    expect(RETIRED_ORCHESTRATION_TOOLS.map((t) => t.name)).toEqual(retired)
+    expect(COLLABORATION_TOOLS.map((t) => t.name)).not.toEqual(expect.arrayContaining(retired))
+  })
+
+  it('removes peer targets for a collaboration-off treatment while preserving platform sends', () => {
     expect(toolsForIntegrations([], { collaboration: false }).map((tool) => tool.name)).toEqual([
       'readMemory',
       'writeMemory'
@@ -313,9 +333,9 @@ describe('toolsForIntegrations', () => {
 
     const tools = toolsForIntegrations([slackInt], { collaboration: false })
     const names = tools.map((tool) => tool.name)
-    expect(names).not.toEqual(
-      expect.arrayContaining(['listAgents', 'listChannelAgents', 'startOrchestration', 'getOrchestration'])
-    )
+    for (const gone of ['listAgents', 'listChannelAgents', 'viewSessionStatus']) {
+      expect(names).not.toContain(gone)
+    }
     expect(names).toContain('sendMessage')
     const send = tools.find((tool) => tool.name === 'sendMessage')!
     const schema = send.inputSchema as unknown as ObjectSchema
@@ -350,7 +370,7 @@ describe('toolsForIntegrations', () => {
     )
   })
 
-  it('ALL_TOOL_NAMES lists every injectable tool exactly once', () => {
+  it('ALL_TOOL_NAMES reserves every dispatchable product tool exactly once', () => {
     expect(new Set(ALL_TOOL_NAMES).size).toBe(ALL_TOOL_NAMES.length)
     expect(ALL_TOOL_NAMES).toEqual(
       expect.arrayContaining([
@@ -369,6 +389,9 @@ describe('toolsForIntegrations', () => {
     // The merged-away tool names are gone.
     expect(ALL_TOOL_NAMES).not.toContain('sendPlatformMessage')
     expect(ALL_TOOL_NAMES).not.toContain('messageAgent')
+    // The orchestration triple is retired from INJECTION but `executeTool` still dispatches
+    // it for warm sessions / in-flight records, so the names stay reserved + auto-allowed.
+    for (const retired of RETIRED_ORCHESTRATION_TOOLS) expect(ALL_TOOL_NAMES).toContain(retired.name)
   })
 
   it('projects only reviewed external-memory capabilities onto stable core tool names', () => {
