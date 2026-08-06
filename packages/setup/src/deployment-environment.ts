@@ -6,21 +6,30 @@ const LOCAL_HOST = 'localhost'
 
 function isLoopback(hostname: string): boolean {
   const value = hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  return value === 'localhost' || value.endsWith('.localhost') || value === '127.0.0.1' || value === '::1'
+  return value === 'localhost' || value === '127.0.0.1' || value === '::1'
 }
 
-const OriginSchema = z
-  .string()
-  .url()
-  .superRefine((value, ctx) => {
-    const url = new URL(value)
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback(url.hostname))) {
-      ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
-    }
-    if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-      ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
-    }
-  })
+function originSchema(allowInternalHttp = false) {
+  return z
+    .string()
+    .url()
+    .superRefine((value, ctx) => {
+      const url = new URL(value)
+      const httpAllowed = url.protocol === 'http:' && (allowInternalHttp || isLoopback(url.hostname))
+      if (url.protocol !== 'https:' && !httpAllowed) {
+        ctx.addIssue({
+          code: 'custom',
+          message: allowInternalHttp ? 'must use HTTP or HTTPS' : 'must use HTTPS unless it is loopback'
+        })
+      }
+      if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+        ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
+      }
+    })
+}
+
+const OriginSchema = originSchema()
+const ServerOriginSchema = originSchema(true)
 
 const IssuerSchema = z
   .string()
@@ -92,7 +101,7 @@ export function loadDeploymentEnvironment(environment: Environment = process.env
     issuer: IssuerSchema.parse(
       environmentValue(environment, 'OIDC_ISSUER') ?? `${logtoOrigin ?? defaultLogtoOrigin}/oidc`
     ),
-    managementEndpoint: OriginSchema.parse(
+    managementEndpoint: ServerOriginSchema.parse(
       environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ?? logtoOrigin ?? defaultLogtoOrigin
     )
   }

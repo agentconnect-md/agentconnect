@@ -2,10 +2,15 @@ services:
   control-plane:
     environment:
       - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
+      - LOGTO_MGMT_ENDPOINT=${LOGTO_MGMT_ENDPOINT:-http://logto:3001}
 
   web:
     environment:
       - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
+
+  tenant-admin:
+    environment:
+      - LOGTO_MGMT_ENDPOINT=${LOGTO_MGMT_ENDPOINT:-http://logto:3001}
 
   logto-db-init:
     image: postgres:18-alpine

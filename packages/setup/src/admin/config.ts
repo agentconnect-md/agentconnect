@@ -25,8 +25,7 @@ const HttpOriginSchema = z
 const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
   const url = new URL(value)
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const loopback =
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
   if (url.protocol !== 'https:' && !loopback) {
     ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
   }

@@ -151,8 +151,7 @@ function githubServiceUrl(value: string | undefined, label: string): string {
   if (!value) throw new Error(`GitHub App creation requires a saved ${label} URL`)
   const url = new URL(value)
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const loopback =
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
     throw new Error(`GitHub App ${label} URL must use HTTPS unless it is loopback`)
   }
