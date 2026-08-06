@@ -14,8 +14,10 @@
  *    numeric forum-TOPIC namespace. (A root post into a forum lands in General,
  *    whose messages carry no `is_topic_message`, so replies there resolve
  *    through the same `tg:` ladder rather than to a topic id.)
- *  - Discord conversations are the CHANNEL — every inbound message there keys
- *    the channel id, so a post cannot open a thread of its own.
+ *  - A Discord guild root post keys on its own message id. If a native thread is
+ *    opened from that post, Discord gives the thread channel the same id, so the
+ *    first in-thread reply reaches the initialized session. Discord DMs remain
+ *    one continuous conversation keyed by their channel id.
  *  - A DM is one continuous conversation, keyed `dm` on Telegram and by the
  *    chat on Feishu. A post into one joins it; it never starts a second.
  *
@@ -31,21 +33,44 @@
  * registered per platform rather than inferred.
  */
 
-type ThreadKeyStrategy = (channel: string, ts: string, isDm: boolean) => string
+interface ThreadKeyStrategy {
+  key(channel: string, ts: string, isDm: boolean): string
+  /** Whether callers must classify a root target as DM before deriving its key. */
+  dmSensitive: boolean
+  /** Whether a non-DM root post must be turned into a native thread before its
+   *  session can be initialized. */
+  materializeRootThread?: boolean
+}
 
 const STRATEGIES = new Map<string, ThreadKeyStrategy>([
-  // Conversations ARE the channel; a post cannot open a thread of its own.
-  ['discord', (channel) => channel],
+  // Guild threads use the starter message id; DMs are continuous.
+  ['discord', { key: (channel, ts, isDm) => (isDm ? channel : ts), dmSensitive: true, materializeRootThread: true }],
   // Reply-based threading: numeric message ids enter the `tg:` reply-root
   // namespace; DMs are one continuous conversation.
-  ['telegram', (_channel, ts, isDm) => (isDm ? 'dm' : /^\d+$/.test(ts) ? `tg:${ts}` : ts)],
+  ['telegram', { key: (_channel, ts, isDm) => (isDm ? 'dm' : /^\d+$/.test(ts) ? `tg:${ts}` : ts), dmSensitive: true }],
   // Group chats thread off the post; a DM is keyed by the chat itself.
-  ['feishu', (channel, ts, isDm) => (isDm ? channel : ts)]
+  ['feishu', { key: (channel, ts, isDm) => (isDm ? channel : ts), dmSensitive: true }]
 ])
+
+/** Whether the platform's root-post session key depends on DM classification. */
+export function threadKeyNeedsDmClassification(platform: string): boolean {
+  return STRATEGIES.get(platform)?.dmSensitive ?? false
+}
+
+/** Whether a non-DM root post needs a provider thread before it can own a session. */
+export function rootPostNeedsThreadMaterialization(platform: string): boolean {
+  return STRATEGIES.get(platform)?.materializeRootThread ?? false
+}
+
+/** Provider-safe title for a native thread opened from a root post. */
+export function rootPostThreadName(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, 90)
+  return oneLine || 'Agent thread'
+}
 
 /** The session-thread key for a message this daemon just posted at a channel
  *  ROOT. Total by construction: an unregistered platform threads off the post's
  *  own ts, the Slack/core rule. */
 export function threadKeyForPost(platform: string, channel: string, ts: string, isDm = false): string {
-  return STRATEGIES.get(platform)?.(channel, ts, isDm) ?? ts
+  return STRATEGIES.get(platform)?.key(channel, ts, isDm) ?? ts
 }

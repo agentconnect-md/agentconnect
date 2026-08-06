@@ -9,8 +9,10 @@ describe('outbound thread keys (threadKeyForPost)', () => {
   it('keeps each platform aligned with its inbound canonicalization', () => {
     // Slack (and core): the post's own ts IS the thread segment.
     expect(threadKeyForPost('slack', 'C1', '1700.1')).toBe('1700.1')
-    // Discord: conversations are the channel; a post cannot open a thread.
-    expect(threadKeyForPost('discord', 'chan9', '999')).toBe('chan9')
+    // Discord guild: the starter message id becomes the native thread id.
+    expect(threadKeyForPost('discord', 'chan9', '999')).toBe('999')
+    // Discord DM: one continuous conversation keyed by the channel id.
+    expect(threadKeyForPost('discord', 'dm9', '999', true)).toBe('dm9')
     // Telegram: numeric ids enter the tg: reply-root namespace…
     expect(threadKeyForPost('telegram', '-100', '42')).toBe('tg:42')
     // …non-numeric anchors (already-canonical keys) pass through…

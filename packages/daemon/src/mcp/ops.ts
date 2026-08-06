@@ -1,6 +1,11 @@
 import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
-import { threadKeyForPost } from '../platforms/thread-keys.js'
+import {
+  rootPostNeedsThreadMaterialization,
+  rootPostThreadName,
+  threadKeyForPost,
+  threadKeyNeedsDmClassification
+} from '../platforms/thread-keys.js'
 import {
   directMessagePlatformFor,
   directMessagePlatformList,
@@ -71,6 +76,9 @@ export interface MessageGateway {
    *  daemon can record it. `identity` carries the agent's stable id and optional
    *  visual identity; other platforms may ignore it. */
   postMessage(channel: string, text: string, threadTs?: string, identity?: SendIdentity): Promise<string | undefined>
+  /** Materialize a provider-native thread from a root message when that platform
+   *  requires one before the post can own a follow-up session (Discord). */
+  createThread?(channel: string, messageId: string, name: string): Promise<string | undefined>
   getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }>
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
@@ -466,9 +474,9 @@ export interface OpsDeps {
     targetPlatform: string
     targetChannel: string
     /** The post's own session-thread key ({@link threadKeyForPost}). A conversation is only
-     *  FORKED when this differs from the thread that conversation lives on — on Discord and in
-     *  Telegram / Feishu DMs a root post maps back onto the continuous conversation, so it forks
-     *  nothing and the reader did receive it. */
+     *  FORKED when this differs from the thread that conversation lives on. Discord guild roots
+     *  are materialized as native threads; Telegram / Feishu / Discord DMs map back onto their
+     *  continuous conversation, so they fork nothing and the reader did receive the post. */
     targetThread: string
     targetIntegrationId?: string
   }) => { kind: 'parent'; sessionId: string } | { kind: 'self' } | undefined
@@ -1102,20 +1110,31 @@ export async function executeTool(
       // continuous conversation, and no id carries that — ask the platform, once, and only where
       // the answer can change the key. A failed lookup falls back to the non-DM conversation
       // rather than failing the send that already happened.
-      const isDmTarget =
-        wantPlatform === 'telegram' || wantPlatform === 'feishu'
-          ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
-          : false
-      postedThread =
+      const isDmTarget = threadKeyNeedsDmClassification(wantPlatform)
+        ? ((await gw.getChannelInfo(postChannel).catch(() => undefined))?.isIm ?? false)
+        : false
+      const mustMaterializeThread = !isDmTarget && rootPostNeedsThreadMaterialization(wantPlatform)
+      const materializedThread =
+        providerPostId !== undefined && mustMaterializeThread
+          ? await gw.createThread?.(postChannel, providerPostId, rootPostThreadName(body))
+          : undefined
+      const canonicalPostThread =
         providerPostId === undefined
           ? undefined
           : threadKeyForPost(wantPlatform, postChannel, providerPostId, isDmTarget)
+      postedThread =
+        providerPostId === undefined ? undefined : mustMaterializeThread ? materializedThread : canonicalPostThread
       // Record the post in the thread it BELONGS to — the one it just created for a root post,
       // not the caller's own thread (the daemon's fallback, which for a cross-channel post keys a
       // row to coords that match no session at all). It is also what resolves a later reply to
       // this post back onto this thread, so it must be the same canonical key the session uses.
-      deps.recordOutbound(ctx, postChannel, postedThread, body, ts, targetId)
+      deps.recordOutbound(ctx, postChannel, postedThread ?? canonicalPostThread, body, ts, targetId)
       post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: null, ts }
+      if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
+        throw new Error(
+          `sendMessage: posted root message ${ts}, but its required thread could not be created; no session was started`
+        )
+      }
       // session-concept case 2a: a root post with NO peer wake seeds a NEW session owned by
       // this agent, keyed by the post's own thread, origin = the current session. When there
       // IS a `toAgent`, the woken peer owns that thread instead (see (B)) — so skip the
@@ -1144,10 +1163,10 @@ export async function executeTool(
         //
         // Gated twice, because both claims can be false. `seeded` — the daemon declines outright
         // at the hop limit, and nothing may then say a context opened. And `targetThread`, which
-        // the daemon compares against the conversation's own thread: on Discord and in Telegram /
-        // Feishu DMs a "root" post has no separate thread to land in ({@link threadKeyForPost}
-        // maps it back onto the continuous conversation), so it forks nothing and the message DID
-        // reach the reader — saying otherwise would talk an agent into sending twice.
+        // the daemon compares against the conversation's own thread: in Telegram / Feishu /
+        // Discord DMs a "root" post maps back onto the continuous conversation, so it forks
+        // nothing and the message DID reach the reader — saying otherwise would talk an agent
+        // into sending twice. Discord guild posts have already materialized a native thread.
         const relation =
           seeded && postedThread !== undefined
             ? deps.rootPostRelation?.({

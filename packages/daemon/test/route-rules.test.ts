@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mentionedAgents, participantAgents, routeRules } from '../src/router/routing-table.js'
 import { rulesFromAgent, resolveAgentIntegration, type RoutingRule } from '../src/router/routing-rule.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -118,6 +118,14 @@ describe('routeRules ladder', () => {
     const rules = [rule({ agentId: 'owner', match: { kind: 'auto' }, scope: { channel: 'C1' } })]
     const r = routeRules(msg({ thread: 'T1' }), rules, (c, t) => (c === 'C1' && t === 'T1' ? 'owner' : null))
     expect(r?.agentId).toBe('owner')
+  })
+
+  it('does not let a Discord channel-root session claim unrelated channel messages', () => {
+    const rules = [rule({ agentId: 'owner', botUserId: 'B9', match: { kind: 'mention' }, scope: { channel: 'C1' } })]
+    const threadOwner = vi.fn(() => 'owner')
+
+    expect(routeRules(msg({ platform: 'discord', thread: undefined }), rules, threadOwner)).toBeNull()
+    expect(threadOwner).not.toHaveBeenCalled()
   })
 
   it('kind precedence: mention > dm > keyword > auto within a layer', () => {

@@ -269,18 +269,34 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(slack.spawns[0]).toMatchObject({ thread: 'ts-123', postTs: 'ts-123' })
     })
 
-    it('keys a Discord post by its channel, which is what a Discord conversation is', async () => {
-      // Every inbound Discord message keys the channel id (discord-message.ts), so a post there
-      // cannot open a thread of its own — keying it by the message id made a session unreachable.
-      const discord = tgDeps({}, { postMessage: vi.fn(async () => '900') })
+    it('keys a Discord guild root post by its message id', async () => {
+      // A native Discord thread opened from this post receives the same id as its
+      // starter message, so later in-thread replies meet this initialized session.
+      const createThread = vi.fn(async () => '900')
+      const discord = tgDeps({}, { postMessage: vi.fn(async () => '900'), createThread })
       await executeTool(
         withIntegration('discord', 'int-dc'),
         'sendMessage',
         { platform: 'discord', channel: 'C42', message: 'hi' },
         discord.d
       )
-      expect(discord.spawns[0]).toMatchObject({ thread: 'C42', postTs: '900' })
-      expect(discord.recorded[0]).toMatchObject({ thread: 'C42', ts: '900' })
+      expect(discord.spawns[0]).toMatchObject({ thread: '900', postTs: '900' })
+      expect(discord.recorded[0]).toMatchObject({ thread: '900', ts: '900' })
+      expect(createThread).toHaveBeenCalledWith('C42', '900', 'hi')
+    })
+
+    it('does not initialize a Discord root session when its native thread cannot be created', async () => {
+      const discord = tgDeps({}, { postMessage: vi.fn(async () => '900'), createThread: vi.fn(async () => undefined) })
+      await expect(
+        executeTool(
+          withIntegration('discord', 'int-dc'),
+          'sendMessage',
+          { platform: 'discord', channel: 'C42', message: 'hi' },
+          discord.d
+        )
+      ).rejects.toThrow(/required thread could not be created/)
+      expect(discord.spawns).toHaveLength(0)
+      expect(discord.recorded[0]).toMatchObject({ thread: '900', ts: '900' })
     })
 
     it('joins a DM instead of forking it, on each platform that keeps DMs continuous', async () => {
@@ -299,6 +315,17 @@ describe('executeTool: sendMessage (channel post)', () => {
         feishuDm.d
       )
       expect(feishuDm.spawns[0]).toMatchObject({ thread: 'oc_42', postTs: '172' })
+
+      const createThread = vi.fn(async () => '900')
+      const discordDm = tgDeps({}, { ...asDm, postMessage: vi.fn(async () => '900'), createThread })
+      await executeTool(
+        withIntegration('discord', 'int-dc'),
+        'sendMessage',
+        { platform: 'discord', channel: 'D42', message: 'hi' },
+        discordDm.d
+      )
+      expect(discordDm.spawns[0]).toMatchObject({ thread: 'D42', postTs: '900' })
+      expect(createThread).not.toHaveBeenCalled()
 
       // A Feishu GROUP threads off the message, like Slack.
       const feishuGroup = tgDeps()

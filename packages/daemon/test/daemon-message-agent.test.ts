@@ -2163,7 +2163,7 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     await daemon.stop()
   })
 
-  it('says nothing where a root post cannot fork: Discord, and Telegram / Feishu DMs', async () => {
+  it('says nothing where a root post cannot fork: Telegram / Feishu DMs', async () => {
     const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
     const { daemon } = await bootWithDispatchSpy(root)
     // These platforms have no separate thread for a root post to open: threadKeyForPost maps it
@@ -2171,7 +2171,6 @@ describe('rootPostRelation: did this post fork a conversation we are already in'
     // would tell an agent its answer went nowhere when the reader already has it — and talk it
     // into sending a second copy.
     const continuous = [
-      { platform: 'discord', channel: 'D42', thread: 'D42' },
       { platform: 'telegram', channel: '777', thread: 'dm' },
       { platform: 'feishu', channel: 'oc_42', thread: 'oc_42' }
     ]

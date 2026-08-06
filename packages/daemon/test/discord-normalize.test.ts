@@ -28,7 +28,7 @@ const base: DiscordMessageLike = {
 }
 
 describe('normalizeDiscordMessage', () => {
-  it('maps a top-level guild message keyed on the channel id, flagged for auto-threading', () => {
+  it('maps a top-level guild message without thread affinity, flagged for auto-threading', () => {
     const m = normalizeDiscordMessage(base, { traceId: 't1' })
     expect(m).toMatchObject({
       msgId: 'discord:C777:111',
@@ -42,7 +42,7 @@ describe('normalizeDiscordMessage', () => {
       isDm: false
     })
     // Before promotion there is no separate thread id yet.
-    expect(m.thread).toBe('C777')
+    expect(m.thread).toBeUndefined()
     // §6.5 emission flip: the generic coordinate only — discordTopLevel retired.
     expect(m.promoteToThread).toBe(true)
     expect(m.discordTopLevel).toBeUndefined()
@@ -62,6 +62,7 @@ describe('normalizeDiscordMessage', () => {
   it('flags a non-guild message as a DM and does not auto-thread it', () => {
     const m = normalizeDiscordMessage({ ...base, inGuild: false }, { traceId: 't' })
     expect(m.isDm).toBe(true)
+    expect(m.thread).toBe('C777')
     expect(m.promoteToThread).toBeUndefined()
   })
 

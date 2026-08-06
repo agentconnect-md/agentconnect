@@ -242,6 +242,11 @@ returned platform message creates the agent's session for that new thread but do
 a model turn. The root is already the agent's own output, not a new request: treating it
 as an activation can make the agent post it again recursively.
 
+On Discord, publishing that root must immediately open a native thread from the posted
+message. The initialized session uses `{channel: parent channel, thread: created thread}`;
+it must never use the parent channel itself as the thread-affinity key. If Discord cannot
+create the thread, the post remains visible but no follow-up session is initialized.
+
 The session starts idle, retains its parent-session lineage, and records the root for
 transcript display. The first real reply in that thread receives the root as preceding
 context before the new message. Session initialization itself produces no agent output,
