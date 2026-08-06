@@ -1181,6 +1181,72 @@ describe('tenant isolation — SessionRepo and WebchatConversationRepo fences un
     expect(await repo.getUnscoped(SessionId(foreignSessionId))).not.toBeNull()
   })
 
+  it('a tighten never follows session lineage across the tenancy boundary', async () => {
+    const repo = new PgSessionRepo(prisma)
+    // `parentSessionId` is a daemon-reported free string with NO foreign key, so
+    // a session in ANOTHER org can name one of ours as its parent. Nothing stops
+    // the claim from being made; what must hold is that our cascade ignores it.
+    const rootId = randomUUID()
+    await prisma.sessionMeta.create({
+      data: {
+        id: rootId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: ownAgentId,
+        platform: 'slack',
+        channel: '#lineage',
+        phase: 'start',
+        visibility: 'org',
+        lastActivityAt: new Date()
+      }
+    })
+    const ownChildId = randomUUID()
+    await prisma.sessionMeta.create({
+      data: {
+        id: ownChildId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: ownAgentId,
+        parentSessionId: rootId,
+        platform: 'slack',
+        channel: '#lineage',
+        phase: 'start',
+        visibility: 'org',
+        lastActivityAt: new Date()
+      }
+    })
+    const impostorChildId = randomUUID()
+    await prisma.sessionMeta.create({
+      data: {
+        id: impostorChildId,
+        orgId: foreignOrgId,
+        agentId: foreignAgentId,
+        parentSessionId: rootId, // the cross-org claim
+        platform: 'slack',
+        channel: '#lineage',
+        phase: 'start',
+        visibility: 'org',
+        lastActivityAt: new Date()
+      }
+    })
+
+    const { affected } = await repo.setVisibility(CALLER_ORG, SessionId(rootId), 'private')
+    const affectedIds = affected.map((a) => a.id)
+    expect(affectedIds).toContain(rootId)
+    expect(affectedIds).toContain(ownChildId) // the real descendant IS rewritten
+    expect(affectedIds).not.toContain(impostorChildId)
+
+    // The impostor keeps its own audience and revision — it was neither rewritten
+    // nor handed to the foreign org's daemon as a visibility push.
+    const impostor = await prisma.sessionMeta.findUnique({ where: { id: impostorChildId } })
+    expect(impostor!.visibility).toBe('org')
+    expect(impostor!.visibilityRev).toBe(0)
+    expect(impostor!.ownerIdentity).toBeNull()
+
+    // The subtree the orchestrator pushes is confined the same way.
+    const subtree = (await repo.visibilitySubtree(SessionId(rootId), 50)).map((row) => row.id)
+    expect(subtree).toEqual(expect.arrayContaining([rootId, ownChildId]))
+    expect(subtree).not.toContain(impostorChildId)
+  })
+
   it('a foreign webchat conversation’s roster reads empty — the child fences through its parent', async () => {
     const repo = new PgWebchatConversationRepo(prisma)
 
