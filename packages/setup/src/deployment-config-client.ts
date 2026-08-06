@@ -209,7 +209,6 @@ export function slackDeploymentPut(
 export interface LogtoGoogleConnectorCredentials {
   clientId: string
   clientSecret?: string
-  configuredRedirectUris: string[]
 }
 
 export function logtoGoogleConnectorPut(
@@ -232,8 +231,7 @@ export function logtoGoogleConnectorPut(
             }
           : current.values.logto.browser,
         googleConnector: {
-          clientId: credentials.clientId,
-          configuredRedirectUris: credentials.configuredRedirectUris
+          clientId: credentials.clientId
         }
       }
     },

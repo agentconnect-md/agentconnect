@@ -835,8 +835,7 @@ export function buildTenantAdminServer(
       const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
         clientId: parsed.data.clientId,
-        ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {}),
-        configuredRedirectUris: redirectUris
+        ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {})
       })
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
       return { revision: saved.revision, redirectUris, restartRequired: true as const }

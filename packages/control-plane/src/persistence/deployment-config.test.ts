@@ -46,8 +46,7 @@ describe('deploymentSecretsRequiringRefresh', () => {
         logto: {
           ...base.logto!,
           googleConnector: {
-            clientId: 'google-client',
-            configuredRedirectUris: ['https://login.example.test/callback/agentconnect-google']
+            clientId: 'google-client'
           }
         }
       })

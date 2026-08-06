@@ -287,6 +287,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <div id="google-drift" class="notice" hidden></div>
         <p>Authorized JavaScript origin:</p><ul id="google-origins" class="uris"></ul>
         <p>Authorized redirect URIs:</p><ul id="google-redirects" class="uris"></ul>
+        <p class="muted">Google does not expose OAuth client redirect settings through an API. Copy these required values into Google Auth Platform; Tenant Admin can verify only the Logto connector.</p>
         <div class="row"><a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google Auth Platform</a></div>
         <div id="google-config-controls" class="subsection">
           <label class="field">Client ID<input id="google-id" autocomplete="off"></label>
@@ -662,11 +663,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       showIdentityEditors('google', Boolean(google));
       el('google-id').value = google ? google.clientId : '';
       el('google-status').textContent = google ? 'Google OAuth client is configured.' : 'Create a Web application OAuth client manually, then save it here.';
-      const googleDrift = google && !same(google.configuredRedirectUris, expectedGoogle.redirects)
-        ? [{ field: 'Authorized redirect URIs', current: google.configuredRedirectUris, expected: expectedGoogle.redirects }]
-        : [];
-      showDiff('google-drift', googleDrift);
-      match('google-match', !google || !googleSecret ? '' : googleDrift.length ? 'warn' : '', !google ? 'Not configured' : !googleSecret ? 'Missing secret' : googleDrift.length ? 'Update required' : 'Ready to check');
+      showDiff('google-drift', []);
+      match('google-match', google && googleSecret ? 'warn' : '', !google ? 'Not configured' : !googleSecret ? 'Missing secret' : "Can't verify automatically");
       el('google-initial-secret-field').hidden = googleSecret;
       el('save-google').textContent = google ? 'Confirm callback settings' : 'Save Google client';
       el('google-config-controls').hidden = Boolean(google);
@@ -1160,23 +1158,18 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const report = await checkLogto();
       const connector = report.findings.find((finding) => finding.id === 'logto.connectors');
       const google = currentStatus && currentStatus.values.logto && currentStatus.values.logto.googleConnector;
-      const expected = currentStatus ? currentStatus.providerExpectations.google : { redirects: [] };
-      const callbacksMatch = google && same(google.configuredRedirectUris, expected.redirects);
-      const passed = connector && connector.status === 'pass' && callbacksMatch;
       const connectorDiff = connector && connector.diff
         ? connector.diff.filter((item) => item.field.toLowerCase().startsWith('google'))
         : [];
-      showDiff(
-        'google-drift',
-        [
-          ...connectorDiff,
-          ...(callbacksMatch || !google
-            ? []
-            : [{ field: 'Authorized redirect URIs', current: google.configuredRedirectUris, expected: expected.redirects }])
-        ]
+      const passed = Boolean(google && connector && connectorDiff.length === 0);
+      showDiff('google-drift', connectorDiff);
+      match('google-match', passed ? 'pass' : 'warn', passed ? 'Logto matches' : 'Update required');
+      message(
+        passed
+          ? "The Logto Google connector matches. Google OAuth redirect settings can't be verified automatically."
+          : 'The Logto Google connector needs an update.',
+        !passed
       );
-      match('google-match', passed ? 'pass' : 'warn', passed ? 'Matches' : 'Update required');
-      message(passed ? 'Google callbacks and the Logto connector match.' : 'Google or its Logto connector needs an update.', !passed);
     }
 
     async function checkRegionalLoginApp(region) {

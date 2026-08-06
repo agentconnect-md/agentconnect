@@ -75,6 +75,16 @@ function withoutDerivedConnectorId(value: unknown): unknown {
   return stored
 }
 
+function withoutGoogleProviderSnapshot(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const {
+    connectorId: _connectorId,
+    configuredRedirectUris: _configuredRedirectUris,
+    ...stored
+  } = value as Record<string, unknown>
+  return stored
+}
+
 const LogtoGithubConnectorSchema = z.preprocess(
   withoutDerivedConnectorId,
   z.strictObject({
@@ -85,11 +95,9 @@ const LogtoGithubConnectorSchema = z.preprocess(
 )
 
 const LogtoGoogleConnectorSchema = z.preprocess(
-  withoutDerivedConnectorId,
+  withoutGoogleProviderSnapshot,
   z.strictObject({
-    clientId: z.string().trim().min(1),
-    /** Provider-console callbacks last confirmed by the operator. */
-    configuredRedirectUris: z.array(SecureHttpUrlSchema).min(1)
+    clientId: z.string().trim().min(1)
   })
 )
 
