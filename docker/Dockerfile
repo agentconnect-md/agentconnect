@@ -79,14 +79,8 @@ RUN pnpm --config.enable-pre-post-scripts=false \
 # Compile the Tenant Admin server.
 RUN pnpm --filter "@agentconnect.md/setup" build
 
-# Materialize the same portable production bundle used by the other plain Node
-# services. The pnpm hook removes Prisma's build-only optional peers while
-# preserving real runtime packages (notably Resvg's native binding).
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-  pnpm --config.inject-workspace-packages=true \
-  --filter "@agentconnect.md/control-plane" \
-  deploy --prod /control-plane
-
+# Setup depends on the Control Plane, so this single deploy contains both
+# processes and one shared production dependency tree.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm --config.inject-workspace-packages=true \
   --filter "@agentconnect.md/setup" \
@@ -94,7 +88,7 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
 
 # ──────────────────────── control-plane: runtime ────────────────────────────
 FROM node:24-bookworm-slim AS control-plane
-WORKDIR /app/packages/control-plane
+WORKDIR /app
 ENV NODE_ENV=production \
   PORT=8080 \
   HOST=0.0.0.0
@@ -104,10 +98,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Production dependencies, built workspace packages, and the version-matched
-# Prisma schema/migrations used by the schema-export init container.
-COPY --from=cp-builder /control-plane ./
+# The Setup deploy includes its Control Plane workspace dependency. Keep the
+# existing Control Plane path stable for the default process and migration
+# consumers without copying that dependency tree a second time.
 COPY --from=cp-builder /tenant-admin /app/packages/setup
+RUN ln -s /app/packages/setup/node_modules/@agentconnect.md/control-plane /app/packages/control-plane
+
+WORKDIR /app/packages/control-plane
 
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
