@@ -14,8 +14,10 @@ import {
   AddToSlackRow,
   GsRows,
   MeetYourAgents,
+  useGithubAppEnabled,
   useGithubProfileLinked,
-  useGsActions
+  useGsActions,
+  useSlackPlatformAppAvailable
 } from '@/components/console/GettingStartedChecklist'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import {
@@ -67,6 +69,10 @@ export default function OnboardingView() {
   const { orgPath } = useOrgs()
   const { runAction } = useGsActions()
   const githubLinked = useGithubProfileLinked()
+  const githubEnabled = useGithubAppEnabled()
+  // Local mode (no platform-published Slack app): the slack row falls back to the
+  // default GsRow, whose CTA opens the Slack integration wizard.
+  const slackOneClick = useSlackPlatformAppAvailable()
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
   const authOn = isAuthConfigured()
 
@@ -241,8 +247,10 @@ export default function OnboardingView() {
             members,
             authOn,
             orgHasSessions,
-            githubLinked
+            githubLinked,
+            githubEnabled
           })}
+          slackOneClick={slackOneClick}
           runAction={runAction}
           onFinish={goConsole}
         />
@@ -502,10 +510,12 @@ function ConfigureAgent({
 // --- Phase 2: daemon online → the same checklist the console shows -------------------
 function RevealChecklist({
   gs,
+  slackOneClick,
   runAction,
   onFinish
 }: {
   gs: ReturnType<typeof computeGettingStarted>
+  slackOneClick: boolean
   runAction: (action: import('@/lib/getting-started').GsAction) => void
   onFinish: () => void
 }) {
@@ -555,7 +565,7 @@ function RevealChecklist({
                   toggle={ctx.toggle}
                   onConnect={() => runAction(it.action)}
                 />
-              ) : it.key === 'slack' ? (
+              ) : it.key === 'slack' && slackOneClick ? (
                 <AddToSlackRow
                   done={it.done}
                   open={ctx.open}

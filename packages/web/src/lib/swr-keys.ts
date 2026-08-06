@@ -24,6 +24,8 @@ export const consoleKeys = {
    *  Slack-NAMED but answered per organization AND per caller, so it is
    *  org-scoped like every other row here. */
   deploymentConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'deployment-config'),
+  /** The deployment GitHub App enabled-probe (`GET /github/installations`, 404 ⇒ off). */
+  githubApp: (orgId: string | null | undefined) => consoleKey(orgId, 'github-app'),
   connectorsConfig: (orgId: string | null | undefined) => consoleKey(orgId, 'connectors-config'),
   memoryPluginInstallations: (orgId: string | null | undefined) => consoleKey(orgId, 'memory-plugin-installations'),
   externalMemoryConnections: (orgId: string | null | undefined) => consoleKey(orgId, 'external-memory-connections'),
