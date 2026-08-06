@@ -12,7 +12,7 @@
  * migrating a repository (§7 M2) adds its resource block here in the same PR.
  */
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -21,11 +21,16 @@ import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { PgBotRepo, PgIntegrationRepo } from '../../src/persistence/repositories/integration.repo.js'
 import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
+import { PgMcpProviderRepo } from '../../src/persistence/repositories/mcp.repo.js'
+import { PgSkillSourceRepo } from '../../src/persistence/repositories/skill-source.repo.js'
+import { PgOrganizationKnowledgeRepo } from '../../src/persistence/repositories/organization-knowledge.repo.js'
 import { AgentMissing, BotMissing, CronMissing, HookMissing } from '../../src/persistence/errors.js'
 import { AgentId, BotId, CronId, DaemonId, HookId, IntegrationId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
+/** The revision tables constrain `digest` to `sha256:<64 hex>`. */
+const sha256 = (v: string): string => `sha256:${createHash('sha256').update(v).digest('hex')}`
 const CALLER_ORG = OrgId(DEFAULT_ORG_ID)
 
 let running: HttpApp | undefined
@@ -43,6 +48,13 @@ let foreignCronId: string
 let ownCronId: string
 let foreignHookId: string
 let foreignHookRunId: string
+let foreignProviderId: string
+let ownProviderId: string
+let foreignSkillSourceId: string
+let ownSkillSourceId: string
+let foreignKnowledgeId: string
+let ownKnowledgeId: string
+let foreignManagedSkillId: string
 
 afterEach(async () => {
   await running?.close()
@@ -176,6 +188,80 @@ beforeEach(async () => {
       status: 'success'
     }
   })
+
+  // Shareable org registries: an MCP provider and a skill source per org.
+  ownProviderId = randomUUID()
+  await prisma.mcpProvider.create({
+    data: { id: ownProviderId, orgId: DEFAULT_ORG_ID, name: 'own-mcp', url: 'https://mcp.example.test/own' }
+  })
+  foreignProviderId = randomUUID()
+  await prisma.mcpProvider.create({
+    data: {
+      id: foreignProviderId,
+      orgId: foreignOrgId,
+      name: 'foreign-mcp',
+      url: 'https://mcp.example.test/foreign'
+    }
+  })
+  ownSkillSourceId = randomUUID()
+  await prisma.skillSource.create({
+    data: { id: ownSkillSourceId, orgId: DEFAULT_ORG_ID, name: 'own-skills', source: 'example-org/own-skills' }
+  })
+  foreignSkillSourceId = randomUUID()
+  await prisma.skillSource.create({
+    data: {
+      id: foreignSkillSourceId,
+      orgId: foreignOrgId,
+      name: 'foreign-skills',
+      source: 'example-org/foreign-skills'
+    }
+  })
+
+  // Organization knowledge + one managed skill, each with a current revision.
+  ownKnowledgeId = randomUUID()
+  await prisma.organizationKnowledge.create({
+    data: {
+      id: ownKnowledgeId,
+      orgId: DEFAULT_ORG_ID,
+      title: 'own-runbook',
+      currentRevision: 1,
+      revisions: { create: { revision: 1, content: 'own content', digest: sha256('own content'), source: 'manual' } }
+    }
+  })
+  foreignKnowledgeId = randomUUID()
+  await prisma.organizationKnowledge.create({
+    data: {
+      id: foreignKnowledgeId,
+      orgId: foreignOrgId,
+      title: 'foreign-runbook',
+      currentRevision: 1,
+      revisions: {
+        create: { revision: 1, content: 'foreign content', digest: sha256('foreign content'), source: 'manual' }
+      }
+    }
+  })
+  foreignManagedSkillId = randomUUID()
+  await prisma.managedSkill.create({
+    data: {
+      id: foreignManagedSkillId,
+      orgId: foreignOrgId,
+      name: 'foreign-skill',
+      description: 'foreign managed skill',
+      currentRevision: 1,
+      revisions: {
+        create: {
+          revision: 1,
+          archive: Buffer.from('foreign-archive'),
+          digest: sha256('foreign-archive'),
+          compressedBytes: 15,
+          expandedBytes: 15,
+          fileCount: 1,
+          manifest: {},
+          source: 'manual'
+        }
+      }
+    }
+  })
 })
 
 function build(): HttpApp {
@@ -232,6 +318,32 @@ async function foreignHookUnmodified(): Promise<void> {
   expect(row!.enabled).toBe(true)
   // The run row hangs off the hook; a removal would have tombstoned it too.
   expect(await prisma.hookRun.findUnique({ where: { id: foreignHookRunId } })).not.toBeNull()
+}
+
+async function foreignRegistriesUnmodified(): Promise<void> {
+  const provider = await prisma.mcpProvider.findUnique({ where: { id: foreignProviderId } })
+  expect(provider).not.toBeNull()
+  expect(provider!.orgId).toBe(foreignOrgId)
+  expect(provider!.url).toBe('https://mcp.example.test/foreign')
+  expect(provider!.visibility).toBe('org')
+  const source = await prisma.skillSource.findUnique({ where: { id: foreignSkillSourceId } })
+  expect(source).not.toBeNull()
+  expect(source!.orgId).toBe(foreignOrgId)
+  expect(source!.source).toBe('example-org/foreign-skills')
+  expect(source!.visibility).toBe('org')
+}
+
+async function foreignKnowledgeUnmodified(): Promise<void> {
+  const row = await prisma.organizationKnowledge.findUnique({ where: { id: foreignKnowledgeId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.title).toBe('foreign-runbook')
+  expect(row!.currentRevision).toBe(1)
+  expect(row!.archivedAt).toBeNull()
+  // Revisions carry no org of their own — a leaked update would have added one.
+  expect(await prisma.organizationKnowledgeRevision.count({ where: { knowledgeId: foreignKnowledgeId } })).toBe(1)
+  const skill = await prisma.managedSkill.findUnique({ where: { id: foreignManagedSkillId } })
+  expect(skill!.archivedAt).toBeNull()
 }
 
 async function foreignBotUnmodified(): Promise<void> {
@@ -735,5 +847,189 @@ describe('tenant isolation — HookRepo fences under the routes', () => {
     // The unscoped reads are the GitHub-machinery / daemon escape hatches.
     expect(await repo.getUnscoped(HookId(foreignHookId))).not.toBeNull()
     expect(await repo.getManyUnscoped([HookId(foreignHookId)])).toHaveLength(1)
+  })
+})
+
+describe('tenant isolation — MCP providers and skill sources over the REST surface', () => {
+  it('point-GET of a foreign provider or skill source reads as absent (404)', async () => {
+    const app = build()
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers/${foreignProviderId}` })).statusCode).toBe(
+      404
+    )
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/${foreignSkillSourceId}` })).statusCode
+    ).toBe(404)
+    // The per-source skill scan is a second read path onto the same row.
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources/${foreignSkillSourceId}/skills` })).statusCode
+    ).toBe(404)
+  })
+
+  it('foreign provider and skill-source writes are 404 and change nothing', async () => {
+    const app = build()
+    const patchProvider = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/mcp-providers/${foreignProviderId}`,
+      payload: { url: 'https://mcp.example.test/hijacked' }
+    })
+    expect(patchProvider.statusCode).toBe(404)
+    const rotate = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/mcp-providers/${foreignProviderId}/grant/rotate`
+    })
+    expect(rotate.statusCode).toBe(404)
+    const shareProvider = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/mcp-providers/${foreignProviderId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(shareProvider.statusCode).toBe(404)
+    const deleteProvider = await app.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/mcp-providers/${foreignProviderId}`
+    })
+    expect(deleteProvider.statusCode).toBe(404)
+
+    const patchSource = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/skill-sources/${foreignSkillSourceId}`,
+      payload: { source: 'example-org/hijacked' }
+    })
+    expect(patchSource.statusCode).toBe(404)
+    const shareSource = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/skill-sources/${foreignSkillSourceId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(shareSource.statusCode).toBe(404)
+    const deleteSource = await app.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/skill-sources/${foreignSkillSourceId}`
+    })
+    expect(deleteSource.statusCode).toBe(404)
+
+    await foreignRegistriesUnmodified()
+  })
+
+  it('neither registry list contains a foreign row', async () => {
+    const app = build()
+    const providers = await app.app.inject({ method: 'GET', url: `${ORG}/mcp-providers` })
+    expect(providers.statusCode).toBe(200)
+    const providerIds = (providers.json() as Array<{ id: string }>).map((p) => p.id)
+    expect(providerIds).toContain(ownProviderId)
+    expect(providerIds).not.toContain(foreignProviderId)
+
+    const sources = await app.app.inject({ method: 'GET', url: `${ORG}/skill-sources` })
+    expect(sources.statusCode).toBe(200)
+    const sourceIds = (sources.json() as Array<{ id: string }>).map((s) => s.id)
+    expect(sourceIds).toContain(ownSkillSourceId)
+    expect(sourceIds).not.toContain(foreignSkillSourceId)
+  })
+})
+
+describe('tenant isolation — organization knowledge and managed skills over the REST surface', () => {
+  it('a foreign knowledge entry is unreachable through its read, revision, and write routes', async () => {
+    const app = build()
+    expect((await app.app.inject({ method: 'GET', url: `${ORG}/knowledge/${foreignKnowledgeId}` })).statusCode).toBe(
+      404
+    )
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/knowledge/${foreignKnowledgeId}/revisions` })).statusCode
+    ).toBe(404)
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/knowledge/${foreignKnowledgeId}`,
+      payload: { expectedRevision: 1, title: 'hijacked', content: 'hijacked content' }
+    })
+    expect(patch.statusCode).toBe(404)
+    const archive = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/knowledge/${foreignKnowledgeId}/archive`,
+      payload: { archived: true }
+    })
+    expect(archive.statusCode).toBe(404)
+    await foreignKnowledgeUnmodified()
+  })
+
+  it('a foreign managed skill is unreachable through its read, revision, and archive routes', async () => {
+    const app = build()
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/managed-skills/${foreignManagedSkillId}` })).statusCode
+    ).toBe(404)
+    expect(
+      (await app.app.inject({ method: 'GET', url: `${ORG}/managed-skills/${foreignManagedSkillId}/revisions` }))
+        .statusCode
+    ).toBe(404)
+    const archive = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/managed-skills/${foreignManagedSkillId}/archive`,
+      payload: { archived: true }
+    })
+    expect(archive.statusCode).toBe(404)
+    await foreignKnowledgeUnmodified()
+  })
+
+  it('neither knowledge list contains a foreign row', async () => {
+    const app = build()
+    const knowledge = await app.app.inject({ method: 'GET', url: `${ORG}/knowledge` })
+    expect(knowledge.statusCode).toBe(200)
+    const ids = (knowledge.json() as Array<{ id: string }>).map((k) => k.id)
+    expect(ids).toContain(ownKnowledgeId)
+    expect(ids).not.toContain(foreignKnowledgeId)
+
+    const skills = await app.app.inject({ method: 'GET', url: `${ORG}/managed-skills` })
+    expect(skills.statusCode).toBe(200)
+    expect((skills.json() as Array<{ id: string }>).map((s) => s.id)).not.toContain(foreignManagedSkillId)
+  })
+})
+
+describe('tenant isolation — MCP, skill-source and knowledge fences under the routes', () => {
+  it('provider and skill-source reads and mutations treat a cross-org id like a missing row', async () => {
+    const providers = new PgMcpProviderRepo(prisma)
+    expect(await providers.get(CALLER_ORG, foreignProviderId)).toBeNull()
+    expect(await providers.get(CALLER_ORG, ownProviderId)).not.toBeNull()
+    await expect(providers.update(CALLER_ORG, foreignProviderId, { url: 'https://x.example.test' })).rejects.toThrow()
+    await expect(
+      providers.setSharing(CALLER_ORG, foreignProviderId, { visibility: 'restricted', sharedWith: [] })
+    ).rejects.toThrow()
+    await expect(providers.delete(CALLER_ORG, foreignProviderId)).rejects.toThrow()
+
+    const sources = new PgSkillSourceRepo(prisma)
+    expect(await sources.get(CALLER_ORG, foreignSkillSourceId)).toBeNull()
+    expect(await sources.get(CALLER_ORG, ownSkillSourceId)).not.toBeNull()
+    await expect(sources.update(CALLER_ORG, foreignSkillSourceId, { source: 'example-org/hijacked' })).rejects.toThrow()
+    await expect(
+      sources.setSharing(CALLER_ORG, foreignSkillSourceId, { visibility: 'restricted', sharedWith: [] })
+    ).rejects.toThrow()
+    // Delete answers 'deleted' — the same word an unknown id gets. Answering
+    // 'referenced' would confirm the foreign row AND leak its agent enable-lists.
+    expect(await sources.delete(CALLER_ORG, foreignSkillSourceId)).toBe('deleted')
+
+    await foreignRegistriesUnmodified()
+  })
+
+  it('knowledge, managed-skill and suggestion reads and mutations treat a cross-org id like a missing row', async () => {
+    const repo = new PgOrganizationKnowledgeRepo(prisma)
+
+    expect(await repo.getKnowledge(CALLER_ORG, foreignKnowledgeId)).toBeNull()
+    expect(await repo.getKnowledge(CALLER_ORG, ownKnowledgeId)).not.toBeNull()
+    expect(await repo.getManagedSkill(CALLER_ORG, foreignManagedSkillId)).toBeNull()
+    expect(await repo.getSuggestion(CALLER_ORG, randomUUID())).toBeNull()
+
+    // The revision CAS and the fence share one `where`, so a cross-org id misses
+    // exactly like a stale expectedRevision — null, and no revision row written.
+    expect(
+      await repo.updateKnowledge(
+        CALLER_ORG,
+        foreignKnowledgeId,
+        1,
+        { title: 'hijacked', content: 'hijacked content' },
+        { source: 'manual' }
+      )
+    ).toBeNull()
+    await expect(repo.setKnowledgeArchived(CALLER_ORG, foreignKnowledgeId, true)).rejects.toThrow()
+    await expect(repo.setManagedSkillArchived(CALLER_ORG, foreignManagedSkillId, true)).rejects.toThrow()
+
+    await foreignKnowledgeUnmodified()
   })
 })

@@ -3963,19 +3963,28 @@ export interface UpdateMcpProviderInput {
 
 export interface McpProviderRepo {
   create(input: CreateMcpProviderInput): Promise<McpProviderRecord>
-  get(id: string): Promise<McpProviderRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. This port has no
+   *  `getUnscoped` — the daemon and relay reach providers through
+   *  {@link McpProviderRepo.activeForDaemon} and {@link McpProviderRepo.listAll},
+   *  so no internal trust domain needs an id-addressed escape hatch. */
+  get(orgId: OrgId, id: string): Promise<McpProviderRecord | null>
   /** The org's providers, filtered to what a supplied human principal may see
    *  (org-visible OR owned-by-them OR shared-with-them). Undefined is reserved
    *  for unfiltered internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<McpProviderRecord[]>
-  /** Set visibility + share set (console access only; never crosses the wire). */
+  /** Set visibility + share set (console access only; never crosses the wire).
+   *  Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<McpProviderRecord>
-  update(id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
-  delete(id: string): Promise<void>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  update(orgId: OrgId, id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  delete(orgId: OrgId, id: string): Promise<void>
   /**
    * Providers that should be pushed to `daemonId`: an org provider whose `name` is
    * enabled (in `runtimeOverrides.mcpServers`) by some agent placed on the daemon.
@@ -3985,7 +3994,7 @@ export interface McpProviderRepo {
   activeForDaemon(daemonId: DaemonId): Promise<McpProviderRecord[]>
   /** EVERY provider across all orgs — the pool-wide set replayed to a relay that just
    *  (re)registered (its in-memory binding table starts empty; bindings are pool-wide,
-   *  like bots/hooks). */
+   *  like bots/hooks). System-tier: deployment-level infrastructure by design. */
   listAll(): Promise<McpProviderRecord[]>
 }
 
@@ -3997,7 +4006,12 @@ export interface McpHeader {
 
 /** The ONLY read/write path for `mcp_provider_secret` (upstream auth headers).
  *  Store-only: NEVER in a DTO, NEVER pushed to a daemon (relay-only, via rc/mcp-assign).
- *  Same seam/discipline as {@link BotSecretStore}. */
+ *  Same seam/discipline as {@link BotSecretStore}.
+ *
+ *  Rows are keyed by `providerId` alone and carry no org, so this store fences
+ *  through its parent (org-scoped-data-layer.md §3.6): a route reaching a
+ *  secret must have resolved its provider through the org-fenced
+ *  {@link McpProviderRepo.get} (or just created it) first. */
 export interface McpProviderSecretStore {
   put(providerId: string, headers: McpHeader[]): Promise<void>
   get(providerId: string): Promise<McpHeader[] | null>
@@ -4015,6 +4029,9 @@ export interface McpGrantRecord {
   createdAt: Date
 }
 
+/** Grants hang off one provider and carry no org of their own — they fence
+ *  through {@link McpProviderRepo} exactly like {@link McpProviderSecretStore}
+ *  (org-scoped-data-layer.md §3.6). */
 export interface McpGrantRepo {
   /** Mint a fresh active grant (generates a new plaintext key) for a provider.
    *  v1 keeps exactly one active grant per provider — the caller revokes any prior
@@ -4077,7 +4094,11 @@ export interface SkillSourceRepo {
    *  scope, the agent-reference scan, and the insert share one transaction;
    *  null ⇒ an agent still enables skills under this name (caller answers 409). */
   create(input: CreateSkillSourceInput): Promise<SkillSourceRecord | null>
-  get(id: string): Promise<SkillSourceRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. This port has no
+   *  `getUnscoped` — internal readers resolve a source by its org-unique NAME
+   *  through {@link SkillSourceRepo.getByName}, which is already org-carrying. */
+  get(orgId: OrgId, id: string): Promise<SkillSourceRecord | null>
   /** The org's sources, filtered by the OSS resource-visibility policy for a
    *  supplied human principal; undefined is reserved for internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]>
@@ -4085,16 +4106,21 @@ export interface SkillSourceRepo {
   getByName(orgId: OrgId, name: string): Promise<SkillSourceRecord | null>
   /** Holds the (orgId, name) advisory scope for the write: agent enable-list
    *  writes authorize visibility under the same scope, so a flip cannot land
-   *  between their check and their commit. */
+   *  between their check and their commit. Org-fenced: a cross-org id throws
+   *  the same P2025 as a missing row, before that scope is taken. */
   setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<SkillSourceRecord>
-  update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  update(orgId: OrgId, id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
   /** Delete under the referenced-guard, in one transaction with the reference
-   *  scan ('referenced' ⇒ caller answers 409; missing row ⇒ 'deleted'). */
-  delete(id: string): Promise<'deleted' | 'referenced'>
+   *  scan ('referenced' ⇒ caller answers 409; missing row ⇒ 'deleted').
+   *  Org-fenced: a cross-org id is 'deleted' — the same answer as an unknown id,
+   *  and (unlike 'referenced') one that discloses nothing about the foreign row. */
+  delete(orgId: OrgId, id: string): Promise<'deleted' | 'referenced'>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -4228,9 +4254,20 @@ export type AcceptOrganizationSuggestionResult =
   | { outcome: 'target_missing'; suggestion: OrganizationSuggestionRecord }
   | { outcome: 'name_conflict'; suggestion: OrganizationSuggestionRecord }
 
+/**
+ * Knowledge entries, managed skills and dream suggestions are all org-owned rows
+ * addressed by id, so every point read and mutation here is org-fenced
+ * (docs/designs/org-scoped-data-layer.md §3). Their REVISION tables carry no
+ * `orgId` of their own and fence through the parent (§3.6) — each revision read
+ * sits behind the fenced `getKnowledge` / `getManagedSkill` that admitted it.
+ * Nothing in this port needs a `getUnscoped`: the daemon-facing reads
+ * (`managed-skill/read`, knowledge search) resolve the org from the requesting
+ * agent, which the WS handler has already proved is placed on the connection.
+ */
 export interface OrganizationKnowledgeRepo {
   listKnowledge(orgId: OrgId, includeArchived?: boolean): Promise<OrganizationKnowledgeRecord[]>
-  getKnowledge(id: string): Promise<OrganizationKnowledgeRecord | null>
+  getKnowledge(orgId: OrgId, id: string): Promise<OrganizationKnowledgeRecord | null>
+  /** Fences through {@link OrganizationKnowledgeRepo.getKnowledge} (§3.6). */
   listKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionRecord[]>
   searchKnowledge(
     orgId: OrgId,
@@ -4241,19 +4278,33 @@ export interface OrganizationKnowledgeRepo {
     input: { title: string; content: string; summary?: string; tags?: string[] },
     provenance: OrganizationArtifactProvenance
   ): Promise<OrganizationKnowledgeRecord>
+  /** Org-fenced: a cross-org id misses the revision CAS exactly like a stale
+   *  `expectedRevision` (null), so it discloses nothing the CAS did not already. */
   updateKnowledge(
+    orgId: OrgId,
     id: string,
     expectedRevision: number,
     input: { title: string; content: string; summary?: string; tags?: string[] },
     provenance: OrganizationArtifactProvenance
   ): Promise<OrganizationKnowledgeRecord | null>
-  setKnowledgeArchived(id: string, archived: boolean, byUserId?: string): Promise<OrganizationKnowledgeRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  setKnowledgeArchived(
+    orgId: OrgId,
+    id: string,
+    archived: boolean,
+    byUserId?: string
+  ): Promise<OrganizationKnowledgeRecord>
 
   listManagedSkills(orgId: OrgId, includeArchived?: boolean): Promise<ManagedSkillRecord[]>
-  getManagedSkill(id: string): Promise<ManagedSkillRecord | null>
+  /** Org-fenced: a cross-org id reads as absent. Every caller previously
+   *  post-filtered on `row.orgId !== …`; the fence replaces that check. */
+  getManagedSkill(orgId: OrgId, id: string): Promise<ManagedSkillRecord | null>
+  /** Fences through {@link OrganizationKnowledgeRepo.getManagedSkill} (§3.6). */
   getManagedSkillRevision(id: string, revision: number): Promise<ManagedSkillRevisionRecord | null>
+  /** Fences through {@link OrganizationKnowledgeRepo.getManagedSkill} (§3.6). */
   listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionRecord[]>
-  setManagedSkillArchived(id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  setManagedSkillArchived(orgId: OrgId, id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord>
 
   syncSuggestions(
     orgId: OrgId,
@@ -4264,19 +4315,29 @@ export interface OrganizationKnowledgeRepo {
     orgId: OrgId,
     filters?: { kind?: OrganizationSuggestionKind; state?: OrganizationSuggestionState; query?: string }
   ): Promise<OrganizationSuggestionRecord[]>
-  getSuggestion(id: string): Promise<OrganizationSuggestionRecord | null>
+  /** Org-fenced: a cross-org id reads as absent. */
+  getSuggestion(orgId: OrgId, id: string): Promise<OrganizationSuggestionRecord | null>
+  /** Org-fenced: a cross-org id throws the same missing-row error as an
+   *  unknown one, and the pending-state CAS is unchanged. */
   rejectSuggestion(
+    orgId: OrgId,
     id: string,
     reviewedByUserId: string | undefined,
     reason?: string
   ): Promise<OrganizationSuggestionRecord>
+  /** Org-fenced on the row-locked read that opens the transaction, before the
+   *  snapshot-token comparison — so a cross-org id can never answer "stale
+   *  snapshot" and confirm the foreign suggestion exists. */
   acceptKnowledgeSuggestion(
+    orgId: OrgId,
     id: string,
     body: { title: string; content: string; summary: string | null; tags: string[] },
     expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult>
+  /** Org-fenced like {@link OrganizationKnowledgeRepo.acceptKnowledgeSuggestion}. */
   acceptSkillSuggestion(
+    orgId: OrgId,
     id: string,
     body: {
       archive: Uint8Array

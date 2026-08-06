@@ -197,9 +197,10 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const p = await deps.repos.mcpProvider.get(req.params.id)
-        // A cross-org id OR a restricted provider the caller can't see both read as 404.
-        if (!p || p.orgId !== orgOf(req) || !canView(p, ctxOf(req))) {
+        const p = await deps.repos.mcpProvider.get(orgOf(req), req.params.id)
+        // A cross-org id (fenced in the repo) OR a restricted provider the caller
+        // can't see both read as 404.
+        if (!p || !canView(p, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
         return toDto(p, ctxOf(req), (await deps.repos.mcpProviderSecret.get(p.id)) ?? [])
@@ -288,8 +289,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.mcpProvider.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
+        const existing = await deps.repos.mcpProvider.get(orgOf(req), req.params.id)
+        if (!existing || !canView(existing, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
         // An open_connector row's url (the shared open-connector /mcp endpoint) and headers
@@ -311,7 +312,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         // no atomic rename, so only the url may change the row here.
         const provider =
           req.body.url !== undefined
-            ? await deps.repos.mcpProvider.update(existing.id, { url: req.body.url })
+            ? await deps.repos.mcpProvider.update(orgOf(req), existing.id, { url: req.body.url })
             : existing
         if (req.body.headers !== undefined) await deps.repos.mcpProviderSecret.put(provider.id, req.body.headers)
         const headers = req.body.headers ?? (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
@@ -341,8 +342,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const provider = await deps.repos.mcpProvider.get(req.params.id)
-        if (!provider || provider.orgId !== orgOf(req) || !canView(provider, ctxOf(req))) {
+        const provider = await deps.repos.mcpProvider.get(orgOf(req), req.params.id)
+        if (!provider || !canView(provider, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
         const headers = (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
@@ -380,8 +381,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.mcpProvider.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
+        const existing = await deps.repos.mcpProvider.get(orgOf(req), req.params.id)
+        if (!existing || !canView(existing, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
         if (!canManageSharing(existing, ctxOf(req))) {
@@ -390,6 +391,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
         const provider = await serializeByProvider(orgOf(req), existing.name, () =>
           deps.repos.mcpProvider.setSharing(
+            orgOf(req),
             existing.id,
             {
               visibility: req.body.visibility,
@@ -417,8 +419,8 @@ export function mcpProviderRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.mcpProvider.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) {
+        const existing = await deps.repos.mcpProvider.get(orgOf(req), req.params.id)
+        if (!existing || !canView(existing, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
         // Serialized with rotation/patch: unbind + delete must not interleave with a rotation
@@ -436,7 +438,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           const agents = await deps.repos.agent.list(orgOf(req))
           if (agents.some((a) => a.mcpServers.includes(existing.name))) return 'referenced' as const
           await pushUnassign(existing, orgOf(req)) // unbind relays + affected daemons (before the row is gone)
-          await deps.repos.mcpProvider.delete(existing.id) // FK cascade drops secret + grants
+          await deps.repos.mcpProvider.delete(orgOf(req), existing.id) // FK cascade drops secret + grants
           return 'deleted' as const
         })
         if (outcome === 'referenced') {
