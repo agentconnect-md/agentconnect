@@ -204,7 +204,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <dt>App slug</dt><dd class="value-line"><code id="github-app-slug">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Client ID</dt><dd class="value-line"><code id="github-client-id">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Webhook delivery</dt><dd class="value-line"><code id="github-webhook-enabled">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
-          <dt>Logto connector ID</dt><dd class="value-line"><code id="github-logto-connector-id">Not enabled</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="github-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.clientSecret" data-secret-display="github-client-secret-display">Edit</button></dd>
           <dt>Private key</dt><dd class="secret-line"><span id="github-private-key-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.privateKeyB64" data-secret-display="github-private-key-display">Edit</button></dd>
           <dt>Webhook secret</dt><dd class="secret-line"><span id="github-webhook-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.webhookSecret" data-secret-display="github-webhook-secret-display">Edit</button></dd>
@@ -218,7 +217,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <label class="field">App slug<input id="github-edit-slug" autocomplete="off"></label>
           <label class="field">Client ID<input id="github-edit-client-id" autocomplete="off"></label>
           <label><input id="github-edit-webhook-enabled" type="checkbox"> Enable Relay webhook delivery</label>
-          <label id="github-edit-connector-id-field" class="field" hidden>Logto connector ID<input id="github-edit-connector-id" autocomplete="off"></label>
           <label class="field">New client secret<input id="github-edit-client-secret" type="password" autocomplete="new-password" placeholder="Required when App or Client ID changes"></label>
           <label class="field">New private key (base64)<textarea id="github-edit-private-key" autocomplete="off" placeholder="Required when App ID changes"></textarea></label>
           <label class="field">New webhook secret<input id="github-edit-webhook-secret" type="password" autocomplete="new-password" placeholder="Required when an active webhook App ID changes"></label>
@@ -249,7 +247,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <dl class="credentials">
           <dt>App ID</dt><dd class="value-line"><code id="slack-app-id">Not configured</code><button class="edit-configuration" data-provider="slack">Edit</button></dd>
           <dt>Client ID</dt><dd class="value-line"><code id="slack-client-id">Not configured</code><button class="edit-configuration" data-provider="slack">Edit</button></dd>
-          <dt>Logto connector ID</dt><dd class="value-line"><code id="slack-logto-connector-id">Not enabled</code><button class="edit-configuration" data-provider="slack">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="slack-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="slack.clientSecret" data-secret-display="slack-client-secret-display">Edit</button></dd>
           <dt>Signing secret</dt><dd class="secret-line"><span id="slack-signing-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="slack.signingSecret" data-secret-display="slack-signing-secret-display">Edit</button></dd>
           <dt>Logto sign-in</dt><dd id="slack-logto-status">Not configured</dd>
@@ -260,7 +257,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <h3>Edit Slack App identity</h3>
           <label class="field">App ID<input id="slack-edit-app-id" autocomplete="off"></label>
           <label class="field">Client ID<input id="slack-edit-client-id" autocomplete="off"></label>
-          <label id="slack-edit-connector-id-field" class="field" hidden>Logto connector ID<input id="slack-edit-connector-id" autocomplete="off"></label>
           <label class="field">New client secret<input id="slack-edit-client-secret" type="password" autocomplete="new-password" placeholder="Required when identity changes"></label>
           <label class="field">New signing secret<input id="slack-edit-signing-secret" type="password" autocomplete="new-password" placeholder="Required when identity changes"></label>
           <div class="row"><button id="save-slack-configuration">Save configuration</button><button id="cancel-slack-configuration">Cancel</button></div>
@@ -285,7 +281,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         </div>
         <dl class="credentials">
           <dt>Client ID</dt><dd class="value-line"><code id="google-client-id">Not configured</code><button class="edit-configuration" data-provider="google">Edit</button></dd>
-          <dt>Logto connector ID</dt><dd class="value-line"><code id="google-connector-id">Not configured</code><button class="edit-configuration" data-provider="google">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="google-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="logto.googleConnectorClientSecret" data-secret-display="google-client-secret-display">Edit</button></dd>
         </dl>
         <p id="google-status" class="muted"></p>
@@ -295,7 +290,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <div class="row"><a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google Auth Platform</a></div>
         <div id="google-config-controls" class="subsection">
           <label class="field">Client ID<input id="google-id" autocomplete="off"></label>
-          <label class="field">Logto connector ID<input id="google-connector-id-input" autocomplete="off"></label>
           <label id="google-initial-secret-field" class="field">Client secret<input id="google-secret" type="password" autocomplete="new-password" placeholder="Required when Client ID changes"></label>
         </div>
         <div class="row"><button id="save-google">Save Google client</button><button id="cancel-google-configuration" hidden>Cancel</button><button id="check-google" hidden>Check match</button><button id="clear-google" class="danger" hidden>Clear configuration</button></div>
@@ -597,7 +591,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       text('github-app-slug', github && github.slug);
       text('github-client-id', github && github.clientId);
       text('github-webhook-enabled', github && (github.webhookEnabled === false ? 'Disabled' : 'Enabled'));
-      text('github-logto-connector-id', values.logto && values.logto.githubConnector && values.logto.githubConnector.connectorId);
       el('github-edit-controls').hidden = true;
       showIdentityEditors('github', Boolean(github));
       secretText('github-client-secret-display', byKey, 'github.clientSecret', Boolean(github));
@@ -629,7 +622,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const slack = values.slack;
       text('slack-app-id', slack && slack.appId);
       text('slack-client-id', slack && slack.clientId);
-      text('slack-logto-connector-id', values.logto && values.logto.slackConnector && values.logto.slackConnector.connectorId);
       el('slack-edit-controls').hidden = true;
       showIdentityEditors('slack', Boolean(slack));
       secretText('slack-client-secret-display', byKey, 'slack.clientSecret', Boolean(slack));
@@ -666,11 +658,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       renderUriList('google-origins', expectedGoogle.origins);
       renderUriList('google-redirects', expectedGoogle.redirects);
       text('google-client-id', google && google.clientId);
-      text('google-connector-id', google && google.connectorId);
       secretText('google-client-secret-display', byKey, 'logto.googleConnectorClientSecret', Boolean(google));
       showIdentityEditors('google', Boolean(google));
       el('google-id').value = google ? google.clientId : '';
-      el('google-connector-id-input').value = google ? google.connectorId : bootstrapInfo.googleConnectorId;
       el('google-status').textContent = google ? 'Google OAuth client is configured.' : 'Create a Web application OAuth client manually, then save it here.';
       const googleDrift = google && !same(google.configuredRedirectUris, expectedGoogle.redirects)
         ? [{ field: 'Authorized redirect URIs', current: google.configuredRedirectUris, expected: expectedGoogle.redirects }]
@@ -756,9 +746,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         el('github-edit-slug').value = github.slug;
         el('github-edit-client-id').value = github.clientId || '';
         el('github-edit-webhook-enabled').checked = github.webhookEnabled !== false;
-        const githubConnector = values.logto && values.logto.githubConnector;
-        el('github-edit-connector-id').value = githubConnector ? githubConnector.connectorId : '';
-        el('github-edit-connector-id-field').hidden = !githubConnector;
         for (const id of ['github-edit-client-secret', 'github-edit-private-key', 'github-edit-webhook-secret', 'github-edit-logto-secret']) el(id).value = '';
         el('github-edit-logto-secret-field').hidden = !githubConnectorUsesDeployment(values);
         el('github-edit-controls').hidden = false;
@@ -769,9 +756,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         if (!slack) return;
         el('slack-edit-app-id').value = slack.appId;
         el('slack-edit-client-id').value = slack.clientId;
-        const slackConnector = values.logto && values.logto.slackConnector;
-        el('slack-edit-connector-id').value = slackConnector ? slackConnector.connectorId : '';
-        el('slack-edit-connector-id-field').hidden = !slackConnector;
         el('slack-edit-client-secret').value = '';
         el('slack-edit-signing-secret').value = '';
         el('slack-edit-controls').hidden = false;
@@ -781,7 +765,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         const google = values.logto && values.logto.googleConnector;
         if (!google) return;
         el('google-id').value = google.clientId;
-        el('google-connector-id-input').value = google.connectorId;
         el('google-secret').value = '';
         el('google-config-controls').hidden = false;
         el('google-initial-secret-field').hidden = false;
@@ -860,7 +843,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const webhookEnabled = el('github-edit-webhook-enabled').checked;
       const webhookEnabling = webhookEnabled && previous.webhookEnabled === false;
       const connectorReused = githubConnectorUsesDeployment(values);
-      const connectorId = connectorReused ? requiredInput('github-edit-connector-id', 'the Logto connector ID') : null;
       const clientSecret = el('github-edit-client-secret').value;
       const privateKey = el('github-edit-private-key').value.trim();
       const webhookSecret = el('github-edit-webhook-secret').value;
@@ -876,7 +858,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       if (webhookSecret) secrets['github.webhookSecret'] = webhookSecret;
       if (connectorSecret) secrets['logto.githubConnectorClientSecret'] = connectorSecret;
       const nextLogto = connectorReused && values.logto
-        ? { ...values.logto, githubConnector: { ...values.logto.githubConnector, connectorId, appId, slug, clientId } }
+        ? { ...values.logto, githubConnector: { ...values.logto.githubConnector, appId, slug, clientId } }
         : values.logto;
       await replaceConfiguration(
         {
@@ -887,6 +869,10 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         Object.keys(secrets).length ? secrets : undefined,
         'GitHub App identity saved. Restart AgentConnect to apply it.'
       );
+      if (connectorSecret) {
+        await reconcileLogto(true);
+        await load();
+      }
     }
 
     async function saveSlackConfiguration() {
@@ -896,9 +882,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const appId = requiredInput('slack-edit-app-id', 'the Slack App ID');
       const clientId = requiredInput('slack-edit-client-id', 'the Slack Client ID');
       const changed = appId !== previous.appId || clientId !== previous.clientId;
-      const connectorId = values.logto && values.logto.slackConnector
-        ? requiredInput('slack-edit-connector-id', 'the Logto connector ID')
-        : null;
       const clientSecret = el('slack-edit-client-secret').value;
       const signingSecret = el('slack-edit-signing-secret').value;
       if (changed && (!clientSecret || !signingSecret)) throw new Error('Enter both the new Slack client secret and signing secret');
@@ -906,7 +889,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       if (clientSecret) secrets['slack.clientSecret'] = clientSecret;
       if (signingSecret) secrets['slack.signingSecret'] = signingSecret;
       const nextLogto = values.logto && values.logto.slackConnector
-        ? { ...values.logto, slackConnector: { ...values.logto.slackConnector, connectorId, appId, clientId } }
+        ? { ...values.logto, slackConnector: { ...values.logto.slackConnector, appId, clientId } }
         : values.logto;
       await replaceConfiguration(
         {
@@ -917,6 +900,10 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         Object.keys(secrets).length ? secrets : undefined,
         'Slack App identity saved. Restart AgentConnect to apply it.'
       );
+      if (clientSecret && nextLogto && nextLogto.slackConnector) {
+        await reconcileLogto(true);
+        await load();
+      }
     }
 
     async function clearProvider(provider) {
@@ -1070,12 +1057,13 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     }
 
     async function bootstrapGoogle() {
+      const secret = el('bootstrap-google-secret').value;
       await json(await fetch(api + '/configure/google', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ clientId: el('bootstrap-google-id').value, clientSecret: el('bootstrap-google-secret').value })
+        body: JSON.stringify({ clientId: el('bootstrap-google-id').value, clientSecret: secret })
       }));
       el('bootstrap-google-secret').value = '';
-      await reconcileLogto();
+      await reconcileLogto(true);
       await load();
     }
 
@@ -1138,7 +1126,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
               ? { ...logto.browser, socialProviders: [...new Set([...logto.browser.socialProviders, 'slack'])] }
               : logto.browser,
             slackConnector: {
-              connectorId: bootstrapInfo.slackConnectorId,
               appId: slack.appId,
               clientId: slack.clientId
             }
@@ -1159,7 +1146,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         body: JSON.stringify({ configToken: token })
       }));
       el('slack-token').value = '';
-      if (result.status === 'pass') await load();
+      if (result.status === 'pass' && currentStatus && currentStatus.values.slack) {
+        currentRevision = result.revision;
+        currentStatus.revision = result.revision;
+        currentStatus.values.slack = { ...currentStatus.values.slack, configuredUrls: result.expected };
+      }
       showDiff('slack-drift', result.diff || []);
       match('slack-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : 'Update required');
       message(result.status === 'pass' ? 'Slack App matches the default integration manifest.' : 'Slack App settings need an update.', result.status !== 'pass');
@@ -1200,13 +1191,12 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       await json(await fetch(api + '/configure/google', {
         method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({
-          connectorId: requiredInput('google-connector-id-input', 'the Logto connector ID'),
           clientId: el('google-id').value,
           ...(secret ? { clientSecret: secret } : {})
         })
       }));
       el('google-secret').value = '';
-      await reconcileLogto();
+      await reconcileLogto(Boolean(secret));
       await load();
       message('Google OAuth client and Logto connector are configured. Restart AgentConnect to apply the saved settings.');
     }
@@ -1255,8 +1245,12 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       }
     }
 
-    async function reconcileLogto() {
-      return json(await fetch(api + '/reconcile/logto', { method: 'POST', headers: bearer() }));
+    async function reconcileLogto(refreshConnectorSecrets) {
+      return json(await fetch(api + '/reconcile/logto', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({ refreshConnectorSecrets: Boolean(refreshConnectorSecrets) })
+      }));
     }
 
     async function refreshDeploymentConfig() {
@@ -1376,12 +1370,24 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     async function saveSecretReplacement(key, value) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
       if (!value) throw new Error('Enter the replacement secret');
-      const saved = await json(await fetch(api + '/deployment-config', {
+      const refreshLogto =
+        (key === 'logto.githubConnectorClientSecret' && currentStatus.values.logto && currentStatus.values.logto.githubConnector) ||
+        (key === 'logto.googleConnectorClientSecret' && currentStatus.values.logto && currentStatus.values.logto.googleConnector) ||
+        (key === 'slack.clientSecret' && currentStatus.values.logto && currentStatus.values.logto.slackConnector);
+      await json(await fetch(api + '/deployment-config', {
         method: 'PUT', headers: { 'content-type': 'application/json', ...bearer() },
         body: JSON.stringify({ expectedRevision: currentRevision, values: currentStatus.values, secrets: { [key]: value } })
       }));
-      await load();
-      message('Secret replaced. Restart AgentConnect to apply it.');
+      try {
+        if (refreshLogto) await reconcileLogto(true);
+      } finally {
+        await load();
+      }
+      if (refreshLogto) {
+        message('Secret replaced and applied to the Logto connector. Restart AgentConnect to apply deployment changes.');
+      } else {
+        message('Secret replaced. Restart AgentConnect to apply it.');
+      }
     }
 
     function editSecret(button) {

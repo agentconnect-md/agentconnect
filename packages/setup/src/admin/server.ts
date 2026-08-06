@@ -108,7 +108,6 @@ const CreateSlackBody = z.strictObject({
 })
 
 const ConfigureGoogleBody = z.strictObject({
-  connectorId: z.string().trim().min(1).max(500).optional(),
   clientId: z.string().trim().min(1).max(500),
   clientSecret: z.string().min(1).max(10_000).optional()
 })
@@ -132,6 +131,10 @@ const CreateRegionalLoginAppBody = z.strictObject({
 
 const CheckSlackBody = z.strictObject({
   configToken: z.string().trim().min(1).max(10_000)
+})
+
+const ReconcileLogtoBody = z.strictObject({
+  refreshConnectorSecrets: z.boolean().optional().default(false)
 })
 
 interface OidcDiscovery {
@@ -350,7 +353,6 @@ function logtoSetup(
       ...(logto.githubConnector && githubSecret
         ? {
             github: {
-              connectorId: logto.githubConnector.connectorId,
               clientId: logto.githubConnector.clientId,
               clientSecret: githubSecret
             }
@@ -359,7 +361,6 @@ function logtoSetup(
       ...(logto.googleConnector && googleSecret
         ? {
             google: {
-              connectorId: logto.googleConnector.connectorId,
               clientId: logto.googleConnector.clientId,
               clientSecret: googleSecret
             }
@@ -368,38 +369,11 @@ function logtoSetup(
       ...(logto.slackConnector && slackSecret
         ? {
             slack: {
-              connectorId: logto.slackConnector.connectorId,
               clientId: logto.slackConnector.clientId,
               clientSecret: slackSecret,
               scope: 'openid profile email'
             }
           }
-        : {})
-    }
-  }
-}
-
-function withResolvedConnectorIds(
-  values: DeploymentConfigValuesV1,
-  connectors: readonly { target: string; id: string }[]
-): DeploymentConfigValuesV1 {
-  if (!values.logto) return values
-  const connectorIds = new Map(connectors.map((connector) => [connector.target, connector.id]))
-  const githubId = connectorIds.get('github')
-  const googleId = connectorIds.get('google')
-  const slackId = connectorIds.get('slack')
-  return {
-    ...values,
-    logto: {
-      ...values.logto,
-      ...(values.logto.githubConnector && githubId
-        ? { githubConnector: { ...values.logto.githubConnector, connectorId: githubId } }
-        : {}),
-      ...(values.logto.googleConnector && googleId
-        ? { googleConnector: { ...values.logto.googleConnector, connectorId: googleId } }
-        : {}),
-      ...(values.logto.slackConnector && slackId
-        ? { slackConnector: { ...values.logto.slackConnector, connectorId: slackId } }
         : {})
     }
   }
@@ -464,7 +438,19 @@ export function buildTenantAdminServer(
     return result
   }
 
-  const expectedGithubManifest = (values: DeploymentConfigValuesV1): Record<string, unknown> => {
+  type ManagedConnectorIds = Partial<Record<'github' | 'google' | 'slack', string>>
+
+  const resolveLogtoConnectorIds = async (): Promise<ManagedConnectorIds> => {
+    const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+    const config = logtoConfig(runtime, logtoManagementEndpoint)
+    if (!config) return {}
+    return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds(['github', 'google', 'slack'])
+  }
+
+  const expectedGithubManifest = (
+    values: DeploymentConfigValuesV1,
+    connectorIds: ManagedConnectorIds
+  ): Record<string, unknown> => {
     const browser = values.logto?.browser
     const connectLogto = Boolean(values.logto?.githubConnector && browser)
     return buildGithubAppManifest(
@@ -475,34 +461,37 @@ export function buildTenantAdminServer(
         ? {
             webUrl: localAuthBootstrap.services.web,
             logtoEndpoint,
-            connectorId: values.logto!.githubConnector!.connectorId
+            connectorId: connectorIds.github ?? LOGTO_GITHUB_CONNECTOR_ID
           }
         : undefined
     )
   }
 
-  const expectedSlackManifest = (values: DeploymentConfigValuesV1): Record<string, unknown> => {
+  const expectedSlackManifest = (
+    values: DeploymentConfigValuesV1,
+    connectorIds: ManagedConnectorIds
+  ): Record<string, unknown> => {
     const browser = values.logto?.browser
     return buildSlackDeploymentManifest(
       slackProviderAppConfig(localAuthBootstrap.services),
       'AgentConnect',
       values.logto?.slackConnector && browser
-        ? { logtoEndpoint, connectorId: values.logto.slackConnector.connectorId }
+        ? { logtoEndpoint, connectorId: connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID }
         : undefined
     )
   }
 
-  const providerExpectations = (values: DeploymentConfigValuesV1) => {
+  const providerExpectations = (values: DeploymentConfigValuesV1, connectorIds: ManagedConnectorIds) => {
     let github: ReturnType<typeof githubConfiguredUrls> | null = null
     let slack: ReturnType<typeof slackConfiguredUrls> | null = null
     try {
-      const manifest = expectedGithubManifest(values)
+      const manifest = expectedGithubManifest(values, connectorIds)
       github = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
     } catch {
       // Invalid startup URLs are surfaced as an unavailable expectation in the UI.
     }
     try {
-      slack = slackConfiguredUrls(expectedSlackManifest(values))
+      slack = slackConfiguredUrls(expectedSlackManifest(values, connectorIds))
     } catch {
       // Slack requires HTTPS startup URLs; the UI keeps creation/check disabled.
     }
@@ -514,7 +503,7 @@ export function buildTenantAdminServer(
             origins: [logtoEndpoint],
             redirects: googleRedirectUris(
               logtoEndpoint,
-              values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID,
+              connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID,
               localAuthBootstrap.services.web
             )
           }
@@ -522,9 +511,15 @@ export function buildTenantAdminServer(
     }
   }
 
-  const statusWithExpectations = (record: DeploymentConfigAdmin | null) => {
+  const statusWithExpectations = async (record: DeploymentConfigAdmin | null) => {
     const status = toStatus(record)
-    return { ...status, providerExpectations: providerExpectations(status.values) }
+    let connectorIds: ManagedConnectorIds = {}
+    try {
+      connectorIds = await resolveLogtoConnectorIds()
+    } catch {
+      // Logto availability is reported by the dedicated check. Fixed IDs remain correct for connectors we create.
+    }
+    return { ...status, providerExpectations: providerExpectations(status.values, connectorIds) }
   }
 
   app.addHook('onClose', async () => {
@@ -625,8 +620,14 @@ export function buildTenantAdminServer(
 
   app.get('/api/v1/bootstrap-info', { preHandler: requireLocal }, async () => {
     const current = await deps.store.getAdmin()
-    const googleConnectorId = current?.values.logto?.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
-    const slackConnectorId = current?.values.logto?.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID
+    let connectorIds: ManagedConnectorIds = {}
+    try {
+      connectorIds = await resolveLogtoConnectorIds()
+    } catch {
+      // The setup check reports Logto errors; new connectors still use the fixed IDs below.
+    }
+    const googleConnectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
+    const slackConnectorId = connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID
     const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
@@ -661,18 +662,18 @@ export function buildTenantAdminServer(
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
-      googleConnectorId,
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
       githubAvailable,
       githubWebhookActive,
       slackAvailable,
-      slackConnectorId,
       slackLoginRedirectUrl: appendPath(slackLoginEndpoint, `/callback/${slackConnectorId}`)
     }
   })
 
-  app.get('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async () =>
-    statusWithExpectations(await deps.store.getAdmin())
+  app.get(
+    '/api/v1/deployment-config',
+    { preHandler: requireConfigurationAccess },
+    async () => await statusWithExpectations(await deps.store.getAdmin())
   )
 
   app.put('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async (request, reply) => {
@@ -685,7 +686,7 @@ export function buildTenantAdminServer(
       values: parsed.data.values
     })
     return {
-      ...statusWithExpectations(saved),
+      ...(await statusWithExpectations(saved)),
       restartRequired: true as const
     }
   })
@@ -707,7 +708,7 @@ export function buildTenantAdminServer(
         }
       )
       const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
-      return { ...statusWithExpectations(saved), restartRequired: true as const }
+      return { ...(await statusWithExpectations(saved)), restartRequired: true as const }
     })
   })
 
@@ -728,6 +729,7 @@ export function buildTenantAdminServer(
         !current.values.logto?.githubConnector &&
         (parsed.data.connectLogto || browser.socialProviders.includes('github'))
       )
+      const connectorIds = connectLogto ? await resolveLogtoConnectorIds() : {}
       manifest = buildGithubAppManifest(
         providerAppConfig(localAuthBootstrap.services),
         parsed.data.name,
@@ -736,7 +738,7 @@ export function buildTenantAdminServer(
           ? {
               webUrl: localAuthBootstrap.services.web,
               logtoEndpoint,
-              connectorId: LOGTO_GITHUB_CONNECTOR_ID
+              connectorId: connectorIds.github ?? LOGTO_GITHUB_CONNECTOR_ID
             }
           : undefined
       )
@@ -828,11 +830,10 @@ export function buildTenantAdminServer(
     return serializeMutation(async () => {
       const current = await deps.store.getAdmin()
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
-      const connectorId =
-        parsed.data.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
+      const connectorIds = await resolveLogtoConnectorIds()
+      const connectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
       const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
-        ...(parsed.data.connectorId ? { connectorId: parsed.data.connectorId } : {}),
         clientId: parsed.data.clientId,
         ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {}),
         configuredRedirectUris: redirectUris
@@ -1026,7 +1027,12 @@ export function buildTenantAdminServer(
         manifest = buildSlackDeploymentManifest(
           slackProviderAppConfig(localAuthBootstrap.services),
           parsed.data.name,
-          parsed.data.connectLogto && browser ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID } : undefined
+          parsed.data.connectLogto && browser
+            ? {
+                logtoEndpoint,
+                connectorId: (await resolveLogtoConnectorIds()).slack ?? LOGTO_SLACK_CONNECTOR_ID
+              }
+            : undefined
         )
       } catch (error) {
         return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
@@ -1070,7 +1076,7 @@ export function buildTenantAdminServer(
     }
     let manifest: Record<string, unknown>
     try {
-      manifest = expectedGithubManifest(runtime.values)
+      manifest = expectedGithubManifest(runtime.values, await resolveLogtoConnectorIds())
     } catch (error) {
       return problem(reply, 409, error instanceof Error ? error.message : 'GitHub App configuration is incomplete')
     }
@@ -1128,7 +1134,7 @@ export function buildTenantAdminServer(
       if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
       let manifest: Record<string, unknown>
       try {
-        manifest = expectedSlackManifest(current.values)
+        manifest = expectedSlackManifest(current.values, await resolveLogtoConnectorIds())
       } catch (error) {
         return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
       }
@@ -1166,8 +1172,10 @@ export function buildTenantAdminServer(
     })
   })
 
-  app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
+  app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (request, reply) =>
     serializeMutation(async () => {
+      const parsed = ReconcileLogtoBody.safeParse(request.body ?? {})
+      if (!parsed.success) return problem(reply, 400, 'invalid Logto reconciliation options')
       const secretKeys = [
         'logto.managementAppSecret',
         'logto.githubConnectorClientSecret',
@@ -1214,7 +1222,9 @@ export function buildTenantAdminServer(
       }
 
       const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
-      const reconciled = await client.reconcileSetup(setup.desired)
+      const reconciled = await client.reconcileSetup(setup.desired, {
+        refreshConnectorSecrets: parsed.data.refreshConnectorSecrets
+      })
       const auth = {
         mode: 'oidc' as const,
         audience: setup.apiResource ?? reconciled.application.id,
@@ -1224,7 +1234,7 @@ export function buildTenantAdminServer(
         },
         socialProviders: setup.socialProviders
       }
-      const nextValues = withResolvedConnectorIds({ ...runtime.values, auth }, reconciled.connectors)
+      const nextValues = { ...runtime.values, auth }
       const configChanged = JSON.stringify(runtime.values) !== JSON.stringify(nextValues)
       const saved = configChanged
         ? await deps.store.replace({
@@ -1403,20 +1413,6 @@ export function buildTenantAdminServer(
         ]
       })
       return report()
-    }
-    const resolvedValues = withResolvedConnectorIds(
-      runtime.values,
-      setupInspection.connectors.flatMap((connector) =>
-        connector.id ? [{ target: connector.target, id: connector.id }] : []
-      )
-    )
-    if (JSON.stringify(resolvedValues) !== JSON.stringify(runtime.values)) {
-      await serializeMutation(() => deps.store.replace({ expectedRevision: runtime.revision, values: resolvedValues }))
-      findings.push({
-        id: 'logto.connector_references',
-        status: 'pass',
-        message: 'Tenant Admin adopted the existing Logto connector IDs.'
-      })
     }
     findings.push(
       setupInspection.application.exists && setupInspection.application.matches

@@ -69,25 +69,37 @@ const LogtoBrowserSchema = z.strictObject({
   socialProviders: z.array(z.string().trim().min(1)).default([])
 })
 
-const LogtoGithubConnectorSchema = z.strictObject({
-  connectorId: z.string().trim().min(1).default('agentconnect-github'),
-  appId: z.number().int().positive(),
-  slug: z.string().trim().min(1),
-  clientId: z.string().trim().min(1)
-})
+function withoutDerivedConnectorId(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const { connectorId: _connectorId, ...stored } = value as Record<string, unknown>
+  return stored
+}
 
-const LogtoGoogleConnectorSchema = z.strictObject({
-  connectorId: z.string().trim().min(1).default('agentconnect-google'),
-  clientId: z.string().trim().min(1),
-  /** Provider-console callbacks last confirmed by the operator. */
-  configuredRedirectUris: z.array(SecureHttpUrlSchema).min(1)
-})
+const LogtoGithubConnectorSchema = z.preprocess(
+  withoutDerivedConnectorId,
+  z.strictObject({
+    appId: z.number().int().positive(),
+    slug: z.string().trim().min(1),
+    clientId: z.string().trim().min(1)
+  })
+)
 
-const LogtoSlackConnectorSchema = z.strictObject({
-  connectorId: z.string().trim().min(1).default('agentconnect-slack'),
-  appId: z.string().trim().min(1),
-  clientId: z.string().trim().min(1)
-})
+const LogtoGoogleConnectorSchema = z.preprocess(
+  withoutDerivedConnectorId,
+  z.strictObject({
+    clientId: z.string().trim().min(1),
+    /** Provider-console callbacks last confirmed by the operator. */
+    configuredRedirectUris: z.array(SecureHttpUrlSchema).min(1)
+  })
+)
+
+const LogtoSlackConnectorSchema = z.preprocess(
+  withoutDerivedConnectorId,
+  z.strictObject({
+    appId: z.string().trim().min(1),
+    clientId: z.string().trim().min(1)
+  })
+)
 
 const GithubAppConfiguredUrlsSchema = z.strictObject({
   externalUrl: SecureOriginUrlSchema,

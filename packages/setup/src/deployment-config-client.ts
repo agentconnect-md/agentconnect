@@ -5,7 +5,6 @@ import {
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { z } from 'zod'
-import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from './logto-connectors.js'
 
 export const DeploymentConfigPutSchema = z.strictObject({
   values: DeploymentConfigValuesV1Schema,
@@ -61,7 +60,6 @@ export function githubDeploymentPut(
                   }
                 : connectLogto.browser,
               githubConnector: {
-                connectorId: LOGTO_GITHUB_CONNECTOR_ID,
                 appId,
                 slug: credentials.slug,
                 clientId: credentials.clientId
@@ -143,7 +141,6 @@ export function logtoGithubConnectorPut(
             }
           : current.values.logto.browser,
         githubConnector: {
-          connectorId: current.values.logto.githubConnector?.connectorId ?? LOGTO_GITHUB_CONNECTOR_ID,
           appId,
           slug: credentials.slug,
           clientId: credentials.clientId
@@ -195,7 +192,6 @@ export function slackDeploymentPut(
                   }
                 : logto.browser,
               slackConnector: {
-                connectorId: logto.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID,
                 appId: credentials.appId,
                 clientId: credentials.clientId
               }
@@ -211,7 +207,6 @@ export function slackDeploymentPut(
 }
 
 export interface LogtoGoogleConnectorCredentials {
-  connectorId?: string
   clientId: string
   clientSecret?: string
   configuredRedirectUris: string[]
@@ -237,8 +232,6 @@ export function logtoGoogleConnectorPut(
             }
           : current.values.logto.browser,
         googleConnector: {
-          connectorId:
-            credentials.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID,
           clientId: credentials.clientId,
           configuredRedirectUris: credentials.configuredRedirectUris
         }
