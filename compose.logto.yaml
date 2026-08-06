@@ -8,7 +8,7 @@ services:
     environment:
       - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
 
-  tenant-admin:
+  setup-server:
     environment:
       - LOGTO_MGMT_ENDPOINT=${LOGTO_MGMT_ENDPOINT:-http://logto:3001}
 

@@ -1,4 +1,4 @@
-/** Typed deployment mutations used by the Tenant Admin provider workflows. */
+/** Typed deployment mutations used by the Setup Server provider workflows. */
 import {
   DeploymentConfigValuesV1Schema,
   DeploymentSecretPatchSchema,

@@ -49,7 +49,7 @@ callback endpoint is required; the CP only orchestrates. Concretely:
 | `@agentconnect.md/daemon`        | Node CLI (commander)               | The edge unit. Exposes the `agentconnect` CLI bin. Many CLI subcommands are still stubs (`run` and `chat` are the live ones).                                      |
 | `@agentconnect.md/control-plane` | Fastify + Prisma (Postgres)        | One Fastify process co-hosts the C2 BFF REST surface **and** the daemon WS endpoint on one port / one Postgres connection.                                         |
 | `@agentconnect.md/relay`         | Fastify                            | Optional public ingress: Slack/Feishu HTTP callbacks, webhooks, webchat. Verifies, demuxes to the owning bot, forwards to the daemon. Persists no message content. |
-| `@agentconnect.md/setup`         | Fastify + browser UI               | Loopback-only Tenant Admin for self-hosting, Logto setup, and deployment-owned provider App administration.                                                        |
+| `@agentconnect.md/setup`         | Fastify + browser UI               | Loopback-only Setup Server for self-hosting, Logto setup, and deployment-owned provider App administration.                                                        |
 | `@agentconnect.md/web`           | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                       |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild
@@ -191,7 +191,7 @@ Tests never call `index.ts`; they call `buildApp(...)` with the Testcontainers
 
 ## Human auth (Web UI) — opt-in OIDC
 
-Console sign-in is optional social login through Logto. Tenant Admin owns the
+Console sign-in is optional social login through Logto. Setup Server owns the
 browser application, API Resource, enabled sign-in methods, Management API
 application, and provider connectors in the typed deployment document; provider
 secrets are write-only entries in the deployment secret store.
@@ -201,7 +201,7 @@ secrets are write-only entries in the deployment secret store.
   `sub` (`persistence/repositories/user.repo.ts`). The issuer and service origins are
   startup topology; the required token audience comes from the persisted browser auth
   configuration. The base Compose stack stays in loopback-only no-auth mode until
-  Tenant Admin bootstraps sign-in.
+  Setup Server bootstraps sign-in.
 - **Web** uses `@logto/browser` (`src/lib/auth.ts`); the login UI is social-only
   (`src/components/Auth.tsx`), redirect landing at `src/app/auth/callback`.
 - **Runtime config:** `src/lib/public-env.tsx` reads the Control Plane's

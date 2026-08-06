@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { loadEnvFile } from 'node:process'
-import { serveTenantAdmin } from './admin/server.js'
+import { serveSetupServer } from './server/index.js'
 
 function loadDefaultEnvironment(): void {
   const candidates = [resolve(process.env.INIT_CWD ?? process.cwd(), '.env'), resolve(process.cwd(), '.env')]
@@ -11,8 +11,8 @@ function loadDefaultEnvironment(): void {
 
 loadDefaultEnvironment()
 
-serveTenantAdmin().catch((error: unknown) => {
+serveSetupServer().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
-  console.error(`tenant-admin: ${message}`)
+  console.error(`setup-server: ${message}`)
   process.exitCode = 1
 })

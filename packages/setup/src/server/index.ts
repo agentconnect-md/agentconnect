@@ -53,15 +53,15 @@ import {
 } from '../slack-app.js'
 import type { ProviderAppConfig } from '../provider-app.js'
 import {
-  TenantAdminAuthError,
-  TenantAdminAuthenticator,
+  SetupAuthError,
+  SetupAuthenticator,
   urlAtOrigin,
-  type AdminOidcConfig,
-  type TenantAdminPrincipal,
+  type SetupOidcConfig,
+  type SetupPrincipal,
   type VerifyOidcToken
 } from './auth.js'
-import { loadTenantAdminProcessConfig } from './config.js'
-import { TENANT_ADMIN_HTML } from './html.js'
+import { loadSetupServerProcessConfig } from './config.js'
+import { SETUP_HTML } from './html.js'
 import {
   LogtoAdminClaimClient,
   LogtoManagementError,
@@ -147,7 +147,7 @@ interface OidcDiscovery {
   tokenEndpoint: string
 }
 
-export interface TenantAdminServerDeps {
+export interface SetupServerDeps {
   store: DeploymentConfigStore
   publicUrl: string
   fetch?: typeof fetch
@@ -171,7 +171,7 @@ export interface TenantAdminServerDeps {
   allowContainerLoopbackProxy?: boolean
 }
 
-export type TenantAdminServerOptions = FastifyServerOptions
+export type SetupServerOptions = FastifyServerOptions
 
 function problem(reply: FastifyReply, statusCode: number, message: string, code?: string): FastifyReply {
   return reply.code(statusCode).send({
@@ -236,9 +236,9 @@ function toStatus(record: DeploymentConfigAdmin | null) {
   }
 }
 
-function oidcOf(record: DeploymentConfigAdmin | null, issuer: string, upstream?: string): AdminOidcConfig | null {
+function oidcOf(record: DeploymentConfigAdmin | null, issuer: string, upstream?: string): SetupOidcConfig | null {
   const auth = record?.values.auth
-  // Logto emits the `roles` scope into the ID token. Tenant Admin therefore
+  // Logto emits the `roles` scope into the ID token. Setup Server therefore
   // validates that token against the browser application's client id. The CP
   // continues to validate API access tokens against auth.audience separately.
   return auth?.mode === 'oidc'
@@ -246,7 +246,7 @@ function oidcOf(record: DeploymentConfigAdmin | null, issuer: string, upstream?:
     : null
 }
 
-function authFailure(reply: FastifyReply, error: TenantAdminAuthError): FastifyReply {
+function authFailure(reply: FastifyReply, error: SetupAuthError): FastifyReply {
   return problem(reply, error.statusCode, error.message, error.code)
 }
 
@@ -321,7 +321,7 @@ function slackProviderAppConfig(services: ServiceTopology): ProviderAppConfig {
 
 function logtoSetup(
   record: DeploymentConfigRuntime,
-  tenantAdminUrl: string,
+  setupUrl: string,
   services: ServiceTopology,
   endpoint: string
 ): ResolvedLogtoSetup | null {
@@ -344,7 +344,7 @@ function logtoSetup(
   const slackSecret = record.secrets['slack.clientSecret']
   const applicationId = auth.mode === 'oidc' ? auth.browserClient.appId : undefined
   const webOrigin = new URL(services.web).origin
-  const adminOrigin = new URL(tenantAdminUrl).origin
+  const setupOrigin = new URL(setupUrl).origin
   return {
     endpoint: resolvedEndpoint,
     apiResource: browser.apiResource,
@@ -352,7 +352,7 @@ function logtoSetup(
     desired: {
       ...(applicationId ? { applicationId } : {}),
       applicationName: browser.applicationName,
-      redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
+      redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(setupOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
       socialProviders: [...browser.socialProviders],
       ...(logto.githubConnector && githubSecret
@@ -385,16 +385,13 @@ function logtoSetup(
 }
 
 /** Build the thin UI/API over the shared typed deployment-config service. */
-export function buildTenantAdminServer(
-  deps: TenantAdminServerDeps,
-  options: TenantAdminServerOptions = {}
-): FastifyInstance {
+export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false, ...options })
   const fetchImpl = deps.fetch ?? fetch
   const auditFeishuAppSetup = deps.auditFeishuAppSetup ?? createFeishuAppSetupAuditor(fetchImpl)
   const slackConfigApi = deps.slackConfigApi ?? createSlackConfigApi({ fetch: fetchImpl })
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
-  const authenticator = new TenantAdminAuthenticator(
+  const authenticator = new SetupAuthenticator(
     { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer, logtoManagementEndpoint) },
     deps.verifyOidcToken
   )
@@ -572,9 +569,9 @@ export function buildTenantAdminServer(
       return requireLocal(request, reply)
     }
     try {
-      request.tenantAdminPrincipal = await authenticator.authenticate(request.headers.authorization)
+      request.setupPrincipal = await authenticator.authenticate(request.headers.authorization)
     } catch (error) {
-      if (!(error instanceof TenantAdminAuthError)) throw error
+      if (!(error instanceof SetupAuthError)) throw error
       void authFailure(reply, error)
     }
   }
@@ -599,13 +596,13 @@ export function buildTenantAdminServer(
         error.code === 'LOGTO_UNAVAILABLE' ? 502 : error.code === 'SOCIAL_CONNECTOR_UNSUPPORTED' ? 400 : 409
       return problem(reply, status, error.message, error.code)
     }
-    request.log.error({ err: error }, 'tenant-admin request failed')
+    request.log.error({ err: error }, 'setup-server request failed')
     return problem(reply, 500, 'internal server error')
   })
 
   app.get('/livez', async () => ({ status: 'ok' }))
-  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(TENANT_ADMIN_HTML))
-  app.get('/auth/callback', async (_request, reply) => reply.type('text/html; charset=utf-8').send(TENANT_ADMIN_HTML))
+  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(SETUP_HTML))
+  app.get('/auth/callback', async (_request, reply) => reply.type('text/html; charset=utf-8').send(SETUP_HTML))
 
   // Public browser bootstrap data only; these values are already published to
   // the normal console. No deployment secrets or management credentials leave.
@@ -1423,7 +1420,7 @@ export function buildTenantAdminServer(
             status: 'fail',
             message: adminRole.exists
               ? 'A role named ADMIN exists, but it is not a non-default User role.'
-              : 'The exact global User role ADMIN does not exist; the first Tenant Admin sign-in will create it.',
+              : 'The exact global User role ADMIN does not exist; the first administrator sign-in through Setup will create it.',
             diff: [
               {
                 field: 'ADMIN role',
@@ -1516,7 +1513,7 @@ export function buildTenantAdminServer(
     return report()
   })
 
-  // Local-only first-admin assignment. The Tenant Admin page calls this
+  // Local-only first-admin assignment. The Setup page calls this
   // automatically after the first OIDC sign-in. It verifies a real identity
   // without the role, then the Management API creates the exact global User
   // role ADMIN (if absent) and assigns that operator. Every ordinary config
@@ -1540,11 +1537,11 @@ export function buildTenantAdminServer(
         return problem(reply, 409, 'the Logto Management API secret is not configured')
       }
 
-      let principal: TenantAdminPrincipal
+      let principal: SetupPrincipal
       try {
         principal = await authenticator.authenticate(request.headers.authorization, false)
       } catch (error) {
-        if (!(error instanceof TenantAdminAuthError)) throw error
+        if (!(error instanceof SetupAuthError)) throw error
         return authFailure(reply, error)
       }
 
@@ -1571,15 +1568,15 @@ export function buildTenantAdminServer(
   return app
 }
 
-/** Run the Tenant Admin HTTP server. */
-export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const config = loadTenantAdminProcessConfig(env)
+/** Run the Setup Server. */
+export async function serveSetupServer(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const config = loadSetupServerProcessConfig(env)
   const host = config.HOST
   const port = config.PORT
-  const publicUrl = env.TENANT_ADMIN_URL ?? `http://localhost:${port}`
+  const publicUrl = env.SETUP_SERVER_URL ?? `http://localhost:${port}`
   const deploymentEnvironment = loadDeploymentEnvironment(env)
-  if (!isLoopbackHostname(host) && !config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY) {
-    throw new Error('Tenant Admin may bind outside loopback only behind an isolated local port forward')
+  if (!isLoopbackHostname(host) && !config.SETUP_SERVER_ALLOW_CONTAINER_PROXY) {
+    throw new Error('Setup Server may bind outside loopback only behind an isolated local port forward')
   }
   const handle = openDeploymentConfigStore({
     databaseUrl: config.DATABASE_URL,
@@ -1593,11 +1590,11 @@ export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Pr
     ...(config.VAULT_TOKEN ? { VAULT_TOKEN: config.VAULT_TOKEN } : {}),
     ...(config.VAULT_JWT_ROLE ? { VAULT_JWT_ROLE: config.VAULT_JWT_ROLE } : {})
   })
-  const app = buildTenantAdminServer(
+  const app = buildSetupServer(
     {
       store: handle.store,
       publicUrl,
-      allowContainerLoopbackProxy: config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY,
+      allowContainerLoopbackProxy: config.SETUP_SERVER_ALLOW_CONTAINER_PROXY,
       localAuthBootstrap: {
         issuer: deploymentEnvironment.issuer,
         managementEndpoint: deploymentEnvironment.managementEndpoint,
@@ -1609,7 +1606,7 @@ export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Pr
   )
   try {
     await app.listen({ host, port })
-    app.log.info(`Tenant Admin listening at ${publicUrl}`)
+    app.log.info(`Setup Server listening at ${publicUrl}`)
     await new Promise<void>((resolve) => {
       const stop = () => resolve()
       process.once('SIGINT', stop)

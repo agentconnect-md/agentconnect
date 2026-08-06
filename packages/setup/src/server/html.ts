@@ -1,5 +1,5 @@
 /** One deliberately small, dependency-free deployment administration page. */
-export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
+export const SETUP_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -51,16 +51,16 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     #message { white-space: pre-wrap; padding: 10px 0; min-height: 1.5em; }
     .error { color: #c33; } .ok { color: #198754; } .warn { color: #a66b00; }
     code { overflow-wrap: anywhere; }
-    .admin-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 32px; align-items: start; }
-    .admin-nav { position: sticky; top: 24px; display: grid; gap: 3px; padding: 10px; border: 1px solid #8886; border-radius: 8px; background: Canvas; }
-    .admin-nav a { padding: 7px 9px; border-radius: 5px; color: inherit; text-decoration: none; white-space: nowrap; }
-    .admin-nav a:hover { background: #8882; }
-    .admin-section { scroll-margin-top: 24px; }
+    .setup-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 32px; align-items: start; }
+    .setup-nav { position: sticky; top: 24px; display: grid; gap: 3px; padding: 10px; border: 1px solid #8886; border-radius: 8px; background: Canvas; }
+    .setup-nav a { padding: 7px 9px; border-radius: 5px; color: inherit; text-decoration: none; white-space: nowrap; }
+    .setup-nav a:hover { background: #8882; }
+    .setup-section { scroll-margin-top: 24px; }
     details.environment { margin: 0 0 24px; } details.environment summary { cursor: pointer; font-weight: 600; }
     @media (max-width: 760px) {
       body { margin-top: 24px; }
-      .admin-layout { grid-template-columns: 1fr; gap: 18px; }
-      .admin-nav { position: static; display: flex; overflow-x: auto; }
+      .setup-layout { grid-template-columns: 1fr; gap: 18px; }
+      .setup-nav { position: static; display: flex; overflow-x: auto; }
       .credentials { grid-template-columns: 1fr; gap: 2px; }
       .credentials dd { margin-bottom: 8px; }
       .diff-row { grid-template-columns: 1fr; }
@@ -74,7 +74,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 </head>
 <body>
   <section id="access">
-    <h1>AgentConnect Tenant Admin</h1>
+    <h1>AgentConnect Setup</h1>
     <p id="access-message" class="muted" aria-live="polite">Checking Logto sign-in…</p>
     <div class="row">
       <button id="login" hidden>Sign in with Logto</button>
@@ -133,9 +133,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     </section>
   </section>
 
-  <main id="admin" hidden>
-    <div class="admin-layout">
-    <nav class="admin-nav" aria-label="Deployment settings">
+  <main id="setup" hidden>
+    <div class="setup-layout">
+    <nav class="setup-nav" aria-label="Deployment settings">
       <a href="#startup-section">Startup</a>
       <a href="#logto-section">Logto</a>
       <a href="#github-section">GitHub</a>
@@ -145,7 +145,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       <a href="#lark-section">Lark</a>
       <a href="#options-section">Options</a>
     </nav>
-    <div class="admin-content">
+    <div class="setup-content">
     <h1>AgentConnect deployment settings</h1>
     <p class="muted">Saved settings take effect after the stack is restarted.</p>
     <div class="row">
@@ -154,15 +154,15 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     <div id="message" aria-live="polite"></div>
 
     <section id="editor" hidden>
-    <details id="startup-section" class="environment admin-section" open>
+    <details id="startup-section" class="environment setup-section" open>
       <summary>Startup environment</summary>
       <p class="notice">Public service URLs come from <code>.env</code>. Provider callbacks below are derived from these values.</p>
       <pre id="startup-environment"></pre>
     </details>
 
-    <section id="logto-section" class="admin-section" aria-labelledby="logto-heading">
+    <section id="logto-section" class="setup-section" aria-labelledby="logto-heading">
       <div class="section-head">
-        <div><h2 id="logto-heading">Logto</h2><p class="muted">Authentication and Tenant Admin access.</p></div>
+        <div><h2 id="logto-heading">Logto</h2><p class="muted">Authentication and administrator access.</p></div>
         <span id="logto-match" class="badge">Not checked</span>
       </div>
       <div class="panel">
@@ -196,7 +196,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
     <h2>Providers</h2>
     <div class="provider-stack">
-      <section id="github-section" class="panel admin-section" aria-labelledby="github-heading">
+      <section id="github-section" class="panel setup-section" aria-labelledby="github-heading">
         <div class="provider-head">
           <div><h3 id="github-heading">GitHub</h3><p class="muted">Repository integration and optional Logto sign-in.</p></div>
           <span id="github-match" class="badge">Not configured</span>
@@ -241,7 +241,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         </div>
       </section>
 
-      <section id="slack-section" class="panel admin-section" aria-labelledby="slack-heading">
+      <section id="slack-section" class="panel setup-section" aria-labelledby="slack-heading">
         <div class="provider-head">
           <div><h3 id="slack-heading">Slack</h3><p class="muted">One App for workspace integration and Logto sign-in.</p></div>
           <span id="slack-match" class="badge">Not configured</span>
@@ -276,7 +276,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         </div>
       </section>
 
-      <section id="google-section" class="panel admin-section" aria-labelledby="google-heading">
+      <section id="google-section" class="panel setup-section" aria-labelledby="google-heading">
         <div class="provider-head">
           <div><h3 id="google-heading">Google</h3><p class="muted">OAuth client used by the Logto Google connector.</p></div>
           <span id="google-match" class="badge">Not configured</span>
@@ -289,7 +289,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <div id="google-drift" class="notice" hidden></div>
         <p>Authorized JavaScript origin:</p><ul id="google-origins" class="uris"></ul>
         <p>Authorized redirect URIs:</p><ul id="google-redirects" class="uris"></ul>
-        <p class="muted">Google does not expose OAuth client redirect settings through an API. Copy these required values into Google Auth Platform; Tenant Admin can verify only the Logto connector.</p>
+        <p class="muted">Google does not expose OAuth client redirect settings through an API. Copy these required values into Google Auth Platform; Setup can verify only the Logto connector.</p>
         <div class="row"><a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google settings</a></div>
         <div id="google-config-controls" class="subsection">
           <label class="field">Client ID<input id="google-id" autocomplete="off"></label>
@@ -298,7 +298,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <div class="row"><button id="save-google">Save Google client</button><button id="cancel-google-configuration" hidden>Cancel</button><button id="check-google" hidden>Check match</button><button id="clear-google" class="danger" hidden>Clear configuration</button></div>
       </section>
 
-      <section id="feishu-section" class="panel admin-section" aria-labelledby="feishu-heading">
+      <section id="feishu-section" class="panel setup-section" aria-labelledby="feishu-heading">
         <div class="provider-head">
           <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Matches the Logto OAuth 2.0 connector named Feishu, OAuth callbacks, and published App setup.</p></div>
           <span id="feishu-match" class="badge">Not configured</span>
@@ -324,7 +324,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         </div>
       </section>
 
-      <section id="lark-section" class="panel admin-section" aria-labelledby="lark-heading">
+      <section id="lark-section" class="panel setup-section" aria-labelledby="lark-heading">
         <div class="provider-head">
           <div><h3 id="lark-heading">Lark</h3><p class="muted">Matches the Logto OAuth 2.0 connector named Lark, OAuth callbacks, and published App setup.</p></div>
           <span id="lark-match" class="badge">Not configured</span>
@@ -351,7 +351,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       </section>
     </div>
 
-    <section id="options-section" class="admin-section">
+    <section id="options-section" class="setup-section">
       <h2>Deployment options</h2>
       <div class="panel">
         <label class="field"><span><input id="preset-agents-enabled" type="checkbox"> Enable preset Agents</span></label>
@@ -365,15 +365,15 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
   <script>
     const api = '/api/v1';
-    const tokenKey = 'agentconnect.tenant-admin.token';
-    const verifierKey = 'agentconnect.tenant-admin.pkce';
-    const stateKey = 'agentconnect.tenant-admin.state';
+    const tokenKey = 'agentconnect.setup.token';
+    const verifierKey = 'agentconnect.setup.pkce';
+    const stateKey = 'agentconnect.setup.state';
     let currentRevision = 0;
     let currentStatus = null;
     let bootstrapInfo = null;
     const el = (id) => document.getElementById(id);
     const message = (text, error = false) => {
-      const target = el('admin').hidden ? el('access-message') : el('message');
+      const target = el('setup').hidden ? el('access-message') : el('message');
       target.textContent = text;
       target.className = error ? 'error' : 'ok';
     };
@@ -1235,7 +1235,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     async function refreshDeploymentConfig() {
       const status = await json(await fetch(api + '/deployment-config', { headers: bearer() }));
       el('access').hidden = true;
-      el('admin').hidden = false;
+      el('setup').hidden = false;
       el('editor').hidden = false;
       currentRevision = status.revision;
       renderApps(status);
@@ -1284,7 +1284,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       if (githubResult) history.replaceState({}, '', '/');
       const hasToken = Boolean(sessionStorage.getItem(tokenKey));
       el('access').hidden = false;
-      el('admin').hidden = true;
+      el('setup').hidden = true;
       el('login').hidden = true;
       el('open-logto').hidden = true;
       el('show-bootstrap').hidden = true;
