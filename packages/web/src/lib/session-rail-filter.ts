@@ -83,23 +83,33 @@ export function railAgentFilterQuery(filter: RailAgentFilter): { agentId?: strin
 }
 
 /**
- * Whether a SEEDED filter's answer collapsed to the conversation already on screen,
- * so the rail should re-ask its question unfiltered.
+ * The identity a widen decision is latched to — the seeded agents, or `''` when
+ * there is nothing to widen (an unseeded filter, or one the reader TOUCHED, whose
+ * narrow answer is a real answer to their own question).
  *
- * The rail hides itself when it has fewer than two rows to offer — and hiding takes
- * the chips and the agent picker with it, so a seed that narrowed the list that far
- * leaves the reader an empty gutter with no way to widen it. Multiple agents are the
- * usual route in: repeated `agentId` asks the CP for the conversations those agents
- * SHARE, and a thread they have only ever worked in together once answers with
- * exactly that thread. A single agent lands in the same place whenever the open
- * session is the only one it owns.
- *
- * A TOUCHED filter is never widened: a narrow result is a real answer to the
- * reader's own question, and broadening it would silently overrule them. `loading`
- * defers the decision — an in-flight page looks identical to a collapsed one from
- * here (no rows, zero total), and widening on that would fire a request per load.
+ * Latching to the seed rather than to a boolean is what keeps the widened rail
+ * stable: widening replaces the rail's rows, so the collapse that justified it
+ * stops being observable the moment it takes effect. Keyed by the seed, the
+ * decision survives its own success and is reconsidered only when the route seeds
+ * a different set of agents.
  */
-export function railSeedCollapsed(filter: RailAgentFilter, rows: number, total: number, loading: boolean): boolean {
-  if (filter.touched || filter.agentIds.length === 0 || loading) return false
-  return Math.max(total, rows) < 2
+export function railSeedKey(filter: RailAgentFilter): string {
+  return filter.touched || filter.agentIds.length === 0 ? '' : filter.agentIds.join(',')
+}
+
+/**
+ * Whether the rail's own "I would draw nothing" verdict should widen this seed.
+ *
+ * The verdict has to come from the rail: it hides on fewer than two rows, but only
+ * after merging the seeded page with globally hydrated pins and the open row, and
+ * only when there is no lineage to show. A one-row page with a parent or a child
+ * still renders a Related tree and the picker — deciding from the page count alone
+ * would widen that to the org-wide list and throw the seeded chips away with it.
+ *
+ * `seedLoading` defers the call: an in-flight page reaches the rail as no rows and
+ * zero total, which is indistinguishable from a collapsed one, and widening there
+ * would fire the unfiltered request on every single load.
+ */
+export function railSeedShouldWiden(seedKey: string, railWouldHide: boolean, seedLoading: boolean): boolean {
+  return seedKey !== '' && railWouldHide && !seedLoading
 }

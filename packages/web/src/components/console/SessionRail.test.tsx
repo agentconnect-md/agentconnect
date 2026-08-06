@@ -26,7 +26,7 @@ vi.mock('next/link', () => ({
   default: ({ children, href }: { children: ReactElement; href: string }) => <a href={href}>{children}</a>
 }))
 
-import { SessionRail, SessionRailSlot } from './SessionRail'
+import { SessionRail, SessionRailSlot, railWouldHide } from './SessionRail'
 import type { Session } from '@/lib/data'
 import type { SessionRelationDto } from '@/lib/api'
 
@@ -152,5 +152,37 @@ describe('SessionRail column', () => {
 
     expect(markup).toContain('href="/sessions/a?view=flat"')
     expect(markup).toContain('href="/sessions?view=flat&amp;agent=agent-1"')
+  })
+})
+
+// The verdict the rail reports upward so a caller can widen a SEEDED filter that
+// collapsed (see railSeedShouldWiden). Pinned here as a unit because a caller that
+// re-derived it from its own fetched page would miss the two inputs the page does
+// not carry — lineage, and pins hydrated from outside it — and would widen a rail
+// that is in fact perfectly serviceable, throwing the seeded chips away with it.
+describe('railWouldHide', () => {
+  const collapsed = { total: 1, rowCount: 1, hasFamily: false, filterTouched: false }
+
+  it('hides a rail holding only the session already on screen', () => {
+    expect(railWouldHide(collapsed)).toBe(true)
+  })
+
+  it('keeps a one-row rail that has lineage to draw', () => {
+    // The Related tree is the rail's content here, and the picker rides with it.
+    expect(railWouldHide({ ...collapsed, hasFamily: true })).toBe(false)
+  })
+
+  it('keeps a rail whose merged rows outnumber the open session', () => {
+    // `rowCount` is the merged set, so an off-page pin lands here even when the
+    // filtered page itself came back with a single conversation.
+    expect(railWouldHide({ ...collapsed, rowCount: 2 })).toBe(false)
+  })
+
+  it('keeps a rail whose filtered list is longer than its first page', () => {
+    expect(railWouldHide({ ...collapsed, total: 86 })).toBe(false)
+  })
+
+  it('keeps the filter control reachable once the reader has set one', () => {
+    expect(railWouldHide({ ...collapsed, filterTouched: true })).toBe(false)
   })
 })
