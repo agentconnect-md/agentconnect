@@ -203,6 +203,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <dt>App ID</dt><dd class="value-line"><code id="github-app-id">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>App slug</dt><dd class="value-line"><code id="github-app-slug">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Client ID</dt><dd class="value-line"><code id="github-client-id">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
+          <dt>Webhook delivery</dt><dd class="value-line"><code id="github-webhook-enabled">Not configured</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Logto connector ID</dt><dd class="value-line"><code id="github-logto-connector-id">Not enabled</code><button class="edit-configuration" data-provider="github">Edit</button></dd>
           <dt>Client secret</dt><dd class="secret-line"><span id="github-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.clientSecret" data-secret-display="github-client-secret-display">Edit</button></dd>
           <dt>Private key</dt><dd class="secret-line"><span id="github-private-key-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="github.privateKeyB64" data-secret-display="github-private-key-display">Edit</button></dd>
@@ -216,6 +217,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <label class="field">App ID<input id="github-edit-app-id" inputmode="numeric" autocomplete="off"></label>
           <label class="field">App slug<input id="github-edit-slug" autocomplete="off"></label>
           <label class="field">Client ID<input id="github-edit-client-id" autocomplete="off"></label>
+          <label><input id="github-edit-webhook-enabled" type="checkbox"> Enable Relay webhook delivery</label>
           <label id="github-edit-connector-id-field" class="field" hidden>Logto connector ID<input id="github-edit-connector-id" autocomplete="off"></label>
           <label class="field">New client secret<input id="github-edit-client-secret" type="password" autocomplete="new-password" placeholder="Required when App or Client ID changes"></label>
           <label class="field">New private key (base64)<textarea id="github-edit-private-key" autocomplete="off" placeholder="Required when App ID changes"></textarea></label>
@@ -590,10 +592,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
       const github = values.github;
       const webhookStored = byKey.get('github.webhookSecret') && byKey.get('github.webhookSecret').configured;
-      const webhookInactive = github && github.configuredUrls && github.configuredUrls.webhookActive === false;
+      const webhookInactive = github && github.webhookEnabled === false;
       text('github-app-id', github && github.appId);
       text('github-app-slug', github && github.slug);
       text('github-client-id', github && github.clientId);
+      text('github-webhook-enabled', github && (github.webhookEnabled === false ? 'Disabled' : 'Enabled'));
       text('github-logto-connector-id', values.logto && values.logto.githubConnector && values.logto.githubConnector.connectorId);
       el('github-edit-controls').hidden = true;
       showIdentityEditors('github', Boolean(github));
@@ -603,7 +606,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       secretText('github-logto-secret-display', byKey, 'logto.githubConnectorClientSecret', Boolean(values.logto && values.logto.githubConnector));
       el('github-status').textContent = github
         ? github.slug + ' is configured. Webhook secret: ' + (webhookStored ? 'stored' : webhookInactive ? 'not required yet' : 'missing') + '.' +
-          (webhookInactive ? ' Webhook delivery is not registered until HTTPS ingress is configured.' : '')
+          (webhookInactive ? ' Relay webhook delivery is disabled.' : '')
         : 'Creates the complete App used for repository installation, webhooks, and optional GitHub sign-in.';
       const githubSubmitted = Boolean(github && github.configuredUrls);
       const githubDrift = github
@@ -752,6 +755,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         el('github-edit-app-id').value = String(github.appId);
         el('github-edit-slug').value = github.slug;
         el('github-edit-client-id').value = github.clientId || '';
+        el('github-edit-webhook-enabled').checked = github.webhookEnabled !== false;
         const githubConnector = values.logto && values.logto.githubConnector;
         el('github-edit-connector-id').value = githubConnector ? githubConnector.connectorId : '';
         el('github-edit-connector-id-field').hidden = !githubConnector;
@@ -853,15 +857,18 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const clientId = requiredInput('github-edit-client-id', 'the GitHub Client ID');
       const appChanged = appId !== previous.appId;
       const clientChanged = clientId !== previous.clientId;
+      const webhookEnabled = el('github-edit-webhook-enabled').checked;
+      const webhookEnabling = webhookEnabled && previous.webhookEnabled === false;
       const connectorReused = githubConnectorUsesDeployment(values);
       const connectorId = connectorReused ? requiredInput('github-edit-connector-id', 'the Logto connector ID') : null;
       const clientSecret = el('github-edit-client-secret').value;
       const privateKey = el('github-edit-private-key').value.trim();
       const webhookSecret = el('github-edit-webhook-secret').value;
       const connectorSecret = el('github-edit-logto-secret').value;
+      const webhookSecretStored = currentStatus.secrets.some((secret) => secret.key === 'github.webhookSecret' && secret.configured);
       if ((appChanged || clientChanged) && !clientSecret) throw new Error('Enter the new GitHub client secret');
       if (appChanged && !privateKey) throw new Error('Enter the new GitHub private key as base64');
-      if (appChanged && previous.configuredUrls?.webhookActive !== false && !webhookSecret) throw new Error('Enter the new GitHub webhook secret');
+      if (webhookEnabled && ((appChanged && !webhookSecret) || (webhookEnabling && !webhookSecret && !webhookSecretStored))) throw new Error('Enter the new GitHub webhook secret');
       if (connectorReused && (appChanged || clientChanged) && !connectorSecret) throw new Error('Enter the new Logto connector client secret');
       const secrets = {};
       if (clientSecret) secrets['github.clientSecret'] = clientSecret;
@@ -874,7 +881,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       await replaceConfiguration(
         {
           ...values,
-          github: { ...previous, appId, slug, clientId, ...(appChanged ? { configuredUrls: undefined } : {}) },
+          github: { ...previous, appId, slug, clientId, webhookEnabled, ...(appChanged ? { configuredUrls: undefined } : {}) },
           ...(nextLogto ? { logto: nextLogto } : {})
         },
         Object.keys(secrets).length ? secrets : undefined,

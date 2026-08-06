@@ -47,6 +47,7 @@ export function githubDeploymentPut(
         appId,
         slug: credentials.slug,
         clientId: credentials.clientId,
+        webhookEnabled: options.configuredUrls?.webhookActive ?? true,
         ...(options.configuredUrls ? { configuredUrls: options.configuredUrls } : {})
       },
       ...(connectLogto
