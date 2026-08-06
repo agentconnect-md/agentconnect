@@ -78,6 +78,7 @@ export interface LogtoGithubConnectorCredentials {
 export interface LocalAuthLogtoBootstrap {
   managementAppId?: string
   managementAppSecret?: string
+  managementResource?: string
   socialProvider?: 'github' | 'google' | 'slack'
 }
 
@@ -94,7 +95,8 @@ export function localAuthLogtoPut(
       ...current.values,
       logto: {
         managementAppId,
-        managementResource: existing?.managementResource ?? 'https://default.logto.app/api',
+        managementResource:
+          bootstrap.managementResource ?? existing?.managementResource ?? 'https://default.logto.app/api',
         browser:
           existing?.browser ??
           ({

@@ -90,6 +90,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <p class="muted">Enter the one-time Logto Management API credential. It is sealed in the deployment database and verified before continuing.</p>
         <label class="field">Logto M2M App ID<input id="logto-app-id" autocomplete="off"></label>
         <label class="field">Logto M2M App Secret<input id="logto-app-secret" type="password" autocomplete="new-password"></label>
+        <label class="field">Management API resource<input id="logto-management-api-resource" type="url" autocomplete="off"></label>
+        <p class="muted">Logto Cloud uses <code>https://&lt;tenant-id&gt;.logto.app/api</code>. Keep <code>https://default.logto.app/api</code> for Logto OSS.</p>
         <button id="bootstrap-logto-submit">Save Logto and continue</button>
       </div>
       <div id="bootstrap-provider-step" hidden>
@@ -971,6 +973,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       renderUriList('bootstrap-google-origins', bootstrapInfo.google.javascriptOrigins);
       renderUriList('bootstrap-google-redirects', bootstrapInfo.google.redirectUris);
       renderUriList('bootstrap-slack-redirects', [bootstrapInfo.slackLoginRedirectUrl]);
+      el('logto-management-api-resource').value = bootstrapInfo.logtoManagementResource;
       el('bootstrap-github-submit').disabled = !bootstrapInfo.githubAvailable;
       if (!bootstrapInfo.githubAvailable) {
         el('bootstrap-github-note').textContent = 'GitHub App creation needs valid saved Web, API, and ingress URLs.';
@@ -1025,7 +1028,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           managementAppId: el('logto-app-id').value,
-          managementAppSecret: el('logto-app-secret').value
+          managementAppSecret: el('logto-app-secret').value,
+          managementResource: el('logto-management-api-resource').value
         })
       }));
       el('logto-app-secret').value = '';

@@ -75,9 +75,15 @@ const PutDeploymentConfigBody = z.strictObject({
   secrets: DeploymentSecretPatchSchema.optional()
 })
 
+const ManagementApiResourceSchema = z
+  .string()
+  .trim()
+  .pipe(DeploymentConfigValuesV1Schema.shape.logto.unwrap().shape.managementResource)
+
 const BootstrapLogtoBody = z.strictObject({
   managementAppId: z.string().trim().min(1).max(200),
   managementAppSecret: z.string().min(1).max(10_000),
+  managementResource: ManagementApiResourceSchema.optional(),
   socialProvider: z.enum(['github', 'google', 'slack']).optional()
 })
 
@@ -666,6 +672,7 @@ export function buildTenantAdminServer(
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
+      logtoManagementResource: current?.values.logto?.managementResource ?? 'https://default.logto.app/api',
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
       githubAvailable,
       githubWebhookActive,
@@ -708,6 +715,7 @@ export function buildTenantAdminServer(
         {
           managementAppId: parsed.data.managementAppId,
           managementAppSecret: parsed.data.managementAppSecret,
+          managementResource: parsed.data.managementResource,
           socialProvider: parsed.data.socialProvider
         }
       )
