@@ -852,6 +852,14 @@ workspace files and cannot be undone. Use an explicit `Replace workspace` save l
 for that destructive case. A working-subdirectory or access-only edit preserves the
 current checkout.
 
+The same Edit workspace dialog owns additional repository access for both GitHub and
+scratch workspaces: it lists current grants, adds another repository, and revokes an
+existing grant. The Workspace card and contextual authorization prompts may keep
+direct shortcuts for discoverability, but those shortcuts open this shared dialog at
+the additional-repository step and return to the calling flow after authorization.
+There must not be a second standalone repository-management surface with different
+options or vocabulary.
+
 GitHub workspace settings expose one boolean named `Worktree`. When enabled, each
 logical session runs in its own stable Git worktree under the Agent directory, so one
 Agent can work on several sessions concurrently without sharing branch or file state.
