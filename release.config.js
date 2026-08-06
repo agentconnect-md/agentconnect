@@ -30,7 +30,7 @@ export default {
     ],
     [
       // Publish ONLY the daemon to npm, as the self-contained build bundle.
-      // The CP/web ship as Docker images through build.yaml, not npm packages.
+      // The CP/web/setup ship as Docker images through build.yaml, not npm packages.
       // tsdown inlines every dependency into dist/, so the published manifest
       // is stripped to zero runtime deps before publish.
       // pnpm (not @semantic-release/npm → npm) because this is a pnpm workspace:
@@ -74,16 +74,6 @@ export default {
         prepareCmd: 'sh scripts/publish-cli-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version}" prepare',
         publishCmd:
           'sh scripts/publish-cli-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
-      }
-    ],
-    [
-      // Publish the self-contained Tenant Admin package independently so a
-      // deployment-only change does not force a daemon or host-CLI release.
-      '@semantic-release/exec',
-      {
-        prepareCmd: 'sh scripts/publish-setup-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version}" prepare',
-        publishCmd:
-          'sh scripts/publish-setup-if-changed.sh "${lastRelease.gitTag}" "${nextRelease.version.includes("-") ? "rc" : "latest"}"'
       }
     ],
     // Expose the published tag to release.yaml so image publication can run

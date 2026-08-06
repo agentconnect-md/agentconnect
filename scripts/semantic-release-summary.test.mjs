@@ -14,11 +14,6 @@ test('release summary writes commit-derived notes literally', async (t) => {
   )
   assert.ok(daemonPublisher)
   assert.equal(daemonPublisher[1].successCmd, undefined)
-  const setupPublisher = releaseConfig.plugins.find(
-    (plugin) => Array.isArray(plugin) && plugin[1]?.prepareCmd?.includes('publish-setup-if-changed')
-  )
-  assert.ok(setupPublisher)
-
   const dir = await mkdtemp(join(tmpdir(), 'agentconnect-release-summary-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
 
