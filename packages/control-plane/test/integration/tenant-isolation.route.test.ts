@@ -1095,11 +1095,20 @@ describe('tenant isolation — organization knowledge and managed skills over th
     })
     expect(patch.statusCode).toBe(404)
     const archive = await app.app.inject({
-      method: 'PUT',
+      method: 'POST',
       url: `${ORG}/knowledge/${foreignKnowledgeId}/archive`,
       payload: { archived: true }
     })
     expect(archive.statusCode).toBe(404)
+    // Positive control: the SAME verb and shape on the caller's own entry must
+    // reach the handler. Without it a 404 from a mistyped route would read as a
+    // passing fence assertion.
+    const ownArchive = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/knowledge/${ownKnowledgeId}/archive`,
+      payload: { archived: true }
+    })
+    expect(ownArchive.statusCode).toBe(200)
     await foreignKnowledgeUnmodified()
   })
 
@@ -1113,7 +1122,7 @@ describe('tenant isolation — organization knowledge and managed skills over th
         .statusCode
     ).toBe(404)
     const archive = await app.app.inject({
-      method: 'PUT',
+      method: 'POST',
       url: `${ORG}/managed-skills/${foreignManagedSkillId}/archive`,
       payload: { archived: true }
     })
