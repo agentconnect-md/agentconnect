@@ -354,8 +354,6 @@ export function deploymentSecretsRequiringRefresh(
   const githubClientChanged =
     next.github !== null && next.github.clientId !== null && previous?.github?.clientId !== next.github.clientId
   const githubWebhookEnabled = next.github !== null && next.github.webhookEnabled !== false
-  const githubWebhookActivated =
-    next.github !== null && githubWebhookEnabled && previous?.github?.webhookEnabled === false
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
@@ -369,9 +367,7 @@ export function deploymentSecretsRequiringRefresh(
     next.logto?.googleConnector && previous?.logto?.googleConnector?.clientId !== next.logto.googleConnector.clientId
   return [
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
-    ...(next.github && githubWebhookEnabled && (githubAppChanged || githubWebhookActivated)
-      ? (['github.webhookSecret'] as const)
-      : []),
+    ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
