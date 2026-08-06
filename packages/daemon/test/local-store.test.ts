@@ -1666,8 +1666,8 @@ describe('LocalStore activation rendezvous (send-message-routing-rework.md §3.2
     // time; admitting both would strand a delivery that never persisted. The inbox row is
     // the only evidence that distinguishes them.
     const s = store()
-    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join(' ')
-    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join(' ')
+    const durable = ['slack', 'scope-1', 'ts-durable', 'agent-target'].join('\u0000')
+    const lost = ['slack', 'scope-1', 'ts-lost', 'agent-target'].join('\u0000')
     expect(s.attachActivationEnvelope(durable, ENVELOPE, 1000, 'delivery-durable').dispatch).toBe(true)
     expect(s.attachActivationEnvelope(lost, ENVELOPE, 1000, 'delivery-lost').dispatch).toBe(true)
     // Only the first one's turn actually reached the durable queue before the crash.

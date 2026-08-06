@@ -1731,9 +1731,11 @@ export default function SessionDetailView() {
     if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!)
     // The demo fixtures carry no conversation grouping, so stand in for it with
     // the channel — enough for the multi-agent filter to behave like the real one.
-    const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform} ${s.channel}`))
+    const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform}\0${s.channel}`))
     const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
-    return allSessions.filter((s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform} ${s.channel}`))
+    return allSessions.filter(
+      (s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform}\0${s.channel}`)
+    )
   }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
   // The open row as the rail sees it: its conversation and, where the resolver
   // has answered, that conversation's full membership. Both are identity the rail
