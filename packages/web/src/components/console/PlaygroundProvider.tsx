@@ -494,15 +494,29 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             lane({ kind: 'tool', text: ev.title || 'tool call', toolCallId: ev.toolCallId, toolStatus: ev.status })
           ]
         }
-        if (ev.kind === 'tool_update' && last?.kind === 'tool') {
-          return replaceAt(laneIndex, {
-            ...last,
-            toolStatus: ev.status,
-            ...(ev.title ? { text: ev.title } : {}),
-            observedAtMs
-          })
+        if (ev.kind === 'tool_update') {
+          // Address the update to ITS call, not the lane tail: ACP allows parallel
+          // tool calls, so the most recent tool step may belong to a different call.
+          // Same fences as the lane scan above — never cross a user message, a
+          // foreign turn, or the supersession boundary.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            if (step.kind === 'msg' && step.agentId === undefined) break
+            if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.turnId !== turnId) break
+            if (step.boundary) break
+            if (step.kind === 'tool' && step.toolCallId === ev.toolCallId) {
+              return replaceAt(i, {
+                ...step,
+                toolStatus: ev.status,
+                ...(ev.title ? { text: ev.title } : {}),
+                observedAtMs
+              })
+            }
+          }
+          return steps // no matching call in this lane (e.g. suppressed tool_call)
         }
-        return steps // tool_update: status-only, nothing to render for now
+        return steps
       })
     },
     [mutateSteps, participantName]
