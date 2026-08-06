@@ -53,10 +53,6 @@ interface RuntimeConfigResponse {
   schemaVersion: '1'
   revision: number | null
   config: null | {
-    apiUrl: string | null
-    relayUrl: string | null
-    webUrl: string | null
-    mcpUrl: string | null
     auth: null | {
       endpoint: string
       issuer: string
@@ -79,9 +75,6 @@ async function loadDeploymentEnv(): Promise<Record<string, string> | null> {
   if (body.schemaVersion !== '1' || body.config === null) return null
 
   const env: Record<string, string> = {}
-  if (body.config.apiUrl) env.CP_URL = body.config.apiUrl
-  if (body.config.relayUrl) env.RELAY_URL = body.config.relayUrl
-  if (body.config.mcpUrl) env.MCP_URL = body.config.mcpUrl
   if (body.config.auth) {
     env.LOGTO_ENDPOINT = body.config.auth.endpoint
     env.LOGTO_APP_ID = body.config.auth.appId
@@ -102,24 +95,17 @@ async function resolve(): Promise<Record<string, string>> {
   const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
   if (relayUrl) env.RELAY_URL = relayUrl
 
-  // The internal URL is deployment topology and therefore remains a bootstrap
-  // env value. The public settings themselves come from the CP's immutable
-  // startup snapshot. Cache the first attempt (including absence or failure)
-  // for this Web process so configuration never hot-reloads between requests;
-  // a restart applies it.
+  // CP_INTERNAL_URL is deployment topology and remains a bootstrap env value.
+  // The CP snapshot supplies only DB-owned auth state. Browser-facing service
+  // routes stay owned by this Web process because their public path can differ
+  // from the CP's daemon/control origin (for example apiHost /v1 rewrites to
+  // the CP's internal /api/v1 mount). Cache the first attempt, including absence
+  // or failure, so configuration never hot-reloads between requests.
   if (process.env.CP_INTERNAL_URL) {
     deploymentEnv ??= loadDeploymentEnv().catch(() => null)
     const persisted = await deploymentEnv
     if (persisted) {
-      for (const key of [
-        'LOGTO_ENDPOINT',
-        'LOGTO_APP_ID',
-        'LOGTO_API_RESOURCE',
-        'SOCIAL_PROVIDERS',
-        'CP_URL',
-        'RELAY_URL',
-        'MCP_URL'
-      ]) {
+      for (const key of ['LOGTO_ENDPOINT', 'LOGTO_APP_ID', 'LOGTO_API_RESOURCE', 'SOCIAL_PROVIDERS']) {
         delete env[key]
       }
       Object.assign(env, persisted)
