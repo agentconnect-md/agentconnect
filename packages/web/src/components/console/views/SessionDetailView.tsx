@@ -99,6 +99,7 @@ import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
   railSeedAgentIds,
+  railSeedCollapsed,
   seedRailAgentFilter,
   type RailAgentFilter
 } from '@/lib/session-rail-filter'
@@ -1665,11 +1666,26 @@ export default function SessionDetailView() {
   // grouped list or hide superseded sessions again.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
-  const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
-    MOCK_MODE || !railQuery ? null : activeOrg?.id,
-    railQuery ?? {},
+  const {
+    sessions: seededRailRows,
+    total: seededRailTotal,
+    isLoading: seededRailLoading
+  } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {}, { grouped: !flatView })
+  // A seed that narrowed the rail down to the conversation already on screen is
+  // re-asked unfiltered rather than left to hide the rail — and the picker that
+  // could widen it — behind SessionRail's `empty`. See railSeedCollapsed.
+  const railSeedCollapsedNow =
+    !MOCK_MODE && railSeedCollapsed(railFilter, seededRailRows.length, seededRailTotal, seededRailLoading)
+  const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
+    railSeedCollapsedNow ? activeOrg?.id : null,
+    {},
     { grouped: !flatView }
   )
+  const railSessionRows = railSeedCollapsedNow ? widenedRailRows : seededRailRows
+  const railSessionTotal = railSeedCollapsedNow ? widenedRailTotal : seededRailTotal
+  // The chips have to describe the list actually on screen — a widened rail is
+  // unfiltered, and leaving the seed's chips up would misname it.
+  const railDisplayAgentIds = railSeedCollapsedNow ? [] : railFilter.agentIds
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
@@ -3951,7 +3967,7 @@ export default function SessionDetailView() {
         // the roster resolver is not agent-filtered, so its members are complete.
         current={railCurrent ?? session}
         total={railSessionTotal}
-        agentIds={railFilter.agentIds}
+        agentIds={railDisplayAgentIds}
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}

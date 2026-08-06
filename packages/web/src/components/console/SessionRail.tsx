@@ -286,6 +286,12 @@ export function SessionRail({
   // This test is also true while the rail's page is still in flight, since `rows` is
   // the open session alone until it lands. Same answer either way: hold the column,
   // fill it when there is something to fill it with.
+  //
+  // A SEEDED filter that narrowed the list down to the open row never reaches this
+  // point already widened — the caller re-asks the question unfiltered rather than
+  // letting the rail hide itself along with the picker that could widen it (see
+  // `railSeedCollapsed`, lib/session-rail-filter.ts). So an `empty` here really is
+  // "there is nothing else to navigate to", which is what should draw nothing.
   const empty = Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched
 
   // ≤768px has no column to hold, so the list hangs off a shell-owned app-bar

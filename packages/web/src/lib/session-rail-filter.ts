@@ -81,3 +81,25 @@ export function railAgentFilterQuery(filter: RailAgentFilter): { agentId?: strin
   if (filter.agentIds.length > 0) return { agentId: [...filter.agentIds] }
   return filter.touched ? {} : null
 }
+
+/**
+ * Whether a SEEDED filter's answer collapsed to the conversation already on screen,
+ * so the rail should re-ask its question unfiltered.
+ *
+ * The rail hides itself when it has fewer than two rows to offer — and hiding takes
+ * the chips and the agent picker with it, so a seed that narrowed the list that far
+ * leaves the reader an empty gutter with no way to widen it. Multiple agents are the
+ * usual route in: repeated `agentId` asks the CP for the conversations those agents
+ * SHARE, and a thread they have only ever worked in together once answers with
+ * exactly that thread. A single agent lands in the same place whenever the open
+ * session is the only one it owns.
+ *
+ * A TOUCHED filter is never widened: a narrow result is a real answer to the
+ * reader's own question, and broadening it would silently overrule them. `loading`
+ * defers the decision — an in-flight page looks identical to a collapsed one from
+ * here (no rows, zero total), and widening on that would fire a request per load.
+ */
+export function railSeedCollapsed(filter: RailAgentFilter, rows: number, total: number, loading: boolean): boolean {
+  if (filter.touched || filter.agentIds.length === 0 || loading) return false
+  return Math.max(total, rows) < 2
+}

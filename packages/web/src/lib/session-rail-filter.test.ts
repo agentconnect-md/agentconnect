@@ -3,6 +3,7 @@ import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
   railSeedAgentIds,
+  railSeedCollapsed,
   seedRailAgentFilter
 } from './session-rail-filter'
 
@@ -113,5 +114,46 @@ describe('railAgentFilterQuery', () => {
     expect(railAgentFilterQuery({ agentIds: ['agent-c', 'agent-d'], touched: true })).toEqual({
       agentId: ['agent-c', 'agent-d']
     })
+  })
+})
+
+describe('railSeedCollapsed', () => {
+  const seeded = (agentIds: string[]) => ({ agentIds, touched: false })
+
+  it('widens a shared-conversation seed that answered with only the open thread', () => {
+    // The reported bug: a Slack thread two agents worked in together exactly once.
+    // Repeated `agentId` is an AND, so the CP answers with that one conversation —
+    // measured against a real org whose agents own 48 and 86 sessions apart, and
+    // 474 between everyone. The rail then had fewer than two rows and erased
+    // itself, taking the picker that could have widened it.
+    expect(railSeedCollapsed(seeded(['agent-a', 'agent-b']), 1, 1, false)).toBe(true)
+  })
+
+  it('widens a single-agent seed whose only session is the open one', () => {
+    expect(railSeedCollapsed(seeded(['agent-a']), 1, 1, false)).toBe(true)
+  })
+
+  it('leaves a seed that found other conversations alone', () => {
+    expect(railSeedCollapsed(seeded(['agent-a', 'agent-b']), 2, 2, false)).toBe(false)
+    // `total` is the CP's count for the whole filtered list, so a first page that
+    // fits in one row still speaks for the rest of it.
+    expect(railSeedCollapsed(seeded(['agent-a']), 1, 86, false)).toBe(false)
+  })
+
+  it('never overrules a filter the reader set, however narrow its answer', () => {
+    // Their question, their answer — widening it would silently discard the
+    // agents they just picked.
+    expect(railSeedCollapsed({ agentIds: ['agent-a', 'agent-b'], touched: true }, 1, 1, false)).toBe(false)
+    expect(railSeedCollapsed({ agentIds: [], touched: true }, 0, 0, false)).toBe(false)
+  })
+
+  it('waits for the seeded page instead of widening on an in-flight one', () => {
+    // Mid-flight is indistinguishable from collapsed here (no rows, zero total).
+    // Widening on it would fire the unfiltered request on every single load.
+    expect(railSeedCollapsed(seeded(['agent-a']), 0, 0, true)).toBe(false)
+  })
+
+  it('has nothing to widen before the conversation has seeded the filter', () => {
+    expect(railSeedCollapsed(EMPTY_RAIL_AGENT_FILTER, 0, 0, false)).toBe(false)
   })
 })
