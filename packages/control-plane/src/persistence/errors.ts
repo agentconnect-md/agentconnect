@@ -157,6 +157,21 @@ export class MemoryConnectionMissing extends Error {
 }
 
 /**
+ * Thrown by the org-fenced `CronRepo.upsert` when the client-minted `cronId`
+ * already names a row in ANOTHER organization (docs/designs/org-scoped-data-layer.md
+ * §3). Unlike the other fences this one refuses a TAKEOVER rather than a leak:
+ * the PUT is a create-or-edit, so without it the update branch would rewrite a
+ * foreign row — `orgId` included. Surfaces as the same 404 as an unknown id.
+ */
+export class CronMissing extends Error {
+  readonly code = 'CRON_MISSING' as const
+  constructor(readonly cronId: string) {
+    super(`cron ${cronId} not found in this organization`)
+    this.name = 'CronMissing'
+  }
+}
+
+/**
  * A membership-dependent transaction reached persistence after one of its
  * required organization memberships disappeared. HTTP maps this to the same
  * not-found shape as the org-scope guard; non-HTTP callers can match the code.

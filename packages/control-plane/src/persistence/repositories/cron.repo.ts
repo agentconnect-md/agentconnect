@@ -15,6 +15,7 @@ import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
 import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
+import { CronMissing } from '../errors.js'
 
 // The cron row plus its joined creator + last-modifier users — reads surface both
 // for the console (same model as agents/daemons).
@@ -66,6 +67,14 @@ export class PgCronRepo implements CronRepo {
       enabled: input.enabled ?? true
     }
     return withAmbientTx(this.db, async (tx) => {
+      // Tenancy fence (org-scoped-data-layer.md §3). `cronId` is client-minted
+      // and this is a create-or-edit, so an id that already names a row in
+      // another organization must NOT fall through to the update branch — that
+      // branch rewrites `orgId` along with the definition, which would be a
+      // takeover rather than a leak. A brand-new id still creates; a concurrent
+      // create of the same id elsewhere loses to the unique constraint below.
+      const owner = await tx.cronDef.findUnique({ where: { id: input.cronId }, select: { orgId: true } })
+      if (owner && owner.orgId !== input.orgId) throw new CronMissing(input.cronId)
       const memberships = await lockResourceWriteMemberships(tx, {
         orgId: input.orgId,
         visibility: input.visibility ?? 'org',
@@ -100,13 +109,16 @@ export class PgCronRepo implements CronRepo {
   }
 
   async setSharing(
+    orgId: OrgId,
     cronId: CronId,
     sharing: { visibility: CronRecord['visibility']; sharedWith: string[] },
     byUserId?: string
   ): Promise<CronRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      // Org fence on the opening read: a cross-org id throws the same P2025 as
+      // a missing row, before the membership lock or any write.
       const existing = await tx.cronDef.findUniqueOrThrow({
-        where: { id: cronId },
+        where: { id: cronId, orgId },
         select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -118,7 +130,7 @@ export class PgCronRepo implements CronRepo {
       // A sharing change is a human edit — advance the last-modified audit
       // (editor stamped when known; absent under devAuth ⇒ leave it unchanged).
       const c = await tx.cronDef.update({
-        where: { id: cronId },
+        where: { id: cronId, orgId },
         data: {
           visibility: sharing.visibility,
           sharedWith: memberships.sharedWith ?? [],
@@ -131,8 +143,9 @@ export class PgCronRepo implements CronRepo {
     })
   }
 
-  async remove(cronId: CronId): Promise<void> {
-    await this.db.cronDef.delete({ where: { id: cronId } })
+  async remove(orgId: OrgId, cronId: CronId): Promise<void> {
+    // Org-fenced delete: a cross-org id throws the same P2025 as an absent row.
+    await this.db.cronDef.delete({ where: { id: cronId, orgId } })
   }
 
   async listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<CronRecord[]> {
@@ -164,8 +177,10 @@ export class PgCronRepo implements CronRepo {
     return rows.map(toRecord)
   }
 
-  async get(cronId: CronId): Promise<CronRecord | null> {
-    const c = await this.db.cronDef.findUnique({ where: { id: cronId }, include: withUsers })
+  async get(orgId: OrgId, cronId: CronId): Promise<CronRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const c = await this.db.cronDef.findUnique({ where: { id: cronId, orgId }, include: withUsers })
     return c ? toRecord(c) : null
   }
 
@@ -211,9 +226,11 @@ export class PgCronRepo implements CronRepo {
     return true
   }
 
-  async listRuns(cronId: CronId, limit = 50): Promise<CronRunRecord[]> {
+  async listRuns(orgId: OrgId, cronId: CronId, limit = 50): Promise<CronRunRecord[]> {
+    // Run rows carry their own `orgId`, so the fence rides this query rather
+    // than resting solely on the parent cron's (org-scoped-data-layer.md §3.6).
     const rows = await this.db.cronRun.findMany({
-      where: { cronId },
+      where: { cronId, orgId },
       orderBy: { startedAt: 'desc' },
       take: limit
     })

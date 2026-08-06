@@ -115,7 +115,10 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
     }
   }
   if (!origin.integrationId || !origin.realmKey) return pending
-  const integration = await deps.integration.get(IntegrationId(origin.integrationId))
+  // Daemon trust domain: the integration a reporting daemon named as the origin
+  // of a session it already proved it owns (org-scoped-data-layer.md §4). The
+  // ownership checks below still bind it to the reporting agent.
+  const integration = await deps.integration.getUnscoped(IntegrationId(origin.integrationId))
   if (
     !integration ||
     integration.agentId !== agentId ||

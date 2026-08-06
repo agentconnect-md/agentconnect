@@ -210,7 +210,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -266,7 +266,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -324,7 +324,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -418,7 +418,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,

@@ -44,13 +44,10 @@ export async function installNewFeishuBot(
   const transport = args.transport ?? 'socket'
   const botId = args.botId ?? BotId(randomUUID())
   const id = args.integrationId ?? IntegrationId(randomUUID())
-  let integration = await deps.repos.integration.get(id)
+  let integration = await deps.repos.integration.get(orgId, id)
   if (
     integration &&
-    (integration.orgId !== orgId ||
-      integration.agentId !== agent.id ||
-      integration.botId !== botId ||
-      integration.platform !== 'feishu')
+    (integration.agentId !== agent.id || integration.botId !== botId || integration.platform !== 'feishu')
   ) {
     throw new Error('reserved Feishu integration id is already in use')
   }

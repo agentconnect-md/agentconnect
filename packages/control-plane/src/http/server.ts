@@ -166,7 +166,8 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       (err as { code?: string }).code === 'P2025' ||
       (err as { code?: string }).code === 'ORG_MEMBERSHIP_MISSING' ||
       (err as { code?: string }).code === 'AGENT_MISSING' ||
-      (err as { code?: string }).code === 'BOT_MISSING'
+      (err as { code?: string }).code === 'BOT_MISSING' ||
+      (err as { code?: string }).code === 'CRON_MISSING'
     ) {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'resource not found' })
     }

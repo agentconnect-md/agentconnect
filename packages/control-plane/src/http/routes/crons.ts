@@ -83,8 +83,8 @@ export function cronRoutes(deps: HttpDeps) {
     // cross-org id OR a restricted cron they can't see both read as absent (404).
     // The single insertion point that replaces the scattered inline org checks.
     const getOrgCron = async (req: FastifyRequest, id: string): Promise<CronRecord | null> => {
-      const cron = await deps.repos.cron.get(CronId(id))
-      if (!cron || cron.orgId !== req.orgCtx!.orgId) return null
+      const cron = await deps.repos.cron.get(orgOf(req), CronId(id))
+      if (!cron) return null
       return canView(cron, ctxOf(req)) ? cron : null
     }
 
@@ -127,10 +127,10 @@ export function cronRoutes(deps: HttpDeps) {
         // The UUID is client-minted. On an EDIT (existing row), refuse if it's
         // another org's cron OR one this caller can't see (both 404), and require
         // edit rights (403). A brand-new id falls through to create.
-        const existing = await deps.repos.cron.get(CronId(req.params.id))
+        const existing = await deps.repos.cron.get(orgId, CronId(req.params.id))
         if (existing) {
           const ctx = ctxOf(req)
-          if (existing.orgId !== orgId || !canView(existing, ctx)) {
+          if (!canView(existing, ctx)) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'cron not found' })
           }
           if (!canEdit(existing, ctx)) {
@@ -151,8 +151,8 @@ export function cronRoutes(deps: HttpDeps) {
         let targetIntegrationId: IntegrationId | undefined
         let targetPlatform = req.body.targetPlatform
         if (req.body.targetIntegrationId && req.body.targetChannel) {
-          const integ = await deps.repos.integration.get(IntegrationId(req.body.targetIntegrationId))
-          if (!integ || integ.orgId !== orgId || integ.agentId !== agent.id) {
+          const integ = await deps.repos.integration.get(orgId, IntegrationId(req.body.targetIntegrationId))
+          if (!integ || integ.agentId !== agent.id) {
             return reply.code(400).send({
               error: 'Bad Request',
               statusCode: 400,
@@ -297,7 +297,7 @@ export function cronRoutes(deps: HttpDeps) {
         if (!cron) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'cron not found' })
         }
-        const runs = await deps.repos.cron.listRuns(cron.id)
+        const runs = await deps.repos.cron.listRuns(cron.orgId, cron.id)
         return runs.map((run) => ({
           id: run.id,
           startedAt: run.startedAt.toISOString(),
@@ -433,7 +433,7 @@ export function cronRoutes(deps: HttpDeps) {
             })
           }
           agent = current
-          await deps.repos.cron.remove(existing.id)
+          await deps.repos.cron.remove(orgId, existing.id)
           void deps.repos.audit
             .append({
               kind: 'cron_change',
@@ -510,6 +510,7 @@ export function cronRoutes(deps: HttpDeps) {
           }
           const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
           const cron = await deps.repos.cron.setSharing(
+            orgOf(req),
             CronId(req.params.id),
             { visibility: req.body.visibility, sharedWith },
             req.principal?.userId
