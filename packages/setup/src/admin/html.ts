@@ -991,7 +991,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('bootstrap-slack-submit').disabled = !bootstrapInfo.slackAvailable;
       el('bootstrap-slack-note').textContent = bootstrapInfo.slackAvailable
         ? 'Creates one complete Slack App. Sign-in uses a separate openid profile email flow from workspace installation.'
-        : 'Slack sign-in needs HTTPS Logto, Web, Control Plane, and Relay URLs. Use GitHub locally or expose the stack through trusted HTTPS endpoints.';
+        : 'Slack sign-in needs all public service URLs to use HTTPS. Use GitHub locally or expose the stack through trusted HTTPS endpoints.';
       if ((!bootstrapInfo.googleAvailable && el('bootstrap-provider').value === 'google') ||
           (!bootstrapInfo.slackAvailable && el('bootstrap-provider').value === 'slack')) {
         el('bootstrap-provider').value = 'github';
@@ -1066,7 +1066,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     }
 
     async function bootstrapSlack() {
-      if (!bootstrapInfo || !bootstrapInfo.slackAvailable) throw new Error('Slack sign-in requires saved HTTPS Logto, Web, Control Plane, and Relay URLs.');
+      if (!bootstrapInfo || !bootstrapInfo.slackAvailable) throw new Error('Slack sign-in requires all public service URLs to use HTTPS.');
       await createSlack('bootstrap-slack', true);
       await reconcileLogto();
       await load();
