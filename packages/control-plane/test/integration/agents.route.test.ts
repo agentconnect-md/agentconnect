@@ -15,7 +15,6 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
@@ -25,10 +24,6 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
-const REDACT_GIT_REPO_MIGRATION = readFileSync(
-  new URL('../../prisma/migrations/20260725120000_redact_agent_git_repo_secrets/migration.sql', import.meta.url),
-  'utf8'
-)
 
 let running: HttpApp | undefined
 
@@ -620,34 +615,6 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect((await prisma.agent.findUnique({ where: { id: agentId } }))?.gitRepo).toBe(stored)
     expect(getMissing.statusCode).toBe(200)
     expect((getMissing.json() as { workspace: { gitRepo: string } }).workspace.gitRepo).toBe('')
-  })
-
-  it('migration clears ambiguous userinfo while preserving a host-port path', async () => {
-    const cases = new Map<string, { stored: string; expected: string | null }>([
-      [randomUUID(), { stored: 'https://user:password?metadata@host.example/owner/repo', expected: null }],
-      [randomUUID(), { stored: 'https://user:password#metadata@host.example/owner/repo', expected: null }],
-      [randomUUID(), { stored: 'ssh://git:password?metadata@host.example/owner/repo', expected: null }],
-      [randomUUID(), { stored: 'ssh://git:password#metadata@host.example/owner/repo', expected: null }],
-      [
-        randomUUID(),
-        {
-          stored: 'https://example.com:443/repo?contact=user@example.com',
-          expected: 'https://example.com:443/repo'
-        }
-      ]
-    ])
-    await Promise.all([...cases].map(([id, testCase]) => seedAgent(prisma, id, { gitRepo: testCase.stored })))
-
-    // Re-run the exact committed migration against historical rows. The global
-    // setup already applied it before these fixtures existed.
-    await prisma.$executeRawUnsafe(REDACT_GIT_REPO_MIGRATION)
-
-    const migrated = await prisma.agent.findMany({
-      where: { id: { in: [...cases.keys()] } },
-      select: { id: true, gitRepo: true }
-    })
-    expect(migrated).toHaveLength(cases.size)
-    for (const agent of migrated) expect(agent.gitRepo).toBe(cases.get(agent.id)?.expected)
   })
 
   it('POST /agents rejects write access for anonymous GitHub workspaces', async () => {

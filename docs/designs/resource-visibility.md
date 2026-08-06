@@ -529,7 +529,7 @@ stay unfiltered exactly as above.
 ## 10. Schema Compatibility
 
 The current schema baseline is
-`prisma/migrations/20260712000000_v1_baseline/migration.sql`, which preserves
+`prisma/migrations/00000000000000_init/migration.sql`, which preserves
 GIN indexes Prisma cannot express. Later changes require new forward-only
 migrations and must not rewrite that file:
 

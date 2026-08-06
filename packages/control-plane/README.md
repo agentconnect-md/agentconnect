@@ -120,9 +120,9 @@ migration SQL (§3.13). When OIDC is disabled, Control Plane startup idempotentl
 ensures the default single-tenant Org + owner User. The explicit Prisma seed
 reuses that same operation for tests and maintenance.
 
-The v1 baseline targets an empty PostgreSQL database. Databases created from a
-pre-v1 release candidate must be reset rather than upgraded in place. Starting
-with v1, committed migrations are append-only and must not rewrite the baseline.
+The v1 `00000000000000_init` baseline targets an empty PostgreSQL database and
+captures the final schema from the pre-release migration history. Starting with
+v1, committed migrations are append-only and must not rewrite this baseline.
 
 ```bash
 pnpm --filter @agentconnect.md/control-plane exec prisma migrate dev    # dev: create/apply
