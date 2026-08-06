@@ -33,13 +33,16 @@ export const handleChildSessionStatus: Handler = async (frame, conn, deps) => {
   if (!isFrame('session/child-status')(frame)) return
   const { parentSessionId, childSessionId, childAgentId } = frame.payload
 
-  const daemon = await deps.registry.get(DaemonId(conn.daemonId))
+  // Daemon trust domain: the connection's own daemon (org-scoped-data-layer.md §4).
+  const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon) return // unknown daemon (should not happen post-auth) — drop silently
 
   // (a) Prove the asking daemon owns the parent session it is asking AS. `daemonId` on the session
   // row is stamped by the CP from the authenticated socket and is never daemon-echoed, so it is
   // trustworthy here. Fail closed when the session is unknown to the CP.
-  const parent = await deps.session.get(SessionId(parentSessionId))
+  // Daemon trust domain: the parent session the asking daemon claims to own —
+  // the ownership check below is what admits it (org-scoped-data-layer.md §4).
+  const parent = await deps.session.getUnscoped(SessionId(parentSessionId))
   if (!parent || parent.daemonId !== conn.daemonId) {
     conn.replyTo(frame, 'session/child-status/ok', NOT_FOUND)
     return

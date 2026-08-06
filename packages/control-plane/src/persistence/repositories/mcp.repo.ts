@@ -30,6 +30,7 @@ import type {
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -76,8 +77,10 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     })
   }
 
-  async get(id: string): Promise<McpProviderRecord | null> {
-    const p = await this.db.mcpProvider.findUnique({ where: { id } })
+  async get(orgId: OrgId, id: string): Promise<McpProviderRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const p = await this.db.mcpProvider.findUnique({ where: { id, orgId } })
     return p ? toProviderRecord(p) : null
   }
 
@@ -92,13 +95,16 @@ export class PgMcpProviderRepo implements McpProviderRepo {
   }
 
   async setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<McpProviderRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      // Org fence on the opening read: a cross-org id throws the same P2025 as
+      // a missing row, before the membership lock or any write.
       const existing = await tx.mcpProvider.findUniqueOrThrow({
-        where: { id },
+        where: { id, orgId },
         select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -108,7 +114,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
         sharedWith: sharing.sharedWith
       })
       const p = await tx.mcpProvider.update({
-        where: { id },
+        where: { id, orgId },
         data: { visibility: sharing.visibility, sharedWith: memberships.sharedWith ?? [] }
       })
       return toProviderRecord(p)
@@ -120,9 +126,10 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     return rows.map(toProviderRecord)
   }
 
-  async update(id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord> {
+  async update(orgId: OrgId, id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord> {
+    // Org-fenced update: a cross-org id throws the same P2025 as a missing row.
     const p = await this.db.mcpProvider.update({
-      where: { id },
+      where: { id, orgId },
       data: {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.url !== undefined ? { url: patch.url } : {}),
@@ -132,8 +139,9 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     return toProviderRecord(p)
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.mcpProvider.delete({ where: { id } }) // FK cascade drops secret + grants
+  async delete(orgId: OrgId, id: string): Promise<void> {
+    // Org-fenced delete: a cross-org id throws the same P2025 as a missing row.
+    await this.db.mcpProvider.delete({ where: { id, orgId } }) // FK cascade drops secret + grants
   }
 
   // Org providers whose `name` is enabled by some agent placed on this daemon. The
@@ -166,11 +174,17 @@ export class PgMcpProviderSecretStore implements McpProviderSecretStore {
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(providerId: string, headers: McpHeader[]): Promise<void> {
+  async put(orgId: OrgId, providerId: string, headers: McpHeader[]): Promise<void> {
+    // The row is keyed by providerId alone, so the upsert cannot carry the org in
+    // its predicate — check the parent row once instead.
+    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
+      throw new Error('mcp provider secret write outside its organization')
+    }
     // Header NAMES stay readable (they're config, not secrets); each VALUE passes
     // through the configured cipher before persistence.
+    const scope = orgScope(orgId)
     const sealed = await Promise.all(
-      headers.map(async (h) => ({ name: h.name, value: await this.cipher.seal(h.value) }))
+      headers.map(async (h) => ({ name: h.name, value: await this.cipher.seal(h.value, scope) }))
     )
     const value = sealed as unknown as Prisma.InputJsonValue
     await this.db.mcpProviderSecret.upsert({
@@ -180,16 +194,19 @@ export class PgMcpProviderSecretStore implements McpProviderSecretStore {
     })
   }
 
-  async get(providerId: string): Promise<McpHeader[] | null> {
-    const s = await this.db.mcpProviderSecret.findUnique({ where: { mcpProviderId: providerId } })
+  async get(orgId: OrgId, providerId: string): Promise<McpHeader[] | null> {
+    const s = await this.db.mcpProviderSecret.findFirst({
+      where: { mcpProviderId: providerId, provider: { orgId } }
+    })
     if (!s) return null
+    const scope = orgScope(orgId)
     const stored = s.headers as unknown as McpHeader[]
-    return Promise.all(stored.map(async (h) => ({ name: h.name, value: await this.cipher.open(h.value) })))
+    return Promise.all(stored.map(async (h) => ({ name: h.name, value: await this.cipher.open(h.value, scope) })))
   }
 
-  async delete(providerId: string): Promise<void> {
+  async delete(orgId: OrgId, providerId: string): Promise<void> {
     // deleteMany → idempotent (the FK cascade may already have removed it).
-    await this.db.mcpProviderSecret.deleteMany({ where: { mcpProviderId: providerId } })
+    await this.db.mcpProviderSecret.deleteMany({ where: { mcpProviderId: providerId, provider: { orgId } } })
   }
 }
 
@@ -209,18 +226,24 @@ export class PgMcpGrantRepo implements McpGrantRepo {
     private readonly cipher: SecretCipher
   ) {}
 
-  async mintFor(providerId: string): Promise<McpGrantRecord> {
+  async mintFor(orgId: OrgId, providerId: string): Promise<McpGrantRecord> {
+    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
+      throw new Error('mcp grant mint outside its organization')
+    }
     const key = mintGrantKey() // the one mint path (orchestrator/mcpProvider) — opaque, header-safe
-    const g = await this.db.mcpGrant.create({ data: { mcpProviderId: providerId, key: await this.cipher.seal(key) } })
+    const g = await this.db.mcpGrant.create({
+      data: { mcpProviderId: providerId, key: await this.cipher.seal(key, orgScope(orgId)) }
+    })
     return { ...toGrantRecord(g), key } // callers get the plaintext they must ship, not the stored form
   }
 
-  async activeForProvider(providerId: string): Promise<McpGrantRecord[]> {
+  async activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]> {
     const rows = await this.db.mcpGrant.findMany({
-      where: { mcpProviderId: providerId, status: 'active' },
+      where: { mcpProviderId: providerId, status: 'active', provider: { orgId } },
       orderBy: { createdAt: 'asc' }
     })
-    return Promise.all(rows.map(async (g) => ({ ...toGrantRecord(g), key: await this.cipher.open(g.key) })))
+    const scope = orgScope(orgId)
+    return Promise.all(rows.map(async (g) => ({ ...toGrantRecord(g), key: await this.cipher.open(g.key, scope) })))
   }
 
   async revoke(grantId: string): Promise<void> {

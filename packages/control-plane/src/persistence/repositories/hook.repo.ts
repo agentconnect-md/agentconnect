@@ -49,6 +49,7 @@ import type {
 } from '../ports.js'
 import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { AgentId, HookId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
 import { ORPHANED_RUN_REASON } from './cron.repo.js'
 import {
@@ -59,7 +60,7 @@ import {
   lockHookReviewOrgProducerScope
 } from '../review-projection-lock.js'
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
-import { AgentWorkspaceIntegrationConflict } from '../errors.js'
+import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -480,6 +481,11 @@ export class PgHookRepo implements HookRepo {
         ])
         await lockHookReviewLifecycleScope(tx, input.hookId)
         const existing = await tx.hookDef.findUnique({ where: { id: input.hookId } })
+        // Tenancy fence (org-scoped-data-layer.md §3), under the same lock as
+        // the write it guards: an id that already names a row in another
+        // organization must not fall through to the update branch, which
+        // rewrites `orgId` and `agentId` along with the definition.
+        if (existing && existing.orgId !== input.orgId) throw new HookMissing(input.hookId)
         if (existing?.agentId && !lockedAgentIds.has(existing.agentId)) {
           return { kind: 'retry', owner: AgentId(existing.agentId) } as const
         }
@@ -587,7 +593,7 @@ export class PgHookRepo implements HookRepo {
     }
   }
 
-  async remove(hookId: HookId, expectedAgentId?: AgentId): Promise<void> {
+  async remove(orgId: OrgId, hookId: HookId, expectedAgentId?: AgentId): Promise<void> {
     let ownerHint =
       expectedAgentId ??
       (await this.db.hookDef.findUnique({ where: { id: hookId }, select: { agentId: true } }))?.agentId
@@ -596,14 +602,18 @@ export class PgHookRepo implements HookRepo {
       const result = await this.transaction(async (tx) => {
         const lockedAgentIds = await this.lockAgentLifecycleScopes(tx, [ownerHint ? AgentId(ownerHint) : null])
         await lockHookReviewLifecycleScope(tx, hookId)
-        const hook = await tx.hookDef.findUnique({ where: { id: hookId }, select: { agentId: true } })
+        const hook = await tx.hookDef.findUnique({ where: { id: hookId }, select: { agentId: true, orgId: true } })
+        // Org fence BEFORE the projection tombstones: reaching those with a
+        // foreign id would tear down another organization's durable Check
+        // projections and only then fail on the delete (§3).
+        if (hook && hook.orgId !== orgId) throw new HookMissing(hookId)
         if (hook?.agentId && !lockedAgentIds.has(hook.agentId)) {
           return { kind: 'retry', owner: AgentId(hook.agentId) } as const
         }
         const projections = await tx.hookReviewProjection.findMany({ where: { hookId } })
         await this.tombstoneProjectionRows(tx, projections, new Date(), 'failure')
         await tx.hookDef.delete({
-          where: { id: hookId, ...(expectedOwnerForMutation ? { agentId: expectedOwnerForMutation } : {}) }
+          where: { id: hookId, orgId, ...(expectedOwnerForMutation ? { agentId: expectedOwnerForMutation } : {}) }
         })
         return { kind: 'done' } as const
       })
@@ -612,12 +622,26 @@ export class PgHookRepo implements HookRepo {
     }
   }
 
-  async get(hookId: HookId): Promise<HookRecord | null> {
+  async get(orgId: OrgId, hookId: HookId): Promise<HookRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const h = await this.db.hookDef.findUnique({ where: { id: hookId, orgId }, include: withUsers })
+    return h ? toRecord(h) : null
+  }
+
+  async getUnscoped(hookId: HookId): Promise<HookRecord | null> {
     const h = await this.db.hookDef.findUnique({ where: { id: hookId }, include: withUsers })
     return h ? toRecord(h) : null
   }
 
-  async getMany(hookIds: HookId[]): Promise<HookRecord[]> {
+  async getMany(orgId: OrgId, hookIds: HookId[]): Promise<HookRecord[]> {
+    if (hookIds.length === 0) return []
+    // Ids outside the org drop out of the result exactly like unknown ones.
+    const rows = await this.db.hookDef.findMany({ where: { id: { in: hookIds }, orgId }, include: withUsers })
+    return rows.map(toRecord)
+  }
+
+  async getManyUnscoped(hookIds: HookId[]): Promise<HookRecord[]> {
     if (hookIds.length === 0) return []
     const rows = await this.db.hookDef.findMany({ where: { id: { in: hookIds } }, include: withUsers })
     return rows.map(toRecord)
@@ -1824,9 +1848,11 @@ export class PgHookRepo implements HookRepo {
     })
   }
 
-  async listRuns(hookId: HookId, limit = 50): Promise<HookRunRecord[]> {
+  async listRuns(orgId: OrgId, hookId: HookId, limit = 50): Promise<HookRunRecord[]> {
+    // Run rows carry their own `orgId`, so the fence rides this query rather
+    // than resting solely on the parent hook (org-scoped-data-layer.md §3.6).
     const rows = await this.db.hookRun.findMany({
-      where: { hookId },
+      where: { hookId, orgId },
       orderBy: { startedAt: 'desc' },
       take: limit
     })
@@ -3080,8 +3106,13 @@ export class PgHookSecretStore implements HookSecretStore {
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(hookId: HookId, hmacSecret: string): Promise<void> {
-    const sealed = await this.cipher.seal(hmacSecret)
+  async put(orgId: OrgId, hookId: HookId, hmacSecret: string): Promise<void> {
+    // `hook_secret` is keyed by hookId alone, so the upsert cannot carry the org
+    // in its predicate — check the parent row once instead.
+    if ((await this.db.hookDef.count({ where: { id: hookId, orgId } })) === 0) {
+      throw new Error('hook secret write outside its organization')
+    }
+    const sealed = await this.cipher.seal(hmacSecret, orgScope(orgId))
     await this.db.hookSecret.upsert({
       where: { hookId },
       create: { hookId, hmacSecret: sealed },
@@ -3089,12 +3120,13 @@ export class PgHookSecretStore implements HookSecretStore {
     })
   }
 
-  async get(hookId: HookId): Promise<string | null> {
-    const s = await this.db.hookSecret.findUnique({ where: { hookId } })
-    return s ? this.cipher.open(s.hmacSecret) : null
+  async get(orgId: OrgId, hookId: HookId): Promise<string | null> {
+    const s = await this.db.hookSecret.findFirst({ where: { hookId, hook: { orgId } } })
+    return s ? this.cipher.open(s.hmacSecret, orgScope(orgId)) : null
   }
 
-  async delete(hookId: HookId): Promise<void> {
-    await this.db.hookSecret.deleteMany({ where: { hookId } }) // idempotent (FK cascade may have run)
+  async delete(orgId: OrgId, hookId: HookId): Promise<void> {
+    // idempotent (FK cascade may have run)
+    await this.db.hookSecret.deleteMany({ where: { hookId, hook: { orgId } } })
   }
 }

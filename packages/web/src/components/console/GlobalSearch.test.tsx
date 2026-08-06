@@ -26,7 +26,7 @@ vi.mock('@/components/marks', () => ({
 }))
 
 import { GlobalSearch } from './GlobalSearch'
-import { NAV_ITEMS, SEARCH_PAGES } from './nav'
+import { NAV_GROUPS, SEARCH_PAGES } from './nav'
 
 let host: HTMLDivElement
 let root: Root
@@ -74,7 +74,7 @@ function resultButton(route: string): HTMLButtonElement {
 describe('SEARCH_PAGES index', () => {
   it('contains every rail destination as a page', () => {
     const pageHrefs = SEARCH_PAGES.filter((p) => p.kind === 'page').map((p) => p.href)
-    for (const n of NAV_ITEMS) expect(pageHrefs).toContain(n.href)
+    for (const n of NAV_GROUPS.flat()) expect(pageHrefs).toContain(n.href)
   })
 
   it('contains Settings and Profile as settings', () => {

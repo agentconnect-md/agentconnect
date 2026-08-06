@@ -77,7 +77,7 @@ export default {
       }
     ],
     [
-      // Publish the self-contained Tenant Admin package independently so a
+      // Publish the self-contained Setup Server package independently so a
       // deployment-only change does not force a daemon or host-CLI release.
       '@semantic-release/exec',
       {

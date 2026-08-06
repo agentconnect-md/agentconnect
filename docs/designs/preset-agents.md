@@ -172,7 +172,7 @@ from that moment on, owned and editable like any other. Auto-placement writes an
 audit row carrying the daemon and the affected agent.
 
 **Opt-out.** An org-level setting (default on) checked by the creation seam and the
-backfill. Tenant Admin controls the deployment default for self-hosted fleets.
+backfill. Setup Server controls the deployment default for self-hosted fleets.
 
 ### 3.3 Reserved slugs and collisions
 
@@ -260,7 +260,7 @@ installed via standard OAuth v2. Verified gaps against current code:
 
 - **Platform credentials.** The distributed Slack App identity and its write-only
   client and signing secrets live in the DB-backed deployment configuration and
-  are edited through Tenant Admin. Without that provider configuration, the
+  are edited through Setup. Without that provider configuration, the
   one-click platform App is absent and the per-agent setup paths remain available.
 - **Install starts from the console.** The OAuth callback strictly requires a `state`
   resolving to a pending-install row (`routes/slack-install.ts` renders denied/expired

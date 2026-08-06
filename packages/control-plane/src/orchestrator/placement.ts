@@ -368,7 +368,9 @@ export class Placement implements ReconcileService {
   }
 
   async reconcile(daemonId: DaemonId, req: RegisterReq): Promise<RegisterOk> {
-    const daemon = await this.daemons.get(daemonId)
+    // Daemon trust domain: reconcile runs for the registering connection's own
+    // daemon (org-scoped-data-layer.md §4).
+    const daemon = await this.daemons.getUnscoped(daemonId)
     if (!daemon) {
       // Should not happen — auth created the row — but stay defensive.
       throw new Error(`reconcile: unknown daemon ${daemonId}`)
@@ -395,9 +397,10 @@ export class Placement implements ReconcileService {
       Promise.all(
         activeIntegrations.map(async (i) => {
           const [secret, channels, bot] = await Promise.all([
-            this.botSecrets.get(i.botId),
+            this.botSecrets.get(i.orgId, i.botId),
             this.integrationChannels.listForIntegration(i.id),
-            this.bots.get(i.botId)
+            // The bot behind one of the reconciling daemon's integration rows.
+            this.bots.getUnscoped(i.botId)
           ])
           // A spec needs BOTH halves of its identity: the bot row (the projector's
           // required input — credentials shape, transport, demux identity) and the
@@ -566,7 +569,7 @@ export class Placement implements ReconcileService {
     const relayBaseUrl = relayHttpOrigin(relay.url)
     const specs: McpServerSpec[] = []
     for (const p of providers) {
-      const grant = (await mcp.grants.activeForProvider(p.id))[0]
+      const grant = (await mcp.grants.activeForProvider(p.orgId, p.id))[0]
       if (grant) specs.push(mcpProxyDef(p, grant.key, relayBaseUrl))
     }
     return specs
@@ -586,7 +589,7 @@ export class Placement implements ReconcileService {
       const installation = await memory.installations.get(connection.installationId)
       if (!installation) continue
       if (installation.transport === 'stdio') {
-        const secrets = (await memory.secrets.get(connection.id)) ?? {}
+        const secrets = (await memory.secrets.get(connection.orgId, connection.id)) ?? {}
         specs.push(stdioMemoryConnectionSpec(connection, installation, secrets))
         continue
       }
@@ -598,8 +601,8 @@ export class Placement implements ReconcileService {
         // Rotation overlaps old+new grants until every projection has the fresh
         // key. Prefer the newest active grant so a reconnect in that window does
         // not receive the key that is about to be retired.
-        memory.grants.activeForConnection(connection.id).then((rows) => rows.at(-1)),
-        memory.secrets.keys(connection.id)
+        memory.grants.activeForConnection(connection.orgId, connection.id).then((rows) => rows.at(-1)),
+        memory.secrets.keys(connection.orgId, connection.id)
       ])
       if (!grant) continue
       specs.push(memoryConnectionSpec(connection, installation, secretKeys, grant.key, relayBaseUrl))

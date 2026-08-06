@@ -90,8 +90,8 @@ export function hookRoutes(deps: HttpDeps) {
     // agent the caller can't see, and any legacy orphaned hook all read as absent
     // (404, no existence oracle).
     const getOrgHook = async (req: FastifyRequest, id: string): Promise<HookRecord | null> => {
-      const hook = await deps.repos.hook.get(HookId(id))
-      if (!hook || hook.orgId !== req.orgCtx!.orgId || !hook.agentId) return null
+      const hook = await deps.repos.hook.get(orgOf(req), HookId(id))
+      if (!hook || !hook.agentId) return null
       const agent = await deps.repos.agent.get(orgOf(req), hook.agentId)
       if (!agent || !canView(agent, ctxOf(req))) return null
       return hook
@@ -283,7 +283,7 @@ export function hookRoutes(deps: HttpDeps) {
     // Validate the optional anchoring target against the hook's agent (the
     // anchor posts through one of THAT agent's integrations — cron semantics).
     const resolveTarget = async (
-      orgId: string,
+      orgId: OrgId,
       agentId: string,
       // `DbPlatform` is the served set the anchor may target — the same registry
       // declaration `Platform` (the request body's own enum) and `toDbPlatform`
@@ -295,8 +295,8 @@ export function hookRoutes(deps: HttpDeps) {
       }
     ): Promise<{ ok: true; targetPlatform: DbPlatform; targetIntegrationId?: IntegrationId } | { ok: false }> => {
       if (!(body.targetIntegrationId && body.targetChannel)) return { ok: true, targetPlatform: body.targetPlatform }
-      const integ = await deps.repos.integration.get(IntegrationId(body.targetIntegrationId))
-      if (!integ || integ.orgId !== orgId || integ.agentId !== agentId) return { ok: false }
+      const integ = await deps.repos.integration.get(orgId, IntegrationId(body.targetIntegrationId))
+      if (!integ || integ.agentId !== agentId) return { ok: false }
       return { ok: true, targetPlatform: toDbPlatform(integ.platform), targetIntegrationId: integ.id }
     }
 
@@ -412,7 +412,7 @@ export function hookRoutes(deps: HttpDeps) {
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
-        if (hmacSecret) await deps.repos.hookSecret.put(hookId, hmacSecret)
+        if (hmacSecret) await deps.repos.hookSecret.put(orgOf(req), hookId, hmacSecret)
         void deps.repos.audit
           .append({
             kind: 'hook_change',
@@ -430,7 +430,7 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         // Re-read so hmacConfigured reflects the secret written above.
-        const fresh = (await deps.repos.hook.get(hookId)) ?? hook
+        const fresh = (await deps.repos.hook.get(orgId, hookId)) ?? hook
         converge(fresh)
         return { ...toDto(fresh, deps.config.PUBLIC_RELAY_URL), hmacSecret }
       }
@@ -692,7 +692,7 @@ export function hookRoutes(deps: HttpDeps) {
         }
         // remove() atomically tombstones the current projection epoch under the
         // same hook lifecycle lock before deleting the definition.
-        await deps.repos.hook.remove(existing.id, existing.agentId!)
+        await deps.repos.hook.remove(orgOf(req), existing.id, existing.agentId!)
         void deps.repos.audit
           .append({
             kind: 'hook_change',
@@ -728,7 +728,7 @@ export function hookRoutes(deps: HttpDeps) {
         if (!hook) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'hook not found' })
         }
-        const runs = await deps.repos.hook.listRuns(hook.id)
+        const runs = await deps.repos.hook.listRuns(orgOf(req), hook.id)
         return runs.map((run) => ({
           id: run.id,
           deliveryKey: run.deliveryKey,

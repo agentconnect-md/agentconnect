@@ -80,13 +80,14 @@ export function streamRoutes(deps: HttpDeps) {
         const orgId = req.orgCtx!.orgId
         const connectedCtx = ctxOf(req)
         // daemonId → belongs-to-this-org, memoized per connection (events arrive
-        // in bursts from the same few daemons; one registry lookup each).
+        // in bursts from the same few daemons; one registry lookup each). The read
+        // is org-fenced (org-scoped-data-layer.md §3), so "resolves" IS "in org".
         const daemonOrg = new Map<string, boolean>()
         const inOrg = async (daemonId: string): Promise<boolean> => {
           const cached = daemonOrg.get(daemonId)
           if (cached !== undefined) return cached
-          const view = await deps.registry.get(DaemonId(daemonId)).catch(() => null)
-          const ok = !!view && view.orgId === orgId
+          const view = await deps.registry.get(orgId, DaemonId(daemonId)).catch(() => null)
+          const ok = !!view
           daemonOrg.set(daemonId, ok)
           return ok
         }
@@ -109,7 +110,7 @@ export function streamRoutes(deps: HttpDeps) {
         // single-flight) and the unlink path invalidates that cache, so the
         // revocation lands on the next event, not the next connection.
         const canSeeSession = async (agentId: string, sessionId: string, ctx: ViewCtx): Promise<boolean> => {
-          const session = await deps.repos.session.get(SessionId(sessionId)).catch(() => null)
+          const session = await deps.repos.session.get(orgId, SessionId(sessionId)).catch(() => null)
           if (!session || session.agentId !== agentId) return false
           const access = await sessionAccess.forSessions(req, [session]).catch(() => null)
           return !!access && canStreamSession(session, orgId, ctx, access.identitySet, access.externalAccess)

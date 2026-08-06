@@ -100,6 +100,11 @@ export class HttpBotOrchestrator {
   private readonly channelMutationChains = new Map<string, Promise<unknown>>()
 
   constructor(
+    /** Every bot read here is `getUnscoped`: this is the orchestration trust
+     *  domain (org-scoped-data-layer.md §4) — convergence is driven by a bot id
+     *  that arrived from relay ingress, a relay-reported lifecycle event, or a
+     *  route that already resolved the row through its own org fence, and the
+     *  organization is derived from the row itself. */
     private readonly bots: BotRepo,
     private readonly botSecret: BotSecretStore,
     private readonly botCredential: BotCredentialWriter,
@@ -126,7 +131,7 @@ export class HttpBotOrchestrator {
    * the release check).
    */
   async syncBot(botId: string): Promise<void> {
-    const bot = await this.bots.get(BotId(botId))
+    const bot = await this.bots.getUnscoped(BotId(botId))
     if (!bot) return
     if (bot.transport !== 'http' || bot.agentIds.length === 0) {
       await this.unassign(bot)
@@ -137,7 +142,7 @@ export class HttpBotOrchestrator {
       await this.unassign(bot)
       return
     }
-    const secret = await this.botSecret.get(bot.id)
+    const secret = await this.botSecret.get(bot.orgId, bot.id)
     if (!secret) {
       this.log.warn({ botId }, 'http-bot: no secret for http bot — cannot assign')
       return
@@ -183,7 +188,7 @@ export class HttpBotOrchestrator {
    * connected relay yet.
    */
   async syncRoutes(botId: string): Promise<void> {
-    const bot = await this.bots.get(BotId(botId))
+    const bot = await this.bots.getUnscoped(BotId(botId))
     if (!bot || bot.transport !== 'http' || bot.agentIds.length === 0) return this.syncBot(botId)
     if (this.relayReg.all().length === 0) return this.syncBot(botId) // nobody connected → defer
     const compiled = await this.compile(bot)
@@ -203,7 +208,7 @@ export class HttpBotOrchestrator {
         ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
     )
-    const secret = await this.botSecret.get(bot.id)
+    const secret = await this.botSecret.get(bot.orgId, bot.id)
     if (secret) await this.pushSpecs(compiled, secret, bot)
   }
 
@@ -249,7 +254,7 @@ export class HttpBotOrchestrator {
     reason: 'app_uninstalled' | 'tokens_revoked',
     fence: { revision?: number; eventAtMs?: number } = {}
   ): Promise<{ applied: boolean }> {
-    const bot = await this.bots.get(BotId(botId))
+    const bot = await this.bots.getUnscoped(BotId(botId))
     // Unknown bot: nothing to apply and nothing that will ever change that, so
     // this is terminal for the reporting relay — not a reason to keep retrying.
     if (!bot) return { applied: false }
@@ -270,7 +275,7 @@ export class HttpBotOrchestrator {
     // moment we released it, in which case IT owns the live state and has
     // already broadcast a fresh assign. Emitting the teardown now would tear
     // down a credential we no longer describe.
-    const after = await this.bots.get(bot.id)
+    const after = await this.bots.getUnscoped(bot.id)
     if (after && after.credentialRevision !== bot.credentialRevision) {
       this.log.info(
         { botId: bot.id, reason, from: bot.credentialRevision, to: after.credentialRevision },
@@ -322,7 +327,7 @@ export class HttpBotOrchestrator {
     for (const bot of bots) {
       const compiled = await this.compile(bot)
       if (!compiled) continue
-      const secret = await this.botSecret.get(bot.id)
+      const secret = await this.botSecret.get(bot.orgId, bot.id)
       if (!secret) continue
       if (this.missingAssignSecrets(bot, secret).length > 0) continue
       // Built OUTSIDE the try on purpose: the catch below means "dead socket",
@@ -466,7 +471,7 @@ export class HttpBotOrchestrator {
    *  creating (earliest active) agent, while an existing owner is preserved.
    */
   async replaceChannels(botId: string, channels: ReportedChannel[]): Promise<void> {
-    const bot = await this.bots.get(BotId(botId))
+    const bot = await this.bots.getUnscoped(BotId(botId))
     if (!bot || manifestFor(bot.platform).membershipEnumeration !== 'authoritative' || bot.transport !== 'http') {
       this.log.warn(
         { botId },
@@ -525,7 +530,7 @@ export class HttpBotOrchestrator {
    * recompiled because a newly observed public row is immediately active.
    */
   async reportConversation(botId: string, conversation: ReportedChannel): Promise<void> {
-    const bot = await this.bots.get(BotId(botId))
+    const bot = await this.bots.getUnscoped(BotId(botId))
     // A conversation report can only originate from relay ingress, so the gate is
     // the same §9 signal the assign builder runs on: a platform with no
     // `projectBotAssign` has no relay path and no relay can be reporting for it.
@@ -563,7 +568,7 @@ export class HttpBotOrchestrator {
     options: { expectedOwnerAgentId?: string; source?: 'console' | 'slack' } = {}
   ): Promise<IntegrationChannelRecord | null> {
     return this.serializeChannelMutation(botId, channelId, async () => {
-      const bot = await this.bots.get(BotId(botId))
+      const bot = await this.bots.getUnscoped(BotId(botId))
       if (bot?.transport !== 'http') {
         this.log.warn({ botId }, 'http-bot: update-channel for a non-http/unknown bot — ignored')
         return null
@@ -612,7 +617,7 @@ export class HttpBotOrchestrator {
 
   /** Preserve bot-scoped channel state before an owner integration is deleted. */
   async prepareIntegrationRemoval(botId: string): Promise<void> {
-    const bot = await this.bots.get(BotId(botId))
+    const bot = await this.bots.getUnscoped(BotId(botId))
     if (bot?.transport !== 'http') return
     const installs = await this.integrations.listForBot(bot.id)
     await this.ensureChannelOwners(bot.id, installs)

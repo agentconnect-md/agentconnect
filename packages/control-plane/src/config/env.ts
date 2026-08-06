@@ -7,6 +7,7 @@
  */
 import { z } from 'zod'
 import { composeCpPlatformEnv } from '../platforms/env.js'
+import { effectiveOrgKeyPrefix, orgKeyPrefixConflict } from '../secrets/scope.js'
 
 const HttpOriginSchema = z
   .string()
@@ -24,8 +25,7 @@ const HttpOriginSchema = z
 const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
   const url = new URL(value)
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const loopback =
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
   if (url.protocol !== 'https:' && !loopback) {
     ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
   }
@@ -84,7 +84,14 @@ const CoreConfigShape = {
   // next write re-seals them (lazy migration, no backfill required).
   SECRET_CIPHER: z.enum(['none', 'vault-transit']).default('none'),
   VAULT_ADDR: HttpOriginSchema.optional(), // Vault origin, e.g. http://vault.vault.svc:8200
-  VAULT_TRANSIT_KEY: z.string().default('agentconnect-cp'), // transit key name
+  VAULT_TRANSIT_KEY: z.string().default('agentconnect-cp'), // deployment-scope transit key name
+  // Org-scope key names are this prefix + the org id (one key per organization,
+  // so deleting an org can destroy its key — docs/designs/per-org-secret-encryption.md).
+  // Unset ⇒ derived as `<VAULT_TRANSIT_KEY>-org-`, which inherits whatever
+  // namespace the deployment key already occupies; deployments sharing one
+  // transit mount rely on key naming alone to stay separated, and a fixed
+  // prefix would collide their org keys.
+  VAULT_TRANSIT_ORG_KEY_PREFIX: z.string().optional(),
   VAULT_TRANSIT_MOUNT: z.string().default('transit'), // transit engine mount path
   VAULT_NAMESPACE: z.string().optional(), // Vault Enterprise namespace (sent as X-Vault-Namespace)
   // Auth — exactly ONE of the two modes when SECRET_CIPHER=vault-transit:
@@ -225,9 +232,26 @@ interface SecretCipherEnv {
   VAULT_ADDR?: string
   VAULT_TOKEN?: string
   VAULT_JWT_ROLE?: string
+  VAULT_TRANSIT_KEY: string
+  VAULT_TRANSIT_ORG_KEY_PREFIX?: string
 }
 
 function validateSecretCipher(config: SecretCipherEnv, ctx: z.RefinementCtx): void {
+  // Checked whatever the cipher is: a deployment key sitting inside the org key
+  // namespace is a SHREDDABLE name, and destroying it would take the whole
+  // deployment's trust root with it. Catch the naming mistake at boot rather
+  // than the first time an org is deleted.
+  const conflict = orgKeyPrefixConflict(
+    config.VAULT_TRANSIT_KEY,
+    effectiveOrgKeyPrefix(config.VAULT_TRANSIT_KEY, config.VAULT_TRANSIT_ORG_KEY_PREFIX)
+  )
+  if (conflict) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VAULT_TRANSIT_ORG_KEY_PREFIX'],
+      message: conflict
+    })
+  }
   if (config.SECRET_CIPHER !== 'vault-transit') return
   if (!config.VAULT_ADDR) {
     ctx.addIssue({
@@ -256,6 +280,7 @@ const BootstrapConfigSchema = z
     SECRET_CIPHER: CoreConfigShape.SECRET_CIPHER,
     VAULT_ADDR: CoreConfigShape.VAULT_ADDR,
     VAULT_TRANSIT_KEY: CoreConfigShape.VAULT_TRANSIT_KEY,
+    VAULT_TRANSIT_ORG_KEY_PREFIX: CoreConfigShape.VAULT_TRANSIT_ORG_KEY_PREFIX,
     VAULT_TRANSIT_MOUNT: CoreConfigShape.VAULT_TRANSIT_MOUNT,
     VAULT_NAMESPACE: CoreConfigShape.VAULT_NAMESPACE,
     VAULT_TOKEN: CoreConfigShape.VAULT_TOKEN,
@@ -277,10 +302,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (!logtoEndpoint) return AppConfigChecked.parse(env)
 
   const logtoOrigin = new URL(SecureOriginSchema.parse(logtoEndpoint)).origin
+  const logtoMgmtEndpoint = env.LOGTO_MGMT_ENDPOINT?.trim()
+  const hasLogtoMgmtCredentials = Boolean(env.LOGTO_MGMT_APP_ID?.trim() || env.LOGTO_MGMT_APP_SECRET?.trim())
   return AppConfigChecked.parse({
     ...env,
     OIDC_ISSUER: env.OIDC_ISSUER?.trim() || `${logtoOrigin}/oidc`,
-    LOGTO_MGMT_ENDPOINT: env.LOGTO_MGMT_ENDPOINT?.trim() || logtoOrigin
+    LOGTO_MGMT_ENDPOINT: logtoMgmtEndpoint || (hasLogtoMgmtCredentials ? logtoOrigin : undefined)
   })
 }
 

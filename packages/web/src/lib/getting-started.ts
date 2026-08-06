@@ -70,8 +70,13 @@ export function computeGettingStarted(input: {
    *  ⇒ unknowable or not applicable (auth off, no GitHub connector, account still
    *  loading): the step is omitted rather than shown un-tickable. */
   githubLinked?: boolean
+  /** Whether this deployment's GitHub App provider is configured (GITHUB_APP_* env —
+   *  the installations probe 404s otherwise). False ⇒ the GitHub steps are hidden:
+   *  there is nothing to install. Undefined (probe in flight / failed) keeps them. */
+  githubEnabled?: boolean
 }): GettingStarted {
-  const { agents, daemons, integrations, sessions, members, authOn, orgHasSessions, githubLinked } = input
+  const { agents, daemons, integrations, sessions, members, authOn, orgHasSessions, githubLinked, githubEnabled } =
+    input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
@@ -109,31 +114,38 @@ export function computeGettingStarted(input: {
       ctaLabel: 'Connect Slack',
       action: { kind: 'slack', agentId: firstAgent }
     },
-    {
-      key: 'github',
-      label: 'Connect GitHub and assign a repository',
-      expl: 'Install the GitHub App, then point an agent at a repo, branch and working directory so it has code to work in.',
-      done: agents.some((a) => a.workspace?.mode === 'github'),
-      ctaLabel: 'Connect GitHub',
-      action: { kind: 'github', agentId: firstAgent }
-    },
-    // The App install above is org-level; SEEING private repositories is per-user
-    // (repo probes act as the caller — GITHUB_IDENTITY_REQUIRED otherwise). Only a
-    // member signed in WITHOUT GitHub (Google/Slack — no GitHub identity on the
-    // profile) gets this step; GitHub sign-ins are born linked, and for them the
-    // row would be permanent done-noise. Also omitted when unknowable
-    // (see `githubLinked`).
-    ...(githubLinked !== false
+    // Both GitHub steps vanish when the deployment has no GitHub App provider at
+    // all (`githubEnabled === false`) — installing and profile-linking are dead
+    // ends without it.
+    ...(githubEnabled === false
       ? []
       : [
           {
-            key: 'github-profile',
-            label: 'Link your GitHub profile',
-            expl: 'You signed in without GitHub. Link it to your profile so repository pickers and access checks act as you — private repositories included.',
-            done: false,
-            ctaLabel: 'Link GitHub profile',
-            action: { kind: 'github-profile' } as const
-          }
+            key: 'github',
+            label: 'Connect GitHub and assign a repository',
+            expl: 'Install the GitHub App, then point an agent at a repo, branch and working directory so it has code to work in.',
+            done: agents.some((a) => a.workspace?.mode === 'github'),
+            ctaLabel: 'Connect GitHub',
+            action: { kind: 'github', agentId: firstAgent } as const
+          },
+          // The App install above is org-level; SEEING private repositories is per-user
+          // (repo probes act as the caller — GITHUB_IDENTITY_REQUIRED otherwise). Only a
+          // member signed in WITHOUT GitHub (Google/Slack — no GitHub identity on the
+          // profile) gets this step; GitHub sign-ins are born linked, and for them the
+          // row would be permanent done-noise. Also omitted when unknowable
+          // (see `githubLinked`).
+          ...(githubLinked !== false
+            ? []
+            : [
+                {
+                  key: 'github-profile',
+                  label: 'Link your GitHub profile',
+                  expl: 'You signed in without GitHub. Link it to your profile so repository pickers and access checks act as you — private repositories included.',
+                  done: false,
+                  ctaLabel: 'Link GitHub profile',
+                  action: { kind: 'github-profile' } as const
+                }
+              ])
         ]),
     {
       key: 'conversation',

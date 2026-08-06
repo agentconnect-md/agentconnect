@@ -19,9 +19,11 @@ import { useModal } from './ModalProvider'
 import type { GsAction, GsItem } from '@/lib/getting-started'
 import { agentIsPlaced, agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { isAuthConfigured } from '@/lib/auth'
-import { fetchMySocialAccount } from '@/lib/api'
+import { fetchGithubInstallations, fetchMySocialAccount } from '@/lib/api'
+import { consoleKeys } from '@/lib/swr-keys'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { useSlackPlatformInstall } from '@/components/console/platforms/slack/use-platform-install'
+import { useDeploymentConfig } from '@/components/console/platforms/deployment-config'
 import { Button, Icon } from '@/components/ui'
 import { PlatformMark } from '@/components/marks'
 
@@ -89,6 +91,30 @@ export function useGithubProfileLinked(): boolean | undefined {
   })
   if (!data) return undefined
   return data.identities.some((i) => i.target === 'github')
+}
+
+// Backs hiding the "Connect GitHub" step: whether this deployment's GitHub App
+// provider is configured at all (the installations list doubles as the enabled
+// probe — 404 ⇒ off). Undefined while loading or on error, and
+// computeGettingStarted keeps the step for that value.
+export function useGithubAppEnabled(): boolean | undefined {
+  const { activeOrg } = useOrgs()
+  const { data } = useSWR(
+    consoleKeys.githubApp(activeOrg?.id),
+    () => fetchGithubInstallations().then((r) => r.enabled),
+    { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
+  )
+  return data
+}
+
+// Whether the platform-published one-click "Add to Slack" app is installable on
+// this deployment. Local/self-hosted mode has no published app — the checklist
+// then renders the plain "Connect Slack" row, whose CTA opens the Slack
+// integration wizard instead. An unanswered probe keeps the one-click UI (the
+// hosted default); only a definitive false / failed probe switches to manual.
+export function useSlackPlatformAppAvailable(): boolean {
+  const probe = useDeploymentConfig(true)
+  return probe.config ? probe.config.platformInstallAvailable === true : !probe.failed
 }
 
 // The checklist item rows. `runAction` is supplied by the caller so each surface can

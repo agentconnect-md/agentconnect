@@ -2,27 +2,34 @@ import { z } from 'zod'
 
 type Environment = Readonly<Record<string, string | undefined>>
 
-const LOCAL_WEB_HOST = 'app.agentconnect.localhost'
-const LOCAL_CONTROL_PLANE_HOST = 'api.agentconnect.localhost'
-const LOCAL_RELAY_HOST = 'relay.agentconnect.localhost'
+const LOCAL_HOST = 'localhost'
 
 function isLoopback(hostname: string): boolean {
   const value = hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  return value === 'localhost' || value.endsWith('.localhost') || value === '127.0.0.1' || value === '::1'
+  return value === 'localhost' || value === '127.0.0.1' || value === '::1'
 }
 
-const OriginSchema = z
-  .string()
-  .url()
-  .superRefine((value, ctx) => {
-    const url = new URL(value)
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback(url.hostname))) {
-      ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
-    }
-    if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
-      ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
-    }
-  })
+function originSchema(allowInternalHttp = false) {
+  return z
+    .string()
+    .url()
+    .superRefine((value, ctx) => {
+      const url = new URL(value)
+      const httpAllowed = url.protocol === 'http:' && (allowInternalHttp || isLoopback(url.hostname))
+      if (url.protocol !== 'https:' && !httpAllowed) {
+        ctx.addIssue({
+          code: 'custom',
+          message: allowInternalHttp ? 'must use HTTP or HTTPS' : 'must use HTTPS unless it is loopback'
+        })
+      }
+      if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+        ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
+      }
+    })
+}
+
+const OriginSchema = originSchema()
+const ServerOriginSchema = originSchema(true)
 
 const IssuerSchema = z
   .string()
@@ -78,23 +85,23 @@ export interface DeploymentEnvironment {
 export function loadDeploymentEnvironment(environment: Environment = process.env): DeploymentEnvironment {
   const logtoEndpoint = environmentValue(environment, 'LOGTO_ENDPOINT')
   const logtoOrigin = logtoEndpoint ? new URL(OriginSchema.parse(logtoEndpoint)).origin : undefined
-  const defaultLogtoOrigin = 'http://login.agentconnect.localhost:3001'
+  const defaultLogtoOrigin = 'http://localhost:3001'
   return {
     services: {
       web: OriginSchema.parse(
-        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_WEB_URL', 'AGENTCONNECT_WEB_PORT', LOCAL_WEB_HOST, 3000)
+        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_WEB_URL', 'AGENTCONNECT_WEB_PORT', LOCAL_HOST, 3000)
       ),
       controlPlane: OriginSchema.parse(
-        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_CP_URL', 'AGENTCONNECT_CP_PORT', LOCAL_CONTROL_PLANE_HOST, 8080)
+        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_CP_URL', 'AGENTCONNECT_CP_PORT', LOCAL_HOST, 8080)
       ),
       relay: OriginSchema.parse(
-        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_RELAY_URL', 'AGENTCONNECT_RELAY_PORT', LOCAL_RELAY_HOST, 8090)
+        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_RELAY_URL', 'AGENTCONNECT_RELAY_PORT', LOCAL_HOST, 8090)
       )
     },
     issuer: IssuerSchema.parse(
       environmentValue(environment, 'OIDC_ISSUER') ?? `${logtoOrigin ?? defaultLogtoOrigin}/oidc`
     ),
-    managementEndpoint: OriginSchema.parse(
+    managementEndpoint: ServerOriginSchema.parse(
       environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ?? logtoOrigin ?? defaultLogtoOrigin
     )
   }

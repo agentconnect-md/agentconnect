@@ -199,15 +199,22 @@ export interface DaemonRepo {
   markUnreachable(daemonId: DaemonId, at: Date): Promise<void>
   /** Set the console-assigned display name (a human edit — stamps last-modified
    *  audit). `byUserId` is the editing WebUI principal (absent under devAuth).
-   *  Throws if the daemon row is absent. */
-  rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord>
+   *  Org-fenced (docs/designs/org-scoped-data-layer.md §3): a cross-org id
+   *  throws the same missing-row error as an absent row. */
+  rename(orgId: OrgId, daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord>
   /** Set the console's finished-session retention window (a human edit — stamps
-   *  last-modified audit). Throws if the daemon row is absent. */
-  setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonRecord>
+   *  last-modified audit). Org-fenced like {@link DaemonRepo.rename}. */
+  setSessionRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path). Stamps
    *  the last-modified audit; `byUserId` is the editing WebUI principal (absent
-   *  under devAuth). Throws if the daemon row is absent. */
+   *  under devAuth). Org-fenced like {@link DaemonRepo.rename}. */
   setSharing(
+    orgId: OrgId,
     daemonId: DaemonId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
@@ -215,14 +222,26 @@ export interface DaemonRepo {
   /**
    * Hard-delete a daemon (DELETE /daemons/:id). FK referential actions cascade its
    * api-keys / leases / launches / runtime-profiles and null out agents/assignments
-   * (those become unplaced). Throws Prisma P2025 if the row is absent (→ 404).
+   * (those become unplaced). Org-fenced: a cross-org id throws Prisma P2025
+   * exactly like an absent row (→ 404).
    */
-  delete(daemonId: DaemonId): Promise<void>
-  /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11). */
+  delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
+  /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11).
+   *  System-tier: the orchestrator drives it from a routing decision it already
+   *  resolved, so an org parameter would be tautological (§3.4). */
   bumpRoutingEpoch(daemonId: DaemonId): Promise<bigint>
-  /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9). */
+  /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
+   *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  get(daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
+   *  as absent, exactly like a missing row. The only daemon read the HTTP/MCP
+   *  surface may use. */
+  get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
+   *  their own connection's daemon, orchestration/placement resolving a daemon
+   *  from a routing row, the watchdog. Never call this from the HTTP surface;
+   *  lint enforces it (org-scoped-data-layer.md §6). */
+  getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
   /** The fleet, optionally filtered to one org (console reads pass the org). Every
    *  supplied human principal is resource-filtered; undefined is reserved for
    *  unfiltered internal reads (authorization/policy.ts#visibilityWhere). */
@@ -351,15 +370,27 @@ export interface ApiKeyRepo {
   findByHash(hash: string): Promise<ApiKeyRecord | null>
   /** Throttled liveness write on successful auth. */
   touchLastUsed(id: string, at: Date): Promise<void>
-  /** Kill switch: set `revokedAt` (+ reason). Checked on every auth. */
+  /** Kill switch: set `revokedAt` (+ reason). Checked on every auth.
+   *  System-tier (docs/designs/org-scoped-data-layer.md §3.4): this one method
+   *  revokes daemon, user, oauth AND relay keys, and relay keys are org-less
+   *  deployment infrastructure by design (§7 non-goals). Each caller proves
+   *  ownership on a STRONGER axis first — the org-fenced daemon roster
+   *  ({@link ApiKeyRepo.listForDaemon}) or the caller's own key list
+   *  ({@link ApiKeyRepo.listForUser}) — so an org parameter here would be both
+   *  wrong for relay keys and weaker than the fence already in place. */
   revoke(id: string, reason: string, at: Date): Promise<ApiKeyRecord>
   /** Revoke every live oauth access token minted under a grant — the "disconnect"
    *  cascade so a Profile revoke kills outstanding tokens now, not in ≤1h. Returns count. */
   revokeByOAuthGrant(grantId: string, reason: string, at: Date): Promise<number>
-  /** All keys (including revoked) for a daemon — the console key list. */
-  listForDaemon(daemonId: DaemonId): Promise<ApiKeyRecord[]>
+  /** All keys (including revoked) for a daemon — the console key list, and the
+   *  ownership proof the revoke route binds a raw key id against. Org-fenced
+   *  (§3): a daemon outside `orgId` yields no keys at all, so that proof cannot
+   *  admit a cross-tenant kill even if a route forgot to resolve the daemon. */
+  listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyRecord[]>
   /** A user's personal keys (all their orgs, active-only by default), joined with each
-   *  key's org label — the profile "API keys" list, newest first. */
+   *  key's org label — the profile "API keys" list, newest first.
+   *  System-tier: fenced by the caller's own identity, which spans organizations
+   *  by design (a personal key list is per-user, not per-org). */
   listForUser(userId: string, opts?: { includeRevoked?: boolean }): Promise<UserApiKeyRecord[]>
 }
 
@@ -1223,9 +1254,20 @@ export interface SessionRepo {
    *  this compact index to the HTTP layer. */
   listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex>
   list(q: SessionQuery): Promise<SessionListRecord[]>
-  get(id: SessionId): Promise<SessionMetaRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. The only session
+   *  read the HTTP/MCP surface may use. Visibility (`canViewSession`, the
+   *  identity set, the external-access policy) stays at the route — the fence
+   *  here is tenancy only (§8). */
+  get(orgId: OrgId, id: SessionId): Promise<SessionMetaRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — a daemon proving it owns
+   *  the parent of a child session it is reporting. Never call this from the
+   *  HTTP surface; lint enforces it (§6). */
+  getUnscoped(id: SessionId): Promise<SessionMetaRecord | null>
   /** Fail-closed proof that the durable webchat session for this conversation
-   * remains private before a remote administrative MCP invocation executes. */
+   * remains private before a remote administrative MCP invocation executes.
+   * System-tier (§3.4): fenced by the conversation's own `agentId`, which the
+   * MCP authority has already bound to the delegated agent. */
   hasPrivateWebchatSession(conversationId: string, agentId: AgentId): Promise<boolean>
   /** Distinct settled scopes referenced by external rows matching the non-page
    *  filters. Called before ORDER/LIMIT so membership filtering is pagination-safe. */
@@ -1248,7 +1290,9 @@ export interface SessionRepo {
   }>
   /** Visible-child lookup for the session detail page. Parent ids are opaque and
    *  deliberately not foreign-keyed, so this remains a metadata query. `viewer`
-   *  applies the same session predicate as the list (absent ⇒ internal fail-open). */
+   *  applies the same session predicate as the list (absent ⇒ internal fail-open).
+   *  System-tier (§3.4): `agentIds` is the caller's own org roster, so the query
+   *  is already org-fenced on a stronger axis than the parent id. */
   listChildren(
     parentSessionId: SessionId,
     agentIds: AgentId[],
@@ -1259,6 +1303,7 @@ export interface SessionRepo {
    *  privacy wins) under the lock-then-scan-to-fixpoint protocol of §4.5. Every
    *  rewritten row's `visibilityRev` is bumped in the same transaction. */
   setVisibility(
+    orgId: OrgId,
     sessionId: SessionId,
     visibility: SessionVisibility,
     /** Re-checked against the LOCKED row, closing the gap between the route's
@@ -1285,7 +1330,8 @@ export interface SessionRepo {
    *  bounded snapshot could not carry them all (never a silent truncation). */
   countUnackedVisibility(daemonId: DaemonId, includeExternal?: boolean): Promise<number>
   /** A session plus every descendant — the set a tightening cascade rewrote, so
-   *  the detail view's cutover state covers the whole subtree, not just the root. */
+   *  the detail view's cutover state covers the whole subtree, not just the root.
+   *  System-tier: driven by the visibility-push orchestrator from a row it holds. */
   visibilitySubtree(sessionId: SessionId, limit: number): Promise<SessionMetaRecord[]>
   /** Resolve the agent that owns a bot's `(channel, thread)` — the most-recently-active session
    *  keyed there whose agent still has an active integration for that bot and a current daemon
@@ -1320,17 +1366,21 @@ export interface WebchatConversationRepo {
    *  at creation). Conversation + participant rows commit atomically. */
   create(binding: WebchatConversationBinding, memberAgentIds?: AgentId[]): Promise<void>
   /** The conversation's full roster (primary first, then pick order). Empty
-   *  for an unknown conversation — callers fail closed. */
-  participants(conversationId: string): Promise<WebchatParticipant[]>
+   *  for an unknown conversation — callers fail closed. Org-fenced
+   *  (org-scoped-data-layer.md §3): a cross-org conversation id yields the same
+   *  empty roster as an unknown one, so it fails closed identically. */
+  participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]>
   /** Append one member to an existing conversation's roster (mid-conversation
    *  join, webchat-multi-agents.md §3.1). Idempotent — re-adding an existing
    *  participant is a no-op. Authorization (owner, canView, capability, cap)
    *  belongs to the caller. */
-  addParticipant(conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
+  addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void>
   /** The owning console user of a conversation, for session-visibility ingest
    *  (§4.2). Scoped to a PARTICIPANT agent (any roster role); unknown and
    *  foreign bindings both return null (the caller fails closed). */
   findOwner(conversationId: string, agentId: AgentId): Promise<string | null>
+  /* ^ System-tier (§3.4): fenced by the participant `agentId`, which session
+   *   ingest has already bound to the reporting daemon's own agent. */
   /** Exact owner check for resume via the legacy per-agent mint path (the
    *  asserted agent must be the conversation's primary). Unknown and foreign
    *  bindings both return false. */
@@ -1805,21 +1855,30 @@ export interface CronReportInput {
 }
 
 export interface CronRepo {
+  /** Create-or-edit by the CLIENT-MINTED `cronId`. Org-fenced inside the
+   *  transaction (docs/designs/org-scoped-data-layer.md §3): an id that already
+   *  exists in ANOTHER organization throws {@link CronMissing} rather than
+   *  letting the update branch rewrite that row (and its `orgId`) — the one
+   *  place in this port where a missing route check was a takeover, not a leak. */
   upsert(input: UpsertCronInput): Promise<CronRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from the content `upsert` which needs the full definition). Stamps
-   *  the last-modified audit; `byUserId` is the editing WebUI principal. */
+   *  the last-modified audit; `byUserId` is the editing WebUI principal.
+   *  Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   setSharing(
+    orgId: OrgId,
     cronId: CronId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<CronRecord>
-  remove(cronId: CronId): Promise<void>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  remove(orgId: OrgId, cronId: CronId): Promise<void>
   /** Console list (org-wide, orphans included). Every supplied human principal
    *  is resource-filtered; undefined is reserved for unfiltered internal reads
    *  (authorization/policy.ts#visibilityWhere). */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<CronRecord[]>
-  /** Every cron definition owned by one agent (cold placement-move snapshot). */
+  /** Every cron definition owned by one agent (cold placement-move snapshot).
+   *  System-tier (§3.4): agent-fenced, orchestration-only. */
   listForAgent(agentId: AgentId): Promise<CronRecord[]>
   /** Apply a daemon `cron/report`. Scoped: the cron's owning agent must be
    *  placed on the REPORTING daemon (a daemon can never write another daemon's
@@ -1829,19 +1888,26 @@ export interface CronRepo {
    *  completion report closes it. Returns whether the report was accepted
    *  (false ⇒ unknown/foreign cron, dropped). */
   recordReport(cronId: CronId, reportingDaemonId: DaemonId, report: CronReportInput): Promise<boolean>
-  /** Run history for the console detail page, newest first. */
-  listRuns(cronId: CronId, limit?: number): Promise<CronRunRecord[]>
+  /** Run history for the console detail page, newest first. Run rows carry
+   *  their own `orgId`, so the fence rides this query directly rather than only
+   *  through the parent cron (§3.6). */
+  listRuns(orgId: OrgId, cronId: CronId, limit?: number): Promise<CronRunRecord[]>
   /** Reconcile orphaned runs: close every row still `running` whose `startedAt`
    *  is before `staleBefore` to `failed` with a marker reason (its completion
    *  report was lost — daemon offline / drained at turn end). Non-destructive: a
    *  late completion report still overwrites the outcome (the run-row upsert is
    *  last-writer-wins). Returns the number of rows reaped. Org-wide (a global
-   *  maintenance sweep, not scoped to one daemon). */
+   *  maintenance sweep, not scoped to one daemon). System-tier by construction. */
   reapStaleRuns(staleBefore: Date): Promise<number>
   /** The cron set THIS daemon should run — crons of agents placed on it
-   *  (`register/ok.crons[]`, same scope rule as integrations §3.11). */
+   *  (`register/ok.crons[]`, same scope rule as integrations §3.11).
+   *  System-tier: daemon-fenced. */
   listForDaemon(daemonId: DaemonId): Promise<CronRecord[]>
-  get(cronId: CronId): Promise<CronRecord | null>
+  /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
+   *  missing row. Crons have no internal-trust-domain reader — the daemon-facing
+   *  paths are `listForDaemon` and `recordReport`, both fenced by the daemon
+   *  axis — so this port deliberately grows no `getUnscoped`. */
+  get(orgId: OrgId, cronId: CronId): Promise<CronRecord | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2223,15 +2289,39 @@ export interface ProjectionWriteResultInput {
 }
 
 export interface HookRepo {
+  /** Create-or-edit. `hookId` is minted server-side on create, so the update
+   *  branch is only ever reached with an id the route already resolved — but the
+   *  fence is structural anyway (docs/designs/org-scoped-data-layer.md §3): an id
+   *  that exists in ANOTHER organization throws {@link HookMissing} inside the
+   *  same transaction rather than letting the update rewrite that row's `orgId`. */
   upsert(input: UpsertHookInput): Promise<HookRecord>
-  remove(hookId: HookId, expectedAgentId?: AgentId): Promise<void>
-  get(hookId: HookId): Promise<HookRecord | null>
-  getMany(hookIds: HookId[]): Promise<HookRecord[]>
-  /** Every enabled hook, all orgs — the relay-register full-replay source. */
+  /** Org-fenced: a cross-org id throws the same missing-row error as an absent
+   *  one. `expectedAgentId` is the independent owner CAS (a rebind loser), kept. */
+  remove(orgId: OrgId, hookId: HookId, expectedAgentId?: AgentId): Promise<void>
+  /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
+   *  missing row. The only hook read the HTTP/MCP surface may use. */
+  get(orgId: OrgId, hookId: HookId): Promise<HookRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — the GitHub review broker
+   *  and rerequest machinery resolving the hook behind a run/projection row, and
+   *  WS handlers resolving the hook a reporting daemon named. Never call this
+   *  from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(hookId: HookId): Promise<HookRecord | null>
+  /** Org-fenced batch read: ids outside `orgId` are simply absent from the
+   *  result, exactly like unknown ids. */
+  getMany(orgId: OrgId, hookIds: HookId[]): Promise<HookRecord[]>
+  /** Tenancy-UNSCOPED batch read for the GitHub machinery: the comment-authorization
+   *  fences and the rerequest resolver address hooks by ids carried on durable
+   *  run/projection rows, which already fix the organization. Never call this
+   *  from the HTTP surface; lint enforces it (§6). */
+  getManyUnscoped(hookIds: HookId[]): Promise<HookRecord[]>
+  /** Every enabled hook, all orgs — the relay-register full-replay source.
+   *  System-tier: the relay pool is deployment-level infrastructure. */
   listEnabled(): Promise<HookRecord[]>
   /** A hook is subordinate to one agent and is only ever listed under it (the
    *  console detail page); access is gated by the AGENT's visibility, so no
-   *  viewer-filter here. Also the re-compile source on a placement change. */
+   *  viewer-filter here. Also the re-compile source on a placement change.
+   *  System-tier (§3.4): agent-fenced, and HTTP callers reach it only with an
+   *  agent id resolved through the org-fenced `AgentRepo.get`. */
   listForAgent(agentId: AgentId): Promise<HookRecord[]>
   /** Distinct kinds of ENABLED hooks per agent, org-wide in one query — feeds
    *  the agents-list read model (each agent's own row; no org hook list). */
@@ -2258,6 +2348,8 @@ export interface HookRepo {
     repoFullName: string,
     observedAt: Date
   ): Promise<GithubRepoFullNameRefreshResult>
+  /** System-tier: the run row behind a relay/daemon report or a durable
+   *  projection, always reached from system state that already fixes the org. */
   getRun(hookId: HookId, deliveryKey: string): Promise<HookRunRecord | null>
   /** Direct lookup for projection-owned metadata such as the terminal session deep link. */
   getRunById(runId: string): Promise<HookRunRecord | null>
@@ -2277,8 +2369,10 @@ export interface HookRepo {
    *  no prior delivery row (rc/run-report lost) still creates one, with
    *  `startedAt` estimated as `at − durationMs`. Returns acceptance. */
   recordReport(hookId: HookId, reportingDaemonId: DaemonId, input: HookReportInput, at: Date): Promise<boolean>
-  /** Run history for the console detail page, newest first. */
-  listRuns(hookId: HookId, limit?: number): Promise<HookRunRecord[]>
+  /** Run history for the console detail page, newest first. Run rows carry their
+   *  own `orgId`, so the fence rides this query directly rather than only through
+   *  the parent hook (§3.6). */
+  listRuns(orgId: OrgId, hookId: HookId, limit?: number): Promise<HookRunRecord[]>
   /** Which of `deliveryKeys` already have a run row (any hook) — the redelivery
    *  reconciler's "did this GUID land at all" probe. */
   existingDeliveryKeys(deliveryKeys: string[]): Promise<Set<string>>
@@ -2401,10 +2495,21 @@ export interface HookRepo {
 
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO
  *  (BotSecretStore discipline). */
+/**
+ * The per-hook HMAC secret. Rows are keyed by `hookId` alone and carry no org of
+ * their own, so this store fences through its parent (§3.6): `put` runs on the
+ * create path with a server-minted id, and `get`/`delete` belong to the relay
+ * hook-compile and lifecycle machinery. A route reaching a secret for an
+ * existing hook must resolve that hook through the org-fenced
+ * {@link HookRepo.get} first.
+ */
+/** Child of `HookDef`, so the parent's fence already covers tenancy
+ *  (org-scoped-data-layer.md §3.6). `orgId` is here because it now selects the
+ *  at-rest KEY (per-org-secret-encryption.md §4); the extra fence is a bonus. */
 export interface HookSecretStore {
-  put(hookId: HookId, hmacSecret: string): Promise<void>
-  get(hookId: HookId): Promise<string | null>
-  delete(hookId: HookId): Promise<void>
+  put(orgId: OrgId, hookId: HookId, hmacSecret: string): Promise<void>
+  get(orgId: OrgId, hookId: HookId): Promise<string | null>
+  delete(orgId: OrgId, hookId: HookId): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2560,30 +2665,58 @@ export interface BotRecord {
 
 export interface BotRepo {
   create(input: CreateBotInput): Promise<BotRecord>
-  get(id: BotId): Promise<BotRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. The only bot read
+   *  the HTTP/MCP surface may use. */
+  get(orgId: OrgId, id: BotId): Promise<BotRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — the shared-bot
+   *  orchestrator converging a relay assignment, integration/placement push
+   *  resolving the bot behind an integration row, WS-reported credential
+   *  lifecycle. Never call this from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(id: BotId): Promise<BotRecord | null>
   listForOrg(orgId: OrgId): Promise<BotRecord[]>
   /** Record workspace metadata learned from OAuth/auth.test. A missing name
-   *  preserves the last known label. */
-  setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
-  /** Slack bots missing public app/workspace/member identity metadata. */
+   *  preserves the last known label. Org-fenced: a cross-org id writes nothing
+   *  (the row is filtered out of the update). */
+  setWorkspaceMetadata(orgId: OrgId, id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
+  /** Slack bots missing public app/workspace/member identity metadata.
+   *  System-tier: the identity reconciler's worklist is deliberately fleet-wide. */
   listSlackMissingIdentity(): Promise<BotRecord[]>
-  /** Backfill only a missing id; never replace an established Slack app identity. */
+  /** Backfill only a missing id; never replace an established Slack app identity.
+   *  System-tier: reconciler-only, driven off {@link BotRepo.listSlackMissingIdentity}
+   *  and fenced by its own `slackAppId IS NULL` CAS predicate, so an org
+   *  parameter re-derived from that worklist would be tautological (§3.4). */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
-  /** Backfill only a missing Slack member id; never replace an established identity. */
+  /** Backfill only a missing Slack member id; never replace an established identity.
+   *  System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
   setSlackBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
-  /** Stamp the freed-bot display hints when its LAST integration is removed. */
-  markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void>
+  /** Stamp the freed-bot display hints when its LAST integration is removed.
+   *  Org-fenced: a cross-org id writes nothing. */
+  markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>
   /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
    *  bot row with {@link IntegrationRepo.addBotMembership}; disabling recounts the
    *  ACTIVE installs under that lock and throws `BotStillShared` when >1 remain,
-   *  so a concurrent admission can never slip past the route's optimistic check. */
-  setShareable(id: BotId, shareable: boolean): Promise<void>
+   *  so a concurrent admission can never slip past the route's optimistic check.
+   *  Org-fenced: the lock read is filtered, so a cross-org id throws the same
+   *  missing-row error ({@link BotMissing}) as an absent one. */
+  setShareable(orgId: OrgId, id: BotId, shareable: boolean): Promise<void>
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
-   *  shared-bot orchestrator's convergence worklist (relay register / failover). */
+   *  shared-bot orchestrator's convergence worklist (relay register / failover).
+   *  System-tier: fleet-wide by design. */
   listHttpActive(): Promise<BotRecord[]>
   /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
    *  by the composite demux key (a workspace binds to exactly one org). */
   getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
+  /** Workspace-claim admission predicate (ingress-tenant-fence.md §5): does a
+   *  DIFFERENT organization already hold a bot for this app+workspace? The
+   *  question is deliberately cross-org — one app installed into one workspace
+   *  by two orgs shares its inbound-verification secret AND its tenant, which
+   *  the relay's delivery-time fence cannot tell apart — but the answer is a
+   *  boolean, so no foreign row crosses the persistence seam. Revoked rows
+   *  still claim (workspace transfer is an explicit delete-then-reinstall,
+   *  never a silent capture). A DIFFERENT app in the same workspace is not a
+   *  claim: distinct apps carry distinct secrets, so nothing is ambiguous. */
+  workspaceClaimedElsewhere(orgId: OrgId, platform: string, appId: string, workspaceId: string): Promise<boolean>
   /** CROSS-ORG lookup by the generic demux identity (D6). Pass
    *  {@link TENANTLESS_SENTINEL} as `externalTenantId` for tenantless platforms —
    *  the same value {@link BotIdentityProjector} writes. Legacy rows (NULL
@@ -2599,6 +2732,11 @@ export interface BotRepo {
    * This is also the ONLY way to un-revoke a bot — there is deliberately no bare
    * `setRevoked(id, null)`: reviving a credential without advancing its
    * generation would leave a delayed uninstall from the dead one able to kill it.
+   *
+   * System-tier (§3.4): reached only through {@link BotCredentialWriter}, whose
+   * install arm runs after the platform callback has resolved the row by its
+   * external demux identity — a deliberately cross-org lookup that already
+   * settles which organization owns the credential.
    */
   bumpCredential(id: BotId, at: Date): Promise<number>
   /**
@@ -2615,10 +2753,14 @@ export interface BotRepo {
    *    relay already received the newer assignment and would echo its revision).
    * Both are optional: a report carrying neither still applies (fail-open — an
    * uninstall must eventually take effect).
+   *
+   * System-tier (§3.4): relay-reported lifecycle, already fenced by the
+   * credential generation CAS above — a stronger axis than the owning org.
    */
   revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean>
-  /** Callers must refuse while the bot is installed (FK Restrict backstops). */
-  delete(id: BotId): Promise<void>
+  /** Callers must refuse while the bot is installed (FK Restrict backstops).
+   *  Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
+  delete(orgId: OrgId, id: BotId): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2652,7 +2794,10 @@ export interface GithubInstallationRepo {
   /** Claim/update by GitHub installation id. The setup callback is the only
    * path allowed to create a claim; refresh paths pass the durable claim's org. */
   upsertFromGithub(orgId: OrgId, facts: GithubInstallationFacts): Promise<GithubInstallationRecord>
-  get(id: string): Promise<GithubInstallationRecord | null>
+  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
+   *  as absent, exactly like a missing row. The claim row IS the tenancy record
+   *  for an installation, so this is the read the HTTP surface must use. */
+  get(orgId: OrgId, id: string): Promise<GithubInstallationRecord | null>
   /** Live (non-revoked) installations claimed by the org — the picker's first level. */
   listForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
   /** Every durable claim for an org, including revoked rows. Sync refreshes
@@ -2661,9 +2806,12 @@ export interface GithubInstallationRepo {
   /** Mint-time resolution: the live installation covering `accountLogin` in this org. */
   liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null>
   /** Doorbell lookup by GITHUB-side id (revoked rows included — the claim row is
-   *  what maps the poke to an org; unknown ⇒ no org claim yet, ignore). */
+   *  what maps the poke to an org; unknown ⇒ no org claim yet, ignore).
+   *  System-tier and deliberately CROSS-ORG: resolving the owning organization
+   *  is the whole point of this read, so it cannot take one. */
   getByInstallationId(installationId: bigint): Promise<GithubInstallationRecord | null>
-  /** Doorbell revoke: GitHub answered 404/410 for this installation (never delete). */
+  /** Doorbell revoke: GitHub answered 404/410 for this installation (never delete).
+   *  System-tier: GitHub-driven, keyed by the same cross-org external id. */
   markRevokedByInstallationId(installationId: bigint): Promise<void>
 }
 
@@ -2751,9 +2899,9 @@ export interface BotSecretMaterial {
 }
 
 export interface BotSecretStore {
-  put(botId: BotId, material: BotSecretMaterial): Promise<void>
-  get(botId: BotId): Promise<BotSecretMaterial | null>
-  delete(botId: BotId): Promise<void>
+  put(orgId: OrgId, botId: BotId, material: BotSecretMaterial): Promise<void>
+  get(orgId: OrgId, botId: BotId): Promise<BotSecretMaterial | null>
+  delete(orgId: OrgId, botId: BotId): Promise<void>
 }
 
 /** Outcome of a fenced revocation: `applied: false` ⇒ the report was stale and
@@ -2782,6 +2930,7 @@ export interface BotCredentialWriter {
    *  also restore only memberships revoked with the credential being replaced;
    *  all three writes remain one transaction. Returns the new revision. */
   install(
+    orgId: OrgId,
     botId: BotId,
     material: BotSecretMaterial,
     at: Date,
@@ -2805,12 +2954,12 @@ export interface AgentSecretStore {
    *  deletes it, an omitted key is left untouched (the client never holds values).
    *  This is the standalone row primitive — REST create/PATCH go through
    *  {@link AgentConfigWriter} so the agent row and its secrets commit atomically. */
-  merge(agentId: AgentId, patch: Record<string, string | null>): Promise<void>
+  merge(orgId: OrgId, agentId: AgentId, patch: Record<string, string | null>): Promise<void>
   /** Every secret of one agent ({} when none) — the wire-projection read
    *  (agent/upsert, register/ok roster, agent/activate). NEVER DTO this. */
-  get(agentId: AgentId): Promise<Record<string, string>>
+  get(orgId: OrgId, agentId: AgentId): Promise<Record<string, string>>
   /** Key names only (sorted), batched for list DTOs — never touches values. */
-  keys(agentIds: readonly AgentId[]): Promise<Map<string, string[]>>
+  keys(orgId: OrgId, agentIds: readonly AgentId[]): Promise<Map<string, string[]>>
 }
 
 /**
@@ -2895,10 +3044,14 @@ export interface SlackInstallRecord {
 
 export interface SlackInstallStore {
   create(input: CreateSlackInstallInput): Promise<SlackInstallRecord>
-  get(id: string): Promise<SlackInstallRecord | null>
+  get(orgId: OrgId, id: string): Promise<SlackInstallRecord | null>
+  /** The OAuth callback resolves a pending install by its unforgeable `state`
+   *  before any org context exists — the state token is the authority there
+   *  (org-scoped-data-layer.md §4). Callers take the org from the row. */
+  getUnscoped(id: string): Promise<SlackInstallRecord | null>
   /** Backfill the OAuth-obtained bot token (xoxb) on the callback. False ⇒ row gone. */
-  setBotToken(id: string, botToken: string): Promise<boolean>
-  delete(id: string): Promise<void>
+  setBotToken(orgId: OrgId, id: string, botToken: string): Promise<boolean>
+  delete(orgId: OrgId, id: string): Promise<void>
   /** TTL sweep: delete pending rows created before `staleBefore`; returns the count. */
   reapExpired(staleBefore: Date): Promise<number>
 }
@@ -3014,9 +3167,16 @@ export interface CreateFeishuAppRegistrationInput {
   createdByUserId: string
 }
 
+/**
+ * The route-facing read is org-scoped; everything below it is SYSTEM-TIER
+ * (org-scoped-data-layer.md §3.4). The polling/finalization methods are fenced
+ * by the claim-token lease or the target reservation — a stronger axis than an
+ * org — and run in a background worker that serves no tenant, so they take the
+ * at-rest key scope from the row they just claimed rather than from a caller.
+ */
 export interface FeishuAppRegistrationStore {
   create(input: CreateFeishuAppRegistrationInput): Promise<FeishuAppRegistrationRecord>
-  get(id: string): Promise<FeishuAppRegistrationRecord | null>
+  get(orgId: OrgId, id: string): Promise<FeishuAppRegistrationRecord | null>
   getActiveTarget(targetKey: string): Promise<FeishuAppRegistrationRecord | null>
   /** Atomically fail an expired open row and release its target reservation. */
   expire(id: string, now: Date): Promise<void>
@@ -3156,12 +3316,23 @@ export interface IntegrationRepo {
     | { outcome: 'not_shareable' }
     | { outcome: 'revoked' }
   >
-  get(id: IntegrationId): Promise<IntegrationRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. The only
+   *  integration read the HTTP/MCP surface may use — and, because
+   *  {@link IntegrationChannelRepo}'s rows carry no org of their own, the read
+   *  every route path to a channel row is required to pass through (§3.6). */
+  get(orgId: OrgId, id: IntegrationId): Promise<IntegrationRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — a daemon reporting the
+   *  external origin of a session it already proved it owns. Never call this
+   *  from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(id: IntegrationId): Promise<IntegrationRecord | null>
   /** Every integration in the org. When a human principal is supplied,
    *  integrations whose parent agent is restricted away from them are filtered
    *  out; undefined alone keeps internal reads unfiltered. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<IntegrationRecord[]>
-  /** Every active integration owned by one agent (cold placement-move snapshot). */
+  /** Every active integration owned by one agent (cold placement-move snapshot).
+   *  System-tier (§3.4): agent-fenced, and its only callers are orchestration
+   *  (placement move, spec push) and the dedicated-bot icon converger. */
   listForAgent(agentId: AgentId): Promise<IntegrationRecord[]>
   /**
    * Active integrations whose owning agent is placed on `daemonId` — the
@@ -3186,16 +3357,21 @@ export interface IntegrationRepo {
   channelPlacements(orgId: OrgId): Promise<ChannelPlacementRecord[]>
   /** Every ACTIVE integration installed on `botId` (all agents sharing a shared
    *  bot). The shared-bot route compiler's member set. Ordered by createdAt (the
-   *  earliest is the group's default agent). */
+   *  earliest is the group's default agent). System-tier: bot-fenced, and a bot
+   *  belongs to exactly one org — HTTP callers reach it only with a bot id that
+   *  came through the org-fenced {@link BotRepo.get}. */
   listForBot(botId: BotId): Promise<IntegrationRecord[]>
   /** Flip every ACTIVE integration of `botId` to `revoked` (workspace uninstall /
    *  token revocation), recording the credential generation that owned it.
-   *  Returns the affected integration ids. */
+   *  Returns the affected integration ids. System-tier: relay-reported lifecycle,
+   *  fenced by the credential generation. */
   markRevokedForBot(botId: BotId, credentialRevision: number): Promise<IntegrationId[]>
   /** Restore memberships revoked with exactly `credentialRevision`. Historical
-   *  revoked rows and deliberately deleted/free memberships stay untouched. */
+   *  revoked rows and deliberately deleted/free memberships stay untouched.
+   *  System-tier like {@link IntegrationRepo.markRevokedForBot}. */
   restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number>
-  delete(id: IntegrationId): Promise<void>
+  /** Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
+  delete(orgId: OrgId, id: IntegrationId): Promise<void>
 }
 
 /** One agent visible in a channel — the collaboration directory entry (metadata only). */
@@ -3290,6 +3466,17 @@ export interface ReportedChannel {
   kind?: ConversationKind
 }
 
+/**
+ * Conversation rows carry NO `orgId` of their own: every method here is
+ * addressed by the owning `integrationId` (or `botId`), and fences through that
+ * parent (docs/designs/org-scoped-data-layer.md §3.6). The structural
+ * requirement this places on callers: an integration id that came from the HTTP
+ * surface must have been resolved through the org-fenced
+ * {@link IntegrationRepo.get} — the tenant-isolation contract suite asserts a
+ * foreign integration's conversations stay unreachable that way. Everything
+ * else here is the daemon/relay report path and the shared-bot route compiler,
+ * both internal trust domains (§4).
+ */
 export interface IntegrationChannelRepo {
   /**
    * Converge to the daemon's channel report (latest-wins): upsert every reported
@@ -3838,19 +4025,28 @@ export interface UpdateMcpProviderInput {
 
 export interface McpProviderRepo {
   create(input: CreateMcpProviderInput): Promise<McpProviderRecord>
-  get(id: string): Promise<McpProviderRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. This port has no
+   *  `getUnscoped` — the daemon and relay reach providers through
+   *  {@link McpProviderRepo.activeForDaemon} and {@link McpProviderRepo.listAll},
+   *  so no internal trust domain needs an id-addressed escape hatch. */
+  get(orgId: OrgId, id: string): Promise<McpProviderRecord | null>
   /** The org's providers, filtered to what a supplied human principal may see
    *  (org-visible OR owned-by-them OR shared-with-them). Undefined is reserved
    *  for unfiltered internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<McpProviderRecord[]>
-  /** Set visibility + share set (console access only; never crosses the wire). */
+  /** Set visibility + share set (console access only; never crosses the wire).
+   *  Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<McpProviderRecord>
-  update(id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
-  delete(id: string): Promise<void>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  update(orgId: OrgId, id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  delete(orgId: OrgId, id: string): Promise<void>
   /**
    * Providers that should be pushed to `daemonId`: an org provider whose `name` is
    * enabled (in `runtimeOverrides.mcpServers`) by some agent placed on the daemon.
@@ -3860,7 +4056,7 @@ export interface McpProviderRepo {
   activeForDaemon(daemonId: DaemonId): Promise<McpProviderRecord[]>
   /** EVERY provider across all orgs — the pool-wide set replayed to a relay that just
    *  (re)registered (its in-memory binding table starts empty; bindings are pool-wide,
-   *  like bots/hooks). */
+   *  like bots/hooks). System-tier: deployment-level infrastructure by design. */
   listAll(): Promise<McpProviderRecord[]>
 }
 
@@ -3872,11 +4068,17 @@ export interface McpHeader {
 
 /** The ONLY read/write path for `mcp_provider_secret` (upstream auth headers).
  *  Store-only: NEVER in a DTO, NEVER pushed to a daemon (relay-only, via rc/mcp-assign).
- *  Same seam/discipline as {@link BotSecretStore}. */
+ *  Same seam/discipline as {@link BotSecretStore}.
+ *
+ *  Rows are keyed by `providerId` alone and carry no org, so this store fences
+ *  through its parent (org-scoped-data-layer.md §3.6): a route reaching a
+ *  secret must have resolved its provider through the org-fenced
+ *  {@link McpProviderRepo.get} (or just created it) first. */
+/** Child of `McpProvider` — see {@link HookSecretStore} for why `orgId` is here. */
 export interface McpProviderSecretStore {
-  put(providerId: string, headers: McpHeader[]): Promise<void>
-  get(providerId: string): Promise<McpHeader[] | null>
-  delete(providerId: string): Promise<void>
+  put(orgId: OrgId, providerId: string, headers: McpHeader[]): Promise<void>
+  get(orgId: OrgId, providerId: string): Promise<McpHeader[] | null>
+  delete(orgId: OrgId, providerId: string): Promise<void>
 }
 
 /** Domain view of an `mcp_grant` row. `key` is the PLAINTEXT bearer grant key —
@@ -3890,14 +4092,17 @@ export interface McpGrantRecord {
   createdAt: Date
 }
 
+/** Grants hang off one provider and carry no org of their own — they fence
+ *  through {@link McpProviderRepo} exactly like {@link McpProviderSecretStore}
+ *  (org-scoped-data-layer.md §3.6). */
 export interface McpGrantRepo {
   /** Mint a fresh active grant (generates a new plaintext key) for a provider.
    *  v1 keeps exactly one active grant per provider — the caller revokes any prior
    *  active grant first (shared org identity). Returns the row WITH the plaintext. */
-  mintFor(providerId: string): Promise<McpGrantRecord>
+  mintFor(orgId: OrgId, providerId: string): Promise<McpGrantRecord>
   /** The provider's active grants (v1: 0 or 1). Carries plaintext — internal use only. */
-  activeForProvider(providerId: string): Promise<McpGrantRecord[]>
-  /** Mark a grant revoked (idempotent). */
+  activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]>
+  /** Mark a grant revoked (idempotent). No value is opened, so no scope needed. */
   revoke(grantId: string): Promise<void>
 }
 
@@ -3952,7 +4157,11 @@ export interface SkillSourceRepo {
    *  scope, the agent-reference scan, and the insert share one transaction;
    *  null ⇒ an agent still enables skills under this name (caller answers 409). */
   create(input: CreateSkillSourceInput): Promise<SkillSourceRecord | null>
-  get(id: string): Promise<SkillSourceRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. This port has no
+   *  `getUnscoped` — internal readers resolve a source by its org-unique NAME
+   *  through {@link SkillSourceRepo.getByName}, which is already org-carrying. */
+  get(orgId: OrgId, id: string): Promise<SkillSourceRecord | null>
   /** The org's sources, filtered by the OSS resource-visibility policy for a
    *  supplied human principal; undefined is reserved for internal reads. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<SkillSourceRecord[]>
@@ -3960,16 +4169,21 @@ export interface SkillSourceRepo {
   getByName(orgId: OrgId, name: string): Promise<SkillSourceRecord | null>
   /** Holds the (orgId, name) advisory scope for the write: agent enable-list
    *  writes authorize visibility under the same scope, so a flip cannot land
-   *  between their check and their commit. */
+   *  between their check and their commit. Org-fenced: a cross-org id throws
+   *  the same P2025 as a missing row, before that scope is taken. */
   setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<SkillSourceRecord>
-  update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  update(orgId: OrgId, id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord>
   /** Delete under the referenced-guard, in one transaction with the reference
-   *  scan ('referenced' ⇒ caller answers 409; missing row ⇒ 'deleted'). */
-  delete(id: string): Promise<'deleted' | 'referenced'>
+   *  scan ('referenced' ⇒ caller answers 409; missing row ⇒ 'deleted').
+   *  Org-fenced: a cross-org id is 'deleted' — the same answer as an unknown id,
+   *  and (unlike 'referenced') one that discloses nothing about the foreign row. */
+  delete(orgId: OrgId, id: string): Promise<'deleted' | 'referenced'>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -4103,9 +4317,20 @@ export type AcceptOrganizationSuggestionResult =
   | { outcome: 'target_missing'; suggestion: OrganizationSuggestionRecord }
   | { outcome: 'name_conflict'; suggestion: OrganizationSuggestionRecord }
 
+/**
+ * Knowledge entries, managed skills and dream suggestions are all org-owned rows
+ * addressed by id, so every point read and mutation here is org-fenced
+ * (docs/designs/org-scoped-data-layer.md §3). Their REVISION tables carry no
+ * `orgId` of their own and fence through the parent (§3.6) — each revision read
+ * sits behind the fenced `getKnowledge` / `getManagedSkill` that admitted it.
+ * Nothing in this port needs a `getUnscoped`: the daemon-facing reads
+ * (`managed-skill/read`, knowledge search) resolve the org from the requesting
+ * agent, which the WS handler has already proved is placed on the connection.
+ */
 export interface OrganizationKnowledgeRepo {
   listKnowledge(orgId: OrgId, includeArchived?: boolean): Promise<OrganizationKnowledgeRecord[]>
-  getKnowledge(id: string): Promise<OrganizationKnowledgeRecord | null>
+  getKnowledge(orgId: OrgId, id: string): Promise<OrganizationKnowledgeRecord | null>
+  /** Fences through {@link OrganizationKnowledgeRepo.getKnowledge} (§3.6). */
   listKnowledgeRevisions(id: string): Promise<OrganizationKnowledgeRevisionRecord[]>
   searchKnowledge(
     orgId: OrgId,
@@ -4116,19 +4341,33 @@ export interface OrganizationKnowledgeRepo {
     input: { title: string; content: string; summary?: string; tags?: string[] },
     provenance: OrganizationArtifactProvenance
   ): Promise<OrganizationKnowledgeRecord>
+  /** Org-fenced: a cross-org id misses the revision CAS exactly like a stale
+   *  `expectedRevision` (null), so it discloses nothing the CAS did not already. */
   updateKnowledge(
+    orgId: OrgId,
     id: string,
     expectedRevision: number,
     input: { title: string; content: string; summary?: string; tags?: string[] },
     provenance: OrganizationArtifactProvenance
   ): Promise<OrganizationKnowledgeRecord | null>
-  setKnowledgeArchived(id: string, archived: boolean, byUserId?: string): Promise<OrganizationKnowledgeRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  setKnowledgeArchived(
+    orgId: OrgId,
+    id: string,
+    archived: boolean,
+    byUserId?: string
+  ): Promise<OrganizationKnowledgeRecord>
 
   listManagedSkills(orgId: OrgId, includeArchived?: boolean): Promise<ManagedSkillRecord[]>
-  getManagedSkill(id: string): Promise<ManagedSkillRecord | null>
+  /** Org-fenced: a cross-org id reads as absent. Every caller previously
+   *  post-filtered on `row.orgId !== …`; the fence replaces that check. */
+  getManagedSkill(orgId: OrgId, id: string): Promise<ManagedSkillRecord | null>
+  /** Fences through {@link OrganizationKnowledgeRepo.getManagedSkill} (§3.6). */
   getManagedSkillRevision(id: string, revision: number): Promise<ManagedSkillRevisionRecord | null>
+  /** Fences through {@link OrganizationKnowledgeRepo.getManagedSkill} (§3.6). */
   listManagedSkillRevisions(id: string): Promise<ManagedSkillRevisionRecord[]>
-  setManagedSkillArchived(id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  setManagedSkillArchived(orgId: OrgId, id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord>
 
   syncSuggestions(
     orgId: OrgId,
@@ -4139,19 +4378,29 @@ export interface OrganizationKnowledgeRepo {
     orgId: OrgId,
     filters?: { kind?: OrganizationSuggestionKind; state?: OrganizationSuggestionState; query?: string }
   ): Promise<OrganizationSuggestionRecord[]>
-  getSuggestion(id: string): Promise<OrganizationSuggestionRecord | null>
+  /** Org-fenced: a cross-org id reads as absent. */
+  getSuggestion(orgId: OrgId, id: string): Promise<OrganizationSuggestionRecord | null>
+  /** Org-fenced: a cross-org id throws the same missing-row error as an
+   *  unknown one, and the pending-state CAS is unchanged. */
   rejectSuggestion(
+    orgId: OrgId,
     id: string,
     reviewedByUserId: string | undefined,
     reason?: string
   ): Promise<OrganizationSuggestionRecord>
+  /** Org-fenced on the row-locked read that opens the transaction, before the
+   *  snapshot-token comparison — so a cross-org id can never answer "stale
+   *  snapshot" and confirm the foreign suggestion exists. */
   acceptKnowledgeSuggestion(
+    orgId: OrgId,
     id: string,
     body: { title: string; content: string; summary: string | null; tags: string[] },
     expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult>
+  /** Org-fenced like {@link OrganizationKnowledgeRepo.acceptKnowledgeSuggestion}. */
   acceptSkillSuggestion(
+    orgId: OrgId,
     id: string,
     body: {
       archive: Uint8Array
@@ -4243,14 +4492,22 @@ export interface ExternalMemoryConnectionRepo {
     config: Record<string, unknown>
     createdByUserId?: string
   }): Promise<ExternalMemoryConnectionRecord>
-  get(id: string): Promise<ExternalMemoryConnectionRecord | null>
+  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
+   *  as absent, exactly like a missing row. No `getUnscoped` — the daemon and
+   *  relay reach connections through `activeForDaemon` / `listAll`, never by id. */
+  get(orgId: OrgId, id: string): Promise<ExternalMemoryConnectionRecord | null>
   listForOrg(orgId: OrgId): Promise<ExternalMemoryConnectionRecord[]>
+  /** System-tier: the pool-wide set replayed to a relay that just (re)registered. */
   listAll(): Promise<ExternalMemoryConnectionRecord[]>
-  update(id: string, patch: { config?: Record<string, unknown> }): Promise<ExternalMemoryConnectionRecord>
-  delete(id: string): Promise<void>
-  /** Connections referenced by an external-memory agent placed on this daemon. */
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  update(orgId: OrgId, id: string, patch: { config?: Record<string, unknown> }): Promise<ExternalMemoryConnectionRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  delete(orgId: OrgId, id: string): Promise<void>
+  /** Connections referenced by an external-memory agent placed on this daemon.
+   *  System-tier: daemon-fenced. */
   activeForDaemon(daemonId: DaemonId): Promise<ExternalMemoryConnectionRecord[]>
-  /** Revision-fenced probe fact update; stale daemon facts are ignored. */
+  /** Revision-fenced probe fact update; stale daemon facts are ignored.
+   *  System-tier: daemon-reported, fenced by the revision CAS. */
   updateProbeFact(
     id: string,
     revision: number,
@@ -4266,12 +4523,18 @@ export interface ExternalMemoryConnectionRepo {
   ): Promise<boolean>
 }
 
-/** Secret values keyed by manifest logical field name. Values never enter DTOs. */
+/** Secret values keyed by manifest logical field name. Values never enter DTOs.
+ *  Rows are keyed by `connectionId` alone and carry no org, so this store fences
+ *  through its parent (org-scoped-data-layer.md §3.6) — a route reaching a
+ *  connection's secrets must resolve it through the org-fenced
+ *  {@link ExternalMemoryConnectionRepo.get} first. */
+/** Child of `ExternalMemoryConnection` — see {@link HookSecretStore} for why
+ *  `orgId` is here. `keys` touches no value but keeps the fence for symmetry. */
 export interface ExternalMemoryConnectionSecretStore {
-  put(connectionId: string, values: Record<string, string>): Promise<void>
-  get(connectionId: string): Promise<Record<string, string> | null>
-  keys(connectionId: string): Promise<string[]>
-  delete(connectionId: string): Promise<void>
+  put(orgId: OrgId, connectionId: string, values: Record<string, string>): Promise<void>
+  get(orgId: OrgId, connectionId: string): Promise<Record<string, string> | null>
+  keys(orgId: OrgId, connectionId: string): Promise<string[]>
+  delete(orgId: OrgId, connectionId: string): Promise<void>
 }
 
 export interface ExternalMemoryGrantRecord {
@@ -4282,9 +4545,12 @@ export interface ExternalMemoryGrantRecord {
   createdAt: Date
 }
 
+/** Grants hang off one connection and fence through it, exactly like
+ *  {@link ExternalMemoryConnectionSecretStore} (§3.6). */
 export interface ExternalMemoryGrantRepo {
-  mintFor(connectionId: string): Promise<ExternalMemoryGrantRecord>
-  activeForConnection(connectionId: string): Promise<ExternalMemoryGrantRecord[]>
+  mintFor(orgId: OrgId, connectionId: string): Promise<ExternalMemoryGrantRecord>
+  activeForConnection(orgId: OrgId, connectionId: string): Promise<ExternalMemoryGrantRecord[]>
+  /** No value is opened, so no scope needed. */
   revoke(grantId: string): Promise<void>
 }
 
@@ -4557,12 +4823,13 @@ export interface OrganizationEnvironmentRepo {
  * the value table.
  */
 export interface OrganizationEnvironmentSecretStore {
-  /** Seal one value for a create/replacement. Runs OUTSIDE any transaction — a
-   *  real cipher may make network calls and a transaction must never wait on one. */
-  seal(value: string): Promise<string>
+  /** Seal one value for a create/replacement, under the owning org's key. Runs
+   *  OUTSIDE any transaction — a real cipher may make network calls and a
+   *  transaction must never wait on one. */
+  seal(orgId: OrgId, value: string): Promise<string>
   /** Decrypted values for the given entry ids, keyed by entry id. Missing rows
    *  are simply absent; the resolver turns that into a tombstone (§9). */
-  values(entryIds: readonly string[]): Promise<Map<string, string>>
+  values(orgId: OrgId, entryIds: readonly string[]): Promise<Map<string, string>>
 }
 
 /**

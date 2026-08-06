@@ -15,7 +15,7 @@
 #
 # Control Plane — Fastify BFF + daemon WS gateway (packages/control-plane). The
 #   runtime also carries schema/migration files for the external migration
-#   runner and the self-contained Tenant Admin server;
+#   runner and the self-contained Setup Server;
 #   it deliberately contains no Prisma CLI.
 # Relay — shared integration ingress (packages/relay).
 # Memory plugin — centralized Mem0 MCP wrapper (packages/memory-plugin-mem0).
@@ -56,7 +56,7 @@ COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
-# Install the control-plane, the self-contained Tenant Admin package, and
+# Install the control-plane, the self-contained Setup Server package, and
 # their workspace deps (skips the daemon and its native better-sqlite3 build).
 FROM manifests AS cp-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
@@ -76,7 +76,7 @@ RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/control-plane" \
   -r build
 
-# Bundle the Tenant Admin server and its runtime dependencies.
+# Bundle the Setup Server and its runtime dependencies.
 RUN pnpm --filter "@agentconnect.md/setup" build
 
 # Materialize the same portable production bundle used by the other plain Node

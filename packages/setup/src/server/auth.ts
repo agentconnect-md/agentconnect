@@ -1,5 +1,5 @@
 /**
- * Logto/OIDC authentication for the loopback-only Tenant Admin surface.
+ * Logto/OIDC authentication for the loopback-only Setup Server.
  *
  * There are two deliberately separate checks:
  *  - bootstrap identity: a signature-checked token, accepted only inside the
@@ -15,59 +15,70 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 export const ADMIN_ROLES_CLAIM = 'roles'
 export const ADMIN_ROLE = 'ADMIN'
 
-export interface AdminOidcConfig {
+export interface SetupOidcConfig {
   issuer: string
+  upstream?: string
   audience?: string
 }
 
 /** Reads either the in-memory bootstrap draft or the persisted runtime snapshot. */
-export interface AdminOidcConfigProvider {
-  get(): Promise<AdminOidcConfig | null>
+export interface SetupOidcConfigProvider {
+  get(): Promise<SetupOidcConfig | null>
 }
 
-export interface TenantAdminPrincipal {
+export interface SetupPrincipal {
   subject: string
   email?: string
 }
 
-export class TenantAdminAuthError extends Error {
+export class SetupAuthError extends Error {
   constructor(
     readonly statusCode: 401 | 403 | 503,
     readonly code: 'ADMIN_OIDC_NOT_CONFIGURED' | 'INVALID_TOKEN' | 'ADMIN_ROLE_REQUIRED',
     message: string
   ) {
     super(message)
-    this.name = 'TenantAdminAuthError'
+    this.name = 'SetupAuthError'
   }
 }
 
-export type VerifyOidcToken = (token: string, config: AdminOidcConfig) => Promise<JWTPayload>
+export type VerifyOidcToken = (token: string, config: SetupOidcConfig) => Promise<JWTPayload>
+
+export function urlAtOrigin(value: string, origin: string): URL {
+  const url = new URL(value)
+  const target = new URL(origin)
+  url.protocol = target.protocol
+  url.host = target.host
+  return url
+}
 
 /** Production JWT verifier. Discovery/JWKS are cached per normalized issuer. */
 export function createOidcTokenVerifier(fetchImpl: typeof fetch = fetch): VerifyOidcToken {
   const jwksByIssuer = new Map<string, Promise<ReturnType<typeof createRemoteJWKSet>>>()
 
-  const jwks = (issuer: string): Promise<ReturnType<typeof createRemoteJWKSet>> => {
+  const jwks = (issuer: string, upstream?: string): Promise<ReturnType<typeof createRemoteJWKSet>> => {
     const normalized = issuer.replace(/\/+$/, '')
-    const cached = jwksByIssuer.get(normalized)
+    const cacheKey = `${normalized}\n${upstream ?? ''}`
+    const cached = jwksByIssuer.get(cacheKey)
     if (cached) return cached
     const pending = (async () => {
-      const response = await fetchImpl(`${normalized}/.well-known/openid-configuration`)
+      const discoveryIssuer = upstream ? urlAtOrigin(normalized, upstream).toString().replace(/\/$/, '') : normalized
+      const response = await fetchImpl(`${discoveryIssuer}/.well-known/openid-configuration`)
       if (!response.ok) throw new Error(`OIDC discovery failed: HTTP ${response.status}`)
       const document = (await response.json()) as { jwks_uri?: unknown }
       if (typeof document.jwks_uri !== 'string') throw new Error('OIDC discovery document is missing jwks_uri')
-      return createRemoteJWKSet(new URL(document.jwks_uri))
+      return createRemoteJWKSet(upstream ? urlAtOrigin(document.jwks_uri, upstream) : new URL(document.jwks_uri))
     })().catch((error) => {
-      jwksByIssuer.delete(normalized)
+      jwksByIssuer.delete(cacheKey)
       throw error
     })
-    jwksByIssuer.set(normalized, pending)
+    jwksByIssuer.set(cacheKey, pending)
     return pending
   }
 
   return async (token, config) => {
     const issuer = config.issuer.replace(/\/+$/, '')
-    const verified = await jwtVerify(token, await jwks(issuer), {
+    const verified = await jwtVerify(token, await jwks(issuer, config.upstream), {
       issuer,
       ...(config.audience ? { audience: config.audience } : {})
     })
@@ -82,34 +93,34 @@ export function extractAdminRoles(claim: unknown): string[] {
   return []
 }
 
-export class TenantAdminAuthenticator {
+export class SetupAuthenticator {
   constructor(
-    private readonly config: AdminOidcConfigProvider,
+    private readonly config: SetupOidcConfigProvider,
     private readonly verifyToken: VerifyOidcToken = createOidcTokenVerifier()
   ) {}
 
   /** Verify an OIDC identity. Only the one-time local bootstrap flow may call
-   *  this with `requireAdminRole=false`. Ordinary admin routes always require it. */
-  async authenticate(authorization: string | undefined, requireAdminRole = true): Promise<TenantAdminPrincipal> {
+   *  this with `requireAdminRole=false`. Ordinary Setup routes always require it. */
+  async authenticate(authorization: string | undefined, requireAdminRole = true): Promise<SetupPrincipal> {
     const oidc = await this.config.get()
     if (!oidc) {
-      throw new TenantAdminAuthError(503, 'ADMIN_OIDC_NOT_CONFIGURED', 'tenant admin OIDC is not configured')
+      throw new SetupAuthError(503, 'ADMIN_OIDC_NOT_CONFIGURED', 'Setup Server OIDC is not configured')
     }
     if (!authorization?.startsWith('Bearer ')) {
-      throw new TenantAdminAuthError(401, 'INVALID_TOKEN', 'missing bearer token')
+      throw new SetupAuthError(401, 'INVALID_TOKEN', 'missing bearer token')
     }
 
     let payload: JWTPayload
     try {
       payload = await this.verifyToken(authorization.slice('Bearer '.length), oidc)
     } catch {
-      throw new TenantAdminAuthError(401, 'INVALID_TOKEN', 'invalid bearer token')
+      throw new SetupAuthError(401, 'INVALID_TOKEN', 'invalid bearer token')
     }
     if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
-      throw new TenantAdminAuthError(401, 'INVALID_TOKEN', 'token is missing its subject')
+      throw new SetupAuthError(401, 'INVALID_TOKEN', 'token is missing its subject')
     }
     if (requireAdminRole && !extractAdminRoles(payload[ADMIN_ROLES_CLAIM]).includes(ADMIN_ROLE)) {
-      throw new TenantAdminAuthError(403, 'ADMIN_ROLE_REQUIRED', 'ADMIN role required')
+      throw new SetupAuthError(403, 'ADMIN_ROLE_REQUIRED', 'ADMIN role required')
     }
     return {
       subject: payload.sub,
@@ -120,6 +131,6 @@ export class TenantAdminAuthenticator {
 
 declare module 'fastify' {
   interface FastifyRequest {
-    tenantAdminPrincipal?: TenantAdminPrincipal
+    setupPrincipal?: SetupPrincipal
   }
 }

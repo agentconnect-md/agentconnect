@@ -67,7 +67,9 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
       : p.platform === 'hook'
         ? p.channel
         : undefined
-    const hook = triggerId ? await deps.hook.get(HookId(triggerId)) : null
+    // Daemon trust domain: the hook a reporting daemon named as a session's
+    // trigger; the `hook.agentId === agentId` check below binds it (§4).
+    const hook = triggerId ? await deps.hook.getUnscoped(HookId(triggerId)) : null
     const legacyGithub = hook?.kind === 'github' && hook.agentId === agentId
     if (legacyGithub) return { provider: 'github', resolution: 'pending' as const }
 
@@ -115,7 +117,10 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
     }
   }
   if (!origin.integrationId || !origin.realmKey) return pending
-  const integration = await deps.integration.get(IntegrationId(origin.integrationId))
+  // Daemon trust domain: the integration a reporting daemon named as the origin
+  // of a session it already proved it owns (org-scoped-data-layer.md §4). The
+  // ownership checks below still bind it to the reporting agent.
+  const integration = await deps.integration.getUnscoped(IntegrationId(origin.integrationId))
   if (
     !integration ||
     integration.agentId !== agentId ||
@@ -124,7 +129,9 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
   ) {
     return { provider: origin.provider, resolution: 'invalid' as const }
   }
-  const bot = await deps.bot?.get(BotId(integration.botId))
+  // Daemon trust domain: the bot behind an integration row this resolver already
+  // matched against the reporting agent (org-scoped-data-layer.md §4).
+  const bot = await deps.bot?.getUnscoped(BotId(integration.botId))
   const feishuRegion = bot?.platform === 'feishu' ? (bot.feishuRegion ?? 'feishu') : undefined
   const feishuAppId = bot?.feishuAppId ?? undefined
   const realmKey =

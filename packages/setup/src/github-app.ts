@@ -42,7 +42,7 @@ export const GITHUB_APP_PERMISSIONS = {
   actions: 'write',
   checks: 'write',
   workflows: 'write',
-  email_addresses: 'read'
+  emails: 'read'
 } as const
 
 export const GITHUB_APP_EVENTS = [
@@ -151,8 +151,7 @@ function githubServiceUrl(value: string | undefined, label: string): string {
   if (!value) throw new Error(`GitHub App creation requires a saved ${label} URL`)
   const url = new URL(value)
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const loopback =
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
     throw new Error(`GitHub App ${label} URL must use HTTPS unless it is loopback`)
   }
@@ -213,12 +212,6 @@ function sameRecord(left: unknown, right: Record<string, string>): boolean {
   )
 }
 
-function githubApiPermissions(manifestPermissions: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(manifestPermissions).map(([key, value]) => [key === 'email_addresses' ? 'emails' : key, value])
-  )
-}
-
 function sameStringSet(left: unknown, right: readonly string[]): boolean {
   if (!Array.isArray(left) || !left.every((value) => typeof value === 'string')) return false
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort())
@@ -255,7 +248,7 @@ export async function auditGithubApp(
   if (app.external_url !== expectedManifest.url) {
     addDiff('external_url', 'Homepage URL', app.external_url ?? null, expectedManifest.url ?? null)
   }
-  const expectedPermissions = githubApiPermissions(GITHUB_APP_PERMISSIONS)
+  const expectedPermissions = GITHUB_APP_PERMISSIONS
   if (!sameRecord(app.permissions, expectedPermissions)) {
     addDiff('permissions', 'Repository permissions', asRecord(app.permissions), expectedPermissions)
   }

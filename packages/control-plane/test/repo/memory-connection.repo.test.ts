@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
 import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -59,20 +59,20 @@ describe('external-memory persistence (real Postgres)', () => {
         declaredEgressHosts: ['api.example-memory.com']
       })
     ).toBe(true)
-    expect(await connections.get(connection.id)).toMatchObject({
+    expect(await connections.get(DEF_ORG, connection.id)).toMatchObject({
       status: 'ready',
       probedRevision: 1,
       declaredEgressHosts: ['api.example-memory.com']
     })
 
-    const updated = await connections.update(connection.id, { config: { projectId: 'p2' } })
+    const updated = await connections.update(DEF_ORG, connection.id, { config: { projectId: 'p2' } })
     expect(updated).toMatchObject({ revision: 2, status: 'probing', probedRevision: null })
     expect(await connections.updateProbeFact(connection.id, 1, { status: 'invalid' })).toBe(false)
-    expect((await connections.get(connection.id))?.status).toBe('probing')
+    expect((await connections.get(DEF_ORG, connection.id))?.status).toBe('probing')
     expect(await connections.updateProbeFact(connection.id, 2, { status: 'degraded', reasonCode: 'timeout' })).toBe(
       true
     )
-    expect(await connections.get(connection.id)).toMatchObject({
+    expect(await connections.get(DEF_ORG, connection.id)).toMatchObject({
       revision: 2,
       probedRevision: 2,
       status: 'degraded',
@@ -85,22 +85,25 @@ describe('external-memory persistence (real Postgres)', () => {
     const cipher = new PrefixCipher()
     const secrets = new PgExternalMemoryConnectionSecretStore(prisma, cipher)
     const grants = new PgExternalMemoryGrantRepo(prisma, cipher)
-    await secrets.put(connection.id, { apiKey: 'upstream-secret', tenant: 'acme' })
-    const minted = await grants.mintFor(connection.id)
+    await secrets.put(OrgId(DEFAULT_ORG_ID), connection.id, { apiKey: 'upstream-secret', tenant: 'acme' })
+    const minted = await grants.mintFor(OrgId(DEFAULT_ORG_ID), connection.id)
 
     const secretRow = await prisma.externalMemoryConnectionSecret.findUniqueOrThrow({
       where: { connectionId: connection.id }
     })
     expect(secretRow.values).toEqual({ apiKey: 'sealed:upstream-secret', tenant: 'sealed:acme' })
-    expect(await secrets.get(connection.id)).toEqual({ apiKey: 'upstream-secret', tenant: 'acme' })
-    expect(await secrets.keys(connection.id)).toEqual(['apiKey', 'tenant'])
+    expect(await secrets.get(OrgId(DEFAULT_ORG_ID), connection.id)).toEqual({
+      apiKey: 'upstream-secret',
+      tenant: 'acme'
+    })
+    expect(await secrets.keys(OrgId(DEFAULT_ORG_ID), connection.id)).toEqual(['apiKey', 'tenant'])
     const grantRow = await prisma.externalMemoryGrant.findUniqueOrThrow({ where: { id: minted.id } })
     expect(grantRow.key).toBe(`sealed:${minted.key}`)
-    expect((await grants.activeForConnection(connection.id))[0]?.key).toBe(minted.key)
+    expect((await grants.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id))[0]?.key).toBe(minted.key)
 
     await grants.revoke(minted.id)
-    expect(await grants.activeForConnection(connection.id)).toEqual([])
-    await connections.delete(connection.id)
+    expect(await grants.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)).toEqual([])
+    await connections.delete(DEF_ORG, connection.id)
     expect(await prisma.externalMemoryConnectionSecret.count()).toBe(0)
     expect(await prisma.externalMemoryGrant.count()).toBe(0)
   })

@@ -60,6 +60,8 @@ vi.mock('@/lib/daemon-commands', () => ({ daemonCommands: (command: string) => (
 vi.mock('@/components/console/GettingStartedChecklist', () => ({
   useGsActions: () => ({ runAction: vi.fn(), firstAgent: mocks.agents[0] }),
   useGithubProfileLinked: () => undefined,
+  useGithubAppEnabled: () => undefined,
+  useSlackPlatformAppAvailable: () => true,
   GsRows: () => <div>rows</div>
 }))
 vi.mock('@/components/marks', () => ({

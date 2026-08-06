@@ -402,14 +402,17 @@ mismatch.
    - Every change uses the cold lifecycle to clear daemon credential cache.
      Return 409 when it would remove workspace write authority required by an
      enabled formal review or Check.
-   - Beside it, list each additional repository with `repoFullName`, its access
-     tier, and delete. The workspace repository itself appears here only when the
+   - Beside it, summarize each additional repository with `repoFullName` and its
+     access tier. The workspace repository itself appears here only when the
      workspace is App-backed, where the installation makes it implicit; a manual
      checkout is represented solely by its explicit grant, if one exists.
-   - "Add repository" reuses the installation/repository picker and list
-     filtering, offers three access options defaulting to read, describes each
-     level, warns on write blast radius, and reuses `/access` preflight.
-     Comment preflights as read.
+   - The same Edit workspace dialog lists, adds, and deletes additional repository
+     grants. Card and hook-editor shortcuts open that dialog directly at its
+     authorization step, so every context keeps the fast path without creating a
+     second repository-management surface.
+   - "Authorize repository" reuses the installation/repository picker and list
+     filtering, offers access options defaulting to read, describes each level,
+     warns on write blast radius, and reuses `/access` preflight.
    - The card is visible under `canView`; add and delete require `canEdit` and a
      non-viewer role.
 2. **GitHub hook editor:** candidates are workspace plus additional
@@ -418,7 +421,7 @@ mismatch.
    resumes hook creation.
 3. **Grandfathered out-of-bound hook badge:** if the watched repository is
    outside authorization, show a yellow "write-back unauthorized" badge with a
-   tooltip pointing to Repositories.
+   tooltip pointing to Edit workspace.
 4. Keep mobile branches synchronized.
 5. Scratch conversion needs no prior explicit grant. The picker may select any
    installation-covered repository for which the user has target access.
@@ -440,10 +443,10 @@ authorizing any other repository.
 
 **A. Cross-account repository authorization**
 
-On an agent whose workspace is `acme/primary-service`, open Repositories, add
-`example-co/shared-library` from the installation claimed by the
-organization, choose comment access, attest that the operator has at least read
-access, and persist the row.
+On an agent whose workspace is `acme/primary-service`, open Edit workspace,
+choose "Authorize repository", add `example-co/shared-library` from the
+installation claimed by the organization, choose read access, attest that the
+operator has at least read access, and persist the row.
 
 **B. Hook trigger and write-back**
 
@@ -458,11 +461,13 @@ gitcred/request {
 }
 ```
 
-The Control Plane confirms placement, matches the comment grant, resolves the
-`example-co` installation, and mints a single-repository token with
-contents read, issues write, and pull requests write. The wrapper executes `gh`
-with that token, which reads the issue and comments. **Every invocation fetches
-as needed, with no one-hour stale window.**
+The Control Plane confirms placement, matches the read grant, resolves the
+`example-co` installation, and mints a single-repository token with contents,
+issues, and pull requests read and no actions permission. The wrapper executes
+`gh` with that token, which reads the issue and its existing comments but cannot
+post to either. Any reply uses the separate daemon-owned `github_hook_reply`
+poster token, not this agent-visible grant. **Every invocation fetches as needed,
+with no one-hour stale window.**
 
 **C. Git transport to a secondary repository**
 

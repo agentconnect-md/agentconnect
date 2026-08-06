@@ -158,19 +158,35 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     }
     // Prisma "record to delete/update does not exist", a membership-dependent
     // mutation whose required membership disappeared while it was queued, or an
-    // org-fenced agent mutation whose row vanished (or never belonged to the
-    // caller's org) between the route's pre-read and the write — the fence
-    // deliberately makes those indistinguishable (org-scoped-data-layer.md §3).
+    // org-fenced mutation whose row vanished (or never belonged to the caller's
+    // org) between the route's pre-read and the write — the fence deliberately
+    // makes those indistinguishable (org-scoped-data-layer.md §3). Every
+    // `<Resource>Missing` code the data layer can raise belongs in this list.
     if (
       (err as { code?: string }).code === 'P2025' ||
       (err as { code?: string }).code === 'ORG_MEMBERSHIP_MISSING' ||
-      (err as { code?: string }).code === 'AGENT_MISSING'
+      (err as { code?: string }).code === 'AGENT_MISSING' ||
+      (err as { code?: string }).code === 'BOT_MISSING' ||
+      (err as { code?: string }).code === 'CRON_MISSING' ||
+      (err as { code?: string }).code === 'HOOK_MISSING'
     ) {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'resource not found' })
     }
     // Prisma unique-constraint violation (e.g. duplicate agent slug in an org).
     if ((err as { code?: string }).code === 'P2002') {
       return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'resource already exists' })
+    }
+    // Workspace-claim admission fence (ingress-tenant-fence.md §5). The message
+    // deliberately never names the organization holding the workspace.
+    if ((err as { code?: string }).code === 'BOT_WORKSPACE_CLAIMED') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message:
+          err instanceof Error && err.message
+            ? err.message
+            : 'this workspace is already connected to another organization'
+      })
     }
     if ((err as { code?: string }).code === 'ORG_OWNER_REQUIRED') {
       return reply.code(409).send({

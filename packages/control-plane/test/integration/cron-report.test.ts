@@ -64,10 +64,12 @@ describe('cron/report EVT → lastRunAt convergence', () => {
     const firedAt = '2026-07-03T09:00:00.000Z'
 
     await report(OTHER_DAEMON, cronId, agentId, firedAt) // not this daemon's cron
-    expect((await new PgCronRepo(prisma).get(CronId(cronId)))!.lastRunAt).toBeNull()
+    expect((await new PgCronRepo(prisma).get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toBeNull()
 
     await report(DAEMON, cronId, agentId, firedAt)
-    expect((await new PgCronRepo(prisma).get(CronId(cronId)))!.lastRunAt).toEqual(new Date(firedAt))
+    expect((await new PgCronRepo(prisma).get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(
+      new Date(firedAt)
+    )
   })
 
   it('latest-wins: an older firedAt never regresses the stamp; a newer one advances it', async () => {
@@ -79,10 +81,14 @@ describe('cron/report EVT → lastRunAt convergence', () => {
 
     await report(DAEMON, cronId, agentId, '2026-07-03T09:00:00.000Z')
     await report(DAEMON, cronId, agentId, '2026-07-02T09:00:00.000Z') // reconnect re-assert of an older fire
-    expect((await repo.get(CronId(cronId)))!.lastRunAt).toEqual(new Date('2026-07-03T09:00:00.000Z'))
+    expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(
+      new Date('2026-07-03T09:00:00.000Z')
+    )
 
     await report(DAEMON, cronId, agentId, '2026-07-04T09:00:00.000Z')
-    expect((await repo.get(CronId(cronId)))!.lastRunAt).toEqual(new Date('2026-07-04T09:00:00.000Z'))
+    expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(
+      new Date('2026-07-04T09:00:00.000Z')
+    )
   })
 
   it('an unknown cronId drops silently — never an error', async () => {
@@ -101,28 +107,31 @@ describe('cron/report EVT → lastRunAt convergence', () => {
     const firedAt = '2026-07-03T09:00:00.000Z'
 
     await report(DAEMON, cronId, agentId, firedAt) // fire → running
-    let runs = await repo.listRuns(CronId(cronId))
+    let runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
     expect(runs).toHaveLength(1)
     expect(runs[0]).toMatchObject({ status: 'running', durationMs: null, sessionId: null })
 
     await report(DAEMON, cronId, agentId, firedAt, { sessionId: 'ses_1' })
-    runs = await repo.listRuns(CronId(cronId))
+    runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
     expect(runs[0]).toMatchObject({ status: 'running', durationMs: null, sessionId: 'ses_1' })
 
     // A reconnect re-assert of the plain FIRE report preserves the live link.
     await report(DAEMON, cronId, agentId, firedAt)
-    expect((await repo.listRuns(CronId(cronId)))[0]).toMatchObject({ status: 'running', sessionId: 'ses_1' })
+    expect((await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId)))[0]).toMatchObject({
+      status: 'running',
+      sessionId: 'ses_1'
+    })
 
     // A terminal report from a rolling-compatible daemon may omit the session;
     // omission preserves the association already recorded by the progress report.
     await report(DAEMON, cronId, agentId, firedAt, { status: 'success', durationMs: 4200 })
-    runs = await repo.listRuns(CronId(cronId))
+    runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
     expect(runs).toHaveLength(1) // same (cronId, firedAt) key — closed, not duplicated
     expect(runs[0]).toMatchObject({ status: 'success', durationMs: 4200, sessionId: 'ses_1' })
 
     // Another FIRE re-assert never reopens the closed run.
     await report(DAEMON, cronId, agentId, firedAt)
-    expect((await repo.listRuns(CronId(cronId)))[0]!.status).toBe('success')
+    expect((await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId)))[0]!.status).toBe('success')
   })
 
   it('a completion without a prior fire report (CP was down) still creates the run — failed + reason', async () => {
@@ -137,10 +146,12 @@ describe('cron/report EVT → lastRunAt convergence', () => {
       durationMs: 900,
       reason: 'dispatch failed'
     })
-    const runs = await repo.listRuns(CronId(cronId))
+    const runs = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(cronId))
     expect(runs).toHaveLength(1)
     expect(runs[0]).toMatchObject({ status: 'failed', reason: 'dispatch failed' })
     // ...and the lastRunAt stamp still lands via the completion report.
-    expect((await repo.get(CronId(cronId)))!.lastRunAt).toEqual(new Date('2026-07-03T10:00:00.000Z'))
+    expect((await repo.get(OrgId(DEFAULT_ORG_ID), CronId(cronId)))!.lastRunAt).toEqual(
+      new Date('2026-07-03T10:00:00.000Z')
+    )
   })
 })

@@ -25,9 +25,9 @@ export interface McpReplayDeps {
 export async function replayMcpTo(ch: RelayChannel, deps: McpReplayDeps): Promise<void> {
   for (const p of await deps.providers.listAll()) {
     try {
-      const keys = (await deps.grants.activeForProvider(p.id)).map((g) => g.key)
+      const keys = (await deps.grants.activeForProvider(p.orgId, p.id)).map((g) => g.key)
       if (keys.length === 0) continue // no active grant ⇒ nothing callable to bind
-      const headers = (await deps.secrets.get(p.id)) ?? []
+      const headers = (await deps.secrets.get(p.orgId, p.id)) ?? []
       ch.send('rc/mcp-assign', mcpRcAssign(p, headers, keys))
     } catch (err) {
       deps.log?.warn({ providerId: p.id, err }, 'mcp replay: send failed — skipped')

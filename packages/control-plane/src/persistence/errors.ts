@@ -42,6 +42,21 @@ export class AgentMissing extends Error {
 }
 
 /**
+ * Thrown by org-fenced bot mutations whose fence sits on a row-lock read rather
+ * than on the write's own `where` (docs/designs/org-scoped-data-layer.md §3) —
+ * today `BotRepo.setShareable`, where refusing BEFORE the install recount is
+ * what keeps a foreign bot's occupancy from leaking as a `BotStillShared` 409.
+ * A cross-org id is deliberately indistinguishable from a missing row.
+ */
+export class BotMissing extends Error {
+  readonly code = 'BOT_MISSING' as const
+  constructor(readonly botId: string) {
+    super(`bot ${botId} not found in this organization`)
+    this.name = 'BotMissing'
+  }
+}
+
+/**
  * Thrown by `BotRepo.setShareable(false)` when the row-locked recount still sees
  * more than one ACTIVE install — disabling sharing then would orphan the others'
  * routes. The recount runs under the same bot-row lock `IntegrationRepo.
@@ -56,6 +71,20 @@ export class BotExternalIdentityTaken extends Error {
   constructor(readonly platform: string) {
     super(`a bot for this ${platform} app identity already exists`)
     this.name = 'BotExternalIdentityTaken'
+  }
+}
+
+/** A workspace already connected to a DIFFERENT organization refuses a second
+ *  claim (ingress-tenant-fence.md §5): one app installed into one workspace by
+ *  two orgs would share its inbound-verification secret AND its tenant, which
+ *  the relay's delivery-time fence cannot tell apart — admission is the only
+ *  place to stop it. Mapped to 409 at the HTTP edge; the platform supplies the
+ *  copy, and it never names the holding organization. */
+export class BotWorkspaceClaimed extends Error {
+  readonly code = 'BOT_WORKSPACE_CLAIMED' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'BotWorkspaceClaimed'
   }
 }
 
@@ -138,6 +167,37 @@ export class MemoryConnectionMissing extends Error {
   constructor() {
     super('external memory connection not found in this organization')
     this.name = 'MemoryConnectionMissing'
+  }
+}
+
+/**
+ * Thrown by org-fenced hook mutations whose fence sits on a transaction-time row
+ * read rather than on the write's own `where` (docs/designs/org-scoped-data-layer.md
+ * §3) — `HookRepo.upsert` (whose update branch would otherwise rewrite a foreign
+ * row's `orgId`) and `HookRepo.remove`, which must refuse before it tombstones
+ * the hook's durable review projections. A cross-org id is deliberately
+ * indistinguishable from a missing row.
+ */
+export class HookMissing extends Error {
+  readonly code = 'HOOK_MISSING' as const
+  constructor(readonly hookId: string) {
+    super(`hook ${hookId} not found in this organization`)
+    this.name = 'HookMissing'
+  }
+}
+
+/**
+ * Thrown by the org-fenced `CronRepo.upsert` when the client-minted `cronId`
+ * already names a row in ANOTHER organization (docs/designs/org-scoped-data-layer.md
+ * §3). Unlike the other fences this one refuses a TAKEOVER rather than a leak:
+ * the PUT is a create-or-edit, so without it the update branch would rewrite a
+ * foreign row — `orgId` included. Surfaces as the same 404 as an unknown id.
+ */
+export class CronMissing extends Error {
+  readonly code = 'CRON_MISSING' as const
+  constructor(readonly cronId: string) {
+    super(`cron ${cronId} not found in this organization`)
+    this.name = 'CronMissing'
   }
 }
 

@@ -25,6 +25,7 @@ import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
 import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
 import { NoConnection } from '../orchestrator/outbound.js'
 import type { CpNewBotInstall } from '../platforms/provider.js'
+import { BotWorkspaceClaimed } from '../persistence/errors.js'
 
 export interface InstallNewBotArgs extends CpNewBotInstall {
   orgId: OrgId
@@ -63,6 +64,19 @@ export async function installNewBot(
   // toggle for socket; this is the load-bearing guarantee behind it.
   const shareable = transport === 'http' && args.bot?.shareable === true
 
+  // Workspace-claim admission fence (ingress-tenant-fence.md §5), at the ONE
+  // seam every create path passes through — the generic `POST /integrations`
+  // (provider-projected) and both Slack funnels (`install-slack.ts`) alike.
+  // Placing it on any single caller would leave the others open, which is the
+  // whole failure mode this fence exists to close. A claim the platform could
+  // not capture is absent here and simply skips the check (§3.3 fail-open).
+  // The check-then-create window takes no lock: a same-instant double claim is
+  // out of scope, consistent with the create path's existing concurrency posture.
+  const claim = args.workspaceClaim
+  if (claim && (await deps.repos.bot.workspaceClaimedElsewhere(orgId, platform, claim.appId, claim.tenantId))) {
+    throw new BotWorkspaceClaimed(claim.conflictMessage)
+  }
+
   // Ids are minted HERE, not by the caller: the funnel that needs pre-reserved
   // ids for restart-idempotency (Feishu's one-click registration) keeps its own
   // tail, `install-feishu.ts`.
@@ -82,7 +96,7 @@ export async function installNewBot(
   // identity under `none` and encrypts with an encrypting provider. Slots the
   // relay needs (Slack's signing secret, Feishu's verification token) stay
   // CP-side; the daemon never receives them.
-  await deps.repos.botSecret.put(botId, secrets)
+  await deps.repos.botSecret.put(orgId, botId, secrets)
 
   const id = IntegrationId(randomUUID())
   const integration = await deps.repos.integration.create({
@@ -112,7 +126,7 @@ export async function installNewBot(
   // assembles the spec payload (`orchestrator/placement.ts`). `bot` was created
   // above, so this is the same row, not a second fetch.
   const [secret, channels] = await Promise.all([
-    deps.repos.botSecret.get(botId),
+    deps.repos.botSecret.get(orgId, botId),
     deps.repos.integrationChannel.listForIntegration(id)
   ])
   if (secret) {

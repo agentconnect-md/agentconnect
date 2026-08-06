@@ -24,7 +24,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import { BotId } from '../../domain/ids.js'
-import { denyViewerWrite } from '../rbac.js'
+import { denyViewerWrite, orgOf } from '../rbac.js'
 import { SlackBotRefreshDto, ErrorDto, IdParam, type SlackBotRefreshDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { mergeManagedSlackManifest, slackOAuthRedirectUri, SLACK_BOT_SCOPES } from '../slack-manifest.js'
@@ -82,8 +82,8 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const bot = await deps.repos.bot.get(BotId(req.params.id))
-        if (!bot || bot.orgId !== req.orgCtx!.orgId) {
+        const bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
+        if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         if (bot.platform !== 'slack') {
@@ -98,7 +98,7 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             message: 'Slack app id is unavailable — update this app manually in Slack'
           })
         }
-        const secret = await deps.repos.botSecret.get(bot.id)
+        const secret = await deps.repos.botSecret.get(bot.orgId, bot.id)
         if (!secret) {
           return reply
             .code(409)
@@ -112,7 +112,7 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         const checked = await slack.verifyBot?.(secret.botToken)
         const appIdentityMatches = checked?.status === 'ok' && checked.appId === bot.slackAppId
         if (appIdentityMatches && checked.teamId) {
-          await deps.repos.bot.setWorkspaceMetadata(bot.id, checked.teamId, checked.teamName)
+          await deps.repos.bot.setWorkspaceMetadata(bot.orgId, bot.id, checked.teamId, checked.teamName)
         }
         // A built-in app's manifest is deployment-managed rather than owned by
         // the signed-in user's Slack config token. Refresh still verifies its

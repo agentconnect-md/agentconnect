@@ -1,12 +1,20 @@
 // No 'use client' here: rendered only by ModalProvider (the client boundary).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react'
 import useSWR from 'swr'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
-import { GithubMark, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
-import { GithubPrivateReposNotice } from '@/components/console/WorkspaceFormFields'
+import { GithubPrivateReposNotice, REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
 import type {
   WebWizardTransport,
   WizardFooterState,
@@ -46,8 +54,7 @@ import {
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
-import { REPO_ACCESS_BADGE } from '@/components/console/WorkspaceCard'
-import AddAgentRepoModal from './AddAgentRepoModal'
+import EditWorkspaceModal from './EditWorkspaceModal'
 import {
   GH_DEFAULT_FAMILIES,
   GH_DEFAULT_TRIGGER_MODE,
@@ -174,16 +181,24 @@ function hookTestCurl(url: string, sig: string | null, body: string, requiresSig
 }
 
 // The integration is owned by one agent; that agent's daemon opens the connection.
-// The dialog is only reachable from a specific agent (its row / detail page), so the
-// agent is fixed — no picker. `initialPlatform` lets a caller land on a specific
-// pane (the GitHub group card's "Add repository" — adding a repo, not a bot).
+// Reached from an agent (its row / detail page) the agent is FIXED and no picker
+// renders — `agentChoices` is undefined there, and that arm must stay that way.
+// Reached from the Integrations page there is no implied agent, so the caller
+// (`AddIntegrationForOrgModal`) passes the roster and owns the selection.
+// `initialPlatform` lets a caller land on a specific pane (the GitHub group
+// card's "Add repository" — adding a repo, not a bot).
 export default function AddIntegrationModal({
   agent,
+  agentChoices,
+  onPickAgent,
   initialPlatform,
   initialFeishuRegion,
   onClose
 }: {
   agent: Agent
+  /** Present ONLY when the dialog was opened without an agent in hand. */
+  agentChoices?: Agent[]
+  onPickAgent?: (agentId: string) => void
   initialPlatform?: Platform
   initialFeishuRegion?: FeishuRegion
   onClose: () => void
@@ -269,8 +284,8 @@ export default function AddIntegrationModal({
   )
   const authorizedRepos = useMemo(() => agentReposData ?? [], [agentReposData])
   const canEditAgent = agent.canEdit
-  // Non-null ⇒ the nested authorize-repo dialog is open, prefilled with this
-  // owner/repo + the minimum review/reporting tier ('' = no repo prefill).
+  // Non-null ⇒ the unified workspace dialog is open at repository
+  // authorization, prefilled with this owner/repo + minimum required tier.
   const [authRepoFor, setAuthRepoFor] = useState<{ repo: string; access: RepoAccess } | null>(null)
   const ghSelectedRepo = ghRepos?.find((repo) => repo.fullName.toLowerCase() === ghRepoPick?.toLowerCase())
   const ghSelectedAuthorization = authorizedRepos.find(
@@ -845,7 +860,15 @@ export default function AddIntegrationModal({
         <div className="min-w-0 flex-1">
           <div className="font-sans text-[16px] font-semibold leading-normal">Add integration</div>
           <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            for <span className="mono">{agentLabel(agent)}</span> — this agent answers on the workspace
+            {agentChoices ? (
+              // The Agent field below names the target — repeating it here would
+              // read as fixed, which is the one thing this arm is not.
+              'Connect a chat platform, webhook or repository to one of your agents'
+            ) : (
+              <>
+                for <span className="mono">{agentLabel(agent)}</span> — this agent answers on the workspace
+              </>
+            )}
           </div>
         </div>
         <button className="iconbtn" onClick={onClose}>
@@ -853,6 +876,15 @@ export default function AddIntegrationModal({
         </button>
       </div>
       <div className="modalbody">
+        {agentChoices && onPickAgent && (
+          <div className="mb-[18px]">
+            <div className="fldlbl mb-2">Agent</div>
+            <AgentPicker agents={agentChoices} value={agent.id} onPick={onPickAgent} />
+            <div className="mt-[7px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+              <span className="mono">{agentLabel(agent)}</span> handles messages from this integration.
+            </div>
+          </div>
+        )}
         <div className="fldlbl mb-2">Platform</div>
         <div className="mb-[18px] grid grid-cols-2 gap-[10px] desktop:grid-cols-6">
           {PLATFORMS.map((candidate) => {
@@ -1274,7 +1306,7 @@ export default function AddIntegrationModal({
                                               workspace
                                             </span>
                                           ) : authTier ? (
-                                            <span className={REPO_ACCESS_BADGE[authTier]}>{authTier}</span>
+                                            <span className={REPOSITORY_ACCESS_BADGE[authTier]}>{authTier}</span>
                                           ) : blockedNoEdit ? null : (
                                             <span className="badge flex-none bg-(--surface-app) text-(--brand-soft-text)">
                                               authorize
@@ -1651,18 +1683,22 @@ export default function AddIntegrationModal({
           </Button>
         )}
       </div>
-      {/* Nested authorize-repo dialog (its own fixed overlay): grant the typed
-          repo, then continue creating the hook with it pre-picked. */}
+      {/* Repository shortcuts share the Workspace card's editor, then return to
+          hook creation with the new grant pre-picked. */}
       {authRepoFor !== null && (
-        <AddAgentRepoModal
+        <EditWorkspaceModal
           agent={agent}
-          workspaceRepo={isGithubAppWs ? wsRepo : null}
           authorized={authorizedRepos}
-          initialAccess={authRepoFor.access}
-          {...(!isGithubAppWs && wsRepo ? { fixedRepo: wsRepo } : {})}
-          {...(authRepoFor.repo ? { initialRepo: authRepoFor.repo } : {})}
+          initialRepositoryAuthorization={{
+            access: authRepoFor.access,
+            ...(authRepoFor.repo ? { repo: authRepoFor.repo } : {})
+          }}
           onClose={() => setAuthRepoFor(null)}
-          onCreated={(row) => {
+          onChanged={() => {
+            void refresh()
+            setAuthRepoFor(null)
+          }}
+          onRepositoryCreated={(row) => {
             void mutateAgentRepos((rows) => (rows ? [...rows, row] : [row]), { revalidate: false })
             setGhRepoPick(row.repoFullName)
             setGhQ('')
@@ -1672,5 +1708,204 @@ export default function AddIntegrationModal({
         />
       )}
     </>
+  )
+}
+
+/** The Agent field of the org-scoped arm. Same anatomy as `RuntimeSelect`: an
+ *  `.inp` trigger showing the current choice, an `.fmenu` listbox of the roster.
+ *  Only rendered when the dialog was opened without an agent. */
+function AgentPicker({ agents, value, onPick }: { agents: Agent[]; value: string; onPick: (id: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const listboxId = useId()
+  const selectedIndex = Math.max(
+    0,
+    agents.findIndex((a) => a.id === value)
+  )
+  const selected = agents[selectedIndex]
+
+  useEffect(() => {
+    if (!open) return
+    const frame = requestAnimationFrame(() => listRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [open])
+
+  const closeAndFocus = () => {
+    setOpen(false)
+    requestAnimationFrame(() => triggerRef.current?.focus())
+  }
+  const pick = (id: string) => {
+    if (id !== value) onPick(id)
+    closeAndFocus()
+  }
+  const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActiveIndex((i) => (i + (event.key === 'ArrowDown' ? 1 : -1) + agents.length) % agents.length)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const active = agents[activeIndex]
+      if (active) pick(active.id)
+      return
+    }
+    if (event.key === 'Escape') {
+      // The dialog closes on Escape too — this one belongs to the open menu.
+      event.preventDefault()
+      event.stopPropagation()
+      closeAndFocus()
+      return
+    }
+    if (event.key === 'Tab') setOpen(false)
+  }
+
+  return (
+    <div className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`inp relative w-full cursor-pointer text-left outline-none transition-[background-color,border-color,box-shadow] ${
+          open
+            ? 'border-(--border-focus) ring-[3px] ring-(--brand-ring)'
+            : 'hover:border-(--border-strong) hover:bg-(--surface-hover) focus-visible:border-(--border-focus) focus-visible:ring-[3px] focus-visible:ring-(--brand-ring)'
+        }`}
+        aria-label="Agent"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        onClick={() => {
+          setActiveIndex(selectedIndex)
+          setOpen((v) => !v)
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+          event.preventDefault()
+          setActiveIndex(selectedIndex)
+          setOpen(true)
+        }}
+      >
+        <span className="inline-flex min-w-0 items-center gap-[9px]">
+          <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
+            <AgentIconView icon={selected?.icon} runtime={selected?.runtime ?? ''} size={22} />
+          </span>
+          <span className="mono truncate text-[12.5px]">{selected ? agentLabel(selected) : '—'}</span>
+        </span>
+        <Icon
+          name="chevron-down"
+          size={15}
+          color="var(--text-tertiary)"
+          className={`flex-none transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && (
+        <>
+          <div className="fscrim" onClick={() => setOpen(false)} />
+          <div
+            ref={listRef}
+            id={listboxId}
+            role="listbox"
+            tabIndex={-1}
+            aria-label="Agent"
+            aria-activedescendant={`${listboxId}-option-${activeIndex}`}
+            className="fmenu left-0 z-40 max-h-[260px] w-full overflow-y-auto rounded-lg p-2 shadow-(--shadow-xl) outline-none"
+            onKeyDown={onListKeyDown}
+          >
+            {agents.map((a, index) => {
+              const isSelected = a.id === value
+              return (
+                <button
+                  key={a.id}
+                  id={`${listboxId}-option-${index}`}
+                  type="button"
+                  role="option"
+                  tabIndex={-1}
+                  aria-selected={isSelected}
+                  className={`fopt min-h-10 gap-[9px] rounded-md px-2 py-[6px] ${
+                    isSelected
+                      ? 'bg-(--brand-soft) text-(--brand-soft-text) hover:bg-(--brand-soft)'
+                      : index === activeIndex
+                        ? 'bg-(--surface-hover)'
+                        : ''
+                  }`}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => pick(a.id)}
+                >
+                  <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
+                    <AgentIconView icon={a.icon} runtime={a.runtime} size={22} />
+                  </span>
+                  <span className="mono min-w-0 flex-1 truncate text-left text-[12.5px]">{agentLabel(a)}</span>
+                  {isSelected && <Icon name="check" size={16} color="var(--brand)" className="flex-none" />}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Add-integration opened from the Integrations page, where no agent is implied.
+ *  The dialog itself is unchanged — it just gains the Agent field — and it is
+ *  REMOUNTED per agent (`key`) so nothing agent-scoped (watched repos, authorized
+ *  repos, the picked bot, a half-finished platform flow) survives a switch. */
+export function AddIntegrationForOrgModal({
+  initialPlatform,
+  initialFeishuRegion,
+  onClose
+}: {
+  initialPlatform?: Platform
+  initialFeishuRegion?: FeishuRegion
+  onClose: () => void
+}) {
+  const { agents } = useConsoleData()
+  // Creating an integration writes the agent's spec, so only offer the ones this
+  // viewer may edit — the CP would 403 the rest.
+  const choices = useMemo(() => agents.filter((a) => a.canEdit), [agents])
+  const [agentId, setAgentId] = useState<string | null>(null)
+  const agent = choices.find((a) => a.id === agentId) ?? choices[0]
+
+  if (!agent) {
+    return (
+      <>
+        <div className="modalhead">
+          <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
+            <Icon name="plug" size={17} color="var(--brand)" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="font-sans text-[16px] font-semibold leading-normal">Add integration</div>
+          </div>
+          <button className="iconbtn" onClick={onClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+        <div className="modalbody">
+          <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) px-4 py-5 text-center font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
+            An integration is answered by an agent, and there is no agent you can edit yet. Create one first — the
+            Add-integration step is offered again from the agent&rsquo;s own page.
+          </div>
+        </div>
+        <div className="modalfoot">
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </>
+    )
+  }
+
+  return (
+    <AddIntegrationModal
+      key={agent.id}
+      agent={agent}
+      agentChoices={choices}
+      onPickAgent={setAgentId}
+      initialPlatform={initialPlatform}
+      initialFeishuRegion={initialFeishuRegion}
+      onClose={onClose}
+    />
   )
 }

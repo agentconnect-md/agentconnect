@@ -161,8 +161,8 @@ export function connectorRoutes(deps: HttpDeps) {
         //    in open-connector. Any failure here rolls the whole thing back so a partial
         //    step never strands an orphan provider row / binding.
         try {
-          await deps.repos.mcpProviderSecret.put(provider.id, headers)
-          const grant = await deps.repos.mcpGrant.mintFor(provider.id)
+          await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, headers)
+          const grant = await deps.repos.mcpGrant.mintFor(provider.orgId, provider.id)
           await pushAssign(provider, headers, grant.key, orgId)
 
           const dto = {
@@ -205,7 +205,7 @@ export function connectorRoutes(deps: HttpDeps) {
             const agents = await deps.repos.agent.list(orgId)
             if (agents.some((a) => a.mcpServers.includes(provider.name))) return
             await pushUnassign(provider, orgId)
-            await deps.repos.mcpProvider.delete(provider.id)
+            await deps.repos.mcpProvider.delete(orgId, provider.id)
           })
           // A 4xx upstream is the caller's fault (bad creds) → 400; anything else → 502.
           // Keep the body's statusCode consistent with the HTTP status actually sent.
@@ -237,9 +237,10 @@ export function connectorRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (!deps.connectors) return reply.code(404).send(notFound)
         if (denyViewerWrite(req, reply)) return
-        const provider = await deps.repos.mcpProvider.get(req.params.id)
-        // A cross-org id OR a restricted provider the caller can't see both read as 404.
-        if (!provider || provider.orgId !== orgOf(req) || !canView(provider, ctxOf(req))) {
+        const provider = await deps.repos.mcpProvider.get(orgOf(req), req.params.id)
+        // A cross-org id (fenced in the repo) OR a restricted provider the caller
+        // can't see both read as 404.
+        if (!provider || !canView(provider, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         if (provider.kind !== 'open_connector') {
@@ -248,7 +249,7 @@ export function connectorRoutes(deps: HttpDeps) {
         // Re-derive the service + connection profile from the stored binding markers
         // (the alias carries the creator's userId, so recompute would drift for a
         // non-creator caller — always read it back from the row).
-        const headers = (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
+        const headers = (await deps.repos.mcpProviderSecret.get(provider.orgId, provider.id)) ?? []
         const service = headers.find((h) => h.name === CONNECTOR_SERVICE_HEADER)?.value
         const profile = headers.find((h) => h.name === CONNECTOR_ALIAS_HEADER)?.value
         if (!service || !profile) {

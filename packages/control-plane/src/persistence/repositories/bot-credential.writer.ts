@@ -28,8 +28,9 @@
 import type { PrismaClient } from '../../generated/prisma/client.js'
 import { withTx } from '../prisma.js'
 import type { BotCredentialWriter, BotSecretMaterial, RevokeBotResult } from '../ports.js'
-import type { BotId, IntegrationId } from '../../domain/ids.js'
+import type { BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { PgBotRepo, PgIntegrationRepo } from './integration.repo.js'
 
 export class PgBotCredentialWriter implements BotCredentialWriter {
@@ -41,6 +42,7 @@ export class PgBotCredentialWriter implements BotCredentialWriter {
   ) {}
 
   async install(
+    orgId: OrgId,
     botId: BotId,
     material: BotSecretMaterial,
     at: Date,
@@ -48,20 +50,24 @@ export class PgBotCredentialWriter implements BotCredentialWriter {
   ): Promise<number> {
     // Seal first: cipher calls may be remote (Vault Transit), and holding a
     // transaction open across them would pin a connection for that round trip.
+    const scope = orgScope(orgId)
     const sealed = {
-      botToken: await this.cipher.seal(material.botToken),
-      appToken: material.appToken === null ? null : await this.cipher.seal(material.appToken),
-      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret),
-      verificationToken: material.verificationToken == null ? null : await this.cipher.seal(material.verificationToken),
-      encryptKey: material.encryptKey == null ? null : await this.cipher.seal(material.encryptKey)
+      botToken: await this.cipher.seal(material.botToken, scope),
+      appToken: material.appToken === null ? null : await this.cipher.seal(material.appToken, scope),
+      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret, scope),
+      verificationToken:
+        material.verificationToken == null ? null : await this.cipher.seal(material.verificationToken, scope),
+      encryptKey: material.encryptKey == null ? null : await this.cipher.seal(material.encryptKey, scope)
     }
     return withTx(this.prisma, async (tx) => {
       // Read the generation being replaced while taking the same bot-row lock as
       // revoke. This makes the optional membership restore part of the credential
       // transition rather than a follow-up that a concurrent revoke could flip.
+      // The org rides the lock read: a cross-org pair fails here, before the
+      // sealed material could land on another tenant's bot.
       const locked = await tx.$queryRaw<
         { credentialRevision: number; revokedAt: Date | null }[]
-      >`SELECT "credentialRevision", "revokedAt" FROM bot WHERE id = ${botId} FOR UPDATE`
+      >`SELECT "credentialRevision", "revokedAt" FROM bot WHERE id = ${botId} AND "orgId" = ${orgId} FOR UPDATE`
       if (!locked[0]) throw new Error(`bot ${botId} not found`)
       await tx.botSecret.upsert({ where: { botId }, create: { botId, ...sealed }, update: sealed })
       // Same transaction: no reader can ever observe the new secret under the

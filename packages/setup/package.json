@@ -1,7 +1,7 @@
 {
   "name": "@agentconnect.md/setup",
   "version": "1.0.0-dev",
-  "description": "AgentConnect self-hosted Tenant Admin server",
+  "description": "AgentConnect self-hosted Setup Server",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -46,7 +46,7 @@
   "keywords": [
     "agentconnect",
     "self-hosting",
-    "tenant-admin"
+    "setup-server"
   ],
   "engines": {
     "node": ">=24.12.0"

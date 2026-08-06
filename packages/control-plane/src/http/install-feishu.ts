@@ -44,18 +44,15 @@ export async function installNewFeishuBot(
   const transport = args.transport ?? 'socket'
   const botId = args.botId ?? BotId(randomUUID())
   const id = args.integrationId ?? IntegrationId(randomUUID())
-  let integration = await deps.repos.integration.get(id)
+  let integration = await deps.repos.integration.get(orgId, id)
   if (
     integration &&
-    (integration.orgId !== orgId ||
-      integration.agentId !== agent.id ||
-      integration.botId !== botId ||
-      integration.platform !== 'feishu')
+    (integration.agentId !== agent.id || integration.botId !== botId || integration.platform !== 'feishu')
   ) {
     throw new Error('reserved Feishu integration id is already in use')
   }
   if (!integration) {
-    const bot = await deps.repos.bot.get(botId)
+    const bot = await deps.repos.bot.get(orgId, botId)
     if (!bot) {
       await deps.repos.bot.create({
         id: botId,
@@ -79,7 +76,7 @@ export async function installNewFeishuBot(
   }
   // Feishu reuses the established two-slot secret shape:
   // botToken = appSecret (secret), appToken = appId (identifier).
-  await deps.repos.botSecret.put(botId, {
+  await deps.repos.botSecret.put(orgId, botId, {
     botToken: appSecret,
     appToken: appId,
     signingSecret: null,
@@ -109,9 +106,9 @@ export async function installNewFeishuBot(
   // now assembles the spec payload (`orchestrator/placement.ts`). It was created
   // or matched above, so this read always hits.
   const [secret, channels, botRow] = await Promise.all([
-    deps.repos.botSecret.get(botId),
+    deps.repos.botSecret.get(orgId, botId),
     deps.repos.integrationChannel.listForIntegration(id),
-    deps.repos.bot.get(botId)
+    deps.repos.bot.get(orgId, botId)
   ])
   if (secret && botRow) {
     try {

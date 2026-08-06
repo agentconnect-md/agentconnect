@@ -17,7 +17,15 @@ import { usePathname } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
 import { isAuthConfigured } from '@/lib/auth'
 import { computeGettingStarted, type GsAction } from '@/lib/getting-started'
-import { AddToSlackRow, GsRows, MeetYourAgents, useGithubProfileLinked, useGsActions } from './GettingStartedChecklist'
+import {
+  AddToSlackRow,
+  GsRows,
+  MeetYourAgents,
+  useGithubAppEnabled,
+  useGithubProfileLinked,
+  useGsActions,
+  useSlackPlatformAppAvailable
+} from './GettingStartedChecklist'
 import { Button, Icon } from '@/components/ui'
 
 // A r=10.5 progress ring (viewBox 0 0 26 26), rotated so it fills clockwise from 12
@@ -82,6 +90,10 @@ export default function GettingStarted() {
   }, [])
 
   const githubLinked = useGithubProfileLinked()
+  const githubEnabled = useGithubAppEnabled()
+  // Local mode (no platform-published Slack app): the slack row falls back to the
+  // default GsRow, whose CTA opens the Slack integration wizard.
+  const slackOneClick = useSlackPlatformAppAvailable()
   const gs = useMemo(
     () =>
       computeGettingStarted({
@@ -92,9 +104,10 @@ export default function GettingStarted() {
         members,
         authOn,
         orgHasSessions,
-        githubLinked
+        githubLinked,
+        githubEnabled
       }),
-    [agents, daemons, integrations, allSessions, members, authOn, orgHasSessions, githubLinked]
+    [agents, daemons, integrations, allSessions, members, authOn, orgHasSessions, githubLinked, githubEnabled]
   )
 
   // Show on every console page while the checklist is incomplete — including a
@@ -219,7 +232,7 @@ export default function GettingStarted() {
                       toggle={ctx.toggle}
                       onConnect={() => runFromDrawer(it.action)}
                     />
-                  ) : it.key === 'slack' ? (
+                  ) : it.key === 'slack' && slackOneClick ? (
                     <AddToSlackRow
                       done={it.done}
                       open={ctx.open}

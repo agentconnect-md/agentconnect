@@ -58,7 +58,8 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
     secrets?: Record<string, string>,
     opts?: AgentCreateOpts
   ): Promise<AgentRecord> {
-    const sealed = secrets && Object.keys(secrets).length > 0 ? await sealSecretPatch(this.cipher, secrets) : undefined
+    const sealed =
+      secrets && Object.keys(secrets).length > 0 ? await sealSecretPatch(this.cipher, input.orgId, secrets) : undefined
     return withTx(this.prisma, async (tx) => {
       // The repo owns the fence's lock acquisition (skill-source name scopes → org
       // row), so this path adds none of its own — a lock taken here would sit
@@ -66,7 +67,7 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
       // sharing write.
       const agent = await new PgAgentRepo(tx).create(input, opts)
       if (sealed) {
-        await applySealedSecretPatch(tx, agent.id, sealed)
+        await applySealedSecretPatch(tx, agent.orgId, agent.id, sealed)
         // The repo validated before these rows existed; re-validate the complete
         // definition. A throw aborts the whole create.
         assertEnvironmentAdmissible(await snapshotAgentEnvironments(tx, agent.orgId, [agent.id]))
@@ -82,7 +83,8 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
     secrets?: Record<string, string | null>,
     opts?: AgentUpdateOpts
   ): Promise<AgentRecord> {
-    const sealed = secrets && Object.keys(secrets).length > 0 ? await sealSecretPatch(this.cipher, secrets) : undefined
+    const sealed =
+      secrets && Object.keys(secrets).length > 0 ? await sealSecretPatch(this.cipher, orgId, secrets) : undefined
     return withTx(this.prisma, async (tx) => {
       // This path takes NO locks of its own. All of them belong to the repo, which
       // owns the established order (skill-source name scopes → agent row); anything
@@ -95,7 +97,7 @@ export class PgAgentConfigWriter implements AgentConfigWriter {
       // read misses these uncommitted rows, it commits, and this transaction's
       // later re-read sees its entry and refuses — or it queues behind, and then sees
       // these rows committed and refuses itself. Either way exactly one survives.
-      if (sealed) await applySealedSecretPatch(tx, agentId, sealed)
+      if (sealed) await applySealedSecretPatch(tx, orgId, agentId, sealed)
       // The row update last: it stamps lastModifiedAt, advances configRevision, and
       // runs the fence over the definition INCLUDING the secrets above — so the
       // audit advance, the secret rows, and the validation commit (or roll back) as

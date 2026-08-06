@@ -66,8 +66,10 @@ export class PgGithubInstallationRepo implements GithubInstallationRepo {
     })
   }
 
-  async get(id: string): Promise<GithubInstallationRecord | null> {
-    const row = await this.prisma.githubInstallation.findUnique({ where: { id } })
+  async get(orgId: OrgId, id: string): Promise<GithubInstallationRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const row = await this.prisma.githubInstallation.findUnique({ where: { id, orgId } })
     return row ? toRecord(row) : null
   }
 

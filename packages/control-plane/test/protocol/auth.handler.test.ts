@@ -61,7 +61,7 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
     expect(stub.closed).toBeUndefined()
 
     // Persisted epoch advanced to 2.
-    const row = await repo.get(DaemonId(DAEMON))
+    const row = await repo.getUnscoped(DaemonId(DAEMON))
     expect(row?.sessionEpoch).toBe(2n)
   })
 
@@ -90,7 +90,7 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
     expect(stub.lastSent('auth/ok')).toBeUndefined()
 
     // Crucially: the epoch did NOT bump (still 1).
-    const row = await repo.get(DaemonId(DAEMON))
+    const row = await repo.getUnscoped(DaemonId(DAEMON))
     expect(row?.sessionEpoch).toBe(1n)
   })
 
@@ -110,7 +110,7 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
       if (!stub.closed) throw new Error('not closed yet')
     })
     expect(stub.closed?.code).toBe(4401)
-    expect(await repo.get(DaemonId(DAEMON))).toBeNull() // never created
+    expect(await repo.getUnscoped(DaemonId(DAEMON))).toBeNull() // never created
   })
 
   it("key-only auth (no daemonId in the frame) → auth/ok with daemonId = the key's daemon", async () => {
@@ -131,7 +131,7 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
     expect(stub.closed).toBeUndefined()
 
     // The daemon row keeps the key's daemonId; first auth advanced epoch 0 → 1.
-    const row = await repo.get(DaemonId(DAEMON))
+    const row = await repo.getUnscoped(DaemonId(DAEMON))
     expect(row?.sessionEpoch).toBe(1n)
   })
 })

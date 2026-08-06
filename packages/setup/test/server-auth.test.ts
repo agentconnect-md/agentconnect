@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { TenantAdminAuthenticator } from '../src/admin/auth.js'
+import { SetupAuthenticator } from '../src/server/auth.js'
 
 const oidc = { issuer: 'https://login.example.test/oidc', audience: 'agentconnect' }
 
-describe('tenant-admin auth boundary', () => {
+describe('setup-server auth boundary', () => {
   it('accepts a verified ADMIN and rejects a valid non-admin identity', async () => {
     const config = { get: async () => oidc }
-    const admin = new TenantAdminAuthenticator(config, async () => ({ sub: 'admin-1', roles: ['USER', 'ADMIN'] }))
+    const admin = new SetupAuthenticator(config, async () => ({ sub: 'admin-1', roles: ['USER', 'ADMIN'] }))
     await expect(admin.authenticate('Bearer token')).resolves.toEqual({ subject: 'admin-1' })
 
-    const user = new TenantAdminAuthenticator(config, async () => ({ sub: 'user-1', roles: ['admin'] }))
+    const user = new SetupAuthenticator(config, async () => ({ sub: 'user-1', roles: ['admin'] }))
     await expect(user.authenticate('Bearer token')).rejects.toMatchObject({
       statusCode: 403,
       code: 'ADMIN_ROLE_REQUIRED'
@@ -17,13 +17,13 @@ describe('tenant-admin auth boundary', () => {
   })
 
   it('allows role-free identity verification only when the bootstrap flow requests it explicitly', async () => {
-    const auth = new TenantAdminAuthenticator({ get: async () => oidc }, async () => ({ sub: 'operator' }))
+    const auth = new SetupAuthenticator({ get: async () => oidc }, async () => ({ sub: 'operator' }))
     await expect(auth.authenticate('Bearer token', false)).resolves.toEqual({ subject: 'operator' })
     await expect(auth.authenticate('Bearer token')).rejects.toMatchObject({ statusCode: 403 })
   })
 
   it('does not fall back to unauthenticated access when OIDC is unavailable', async () => {
-    const auth = new TenantAdminAuthenticator({ get: async () => null }, async () => ({ sub: 'unused' }))
+    const auth = new SetupAuthenticator({ get: async () => null }, async () => ({ sub: 'unused' }))
     await expect(auth.authenticate(undefined)).rejects.toMatchObject({
       statusCode: 503,
       code: 'ADMIN_OIDC_NOT_CONFIGURED'

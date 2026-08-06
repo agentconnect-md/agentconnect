@@ -137,7 +137,9 @@ export class DaemonRegistryService implements DaemonRegistry {
     // reconnect / duplicate register between open() and the ACK — NOT our command
     // completing. Leaving it pending prevents a false success (the ACK may still decline).
     if (!op.acceptedAt) return
-    const daemon = await this.daemons.get(daemonId)
+    // Lifecycle settlement runs off the daemon's own connection — the internal
+    // trust domain resolves the row without an org (org-scoped-data-layer.md §4).
+    const daemon = await this.daemons.getUnscoped(daemonId)
     if (!daemon) return
     // Require a re-auth since the command was sent (STRICTLY greater sessionEpoch): a
     // same-epoch duplicate register is the same connection, not the daemon coming back
@@ -175,31 +177,46 @@ export class DaemonRegistryService implements DaemonRegistry {
     await this.daemons.markUnreachable(daemonId, new Date(this.clock.now()))
   }
 
-  async rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonView> {
-    const d = await this.daemons.rename(daemonId, name, byUserId)
+  async rename(orgId: OrgId, daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonView> {
+    const d = await this.daemons.rename(orgId, daemonId, name, byUserId)
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 
-  async setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonView> {
-    const d = await this.daemons.setSessionRetention(daemonId, sessionRetention, byUserId)
+  async setSessionRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonView> {
+    const d = await this.daemons.setSessionRetention(orgId, daemonId, sessionRetention, byUserId)
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 
   async setSharing(
+    orgId: OrgId,
     daemonId: DaemonId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<DaemonView> {
-    const d = await this.daemons.setSharing(daemonId, sharing, byUserId)
+    const d = await this.daemons.setSharing(orgId, daemonId, sharing, byUserId)
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }
 
-  async remove(daemonId: DaemonId): Promise<void> {
-    await this.daemons.delete(daemonId)
+  async remove(orgId: OrgId, daemonId: DaemonId): Promise<void> {
+    await this.daemons.delete(orgId, daemonId)
   }
 
-  async get(daemonId: DaemonId): Promise<DaemonView | null> {
-    const d = await this.daemons.get(daemonId)
+  /** Org-fenced (org-scoped-data-layer.md §3): the repo read is filtered, so a
+   *  cross-org id yields null exactly like an unknown one. The runtime-profile
+   *  fetch below is reached only after that fence admits the row. */
+  async get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonView | null> {
+    const d = await this.daemons.get(orgId, daemonId)
+    if (!d) return null
+    return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
+  }
+
+  async getUnscoped(daemonId: DaemonId): Promise<DaemonView | null> {
+    const d = await this.daemons.getUnscoped(daemonId)
     if (!d) return null
     return toView(d, await this.runtimeProfiles.forDaemon(daemonId))
   }

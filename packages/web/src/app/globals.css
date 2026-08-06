@@ -529,6 +529,14 @@
   .navitem svg {
     flex: none;
   }
+  /* Rule between nav groups. Inset to the pills' own gutter so it reads as a
+     divider inside the list, not as a full-bleed section break like the brand
+     row's. */
+  .navsep {
+    height: 1px;
+    margin: 7px 20px;
+    background: var(--border-inverse);
+  }
   /* ----- Collapsed rail (64px, icons only) ----- */
   .rail.collapsed {
     width: 64px;
@@ -552,6 +560,11 @@
   }
   .rail.collapsed .navitem span {
     display: none;
+  }
+  /* Collapsed there is no label column to align to — the rule shortens to sit
+     under the glyph column instead of running the rail's full width. */
+  .rail.collapsed .navsep {
+    margin: 7px 16px;
   }
   /* Collapsed, the brand-row search button gives way to a nav-row one directly above
      Home, so search stays reachable at the same 32px centre line as every other glyph.

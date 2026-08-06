@@ -1,9 +1,9 @@
 'use client'
 
 // One workspace editor owns mode, repository, branch, working directory, and
-// access. The server drains active work, replaces daemon-local files only when
-// mode/repo/branch changes, and rejects edits that conflict with enabled GitHub
-// review or Check actions.
+// both workspace and additional-repository access. The server drains active
+// work, replaces daemon-local files only when mode/repo/branch changes, and
+// rejects edits that conflict with enabled GitHub review or Check actions.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark } from '@/components/marks'
@@ -12,6 +12,7 @@ import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import {
   ApiError,
+  deleteAgentRepo,
   setAgentWorkspace,
   fetchGithubBranches,
   fetchGithubInstallations,
@@ -23,7 +24,8 @@ import {
   type AgentRepoAuthDto,
   type GithubInstallationDto,
   type GithubRepoAccess,
-  type GithubRepoDto
+  type GithubRepoDto,
+  type RepoAccess
 } from '@/lib/api'
 import { agentDirInputValue, normalizeAgentDir } from '@/lib/repo-subdir'
 import {
@@ -33,25 +35,41 @@ import {
   GithubRepositoryField,
   GithubRepositoryOption,
   RepositoryAccessField,
+  REPOSITORY_ACCESS_BADGE,
   WorktreeField,
   WorkingSubdirectoryField,
   WorkspaceBranchField,
   WorkspaceModeField
 } from '@/components/console/WorkspaceFormFields'
+import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
+
+export interface InitialRepositoryAuthorization {
+  repo?: string
+  access?: RepoAccess
+}
 
 export default function EditWorkspaceModal({
   agent,
   authorized,
   initialMode,
+  initialRepositoryAuthorization,
+  onAuthorizedChange,
+  onRepositoryCreated,
   onClose,
   onChanged
 }: {
   agent: Agent
-  /** Existing grants — pre-picked and badged, but any covered repo converts. */
+  /** Existing grants — managed here and badged in the workspace picker. */
   authorized: AgentRepoAuthDto[]
   /** Preselected mode — the workspace card's Source segment opens the editor
    *  already switched to the mode the user picked. Defaults to the current one. */
   initialMode?: 'scratch' | 'github'
+  /** Open directly at the additional-repository step for contextual shortcuts. */
+  initialRepositoryAuthorization?: InitialRepositoryAuthorization
+  /** Keep the caller's shared repository cache synchronized after add/revoke. */
+  onAuthorizedChange?: (rows: AgentRepoAuthDto[]) => void
+  /** Resume a contextual flow, such as GitHub integration setup, after adding. */
+  onRepositoryCreated?: (row: AgentRepoAuthDto) => void
   onClose: () => void
   onChanged: () => void
 }) {
@@ -77,6 +95,18 @@ export default function EditWorkspaceModal({
   const [agentDir, setAgentDir] = useState(currentAgentDir)
   const [worktree, setWorktree] = useState(githubWorkspace ? githubWorkspace.worktree === true : true)
   const [write, setWrite] = useState(currentWrite ?? (authorized[0] ? authorized[0].access === 'write' : true))
+  const [authorizations, setAuthorizations] = useState(authorized)
+  const [repositoryEditor, setRepositoryEditor] = useState<{
+    repo?: string
+    access?: RepoAccess
+    returnToWorkspace: boolean
+  } | null>(() =>
+    initialRepositoryAuthorization !== undefined
+      ? { ...initialRepositoryAuthorization, returnToWorkspace: false }
+      : null
+  )
+  const [removingAuthorization, setRemovingAuthorization] = useState<string | null>(null)
+  const [repositoryError, setRepositoryError] = useState<string | null>(null)
   // Per-user authz preflight for the picked repo. null = unknown/loading —
   // never blocks; the server re-checks when the edit is submitted.
   const [probe, setProbe] = useState<GithubRepoAccess | null>(null)
@@ -86,17 +116,22 @@ export default function EditWorkspaceModal({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || saving) return
+      if (event.key !== 'Escape' || saving || repositoryEditor !== null) return
       event.stopPropagation()
       onClose()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [onClose, saving])
+  }, [onClose, repositoryEditor, saving])
+
+  useEffect(() => {
+    setAuthorizations(authorized)
+  }, [authorized])
 
   // Probe installations on open; re-probe on focus ("Install GitHub app"
   // finishes in another tab, coming back should light the picker up).
   useEffect(() => {
+    if (repositoryEditor !== null) return
     let alive = true
     const probeInstalls = () =>
       fetchGithubInstallations().then(
@@ -110,10 +145,10 @@ export default function EditWorkspaceModal({
       alive = false
       window.removeEventListener('focus', onFocus)
     }
-  }, [])
+  }, [repositoryEditor])
 
   useEffect(() => {
-    if (!gh?.enabled || gh.installations.length === 0) return
+    if (repositoryEditor !== null || !gh?.enabled || gh.installations.length === 0) return
     let alive = true
     const ctrl = new AbortController()
     setPrivateReposHidden(false)
@@ -131,7 +166,7 @@ export default function EditWorkspaceModal({
       alive = false
       ctrl.abort()
     }
-  }, [gh, reposNonce])
+  }, [gh, repositoryEditor, reposNonce])
 
   const openGhInstall = async () => {
     const url = await fetchGithubInstallUrl().catch(() => null)
@@ -156,10 +191,12 @@ export default function EditWorkspaceModal({
   }
 
   const authorizedByName = useMemo(
-    () => new Map(authorized.map((r) => [r.repoFullName.toLowerCase(), r])),
-    [authorized]
+    () => new Map(authorizations.map((r) => [r.repoFullName.toLowerCase(), r])),
+    [authorizations]
   )
   const grantOf = (fullName: string) => authorizedByName.get(fullName.toLowerCase())
+  const manualWorkspaceAuthorization =
+    githubWorkspace && !githubWorkspace.installationId ? grantOf(githubWorkspace.repo) : undefined
 
   const picked = repos?.find((r) => r.fullName.toLowerCase() === pick.toLowerCase())
   const pickOwner = pick.split('/')[0] ?? ''
@@ -175,7 +212,7 @@ export default function EditWorkspaceModal({
   // assertion deployments): read access needs ≥read, push access ≥write.
   useEffect(() => {
     setProbe(null)
-    if (mode !== 'github' || !pick || !pickInstallationId) return
+    if (repositoryEditor !== null || mode !== 'github' || !pick || !pickInstallationId) return
     const [owner, repo] = pick.split('/')
     if (!owner || !repo) return
     let alive = true
@@ -185,12 +222,12 @@ export default function EditWorkspaceModal({
     return () => {
       alive = false
     }
-  }, [mode, pick, pickInstallationId])
+  }, [mode, pick, pickInstallationId, repositoryEditor])
 
   useEffect(() => {
     setBranches(null)
     setBranchOpen(false)
-    if (mode !== 'github' || !pick || !pickInstallationId) return
+    if (repositoryEditor !== null || mode !== 'github' || !pick || !pickInstallationId) return
     const [owner, repo] = pick.split('/')
     if (!owner || !repo) return
     let alive = true
@@ -200,7 +237,7 @@ export default function EditWorkspaceModal({
     return () => {
       alive = false
     }
-  }, [mode, pick, pickInstallationId])
+  }, [mode, pick, pickInstallationId, repositoryEditor])
 
   const probeDenies = !!probe?.gated && (write ? !probe.canWrite : !probe.canRead)
   const probeNote = probeDenies
@@ -301,6 +338,48 @@ export default function EditWorkspaceModal({
       setSaving(false)
       busyRef.current = false
     }
+  }
+
+  const removeAuthorization = async (row: AgentRepoAuthDto) => {
+    if (removingAuthorization) return
+    setRemovingAuthorization(row.id)
+    setRepositoryError(null)
+    try {
+      await deleteAgentRepo(agent.id, row.id)
+      const next = authorizations.filter((authorization) => authorization.id !== row.id)
+      setAuthorizations(next)
+      onAuthorizedChange?.(next)
+    } catch (error) {
+      setRepositoryError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRemovingAuthorization(null)
+    }
+  }
+
+  if (repositoryEditor) {
+    const closeRepositoryEditor = repositoryEditor.returnToWorkspace ? () => setRepositoryEditor(null) : onClose
+    return (
+      <AddAgentRepoModal
+        agent={agent}
+        workspaceRepo={githubWorkspace?.installationId ? githubWorkspace.repo : null}
+        authorized={authorizations}
+        {...(githubWorkspace && !githubWorkspace.installationId ? { fixedRepo: githubWorkspace.repo } : {})}
+        {...(repositoryEditor.repo ? { initialRepo: repositoryEditor.repo } : {})}
+        {...(repositoryEditor.access ? { initialAccess: repositoryEditor.access } : {})}
+        workspaceContext
+        showBack={repositoryEditor.returnToWorkspace}
+        onClose={closeRepositoryEditor}
+        onExit={onClose}
+        onCreated={(row) => {
+          const next = [...authorizations, row]
+          setAuthorizations(next)
+          onAuthorizedChange?.(next)
+          onRepositoryCreated?.(row)
+          if (repositoryEditor.returnToWorkspace) setRepositoryEditor(null)
+          else onClose()
+        }}
+      />
+    )
   }
 
   return (
@@ -511,7 +590,85 @@ export default function EditWorkspaceModal({
               </div>
             ))}
 
-          {err && <div className="font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>}
+          <div className="mt-1 border-t border-(--border-subtle) pt-4">
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+                  Additional repositories
+                </div>
+                <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                  {githubWorkspace && !githubWorkspace.installationId
+                    ? 'This manual checkout can authorize only its workspace repository. Changes here apply immediately.'
+                    : 'Authorize repositories this agent can use in addition to its workspace. Changes here apply immediately.'}
+                </div>
+              </div>
+              {!manualWorkspaceAuthorization && (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setRepositoryError(null)
+                    setRepositoryEditor({ returnToWorkspace: true })
+                  }}
+                >
+                  <Icon name="plus" size={13} />
+                  Authorize repository
+                </Button>
+              )}
+            </div>
+
+            {mode === 'scratch' && gh?.enabled && gh.installations.length > 0 && (
+              <div className="mt-3">
+                <GithubConnectedBanner onManage={() => void openGhInstall()} />
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-col gap-2">
+              {authorizations.length === 0 ? (
+                <div className="flex items-center gap-2 rounded-md border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[10px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                  <Icon name="info" size={14} className="flex-none" />
+                  No additional repositories authorized.
+                </div>
+              ) : (
+                authorizations.map((authorization) => (
+                  <div
+                    key={authorization.id}
+                    className="flex min-w-0 items-center gap-[10px] rounded-md border border-(--border-subtle) bg-(--surface-card) px-3 py-[9px]"
+                  >
+                    <span className="imark h-4 w-4 flex-none border-0 bg-transparent">
+                      <GithubMark />
+                    </span>
+                    <span
+                      className="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--text-primary)"
+                      title={authorization.repoFullName}
+                    >
+                      {authorization.repoFullName}
+                    </span>
+                    <span className={REPOSITORY_ACCESS_BADGE[authorization.access]}>{authorization.access}</span>
+                    <button
+                      type="button"
+                      className={`iconbtn h-6 w-6 flex-none ${
+                        removingAuthorization === authorization.id ? 'pointer-events-none opacity-50' : ''
+                      }`}
+                      title="Revoke repository access"
+                      disabled={removingAuthorization !== null}
+                      onClick={() => void removeAuthorization(authorization)}
+                    >
+                      <Icon name={removingAuthorization === authorization.id ? 'loader' : 'trash-2'} size={13} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            {repositoryError && (
+              <div className="mt-2 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+                {repositoryError}
+              </div>
+            )}
+          </div>
+
+          {err && (
+            <div className="mt-3 font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>
+          )}
         </div>
 
         <div className="modalfoot">

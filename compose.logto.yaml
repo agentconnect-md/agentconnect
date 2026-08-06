@@ -1,11 +1,16 @@
 services:
   control-plane:
     environment:
-      - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
+      - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
+      - LOGTO_MGMT_ENDPOINT=${LOGTO_MGMT_ENDPOINT:-http://logto:3001}
 
   web:
     environment:
-      - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
+      - LOGTO_ENDPOINT=${LOGTO_ENDPOINT:-http://localhost:3001}
+
+  setup-server:
+    environment:
+      - LOGTO_MGMT_ENDPOINT=${LOGTO_MGMT_ENDPOINT:-http://logto:3001}
 
   logto-db-init:
     image: postgres:18-alpine
@@ -47,8 +52,8 @@ services:
     entrypoint: ['sh', '-c', 'npm run cli db seed -- --swe && npm start']
     environment:
       DB_URL: postgresql://logto:${LOGTO_POSTGRES_PASSWORD:-logto}@postgres:5432/logto
-      ENDPOINT: ${LOGTO_ENDPOINT:-http://login.agentconnect.localhost:3001}
-      ADMIN_ENDPOINT: http://admin.agentconnect.localhost:3002
+      ENDPOINT: ${LOGTO_ENDPOINT:-http://localhost:3001}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
     healthcheck:
       test:
         - CMD
@@ -64,11 +69,5 @@ services:
       - 127.0.0.1:3002:3002
     restart: unless-stopped
     networks:
-      default:
-        aliases:
-          - login.agentconnect.localhost
-          - admin.agentconnect.localhost
-      admin:
-        aliases:
-          - login.agentconnect.localhost
-          - admin.agentconnect.localhost
+      - default
+      - admin

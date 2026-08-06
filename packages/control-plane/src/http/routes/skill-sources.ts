@@ -225,8 +225,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const s = await deps.repos.skillSource.get(req.params.id)
-        if (!s || s.orgId !== orgOf(req) || !canView(s, ctxOf(req))) return notFound(reply)
+        const s = await deps.repos.skillSource.get(orgOf(req), req.params.id)
+        if (!s || !canView(s, ctxOf(req))) return notFound(reply)
         return toDto(s, ctxOf(req))
       }
     )
@@ -245,8 +245,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const s = await deps.repos.skillSource.get(req.params.id)
-        if (!s || s.orgId !== orgOf(req) || !canView(s, ctxOf(req))) return notFound(reply)
+        const s = await deps.repos.skillSource.get(orgOf(req), req.params.id)
+        if (!s || !canView(s, ctxOf(req))) return notFound(reply)
         const gh = deps.github
         const parsed = parseGithubRepo(s.source)
         if (!gh || !parsed) return { resolvable: false, skills: [] }
@@ -290,8 +290,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const gh = deps.github
         if (!gh) return notFound(reply) // github-app feature off — no scan possible
-        const ins = await deps.repos.githubInstallation.get(req.body.installationId)
-        if (!ins || ins.orgId !== orgOf(req) || ins.revokedAt) return notFound(reply)
+        const ins = await deps.repos.githubInstallation.get(orgOf(req), req.body.installationId)
+        if (!ins || ins.revokedAt) return notFound(reply)
         const [branches, scan] = await Promise.all([
           gh.listBranches(ins, req.body.owner, req.body.repo).catch(() => [] as string[]),
           gh.scanSkillSource(ins, req.body.owner, req.body.repo, req.body.ref)
@@ -376,8 +376,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.skillSource.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        const existing = await deps.repos.skillSource.get(orgOf(req), req.params.id)
+        if (!existing || !canView(existing, ctxOf(req))) return notFound(reply)
         // Same public-only guard as create, on the EFFECTIVE source — a PATCH that
         // points an existing source at a (now-confirmed) private repo is rejected too.
         if (await isPrivateRepo(orgOf(req), req.body.source ?? existing.source)) {
@@ -400,7 +400,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // A subdir source needs a ref; reject if we couldn't resolve one rather than
         // let the daemon assume `main`.
         if (effSubDir && !resolvedRef) return reply.code(400).send(subdirNeedsRef)
-        const source = await deps.repos.skillSource.update(existing.id, {
+        const source = await deps.repos.skillSource.update(orgOf(req), existing.id, {
           ...(req.body.source !== undefined ? { source: req.body.source } : {}),
           ...(repoId !== undefined ? { githubRepoId: repoId } : {}),
           ...(resolvedRef !== undefined
@@ -432,8 +432,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.skillSource.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        const existing = await deps.repos.skillSource.get(orgOf(req), req.params.id)
+        if (!existing || !canView(existing, ctxOf(req))) return notFound(reply)
         if (!canManageSharing(existing, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot change sharing' })
         }
@@ -443,6 +443,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // scope (routes/agents.ts), so this flip cannot land between their check
         // and their commit.
         const source = await deps.repos.skillSource.setSharing(
+          orgOf(req),
           existing.id,
           {
             visibility: req.body.visibility,
@@ -469,8 +470,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.skillSource.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req) || !canView(existing, ctxOf(req))) return notFound(reply)
+        const existing = await deps.repos.skillSource.get(orgOf(req), req.params.id)
+        if (!existing || !canView(existing, ctxOf(req))) return notFound(reply)
         // Agents bind a source by NAME (their enable-refs), so deleting while
         // referenced would leave dangling selectors that silently re-bind to any
         // future source recreated under the same name. The repo runs the
@@ -482,7 +483,7 @@ export function skillSourceRoutes(deps: HttpDeps) {
         // serializes after the drop (its in-scope visibility check then refuses
         // the now-unknown name, and the create guard keeps the name uncapturable
         // while referenced).
-        const outcome = await deps.repos.skillSource.delete(existing.id)
+        const outcome = await deps.repos.skillSource.delete(orgOf(req), existing.id)
         if (outcome === 'referenced') {
           return reply.code(409).send({
             error: 'Conflict',

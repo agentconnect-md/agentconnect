@@ -172,22 +172,30 @@ export class PgDaemonRepo implements DaemonRepo {
     })
   }
 
-  async rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord> {
+  async rename(orgId: OrgId, daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord> {
     // A rename is a human edit — advance the last-modified audit (editor stamped
     // when known; absent under devAuth ⇒ leave the prior editor as-is).
+    // The org filter rides the unique update (extended where): a cross-org id
+    // throws the same P2025 as a missing row (org-scoped-data-layer.md §3).
     const daemon = await this.db.daemon.update({
-      where: { id: daemonId },
+      where: { id: daemonId, orgId },
       data: { name, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
       include: withUsers
     })
     return toRecord(daemon)
   }
 
-  async setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonRecord> {
+  async setSessionRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord> {
     // A retention change is a human edit — advance the last-modified audit
     // (editor stamped when known; absent under devAuth ⇒ leave the prior editor).
+    // Org-fenced on the update, like `rename`.
     const daemon = await this.db.daemon.update({
-      where: { id: daemonId },
+      where: { id: daemonId, orgId },
       data: { sessionRetention, lastModifiedAt: new Date(), ...(byUserId ? { lastModifiedByUserId: byUserId } : {}) },
       include: withUsers
     })
@@ -195,13 +203,16 @@ export class PgDaemonRepo implements DaemonRepo {
   }
 
   async setSharing(
+    orgId: OrgId,
     daemonId: DaemonId,
     sharing: { visibility: DaemonRecord['visibility']; sharedWith: string[] },
     byUserId?: string
   ): Promise<DaemonRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      // Org fence on the opening read: a cross-org id throws the same P2025 as
+      // a missing row, before the membership lock or any write.
       const existing = await tx.daemon.findUniqueOrThrow({
-        where: { id: daemonId },
+        where: { id: daemonId, orgId },
         select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -213,7 +224,7 @@ export class PgDaemonRepo implements DaemonRepo {
       // A sharing change is a human edit — advance the last-modified audit
       // (editor stamped when known; absent under devAuth ⇒ leave it unchanged).
       const daemon = await tx.daemon.update({
-        where: { id: daemonId },
+        where: { id: daemonId, orgId },
         data: {
           visibility: sharing.visibility,
           sharedWith: memberships.sharedWith ?? [],
@@ -226,10 +237,12 @@ export class PgDaemonRepo implements DaemonRepo {
     })
   }
 
-  async delete(daemonId: DaemonId): Promise<void> {
+  async delete(orgId: OrgId, daemonId: DaemonId): Promise<void> {
     // One DELETE; the DB FKs cascade api-keys/leases/launches/runtime-profiles and
-    // SET NULL agents/assignments (§3.3). Throws P2025 if absent → 404 at the edge.
-    await this.db.daemon.delete({ where: { id: daemonId } })
+    // SET NULL agents/assignments (§3.3). Throws P2025 if absent → 404 at the edge;
+    // the org fence rides the same statement, so a cross-org id is refused with
+    // exactly that error (org-scoped-data-layer.md §3).
+    await this.db.daemon.delete({ where: { id: daemonId, orgId } })
   }
 
   async bumpRoutingEpoch(daemonId: DaemonId): Promise<bigint> {
@@ -250,7 +263,14 @@ export class PgDaemonRepo implements DaemonRepo {
     return rows.map(toRecord)
   }
 
-  async get(daemonId: DaemonId): Promise<DaemonRecord | null> {
+  async get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const d = await this.db.daemon.findUnique({ where: { id: daemonId, orgId }, include: withUsers })
+    return d ? toRecord(d) : null
+  }
+
+  async getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null> {
     const d = await this.db.daemon.findUnique({ where: { id: daemonId }, include: withUsers })
     return d ? toRecord(d) : null
   }

@@ -232,7 +232,9 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
               throw new FeishuRegistrationRetryError()
             }
             const existingSecret =
-              registration.transport === 'http' ? await deps.repos.botSecret.get(registration.botId) : null
+              registration.transport === 'http'
+                ? await deps.repos.botSecret.get(registration.orgId, registration.botId)
+                : null
             const verificationToken =
               existingSecret?.verificationToken && existingSecret.verificationToken.length <= 32
                 ? existingSecret.verificationToken

@@ -420,10 +420,9 @@ export const SHARED_CONFIG_ACTION_ID = 'ac_shared_channel_config'
  *  use that id for the legacy 👤 button + modal flow. */
 export const SHARED_AGENT_SELECT_ACTION_ID = 'ac_shared_agent_select'
 
-// Defined in slack-app-manifest.ts (the web console's Turbopack-safe entry
-// point, which must stay free of relative imports); re-exported here so root
-// consumers keep importing it alongside the other Slack interaction ids.
-export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '../slack-app-manifest.js'
+// `SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID` is declared in the app manifest, so
+// it lives in `../slack-app-manifest.ts` and is re-exported from the package root
+// alongside the ids below. See that file for why it cannot import back into here.
 
 /** Slack action ids shared by the daemon-owned status modal and the relay-owned
  *  HTTP interaction edge. Dedicated bots handle them in the daemon directly; shared bots

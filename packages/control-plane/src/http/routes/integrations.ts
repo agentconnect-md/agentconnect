@@ -106,10 +106,10 @@ export function integrationRoutes(deps: HttpDeps) {
       // caller here is already on the socket-transport arm, so the projector
       // returns the same direct-mode payload this path emitted before.
       const [secret, channels, owner, bot] = await Promise.all([
-        deps.repos.botSecret.get(i.botId),
+        deps.repos.botSecret.get(i.orgId, i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id),
         deps.repos.agent.get(i.orgId, i.agentId),
-        deps.repos.bot.get(i.botId)
+        deps.repos.bot.get(i.orgId, i.botId)
       ])
       if (!secret || !bot) return
       try {
@@ -229,11 +229,8 @@ export function integrationRoutes(deps: HttpDeps) {
 
         // Reusing/promoting a classic bot can change the wire mode for agents
         // already using it, so their placement moves share this same boundary.
-        const observedBot = req.body.botId === undefined ? null : await deps.repos.bot.get(BotId(req.body.botId))
-        if (
-          req.body.botId !== undefined &&
-          (!observedBot || observedBot.orgId !== orgId || observedBot.platform !== req.body.platform)
-        ) {
+        const observedBot = req.body.botId === undefined ? null : await deps.repos.bot.get(orgId, BotId(req.body.botId))
+        if (req.body.botId !== undefined && (!observedBot || observedBot.platform !== req.body.platform)) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         const observedBotAgentIds = [...(observedBot?.agentIds ?? [])].sort()
@@ -268,7 +265,7 @@ export function integrationRoutes(deps: HttpDeps) {
           // Reuse an existing bot: mint an integration for it. A SHAREABLE bot may
           // already serve other agents (this adds one more); a CLASSIC bot must be free.
           if (req.body.botId !== undefined) {
-            const bot = await deps.repos.bot.get(BotId(req.body.botId))
+            const bot = await deps.repos.bot.get(orgId, BotId(req.body.botId))
             if (
               !bot ||
               !observedBot ||
@@ -316,7 +313,7 @@ export function integrationRoutes(deps: HttpDeps) {
               if (bot.agentIds.length > 0) {
                 const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
                 if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
-                if (!bot.shareable) await deps.repos.bot.setShareable(bot.id, true)
+                if (!bot.shareable) await deps.repos.bot.setShareable(orgId, bot.id, true)
               } else if (!deps.httpBot.hasConnectedRelay()) {
                 return reply.code(409).send({
                   error: 'Conflict',
@@ -596,8 +593,8 @@ export function integrationRoutes(deps: HttpDeps) {
       req: { params: { id: string; channelId?: string } },
       reply: FastifyReply
     ): Promise<{ integration: IntegrationRecord; agent: AgentRecord; bot: BotRecord } | null> => {
-      const integration = await deps.repos.integration.get(IntegrationId(req.params.id))
-      if (!integration || integration.orgId !== orgIdOf(req as never)) {
+      const integration = await deps.repos.integration.get(orgIdOf(req as never), IntegrationId(req.params.id))
+      if (!integration) {
         reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         return null
       }
@@ -610,7 +607,7 @@ export function integrationRoutes(deps: HttpDeps) {
         reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         return null
       }
-      const bot = await deps.repos.bot.get(integration.botId)
+      const bot = await deps.repos.bot.get(orgIdOf(req as never), integration.botId)
       if (!bot) {
         reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         return null
@@ -755,8 +752,8 @@ export function integrationRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const integration = await deps.repos.integration.get(IntegrationId(req.params.id))
-        if (!integration || integration.orgId !== orgIdOf(req)) {
+        const integration = await deps.repos.integration.get(orgIdOf(req), IntegrationId(req.params.id))
+        if (!integration) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         }
         // Derived visibility: gate on the parent agent — a restricted agent the
@@ -775,7 +772,7 @@ export function integrationRoutes(deps: HttpDeps) {
         if (!existingChannel) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'channel not found' })
         }
-        const bot = await deps.repos.bot.get(integration.botId)
+        const bot = await deps.repos.bot.get(orgIdOf(req), integration.botId)
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
@@ -1141,8 +1138,8 @@ export function integrationRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.integration.get(IntegrationId(req.params.id))
-        if (!existing || existing.orgId !== orgIdOf(req)) {
+        const existing = await deps.repos.integration.get(orgIdOf(req), IntegrationId(req.params.id))
+        if (!existing) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         }
         // Derived visibility: gate on the parent agent (a restricted agent the caller
@@ -1172,16 +1169,16 @@ export function integrationRoutes(deps: HttpDeps) {
             })
           }
           agent = current
-          const botBefore = await deps.repos.bot.get(existing.botId)
+          const botBefore = await deps.repos.bot.get(orgIdOf(req), existing.botId)
           if (botBefore?.transport === 'http') {
             await deps.httpBot.prepareIntegrationRemoval(existing.botId)
           }
-          await deps.repos.integration.delete(existing.id)
+          await deps.repos.integration.delete(orgIdOf(req), existing.id)
           // "Freed" now means NO active integration remains (a shareable bot may still
           // serve other agents — don't stamp it freed while it does, §6).
           const remaining = await deps.repos.integration.listForBot(existing.botId)
           if (remaining.length === 0) {
-            await deps.repos.bot.markFreed(existing.botId, new Date(), agent.name ?? null)
+            await deps.repos.bot.markFreed(orgIdOf(req), existing.botId, new Date(), agent.name ?? null)
           }
           // Tell the removed agent's daemon to drop the spec either way.
           await replicateRemove(existing.id, agent.daemonId ?? null)

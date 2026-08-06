@@ -12,7 +12,8 @@ async function featureDaemon(
   conn: Parameters<Handler>[1],
   deps: Parameters<Handler>[2]
 ): Promise<DaemonView | null> {
-  const daemon = await deps.registry.get(DaemonId(conn.daemonId))
+  // Daemon trust domain: the connection's own daemon (org-scoped-data-layer.md §4).
+  const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon || !daemon.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)) {
     conn.sendError(frameId, 'SCOPE_DENIED', 'daemon did not advertise organization knowledge support', false)
     return null
@@ -193,9 +194,12 @@ export const handleManagedSkillRead: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'managed skill is not enabled for this agent', false)
     return
   }
-  const skill = await repo.getManagedSkill(frame.payload.managedSkillId)
+  // The managed-skill id comes from the daemon's frame, so it is fenced on the
+  // REQUESTER's org — the one thing this handler has already proved (the agent is
+  // placed on this connection). The revision fences through that parent (§3.6).
+  const skill = await repo.getManagedSkill(requester.orgId, frame.payload.managedSkillId)
   const revision = await repo.getManagedSkillRevision(frame.payload.managedSkillId, frame.payload.revision)
-  if (!skill || skill.orgId !== requester.orgId || skill.archivedAt !== null || !revision) {
+  if (!skill || skill.archivedAt !== null || !revision) {
     conn.sendError(frame.id, 'BAD_PAYLOAD', 'managed skill revision not found', false)
     return
   }

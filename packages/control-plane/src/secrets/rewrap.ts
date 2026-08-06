@@ -31,6 +31,8 @@
  */
 import type { Prisma, PrismaClient } from '../generated/prisma/client.js'
 import type { SecretCipher } from './cipher.js'
+import { DEPLOYMENT_SCOPE, orgScope, type SecretScope } from './scope.js'
+import { OrgId } from '../domain/ids.js'
 
 export interface RewrapStats {
   table: string
@@ -47,11 +49,16 @@ export async function rewrapAllSecrets(
   cipher: SecretCipher,
   log: (message: string) => void = () => {}
 ): Promise<RewrapStats[]> {
-  // open() then seal(): plaintext residue gets sealed, old-key ciphertext gets
-  // re-encrypted at the current key version — both arms of the sweep's job.
-  const reseal = async (stored: string): Promise<string> => cipher.seal(await cipher.open(stored))
-  const resealNullable = async (stored: string | null): Promise<string | null> =>
-    stored === null ? null : reseal(stored)
+  // open() then seal() under the row's OWN scope: plaintext residue gets sealed,
+  // a pre-scoping single-key ciphertext gets re-encrypted under the owning org's
+  // key, and an already-scoped value is refreshed at the current key version.
+  // Converging every value onto its org key is what makes crypto-shredding true
+  // (docs/designs/per-org-secret-encryption.md §7) — a value left under the
+  // deployment key survives its organization's shred.
+  const reseal = async (stored: string, scope: SecretScope): Promise<string> =>
+    cipher.seal(await cipher.open(stored, scope), scope)
+  const resealNullable = async (stored: string | null, scope: SecretScope): Promise<string | null> =>
+    stored === null ? null : reseal(stored, scope)
 
   const stats: RewrapStats[] = []
   const done = (table: string, rows: number, values: number, skipped: number): void => {
@@ -66,13 +73,14 @@ export async function rewrapAllSecrets(
     let rows = 0
     let values = 0
     let skipped = 0
-    for (const r of await prisma.botSecret.findMany()) {
+    for (const r of await prisma.botSecret.findMany({ include: { bot: { select: { orgId: true } } } })) {
+      const scope = orgScope(OrgId(r.bot.orgId))
       const sealed = {
-        botToken: await reseal(r.botToken),
-        appToken: await resealNullable(r.appToken),
-        signingSecret: await resealNullable(r.signingSecret),
-        verificationToken: await resealNullable(r.verificationToken),
-        encryptKey: await resealNullable(r.encryptKey)
+        botToken: await reseal(r.botToken, scope),
+        appToken: await resealNullable(r.appToken, scope),
+        signingSecret: await resealNullable(r.signingSecret, scope),
+        verificationToken: await resealNullable(r.verificationToken, scope),
+        encryptKey: await resealNullable(r.encryptKey, scope)
       }
       // CAS on the snapshot bytes: a concurrent store.put() (already sealed) wins.
       const res = await prisma.botSecret.updateMany({
@@ -108,7 +116,7 @@ export async function rewrapAllSecrets(
     for (const r of await prisma.deploymentSecret.findMany()) {
       const res = await prisma.deploymentSecret.updateMany({
         where: { deploymentConfigId: r.deploymentConfigId, key: r.key, value: r.value },
-        data: { value: await reseal(r.value) }
+        data: { value: await reseal(r.value, DEPLOYMENT_SCOPE) }
       })
       if (res.count === 0) skipped += 1
       else rows += 1
@@ -119,10 +127,10 @@ export async function rewrapAllSecrets(
   {
     let rows = 0
     let skipped = 0
-    for (const r of await prisma.agentSecret.findMany()) {
+    for (const r of await prisma.agentSecret.findMany({ include: { agent: { select: { orgId: true } } } })) {
       const res = await prisma.agentSecret.updateMany({
         where: { agentId: r.agentId, key: r.key, value: r.value },
-        data: { value: await reseal(r.value) }
+        data: { value: await reseal(r.value, orgScope(OrgId(r.agent.orgId))) }
       })
       if (res.count === 0) skipped += 1
       else rows += 1
@@ -136,10 +144,12 @@ export async function rewrapAllSecrets(
     // bytes so a concurrent rotation (already sealed with the new key) wins.
     let rows = 0
     let skipped = 0
-    for (const r of await prisma.organizationEnvironmentSecret.findMany()) {
+    for (const r of await prisma.organizationEnvironmentSecret.findMany({
+      include: { entry: { select: { orgId: true } } }
+    })) {
       const res = await prisma.organizationEnvironmentSecret.updateMany({
         where: { entryId: r.entryId, value: r.value },
-        data: { value: await reseal(r.value) }
+        data: { value: await reseal(r.value, orgScope(OrgId(r.entry.orgId))) }
       })
       if (res.count === 0) skipped += 1
       else rows += 1
@@ -150,10 +160,10 @@ export async function rewrapAllSecrets(
   {
     let rows = 0
     let skipped = 0
-    for (const r of await prisma.hookSecret.findMany()) {
+    for (const r of await prisma.hookSecret.findMany({ include: { hook: { select: { orgId: true } } } })) {
       const res = await prisma.hookSecret.updateMany({
         where: { hookId: r.hookId, hmacSecret: r.hmacSecret },
-        data: { hmacSecret: await reseal(r.hmacSecret) }
+        data: { hmacSecret: await reseal(r.hmacSecret, orgScope(OrgId(r.hook.orgId))) }
       })
       if (res.count === 0) skipped += 1
       else rows += 1
@@ -168,9 +178,12 @@ export async function rewrapAllSecrets(
     let rows = 0
     let values = 0
     let skipped = 0
-    for (const r of await prisma.mcpProviderSecret.findMany()) {
+    for (const r of await prisma.mcpProviderSecret.findMany({ include: { provider: { select: { orgId: true } } } })) {
+      const scope = orgScope(OrgId(r.provider.orgId))
       const headers = r.headers as unknown as Array<{ name: string; value: string }>
-      const resealed = await Promise.all(headers.map(async (h) => ({ name: h.name, value: await reseal(h.value) })))
+      const resealed = await Promise.all(
+        headers.map(async (h) => ({ name: h.name, value: await reseal(h.value, scope) }))
+      )
       const res = await prisma.mcpProviderSecret.updateMany({
         where: { mcpProviderId: r.mcpProviderId, headers: { equals: r.headers as Prisma.InputJsonValue } },
         data: { headers: resealed }
@@ -187,10 +200,10 @@ export async function rewrapAllSecrets(
   {
     let rows = 0
     let skipped = 0
-    for (const r of await prisma.mcpGrant.findMany()) {
+    for (const r of await prisma.mcpGrant.findMany({ include: { provider: { select: { orgId: true } } } })) {
       const res = await prisma.mcpGrant.updateMany({
         where: { id: r.id, key: r.key },
-        data: { key: await reseal(r.key) }
+        data: { key: await reseal(r.key, orgScope(OrgId(r.provider.orgId))) }
       })
       if (res.count === 0) skipped += 1
       else rows += 1
@@ -203,10 +216,11 @@ export async function rewrapAllSecrets(
     let values = 0
     let skipped = 0
     for (const r of await prisma.slackInstall.findMany()) {
+      const scope = orgScope(OrgId(r.orgId))
       const sealed = {
-        clientSecret: await reseal(r.clientSecret),
-        botToken: await resealNullable(r.botToken),
-        signingSecret: await resealNullable(r.signingSecret)
+        clientSecret: await reseal(r.clientSecret, scope),
+        botToken: await resealNullable(r.botToken, scope),
+        signingSecret: await resealNullable(r.signingSecret, scope)
       }
       const res = await prisma.slackInstall.updateMany({
         where: { id: r.id, clientSecret: r.clientSecret, botToken: r.botToken, signingSecret: r.signingSecret },
@@ -228,10 +242,15 @@ export async function rewrapAllSecrets(
     let rows = 0
     let values = 0
     let skipped = 0
-    for (const r of await prisma.externalMemoryConnectionSecret.findMany()) {
+    for (const r of await prisma.externalMemoryConnectionSecret.findMany({
+      include: { connection: { select: { orgId: true } } }
+    })) {
+      const scope = orgScope(OrgId(r.connection.orgId))
       const stored = r.values as unknown as Record<string, string>
       const resealed = Object.fromEntries(
-        await Promise.all(Object.entries(stored).map(async ([name, value]) => [name, await reseal(value)] as const))
+        await Promise.all(
+          Object.entries(stored).map(async ([name, value]) => [name, await reseal(value, scope)] as const)
+        )
       )
       const res = await prisma.externalMemoryConnectionSecret.updateMany({
         where: { connectionId: r.connectionId, values: { equals: r.values as Prisma.InputJsonValue } },
@@ -249,10 +268,12 @@ export async function rewrapAllSecrets(
   {
     let rows = 0
     let skipped = 0
-    for (const r of await prisma.externalMemoryGrant.findMany()) {
+    for (const r of await prisma.externalMemoryGrant.findMany({
+      include: { connection: { select: { orgId: true } } }
+    })) {
       const res = await prisma.externalMemoryGrant.updateMany({
         where: { id: r.id, key: r.key },
-        data: { key: await reseal(r.key) }
+        data: { key: await reseal(r.key, orgScope(OrgId(r.connection.orgId))) }
       })
       if (res.count === 0) skipped += 1
       else rows += 1
@@ -268,9 +289,9 @@ export async function rewrapAllSecrets(
       const res = await prisma.slackUserConfig.updateMany({
         where: { orgId: r.orgId, userId: r.userId, accessToken: r.accessToken, refreshToken: r.refreshToken },
         data: {
-          accessToken: await reseal(r.accessToken),
+          accessToken: await reseal(r.accessToken, orgScope(OrgId(r.orgId))),
           // Access-only rows have no refresh token to reseal (the column is nullable).
-          refreshToken: r.refreshToken ? await reseal(r.refreshToken) : null
+          refreshToken: r.refreshToken ? await reseal(r.refreshToken, orgScope(OrgId(r.orgId))) : null
         }
       })
       if (res.count === 0) skipped += 1
@@ -280,6 +301,32 @@ export async function rewrapAllSecrets(
       }
     }
     done('slack_user_config', rows, values, skipped)
+  }
+
+  {
+    // Was absent from this sweep until per-org keys made the gap load-bearing:
+    // an unswept value can never be shredded with its organization. Both columns
+    // are nullable and cleared on settle/expire, so most rows reseal nothing.
+    let rows = 0
+    let values = 0
+    let skipped = 0
+    for (const r of await prisma.feishuAppRegistration.findMany()) {
+      if (r.deviceCode === null && r.appSecret === null) continue
+      const scope = orgScope(OrgId(r.orgId))
+      const res = await prisma.feishuAppRegistration.updateMany({
+        where: { id: r.id, deviceCode: r.deviceCode, appSecret: r.appSecret },
+        data: {
+          deviceCode: await resealNullable(r.deviceCode, scope),
+          appSecret: await resealNullable(r.appSecret, scope)
+        }
+      })
+      if (res.count === 0) skipped += 1
+      else {
+        rows += 1
+        values += (r.deviceCode === null ? 0 : 1) + (r.appSecret === null ? 0 : 1)
+      }
+    }
+    done('feishu_app_registration', rows, values, skipped)
   }
 
   return stats

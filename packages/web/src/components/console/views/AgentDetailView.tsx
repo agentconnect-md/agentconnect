@@ -499,7 +499,7 @@ export default function AgentDetailView() {
   const tabCls = (t: DetailTab) => (tab === t ? 'tab on' : 'tab')
   const tabHref = (t: DetailTab) => orgPath(t === 'integrations' ? `/agents/${da.id}` : `/agents/${da.id}?tab=${t}`)
   const botSettingsHref = (botId?: string) =>
-    orgPath(botId ? `/settings?bot=${encodeURIComponent(botId)}` : '/settings')
+    orgPath(botId ? `/integrations?bot=${encodeURIComponent(botId)}` : '/integrations')
 
   // ── Single responsive tree. Base classes are the mobile (≤768px) push-detail
   // body (the Shell provides the top push bar there); `desktop:` variants restore
@@ -1892,7 +1892,7 @@ function UnauthorizedWatchBadge() {
   return (
     <span
       className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
-      title="This repo isn't authorized for the agent — events still trigger it, but replies and pushes back to GitHub have no credentials. Authorize the repo in the Workspace card."
+      title="This repo isn't authorized for the agent — events still trigger it, but replies and pushes back to GitHub have no credentials. Open Edit workspace to authorize it."
     >
       <Icon name="triangle-alert" size={11} />
       write-back unauthorized

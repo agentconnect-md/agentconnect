@@ -100,7 +100,7 @@ function make(
       opts.permissions?.[username] ?? opts.permission ?? 'write'
   )
   const service = new GithubCommentAuthzService({
-    hooks: { getMany } as unknown as Pick<HookRepo, 'getMany'>,
+    hooks: { getManyUnscoped: getMany } as unknown as Pick<HookRepo, 'getManyUnscoped'>,
     installations: { getByInstallationId } as unknown as Pick<GithubInstallationRepo, 'getByInstallationId'>,
     github: { repoRefForCommentAuthz, userRepoPermissionForCommentAuthz } as unknown as Pick<
       GithubService,

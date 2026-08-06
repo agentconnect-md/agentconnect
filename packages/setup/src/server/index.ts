@@ -53,18 +53,20 @@ import {
 } from '../slack-app.js'
 import type { ProviderAppConfig } from '../provider-app.js'
 import {
-  TenantAdminAuthError,
-  TenantAdminAuthenticator,
-  type AdminOidcConfig,
-  type TenantAdminPrincipal,
+  SetupAuthError,
+  SetupAuthenticator,
+  urlAtOrigin,
+  type SetupOidcConfig,
+  type SetupPrincipal,
   type VerifyOidcToken
 } from './auth.js'
-import { loadTenantAdminProcessConfig } from './config.js'
-import { TENANT_ADMIN_HTML } from './html.js'
+import { loadSetupServerProcessConfig } from './config.js'
+import { SETUP_HTML } from './html.js'
 import {
   LogtoAdminClaimClient,
   LogtoManagementError,
   type LogtoManagementConfig,
+  type LogtoNamedConnector,
   type LogtoSetupDesired
 } from './logto-management.js'
 
@@ -74,9 +76,15 @@ const PutDeploymentConfigBody = z.strictObject({
   secrets: DeploymentSecretPatchSchema.optional()
 })
 
+const ManagementApiResourceSchema = z
+  .string()
+  .trim()
+  .pipe(DeploymentConfigValuesV1Schema.shape.logto.unwrap().shape.managementResource)
+
 const BootstrapLogtoBody = z.strictObject({
   managementAppId: z.string().trim().min(1).max(200),
   managementAppSecret: z.string().min(1).max(10_000),
+  managementResource: ManagementApiResourceSchema.optional(),
   socialProvider: z.enum(['github', 'google', 'slack']).optional()
 })
 
@@ -139,7 +147,7 @@ interface OidcDiscovery {
   tokenEndpoint: string
 }
 
-export interface TenantAdminServerDeps {
+export interface SetupServerDeps {
   store: DeploymentConfigStore
   publicUrl: string
   fetch?: typeof fetch
@@ -163,7 +171,7 @@ export interface TenantAdminServerDeps {
   allowContainerLoopbackProxy?: boolean
 }
 
-export type TenantAdminServerOptions = FastifyServerOptions
+export type SetupServerOptions = FastifyServerOptions
 
 function problem(reply: FastifyReply, statusCode: number, message: string, code?: string): FastifyReply {
   return reply.code(statusCode).send({
@@ -192,7 +200,7 @@ function isLoopbackHostname(raw: string): boolean {
     .toLowerCase()
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '')
-  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
 }
 
 function isLocalRequest(publicUrl: string, allowContainerLoopbackProxy: boolean, request: FastifyRequest): boolean {
@@ -228,15 +236,17 @@ function toStatus(record: DeploymentConfigAdmin | null) {
   }
 }
 
-function oidcOf(record: DeploymentConfigAdmin | null, issuer: string): AdminOidcConfig | null {
+function oidcOf(record: DeploymentConfigAdmin | null, issuer: string, upstream?: string): SetupOidcConfig | null {
   const auth = record?.values.auth
-  // Logto emits the `roles` scope into the ID token. Tenant Admin therefore
+  // Logto emits the `roles` scope into the ID token. Setup Server therefore
   // validates that token against the browser application's client id. The CP
   // continues to validate API access tokens against auth.audience separately.
-  return auth?.mode === 'oidc' ? { issuer, audience: auth.browserClient.appId } : null
+  return auth?.mode === 'oidc'
+    ? { issuer, ...(upstream ? { upstream } : {}), audience: auth.browserClient.appId }
+    : null
 }
 
-function authFailure(reply: FastifyReply, error: TenantAdminAuthError): FastifyReply {
+function authFailure(reply: FastifyReply, error: SetupAuthError): FastifyReply {
   return problem(reply, error.statusCode, error.message, error.code)
 }
 
@@ -287,13 +297,15 @@ function appendPath(origin: string, path: string): string {
   return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
 }
 
-function googleRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
+function socialRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
   return [
     appendPath(endpoint, `/callback/${connectorId}`),
     appendPath(endpoint, `/account/callback/social/${connectorId}`),
     appendPath(webUrl, '/auth/social/callback')
   ]
 }
+
+const REGIONAL_LOGTO_CONNECTOR_NAMES = { feishu: 'Feishu', lark: 'Lark' } as const
 
 type ServiceTopology = { web: string; controlPlane: string; relay: string }
 
@@ -309,7 +321,7 @@ function slackProviderAppConfig(services: ServiceTopology): ProviderAppConfig {
 
 function logtoSetup(
   record: DeploymentConfigRuntime,
-  tenantAdminUrl: string,
+  setupUrl: string,
   services: ServiceTopology,
   endpoint: string
 ): ResolvedLogtoSetup | null {
@@ -332,7 +344,7 @@ function logtoSetup(
   const slackSecret = record.secrets['slack.clientSecret']
   const applicationId = auth.mode === 'oidc' ? auth.browserClient.appId : undefined
   const webOrigin = new URL(services.web).origin
-  const adminOrigin = new URL(tenantAdminUrl).origin
+  const setupOrigin = new URL(setupUrl).origin
   return {
     endpoint: resolvedEndpoint,
     apiResource: browser.apiResource,
@@ -340,7 +352,7 @@ function logtoSetup(
     desired: {
       ...(applicationId ? { applicationId } : {}),
       applicationName: browser.applicationName,
-      redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
+      redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(setupOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
       socialProviders: [...browser.socialProviders],
       ...(logto.githubConnector && githubSecret
@@ -373,17 +385,14 @@ function logtoSetup(
 }
 
 /** Build the thin UI/API over the shared typed deployment-config service. */
-export function buildTenantAdminServer(
-  deps: TenantAdminServerDeps,
-  options: TenantAdminServerOptions = {}
-): FastifyInstance {
+export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false, ...options })
   const fetchImpl = deps.fetch ?? fetch
   const auditFeishuAppSetup = deps.auditFeishuAppSetup ?? createFeishuAppSetupAuditor(fetchImpl)
   const slackConfigApi = deps.slackConfigApi ?? createSlackConfigApi({ fetch: fetchImpl })
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
-  const authenticator = new TenantAdminAuthenticator(
-    { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer) },
+  const authenticator = new SetupAuthenticator(
+    { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer, logtoManagementEndpoint) },
     deps.verifyOidcToken
   )
   const discovery = new Map<string, Promise<OidcDiscovery>>()
@@ -392,13 +401,12 @@ export function buildTenantAdminServer(
   const localAuthBootstrap = deps.localAuthBootstrap ?? {
     issuer: defaultEnvironment.issuer,
     managementEndpoint: defaultEnvironment.managementEndpoint,
-    adminEndpoint: 'http://admin.agentconnect.localhost:3002',
+    adminEndpoint: 'http://localhost:3002',
     services: defaultEnvironment.services
   }
   const logtoEndpoint = new URL(localAuthBootstrap.issuer).origin
   const logtoManagementEndpoint = localAuthBootstrap.managementEndpoint ?? logtoEndpoint
-  const logtoAdminEndpoint =
-    localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://admin.agentconnect.localhost:3002'
+  const logtoAdminEndpoint = localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://localhost:3002'
   const githubFlows = new Map<
     string,
     {
@@ -438,6 +446,14 @@ export function buildTenantAdminServer(
     const config = logtoConfig(runtime, logtoManagementEndpoint)
     if (!config) return {}
     return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds(['github', 'google', 'slack'])
+  }
+
+  const resolveRegionalLogtoConnector = async (region: 'feishu' | 'lark'): Promise<LogtoNamedConnector | undefined> => {
+    const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+    const config = logtoConfig(runtime, logtoManagementEndpoint)
+    if (!config) return undefined
+    const name = REGIONAL_LOGTO_CONNECTOR_NAMES[region]
+    return (await new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorsByName([name]))[name]
   }
 
   const expectedGithubManifest = (
@@ -494,7 +510,7 @@ export function buildTenantAdminServer(
       google: values.logto?.browser
         ? {
             origins: [logtoEndpoint],
-            redirects: googleRedirectUris(
+            redirects: socialRedirectUris(
               logtoEndpoint,
               connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID,
               localAuthBootstrap.services.web
@@ -526,13 +542,18 @@ export function buildTenantAdminServer(
     const cached = discovery.get(normalized)
     if (cached) return cached
     const pending = (async () => {
-      const response = await fetchImpl(`${normalized}/.well-known/openid-configuration`)
+      const upstream = urlAtOrigin(normalized, logtoManagementEndpoint).toString().replace(/\/$/, '')
+      const response = await fetchImpl(`${upstream}/.well-known/openid-configuration`)
       if (!response.ok) throw new Error(`OIDC discovery failed: HTTP ${response.status}`)
       const body = (await response.json()) as { authorization_endpoint?: unknown; token_endpoint?: unknown }
       if (typeof body.authorization_endpoint !== 'string' || typeof body.token_endpoint !== 'string') {
         throw new Error('OIDC discovery is missing authorization_endpoint or token_endpoint')
       }
-      return { authorizationEndpoint: body.authorization_endpoint, tokenEndpoint: body.token_endpoint }
+      const publicOrigin = new URL(normalized).origin
+      return {
+        authorizationEndpoint: urlAtOrigin(body.authorization_endpoint, publicOrigin).toString(),
+        tokenEndpoint: urlAtOrigin(body.token_endpoint, publicOrigin).toString()
+      }
     })().catch((error) => {
       discovery.delete(normalized)
       throw error
@@ -548,9 +569,9 @@ export function buildTenantAdminServer(
       return requireLocal(request, reply)
     }
     try {
-      request.tenantAdminPrincipal = await authenticator.authenticate(request.headers.authorization)
+      request.setupPrincipal = await authenticator.authenticate(request.headers.authorization)
     } catch (error) {
-      if (!(error instanceof TenantAdminAuthError)) throw error
+      if (!(error instanceof SetupAuthError)) throw error
       void authFailure(reply, error)
     }
   }
@@ -575,13 +596,13 @@ export function buildTenantAdminServer(
         error.code === 'LOGTO_UNAVAILABLE' ? 502 : error.code === 'SOCIAL_CONNECTOR_UNSUPPORTED' ? 400 : 409
       return problem(reply, status, error.message, error.code)
     }
-    request.log.error({ err: error }, 'tenant-admin request failed')
+    request.log.error({ err: error }, 'setup-server request failed')
     return problem(reply, 500, 'internal server error')
   })
 
   app.get('/livez', async () => ({ status: 'ok' }))
-  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(TENANT_ADMIN_HTML))
-  app.get('/auth/callback', async (_request, reply) => reply.type('text/html; charset=utf-8').send(TENANT_ADMIN_HTML))
+  app.get('/', async (_request, reply) => reply.type('text/html; charset=utf-8').send(SETUP_HTML))
+  app.get('/auth/callback', async (_request, reply) => reply.type('text/html; charset=utf-8').send(SETUP_HTML))
 
   // Public browser bootstrap data only; these values are already published to
   // the normal console. No deployment secrets or management credentials leave.
@@ -621,7 +642,7 @@ export function buildTenantAdminServer(
     }
     const googleConnectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
     const slackConnectorId = connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID
-    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
+    const redirectUris = socialRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
       current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
@@ -655,6 +676,7 @@ export function buildTenantAdminServer(
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
+      logtoManagementResource: current?.values.logto?.managementResource ?? 'https://default.logto.app/api',
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
       githubAvailable,
       githubWebhookActive,
@@ -697,6 +719,7 @@ export function buildTenantAdminServer(
         {
           managementAppId: parsed.data.managementAppId,
           managementAppSecret: parsed.data.managementAppSecret,
+          managementResource: parsed.data.managementResource,
           socialProvider: parsed.data.socialProvider
         }
       )
@@ -825,7 +848,7 @@ export function buildTenantAdminServer(
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
       const connectorIds = await resolveLogtoConnectorIds()
       const connectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
-      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
+      const redirectUris = socialRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
         clientId: parsed.data.clientId,
         ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {})
@@ -878,25 +901,71 @@ export function buildTenantAdminServer(
         return problem(reply, 409, `${region === 'feishu' ? 'Feishu' : 'Lark'} App credentials are not configured`)
       }
 
-      const result = await auditFeishuAppSetup(regionalApp.loginAppId, appSecret, region)
       const label = region === 'feishu' ? 'Feishu' : 'Lark'
+      const connectorDiff: Array<{ field: string; current: unknown; expected: unknown }> = []
+      let connector: LogtoNamedConnector | undefined
+      let connectorStatus: 'ok' | 'mismatch' | 'unavailable' = 'ok'
+      try {
+        connector = await resolveRegionalLogtoConnector(region)
+        if (!connector) {
+          connectorStatus = 'mismatch'
+          connectorDiff.push({
+            field: 'Logto connector',
+            current: 'Missing',
+            expected: `OAuth 2.0 connector named ${REGIONAL_LOGTO_CONNECTOR_NAMES[region]}`
+          })
+        } else {
+          if (connector.connectorId !== 'oauth2') {
+            connectorStatus = 'mismatch'
+            connectorDiff.push({
+              field: 'Logto connector type',
+              current: connector.connectorId,
+              expected: 'oauth2'
+            })
+          }
+          if (connector.clientId !== regionalApp.loginAppId) {
+            connectorStatus = 'mismatch'
+            connectorDiff.push({
+              field: 'Logto connector client ID',
+              current: connector.clientId,
+              expected: regionalApp.loginAppId
+            })
+          }
+        }
+      } catch (error) {
+        connectorStatus =
+          error instanceof LogtoManagementError && error.code === 'LOGTO_UNAVAILABLE' ? 'unavailable' : 'mismatch'
+        connectorDiff.push({
+          field: 'Logto connector',
+          current: error instanceof Error ? error.message : 'Could not query Logto',
+          expected: `One OAuth 2.0 connector named ${REGIONAL_LOGTO_CONNECTOR_NAMES[region]}`
+        })
+      }
+
+      const result = await auditFeishuAppSetup(regionalApp.loginAppId, appSecret, region, {
+        ...(connector
+          ? { redirectUris: socialRedirectUris(logtoEndpoint, connector.id, localAuthBootstrap.services.web) }
+          : {})
+      })
+      const diff = [...connectorDiff, ...result.diff]
+      const mismatch = connectorStatus === 'mismatch' || result.status === 'invalid' || result.status === 'mismatch'
+      const unavailable = connectorStatus === 'unavailable' || result.status === 'unavailable'
+      const status = mismatch ? ('fail' as const) : unavailable ? ('unknown' as const) : ('pass' as const)
       return {
         provider: region,
-        status:
-          result.status === 'ok'
-            ? ('pass' as const)
-            : result.status === 'invalid' || result.status === 'mismatch'
-              ? ('fail' as const)
-              : ('unknown' as const),
-        diff: result.diff,
+        status,
+        connector: connector
+          ? { id: connector.id, name: connector.name, type: connector.connectorId, clientId: connector.clientId }
+          : null,
+        diff,
         message:
-          result.status === 'ok'
-            ? `${label} published App${result.version ? ` version ${result.version}` : ''} has the required Bot capability, API permissions, and event subscription.`
+          status === 'pass'
+            ? `${label} Logto connector ${connector!.id} and published App${result.version ? ` version ${result.version}` : ''} match.`
             : result.status === 'invalid'
               ? `${label} rejected the saved App ID or secret.`
-              : result.status === 'mismatch'
-                ? `${label} App setup needs an update.`
-                : `${label} setup could not be audited${result.message ? `: ${result.message}` : '.'}`
+              : status === 'fail'
+                ? `${label} App or Logto OAuth 2.0 connector needs an update.`
+                : `${label} App or Logto connector could not be audited${result.message ? `: ${result.message}` : '.'}`
       }
     }
   )
@@ -1351,7 +1420,7 @@ export function buildTenantAdminServer(
             status: 'fail',
             message: adminRole.exists
               ? 'A role named ADMIN exists, but it is not a non-default User role.'
-              : 'The exact global User role ADMIN does not exist; the first Tenant Admin sign-in will create it.',
+              : 'The exact global User role ADMIN does not exist; the first administrator sign-in through Setup will create it.',
             diff: [
               {
                 field: 'ADMIN role',
@@ -1444,7 +1513,7 @@ export function buildTenantAdminServer(
     return report()
   })
 
-  // Local-only first-admin assignment. The Tenant Admin page calls this
+  // Local-only first-admin assignment. The Setup page calls this
   // automatically after the first OIDC sign-in. It verifies a real identity
   // without the role, then the Management API creates the exact global User
   // role ADMIN (if absent) and assigns that operator. Every ordinary config
@@ -1468,11 +1537,11 @@ export function buildTenantAdminServer(
         return problem(reply, 409, 'the Logto Management API secret is not configured')
       }
 
-      let principal: TenantAdminPrincipal
+      let principal: SetupPrincipal
       try {
         principal = await authenticator.authenticate(request.headers.authorization, false)
       } catch (error) {
-        if (!(error instanceof TenantAdminAuthError)) throw error
+        if (!(error instanceof SetupAuthError)) throw error
         return authFailure(reply, error)
       }
 
@@ -1499,15 +1568,15 @@ export function buildTenantAdminServer(
   return app
 }
 
-/** Run the Tenant Admin HTTP server. */
-export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const config = loadTenantAdminProcessConfig(env)
+/** Run the Setup Server. */
+export async function serveSetupServer(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const config = loadSetupServerProcessConfig(env)
   const host = config.HOST
   const port = config.PORT
-  const publicUrl = env.TENANT_ADMIN_URL ?? `http://localhost:${port}`
+  const publicUrl = env.SETUP_SERVER_URL ?? `http://localhost:${port}`
   const deploymentEnvironment = loadDeploymentEnvironment(env)
-  if (!isLoopbackHostname(host) && !config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY) {
-    throw new Error('Tenant Admin may bind outside loopback only behind an isolated local port forward')
+  if (!isLoopbackHostname(host) && !config.SETUP_SERVER_ALLOW_CONTAINER_PROXY) {
+    throw new Error('Setup Server may bind outside loopback only behind an isolated local port forward')
   }
   const handle = openDeploymentConfigStore({
     databaseUrl: config.DATABASE_URL,
@@ -1521,11 +1590,11 @@ export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Pr
     ...(config.VAULT_TOKEN ? { VAULT_TOKEN: config.VAULT_TOKEN } : {}),
     ...(config.VAULT_JWT_ROLE ? { VAULT_JWT_ROLE: config.VAULT_JWT_ROLE } : {})
   })
-  const app = buildTenantAdminServer(
+  const app = buildSetupServer(
     {
       store: handle.store,
       publicUrl,
-      allowContainerLoopbackProxy: config.TENANT_ADMIN_ALLOW_CONTAINER_PROXY,
+      allowContainerLoopbackProxy: config.SETUP_SERVER_ALLOW_CONTAINER_PROXY,
       localAuthBootstrap: {
         issuer: deploymentEnvironment.issuer,
         managementEndpoint: deploymentEnvironment.managementEndpoint,
@@ -1537,7 +1606,7 @@ export async function serveTenantAdmin(env: NodeJS.ProcessEnv = process.env): Pr
   )
   try {
     await app.listen({ host, port })
-    app.log.info(`Tenant Admin listening at ${publicUrl}`)
+    app.log.info(`Setup Server listening at ${publicUrl}`)
     await new Promise<void>((resolve) => {
       const stop = () => resolve()
       process.once('SIGINT', stop)

@@ -10,7 +10,7 @@
 // only — no top bar, no breadcrumb, no back-link. Mobile keeps its own app bar
 // (`.mtop`), which is where the section/entity title still shows.
 
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, Fragment, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { SiModelcontextprotocol } from 'react-icons/si'
 import { SWRConfig, type SWRConfiguration } from 'swr'
 import Link from 'next/link'
@@ -37,7 +37,7 @@ import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-v
 import { NotificationProvider } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
-import { MOBILE_NAV, MORE_ROWS, NAV_ITEMS, SECTIONS } from './nav'
+import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
@@ -657,21 +657,26 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 <Icon name="search" size={18} />
                 <span>Search</span>
               </button>
-              {NAV_ITEMS.map((item) => {
-                const on = isActive(barePath, item.href)
-                return (
-                  <Link
-                    key={item.href}
-                    href={orgPath(item.href)}
-                    title={railCollapsed ? item.label : undefined}
-                    className={on ? 'navitem on' : 'navitem'}
-                  >
-                    {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
-                    <Icon name={item.icon} size={18} />
-                    <span>{item.label}</span>
-                  </Link>
-                )
-              })}
+              {NAV_GROUPS.map((group, groupIndex) => (
+                <Fragment key={group[0]?.href ?? groupIndex}>
+                  {groupIndex > 0 && <div className="navsep" />}
+                  {group.map((item) => {
+                    const on = isActive(barePath, item.href)
+                    return (
+                      <Link
+                        key={item.href}
+                        href={orgPath(item.href)}
+                        title={railCollapsed ? item.label : undefined}
+                        className={on ? 'navitem on' : 'navitem'}
+                      >
+                        {/* No inline color — `.navitem.on svg` tints the active glyph brand. */}
+                        <Icon name={item.icon} size={18} />
+                        <span>{item.label}</span>
+                      </Link>
+                    )
+                  })}
+                </Fragment>
+              ))}
               {/* Rail footer. In auth mode this is the account block: avatar + name +
             active org, whose menu carries everything the deleted top bar used to —
             org switching, Profile, Settings, the theme toggle, sign-out. No-auth has

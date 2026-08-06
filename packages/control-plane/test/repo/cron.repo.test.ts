@@ -73,8 +73,8 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     const repo = new PgCronRepo(prisma)
     await repo.upsert(upsertInput())
 
-    await repo.remove(CronId(CRON))
-    expect(await repo.get(CronId(CRON))).toBeNull()
+    await repo.remove(OrgId(DEFAULT_ORG_ID), CronId(CRON))
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID), CronId(CRON))).toBeNull()
     expect(await repo.listForOrg(OrgId(DEFAULT_ORG_ID))).toHaveLength(0)
   })
 
@@ -139,7 +139,9 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     const n = await repo.reapStaleRuns(at('2026-01-01T00:30:00Z'))
     expect(n).toBe(1) // only the stale running row
 
-    const byStart = Object.fromEntries((await repo.listRuns(CronId(CRON))).map((r) => [r.startedAt.toISOString(), r]))
+    const byStart = Object.fromEntries(
+      (await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(CRON))).map((r) => [r.startedAt.toISOString(), r])
+    )
     expect(byStart['2026-01-01T00:00:00.000Z']?.status).toBe('failed')
     expect(byStart['2026-01-01T00:00:00.000Z']?.reason).toMatch(/completion/i)
     expect(byStart['2026-01-01T01:00:00.000Z']?.status).toBe('running') // fresh, untouched
@@ -168,7 +170,7 @@ describe('CronRepo — cron definitions (real Postgres)', () => {
     })
     expect(ok).toBe(true)
 
-    const [run] = await repo.listRuns(CronId(CRON))
+    const [run] = await repo.listRuns(OrgId(DEFAULT_ORG_ID), CronId(CRON))
     expect(run?.status).toBe('success')
     expect(run?.sessionId).toBe('late')
     expect(run?.reason).toBeNull() // the orphaned marker was cleared

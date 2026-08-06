@@ -65,7 +65,7 @@ export class AgentSpecAssembler {
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
     const [secrets, skillEntries, managedSkillEntries, organization] = await Promise.all([
-      this.secrets.get(a.id),
+      this.secrets.get(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
       this.managedSkillsOf(a),
       this.organizationEnvironmentOf(a)
@@ -103,8 +103,8 @@ export class AgentSpecAssembler {
 
   /** The store read the agent-move snapshot pins into its {@link MoveBundle} —
    *  exposed here so move code needs no separate secrets dependency. */
-  secretsOf(a: Pick<AgentRecord, 'id'>): Promise<Record<string, string>> {
-    return this.secrets.get(a.id)
+  secretsOf(a: Pick<AgentRecord, 'id' | 'orgId'>): Promise<Record<string, string>> {
+    return this.secrets.get(a.orgId, a.id)
   }
 
   /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
@@ -120,7 +120,11 @@ export class AgentSpecAssembler {
    * daemon's entire reconcile roster. */
   async managedSkillsOf(a: Pick<AgentRecord, 'orgId' | 'managedSkills'>): Promise<ManagedSkillEntry[]> {
     if (!this.organizationKnowledge || a.managedSkills.length === 0) return []
-    const rows = await Promise.all(a.managedSkills.map((id) => this.organizationKnowledge!.getManagedSkill(id)))
+    // The read is org-fenced on the agent's own org, so a foreign id resolves
+    // to null and is dropped by the same defensive filter below.
+    const rows = await Promise.all(
+      a.managedSkills.map((id) => this.organizationKnowledge!.getManagedSkill(a.orgId, id))
+    )
     return rows.flatMap((row) =>
       row !== null && row.orgId === a.orgId && row.archivedAt === null
         ? [

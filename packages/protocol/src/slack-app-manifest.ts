@@ -1,12 +1,25 @@
-// This module is the web console's only protocol entry point (the
-// `./slack-app-manifest` export) and MUST stay self-contained: Turbopack cannot
-// resolve the NodeNext `.js` → `.ts` specifiers our relative imports use
-// (vercel/next.js#69426), so a relative import here breaks `next dev`. Define
-// shared constants here and re-export them from frames/ instead.
+// ⚠️ THIS MODULE MUST NOT IMPORT ANYTHING RELATIVE. ⚠️
+//
+// It is the one protocol source file a *bundler* compiles directly: the web
+// console imports `@agentconnect.md/protocol/slack-app-manifest`, and in dev the
+// `development` export condition points that subpath at this `.ts` file rather
+// than at `dist/`. Turbopack does not implement TypeScript's `.js` → `.ts`
+// extension substitution, and its only escape hatch (`experimental.extensionAlias`)
+// is on Next's Turbopack-unsupported list — so a NodeNext-style `./foo.js`
+// specifier here fails to resolve and 500s every console route, while
+// `pnpm typecheck` / `pnpm test` / `next build` (which reads `dist/`) all stay
+// green. `slack-app-manifest.leaf.test.ts` enforces this.
+//
+// Anything this module needs is defined here and imported *from* here by the rest
+// of protocol — not the other way around.
 
 /** App-level Slack message shortcut for opening the controls of the session that
  * owns the selected message's conversation. Direct apps receive it over Socket
- * Mode; shared apps receive the same callback through the relay HTTP edge. */
+ * Mode; shared apps receive the same callback through the relay HTTP edge.
+ *
+ * Declared to Slack by {@link buildSlackAppManifest} below, which is why it lives
+ * here rather than beside the runtime Block Kit action ids in `frames/relay-cp.ts`:
+ * those name controls on messages we post, this one names a manifest feature. */
 export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 
 /** Public platform profile copy. Never derive this from an Agent description. */
@@ -91,7 +104,7 @@ function normalizeSlackRelayUrl(relayUrl: string): string {
   return relayUrl.replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '')
 }
 
-/** One canonical Slack manifest shared by browser, Control Plane, and Tenant Admin. */
+/** One canonical Slack manifest shared by browser, Control Plane, and Setup Server. */
 export function buildSlackAppManifest(name: string, options: SlackAppManifestOptions = {}): SlackAppManifest {
   const appName = name.trim() || DEFAULT_SLACK_APP_NAME
   const displayName = options.displayName?.trim() || appName

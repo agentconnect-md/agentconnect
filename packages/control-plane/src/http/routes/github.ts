@@ -226,8 +226,8 @@ export function githubRoutes(deps: HttpDeps) {
         // human-admin UI gate. Keep that external destructive power owner-only.
         if (denyNonOwner(req, reply)) return
         const orgId = orgOf(req)
-        const ins = await deps.repos.githubInstallation.get(req.params.id)
-        if (!ins || ins.orgId !== orgId) {
+        const ins = await deps.repos.githubInstallation.get(orgId, req.params.id)
+        if (!ins) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
         // DELETE is idempotent at our boundary too: a repeated request after the
@@ -267,8 +267,8 @@ export function githubRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const ins = await deps.repos.githubInstallation.get(req.params.id)
-        if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
+        const ins = await deps.repos.githubInstallation.get(orgOf(req), req.params.id)
+        if (!ins || ins.revokedAt) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
         try {
@@ -315,8 +315,8 @@ export function githubRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const ins = await deps.repos.githubInstallation.get(req.params.id)
-        if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
+        const ins = await deps.repos.githubInstallation.get(orgOf(req), req.params.id)
+        if (!ins || ins.revokedAt) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
         try {
@@ -369,8 +369,8 @@ export function githubRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const ins = await deps.repos.githubInstallation.get(req.params.id)
-        if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
+        const ins = await deps.repos.githubInstallation.get(orgOf(req), req.params.id)
+        if (!ins || ins.revokedAt) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
         try {
@@ -414,8 +414,8 @@ export function githubRoutes(deps: HttpDeps) {
           }
         },
         async (req, reply) => {
-          const ins = await deps.repos.githubInstallation.get(req.params.id)
-          if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
+          const ins = await deps.repos.githubInstallation.get(orgOf(req), req.params.id)
+          if (!ins || ins.revokedAt) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
           }
           try {

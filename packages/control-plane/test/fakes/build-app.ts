@@ -153,7 +153,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     },
     mintToken: async (daemonId: string) => {
       const org = OrgId(DEFAULT_ORG_ID)
-      if (!(await repos.daemon.get(DaemonId(daemonId)))) await repos.daemon.provision(DaemonId(daemonId), org)
+      if (!(await repos.daemon.getUnscoped(DaemonId(daemonId)))) await repos.daemon.provision(DaemonId(daemonId), org)
       const minted = codec.mint()
       await repos.apiKey.create({
         principalType: 'daemon',

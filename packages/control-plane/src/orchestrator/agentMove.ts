@@ -590,8 +590,10 @@ export class AgentMoveService {
     const specs = await Promise.all(
       integrations.map(async (integration) => {
         const [bot, secret, channels] = await Promise.all([
-          this.deps.bots.get(integration.botId),
-          this.deps.botSecrets.get(integration.botId),
+          // Orchestration: the bot behind an integration row of the agent being
+          // moved — org derived from the record in hand (org-scoped-data-layer.md §4).
+          this.deps.bots.getUnscoped(integration.botId),
+          this.deps.botSecrets.get(integration.orgId, integration.botId),
           this.deps.integrationChannels.listForIntegration(integration.id)
         ])
         if (!bot) throw new AgentMoveConflict(`integration ${integration.id} has no bot`)

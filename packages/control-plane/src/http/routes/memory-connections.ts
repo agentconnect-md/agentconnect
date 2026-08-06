@@ -61,7 +61,7 @@ async function connectionDto(
     id: row.id,
     installationId: row.installationId,
     config: row.config,
-    secretKeys: await deps.repos.externalMemoryConnectionSecret.keys(row.id),
+    secretKeys: await deps.repos.externalMemoryConnectionSecret.keys(row.orgId, row.id),
     status: row.status,
     revision: row.revision,
     probedRevision: row.probedRevision,
@@ -109,7 +109,7 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
           if (daemonIds.size === 0) return true
           spec = stdioMemoryConnectionSpec(connection, installation, secrets)
         } else {
-          const grants = await deps.repos.externalMemoryGrant.activeForConnection(connection.id)
+          const grants = await deps.repos.externalMemoryGrant.activeForConnection(connection.orgId, connection.id)
           if (grants.length === 0) return false
           deps.relayControl.memoryConnectionAssign(
             memoryRcAssign(
@@ -262,8 +262,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const row = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!row || row.orgId !== orgOf(req)) {
+        const row = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!row) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         return connectionDto(row, deps)
@@ -340,15 +340,15 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const existing = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) {
+        const existing = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!existing) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         const installation = await deps.repos.memoryPluginInstallation.get(existing.installationId)
         if (!installation) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
-        const priorSecrets = (await deps.repos.externalMemoryConnectionSecret.get(existing.id)) ?? {}
+        const priorSecrets = (await deps.repos.externalMemoryConnectionSecret.get(existing.orgId, existing.id)) ?? {}
         const secrets = req.body.secrets ?? priorSecrets
         const config = req.body.config ?? existing.config
         const configError = boundedMemoryConfig(config)
@@ -407,8 +407,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!connection || connection.orgId !== orgOf(req)) {
+        const connection = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!connection) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
@@ -491,8 +491,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!connection || connection.orgId !== orgOf(req)) {
+        const connection = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!connection) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)

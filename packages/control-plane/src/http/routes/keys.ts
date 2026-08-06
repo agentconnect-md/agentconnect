@@ -14,7 +14,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { ApiKeyView } from '../../ports.js'
 import { DaemonId } from '../../domain/ids.js'
-import { denyViewerWrite, ctxOf } from '../rbac.js'
+import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { ApiKeyListDto, MintedKeyDto, ApiKeyDto, IdParam, ErrorDto, type ApiKeyDtoT } from '../dto/index.js'
 import { daemonStartCommand, daemonWsUrl } from '../onboarding.js'
@@ -44,8 +44,8 @@ export function keyRoutes(deps: HttpDeps) {
     // revoking a daemon's enrollment credential is a credential write, so the
     // handlers additionally gate on canEdit.
     const getOrgDaemon = async (req: FastifyRequest, id: string) => {
-      const view = await deps.registry.get(DaemonId(id))
-      if (!view || view.orgId !== req.orgCtx!.orgId) return null
+      const view = await deps.registry.get(orgOf(req), DaemonId(id))
+      if (!view) return null
       return canView(view, ctxOf(req)) ? view : null
     }
 
@@ -65,7 +65,7 @@ export function keyRoutes(deps: HttpDeps) {
         if (!(await getOrgDaemon(req, req.params.id))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
         }
-        const rows = await deps.apiKeys.listForDaemon(DaemonId(req.params.id))
+        const rows = await deps.apiKeys.listForDaemon(orgOf(req), DaemonId(req.params.id))
         return rows.map(toDto)
       }
     )
@@ -94,7 +94,7 @@ export function keyRoutes(deps: HttpDeps) {
         if (!canEdit(view, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this daemon' })
         }
-        const minted = await deps.apiKeys.mintForDaemon(DaemonId(req.params.id))
+        const minted = await deps.apiKeys.mintForDaemon(orgOf(req), DaemonId(req.params.id))
         const command = daemonStartCommand(daemonWsUrl(deps.config), minted.token, deps.config.DAEMON_DIST_TAG)
         return reply.code(201).send({
           apiKeyId: minted.apiKeyId,
@@ -129,7 +129,7 @@ export function keyRoutes(deps: HttpDeps) {
         }
         // Bind the keyId to the org-checked daemon — a raw key id from ANOTHER
         // daemon/org must read as absent, not get revoked (cross-tenant kill).
-        const owned = await deps.apiKeys.listForDaemon(DaemonId(req.params.id))
+        const owned = await deps.apiKeys.listForDaemon(orgOf(req), DaemonId(req.params.id))
         if (!owned.some((k) => k.id === req.params.keyId)) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'key not found' })
         }

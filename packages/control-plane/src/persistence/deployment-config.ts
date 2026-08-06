@@ -13,6 +13,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { SecretCipher } from '../secrets/cipher.js'
+import { DEPLOYMENT_SCOPE } from '../secrets/scope.js'
 
 export const DEPLOYMENT_CONFIG_SCHEMA_VERSION = 1 as const
 
@@ -393,7 +394,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
 
 function runtimeSecretKeys(values: DeploymentConfigValuesV1): Set<DeploymentSecretKey> {
   const keys = new Set(requiredSecrets(values))
-  // Tenant Admin may reuse the deployment App for Logto sign-in. Keep this
+  // Setup Server may reuse the deployment App for Logto sign-in. Keep this
   // optional for the GitHub runtime, but allow an explicit setup-side read.
   if (values.github) keys.add('github.clientSecret')
   return keys
@@ -462,7 +463,9 @@ export class DeploymentConfigService implements DeploymentConfigStore {
         value === null
           ? null
           : {
-              sealedValue: await this.cipher.seal(value),
+              // Deployment-owned material: the operator's own credentials, not
+              // any tenant's — the one store that binds the deployment scope.
+              sealedValue: await this.cipher.seal(value, DEPLOYMENT_SCOPE),
               fingerprint: fingerprint(value)
             }
     }
@@ -490,7 +493,7 @@ export class DeploymentConfigService implements DeploymentConfigStore {
       const parsed = DeploymentSecretKeySchema.safeParse(secret.key)
       // Unknown rows from a newer binary are ignored by this older runtime.
       if (parsed.success && openedKeys.has(parsed.data)) {
-        secrets[parsed.data] = await this.cipher.open(secret.sealedValue)
+        secrets[parsed.data] = await this.cipher.open(secret.sealedValue, DEPLOYMENT_SCOPE)
       }
     }
     return {

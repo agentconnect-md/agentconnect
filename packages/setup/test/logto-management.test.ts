@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LogtoAdminClaimClient, LogtoManagementError } from '../src/admin/logto-management.js'
+import { LogtoAdminClaimClient, LogtoManagementError } from '../src/server/logto-management.js'
 
 const config = {
   endpoint: 'https://login.example.test',

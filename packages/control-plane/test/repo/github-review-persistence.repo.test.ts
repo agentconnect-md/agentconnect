@@ -1544,12 +1544,12 @@ describe('R1/R2a persistence foundation', () => {
       reportingMode: 'check',
       gateMode: 'informational'
     })
-    expect((await hooks.get(hookId))?.dispatchRevision).toBe(1n)
+    expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(1n)
 
     expect(await agents.movePlacement(agentId, D1, D2)).not.toBeNull()
-    expect((await hooks.get(hookId))?.dispatchRevision).toBe(2n)
+    expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(2n)
     await agents.setPlacement(agentId, null)
-    expect((await hooks.get(hookId))?.dispatchRevision).toBe(3n)
+    expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(3n)
   })
 
   it('converges renamed GitHub display fields without changing session affinity or accepting stale names', async () => {
@@ -1736,7 +1736,7 @@ describe('R1/R2a persistence foundation', () => {
         permissions: {}
       })
     ).rejects.toBeInstanceOf(GithubInstallationClaimConflict)
-    const durable = await repo.get(first.id)
+    const durable = await repo.get(OrgId(DEFAULT_ORG_ID), first.id)
     expect(durable).toMatchObject({ orgId: DEFAULT_ORG_ID, accountLogin: 'acme' })
     expect(durable?.permissions).toEqual({ pull_requests: 'write', checks: 'write' })
 
@@ -2185,7 +2185,7 @@ describe('R1/R2a persistence foundation', () => {
     expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
 
     // Hook deletion must not erase the historical run or durable external-effect row.
-    await repo.remove(hookId)
+    await repo.remove(OrgId(DEFAULT_ORG_ID), hookId)
     expect(await repo.getRun(hookId, accepted.deliveryKey)).not.toBeNull()
     expect(await repo.getReviewProjection(projection.id)).not.toBeNull()
   })

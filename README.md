@@ -42,7 +42,6 @@
 <p align="center">
   <a href="https://github.com/agentconnect-md/agentconnect/actions/workflows/test.yaml"><img src="https://github.com/agentconnect-md/agentconnect/actions/workflows/test.yaml/badge.svg" alt="Test status" /></a>
   <a href="https://www.npmjs.com/package/@agentconnect.md/daemon/v/latest"><img src="https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/latest?label=daemon%20latest" alt="Latest daemon version" /></a>
-  <a href="https://www.npmjs.com/package/@agentconnect.md/daemon/v/rc"><img src="https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/rc?label=daemon%20rc" alt="RC daemon version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
 </p>
 
@@ -106,16 +105,15 @@ cd agentconnect
 docker compose up -d --pull always
 ```
 
-Open `http://app.agentconnect.localhost:3000`. The special-use `.localhost`
-name resolves to loopback without DNS; the default stack still listens only on
-`127.0.0.1`, uses local no-auth mode, and is intended for local evaluation.
+Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
+uses local no-auth mode, and is intended for local evaluation.
 
 The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,
 workspaces, and runtime credentials.
 
 To evaluate local sign-in without configuring DNS or TLS, use the optional
-official Logto overlay and its browser-based Tenant Admin:
+official Logto overlay and its browser-based Setup Server:
 
 ```bash
 docker compose -f compose.yaml -f compose.logto.yaml up -d
@@ -215,7 +213,7 @@ This repository is a pnpm workspace. Product packages live under `packages/`:
 - [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/oss-get-started)
 - [Architecture and detailed designs](docs/designs/)
 - [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
-- [Tenant Admin](packages/setup/README.md)
+- [Setup Server](packages/setup/README.md)
 - [Daemon configuration](docs/designs/daemon-detailed-design.md)
 - [Config-file secrets](docs/config-file-secrets.md)
 - [Product conventions](docs/product-conventions.md)

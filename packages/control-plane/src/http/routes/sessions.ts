@@ -144,12 +144,13 @@ function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, sess
 async function hookMetadataForSessions(
   deps: HttpDeps,
   sessions: HookSessionRow[],
-  orgId: string
+  orgId: OrgId
 ): Promise<Map<string, HookSessionMetadata>> {
   const ids = [...new Set(sessions.map(hookIdForSession).filter((id): id is string => Boolean(id)))]
   const metadata = new Map<string, HookSessionMetadata>()
-  for (const hook of await deps.repos.hook.getMany(ids.map(HookId))) {
-    if (hook.orgId !== orgId) continue
+  // The batch read is org-fenced (org-scoped-data-layer.md §3), so foreign ids
+  // are simply absent — no post-filter needed.
+  for (const hook of await deps.repos.hook.getMany(orgId, ids.map(HookId))) {
     metadata.set(hook.id, { agentId: hook.agentId, kind: hook.kind, name: hook.name, repoId: hook.repoId })
   }
   return metadata
@@ -364,8 +365,8 @@ export function sessionRoutes(deps: HttpDeps) {
     }
 
     const getOrgViewableSession = async (req: FastifyRequest, sessionId: string) => {
-      const session = await deps.repos.session.get(SessionId(sessionId))
-      if (!session || session.orgId !== orgOf(req)) return null
+      const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
+      if (!session) return null
       const access = await sessionAccess.forSessions(req, [session])
       if (!canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)) return null
       return { session, access }
@@ -692,14 +693,14 @@ export function sessionRoutes(deps: HttpDeps) {
         const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
         const ctx = ctxOf(req)
         const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata] = await Promise.all([
-          s.parentSessionId ? deps.repos.session.get(s.parentSessionId) : Promise.resolve(null),
+          s.parentSessionId ? deps.repos.session.get(orgOf(req), s.parentSessionId) : Promise.resolve(null),
           deps.repos.session.listChildren(SessionId(s.id), orgAgentIds),
           s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, orgAgentIds) : Promise.resolve([]),
           deps.repos.sessionUsage.get(s.agentId, s.id),
           // A webchat session's channel IS its conversation id; the roster feeds
           // the adopted-session composer/header, which has no relay socket.
           s.platform === 'webchat' && s.channel
-            ? deps.repos.webchatConversation.participants(s.channel)
+            ? deps.repos.webchatConversation.participants(orgOf(req), s.channel)
             : Promise.resolve([]),
           hookMetadataForSessions(deps, [s], orgOf(req))
         ])
@@ -954,6 +955,7 @@ export function sessionRoutes(deps: HttpDeps) {
         // session, and the former owner's parked request must not still apply —
         // ownership is judged against the LOCKED row.
         const { affected, forbidden } = await deps.repos.session.setVisibility(
+          orgOf(req),
           SessionId(req.params.id),
           req.body.visibility,
           (row) => canChangeSessionVisibility(row, ctx, identitySet)

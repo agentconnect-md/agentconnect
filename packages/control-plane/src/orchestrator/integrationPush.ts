@@ -43,7 +43,8 @@ export async function convergeIntegrationGating(
   const syncedBots = new Set<string>()
   for (const i of integrations) {
     try {
-      const bot = await deps.repos.bot.get(i.botId)
+      // Orchestration: the bot behind one of this agent's integration rows.
+      const bot = await deps.repos.bot.getUnscoped(i.botId)
       if (bot?.transport === 'http') {
         if (!syncedBots.has(String(bot.id))) {
           syncedBots.add(String(bot.id))
@@ -57,7 +58,7 @@ export async function convergeIntegrationGating(
       if (!bot) continue
       if (!agent.daemonId) continue
       const [secret, channels] = await Promise.all([
-        deps.repos.botSecret.get(i.botId),
+        deps.repos.botSecret.get(i.orgId, i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id)
       ])
       if (!secret) continue

@@ -25,7 +25,6 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // Skip static assets and Next internals; /login and /auth pass through
-  // untouched (they're outside the console).
-  matcher: ['/((?!_next|favicon\\.ico|icon\\.svg|apple-icon\\.png|login|auth).*)']
+  // Skip static assets and Next internals. /login and /auth bypass the console rewrite above.
+  matcher: ['/((?!_next|favicon\\.ico|icon\\.svg|apple-icon\\.png).*)']
 }

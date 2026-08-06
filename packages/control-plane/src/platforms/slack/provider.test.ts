@@ -571,7 +571,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
   const relayReg = new RelayRegistry()
   relayReg.add(ch)
   const integration: IntegrationRecord = { ...INTEGRATION, platform: botRow.platform, botId: botRow.id }
-  const bots = { get: async () => botRow, listHttpActive: async () => [botRow] }
+  const bots = { getUnscoped: async () => botRow, listHttpActive: async () => [botRow] }
   const orch = new HttpBotOrchestrator(
     bots as unknown as BotRepo,
     { get: async () => secret } as unknown as BotSecretStore,
@@ -632,5 +632,17 @@ describe('slack projectBotAssign equivalence with the live buildAssign frame (§
       secrets: frame.secrets,
       ingress: frame.ingress
     })
+  })
+
+  it('projects the workspace tenant fence for a NON-distributed bot (ingress-tenant-fence.md §3)', async () => {
+    // The case the fence exists for: no teamId (quick-install), but the
+    // workspace identity captured at install/backfill must reach the relay —
+    // without it, a same-secret sibling in another org verifies this bot's
+    // deliveries and nothing discriminates.
+    const quickInstall = bot({ transport: 'http', slackAppId: 'A0TESTAPP', workspaceId: 'T0WORKSPACE' })
+    const frame = await liveAssignFrame(quickInstall, HTTP_SECRET)
+    const projected = await provider.projectBotAssign!(quickInstall, HTTP_SECRET)
+    expect(projected.ingress).toEqual(frame.ingress)
+    expect(projected.ingress).toEqual({ apiAppId: 'A0TESTAPP', workspaceId: 'T0WORKSPACE' })
   })
 })

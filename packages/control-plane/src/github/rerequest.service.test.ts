@@ -142,12 +142,16 @@ function make(
     hooks: {
       findReviewProjectionByCheckRunId,
       listReviewProjectionsForSuiteRerequest,
-      get,
-      getMany,
+      getUnscoped: get,
+      getManyUnscoped: getMany,
       getRunById
     } as Pick<
       HookRepo,
-      'findReviewProjectionByCheckRunId' | 'listReviewProjectionsForSuiteRerequest' | 'get' | 'getMany' | 'getRunById'
+      | 'findReviewProjectionByCheckRunId'
+      | 'listReviewProjectionsForSuiteRerequest'
+      | 'getUnscoped'
+      | 'getManyUnscoped'
+      | 'getRunById'
     >,
     appId: APP_ID
   })

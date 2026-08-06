@@ -17,7 +17,7 @@ function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
     agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
-    hook: { get: vi.fn().mockResolvedValue(null) },
+    hook: { getUnscoped: vi.fn().mockResolvedValue(null) },
     ...extra
   } as unknown as DaemonWsDeps
 }
@@ -210,7 +210,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -220,7 +220,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'slack',
@@ -266,7 +266,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -276,7 +276,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'feishu',
@@ -324,7 +324,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -334,7 +334,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'feishu',
@@ -418,7 +418,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       integration: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: INTEGRATION_ID,
           agentId: AGENT_ID,
           botId: BOT_ID,
@@ -428,7 +428,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'slack',
@@ -555,7 +555,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       hook: {
-        get: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
+        getUnscoped: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
       },
       events: { publish: vi.fn() }
     })

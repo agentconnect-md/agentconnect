@@ -560,6 +560,99 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     })
   })
 
+  // ingress-tenant-fence.md §5: the manual-paste create path reaches the same
+  // shared create seam as the funnels, so the workspace-claim fence must hold
+  // here too — this is the path a second org would use to paste an app's
+  // credentials for a workspace another org already runs.
+  it('POST /integrations refuses a workspace already claimed by ANOTHER organization', async () => {
+    const agentId = await placedAgent()
+    const { app } = withSpy()
+    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'http-bot',
+      appId: 'ACLAIMED',
+      botUserId: 'UCLAIMED',
+      teamId: 'TCLAIMED',
+      teamName: 'Acme',
+      scopes: []
+    })
+    // Another org already runs this app in this workspace: same signing secret,
+    // same tenant — the relay's delivery fence cannot tell the two rows apart.
+    const foreignOrgId = `org-claim-${randomUUID().slice(0, 8)}`
+    await prisma.org.create({ data: { id: foreignOrgId, slug: foreignOrgId } })
+    await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: foreignOrgId,
+        platform: 'slack',
+        name: 'foreign-claim',
+        slackAppId: 'ACLAIMED',
+        externalAppId: 'ACLAIMED',
+        workspaceId: 'TCLAIMED'
+      }
+    })
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId,
+        transport: 'http',
+        slack: { botToken: SLACK.botToken, signingSecret: 'signing-secret' }
+      }
+    })
+
+    expect(res.statusCode).toBe(409)
+    // The refusal never names the organization holding the workspace.
+    expect(res.body).not.toContain(foreignOrgId)
+    expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID, slackAppId: 'ACLAIMED' } })).toBe(0)
+  })
+
+  it('POST /integrations allows a DIFFERENT app in a workspace another org already uses', async () => {
+    const agentId = await placedAgent()
+    const { app } = withSpy()
+    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'http-bot',
+      appId: 'AMINE',
+      botUserId: 'UMINE',
+      teamId: 'TSHARED',
+      teamName: 'Acme',
+      scopes: []
+    })
+    // Same workspace, DIFFERENT app ⇒ different signing secret ⇒ nothing is
+    // ambiguous at delivery time, so admission must not over-refuse.
+    const foreignOrgId = `org-otherapp-${randomUUID().slice(0, 8)}`
+    await prisma.org.create({ data: { id: foreignOrgId, slug: foreignOrgId } })
+    await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: foreignOrgId,
+        platform: 'slack',
+        name: 'foreign-other-app',
+        slackAppId: 'ATHEIRS',
+        externalAppId: 'ATHEIRS',
+        workspaceId: 'TSHARED'
+      }
+    })
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: {
+        platform: 'slack',
+        agentId,
+        transport: 'http',
+        slack: { botToken: SLACK.botToken, signingSecret: 'signing-secret' }
+      }
+    })
+
+    expect(res.statusCode).toBe(201)
+  })
+
   it('POST an HTTP Feishu app assigns callback-only secrets and keeps API egress on the daemon', async () => {
     const agentId = await placedAgent()
     const { app, spy } = withSpy()

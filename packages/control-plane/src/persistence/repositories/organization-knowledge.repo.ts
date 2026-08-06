@@ -188,8 +188,13 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
     return rows.map(toKnowledge)
   }
 
-  async getKnowledge(id: string): Promise<OrganizationKnowledgeRecord | null> {
-    const row = await this.db.organizationKnowledge.findUnique({ where: { id }, include: currentKnowledgeInclude })
+  async getKnowledge(orgId: OrgId, id: string): Promise<OrganizationKnowledgeRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const row = await this.db.organizationKnowledge.findUnique({
+      where: { id, orgId },
+      include: currentKnowledgeInclude
+    })
     return row ? toKnowledge(row) : null
   }
 
@@ -305,6 +310,7 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   }
 
   async updateKnowledge(
+    orgId: OrgId,
     id: string,
     expectedRevision: number,
     input: { title: string; content: string; summary?: string; tags?: string[] },
@@ -312,8 +318,10 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   ): Promise<OrganizationKnowledgeRecord | null> {
     return withAmbientTx(this.db, async (tx) => {
       const nextRevision = expectedRevision + 1
+      // The org fence rides the revision CAS: a cross-org id misses it exactly
+      // like a stale `expectedRevision` (null), before any revision row is written.
       const updated = await tx.organizationKnowledge.updateMany({
-        where: { id, currentRevision: expectedRevision },
+        where: { id, orgId, currentRevision: expectedRevision },
         data: { title: input.title, currentRevision: nextRevision }
       })
       if (updated.count === 0) return null
@@ -328,14 +336,23 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
           ...provenanceData(provenance)
         }
       })
-      const row = await tx.organizationKnowledge.findUniqueOrThrow({ where: { id }, include: currentKnowledgeInclude })
+      const row = await tx.organizationKnowledge.findUniqueOrThrow({
+        where: { id, orgId },
+        include: currentKnowledgeInclude
+      })
       return toKnowledge(row)
     })
   }
 
-  async setKnowledgeArchived(id: string, archived: boolean, byUserId?: string): Promise<OrganizationKnowledgeRecord> {
+  async setKnowledgeArchived(
+    orgId: OrgId,
+    id: string,
+    archived: boolean,
+    byUserId?: string
+  ): Promise<OrganizationKnowledgeRecord> {
+    // Org-fenced update: a cross-org id throws the same P2025 as a missing row.
     const row = await this.db.organizationKnowledge.update({
-      where: { id },
+      where: { id, orgId },
       data: archived
         ? { archivedAt: new Date(), archivedByUserId: byUserId ?? null }
         : { archivedAt: null, archivedByUserId: null },
@@ -354,8 +371,9 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
     ).map(toSkill)
   }
 
-  async getManagedSkill(id: string): Promise<ManagedSkillRecord | null> {
-    const row = await this.db.managedSkill.findUnique({ where: { id }, include: currentSkillInclude })
+  async getManagedSkill(orgId: OrgId, id: string): Promise<ManagedSkillRecord | null> {
+    // Org-fenced point read; every caller's `row.orgId !== …` post-filter moves here.
+    const row = await this.db.managedSkill.findUnique({ where: { id, orgId }, include: currentSkillInclude })
     return row ? toSkill(row) : null
   }
 
@@ -375,10 +393,16 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
     ).map(toSkillRevision)
   }
 
-  async setManagedSkillArchived(id: string, archived: boolean, byUserId?: string): Promise<ManagedSkillRecord> {
+  async setManagedSkillArchived(
+    orgId: OrgId,
+    id: string,
+    archived: boolean,
+    byUserId?: string
+  ): Promise<ManagedSkillRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      // Org-fenced update: a cross-org id throws the same P2025 as a missing row.
       const row = await tx.managedSkill.update({
-        where: { id },
+        where: { id, orgId },
         data: archived
           ? { archivedAt: new Date(), archivedByUserId: byUserId ?? null }
           : { archivedAt: null, archivedByUserId: null },
@@ -490,18 +514,22 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
     ).map(toSuggestion)
   }
 
-  async getSuggestion(id: string): Promise<OrganizationSuggestionRecord | null> {
-    const row = await this.db.organizationSuggestion.findUnique({ where: { id } })
+  async getSuggestion(orgId: OrgId, id: string): Promise<OrganizationSuggestionRecord | null> {
+    // Org-fenced point read: a cross-org id is indistinguishable from a missing row.
+    const row = await this.db.organizationSuggestion.findUnique({ where: { id, orgId } })
     return row ? toSuggestion(row) : null
   }
 
   async rejectSuggestion(
+    orgId: OrgId,
     id: string,
     reviewedByUserId: string | undefined,
     reason?: string
   ): Promise<OrganizationSuggestionRecord> {
+    // Org fence on the write AND on the read-back below: a cross-org id writes
+    // nothing and then throws the same P2025 as a missing row.
     await this.db.organizationSuggestion.updateMany({
-      where: { id, state: 'pending' },
+      where: { id, orgId, state: 'pending' },
       data: {
         state: 'rejected',
         reviewedByUserId: reviewedByUserId ?? null,
@@ -509,18 +537,26 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
         reviewReason: reason ?? null
       }
     })
-    return toSuggestion(await this.db.organizationSuggestion.findUniqueOrThrow({ where: { id } }))
+    return toSuggestion(await this.db.organizationSuggestion.findUniqueOrThrow({ where: { id, orgId } }))
   }
 
   async acceptKnowledgeSuggestion(
+    orgId: OrgId,
     id: string,
     body: { title: string; content: string; summary: string | null; tags: string[] },
     expectedSnapshotToken: string,
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult> {
     return withAmbientTx(this.db, async (tx) => {
-      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid FOR UPDATE`)
-      const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id } })
+      // The lock and the fenced read below select the SAME row set: a
+      // cross-org id locks nothing rather than parking on another org's row.
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+      )
+      // Org fence on the row-locked read, BEFORE the state and snapshot-token
+      // comparisons: reaching those with a foreign id would answer
+      // 'not_pending' / 'metadata_changed' and confirm it exists (§3).
+      const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id, orgId } })
       if (suggestion.state !== 'pending') return { outcome: 'not_pending', suggestion: toSuggestion(suggestion) }
       if (suggestion.kind !== 'knowledge') throw new Error('suggestion kind mismatch')
       if (organizationSuggestionSnapshotToken(toSuggestion(suggestion)) !== expectedSnapshotToken) {
@@ -610,6 +646,7 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   }
 
   async acceptSkillSuggestion(
+    orgId: OrgId,
     id: string,
     body: {
       archive: Uint8Array
@@ -627,8 +664,14 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   ): Promise<AcceptOrganizationSuggestionResult> {
     try {
       return await withAmbientTx(this.db, async (tx) => {
-        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid FOR UPDATE`)
-        const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id } })
+        // The lock and the fenced read below select the SAME row set: a
+        // cross-org id locks nothing rather than parking on another org's row.
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+        )
+        // Org fence on the row-locked read, before the state / snapshot-token
+        // comparisons and before any archive bytes are persisted (§3).
+        const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id, orgId } })
         if (suggestion.state !== 'pending') return { outcome: 'not_pending', suggestion: toSuggestion(suggestion) }
         if (suggestion.kind !== 'skill') throw new Error('suggestion kind mismatch')
         if (organizationSuggestionSnapshotToken(toSuggestion(suggestion)) !== expectedSnapshotToken) {
@@ -724,7 +767,7 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
       })
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const suggestion = await this.getSuggestion(id)
+        const suggestion = await this.getSuggestion(orgId, id)
         if (!suggestion) throw err
         return { outcome: 'name_conflict', suggestion }
       }

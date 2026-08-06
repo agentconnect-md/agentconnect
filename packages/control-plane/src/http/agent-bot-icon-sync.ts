@@ -13,7 +13,7 @@ interface AgentBotIconSyncDeps {
   repos: {
     agent: Pick<AgentRepo, 'getUnscoped'>
     integration: Pick<IntegrationRepo, 'listForAgent' | 'listForBot'>
-    bot: Pick<BotRepo, 'get'>
+    bot: Pick<BotRepo, 'getUnscoped'>
     botSecret: Pick<BotSecretStore, 'get'>
   }
   /** §9 platform registry. `sideEffects.syncBotProfileIcon` IS the capability
@@ -59,7 +59,10 @@ async function currentBotIconState(
   deps: AgentBotIconSyncDeps,
   botId: BotRecord['id']
 ): Promise<CurrentBotIconState | null> {
-  const bot = await deps.repos.bot.get(botId)
+  // Background convergence, not the HTTP surface: both sides of the ownership
+  // edge are re-read from system state, exactly like the agent read below
+  // (org-scoped-data-layer.md §4).
+  const bot = await deps.repos.bot.getUnscoped(botId)
   if (!bot || bot.shareable || bot.revokedAt) return null
 
   if (!iconPusherFor(deps, bot.platform)) return null
@@ -85,7 +88,7 @@ async function syncBotIconUntilCurrent(
 ): Promise<void> {
   let state = await currentBotIconState(deps, botId)
   while (state) {
-    const secret = await deps.repos.botSecret.get(state.bot.id)
+    const secret = await deps.repos.botSecret.get(state.bot.orgId, state.bot.id)
     if (!secret) {
       log.warn(
         { agentId: state.agent.id, botId: state.bot.id, platform: state.bot.platform },
