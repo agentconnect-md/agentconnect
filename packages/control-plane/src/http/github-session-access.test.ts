@@ -39,8 +39,14 @@ function scopeAt(index: number): ExternalScopeRecord {
   }
 }
 
+/** `Clock` reports wall-clock epoch milliseconds, and the verdict caches need
+ *  it to: lru-cache reads a falsy entry start as "no TTL recorded", so a clock
+ *  left at 0 would make the first entries immortal and hide every expiry
+ *  assertion below. */
+const EPOCH = 1_777_000_000_000
+
 function make(privateRepo: boolean, permissionForUser = vi.fn()) {
-  const clock = new FakeClock()
+  const clock = new FakeClock(EPOCH)
   const repoRefById = vi.fn().mockResolvedValue({
     repoId: 123n,
     fullName: 'acme/private-repo',
@@ -62,6 +68,9 @@ const viewer: SessionAccessViewer = {
   userId: 'user-1',
   identitySet: new Set(['user:user-1'])
 }
+
+/** A second console user asking about the same repository. */
+const other: SessionAccessViewer = { ...viewer, userId: 'user-2', identitySet: new Set(['user:user-2']) }
 
 describe('GithubSessionAccessService', () => {
   it('resolves allowed scopes beyond the first 200', async () => {
@@ -110,7 +119,9 @@ describe('GithubSessionAccessService', () => {
     await h.service.resolve([scope], viewer)
     expect(h.permissionForUser).toHaveBeenCalledTimes(1)
 
-    h.clock.advance(1)
+    // The lease boundary is exclusive — an entry goes stale once its age passes
+    // the TTL, so the refresh lands the millisecond after the limit.
+    h.clock.advance(2)
     await h.service.resolve([scope], viewer)
     expect(h.permissionForUser).toHaveBeenCalledTimes(2)
   })
@@ -123,5 +134,44 @@ describe('GithubSessionAccessService', () => {
       allowedScopes: [],
       degraded: true
     })
+  })
+
+  it('reads a repository shape once for every viewer that asks about it', async () => {
+    const h = make(false)
+
+    await h.service.resolve([scope], viewer)
+    await h.service.resolve([scope], other)
+
+    // The decision cache is keyed per user, but "is this repo public" is not a
+    // question about the user — so the second viewer must not pay a lookup.
+    expect(h.repoRefById).toHaveBeenCalledTimes(1)
+  })
+
+  it('leases an allow from when the shape was observed, not from when it was reused', async () => {
+    const h = make(false)
+
+    await h.service.resolve([scope], viewer)
+    h.clock.advance(60_000)
+    await h.service.resolve([scope], other)
+    expect(h.repoRefById).toHaveBeenCalledTimes(1)
+
+    // 120 s after the SHAPE was fetched. Had reuse restarted the lease, the
+    // second viewer's allow would still be cached here and nothing would be
+    // re-read; instead both the verdict and its evidence have expired.
+    h.clock.advance(60_001)
+    await h.service.resolve([scope], other)
+    expect(h.repoRefById).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a failed shape lookup a per-request verdict rather than caching it', async () => {
+    const h = make(false)
+    h.repoRefById.mockRejectedValueOnce(new Error('provider unavailable'))
+
+    await expect(h.service.resolve([scope], viewer)).resolves.toEqual({ allowedScopes: [], degraded: true })
+    await expect(h.service.resolve([scope], other)).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    expect(h.repoRefById).toHaveBeenCalledTimes(2)
   })
 })

@@ -211,6 +211,9 @@ importers:
       jose:
         specifier: ^6.2.4
         version: 6.2.4
+      lru-cache:
+        specifier: ^11.5.2
+        version: 11.5.2
       lucide:
         specifier: ^1.26.0
         version: 1.26.0
