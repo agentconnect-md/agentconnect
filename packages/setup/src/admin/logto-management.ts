@@ -42,6 +42,7 @@ interface LogtoConnector {
   id: string
   connectorId: string
   target: string
+  name: string | null
   config: Record<string, unknown>
 }
 
@@ -62,6 +63,14 @@ export interface LogtoAdminRoleInspection {
   exists: boolean
   type: LogtoRole['type'] | null
   isDefault: boolean | null
+}
+
+export interface LogtoNamedConnector {
+  id: string
+  connectorId: string
+  target: string
+  name: string
+  clientId: string | null
 }
 
 export interface LogtoConfigurationDiff {
@@ -171,7 +180,14 @@ function parseConnector(value: unknown): LogtoConnector | null {
   const metadata = asRecord(row.metadata)
   const target = typeof row.target === 'string' ? row.target : metadata.target
   if (typeof row.id !== 'string' || typeof row.connectorId !== 'string' || typeof target !== 'string') return null
-  return { id: row.id, connectorId: row.connectorId, target, config: asRecord(row.config) }
+  const name = asRecord(row.name).en ?? asRecord(metadata.name).en
+  return {
+    id: row.id,
+    connectorId: row.connectorId,
+    target,
+    name: typeof name === 'string' ? name : null,
+    config: asRecord(row.config)
+  }
 }
 
 function desiredConnector(
@@ -225,6 +241,13 @@ function selectConnector(connectors: readonly LogtoConnector[], target: string):
   )
 }
 
+function selectConnectorByName(connectors: readonly LogtoConnector[], name: string): LogtoConnector | undefined {
+  const normalized = name.trim().toLocaleLowerCase('en-US')
+  const matches = connectors.filter((connector) => connector.name?.trim().toLocaleLowerCase('en-US') === normalized)
+  if (matches.length <= 1) return matches[0]
+  throw new LogtoManagementError('SOCIAL_CONNECTOR_AMBIGUOUS', `Logto has more than one social connector named ${name}`)
+}
+
 export class LogtoAdminClaimClient {
   private readonly base: string
   private readonly resource: string
@@ -261,6 +284,29 @@ export class LogtoAdminClaimClient {
       targets.flatMap((target) => {
         const connector = selectConnector(connectors, target)
         return connector ? [[target, connector.id]] : []
+      })
+    )
+  }
+
+  /** Resolve standard OAuth connectors whose targets are not unique. */
+  async resolveConnectorsByName(names: readonly string[]): Promise<Record<string, LogtoNamedConnector>> {
+    const connectors = await this.listConnectors()
+    return Object.fromEntries(
+      names.flatMap((name) => {
+        const connector = selectConnectorByName(connectors, name)
+        if (!connector) return []
+        return [
+          [
+            name,
+            {
+              id: connector.id,
+              connectorId: connector.connectorId,
+              target: connector.target,
+              name,
+              clientId: typeof connector.config.clientId === 'string' ? connector.config.clientId : null
+            }
+          ]
+        ]
       })
     )
   }

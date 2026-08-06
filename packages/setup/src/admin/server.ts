@@ -65,6 +65,7 @@ import {
   LogtoAdminClaimClient,
   LogtoManagementError,
   type LogtoManagementConfig,
+  type LogtoNamedConnector,
   type LogtoSetupDesired
 } from './logto-management.js'
 
@@ -287,13 +288,15 @@ function appendPath(origin: string, path: string): string {
   return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
 }
 
-function googleRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
+function socialRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
   return [
     appendPath(endpoint, `/callback/${connectorId}`),
     appendPath(endpoint, `/account/callback/social/${connectorId}`),
     appendPath(webUrl, '/auth/social/callback')
   ]
 }
+
+const REGIONAL_LOGTO_CONNECTOR_NAMES = { feishu: 'Feishu', lark: 'Lark' } as const
 
 type ServiceTopology = { web: string; controlPlane: string; relay: string }
 
@@ -440,6 +443,14 @@ export function buildTenantAdminServer(
     return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds(['github', 'google', 'slack'])
   }
 
+  const resolveRegionalLogtoConnector = async (region: 'feishu' | 'lark'): Promise<LogtoNamedConnector | undefined> => {
+    const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+    const config = logtoConfig(runtime, logtoManagementEndpoint)
+    if (!config) return undefined
+    const name = REGIONAL_LOGTO_CONNECTOR_NAMES[region]
+    return (await new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorsByName([name]))[name]
+  }
+
   const expectedGithubManifest = (
     values: DeploymentConfigValuesV1,
     connectorIds: ManagedConnectorIds
@@ -494,7 +505,7 @@ export function buildTenantAdminServer(
       google: values.logto?.browser
         ? {
             origins: [logtoEndpoint],
-            redirects: googleRedirectUris(
+            redirects: socialRedirectUris(
               logtoEndpoint,
               connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID,
               localAuthBootstrap.services.web
@@ -621,7 +632,7 @@ export function buildTenantAdminServer(
     }
     const googleConnectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
     const slackConnectorId = connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID
-    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
+    const redirectUris = socialRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
       current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
@@ -825,7 +836,7 @@ export function buildTenantAdminServer(
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
       const connectorIds = await resolveLogtoConnectorIds()
       const connectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
-      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
+      const redirectUris = socialRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
         clientId: parsed.data.clientId,
         ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {})
@@ -878,25 +889,71 @@ export function buildTenantAdminServer(
         return problem(reply, 409, `${region === 'feishu' ? 'Feishu' : 'Lark'} App credentials are not configured`)
       }
 
-      const result = await auditFeishuAppSetup(regionalApp.loginAppId, appSecret, region)
       const label = region === 'feishu' ? 'Feishu' : 'Lark'
+      const connectorDiff: Array<{ field: string; current: unknown; expected: unknown }> = []
+      let connector: LogtoNamedConnector | undefined
+      let connectorStatus: 'ok' | 'mismatch' | 'unavailable' = 'ok'
+      try {
+        connector = await resolveRegionalLogtoConnector(region)
+        if (!connector) {
+          connectorStatus = 'mismatch'
+          connectorDiff.push({
+            field: 'Logto connector',
+            current: 'Missing',
+            expected: `OAuth 2.0 connector named ${REGIONAL_LOGTO_CONNECTOR_NAMES[region]}`
+          })
+        } else {
+          if (connector.connectorId !== 'oauth2') {
+            connectorStatus = 'mismatch'
+            connectorDiff.push({
+              field: 'Logto connector type',
+              current: connector.connectorId,
+              expected: 'oauth2'
+            })
+          }
+          if (connector.clientId !== regionalApp.loginAppId) {
+            connectorStatus = 'mismatch'
+            connectorDiff.push({
+              field: 'Logto connector client ID',
+              current: connector.clientId,
+              expected: regionalApp.loginAppId
+            })
+          }
+        }
+      } catch (error) {
+        connectorStatus =
+          error instanceof LogtoManagementError && error.code === 'LOGTO_UNAVAILABLE' ? 'unavailable' : 'mismatch'
+        connectorDiff.push({
+          field: 'Logto connector',
+          current: error instanceof Error ? error.message : 'Could not query Logto',
+          expected: `One OAuth 2.0 connector named ${REGIONAL_LOGTO_CONNECTOR_NAMES[region]}`
+        })
+      }
+
+      const result = await auditFeishuAppSetup(regionalApp.loginAppId, appSecret, region, {
+        ...(connector
+          ? { redirectUris: socialRedirectUris(logtoEndpoint, connector.id, localAuthBootstrap.services.web) }
+          : {})
+      })
+      const diff = [...connectorDiff, ...result.diff]
+      const mismatch = connectorStatus === 'mismatch' || result.status === 'invalid' || result.status === 'mismatch'
+      const unavailable = connectorStatus === 'unavailable' || result.status === 'unavailable'
+      const status = mismatch ? ('fail' as const) : unavailable ? ('unknown' as const) : ('pass' as const)
       return {
         provider: region,
-        status:
-          result.status === 'ok'
-            ? ('pass' as const)
-            : result.status === 'invalid' || result.status === 'mismatch'
-              ? ('fail' as const)
-              : ('unknown' as const),
-        diff: result.diff,
+        status,
+        connector: connector
+          ? { id: connector.id, name: connector.name, type: connector.connectorId, clientId: connector.clientId }
+          : null,
+        diff,
         message:
-          result.status === 'ok'
-            ? `${label} published App${result.version ? ` version ${result.version}` : ''} has the required Bot capability, API permissions, and event subscription.`
+          status === 'pass'
+            ? `${label} Logto connector ${connector!.id} and published App${result.version ? ` version ${result.version}` : ''} match.`
             : result.status === 'invalid'
               ? `${label} rejected the saved App ID or secret.`
-              : result.status === 'mismatch'
-                ? `${label} App setup needs an update.`
-                : `${label} setup could not be audited${result.message ? `: ${result.message}` : '.'}`
+              : status === 'fail'
+                ? `${label} App or Logto OAuth 2.0 connector needs an update.`
+                : `${label} App or Logto connector could not be audited${result.message ? `: ${result.message}` : '.'}`
       }
     }
   )

@@ -298,7 +298,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
       <section id="feishu-section" class="panel admin-section" aria-labelledby="feishu-heading">
         <div class="provider-head">
-          <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Audits the published Bot capability, API permissions, and message event subscription.</p></div>
+          <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Matches the Logto OAuth 2.0 connector named Feishu, OAuth callbacks, and published App setup.</p></div>
           <span id="feishu-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -323,7 +323,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
       <section id="lark-section" class="panel admin-section" aria-labelledby="lark-heading">
         <div class="provider-head">
-          <div><h3 id="lark-heading">Lark</h3><p class="muted">Audits the published Bot capability, API permissions, and message event subscription.</p></div>
+          <div><h3 id="lark-heading">Lark</h3><p class="muted">Matches the Logto OAuth 2.0 connector named Lark, OAuth callbacks, and published App setup.</p></div>
           <span id="lark-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -1150,6 +1150,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const label = region === 'feishu' ? 'Feishu' : 'Lark';
       showDiff(region + '-drift', result.diff || []);
       match(region + '-match', result.status === 'pass' ? 'pass' : result.status === 'fail' ? 'fail' : 'warn', result.status === 'pass' ? 'Matches' : result.status === 'fail' ? 'Update required' : 'Could not check');
+      el(region + '-login-status').textContent = result.message;
+      el(region + '-login-status').className = result.status === 'pass' ? 'ok' : result.status === 'fail' ? 'warn' : 'muted';
       message(result.message || (label + ' credential check completed.'), result.status === 'fail');
     }
 
