@@ -643,9 +643,8 @@ describe('Daemon session lifecycle (#118)', () => {
   }, 15_000)
 
   it('§6.8: a discord DM anchored fire classifies as a private DM session', async () => {
-    // Discord thread keys are DM-insensitive (the conversation IS the channel), but
-    // `conversationKind` and the daemon-local capture gate are not: a DM fire that
-    // reports isDm:false is stored as a non-private CHANNEL session.
+    // A Discord DM is one continuous conversation keyed by its channel. The same
+    // classification also drives `conversationKind` and the private-capture gate.
     const host = quietHost()
     const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
     await daemon.start()
@@ -683,6 +682,86 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(rec?.conversationKind).toBe('dm')
     // The private-capture gate follows the same bit.
     expect((daemon as any).store.isCaptureExcluded(rec?.acpSessionId)).toBe(true)
+    await daemon.stop()
+  }, 15_000)
+
+  it('§6.8: a discord guild anchored fire materializes its native thread before dispatch', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const postMessage = vi.fn(async () => 'msg-1')
+    const getChannelInfo = vi.fn(async () => ({ id: 'C-1', isIm: false }))
+    const createThread = vi.fn(async () => 'msg-1')
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).dcConnByIntegration.set('int-a', {
+      postMessage,
+      getChannelInfo,
+      createThread,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-dc-guild:trace-1'),
+        msgId: 'cron:cron-dc-guild:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'discord',
+        channel: 'C-1',
+        isDm: false
+      },
+      { channel: 'C-1', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-dc-guild"'
+    )
+
+    expect(createThread).toHaveBeenCalledWith('C-1', 'msg-1', '⏰ scheduled')
+    const key = sessionKey('discord', 'C-1', 'msg-1', 'bot-a', TRANSPORT_SCOPE)
+    expect((daemon as any).store.getSession(key)).toBeTruthy()
+    await daemon.stop()
+  }, 15_000)
+
+  it('§6.8: a discord guild anchored fire starts no session when thread creation fails', async () => {
+    const host = quietHost()
+    const daemon = new Daemon({ root: scaffold(), hostFactory: () => host as any })
+    await daemon.start()
+    makeRoutable(daemon)
+    const createThread = vi.fn(async () => undefined)
+    ;(daemon as any).connByIntegration.delete('int-a')
+    ;(daemon as any).dcConnByIntegration.set('int-a', {
+      postMessage: vi.fn(async () => 'msg-1'),
+      getChannelInfo: vi.fn(async () => ({ id: 'C-1', isIm: false })),
+      createThread,
+      postChrome: vi.fn(async () => {}),
+      updateMessage: vi.fn(async () => {})
+    })
+
+    const result = await (daemon as any).fireTrigger(
+      'bot-a',
+      {
+        ...dm('ignored', 'scheduled', 'cron:cron-dc-failed:trace-1'),
+        msgId: 'cron:cron-dc-failed:trace-1',
+        traceId: 'trace-1',
+        source: 'cron',
+        trigger: 'cron',
+        platform: 'discord',
+        channel: 'C-1',
+        isDm: false
+      },
+      { channel: 'C-1', integrationId: 'int-a' },
+      '⏰ scheduled',
+      'cron "cron-dc-failed"'
+    )
+
+    expect(result).toBeNull()
+    expect(
+      (daemon as any).store.getSession(sessionKey('discord', 'C-1', 'msg-1', 'bot-a', TRANSPORT_SCOPE))
+    ).toBeUndefined()
+    expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
   }, 15_000)
 

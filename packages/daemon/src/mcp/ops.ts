@@ -2,6 +2,7 @@ import type { ToolDescriptor } from './tools.js'
 import type { MemoryProvider } from '../agents/memory-provider.js'
 import {
   rootPostNeedsThreadMaterialization,
+  rootPostThreadName,
   threadKeyForPost,
   threadKeyNeedsDmClassification
 } from '../platforms/thread-keys.js'
@@ -1115,11 +1116,7 @@ export async function executeTool(
       const mustMaterializeThread = !isDmTarget && rootPostNeedsThreadMaterialization(wantPlatform)
       const materializedThread =
         providerPostId !== undefined && mustMaterializeThread
-          ? await gw.createThread?.(
-              postChannel,
-              providerPostId,
-              body.replace(/\s+/g, ' ').trim().slice(0, 90) || 'Agent thread'
-            )
+          ? await gw.createThread?.(postChannel, providerPostId, rootPostThreadName(body))
           : undefined
       const canonicalPostThread =
         providerPostId === undefined
@@ -1133,7 +1130,7 @@ export async function executeTool(
       // this post back onto this thread, so it must be the same canonical key the session uses.
       deps.recordOutbound(ctx, postChannel, postedThread ?? canonicalPostThread, body, ts, targetId)
       post = { platform: wantPlatform, integrationId: targetId, channel: postChannel, thread: null, ts }
-      if (mustMaterializeThread && postedThread === undefined) {
+      if (providerPostId !== undefined && mustMaterializeThread && postedThread === undefined) {
         throw new Error(
           `sendMessage: posted root message ${ts}, but its required thread could not be created; no session was started`
         )

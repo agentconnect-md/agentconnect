@@ -62,6 +62,12 @@ export function rootPostNeedsThreadMaterialization(platform: string): boolean {
   return STRATEGIES.get(platform)?.materializeRootThread ?? false
 }
 
+/** Provider-safe title for a native thread opened from a root post. */
+export function rootPostThreadName(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, 90)
+  return oneLine || 'Agent thread'
+}
+
 /** The session-thread key for a message this daemon just posted at a channel
  *  ROOT. Total by construction: an unregistered platform threads off the post's
  *  own ts, the Slack/core rule. */

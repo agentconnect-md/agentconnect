@@ -159,7 +159,7 @@ import {
 } from './platforms/integration-config.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import { isPlatformMemberId } from './platforms/member-id.js'
-import { threadKeyForPost } from './platforms/thread-keys.js'
+import { rootPostNeedsThreadMaterialization, rootPostThreadName, threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
 import { registerThreadPromotion, threadPromotionFor } from './platforms/thread-promotion.js'
 import { discordThreadPromotion } from './platforms/discord/thread-promotion.js'
@@ -18671,7 +18671,7 @@ export class Daemon {
               await (conn as { getChannelInfo?: (ch: string) => Promise<{ isIm?: boolean } | undefined> })
                 .getChannelInfo?.(target.channel)
                 .catch(() => undefined)
-            )?.isIm ?? false
+            )?.isIm ?? msg.isDm
           if (isDmTarget) msg = { ...msg, isDm: true }
           // slackAgentPostOptions guards on the platform internally: a non-Slack
           // target (or an unresolved agent) yields undefined and the anchor posts
@@ -18688,13 +18688,37 @@ export class Daemon {
           const ts = options
             ? await (conn as SlackConnection).postMessage(target.channel, anchorText, undefined, options)
             : await conn.postMessage(target.channel, anchorText)
-          // The posted anchor is both the thread root and the authoritative
-          // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
-          // §6.8: the SESSION key must follow the platform's own conversation model
-          // (threadKeyForPost — Slack and Discord guild threads key off the post,
-          // Telegram replies resolve to `tg:<root>`, while supported DMs remain
-          // continuous), or the anchored session and its replies mint different keys.
-          if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts, msg.isDm), transcriptTs: ts }
+          if (ts) {
+            const mustMaterializeThread = !isDmTarget && rootPostNeedsThreadMaterialization(msg.platform)
+            let thread: string | undefined
+            if (mustMaterializeThread) {
+              try {
+                thread = await (
+                  conn as {
+                    createThread?: (channel: string, messageId: string, name: string) => Promise<string | undefined>
+                  }
+                ).createThread?.(target.channel, ts, rootPostThreadName(anchorText))
+              } catch (err) {
+                this.log.warn(
+                  `${label}: posted trigger to ${target.channel}, but failed to create its required thread (${formatErr(err)}) — session not started`
+                )
+                return null
+              }
+              if (!thread) {
+                this.log.warn(
+                  `${label}: posted trigger to ${target.channel}, but its required thread was not created — session not started`
+                )
+                return null
+              }
+            } else {
+              thread = threadKeyForPost(msg.platform, target.channel, ts, isDmTarget)
+            }
+            // The posted anchor is both the thread root and the authoritative
+            // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
+            // The session is created only after any required provider thread exists,
+            // so every follow-up resolves to these exact coordinates.
+            msg = { ...msg, channel: target.channel, thread, transcriptTs: ts }
+          }
         } catch (err) {
           this.log.warn(
             `${label}: failed to post trigger to ${target.channel} (${formatErr(err)}) — running without anchor`

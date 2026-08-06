@@ -10,14 +10,14 @@
  * `discordTopLevel` named twin retired with the S1b cleanup.
  */
 import type { DiscordConnection } from '../../discord/connection.js'
+import { rootPostThreadName } from '../thread-keys.js'
 import type { ThreadPromotion, ThreadPromotionHost, ThreadPromotionMessage } from '../thread-promotion.js'
 
 /** Name for the opened thread: the first line of the prompt, collapsed to one
  *  line and clamped under Discord's 100-char thread-name cap (createThread also
  *  clamps). Empty prompts (e.g. attachment-only) get a default. */
 export function discordThreadName(text: string): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim().slice(0, 90)
-  return oneLine || 'Agent thread'
+  return rootPostThreadName(text)
 }
 
 export const discordThreadPromotion: ThreadPromotion<ThreadPromotionMessage> = {
