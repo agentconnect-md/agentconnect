@@ -194,9 +194,12 @@ export const handleManagedSkillRead: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'managed skill is not enabled for this agent', false)
     return
   }
-  const skill = await repo.getManagedSkill(frame.payload.managedSkillId)
+  // The managed-skill id comes from the daemon's frame, so it is fenced on the
+  // REQUESTER's org — the one thing this handler has already proved (the agent is
+  // placed on this connection). The revision fences through that parent (§3.6).
+  const skill = await repo.getManagedSkill(requester.orgId, frame.payload.managedSkillId)
   const revision = await repo.getManagedSkillRevision(frame.payload.managedSkillId, frame.payload.revision)
-  if (!skill || skill.orgId !== requester.orgId || skill.archivedAt !== null || !revision) {
+  if (!skill || skill.archivedAt !== null || !revision) {
     conn.sendError(frame.id, 'BAD_PAYLOAD', 'managed skill revision not found', false)
     return
   }

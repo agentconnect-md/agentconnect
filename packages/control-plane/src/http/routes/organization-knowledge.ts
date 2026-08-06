@@ -283,8 +283,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (!repo) return unavailable(reply)
-        const row = await repo.getKnowledge(req.params.id)
-        if (!row || row.orgId !== orgOf(req)) return missing(reply)
+        const row = await repo.getKnowledge(orgOf(req), req.params.id)
+        if (!row) return missing(reply)
         return knowledgeDto(row, ctxOf(req).role === 'owner')
       }
     )
@@ -305,10 +305,10 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         if (!repo) return unavailable(reply)
-        const existing = await repo.getKnowledge(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) return missing(reply)
+        const existing = await repo.getKnowledge(orgOf(req), req.params.id)
+        if (!existing) return missing(reply)
         const { expectedRevision, ...body } = req.body
-        const row = await repo.updateKnowledge(req.params.id, expectedRevision, body, {
+        const row = await repo.updateKnowledge(orgOf(req), req.params.id, expectedRevision, body, {
           source: 'manual',
           createdByUserId: ctxOf(req).userId
         })
@@ -337,8 +337,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (!repo) return unavailable(reply)
-        const existing = await repo.getKnowledge(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) return missing(reply)
+        const existing = await repo.getKnowledge(orgOf(req), req.params.id)
+        if (!existing) return missing(reply)
         return (await repo.listKnowledgeRevisions(existing.id)).map(knowledgeRevisionDto)
       }
     )
@@ -359,9 +359,9 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         if (!repo) return unavailable(reply)
-        const existing = await repo.getKnowledge(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) return missing(reply)
-        const row = await repo.setKnowledgeArchived(req.params.id, req.body.archived, ctxOf(req).userId)
+        const existing = await repo.getKnowledge(orgOf(req), req.params.id)
+        if (!existing) return missing(reply)
+        const row = await repo.setKnowledgeArchived(orgOf(req), req.params.id, req.body.archived, ctxOf(req).userId)
         return knowledgeDto(row, true)
       }
     )
@@ -400,8 +400,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (!repo) return unavailable(reply)
-        const row = await repo.getManagedSkill(req.params.id)
-        if (!row || row.orgId !== orgOf(req)) return missing(reply, 'managed skill not found')
+        const row = await repo.getManagedSkill(orgOf(req), req.params.id)
+        if (!row) return missing(reply, 'managed skill not found')
         return skillDto(row, ctxOf(req).role === 'owner')
       }
     )
@@ -420,8 +420,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (!repo) return unavailable(reply)
-        const existing = await repo.getManagedSkill(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) return missing(reply, 'managed skill not found')
+        const existing = await repo.getManagedSkill(orgOf(req), req.params.id)
+        if (!existing) return missing(reply, 'managed skill not found')
         return (await repo.listManagedSkillRevisions(existing.id)).map(skillRevisionDto)
       }
     )
@@ -442,9 +442,9 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         if (!repo) return unavailable(reply)
-        const existing = await repo.getManagedSkill(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) return missing(reply, 'managed skill not found')
-        const row = await repo.setManagedSkillArchived(req.params.id, req.body.archived, ctxOf(req).userId)
+        const existing = await repo.getManagedSkill(orgOf(req), req.params.id)
+        if (!existing) return missing(reply, 'managed skill not found')
+        const row = await repo.setManagedSkillArchived(orgOf(req), req.params.id, req.body.archived, ctxOf(req).userId)
 
         // Reconcile every enabling placed agent. Offline/error fan-out is best
         // effort; register/ok remains the durable reconnect backstop.
@@ -525,8 +525,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         if (!repo) return unavailable(reply)
-        const suggestion = await repo.getSuggestion(req.params.id)
-        if (!suggestion || suggestion.orgId !== orgOf(req)) return missing(reply, 'suggestion not found')
+        const suggestion = await repo.getSuggestion(orgOf(req), req.params.id)
+        if (!suggestion) return missing(reply, 'suggestion not found')
         if (suggestion.state !== 'pending') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'suggestion is already reviewed' })
         }
@@ -596,8 +596,8 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
         if (!repo) return unavailable(reply)
-        const suggestion = await repo.getSuggestion(req.params.id)
-        if (!suggestion || suggestion.orgId !== orgOf(req)) return missing(reply, 'suggestion not found')
+        const suggestion = await repo.getSuggestion(orgOf(req), req.params.id)
+        if (!suggestion) return missing(reply, 'suggestion not found')
         if (suggestion.state !== 'pending') {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'suggestion is already reviewed' })
         }
@@ -609,7 +609,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
           ) {
             return unavailable(reply)
           }
-          const rejected = await repo.rejectSuggestion(suggestion.id, ctxOf(req).userId, req.body.reason)
+          const rejected = await repo.rejectSuggestion(orgOf(req), suggestion.id, ctxOf(req).userId, req.body.reason)
           if (rejected.state !== 'rejected') {
             return reply.code(409).send({
               error: 'Conflict',
@@ -673,6 +673,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         try {
           if (suggestion.kind === 'knowledge' && content.body.kind === 'knowledge') {
             result = await repo.acceptKnowledgeSuggestion(
+              orgOf(req),
               suggestion.id,
               {
                 title: suggestion.title,
@@ -686,6 +687,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
           } else if (suggestion.kind === 'skill' && content.body.kind === 'skill') {
             const bundle = packageSkillBundle(content.body.files, suggestion.title)
             result = await repo.acceptSkillSuggestion(
+              orgOf(req),
               suggestion.id,
               { ...bundle, name: suggestion.title, candidateDigest: content.digest },
               req.body.snapshotToken,

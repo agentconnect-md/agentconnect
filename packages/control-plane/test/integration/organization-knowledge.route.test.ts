@@ -287,7 +287,7 @@ describe('Dream organization suggestion review', () => {
       }
     ])
 
-    const artifact = await repo.getKnowledge(acceptedDto.acceptedArtifactId)
+    const artifact = await repo.getKnowledge(DEF_ORG, acceptedDto.acceptedArtifactId)
     expect(artifact).toMatchObject({
       title: 'Signing-key rotation',
       content,
@@ -431,7 +431,7 @@ describe('Dream organization suggestion review', () => {
       payload: { decision: 'accept', snapshotToken }
     })
     expect(response.statusCode).toBe(409)
-    expect(await repo.getSuggestion(pending!.id)).toMatchObject({ state: 'pending', acceptedArtifactId: null })
+    expect(await repo.getSuggestion(DEF_ORG, pending!.id)).toMatchObject({ state: 'pending', acceptedArtifactId: null })
     expect((await repo.listKnowledge(DEF_ORG)).some((row) => row.title === 'Mutated candidate')).toBe(false)
     expect(control.reviews).toEqual([])
   })
@@ -491,7 +491,7 @@ describe('Dream organization suggestion review', () => {
     })
     expect(response.statusCode).toBe(409)
     expect(response.json()).toMatchObject({ message: expect.stringContaining('metadata changed') })
-    expect(await repo.getSuggestion(pending!.id)).toMatchObject({ state: 'pending', title: 'Refreshed title' })
+    expect(await repo.getSuggestion(DEF_ORG, pending!.id)).toMatchObject({ state: 'pending', title: 'Refreshed title' })
     expect(await repo.listKnowledge(DEF_ORG)).toEqual([])
     expect(control.reviews).toEqual([])
   })
@@ -544,6 +544,7 @@ describe('Dream organization suggestion review', () => {
     ])
     const snapshotToken = organizationSuggestionSnapshotToken(pending!)
     await repo.updateKnowledge(
+      DEF_ORG,
       target.id,
       1,
       { title: 'Escalation', content: 'manual revision two' },
@@ -557,8 +558,11 @@ describe('Dream organization suggestion review', () => {
     })
     expect(response.statusCode).toBe(409)
     expect(response.json()).toMatchObject({ message: 'the target has a newer revision; regenerate the suggestion' })
-    expect(await repo.getSuggestion(pending!.id)).toMatchObject({ state: 'pending', acceptedArtifactId: null })
-    expect(await repo.getKnowledge(target.id)).toMatchObject({ currentRevision: 2, content: 'manual revision two' })
+    expect(await repo.getSuggestion(DEF_ORG, pending!.id)).toMatchObject({ state: 'pending', acceptedArtifactId: null })
+    expect(await repo.getKnowledge(DEF_ORG, target.id)).toMatchObject({
+      currentRevision: 2,
+      content: 'manual revision two'
+    })
     expect(await repo.listKnowledgeRevisions(target.id)).toHaveLength(2)
     expect(control.reviews).toEqual([])
   })
@@ -654,7 +658,7 @@ describe('Dream organization suggestion review', () => {
       payload: { decision: 'reject', reason: 'Conflicts with the approved runbook' }
     })
     expect(rejected.statusCode).toBe(503)
-    expect(await owner.deps.repos.organizationKnowledge!.getSuggestion(pending!.id)).toMatchObject({
+    expect(await owner.deps.repos.organizationKnowledge!.getSuggestion(DEF_ORG, pending!.id)).toMatchObject({
       state: 'pending',
       reviewedAt: null,
       reviewedByUserId: null,
@@ -736,7 +740,7 @@ describe('Dream organization suggestion review', () => {
         })
       ).statusCode
     ).toBe(503)
-    expect(await owner.deps.repos.organizationKnowledge!.getSuggestion(pending!.id)).toMatchObject({
+    expect(await owner.deps.repos.organizationKnowledge!.getSuggestion(DEF_ORG, pending!.id)).toMatchObject({
       state: 'pending',
       reviewedAt: null,
       reviewedByUserId: null,

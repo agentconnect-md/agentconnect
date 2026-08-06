@@ -120,7 +120,11 @@ export class AgentSpecAssembler {
    * daemon's entire reconcile roster. */
   async managedSkillsOf(a: Pick<AgentRecord, 'orgId' | 'managedSkills'>): Promise<ManagedSkillEntry[]> {
     if (!this.organizationKnowledge || a.managedSkills.length === 0) return []
-    const rows = await Promise.all(a.managedSkills.map((id) => this.organizationKnowledge!.getManagedSkill(id)))
+    // The read is org-fenced on the agent's own org, so a foreign id resolves
+    // to null and is dropped by the same defensive filter below.
+    const rows = await Promise.all(
+      a.managedSkills.map((id) => this.organizationKnowledge!.getManagedSkill(a.orgId, id))
+    )
     return rows.flatMap((row) =>
       row !== null && row.orgId === a.orgId && row.archivedAt === null
         ? [

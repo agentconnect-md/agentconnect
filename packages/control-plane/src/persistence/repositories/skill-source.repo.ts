@@ -99,8 +99,10 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
     })
   }
 
-  async get(id: string): Promise<SkillSourceRecord | null> {
-    const s = await this.db.skillSource.findUnique({ where: { id } })
+  async get(orgId: OrgId, id: string): Promise<SkillSourceRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const s = await this.db.skillSource.findUnique({ where: { id, orgId } })
     return s ? toRecord(s) : null
   }
 
@@ -120,13 +122,16 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
   }
 
   async setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<SkillSourceRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      // Org fence on the opening read: a cross-org id throws the same P2025 as
+      // a missing row, before the name scope or the membership lock is taken.
       const existing = await tx.skillSource.findUniqueOrThrow({
-        where: { id },
+        where: { id, orgId },
         select: { orgId: true, name: true }
       })
       // Agent enable-list writes authorize against source visibility inside the
@@ -148,13 +153,15 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
     })
   }
 
-  async update(id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord> {
+  async update(orgId: OrgId, id: string, patch: UpdateSkillSourceInput): Promise<SkillSourceRecord> {
     return withAmbientTx(this.db, async (tx) => {
       // The name BEFORE the edit — agents bind by name, so a rename moves which
       // agents resolve through this row and both sets change what they receive.
-      const before = await tx.skillSource.findUnique({ where: { id }, select: { name: true } })
+      // Org-fenced on both statements: a cross-org id reads no `before` name and
+      // throws the same P2025 as a missing row on the update.
+      const before = await tx.skillSource.findUnique({ where: { id, orgId }, select: { name: true } })
       const s = await tx.skillSource.update({
-        where: { id },
+        where: { id, orgId },
         data: {
           ...(patch.name !== undefined ? { name: patch.name } : {}),
           ...(patch.source !== undefined ? { source: patch.source } : {}),
@@ -186,16 +193,23 @@ export class PgSkillSourceRepo implements SkillSourceRepo {
    * enable-list writes). 'referenced' ⇒ the caller answers 409; a row already
    * gone resolves to 'deleted' (the outcome is idempotent).
    */
-  async delete(id: string): Promise<'deleted' | 'referenced'> {
+  async delete(orgId: OrgId, id: string): Promise<'deleted' | 'referenced'> {
     return withAmbientTx(this.db, async (tx) => {
-      const existing = await tx.skillSource.findUnique({ where: { id }, select: { orgId: true, name: true } })
+      // Org fence on the opening read, BEFORE the reference scan: a cross-org id
+      // takes the same early exit as an unknown one, so it can never come back
+      // as 'referenced' — an answer that would disclose the foreign org's agent
+      // enable-lists (org-scoped-data-layer.md §3).
+      const existing = await tx.skillSource.findUnique({
+        where: { id, orgId },
+        select: { orgId: true, name: true }
+      })
       if (!existing) return 'deleted'
       await lockSkillSourceNameScope(tx, existing.orgId, existing.name)
       // Re-read after taking the scope: a concurrent delete may have won it.
-      const row = await tx.skillSource.findUnique({ where: { id }, select: { id: true } })
+      const row = await tx.skillSource.findUnique({ where: { id, orgId }, select: { id: true } })
       if (!row) return 'deleted'
       if (await skillSourceNameReferenced(tx, existing.orgId, existing.name)) return 'referenced'
-      await tx.skillSource.delete({ where: { id } })
+      await tx.skillSource.delete({ where: { id, orgId } })
       return 'deleted'
     })
   }

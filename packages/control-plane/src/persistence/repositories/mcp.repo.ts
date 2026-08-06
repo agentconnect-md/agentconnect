@@ -76,8 +76,10 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     })
   }
 
-  async get(id: string): Promise<McpProviderRecord | null> {
-    const p = await this.db.mcpProvider.findUnique({ where: { id } })
+  async get(orgId: OrgId, id: string): Promise<McpProviderRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const p = await this.db.mcpProvider.findUnique({ where: { id, orgId } })
     return p ? toProviderRecord(p) : null
   }
 
@@ -92,13 +94,16 @@ export class PgMcpProviderRepo implements McpProviderRepo {
   }
 
   async setSharing(
+    orgId: OrgId,
     id: string,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<McpProviderRecord> {
     return withAmbientTx(this.db, async (tx) => {
+      // Org fence on the opening read: a cross-org id throws the same P2025 as
+      // a missing row, before the membership lock or any write.
       const existing = await tx.mcpProvider.findUniqueOrThrow({
-        where: { id },
+        where: { id, orgId },
         select: { orgId: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -108,7 +113,7 @@ export class PgMcpProviderRepo implements McpProviderRepo {
         sharedWith: sharing.sharedWith
       })
       const p = await tx.mcpProvider.update({
-        where: { id },
+        where: { id, orgId },
         data: { visibility: sharing.visibility, sharedWith: memberships.sharedWith ?? [] }
       })
       return toProviderRecord(p)
@@ -120,9 +125,10 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     return rows.map(toProviderRecord)
   }
 
-  async update(id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord> {
+  async update(orgId: OrgId, id: string, patch: UpdateMcpProviderInput): Promise<McpProviderRecord> {
+    // Org-fenced update: a cross-org id throws the same P2025 as a missing row.
     const p = await this.db.mcpProvider.update({
-      where: { id },
+      where: { id, orgId },
       data: {
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.url !== undefined ? { url: patch.url } : {}),
@@ -132,8 +138,9 @@ export class PgMcpProviderRepo implements McpProviderRepo {
     return toProviderRecord(p)
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.mcpProvider.delete({ where: { id } }) // FK cascade drops secret + grants
+  async delete(orgId: OrgId, id: string): Promise<void> {
+    // Org-fenced delete: a cross-org id throws the same P2025 as a missing row.
+    await this.db.mcpProvider.delete({ where: { id, orgId } }) // FK cascade drops secret + grants
   }
 
   // Org providers whose `name` is enabled by some agent placed on this daemon. The

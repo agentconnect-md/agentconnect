@@ -849,8 +849,8 @@ export function agentRoutes(deps: HttpDeps) {
       if (!ids || ids.length === 0) return null
       const repo = deps.repos.organizationKnowledge
       if (!repo) return 'managed skills are unavailable on this control plane'
-      const rows = await Promise.all([...new Set(ids)].map((id) => repo.getManagedSkill(id)))
-      const invalid = rows.some((row) => !row || row.orgId !== orgId || row.archivedAt !== null)
+      const rows = await Promise.all([...new Set(ids)].map((id) => repo.getManagedSkill(orgId, id)))
+      const invalid = rows.some((row) => !row || row.archivedAt !== null)
       return invalid ? 'managed skill not found, archived, or outside this organization' : null
     }
 
