@@ -408,6 +408,9 @@ export function buildTenantAdminServer(
   const logtoManagementEndpoint = localAuthBootstrap.managementEndpoint ?? logtoEndpoint
   const logtoAdminEndpoint =
     localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://admin.agentconnect.localhost:3002'
+  const googleAvailable = [logtoEndpoint, localAuthBootstrap.services.web].every(
+    (value) => new URL(value).protocol === 'https:'
+  )
   const githubFlows = new Map<
     string,
     {
@@ -674,6 +677,7 @@ export function buildTenantAdminServer(
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
       logtoManagementResource: current?.values.logto?.managementResource ?? 'https://default.logto.app/api',
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
+      googleAvailable,
       githubAvailable,
       githubWebhookActive,
       slackAvailable,
@@ -839,6 +843,7 @@ export function buildTenantAdminServer(
   app.post('/api/v1/configure/google', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGoogleBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'Google OAuth client id is required')
+    if (!googleAvailable) return problem(reply, 409, 'Google sign-in requires HTTPS Logto and Web URLs')
     return serializeMutation(async () => {
       const current = await deps.store.getAdmin()
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')

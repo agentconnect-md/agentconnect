@@ -28,6 +28,11 @@ does not display deployment configuration until an administrator has signed
 in. The first signed-in user is assigned the shared `ADMIN` role; sign in once
 more so the refreshed token contains that role.
 
+Use GitHub for the first sign-in on this HTTP `*.agentconnect.localhost`
+topology. Tenant Admin enables Google only when both the Logto and AgentConnect
+Web origins use HTTPS, and enables Slack only when every required public origin
+uses HTTPS.
+
 ## Run from source
 
 Start the database and optional Logto services, then run the server directly:
