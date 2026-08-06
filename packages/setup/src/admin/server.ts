@@ -78,6 +78,7 @@ const PutDeploymentConfigBody = z.strictObject({
 const BootstrapLogtoBody = z.strictObject({
   managementAppId: z.string().trim().min(1).max(200),
   managementAppSecret: z.string().min(1).max(10_000),
+  managementResource: z.string().url().optional(),
   socialProvider: z.enum(['github', 'google', 'slack']).optional()
 })
 
@@ -666,6 +667,7 @@ export function buildTenantAdminServer(
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
+      logtoManagementResource: current?.values.logto?.managementResource ?? 'https://default.logto.app/api',
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
       githubAvailable,
       githubWebhookActive,
@@ -708,6 +710,7 @@ export function buildTenantAdminServer(
         {
           managementAppId: parsed.data.managementAppId,
           managementAppSecret: parsed.data.managementAppSecret,
+          managementResource: parsed.data.managementResource,
           socialProvider: parsed.data.socialProvider
         }
       )
