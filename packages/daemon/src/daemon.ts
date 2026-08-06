@@ -8814,10 +8814,10 @@ export class Daemon {
     const targetScope = this.transportScopeForIntegrationIds(
       req.targetIntegrationId !== undefined ? [req.targetIntegrationId] : undefined
     )
-    // Same conversation AND a different thread: only then did the post FORK it. Where a platform
-    // has no separate thread to open — Discord, and Telegram / Feishu DMs, whose post key IS the
-    // conversation ({@link threadKeyForPost}) — the message simply landed in it, and there is
-    // nothing to warn about.
+    // Same conversation AND a different thread: only then did the post FORK it. Discord guild
+    // roots are materialized as native threads before reaching this comparison. In continuous
+    // DMs whose post key IS the conversation ({@link threadKeyForPost}), the message simply
+    // landed in it and there is nothing to warn about.
     const isForkOf = (platform: string, channel: string, thread: string, scope?: string | null): boolean =>
       platform === req.targetPlatform &&
       channel === req.targetChannel &&
@@ -18691,9 +18691,9 @@ export class Daemon {
           // The posted anchor is both the thread root and the authoritative
           // transcript/read cursor. Keep the synthetic msgId as the durable turn id.
           // §6.8: the SESSION key must follow the platform's own conversation model
-          // (threadKeyForPost — Slack threads off the ts, Telegram replies resolve
-          // to `tg:<root>`, Discord conversations ARE the channel), or the anchored
-          // session and the replies underneath it mint different keys.
+          // (threadKeyForPost — Slack and Discord guild threads key off the post,
+          // Telegram replies resolve to `tg:<root>`, while supported DMs remain
+          // continuous), or the anchored session and its replies mint different keys.
           if (ts) msg = { ...msg, thread: threadKeyForPost(msg.platform, msg.channel, ts, msg.isDm), transcriptTs: ts }
         } catch (err) {
           this.log.warn(

@@ -94,10 +94,13 @@ export function normalizeDiscordMessage(
     platform: 'discord',
     channel,
     ...(message.url ? { threadUrl: message.url } : {}),
-    // For an in-thread message `message.channelId` is the Discord thread channel id.
-    // For a top-level message/DM this temporarily equals `channel`; successful
-    // top-level promotion replaces it with the newly-created thread id.
-    thread: message.channelId,
+    // An actual Discord thread carries its concrete channel id. A DM is one
+    // continuous conversation, so its channel id is also its session thread.
+    // A guild channel root has NO thread yet: using the parent channel id here
+    // would make one root session claim every later message in that channel via
+    // thread affinity. Successful top-level promotion fills this with the newly
+    // created thread id before dispatch.
+    ...(isDm || message.isThread ? { thread: message.channelId } : {}),
     sender: {
       id: message.authorId,
       isBot: message.authorIsBot,
