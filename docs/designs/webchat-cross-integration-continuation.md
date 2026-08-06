@@ -47,17 +47,18 @@ of a fresh webchat-owned channel:
   — the same synthesis the `replyToSession` local branch already performs for
   agent-initiated cross-session delivery (`daemon.ts:8514-8573`) — while
   attaching the webchat stream sink so the browser sees the live reply.
-- The turn and its reply are **mirrored to the originating platform thread**
-  (§5.2), so platform participants watching the Slack thread see the same
-  conversation the console user is having. The session remains the single
-  source of truth; both surfaces are projections
+- The human turn is **mirrored to the originating platform thread before ACP
+  dispatch** (§5.2); the reply follows that session's existing output mode.
+  Platform participants therefore never miss input that changed the agent's
+  context, while `none`/muted output keeps its established meaning. The session
+  remains the single source of truth; both surfaces are projections
   ([product-conventions.md](../product-conventions.md), "the session is the
   complete truth; IM is one projection").
 
 Architecture invariants are preserved: the CP stays off the message hot path
 (it only mints and verifies tokens and stores the adoption tuple), the relay
 persists no content, message bodies remain daemon-local, and rolling
-deployments fail closed behind a daemon capability feature flag.
+deployments fail closed behind daemon and relay capability gates.
 
 ## 2. Goals and non-goals
 
@@ -67,13 +68,14 @@ deployments fail closed behind a daemon capability feature flag.
    integration-origin session gets a live composer; sending a turn resumes the
    **same logical and ACP session** — full context, same worktree, same memory.
 2. The reply streams into the console with the full webchat surface (message,
-   thought, tool-call lanes) and is simultaneously delivered to the origin
-   platform thread under the session's normal output rules.
+   thought, tool-call lanes). Its platform projection follows the origin
+   session's normal output rules; the human input is always mirrored first.
 3. Later platform-side messages continue the same session seamlessly — the
    webchat exchange is ordinary session history, not a fork.
-4. Authorization is CP-checked at mint time and daemon-enforced by construction
-   (the browser can never name an arbitrary session; only the signed verdict
-   carries the target).
+4. Authorization is CP-checked at mint time through a distinct
+   `session.continue` action and daemon-enforced by construction (the browser
+   can never name an arbitrary session; only the signed verdict carries the
+   target).
 5. Mixed-version deployments fail closed: an old daemon or relay simply makes
    the CP refuse to mint, and the console keeps today's read-only view.
 
@@ -156,7 +158,8 @@ sequenceDiagram
     D->>D: resolve session row by target coords,<br/>synthesize turn ON origin coordinates,<br/>dispatch through per-session serial gate
     D-->>R: rd/chat stream (message/thought/tool events)
     R-->>B: live reply stream
-    D->>P: mirror human turn + deliver reply to origin thread<br/>(session's normal output rules)
+    D->>P: mirror human turn before dispatch
+    D->>P: project reply when the session output mode allows it
 ```
 
 The design principle: **continuation is a new ingress for an existing session,
@@ -170,25 +173,34 @@ into the room rather than a second room.
 
 Mint-time check, CP-enforced (`canContinueSession`):
 
-- The caller must pass the existing session **view** policy
-  (`session-visibility.md`) — private sessions (platform DMs, sessions with
-  `ownerIdentity`) only for their owner; org-visible sessions for org members
-  the visibility rules admit.
+- Add `AuthorizationAction.SessionContinue` rather than reusing
+  `SessionView`. Continuation is an organization write: `viewer` is refused;
+  `collaborator`/`owner` may continue a shared session only when the ordinary
+  session-view policy also admits them. This is an explicit AgentConnect
+  operator grant to post through the organization's bot — it does not pretend
+  the caller has a platform identity or is a member of the origin channel.
+- Private sessions remain owner-only: the caller's resolved identity set must
+  match `ownerIdentity`; organization role never widens a private audience.
 - Additionally the caller must be able to `canView` the owning **agent** (same
   gate the webchat mint applies today, `webchat-token.ts:100`).
 
-Rationale: for org-visible channel sessions this is not an escalation — any
-member of the Slack channel can already talk to the agent in that thread, and
-the mirrored delivery (§5.2) keeps the platform audience fully informed. For
-private sessions the owner-only rule matches webchat conversations' existing
-ownership semantics. A stricter owner-only-everywhere variant was considered
-and rejected: it would make the feature useless for the ops use case (continue
-a teammate-triggered channel session from the console), which is the
-motivating scenario.
+Rationale: viewing a transcript is not authority to make the bot speak in an
+external system. The distinct write action keeps read-only organization members
+read-only while preserving the motivating ops case for collaborators and
+owners. Provider membership can tighten this action later without changing the
+route; it is not required or inferred in v1.
+
+The grant covers sending a human turn. A targeted conversation does **not**
+offer runtime-setting operations in v1. `set_model`, `set_effort`,
+`set_permission_mode`, and `set_fast` are rejected even when
+`allowRuntimeChangesInChat` is true. `cancel` is accepted only for a `turnId`
+owned by that same targeted conversation's live webchat stream; it is not a
+session-global stop capability.
 
 ### 5.2 Where the turn and the reply are delivered
 
-**Mirror to the platform (dual delivery), always.**
+**Mirror human input to the platform before dispatch; project the reply under
+the existing output rules.**
 
 - The **human turn** is posted to the origin thread by the bot, attributed:
   `[<user> via console] <text>` (exact rendering per-platform via the existing
@@ -197,7 +209,8 @@ motivating scenario.
 - The **agent reply** is delivered exactly as if the turn had arrived from the
   platform: the session's output mode and splitting rules apply unchanged
   ([product-conventions.md](../product-conventions.md)). The webchat stream is
-  an _additional_ sink, not a replacement.
+  an _additional_ sink, not a replacement. In `none` mode the reply remains in
+  the session and webchat stream but is not posted to the platform.
 
 Rationale: a silent console side-channel into a shared thread would make the
 platform transcript lie — later Slack messages would show the agent "knowing"
@@ -208,9 +221,25 @@ recorded as rejected for shared conversations; it may return later as an
 explicit per-turn option for DM-origin sessions where the console user _is_
 the platform-side human.
 
-Failure mode: if the integration is disconnected at dispatch time, the turn is
-refused at admission (`reason: 'integration_offline'`) rather than accepted
-into a session that cannot mirror — fail closed, no divergent transcript.
+This is not a cross-system transaction. The daemon uses the smallest ordering
+that prevents a hidden console input:
+
+1. Resolve the target, run every synchronous admission check, and reserve one
+   slot under the target session's serial key without starting ACP dispatch.
+2. Post the attributed human turn and await the platform acknowledgement. The
+   stable id `webchat-cont:<chatId>:<turnId>` is reused as the provider
+   idempotency key where the provider supports one.
+3. On post failure, release the reservation and refuse the browser turn with
+   `reason: 'integration_delivery_failed'`. On success, commit the reserved
+   dispatch and return the ordinary accepted ack.
+
+A process crash between steps 2 and 3 can leave an attributed platform input
+without an agent reply, but never lets the agent consume input hidden from the
+platform. Retrying the same `turnId` is idempotent at daemon admission and at
+providers that expose idempotency; providers without it may show a duplicate
+attributed input after retry. This is the same projection-failure boundary as
+ordinary platform output and is explicitly not claimed to be atomic. A
+disconnected integration fails at step 1 as `integration_offline`.
 
 ### 5.3 Placement gate
 
@@ -228,6 +257,11 @@ re-resolves live placement, `registry/webchatVerification.ts:37`).
   `WEBCHAT_SESSION_CONTINUATION_FEATURE = 'webchat_session_continuation_v1'`,
   advertised in the daemon hello capabilities like
   `WEBCHAT_MULTI_AGENT_FEATURE` (`consts.ts:92`).
+- `RcRegister` (`frames/relay-cp.ts`) gains
+  `features: z.array(z.string()).default([])` and relays advertise the same
+  feature when they preserve the session target end to end. The default keeps
+  old relays register-compatible. The CP stores the advertised set on the relay
+  row and live relay channel; an absent list means no continuation support.
 - `RdMsgWebchat` (`frames/relay-daemon.ts:186`) gains an optional
   `target` object:
 
@@ -252,12 +286,22 @@ re-resolves live placement, `registry/webchatVerification.ts:37`).
 
 ### 6.2 `@agentconnect.md/control-plane`
 
-- **Schema:** `WebchatConversation` gains a nullable
-  `targetSessionId String? @db.Text` → `SessionMeta.id` (SetNull), plus an
-  index. A conversation with `targetSessionId` set is a **session-targeted
-  conversation**: it has no roster growth (mid-conversation join returns 409),
-  and its `currentSessionId` fence points at the adopted session from the
-  first milestone.
+- **Schema:** `WebchatConversation` gains an immutable
+  `kind WebchatConversationKind @default(STANDARD)` and a nullable
+  `targetSessionId String? @db.Text` → `SessionMeta.id` (`SetNull`).
+  `SESSION_TARGETED` rows require a non-null target at creation; `STANDARD`
+  rows require null. Add `@@unique([userId, targetSessionId])` rather than a
+  plain target index, so concurrent mints for one user/session converge on one
+  browser conversation (Postgres still permits all standard rows because the
+  target is null). A targeted row has no roster growth (mid-conversation join
+  returns 409), and its `currentSessionId` fence points at the adopted session
+  immediately.
+
+  `kind`, not nullability, is the type discriminator. If the target session is
+  purged, `SetNull` leaves a `SESSION_TARGETED` tombstone that can never become
+  an ordinary webchat conversation. Existing rows backfill/default to
+  `STANDARD`.
+
 - **Mint:** new route in `http/routes/webchat-token.ts`:
 
   ```
@@ -267,23 +311,28 @@ re-resolves live placement, `registry/webchatVerification.ts:37`).
   Flow: load the session (`getOrgViewableSession` semantics), run
   `canContinueSession` (§5.1), require `session.platform` chat-origin (§2.2),
   require the owner agent placed on `session.daemonId`, daemon READY and
-  advertising `webchat_session_continuation_v1`; then find-or-create the
-  caller's session-targeted conversation row for `(userId, targetSessionId)`
-  and mint the standard token (claims unchanged — the target is resolved
+  advertising `webchat_session_continuation_v1`; require every live relay in
+  the public pool to advertise the same feature; then upsert the caller's
+  session-targeted conversation row on the `(userId, targetSessionId)` unique
+  key and mint the standard token (claims unchanged — the target is resolved
   server-side at verify time, never claimed by the browser). Response shape is
   the existing `WebchatTokenDto`. OpenAPI `tags`/`summary`/`description`/
   `operationId` per the repo convention.
 
-- **Verify:** `registry/webchatVerification.ts` — when the conversation row
-  has `targetSessionId`, load the session row, re-check placement
-  (`agent.daemonId === session.daemonId`, READY, feature-capable — otherwise
-  `{ok:false}`), and emit `target` on the verdict with the session's
+- **Verify:** `registry/webchatVerification.ts` first requires the conversation
+  row to exist. The legacy empty-roster fallback remains only for an existing
+  `STANDARD` row. For `SESSION_TARGETED`, require a non-null target and a live
+  session row, then re-check placement (`agent.daemonId === session.daemonId`,
+  READY, feature-capable — otherwise `{ok:false}`). A purge therefore makes
+  every outstanding token fail instead of stripping `target` and silently
+  creating a fresh webchat session. A valid verdict carries the session's
   `platform/channel/thread/tenant-scoped transport` columns.
-- **Milestone upsert:** `session.repo.ts:693` `upsertMilestone` already
-  maintains `currentSessionId` under the conversation-row lock; a
-  session-targeted conversation sets it to the adopted session id (the
-  continuation turn reports milestones on the _origin_ session, so the
-  existing upsert path needs the conversation⇄session join taught to it).
+- **Current-session fence:** set `targetSessionId` and `currentSessionId` to the
+  adopted session atomically when the targeted conversation is created.
+  Continuation milestones are ordinary origin-session milestones and carry no
+  webchat conversation id, so `upsertMilestone` needs no new join or special
+  case. Purging the session nulls both FKs while immutable `kind` keeps the row
+  an unusable targeted tombstone.
 - **Remote MCP:** the delegated-admin machinery keys its current-session fence
   on the conversation row; a session-targeted conversation **does not offer
   remote MCP** in v1 (`remoteMcp` never minted for it) — one less authority
@@ -291,6 +340,12 @@ re-resolves live placement, `registry/webchatVerification.ts:37`).
 
 ### 6.3 `@agentconnect.md/relay`
 
+- `relay-cp-client.ts`: include
+  `features: [webchat_session_continuation_v1]` in `rc/register`. The CP's
+  public-pool contract is that every relay which can pass readiness behind
+  `PUBLIC_RELAY_URL` is represented by a live relay row; mint is refused if
+  the live set is empty or any member lacks the feature. During rollout the
+  feature therefore remains off until the last old relay leaves readiness.
 - `relay-browser-server.ts`: cache `target` from the verdict on the connection
   deps next to `chatId` (`:101-111`).
 - `relay-browser-connection.ts` `sendToParticipant` (`:322-353`): stamp
@@ -351,13 +406,17 @@ target.thread, agentId, target.transportScope)`
   — a continuation turn's transcript rows land on the origin session's
   coordinates via the normal SessionManager path instead.
 - **Mirror the human turn** to the origin thread through the integration
-  client before dispatch (§5.2), rendered per-platform.
+  client after reserving admission and before starting dispatch (§5.2),
+  rendered per-platform. A failed post releases the reservation and NAKs the
+  turn; the stable continuation message id drives provider idempotency where
+  available.
 - **Keying of the aux ops.** The serial/queue preflight key
-  (`daemon.ts:6718`), `set_model`/`set_effort`/`set_permission_mode`/
-  `set_fast` (`key()` at `daemon.ts:10034-10049`), and `cancel` resolve to the
-  **target session key** when the frame carries `target`; the webchat stream
-  replay map stays keyed by `(turnId, agentId)` (`daemon.ts:6798`) and needs
-  no change. Runtime-set ops stay gated by `allowRuntimeChangesInChat`.
+  (`daemon.ts:6718`) resolves to the **target session key** when the frame
+  carries `target`. Stream replay stays keyed by `(turnId, agentId)`
+  (`daemon.ts:6798`). `cancel` reaches the target key only after the stream map
+  proves the requested turn belongs to this targeted conversation;
+  `set_model`/`set_effort`/`set_permission_mode`/`set_fast` are refused for a
+  targeted conversation in v1.
 - **Store:** no schema change. The continuation turn is ordinary session
   history on existing coordinates.
 
@@ -384,15 +443,16 @@ target.thread, agentId, target.transportScope)`
 - The read-only `threadUrl` deep link stays — "continue here" and "open in
   Slack" are complementary.
 - Runtime pills follow the existing `allowRuntimeChangesInChat` gating
-  unchanged; a continuation shows them only when the agent allows it, exactly
-  like an adopted webchat session.
+  for ordinary webchat only. A continuation hides them in v1; this ingress may
+  add human input but does not gain session-global runtime administration.
 
 ### 6.6 Documentation
 
 - [product-conventions.md](../product-conventions.md): extend the webchat
   resume section with the continuation gate and the §5.2 mirroring rule (the
   user-facing invariant: _continuing a platform session from the console
-  always posts both sides to the platform thread_).
+  posts the attributed human input before dispatch; the agent reply keeps the
+  session's existing output mode_).
 - [merged-conversation-view.md](merged-conversation-view.md) §9: replace
   "composer: none — separate product question" with a pointer here; the merged
   Slack view's composer becomes this feature's multi-agent follow-up.
@@ -405,40 +465,50 @@ target.thread, agentId, target.transportScope)`
 Fail-closed gating at three points, all before any content moves:
 
 1. **CP mint** refuses unless the owning daemon's live capabilities include
-   `webchat_session_continuation_v1` (same pattern as the multi-agent gate,
-   `webchat-token.ts:193-206`).
+   `webchat_session_continuation_v1` and every live relay behind the public
+   pool advertises it (same daemon pattern as the multi-agent gate,
+   `webchat-token.ts:193-206`). `rc/register.features` is persisted with each
+   relay heartbeat; an empty pool or one old live member keeps the feature off.
 2. **CP verify** re-checks the same capability + placement, so a daemon
-   downgrade or agent move between mint and dial invalidates the token.
+   downgrade or agent move between mint and dial invalidates the token. It also
+   requires the durable conversation row and, for `SESSION_TARGETED`, its live
+   target; deletion never degrades into standard webchat.
 3. **Daemon** treats `target` on a frame as mandatory-understood: a daemon
    that advertises the feature handles it; one that doesn't never receives it
-   (the CP wouldn't have minted). A stale relay that drops the unknown
-   `target` field would silently create a fresh webchat session — to prevent
-   that, the relay echoes the feature in its CP hello and the CP mint also
-   requires a capable relay pool.
+   (the CP wouldn't have minted). A relay advertises the feature only when it
+   preserves `target`; the all-live-relays mint gate prevents a stale relay
+   from silently creating a fresh webchat session during rolling deployment.
 
-No data migration: the new Prisma column is nullable and absent rows behave
-exactly as today. The console feature-detects per session and keeps the
-read-only view otherwise.
+The Prisma migration adds the enum/discriminator, nullable FK, relay feature
+list, and compound unique constraint. Existing conversations backfill/default
+to `STANDARD`; no content backfill is required. The console feature-detects per
+session and keeps the read-only view otherwise.
 
 ## 8. Testing
 
 - **CP unit (`test:unit`):** `canContinueSession` matrix (private/org
-  visibility × owner/member/outsider), placement + capability refusals,
-  chat-origin-only rule, mint/verify round-trip emitting `target`.
+  visibility × owner/collaborator/viewer/outsider), placement + daemon/relay
+  capability refusals, chat-origin-only rule, mint/verify round-trip emitting
+  `target`; a deleted target and a missing conversation row both invalidate an
+  outstanding token instead of returning a standard verdict.
 - **CP integration (`test:int`):** conversation adoption row lifecycle,
-  milestone upsert maintaining `currentSessionId` for a session-targeted
-  conversation, mid-conversation join returning 409.
+  concurrent mints converging on the `(userId, targetSessionId)` unique row,
+  creation atomically installing `currentSessionId`, purge leaving an unusable
+  `SESSION_TARGETED` tombstone, and mid-conversation join returning 409.
 - **Daemon:** continuation turn into an existing Slack-keyed session resumes
   the same logical + ACP session (no new row); `bindSessionSource` returns
-  `'unchanged'` for the synthesized turn and `'unavailable'`→refusal when the
-  integration is offline; dual delivery (webchat stream events + platform post
-  through the session transport); serial-gate and cancel keyed on the target
-  session; a platform message arriving mid-continuation queues behind it.
+  `'unchanged'` for the synthesized turn; admission reservation is released on
+  offline/failed human-mirror delivery and ACP dispatch has not started; a
+  successful mirror commits one target-keyed turn; agent output mode `none`
+  still streams to webchat without a platform reply; cancel is limited to the
+  conversation's own turn and runtime-set ops are refused; a platform message
+  arriving mid-continuation queues behind the reservation/turn.
 - **Relay:** `target` passthrough verbatim from verdict to `rd/msg`; no
-  context fan-out for a session-targeted conversation.
+  context fan-out for a session-targeted conversation; mixed live relay
+  capabilities keep mint disabled until the pool is homogeneous.
 - **Web:** `isContinuable` gating (feature flag off, agent moved, integration
   offline, hook/dream platforms), composer send path minting the
-  session-target token.
+  session-target token, no runtime pills for targeted conversations.
 
 ## 9. Open questions
 
