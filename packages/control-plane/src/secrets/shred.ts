@@ -27,8 +27,8 @@ import type { PrismaClient } from '../generated/prisma/client.js'
 import { describeVaultError, VaultHttp } from './vault-http.js'
 
 export interface KeyDestroyer {
-  /** Destroy one transit key. Absent ⇒ resolve (already shredded). */
-  destroy(keyName: string): Promise<void>
+  /** Destroy one transit key at its pinned mount. Absent ⇒ resolve (already shredded). */
+  destroy(mount: string, keyName: string): Promise<void>
 }
 
 export interface ShredStats {
@@ -41,7 +41,6 @@ export interface ShredStats {
 export async function shredPendingKeys(
   prisma: PrismaClient,
   destroyer: KeyDestroyer,
-  orgKeyPrefix: string,
   log: (message: string) => void = () => {}
 ): Promise<ShredStats> {
   const pending = await prisma.pendingKeyShred.findMany({ orderBy: { createdAt: 'asc' } })
@@ -49,9 +48,13 @@ export async function shredPendingKeys(
   let failed = 0
 
   for (const row of pending) {
-    const keyName = `${orgKeyPrefix}${row.orgId}`
+    // The target was pinned when the org was deleted. Re-deriving it here would
+    // read whatever configuration is current NOW, so a mount or prefix change
+    // in between would aim at a name that does not exist, be read as "already
+    // gone", clear the row, and leave the real key alive forever.
+    const { mount, keyName } = row
     try {
-      await destroyer.destroy(keyName)
+      await destroyer.destroy(mount, keyName)
     } catch (err) {
       failed += 1
       // The tombstone stays: an operator re-run picks it up. Never echo a body.
@@ -73,20 +76,17 @@ export async function shredPendingKeys(
  * previous run destroyed it and died before clearing the row.
  */
 export class VaultTransitKeyDestroyer implements KeyDestroyer {
-  constructor(
-    private readonly http: VaultHttp,
-    private readonly mount: string
-  ) {}
+  constructor(private readonly http: VaultHttp) {}
 
-  async destroy(keyName: string): Promise<void> {
-    const configured = await this.http.request('POST', `${this.mount}/keys/${keyName}/config`, {
+  async destroy(mount: string, keyName: string): Promise<void> {
+    const configured = await this.http.request('POST', `${mount}/keys/${keyName}/config`, {
       deletion_allowed: true
     })
     if (configured.status === 404) return // already gone
     if (!configured.ok) {
       throw new Error(`vault transit allow-deletion failed: ${await describeVaultError(configured)}`)
     }
-    const deleted = await this.http.request('DELETE', `${this.mount}/keys/${keyName}`)
+    const deleted = await this.http.request('DELETE', `${mount}/keys/${keyName}`)
     if (!deleted.ok && deleted.status !== 404) {
       throw new Error(`vault transit key delete failed: ${await describeVaultError(deleted)}`)
     }

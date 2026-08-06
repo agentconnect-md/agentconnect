@@ -2852,7 +2852,8 @@ export class PgHookRepo implements HookRepo {
    */
   async deleteOrgWithReviewProjectionCleanup(
     orgId: OrgId,
-    at: Date
+    at: Date,
+    shredTarget: { mount: string; keyName: string }
   ): Promise<{
     status: 'deleted' | 'review_cleanup_pending' | 'daemons_present'
     removedHookIds: string[]
@@ -3011,7 +3012,10 @@ export class PgHookRepo implements HookRepo {
         // die". Nothing here destroys a key — the operator-run shred CLI does,
         // under its own identity. `createMany` + skipDuplicates keeps a re-run
         // harmless if a prior attempt already recorded the intent.
-        await tx.pendingKeyShred.createMany({ data: [{ orgId }], skipDuplicates: true })
+        await tx.pendingKeyShred.createMany({
+          data: [{ orgId, mount: shredTarget.mount, keyName: shredTarget.keyName }],
+          skipDuplicates: true
+        })
         await tx.org.delete({ where: { id: orgId } })
         return { status: 'deleted' as const, removedHookIds: hookRows.map((row) => row.id) }
       },

@@ -18,7 +18,15 @@ export class PgOrgRepo implements OrgRepo {
     private readonly db: PrismaLike,
     /** Provision preset agents with each created org (preset-agents.md §3.2);
      *  deploy-time opt-out via PRESET_AGENTS_ENABLED. */
-    private readonly presetAgents = true
+    private readonly presetAgents = true,
+    /** The transit target this deployment would seal THIS org's secrets under,
+     *  pinned onto the shred tombstone at delete time so a later mount/prefix
+     *  change cannot silently redirect the destroy
+     *  (docs/designs/per-org-secret-encryption.md §6). */
+    private readonly shredTarget: (orgId: string) => { mount: string; keyName: string } = (orgId) => ({
+      mount: 'transit',
+      keyName: orgId
+    })
   ) {}
 
   private transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
@@ -142,6 +150,10 @@ export class PgOrgRepo implements OrgRepo {
     // R2a HookRun/projection rows intentionally have no owner FK so ordinary
     // HookDef/Agent deletion can finish GitHub cleanup. Organization deletion
     // therefore needs an explicit durable barrier instead of a raw cascade.
-    return new PgHookRepo(this.db).deleteOrgWithReviewProjectionCleanup(OrgId(orgId), new Date())
+    return new PgHookRepo(this.db).deleteOrgWithReviewProjectionCleanup(
+      OrgId(orgId),
+      new Date(),
+      this.shredTarget(orgId)
+    )
   }
 }

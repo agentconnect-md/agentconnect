@@ -187,10 +187,19 @@ model DeletedIdentityCutoff {
 // ONLY thing that ever deletes a key — the CP process cannot.
 //
 // Deliberately NO foreign key: the row's entire purpose is to outlive the
-// organization it names. The org id is enough to derive the key name, which is
-// why the shredder never has to enumerate keys.
+// organization it names.
+//
+// The RESOLVED target is stored, not just the org id. Deriving the name at
+// drain time would read it from whatever configuration is current then, so
+// rotating VAULT_TRANSIT_MOUNT or the org key prefix between the delete and the
+// drain would aim the destroy at a name that does not exist — which the
+// shredder reads as "already gone", clears the row, and leaves the real key
+// alive forever. Pinning the target at delete time makes the tombstone
+// self-describing and immune to later configuration changes.
 model PendingKeyShred {
-  orgId     String   @id // the deleted org; the key name derives from it
+  orgId     String   @id // the deleted org (identity + idempotency key)
+  mount     String // transit mount as configured when the org was deleted
+  keyName   String // fully resolved key name, e.g. <orgKeyPrefix><orgId>
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_key_shred")

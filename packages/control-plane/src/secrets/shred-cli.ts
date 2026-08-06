@@ -21,61 +21,33 @@
  *   node dist/secrets/shred-cli.js         # in the deployed runtime environment
  *   pnpm secrets:shred                     # locally, via tsx on this same file
  *
- * `SECRET_SHRED_VAULT_TOKEN` / `SECRET_SHRED_VAULT_JWT_ROLE` select this job's
- * own credential; it refuses to fall back to the CP's. Unconfigured deployments
- * simply accumulate unreferenced keys, which is the right default for
- * self-hosted and development installs.
+ * It reads a MINIMAL configuration of its own (`shred-config.ts`) — database,
+ * Vault address, and `SECRET_SHRED_VAULT_TOKEN` / `SECRET_SHRED_VAULT_JWT_ROLE`.
+ * Deliberately not the control plane's `loadConfig()`: that would demand the
+ * CP's `API_KEY_PEPPER` and its Vault credential before this job could start,
+ * handing back the very separation the job exists to create. The transit target
+ * is not configured here at all — each tombstone carries the mount and key name
+ * pinned when its organization was deleted.
+ *
+ * Unconfigured deployments simply accumulate unreferenced keys, which is the
+ * right default for self-hosted and development installs.
  */
-import { loadConfig } from '../config/env.js'
 import { createPrisma, disconnectPrisma } from '../persistence/prisma.js'
-import { effectiveOrgKeyPrefix } from './scope.js'
+import { loadShredConfig, shredVaultAuth } from './shred-config.js'
 import { shredPendingKeys, VaultTransitKeyDestroyer } from './shred.js'
-import { VaultHttp, type VaultAuth } from './vault-http.js'
-
-function shredAuth(env: NodeJS.ProcessEnv, config: { VAULT_JWT_PATH: string; VAULT_AUTH_MOUNT: string }): VaultAuth {
-  const token = env.SECRET_SHRED_VAULT_TOKEN
-  const role = env.SECRET_SHRED_VAULT_JWT_ROLE
-  if (token && role) throw new Error('set exactly one of SECRET_SHRED_VAULT_TOKEN or SECRET_SHRED_VAULT_JWT_ROLE')
-  if (token) return { method: 'token', token }
-  if (role) {
-    return {
-      method: 'jwt',
-      role,
-      jwtPath: env.SECRET_SHRED_VAULT_JWT_PATH ?? config.VAULT_JWT_PATH,
-      authMount: env.SECRET_SHRED_VAULT_AUTH_MOUNT ?? config.VAULT_AUTH_MOUNT
-    }
-  }
-  // Deliberately NOT falling back to the CP's credential: that would put key
-  // deletion back inside the identity this job exists to stay outside of.
-  throw new Error(
-    'no shred credential — set SECRET_SHRED_VAULT_TOKEN or SECRET_SHRED_VAULT_JWT_ROLE for this job’s OWN Vault identity'
-  )
-}
+import { VaultHttp } from './vault-http.js'
 
 async function main(): Promise<void> {
-  const config = loadConfig()
-  if (config.SECRET_CIPHER === 'none') {
-    console.error('secrets:shred: SECRET_CIPHER=none — values are stored in plaintext, so there is no key to destroy.')
-    process.exitCode = 2
-    return
-  }
-  if (!config.VAULT_ADDR) {
-    console.error('secrets:shred: VAULT_ADDR is required.')
-    process.exitCode = 2
-    return
-  }
+  const config = loadShredConfig()
   const http = new VaultHttp({
     addr: config.VAULT_ADDR,
     namespace: config.VAULT_NAMESPACE,
-    auth: shredAuth(process.env, config)
+    auth: shredVaultAuth(config)
   })
   const prisma = createPrisma(config.DATABASE_URL)
   try {
-    const stats = await shredPendingKeys(
-      prisma,
-      new VaultTransitKeyDestroyer(http, config.VAULT_TRANSIT_MOUNT),
-      effectiveOrgKeyPrefix(config.VAULT_TRANSIT_KEY, config.VAULT_TRANSIT_ORG_KEY_PREFIX),
-      (m) => console.log(`secrets:shred: ${m}`)
+    const stats = await shredPendingKeys(prisma, new VaultTransitKeyDestroyer(http), (m) =>
+      console.log(`secrets:shred: ${m}`)
     )
     console.log(`secrets:shred: done — ${stats.shredded} key(s) destroyed, ${stats.failed} left for a re-run`)
     if (stats.failed > 0) process.exitCode = 1

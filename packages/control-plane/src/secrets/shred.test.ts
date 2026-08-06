@@ -10,19 +10,18 @@
 import { describe, it, expect } from 'vitest'
 import type { PrismaClient } from '../generated/prisma/client.js'
 import { shredPendingKeys, VaultTransitKeyDestroyer, type KeyDestroyer } from './shred.js'
+import { loadShredConfig, shredVaultAuth } from './shred-config.js'
 import { VaultHttp } from './vault-http.js'
 
 describe('shredPendingKeys', () => {
-  const PREFIX = 'ac-cp-org-'
-
-  it('destroys <prefix><orgId> for each tombstone and clears only the rows that succeeded', async () => {
+  it('destroys each tombstone’s PINNED target and clears only the rows that succeeded', async () => {
     const destroyed: string[] = []
     const deleted: string[] = []
     const prisma = {
       pendingKeyShred: {
         findMany: async () => [
-          { orgId: 'org-aaa', createdAt: new Date(1) },
-          { orgId: 'org-bbb', createdAt: new Date(2) }
+          { orgId: 'org-aaa', mount: 'transit', keyName: 'ac-cp-org-org-aaa', createdAt: new Date(1) },
+          { orgId: 'org-bbb', mount: 'transit', keyName: 'ac-cp-org-org-bbb', createdAt: new Date(2) }
         ],
         delete: async ({ where }: { where: { orgId: string } }) => {
           deleted.push(where.orgId)
@@ -31,20 +30,41 @@ describe('shredPendingKeys', () => {
       }
     } as unknown as PrismaClient
     const destroyer: KeyDestroyer = {
-      destroy: async (k) => {
-        destroyed.push(k)
+      destroy: async (mount, k) => {
+        destroyed.push(`${mount}/${k}`)
         // The second org's key refuses — its tombstone must survive.
         if (k.endsWith('org-bbb')) throw new Error('vault said no')
       }
     }
 
-    const stats = await shredPendingKeys(prisma, destroyer, PREFIX)
+    const stats = await shredPendingKeys(prisma, destroyer)
 
-    // Names are DERIVED, never discovered: no list call exists to make.
-    expect(destroyed).toEqual(['ac-cp-org-org-aaa', 'ac-cp-org-org-bbb'])
+    // Names come from the ROW, never from current config and never from a list.
+    expect(destroyed).toEqual(['transit/ac-cp-org-org-aaa', 'transit/ac-cp-org-org-bbb'])
     expect(stats).toEqual({ shredded: 1, failed: 1 })
     // Only the successful one lost its tombstone; the failure is retried later.
     expect(deleted).toEqual(['org-aaa'])
+  })
+
+  it('uses the pinned mount even after configuration moved on', async () => {
+    // A tombstone written before a mount rotation must still aim where its key
+    // actually lives; re-deriving would hit a 404 that reads as "already gone"
+    // and would clear the row while the real key survived.
+    const destroyed: string[] = []
+    const prisma = {
+      pendingKeyShred: {
+        findMany: async () => [
+          { orgId: 'org-old', mount: 'transit-legacy', keyName: 'old-prefix-org-old', createdAt: new Date(1) }
+        ],
+        delete: async ({ where }: { where: { orgId: string } }) => where
+      }
+    } as unknown as PrismaClient
+    await shredPendingKeys(prisma, {
+      destroy: async (mount, k) => {
+        destroyed.push(`${mount}/${k}`)
+      }
+    })
+    expect(destroyed).toEqual(['transit-legacy/old-prefix-org-old'])
   })
 
   it('is a no-op with no tombstones', async () => {
@@ -54,7 +74,7 @@ describe('shredPendingKeys', () => {
     const destroy = async (): Promise<void> => {
       throw new Error('must not be called')
     }
-    expect(await shredPendingKeys(prisma, { destroy }, PREFIX)).toEqual({ shredded: 0, failed: 0 })
+    expect(await shredPendingKeys(prisma, { destroy })).toEqual({ shredded: 0, failed: 0 })
   })
 })
 
@@ -83,7 +103,7 @@ describe('VaultTransitKeyDestroyer', () => {
 
   it('allows deletion first, then deletes — a transit key is undeletable until its config says so', async () => {
     const vault = fakeVault(() => ({ status: 204 }))
-    await new VaultTransitKeyDestroyer(http(vault.fetchImpl), 'transit').destroy('ac-cp-org-org-aaa')
+    await new VaultTransitKeyDestroyer(http(vault.fetchImpl)).destroy('transit', 'ac-cp-org-org-aaa')
 
     expect(vault.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       'POST transit/keys/ac-cp-org-org-aaa/config',
@@ -97,7 +117,7 @@ describe('VaultTransitKeyDestroyer', () => {
   it('treats an already-absent key as done — the previous run died between destroy and clear', async () => {
     const vault = fakeVault(() => ({ status: 404, body: { errors: [] } }))
     await expect(
-      new VaultTransitKeyDestroyer(http(vault.fetchImpl), 'transit').destroy('ac-cp-org-gone')
+      new VaultTransitKeyDestroyer(http(vault.fetchImpl)).destroy('transit', 'ac-cp-org-gone')
     ).resolves.toBeUndefined()
     expect(vault.calls).toHaveLength(1) // stopped after the 404 config call
   })
@@ -106,10 +126,46 @@ describe('VaultTransitKeyDestroyer', () => {
     const vault = fakeVault((method) =>
       method === 'DELETE' ? { status: 403, body: { errors: ['permission denied'] } } : { status: 204 }
     )
-    const err = await new VaultTransitKeyDestroyer(http(vault.fetchImpl), 'transit')
-      .destroy('ac-cp-org-org-aaa')
+    const err = await new VaultTransitKeyDestroyer(http(vault.fetchImpl))
+      .destroy('transit', 'ac-cp-org-org-aaa')
       .catch((e: unknown) => e as Error)
     expect((err as Error).message).toContain('403')
     expect((err as Error).message).toContain('permission denied')
+  })
+})
+
+describe('loadShredConfig — the shred workload stands on its OWN configuration', () => {
+  const MINIMAL = {
+    DATABASE_URL: 'postgresql://x:y@localhost:5432/db',
+    VAULT_ADDR: 'https://vault.example.com',
+    SECRET_SHRED_VAULT_TOKEN: 'shred-token'
+  }
+
+  it('parses with NO control-plane variables present — no API_KEY_PEPPER, no CP Vault credential', () => {
+    // The blocker this replaced: loadConfig() demanded both before the job could
+    // start, so a least-privilege workload had to be handed the CP's own
+    // credential (or fake it) — giving back the separation the job exists for.
+    const config = loadShredConfig(MINIMAL as NodeJS.ProcessEnv)
+    expect(config.DATABASE_URL).toBe(MINIMAL.DATABASE_URL)
+    expect(shredVaultAuth(config)).toEqual({ method: 'token', token: 'shred-token' })
+  })
+
+  it('refuses with neither credential, and with both', () => {
+    expect(() =>
+      loadShredConfig({ DATABASE_URL: MINIMAL.DATABASE_URL, VAULT_ADDR: MINIMAL.VAULT_ADDR } as NodeJS.ProcessEnv)
+    ).toThrow(/exactly one/)
+    expect(() => loadShredConfig({ ...MINIMAL, SECRET_SHRED_VAULT_JWT_ROLE: 'r' } as NodeJS.ProcessEnv)).toThrow(
+      /exactly one/
+    )
+  })
+
+  it('never reads the control plane’s VAULT_TOKEN as a fallback', () => {
+    expect(() =>
+      loadShredConfig({
+        DATABASE_URL: MINIMAL.DATABASE_URL,
+        VAULT_ADDR: MINIMAL.VAULT_ADDR,
+        VAULT_TOKEN: 'the-control-planes-token'
+      } as NodeJS.ProcessEnv)
+    ).toThrow(/exactly one/)
   })
 })
