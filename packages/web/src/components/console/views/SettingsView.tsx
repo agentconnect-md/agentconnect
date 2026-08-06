@@ -787,10 +787,6 @@ export default function SettingsView() {
         }}
       />
 
-      {/* Sits with the other organization-wide agent policies. Owner-only, so the
-          card renders nothing at all for collaborators and viewers (§8.1). */}
-      <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
-
       <div className="card mt-[18px]">
         <div className="cardhead">
           <span className="cardtitle">Session access</span>
@@ -799,6 +795,10 @@ export default function SettingsView() {
         <SessionAccessRow provider="github" orgId={activeOrg?.id} isOwner={isOwner} bordered />
         <SessionAccessRow provider="feishu" orgId={activeOrg?.id} isOwner={isOwner} bordered />
       </div>
+
+      {/* Sits with the other organization-wide agent policies. Owner-only, so the
+          card renders nothing at all for collaborators and viewers (§8.1). */}
+      <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
 
       <div className="card mt-[18px]">
         <div className="cardhead justify-between">
