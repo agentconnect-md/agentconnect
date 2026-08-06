@@ -1,7 +1,8 @@
 import type { FastifyRequest } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { canViewSession } from '../authorization/policy.js'
-import type { ExternalScopeRecord } from '../persistence/ports.js'
+import type { ExternalScopeRecord, SessionFilterQuery } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import type { SessionAccessPlugin } from './session-access-plugin.js'
 import { makeSessionAccessResolver } from './session-access.js'
@@ -120,6 +121,101 @@ describe('makeSessionAccessResolver', () => {
     ])
 
     expect(access.degraded).toBe(false)
+    expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
+  })
+})
+
+/**
+ * One console page load asks the same authorization question from `/sessions`,
+ * `/sessions/facets` and `/usage` at once, and each answer used to cost its own
+ * provider sweep — which is what made those three the only reads on the page
+ * measured in seconds.
+ */
+describe('makeSessionAccessResolver snapshot', () => {
+  const query: SessionFilterQuery = { agentIds: [] } as unknown as SessionFilterQuery
+
+  function harness(scopes: readonly ExternalScopeRecord[] = [scope]) {
+    const clock = new FakeClock()
+    const resolve = vi.fn(async (given: readonly ExternalScopeRecord[]) => ({
+      allowedScopes: given.map(({ id, aclRevision }) => ({ id, aclRevision })),
+      degraded: false,
+      accessIssues: []
+    })) satisfies SessionAccessPlugin['resolve']
+    const deps = {
+      repos: {
+        session: {
+          listExternalScopes: vi.fn(async () => scopes),
+          getExternalScopes: vi.fn(async (ids: readonly string[]) => scopes.filter((row) => ids.includes(row.id))),
+          getExternalAccessPolicy: vi.fn(async () => null)
+        }
+      },
+      clock,
+      sessionAccessPlugins: [{ provider: 'feishu', available: true, resolve }]
+    } as unknown as HttpDeps
+    return { deps, clock, resolve }
+  }
+
+  it('collapses the concurrent reads of one page load into a single provider sweep', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    const [first, second, third] = await Promise.all([
+      resolver.forQuery(request(), query),
+      resolver.forQuery(request(), query),
+      resolver.forQuery(request(), query)
+    ])
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+    for (const access of [first, second, third]) {
+      expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
+    }
+  })
+
+  it('shares one snapshot across the route modules that each build a resolver', async () => {
+    const { deps, resolve } = harness()
+
+    await makeSessionAccessResolver(deps).forQuery(request(), query)
+    await makeSessionAccessResolver(deps).forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-asks the providers once the snapshot window closes', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(4_999)
+    await resolver.forQuery(request(), query)
+    expect(resolve).toHaveBeenCalledTimes(1)
+
+    clock.advance(2)
+    await resolver.forQuery(request(), query)
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('keys the snapshot on the scope set, so a re-fenced scope never hits a stale entry', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    // An ACL bump rewrites `aclRevision`; the same conversation is now a
+    // different authorization question and must not reuse the old answer.
+    deps.repos.session.listExternalScopes = vi.fn(async () => [{ ...scope, aclRevision: 3n }]) as never
+    await resolver.forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('never caches a failed sweep as a verdict', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+    resolve.mockRejectedValueOnce(new Error('slack unreachable'))
+
+    await expect(resolver.forQuery(request(), query)).rejects.toThrow('slack unreachable')
+    const access = await resolver.forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(2)
     expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
   })
 })

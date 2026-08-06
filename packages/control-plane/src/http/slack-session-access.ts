@@ -14,6 +14,17 @@ const SCOPE_CONCURRENCY = 6
 const MAX_MEMBER_PAGES = 50
 const PAGE_SIZE = 200
 const TIMEOUT_MS = 5_000
+/**
+ * How long one conversation's audience (public / members-only / gone) is reused.
+ *
+ * Like the repository shape on the GitHub side, the audience is a property of
+ * the CONVERSATION, not of the viewer, while the decision cache below is keyed
+ * per principal — so every viewer paid their own uncached `conversations.info`,
+ * and for a public channel that call is the first half of every check. Reusing
+ * it costs no lease: an `allow` expires this long after the audience was
+ * OBSERVED, not after it was reused (see `putCache`).
+ */
+const AUDIENCE_TTL_MS = 120_000
 
 type Decision = 'allow' | 'deny' | 'unknown'
 type ConversationAudience = 'public' | 'members' | 'gone' | 'unknown'
@@ -22,6 +33,9 @@ type SlackPrincipal = { key: string; teamId: string; userId: string }
 
 type CachedDecision = { decision: Decision; expiresAt: number }
 type CachedWorkspaceAccess = { access: WorkspaceAccess; expiresAt: number }
+type ObservedAudience = { audience: ConversationAudience; fetchedAt: number }
+/** A verdict plus the age of the oldest evidence it rests on. */
+type CheckedAccess = { decision: Decision; evidenceAt: number }
 
 // `ok: false` covers two very different answers, and conflating them is what
 // made an ordinary event — a private channel deleted, or the bot removed from
@@ -73,6 +87,10 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
   readonly provider = 'slack'
   private readonly cache = new Map<string, CachedDecision>()
   private readonly workspaceAccessCache = new Map<string, CachedWorkspaceAccess>()
+  /** (bot, credential revision, channel) → audience. Shared across viewers,
+   *  unlike `cache` and `workspaceAccessCache`, which are per principal. */
+  private readonly audiences = new Map<string, ObservedAudience>()
+  private readonly audiencesInFlight = new Map<string, Promise<ObservedAudience>>()
 
   constructor(
     private readonly deps: {
@@ -174,8 +192,9 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       const cached = this.cache.get(key)
       let decision = cached && cached.expiresAt > this.deps.clock.now() ? cached.decision : undefined
       if (!decision) {
-        decision = await this.checkAccess(scope, principal, bot.id, bot.credentialRevision, signal)
-        this.putCache(key, decision)
+        const checked = await this.checkAccess(scope, principal, bot.id, bot.credentialRevision, signal)
+        decision = checked.decision
+        this.putCache(key, decision, checked.evidenceAt)
       }
       if (decision === 'allow') return 'allow'
       if (decision === 'unknown') sawUnknown = true
@@ -189,16 +208,23 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     botId: string,
     credentialRevision: number,
     signal: AbortSignal
-  ): Promise<Decision> {
+  ): Promise<CheckedAccess> {
+    const now = this.deps.clock.now()
     const secret = await this.deps.botSecrets.get(scope.orgId, BotId(botId)).catch(() => null)
-    if (!secret?.botToken) return 'unknown'
+    if (!secret?.botToken) return { decision: 'unknown', evidenceAt: now }
     try {
-      const audience = await this.conversationAudience(scope.resourceKey, secret.botToken, signal)
+      const observed = await this.audienceOf(
+        [botId, credentialRevision, scope.resourceKey].join(':'),
+        scope.resourceKey,
+        secret.botToken,
+        signal
+      )
+      const evidenceAt = observed.fetchedAt
       // The conversation is gone (or the bot is no longer in it): a settled fact
       // about the audience, not an unavailable check.
-      if (audience === 'gone') return 'deny'
-      if (audience === 'unknown') return 'unknown'
-      if (audience === 'public') {
+      if (observed.audience === 'gone') return { decision: 'deny', evidenceAt }
+      if (observed.audience === 'unknown') return { decision: 'unknown', evidenceAt }
+      if (observed.audience === 'public') {
         const access = await this.workspaceAccess(
           scope.realmKey,
           principal,
@@ -206,20 +232,51 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
           secret.botToken,
           signal
         )
-        if (access !== 'membership') return access
-        return this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
+        if (access !== 'membership') return { decision: access, evidenceAt }
+        const member = await this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
+        return { decision: member, evidenceAt }
       }
 
       const member = await this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
-      if (member !== 'allow' || principal.teamId === scope.realmKey) return member
+      if (member !== 'allow' || principal.teamId === scope.realmKey) return { decision: member, evidenceAt }
 
       // Slack Connect can return a member from another workspace. Verify the
       // identity's home team instead of treating the installing team as proof.
       const access = await this.workspaceAccess(scope.realmKey, principal, credentialRevision, secret.botToken, signal)
-      return access === 'unknown' || access === 'deny' ? access : 'allow'
+      return { decision: access === 'unknown' || access === 'deny' ? access : 'allow', evidenceAt }
     } catch {
-      return 'unknown'
+      return { decision: 'unknown', evidenceAt: now }
     }
+  }
+
+  /** Cached + deduped conversation audience. */
+  private audienceOf(key: string, channel: string, token: string, signal: AbortSignal): Promise<ObservedAudience> {
+    const cached = this.audiences.get(key)
+    if (cached && this.deps.clock.now() - cached.fetchedAt < AUDIENCE_TTL_MS) return Promise.resolve(cached)
+    let pending = this.audiencesInFlight.get(key)
+    if (!pending) {
+      const tracked: Promise<ObservedAudience> = this.conversationAudience(channel, token, signal)
+        .then((audience) => {
+          const observed: ObservedAudience = { audience, fetchedAt: this.deps.clock.now() }
+          // `unknown` is the CHECK failing, not an answer about the audience.
+          // Caching it would pin a transient Slack blip for two minutes; it
+          // stays a per-request verdict, as it is everywhere else here.
+          if (audience !== 'unknown') {
+            if (this.audiences.size >= MAX_CACHE_ENTRIES) {
+              const oldest = this.audiences.keys().next().value as string | undefined
+              if (oldest !== undefined) this.audiences.delete(oldest)
+            }
+            this.audiences.set(key, observed)
+          }
+          return observed
+        })
+        .finally(() => {
+          if (this.audiencesInFlight.get(key) === tracked) this.audiencesInFlight.delete(key)
+        })
+      pending = tracked
+      this.audiencesInFlight.set(key, pending)
+    }
+    return pending
   }
 
   private async conversationAudience(
@@ -343,13 +400,19 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     return (await response.json()) as T
   }
 
-  private putCache(key: string, decision: Decision): void {
+  private putCache(key: string, decision: Decision, evidenceAt: number): void {
     if (this.cache.size >= MAX_CACHE_ENTRIES) {
       const oldest = this.cache.keys().next().value as string | undefined
       if (oldest) this.cache.delete(oldest)
     }
     const ttl = decision === 'allow' ? ALLOW_TTL_MS : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    this.cache.set(key, { decision, expiresAt: this.deps.clock.now() + ttl })
+    const now = this.deps.clock.now()
+    // An `allow` is leased from the EVIDENCE it rests on, so reusing a cached
+    // audience can never stretch the window a fresh `conversations.info` would
+    // have granted. `deny`/`unknown` keep the wall-clock lease: reused evidence
+    // can only ever narrow access, never widen it.
+    const from = decision === 'allow' ? Math.min(evidenceAt, now) : now
+    this.cache.set(key, { decision, expiresAt: from + ttl })
   }
 
   private putWorkspaceAccess(key: string, access: WorkspaceAccess): void {

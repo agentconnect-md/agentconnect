@@ -294,4 +294,51 @@ describe('SlackSessionAccessService', () => {
       degraded: true
     })
   })
+
+  it('reads a conversation audience once for every viewer that asks about it', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) return json({ ok: true, user: { team_id: 'T_INSTALL' } })
+      return json({ ok: false, error: 'unexpected' })
+    })
+    const resolver = service(fetchImpl)
+
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))
+
+    // Whether the channel is public is not a question about the viewer, so the
+    // second one rides the first one's answer — only `users.info`, which IS per
+    // person, is asked again.
+    const info = fetchImpl.mock.calls.filter(([url]) => String(url).includes('conversations.info'))
+    const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+    expect(info).toHaveLength(1)
+    expect(users).toHaveLength(2)
+  })
+
+  it('keeps an unanswerable audience a per-request verdict rather than caching it', async () => {
+    let attempt = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        attempt += 1
+        // A blip, then a real answer — the blip must not pin the channel.
+        return attempt === 1
+          ? json({ ok: false, error: 'ratelimited' })
+          : json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) return json({ ok: true, user: { team_id: 'T_INSTALL' } })
+      return json({ ok: false, error: 'unexpected' })
+    })
+    const resolver = service(fetchImpl)
+
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))).resolves.toMatchObject({
+      allowedScopes: [],
+      degraded: true
+    })
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))).resolves.toMatchObject({
+      degraded: false
+    })
+    expect(attempt).toBe(2)
+  })
 })
