@@ -74,7 +74,16 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
   z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
   z.object({ kind: z.literal('tool_call'), toolCallId: z.string(), title: z.string(), status: z.string() }),
-  z.object({ kind: z.literal('tool_update'), toolCallId: z.string(), status: z.string() }),
+  // `title` is set only when this update refines the initial `tool_call` title (e.g.
+  // Codex web_search names itself generically first, then retitles with the actual
+  // query once known) — mirrors the ACP field so the live view can retitle in place
+  // the same way the persisted transcript already does (TranscriptRecorder.titles).
+  z.object({
+    kind: z.literal('tool_update'),
+    toolCallId: z.string(),
+    status: z.string(),
+    title: z.string().optional()
+  }),
   // The runtime's auto-generated session title (from ACP session_info_update). The
   // daemon persists it (session/list surfaces it on the persisted row); this streams
   // the same value so the LIVE playground session renames itself in place, matching

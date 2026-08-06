@@ -864,6 +864,17 @@ export interface SessionStep {
   /** Client-side timestamp for live playground/webchat steps. Persisted transcripts
    *  carry their own message `ts`; this only keeps in-memory live stats moving. */
   observedAtMs?: number
+  /** Live-webchat tool-call identity + latest ACP status, mirrored straight off the
+   *  WebchatEvent. The live wire frame never carries input/output/content (kept off
+   *  the hot path — see protocol webchat.ts) but the daemon persists the full body
+   *  unconditionally as it streams, so this id is enough to pull the same detail a
+   *  history view gets, via the existing `fetchToolBody` read. */
+  toolCallId?: string
+  toolStatus?: string
+  /** The daemon session that recorded this tool call — set on live multi-agent
+   *  steps where the owning participant's session differs from the row's
+   *  primary `realSessionId`; the on-demand tool-body read targets it. */
+  toolSessionId?: string
 }
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.

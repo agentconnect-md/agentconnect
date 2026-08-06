@@ -505,7 +505,27 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
-    ...(platform ? { platform } : {})
+    ...(platform ? { platform } : {}),
+    // The live wire frame carries no body (kept off the hot path); attach just
+    // enough of a SessionMessageDto shape for ToolBodyDetail to pull the same
+    // full body a history row shows, via `fetchToolBody` (no inline preview yet,
+    // so it fetches on open rather than rendering one immediately).
+    ...(stp.kind === 'tool' && stp.toolCallId
+      ? {
+          msg: {
+            seq: 0,
+            sender: '',
+            ts: '',
+            kind: 'tool',
+            text: stp.text,
+            toolCallId: stp.toolCallId,
+            toolStatus: stp.toolStatus
+          } satisfies SessionMessageDto,
+          // A member participant's call lives in ITS daemon session, not the
+          // row's primary — carry it so StepExtras targets the right session.
+          ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
+        }
+      : {})
   }
 }
 
@@ -598,9 +618,12 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  // A same-seq live update replaces `msg`; associate the fetched body with the
-  // exact source row so an older full response can never mask the new preview.
-  const fullBody = full?.source === msg ? full.body : null
+  // A same-seq live update replaces `msg` with a fresher preview; fence the fetched
+  // full body against the (toolCallId, preview) it was fetched under so an older
+  // full response can never mask the new preview. Compared by CONTENT, not object
+  // identity: a live-streamed step rebuilds its `msg` on every render (fmtStep), so
+  // an identity fence would discard the fetch the moment the next chunk repaints.
+  const fullBody = full && full.source.toolCallId === msg.toolCallId && full.source.body === msg.body ? full.body : null
   const bodyStr = fullBody ?? msg.body ?? null
   let body: ToolBody | null = null
   let parseErr = false
@@ -636,16 +659,49 @@ function ToolBodyDetail({ msg, sessionId }: { msg: SessionMessageDto; sessionId:
 
   const kb = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`)
 
+  // Live-only refresh: a fetched body is a point-in-time snapshot of a still-running
+  // call (rawOutput lands only on completion). The streamed tool_update flips
+  // `msg.toolStatus`; use that as the refetch signal so an open panel fills in the
+  // OUTPUT without waiting for the turn-end transcript reconciliation. Persisted
+  // rows (msg.body present) keep their own preview lifecycle and never refetch here.
+  const liveStale =
+    open &&
+    !loading &&
+    msg.body == null &&
+    full != null &&
+    full.source.toolCallId === msg.toolCallId &&
+    full.source.toolStatus !== msg.toolStatus
+  useEffect(() => {
+    if (liveStale) loadFull()
+    // loadFull is redefined per render (plain closure); liveStale already gates the
+    // refetch to one flip per status change, so it is deliberately the only dep.
+  }, [liveStale])
+
+  // A live step carries no inline preview at all (the hot-path frame never ships
+  // one) — opening it has nothing to show yet, so fetch the full body the same
+  // way the "View full" affordance does for a truncated persisted preview.
+  const toggle = () => {
+    if (!open && bodyStr == null) {
+      loadFull()
+      return
+    }
+    setOpen((o) => !o)
+  }
+
   return (
     <div className="mt-[6px]">
       <div className="flex flex-wrap items-center gap-2">
         <button
-          onClick={() => setOpen((o) => !o)}
+          onClick={toggle}
+          disabled={loading}
           className="inline-flex cursor-pointer items-center gap-[5px] border-0 bg-transparent p-0 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)"
         >
-          <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />
+          {loading ? <Spinner size={13} /> : <Icon name={open ? 'chevron-down' : 'chevron-right'} size={13} />}
           {open ? 'Hide detail' : 'View detail'}
         </button>
+        {err && bodyStr == null && (
+          <span className="font-sans text-[10.5px] font-medium leading-normal text-(--red-600)">{err}</span>
+        )}
         {kind && <span className="scope text-[10.5px]">{kind}</span>}
         {badge && (
           <span className="badge text-[10px]" style={{ background: badge.bg, color: badge.text }}>
@@ -1691,6 +1747,13 @@ export default function SessionDetailView() {
   // separate on-demand pull from the owning daemon. Playground + mock sessions
   // carry their own steps, so they never fetch.
   const sid = session?.id
+  // The CP-resolvable id: a playground/webchat session starts under its synthetic
+  // local id (`pg_...`) and only gets a `realSessionId` once the daemon creates the
+  // real ACP session — `fetchToolBody` targets the CP, which never knows the
+  // synthetic id, so a live tool row's full-body fetch must key off this instead of
+  // `sid` (matches the `session.realSessionId ?? session.id` idiom used elsewhere
+  // in this file for the same daemon-proxied reads).
+  const toolSid = session?.realSessionId ?? sid
   const aid = session?.agentId
   const wantTranscript = !!session && session.platform !== 'playground' && session.steps.length === 0 && !!aid
   // This component now survives id changes. Do not paint session A's transcript
@@ -3346,7 +3409,7 @@ export default function SessionDetailView() {
                                     <MessageText text={st.text} platform={st.platform} />
                                   </div>
                                 )}
-                                <StepExtras step={st} sessionId={sid} />
+                                <StepExtras step={st} sessionId={toolSid} />
                               </div>
                             ))}
                             {workSteps.length > 0 && (
@@ -3366,9 +3429,21 @@ export default function SessionDetailView() {
                                 </button>
                                 {openWork && (
                                   <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                    {workSteps.map((st, si) => (
+                                    {/* While the turn is still streaming, the panel is a
+                                    progress ticker: only the LATEST work step shows (the
+                                    list would grow unboundedly mid-run). The full list
+                                    appears once the turn completes. */}
+                                    {(streaming ? workSteps.slice(-1) : workSteps).map((st, si) => (
                                       <div
-                                        key={si}
+                                        // Keyed by tool identity where there is one, so the
+                                        // key survives the streaming→completed transition
+                                        // (the ticker's slice(-1) renders index 0, the full
+                                        // list the original index — an index-bearing key
+                                        // would remount ToolBodyDetail at turn end and slam
+                                        // an expanded panel shut). Steps without a tool id
+                                        // (THINK rows) fall back to the index; within one
+                                        // agent's turn a toolCallId appears once.
+                                        key={st.msg?.toolCallId ?? `i:${si}`}
                                         className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
                                           si > 0 ? 'border-t border-(--border-subtle)' : ''
                                         }`}
@@ -3396,7 +3471,7 @@ export default function SessionDetailView() {
                                               <MessageText text={st.text} platform={st.platform} />
                                             </div>
                                           )}
-                                          <StepExtras step={st} sessionId={sid} />
+                                          <StepExtras step={st} sessionId={toolSid} />
                                         </div>
                                       </div>
                                     ))}

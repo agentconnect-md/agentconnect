@@ -198,7 +198,7 @@ type WebchatEvent =
   | { kind: 'message'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_call'; toolCallId: string; title: string; status: string }
-  | { kind: 'tool_update'; toolCallId: string; status: string }
+  | { kind: 'tool_update'; toolCallId: string; status: string; title?: string }
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
 
@@ -295,6 +295,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // same tick openPlayground staged the session — so state-based lookups there
   // would read a stale snapshot and stamp every step without a name.
   const rosterNames = useRef<Map<string, Map<string, string>>>(new Map())
+  // Per-participant daemon session ids (conversation id → agentId → acp sessionId),
+  // from each lane's status frames. The session row's `realSessionId` only tracks
+  // the PRIMARY participant (applyStatus fences the rest out), but every member
+  // owns its own daemon session — a member's tool step must carry ITS session so
+  // the on-demand tool-body read targets the daemon that recorded the call.
+  const agentSessionIds = useRef<Map<string, Map<string, string>>>(new Map())
   // One ordering cursor per stream LANE — a multi-agent turn runs one lane per
   // targeted participant (webchat-multi-agents.md §5.3); keys from lib/webchat-lanes.ts.
   const streamCursors = useRef<Map<string, OrderedWebchatCursor<WebchatOutput, WebchatDone>>>(new Map())
@@ -489,12 +495,47 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           return [...steps, lane({ kind: 'plan', text: ev.text })]
         }
         if (ev.kind === 'tool_call') {
-          return [...steps, lane({ kind: 'tool', text: ev.title || 'tool call' })]
+          // The owning participant's daemon session (recorded from its status
+          // lane) — the tool-body read must target the session that logged this
+          // call, not the conversation's primary. Falls back through the sole/
+          // primary lane key; absent until that lane's first status frame lands,
+          // in which case the detail view falls back to the row's realSessionId.
+          const toolSessionId =
+            agentSessionIds.current.get(id)?.get(agentId ?? '') ?? agentSessionIds.current.get(id)?.get('')
+          return [
+            ...steps,
+            lane({
+              kind: 'tool',
+              text: ev.title || 'tool call',
+              toolCallId: ev.toolCallId,
+              toolStatus: ev.status,
+              ...(toolSessionId ? { toolSessionId } : {})
+            })
+          ]
         }
-        if (ev.kind === 'tool_update' && last?.kind === 'tool') {
-          return replaceAt(laneIndex, { ...last, observedAtMs })
+        if (ev.kind === 'tool_update') {
+          // Address the update to ITS call, not the lane tail: ACP allows parallel
+          // tool calls, so the most recent tool step may belong to a different call.
+          // Same fences as the lane scan above — never cross a user message, a
+          // foreign turn, or the supersession boundary.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            if (step.kind === 'msg' && step.agentId === undefined) break
+            if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.turnId !== turnId) break
+            if (step.boundary) break
+            if (step.kind === 'tool' && step.toolCallId === ev.toolCallId) {
+              return replaceAt(i, {
+                ...step,
+                toolStatus: ev.status,
+                ...(ev.title ? { text: ev.title } : {}),
+                observedAtMs
+              })
+            }
+          }
+          return steps // no matching call in this lane (e.g. suppressed tool_call)
         }
-        return steps // tool_update: status-only, nothing to render for now
+        return steps
       })
     },
     [mutateSteps, participantName]
@@ -506,6 +547,15 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  model or the last token total. Playground sessions only (adopted webchat rows carry
    *  their own persisted headline). */
   const applyStatus = useCallback((id: string, st: WebchatStatus, agentId?: string): void => {
+    // Record every participant's session id BEFORE the primary fence below —
+    // member lanes never reach the session-row merge, but their tool steps need
+    // the owning session for the live tool-body read (keyed '' for the sole/
+    // primary lane, whose frames may omit agentId).
+    if (st.sessionId) {
+      const perAgent = agentSessionIds.current.get(id) ?? new Map<string, string>()
+      perAgent.set(agentId ?? '', st.sessionId)
+      agentSessionIds.current.set(id, perAgent)
+    }
     setPgSessions((cur) => {
       const s = cur[id]
       if (!s) return cur
