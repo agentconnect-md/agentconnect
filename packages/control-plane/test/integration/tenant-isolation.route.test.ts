@@ -101,6 +101,28 @@ describe('tenant isolation — Agent over the REST surface', () => {
     await foreignRowUnmodified()
   })
 
+  it('a PATCH losing the delete race still reads as 404 (AgentMissing → not-found mapping)', async () => {
+    const app = build()
+    // Delete the row right after the route's SECOND read — the post-lease
+    // optimistic-CAS refresh — returns it. An earlier delete is absorbed by the
+    // route's own "agent changed" 409 guard; this interleaving is the one only
+    // the repo-level update fence can refuse, and it must surface as 404.
+    const repo = app.deps.repos.agent
+    const realGet = repo.get.bind(repo)
+    let reads = 0
+    repo.get = async (orgId, id) => {
+      const row = await realGet(orgId, id)
+      if (row?.id === ownAgentId && ++reads === 2) await prisma.agent.delete({ where: { id: ownAgentId } })
+      return row
+    }
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${ownAgentId}`,
+      payload: { description: 'race' }
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
   it('the agents list never contains a foreign row', async () => {
     const app = build()
     const res = await app.app.inject({ method: 'GET', url: `${ORG}/agents` })
