@@ -775,7 +775,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   </button>
                 )}
                 <div className="flex-none">
-                  <NotificationBell placement="top-left" />
+                  <NotificationBell variant="rail" />
                 </div>
                 {/* Same 22px box as the brand row's search button, and the same 2px
               inset from the rail's edge — the two sit on one vertical centre line. */}
@@ -932,7 +932,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
                       <Icon name="search" size={20} />
                     </button>
-                    <NotificationBell />
+                    <NotificationBell variant="mobile" />
                     <button
                       className="mappbtn"
                       aria-label="Toggle theme"
