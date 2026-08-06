@@ -1,6 +1,13 @@
-import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './frames/relay-cp.js'
+// This module is the web console's only protocol entry point (the
+// `./slack-app-manifest` export) and MUST stay self-contained: Turbopack cannot
+// resolve the NodeNext `.js` → `.ts` specifiers our relative imports use
+// (vercel/next.js#69426), so a relative import here breaks `next dev`. Define
+// shared constants here and re-export them from frames/ instead.
 
-export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID }
+/** App-level Slack message shortcut for opening the controls of the session that
+ * owns the selected message's conversation. Direct apps receive it over Socket
+ * Mode; shared apps receive the same callback through the relay HTTP edge. */
+export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 
 /** Public platform profile copy. Never derive this from an Agent description. */
 export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'

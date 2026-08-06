@@ -420,10 +420,10 @@ export const SHARED_CONFIG_ACTION_ID = 'ac_shared_channel_config'
  *  use that id for the legacy 👤 button + modal flow. */
 export const SHARED_AGENT_SELECT_ACTION_ID = 'ac_shared_agent_select'
 
-/** App-level Slack message shortcut for opening the controls of the session that
- * owns the selected message's conversation. Direct apps receive it over Socket
- * Mode; shared apps receive the same callback through the relay HTTP edge. */
-export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
+// Defined in slack-app-manifest.ts (the web console's Turbopack-safe entry
+// point, which must stay free of relative imports); re-exported here so root
+// consumers keep importing it alongside the other Slack interaction ids.
+export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '../slack-app-manifest.js'
 
 /** Slack action ids shared by the daemon-owned status modal and the relay-owned
  *  HTTP interaction edge. Dedicated bots handle them in the daemon directly; shared bots
