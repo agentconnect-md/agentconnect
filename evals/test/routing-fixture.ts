@@ -19,6 +19,8 @@
  * (evaluation events), delivered/attempted world outbound effects, and thread
  * coordinates — not mechanism internals.
  */
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '../../packages/message/src/index.js'
 import type {
   DeliveryAdmission,
@@ -33,10 +35,30 @@ import {
   type DaemonMcpBinding,
   type DaemonToolCallResult
 } from '../games/mcp-client.js'
-import { prepareScriptedSubject } from '../games/subject.js'
+import { type GameSubjectSpec, prepareGameSubject, preflightRealSubject } from '../games/subject.js'
 import { compileTopology } from '../games/topology.js'
 import type { CompiledRoom, CompiledTopology } from '../games/types.js'
 import { ArenaWorld } from '../games/world.js'
+
+/** Scripted turns settle in milliseconds; a real ACP runtime does not. */
+const DEFAULT_SETTLE_TIMEOUT_MS = 30_000
+
+/**
+ * Rewrite the prepared agents' `description` — the agent's own standing prompt
+ * seed, which the daemon renders into the `# Agent` block. This is the only
+ * per-seat lever a REAL-subject scenario gets: the model is never scripted, so
+ * a fixed counterpart persona has to be configuration, exactly as an operator
+ * would write it in `agent.json`.
+ */
+function applyAgentDescriptions(root: string, topology: CompiledTopology, descriptions: Record<string, string>): void {
+  for (const [alias, description] of Object.entries(descriptions)) {
+    const agent = topology.agents.find((candidate) => candidate.alias === alias)
+    if (!agent) throw new Error(`description for unknown agent alias "${alias}"`)
+    const agentPath = join(root, 'agents', agent.agentId, 'agent.json')
+    const config = JSON.parse(readFileSync(agentPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(agentPath, `${JSON.stringify({ ...config, description }, null, 2)}\n`, { mode: 0o600 })
+  }
+}
 
 export interface RoutingScriptContext {
   sessionId: string
@@ -53,14 +75,40 @@ export type RoutingScript = (context: RoutingScriptContext) => Promise<void> | v
 
 export interface RoutingFixtureOptions {
   agents: string[]
+  /** Per-alias scripted behavior. Ignored entirely for a `real` subject: the
+   *  runtime is the model, and nothing may script it. */
   scripts: Record<string, RoutingScript>
   seed?: number
+  /** Who plays (games/subject.ts §8.1). Defaults to the credential-free
+   *  scripted hosts every gate case uses. */
+  subject?: GameSubjectSpec
+  /** Per-alias `description` override written onto the prepared agent.json.
+   *  This is the agent's own standing prompt seed (it becomes part of the
+   *  `# Agent` block), so it is the seam a real-subject scenario uses to give
+   *  one seat a fixed persona without scripting its model. */
+  agentDescriptions?: Record<string, string>
+  /** Idleness budget for {@link RoutingFixture.settle}. Real runtimes need far
+   *  more than the scripted default. */
+  settleTimeoutMs?: number
+}
+
+/** One model turn, reassembled from the ordered evaluation events: what was
+ *  delivered into it, which tools it called IN THAT TURN, and what it said. */
+export interface RoutingTurnTrace {
+  turnId?: string
+  agentAlias: string
+  sessionId?: string
+  input: string
+  toolCalls: { id?: string; name: string; arguments: unknown }[]
+  output: string
 }
 
 export class RoutingFixture {
   readonly topology: CompiledTopology
   readonly world: ArenaWorld
   readonly room: CompiledRoom
+  /** Template values that must never reach an artifact this fixture's caller writes. */
+  readonly secrets: readonly string[]
   private readonly harness: DaemonEvaluationHarness
   private readonly subjectCleanup: () => void
   private readonly echoHandles: DeliveryHandle[] = []
@@ -74,18 +122,23 @@ export class RoutingFixture {
   /** Thread each delivered message lives in (root posts anchor themselves). */
   private readonly threadByMessageId = new Map<string, string>()
   private readonly aliasByAgentId = new Map<string, string>()
+  private readonly settleTimeoutMs: number
 
   private constructor(
     topology: CompiledTopology,
     world: ArenaWorld,
     harness: DaemonEvaluationHarness,
-    subjectCleanup: () => void
+    subjectCleanup: () => void,
+    settleTimeoutMs: number,
+    secrets: readonly string[]
   ) {
     this.topology = topology
     this.world = world
     this.room = topology.rooms[0]!
     this.harness = harness
     this.subjectCleanup = subjectCleanup
+    this.settleTimeoutMs = settleTimeoutMs
+    this.secrets = secrets
     for (const agent of topology.agents) this.aliasByAgentId.set(agent.agentId, agent.alias)
   }
 
@@ -100,65 +153,83 @@ export class RoutingFixture {
     const world = new ArenaWorld(topology)
     // Production shared-channel convention: mention-gated, never `auto`.
     const environment = world.buildEnvironment({ bindMatch: 'mention' })
-    const subject = prepareScriptedSubject(topology)
+    const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
+    const subject = prepareGameSubject(topology, subjectSpec)
+    if (options.agentDescriptions) {
+      applyAgentDescriptions(subject.root, topology, options.agentDescriptions)
+    }
+    // A real runtime reaches `sendMessage` through the `mcp-bridge` SUBPROCESS,
+    // and an unlaunchable runtime stalls silently. Both are refused up front.
+    if (subjectSpec.kind === 'real') await preflightRealSubject(subject.root)
     const scriptByAgentId = new Map<string, RoutingScript>()
     for (const [alias, script] of Object.entries(options.scripts)) {
       const agent = topology.agents.find((candidate) => candidate.alias === alias)
       if (!agent) throw new Error(`script for unknown agent alias "${alias}"`)
       scriptByAgentId.set(agent.agentId, script)
     }
+    // A real subject gets NO hostFactory: the daemon spawns the template's own
+    // ACP runtimes, exactly as it does in production.
+    const scriptedHostFactory = (agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => {
+      let sessions = 0
+      const bindings = new Map<string, DaemonMcpBinding>()
+      return {
+        start: async () => {},
+        newSession: async (_cwd: string, mcpServers?: unknown) => {
+          const sessionId = `routing-${agent.id.slice(0, 8)}-${(sessions += 1)}`
+          const binding = daemonMcpBinding(mcpServers)
+          if (binding) bindings.set(sessionId, binding)
+          return sessionId
+        },
+        hasSession: () => true,
+        modelOptions: () => ({ current: 'scripted-routing', models: ['scripted-routing'] }),
+        prompt: async (sessionId: string, blocks: { text?: string }[]) => {
+          const text = blocks.map((block) => block.text ?? '').join('\n')
+          const script = scriptByAgentId.get(agent.id)
+          let replied = false
+          const context: RoutingScriptContext = {
+            sessionId,
+            text,
+            callTool: async (name, args) => {
+              const binding = bindings.get(sessionId)
+              if (!binding) throw new Error('session has no daemon tool binding')
+              return callDaemonTool(binding, name, args)
+            },
+            reply: (value) => {
+              replied = true
+              onUpdate(sessionId, {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: value }
+              })
+            }
+          }
+          if (script) await script(context)
+          if (!replied) {
+            // An empty turn posts nothing — the scripted stand-in for a
+            // production agent that chooses silence.
+            onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' } })
+          }
+          return { stopReason: 'end_turn' }
+        },
+        cancel: async () => {},
+        stop: async () => {}
+      }
+    }
     const harness = new DaemonEvaluationHarness({
       root: subject.root,
       environment,
       runId: `routing-${seed}`,
       capabilityProfile: { memory: 'off' },
-      hostFactory: ((agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => {
-        let sessions = 0
-        const bindings = new Map<string, DaemonMcpBinding>()
-        return {
-          start: async () => {},
-          newSession: async (_cwd: string, mcpServers?: unknown) => {
-            const sessionId = `routing-${agent.id.slice(0, 8)}-${(sessions += 1)}`
-            const binding = daemonMcpBinding(mcpServers)
-            if (binding) bindings.set(sessionId, binding)
-            return sessionId
-          },
-          hasSession: () => true,
-          modelOptions: () => ({ current: 'scripted-routing', models: ['scripted-routing'] }),
-          prompt: async (sessionId: string, blocks: { text?: string }[]) => {
-            const text = blocks.map((block) => block.text ?? '').join('\n')
-            const script = scriptByAgentId.get(agent.id)
-            let replied = false
-            const context: RoutingScriptContext = {
-              sessionId,
-              text,
-              callTool: async (name, args) => {
-                const binding = bindings.get(sessionId)
-                if (!binding) throw new Error('session has no daemon tool binding')
-                return callDaemonTool(binding, name, args)
-              },
-              reply: (value) => {
-                replied = true
-                onUpdate(sessionId, {
-                  sessionUpdate: 'agent_message_chunk',
-                  content: { type: 'text', text: value }
-                })
-              }
-            }
-            if (script) await script(context)
-            if (!replied) {
-              // An empty turn posts nothing — the scripted stand-in for a
-              // production agent that chooses silence.
-              onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' } })
-            }
-            return { stopReason: 'end_turn' }
-          },
-          cancel: async () => {},
-          stop: async () => {}
-        }
-      }) as never
+      secrets: subject.secrets,
+      ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedHostFactory as never } : {})
     })
-    const fixture = new RoutingFixture(topology, world, harness, subject.cleanup)
+    const fixture = new RoutingFixture(
+      topology,
+      world,
+      harness,
+      subject.cleanup,
+      options.settleTimeoutMs ?? DEFAULT_SETTLE_TIMEOUT_MS,
+      subject.secrets
+    )
     // Production Slack echo: every delivered agent post fans back to the OTHER
     // member integrations under the author's managed bot identity.
     world.onDelivered((effect) => fixture.echoDeliveredPost(effect))
@@ -297,13 +368,13 @@ export class RoutingFixture {
       await Promise.all(pending.map((handle) => handle.completion))
       pending = this.echoHandles.splice(0)
     }
-    await this.harness.waitUntilIdle()
+    await this.harness.waitUntilIdle(this.settleTimeoutMs)
     // Idle turns may have delivered posts whose echoes are still unsettled.
     pending = this.echoHandles.splice(0)
     while (pending.length > 0 && generations < 32) {
       generations += 1
       await Promise.all(pending.map((handle) => handle.completion))
-      await this.harness.waitUntilIdle()
+      await this.harness.waitUntilIdle(this.settleTimeoutMs)
       pending = this.echoHandles.splice(0)
     }
   }
@@ -325,6 +396,99 @@ export class RoutingFixture {
     return this.events()
       .filter((event) => event.type === 'turn.started' && event.agentId === agentId)
       .map((event) => String(event.data.input ?? ''))
+  }
+
+  /**
+   * Every model turn, reassembled from the ordered evaluation events.
+   *
+   * The per-turn TOOL CALL list is what a same-turn behavioral invariant needs
+   * ("did it poll the child in the very turn that started it?"), and it is only
+   * available here: `acp.update` carries the daemon's own `turnId`, so a call is
+   * attributed to the turn the daemon was running, never guessed from timing.
+   */
+  turnTraces(alias?: string): RoutingTurnTrace[] {
+    const wanted = alias !== undefined ? this.agentId(alias) : undefined
+    const traces: RoutingTurnTrace[] = []
+    const byTurnId = new Map<string, RoutingTurnTrace>()
+    const openByAgent = new Map<string, RoutingTurnTrace>()
+    for (const event of this.events()) {
+      if (event.agentId === undefined) continue
+      if (wanted !== undefined && event.agentId !== wanted) continue
+      if (event.type === 'turn.started') {
+        const trace: RoutingTurnTrace = {
+          ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+          agentAlias: this.aliasOf(event.agentId),
+          ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+          input: String(event.data.input ?? ''),
+          toolCalls: [],
+          output: ''
+        }
+        traces.push(trace)
+        if (event.turnId !== undefined) byTurnId.set(event.turnId, trace)
+        openByAgent.set(event.agentId, trace)
+        continue
+      }
+      if (event.type !== 'acp.update') continue
+      const trace =
+        (event.turnId !== undefined ? byTurnId.get(event.turnId) : undefined) ?? openByAgent.get(event.agentId)
+      if (!trace) continue
+      const update = event.data.update as Record<string, unknown> | undefined
+      if (!update) continue
+      if (update.sessionUpdate === 'agent_message_chunk') {
+        const text = (update.content as { text?: unknown } | undefined)?.text
+        if (typeof text === 'string') trace.output += text
+        continue
+      }
+      if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') continue
+      // A runtime may announce the call before its arguments are known and fill
+      // them in on the following `tool_call_update` for the same `toolCallId`
+      // (Claude Code's adapter does exactly that), so the two are merged. The
+      // NAME comes from `rawInput.tool` when the runtime reports MCP call
+      // structure and from the human `title` otherwise.
+      const rawInput = update.rawInput as Record<string, unknown> | undefined
+      const callId = typeof update.toolCallId === 'string' ? update.toolCallId : undefined
+      const existing = callId !== undefined ? trace.toolCalls.find((call) => call.id === callId) : undefined
+      const name =
+        (typeof rawInput?.tool === 'string' ? rawInput.tool : undefined) ??
+        (typeof update.title === 'string' ? update.title : undefined)
+      const args = rawInput?.arguments ?? (rawInput !== undefined && rawInput.tool === undefined ? rawInput : undefined)
+      if (existing) {
+        if (name !== undefined) existing.name = name
+        if (args !== undefined) existing.arguments = args
+        continue
+      }
+      if (update.sessionUpdate !== 'tool_call') continue
+      trace.toolCalls.push({
+        ...(callId !== undefined ? { id: callId } : {}),
+        name: name ?? 'unknown_tool',
+        arguments: args ?? {}
+      })
+    }
+    return traces
+  }
+
+  /**
+   * Peer wakes an agent ISSUED, as the daemon recorded them
+   * (`collaboration.delivery.*`, stamped with the CALLER's agent id and the
+   * caller's own evaluation turn id).
+   *
+   * This is the authoritative answer to "which turn delegated": it comes from
+   * the daemon's delivery path rather than from the runtime's tool-call
+   * reporting, which is advisory and may announce a call before its arguments
+   * are known.
+   */
+  peerWakesIssued(alias: string): { turnId?: string; admitted: boolean }[] {
+    const agentId = this.agentId(alias)
+    return this.events()
+      .filter(
+        (event) =>
+          event.agentId === agentId &&
+          (event.type === 'collaboration.delivery.admitted' || event.type === 'collaboration.delivery.rejected')
+      )
+      .map((event) => ({
+        ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+        admitted: event.type === 'collaboration.delivery.admitted'
+      }))
   }
 
   /** Delivered, visible IM posts (agent speech — chrome excluded). */

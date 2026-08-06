@@ -9,6 +9,13 @@ These scenarios **work** on the current implementation. The limitations in §6 a
 real and documented, but none of them is a defect discovered by the arena — each
 is a protection behaving as designed, or a capability the product does not have.
 
+One exception, added later and stated here so the paragraph above is not read as
+covering it: §3.5 / §5.5 (delegate-and-forward) **is** a defect the arena found.
+A child woken postlessly with `needsReply` that answers in prose instead of
+calling `sendMessage {sessionId}` has its answer discarded with no signal to
+anyone, and the parent waits forever. It is pinned as an expected-fail, not as a
+protection.
+
 **Scope note.** This document describes and measures the landed implementation.
 It deliberately does not argue for design alternatives; that discussion belongs
 to the messaging-primitives counter-proposal, which builds on this baseline.
@@ -193,6 +200,48 @@ failure. Measured leaks: **0**.
 See §6.4. The game is present and its referee semantics are covered, but the
 milestone cannot complete against the landed `sendMessage`.
 
+### 3.5 Delegate and forward — the `needsReply` round trip
+
+`evals/test/delegate-and-forward.test.ts` (credential-free, in the gate) and
+`evals/test/delegate-and-forward-real.test.ts` (real runtime, on demand).
+
+This case exists because of an observed production failure, not a hypothesis. A
+user told agent A **"send hello to agent b and forward reply"**. A called
+`sendMessage {toAgent:{agentId:<B>,needsReply:true}, message:"hello"}`, got back
+`{ok:true, wake:{delivered:true,…}, childSessionId:"webchat:a2a:…"}`, then — in
+the same turn — called `viewSessionStatus` on that child, read
+`{status:"in-progress", state:"prompting"}`, and told the user **"Agent B
+completed its turn but returned no message to forward."** The last sentence is
+contradicted by the state A had just read.
+
+Nothing in that trace is a routing fault: the wake was delivered and the child
+did run. What the case measures is that **`needsReply` is a two-sided contract
+with only one side stated**:
+
+| Side       | What it is told                                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Child**  | A standing `# Reporting back to your parent session` block (`packages/daemon/src/session/session-manager.ts`) naming the parent session and the reply shape. |
+| **Parent** | Nothing. Its tool result is `{ok, wake, childSessionId}` — three fields, no prose, no statement that the call was asynchronous.                              |
+
+The credential-free half pins the fixable affordances. Two of its tests are
+ordinary characterization pins (green), and five are `it.fails(…)` — the repo's
+expected-fail idiom: the assertion is written for the surface we want, it passes
+while the surface still fails it, and it starts failing the moment the fix lands.
+Each names the file and the change in a comment.
+
+| Assertion                                                                                   | Today                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The `needsReply` wake result states the async contract (reply arrives later; end your turn) | **Red.** The result is exactly `{ok, wake, childSessionId}` — measured, keys asserted.                                                                                        |
+| `viewSessionStatus` does not advise an action a turn cannot take                            | **Red.** It ends with "Poll sparingly, and prefer waiting for the child's reply over a tight polling loop." A turn cannot wait; it can only end or block.                     |
+| `viewSessionStatus` says when checking a child IS appropriate                               | **Red.** Nothing distinguishes "you are already awake for another reason" from "you are trying to synchronize".                                                               |
+| The status result separates "its turn ended" from "it reported back"                        | **Red.** Measured by running both situations and comparing: minus the child's ids and the clock, both answer `{status:'done', state:'idle'}` — byte-identical.                |
+| A headless child's answer is not silently dropped when it never reports back                | **Red.** Measured: the child's output reaches no platform effect (delivered or attempted) and no parent turn. See §5.5 — this is the failure the real runs actually produced. |
+
+The two green pins record the surface as it is, so the red ones are anchored in
+measured behavior rather than a paraphrase: the wake result's exact key set, and
+a same-turn poll returning `{status:'in-progress', state:'prompting'}` while the
+child is provably mid-turn (an explicit rendezvous, not a sleep).
+
 ## 4. Reproducing every result
 
 Node 24 (`.nvmrc`) and pnpm 11. No model credentials required.
@@ -202,12 +251,13 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 15 files, 115 tests
+pnpm eval:collab:contracts # 16 files, 122 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
 
 # individual scenarios
+npx vitest run evals/test/delegate-and-forward.test.ts
 npx vitest run evals/test/counting.test.ts
 npx vitest run evals/test/quota-counting.test.ts
 npx vitest run evals/test/werewolf.test.ts
@@ -228,6 +278,7 @@ Full gate, measured on this branch:
 | Suite                                                  | Tests   |
 | ------------------------------------------------------ | ------- |
 | `evals/test/routing-acceptance.test.ts`                | 8       |
+| `evals/test/delegate-and-forward.test.ts`              | 7       |
 | `evals/test/game-runner.test.ts`                       | 5       |
 | `evals/test/werewolf.test.ts`                          | 18      |
 | `evals/test/quota-counting.test.ts`                    | 8       |
@@ -242,9 +293,18 @@ Full gate, measured on this branch:
 | `evals/test/virtual-connections.test.ts`               | 4       |
 | `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
 | `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
-| **Total**                                              | **115** |
+| **Total**                                              | **122** |
 
-**0 expected-fail.** Every pin is an ordinary assertion.
+**5 expected-fail**, all of them in `delegate-and-forward.test.ts` (§3.5) and all
+naming a specific change to the tool surface. Every other pin in the gate is an
+ordinary assertion.
+
+**One known flake, pre-existing and not from this work.** `werewolf.test.ts`'s
+`SCRIPTED BOUNDARY: a seven-player game exhausts the budget inside one 60s window`
+depends on the scripted game finishing inside the loop guard's real 60-second
+window. On a loaded machine it does not, the budget refreshes mid-game, and the
+test fails with `latched: 0` or `admitted: 20`. Reproduced on `main` @ 09d76132
+before any change here, and green on an unloaded run.
 
 ### 4.1 Running a game against a real ACP runtime
 
@@ -562,6 +622,74 @@ The high regeneration and coalescing counts are the turn-final context refresh
 working: a concurrent turn pulls a fresher thread snapshot, sees a peer message
 it has not represented, and regenerates rather than posting a stale number.
 
+### 5.5 Delegate and forward, real local Claude Code — the diagnosis did NOT reproduce
+
+Same runtime and model as §5.1–§5.3 (`npx -y @agentclientprotocol/claude-agent-acp@0.64.0`,
+model pinned to `sonnet`, `permissionMode: default`, memory off, from-scratch
+workspace), two seats in one mention-gated Slack-shaped room, five trials, seeds
+901–905. Agent B is a real model too — the daemon's host seam is per-daemon, so a
+run cannot mix a real runtime with a scripted one — but its behavior is fixed by
+**configuration**: its `agent.json` description gives it a responder persona and a
+per-trial marker it must include in its answer. A can never see that marker (an
+agent's description is its own), which is what makes "A forwarded B's **actual**
+reply" a hard assertion.
+
+```bash
+pnpm --filter @agentconnect.md/daemon build
+export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
+export AGENTCONNECT_EVAL_SUBJECT_ROOT=/absolute/path/to/subject
+export AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS=<template-agent-id>
+npx vitest run evals/test/delegate-and-forward-real.test.ts
+```
+
+| Trial | Seed | Delegated | Polled the child | Premature claim | Child used `sendMessage {sessionId}` | Parent woken by the reply | Forwarded it |
+| ----- | ---- | --------- | ---------------- | --------------- | ------------------------------------ | ------------------------- | ------------ |
+| 1     | 901  | turn 1    | **0 calls**      | no              | **yes**                              | yes                       | yes          |
+| 2     | 902  | turn 1    | **0 calls**      | no              | **no**                               | **no**                    | **no**       |
+| 3     | 903  | turn 1    | **0 calls**      | no              | **yes**                              | yes                       | yes          |
+| 4     | 904  | turn 1    | **0 calls**      | no              | **no**                               | **no**                    | **no**       |
+| 5     | 905  | turn 1    | **0 calls**      | no              | **yes**                              | yes                       | yes          |
+
+Rates: `noSameTurnPoll` **5/5**, `noPrematureClaim` **5/5**, `wokenByTheReply`
+**3/5**, `forwardedTheReply` **3/5**.
+
+**The parent-side failure did not reproduce, and that has to be said plainly.**
+In all five trials agent A discovered B with `listAgents`, sent
+`{"toAgent":{"agentId":…,"needsReply":true},"message":"Hello!"}`, **called
+`viewSessionStatus` zero times**, and ended its turn saying it was waiting — _"Sent
+hello to agent-b — waiting on its reply, will forward once it comes back."_ It
+inferred the asynchronous contract that nothing in the surface states. So the
+missing affordances in §3.5 are real (they are measured facts about the tool
+surface), but on this model, in this shape, they are not sufficient to produce the
+polling-and-fabricating behavior. They raise the odds; they do not determine it.
+
+**A different failure reproduced instead, in 2 of 5 trials, and it is worse.** A
+postless `toAgent` wake gives the child a **headless** session: an ordinary turn
+reply from it is published nowhere. The report-back directive is therefore not a
+courtesy — it is the child's **entire output channel**. In trials 2 and 4 the
+child made no tool call at all and simply answered in prose
+(_"Hello agent-a, hello back! B-REPLY-904-PWY37N"_). That answer reached nothing:
+no platform effect, delivered or attempted, and no wake of the parent. Agent A ran
+exactly **one** turn and was left waiting forever, with no signal that anything had
+gone wrong.
+
+That is the same observable the production trace reported — "returned no message to
+forward" — reached by a different mechanism, and from A's seat it was **true**. It
+is now pinned as the fifth expected-fail in §3.5.
+
+**What worked, when it worked, was not quite what the child thought.** In trials 1,
+3 and 5 the child did call `sendMessage {sessionId:<parent>}` — but it described
+itself as having _"replied in-thread"_ and sent the parent a **summary** of that
+reply rather than the reply. The summary happened to quote the marker verbatim, so
+the forward carried B's real words; a child that summarized more loosely would have
+delivered a paraphrase without either side noticing. The child believes it has two
+channels; it has one.
+
+Trial artifacts (full turn-by-turn transcripts, per-turn tool calls, delivered
+posts, and the per-trial summary) are written to
+`.artifacts/evaluation/delegate-forward/` at mode 0600, redacted with the subject
+template's secret set. They are deliberately not committed.
+
 ## 6. Limitations
 
 ### 6.1 The raised hop cap is unreachable — the automatic-turn budget binds first
@@ -783,44 +911,52 @@ before a future game depends on them:
 
 Stated explicitly, since several claims above are structural rather than observed:
 
-| Claim                                                       | Basis                                                                                                                                             |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The 115 contract tests pass, credential-free                | **Measured**, this branch                                                                                                                         |
-| The four acceptance cases behave as tabulated               | **Measured**, this branch                                                                                                                         |
-| Werewolf plays to a winner with 0 canary leaks              | **Measured**, this branch                                                                                                                         |
-| Normalization is not exercised                              | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                                                          |
-| Only cross-room counting omits the echo                     | **Measured** — `PlatformEcho` is constructed in `counting.ts`, `quota-counting.ts` and `werewolf.ts`                                              |
-| Werewolf visibility admits dead players                     | **Measured** — the `visibleTo` predicate tests configured membership, not aliveness                                                               |
-| Cross-room handoff is refused, naming `thread`              | **Measured**, this branch (assertion on the product's own error text)                                                                             |
-| Leaderless rooms overshoot the target                       | **Measured**, this branch (scripted, 3 × 6)                                                                                                       |
-| 4-bot quota counting stalls 0/8 at 29 accepted / 10 started | **Measured**, this branch (scripted)                                                                                                              |
-| A 2-agent chain stops at 16 edges, not the hop cap of 20    | **Measured**, this branch (scripted A→B→A chain)                                                                                                  |
-| ...and the automatic-turn budget is what stops it           | **Measured by construction** — raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the same chain reach hop 20                                     |
-| Werewolf's day advances on peer messages, not the referee   | **Measured**, this branch — one referee event per day between open and close, each speech preceded by the previous speaker's echo                 |
-| A sequential order stops at exactly 9 speakers per round    | **Measured**, this branch (scripted, tables of 7/9/10/11/12, seeds 42 and 9)                                                                      |
-| ...because each latched player absorbed exactly 8 wakes     | **Measured** — every latched circuit reports `admitted: 8` then `gated`                                                                           |
-| A referee (human) message resets the automatic counter      | **Measured** — 7-player players absorb 9–10 admitted automatic turns across a game with zero refusals; confirmed by reading `recordLoopGuardTurn` |
-| A latched player cannot receive the referee's VOTE either   | **Measured** — `incompleteVotes ≥ 1` on every stalled table                                                                                       |
-| Real Claude Code speaks strictly in order when it speaks    | **Measured**, this branch — 0 out-of-order speeches across 5 trials (§5.1)                                                                        |
-| ...but carries the order to the end in only 3 of 5 trials   | **Measured**, this branch (§5.1); both stalls had 0 gated wakes and 0 latches, so no protection was involved                                      |
-| A real subject with a bad MCP bridge entry loses ALL tools  | **Measured**, this branch (§5.1 trial B) — now refused by the preflight                                                                           |
-| Real Claude Code plays Werewolf to a winner, multi-round    | **Measured**, this branch (§5.2) — 4 games, 4 winners, 1–3 rounds, 0 leaks                                                                        |
-| A 5-player table can end at night 1 with no day at all      | **Measured** (§5.2 trial 2) — 2 wolves vs 3 others, one kill makes it 2-vs-2                                                                      |
-| The per-round budget reset carries a multi-round game       | **Measured** — 48–96 admitted automatic turns per game, 0 gated                                                                                   |
-| A real subject's tool calls were denied INSIDE the runtime  | **Measured** — the denial text names `don't ask mode`, and the daemon logs zero `permission.*` events for the whole run                           |
-| Werewolf's actions are messages, parsed per conversation    | **Measured**, this branch — the game registers no evaluation tools at all                                                                         |
-| A non-wolf cannot even post a kill statement in the den     | **Measured** — the world's §7.2 authorization rejects the post before parsing                                                                     |
-| Real agents state actions clearly enough to parse           | **Measured** — `unparseableActions: 0` in both real 7p trials                                                                                     |
-| The wolves actually negotiate in the den                    | **Measured** — proposal → rationale → "any objections?" → agreement, with the redundant confirmations deduped                                     |
-| Scripted 7p collapses inside ONE 60s loop-guard window      | **Measured**, this branch — every circuit latches at `admitted: 8`                                                                                |
-| ...and that is scripted SPEED, not the design               | **Measured** — real 7p rounds span 90–128 s, the window rolls, and all 3 trials complete with 0 gated                                             |
-| Real games still leave votes uncast                         | **Measured** — 3 and 2 votes of 6 eligible, with 0 gated and 0 latches, so model behavior not protection                                          |
-| ...so the daemon's auto-allow set was never the blocker     | **Measured** — an earlier revision of this document claimed it was; the request never reaches the daemon at all                                   |
-| Workspace `.claude/settings.json` pre-approval is ignored   | **Measured** — files written and confirmed surviving the run, tools still denied                                                                  |
-| `CLAUDE_CONFIG_DIR` relocation breaks the runtime's auth    | **Measured** — `infra_error`, 0 peer wakes, 32s collapse                                                                                          |
-| Real-model 2 × 20 → 10, entropy 1.0                         | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                                                             |
-| Real-model 4 × 8 → 8/8, entropy 0.70                        | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                                                     |
-| The same real-model run would now stop at 16 edges          | **Inferred** from the scripted chain result; no real-model run has been done since #628                                                           |
-| A long leaderless count still cannot finish unaided         | **Inferred** from the 16-edge bound plus the absence of any override                                                                              |
-| No hop-cap or loop-guard override exists                    | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                                                      |
-| Participation unfairness under fan-out                      | **Measured** (agents that never spoke) — the _cause_ attributed to scheduling order is **inferred**                                               |
+| Claim                                                                   | Basis                                                                                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The 115 contract tests pass, credential-free                            | **Measured**, this branch                                                                                                                         |
+| The four acceptance cases behave as tabulated                           | **Measured**, this branch                                                                                                                         |
+| Werewolf plays to a winner with 0 canary leaks                          | **Measured**, this branch                                                                                                                         |
+| Normalization is not exercised                                          | **Measured** by reading `injectPlatformEvent` — it builds the `NormalizedMessage` itself                                                          |
+| Only cross-room counting omits the echo                                 | **Measured** — `PlatformEcho` is constructed in `counting.ts`, `quota-counting.ts` and `werewolf.ts`                                              |
+| Werewolf visibility admits dead players                                 | **Measured** — the `visibleTo` predicate tests configured membership, not aliveness                                                               |
+| Cross-room handoff is refused, naming `thread`                          | **Measured**, this branch (assertion on the product's own error text)                                                                             |
+| Leaderless rooms overshoot the target                                   | **Measured**, this branch (scripted, 3 × 6)                                                                                                       |
+| 4-bot quota counting stalls 0/8 at 29 accepted / 10 started             | **Measured**, this branch (scripted)                                                                                                              |
+| A 2-agent chain stops at 16 edges, not the hop cap of 20                | **Measured**, this branch (scripted A→B→A chain)                                                                                                  |
+| ...and the automatic-turn budget is what stops it                       | **Measured by construction** — raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the same chain reach hop 20                                     |
+| Werewolf's day advances on peer messages, not the referee               | **Measured**, this branch — one referee event per day between open and close, each speech preceded by the previous speaker's echo                 |
+| A sequential order stops at exactly 9 speakers per round                | **Measured**, this branch (scripted, tables of 7/9/10/11/12, seeds 42 and 9)                                                                      |
+| ...because each latched player absorbed exactly 8 wakes                 | **Measured** — every latched circuit reports `admitted: 8` then `gated`                                                                           |
+| A referee (human) message resets the automatic counter                  | **Measured** — 7-player players absorb 9–10 admitted automatic turns across a game with zero refusals; confirmed by reading `recordLoopGuardTurn` |
+| A latched player cannot receive the referee's VOTE either               | **Measured** — `incompleteVotes ≥ 1` on every stalled table                                                                                       |
+| Real Claude Code speaks strictly in order when it speaks                | **Measured**, this branch — 0 out-of-order speeches across 5 trials (§5.1)                                                                        |
+| ...but carries the order to the end in only 3 of 5 trials               | **Measured**, this branch (§5.1); both stalls had 0 gated wakes and 0 latches, so no protection was involved                                      |
+| A real subject with a bad MCP bridge entry loses ALL tools              | **Measured**, this branch (§5.1 trial B) — now refused by the preflight                                                                           |
+| Real Claude Code plays Werewolf to a winner, multi-round                | **Measured**, this branch (§5.2) — 4 games, 4 winners, 1–3 rounds, 0 leaks                                                                        |
+| A 5-player table can end at night 1 with no day at all                  | **Measured** (§5.2 trial 2) — 2 wolves vs 3 others, one kill makes it 2-vs-2                                                                      |
+| The per-round budget reset carries a multi-round game                   | **Measured** — 48–96 admitted automatic turns per game, 0 gated                                                                                   |
+| A real subject's tool calls were denied INSIDE the runtime              | **Measured** — the denial text names `don't ask mode`, and the daemon logs zero `permission.*` events for the whole run                           |
+| Werewolf's actions are messages, parsed per conversation                | **Measured**, this branch — the game registers no evaluation tools at all                                                                         |
+| A non-wolf cannot even post a kill statement in the den                 | **Measured** — the world's §7.2 authorization rejects the post before parsing                                                                     |
+| Real agents state actions clearly enough to parse                       | **Measured** — `unparseableActions: 0` in both real 7p trials                                                                                     |
+| The wolves actually negotiate in the den                                | **Measured** — proposal → rationale → "any objections?" → agreement, with the redundant confirmations deduped                                     |
+| Scripted 7p collapses inside ONE 60s loop-guard window                  | **Measured**, this branch — every circuit latches at `admitted: 8`                                                                                |
+| ...and that is scripted SPEED, not the design                           | **Measured** — real 7p rounds span 90–128 s, the window rolls, and all 3 trials complete with 0 gated                                             |
+| Real games still leave votes uncast                                     | **Measured** — 3 and 2 votes of 6 eligible, with 0 gated and 0 latches, so model behavior not protection                                          |
+| ...so the daemon's auto-allow set was never the blocker                 | **Measured** — an earlier revision of this document claimed it was; the request never reaches the daemon at all                                   |
+| Workspace `.claude/settings.json` pre-approval is ignored               | **Measured** — files written and confirmed surviving the run, tools still denied                                                                  |
+| `CLAUDE_CONFIG_DIR` relocation breaks the runtime's auth                | **Measured** — `infra_error`, 0 peer wakes, 32s collapse                                                                                          |
+| The `needsReply` wake result is exactly `{ok, wake, childSessionId}`    | **Measured**, this branch — key set asserted through the real MCP control socket (§3.5)                                                           |
+| A same-turn poll of a running child returns `in-progress`/`prompting`   | **Measured**, this branch — explicit rendezvous, so the child is provably mid-turn                                                                |
+| `viewSessionStatus` advises waiting, which a turn cannot do             | **Measured** by reading the shipped descriptor; that a turn cannot wait is **structural** (a turn ends or blocks)                                 |
+| `done` cannot be told from "reported back"                              | **Measured** — both situations run end-to-end and, minus ids and clock, return identical results                                                  |
+| A headless child's prose answer reaches nothing at all                  | **Measured**, this branch — no world effect (delivered or attempted) and no parent turn (§3.5, §5.5)                                              |
+| Real Claude Code did NOT poll or fabricate on delegate-and-forward      | **Measured**, this branch — 5 trials, `viewSessionStatus` called 0 times, 0 premature claims (§5.5)                                               |
+| ...but the reply was lost in 2 of 5 trials                              | **Measured** (§5.5) — the child answered only in prose into a headless session                                                                    |
+| The missing parent-side affordances are not sufficient to cause the bug | **Inferred** from those 5 trials — a negative result on one model in one room shape, not a proof that the affordances do not matter               |
+| Real-model 2 × 20 → 10, entropy 1.0                                     | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                                                             |
+| Real-model 4 × 8 → 8/8, entropy 0.70                                    | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                                                     |
+| The same real-model run would now stop at 16 edges                      | **Inferred** from the scripted chain result; no real-model run has been done since #628                                                           |
+| A long leaderless count still cannot finish unaided                     | **Inferred** from the 16-edge bound plus the absence of any override                                                                              |
+| No hop-cap or loop-guard override exists                                | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                                                      |
+| Participation unfairness under fan-out                                  | **Measured** (agents that never spoke) — the _cause_ attributed to scheduling order is **inferred**                                               |
