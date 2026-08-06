@@ -234,7 +234,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <button id="create-github">Create GitHub App</button>
           <button id="connect-github-login" hidden>Use for Logto sign-in</button>
           <button id="check-github" hidden>Check match</button>
-          <button id="confirm-github" hidden>I updated callback/setup URLs</button>
           <button id="clear-github" class="danger" hidden>Clear configuration</button>
           <a id="github-settings" class="button" target="_blank" rel="noopener" hidden>Open GitHub settings</a>
         </div>
@@ -606,22 +605,22 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? github.slug + ' is configured. Webhook secret: ' + (webhookStored ? 'stored' : webhookInactive ? 'not required yet' : 'missing') + '.' +
           (webhookInactive ? ' Webhook delivery is not registered until HTTPS ingress is configured.' : '')
         : 'Creates the complete App used for repository installation, webhooks, and optional GitHub sign-in.';
+      const githubSubmitted = Boolean(github && github.configuredUrls);
       const githubDrift = github
         ? expected.github
-          ? objectDiff(github.configuredUrls, expected.github, {
+          ? githubSubmitted ? objectDiff(github.configuredUrls, expected.github, {
               externalUrl: 'Homepage URL', setupUrl: 'Setup URL', webhookUrl: 'Webhook URL',
               webhookActive: 'Webhook active', callbackUrls: 'Callback URLs'
-            })
+            }) : []
           : [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'Valid Web, API, and ingress URLs' }]
         : [];
-      const githubVerified = Boolean(github && github.configuredUrls);
-      match('github-match', !github ? '' : !githubVerified || githubDrift.length ? 'warn' : '', !github ? 'Not configured' : !githubVerified ? 'Not verified' : githubDrift.length ? 'Update required' : 'Ready to check');
+      match('github-match', !github ? '' : githubDrift.length ? 'warn' : '', !github ? 'Not configured' : githubDrift.length ? 'Expected URLs changed' : 'Ready to check');
       el('github-create-controls').hidden = Boolean(github);
       el('create-github').hidden = Boolean(github);
       el('clear-github').hidden = !github;
       el('connect-github-login').hidden = !github || !values.logto || Boolean(values.logto.githubConnector);
       el('check-github').hidden = !github;
-      if (github) showDiff('github-drift', githubDrift, githubVerified ? 'Update required' : 'Not verified');
+      if (github) showDiff('github-drift', githubDrift, 'Expected URLs changed since App creation');
       else el('github-drift').hidden = true;
 
       const slack = values.slack;
@@ -1103,8 +1102,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       const result = await json(await fetch(api + '/check/github', { headers: bearer() }));
       el('github-settings').href = result.settingsUrl;
       el('github-settings').hidden = false;
-      const confirmationFields = result.unverified || [];
-      el('confirm-github').hidden = ![...result.missing, ...confirmationFields].some((field) => field === 'callback_urls' || field === 'setup_url' || field === 'webhook_active');
       const label = result.missing.length ? 'Update required' : "Can't verify automatically";
       showDiff('github-drift', result.diff || [], label);
       match('github-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : label);
@@ -1146,13 +1143,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       await reconcileLogto();
       await load();
       message('The deployment Slack App is now also used for Logto sign-in.');
-    }
-
-    async function confirmGithub() {
-      await json(await fetch(api + '/confirm/github-urls', { method: 'POST', headers: bearer() }));
-      el('confirm-github').hidden = true;
-      await load();
-      await checkGithub();
     }
 
     async function checkSlack() {
@@ -1438,7 +1428,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     el('clear-github').onclick = () => clearProvider('github').catch((error) => message(error.message, true));
     el('connect-github-login').onclick = () => connectGithubLogin().catch((error) => message(error.message, true));
     el('check-github').onclick = () => checkGithub().catch((error) => message(error.message, true));
-    el('confirm-github').onclick = () => confirmGithub().catch((error) => message(error.message, true));
     el('create-slack').onclick = () => createSlack('slack').catch((error) => message(error.message, true));
     el('connect-slack-login').onclick = () => connectSlackLogin().catch((error) => message(error.message, true));
     el('save-slack-configuration').onclick = () => saveSlackConfiguration().catch((error) => message(error.message, true));

@@ -118,7 +118,7 @@ export const DeploymentConfigValuesV1Schema = z
         appId: z.number().int().positive(),
         slug: z.string().trim().min(1),
         clientId: z.string().trim().min(1).nullable(),
-        /** Provider settings last created or explicitly confirmed by setup. */
+        /** Provider URL settings submitted by setup during GitHub App Manifest creation. Never live verification. */
         configuredUrls: GithubAppConfiguredUrlsSchema.optional()
       })
       .nullable(),
