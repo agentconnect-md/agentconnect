@@ -160,9 +160,8 @@ export class ChannelNameResolver {
       if (info.spaceId && info.spaceName) this.save(info.spaceId, info.spaceName)
       // A named channel/group is saved bare (the console prefixes "#"); a DM that carries
       // its own handle (a Telegram @username) is saved "@name" so readers can tell it apart.
-      // A Discord session keys on the THREAD id, whose own name is the turn's title — label
-      // it with the enclosing channel instead, so the console reads "#general" the way a
-      // threaded Slack session does.
+      // A legacy Discord session may still ask to resolve a thread id during upgrade.
+      // Label it with the enclosing channel so its historical row reads "#general".
       const name = info.parentName ?? info.name
       if (name) {
         this.save(channel, info.isIm ? `@${name}` : name)

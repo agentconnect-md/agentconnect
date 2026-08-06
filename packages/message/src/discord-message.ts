@@ -80,6 +80,11 @@ export function normalizeDiscordMessage(
     .map(toDiscordAttachment)
     .filter((attachment): attachment is PlatformAttachment => attachment !== null)
   const isDm = !message.inGuild
+  // Discord models a thread as a channel of its own. The normalized contract does
+  // not: `channel` is the configurable enclosing conversation (Slack parity), while
+  // `thread` is the concrete thread within it. DMs and top-level guild messages have
+  // no separate enclosing id, so their channel remains the provider channel id.
+  const channel = message.isThread && message.parentChannelId ? message.parentChannelId : message.channelId
 
   return {
     msgId: `discord:${message.channelId}:${message.id}`,
@@ -87,10 +92,11 @@ export function normalizeDiscordMessage(
     traceId: context.traceId,
     source: 'user',
     platform: 'discord',
-    channel: message.channelId,
+    channel,
     ...(message.url ? { threadUrl: message.url } : {}),
-    // Discord thread channels are conversations, so the channel itself is the
-    // stable session/thread coordinate.
+    // For an in-thread message `message.channelId` is the Discord thread channel id.
+    // For a top-level message/DM this temporarily equals `channel`; successful
+    // top-level promotion replaces it with the newly-created thread id.
     thread: message.channelId,
     sender: {
       id: message.authorId,
@@ -101,8 +107,6 @@ export function normalizeDiscordMessage(
     mentionedBots: message.mentionUserIds,
     ...(attachments.length ? { attachments } : {}),
     isDm,
-    ...(message.isThread && message.parentChannelId ? { parentChannel: message.parentChannelId } : {}),
-    // §6.5 dual-shape: the generic promote flag alongside the deprecated named one.
     // §6.5 emission flip: the generic coordinate only — `discordTopLevel` retired.
     ...(!isDm && !message.isThread ? { promoteToThread: true } : {})
   }

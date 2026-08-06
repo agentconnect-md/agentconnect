@@ -71,7 +71,7 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
   if (!conn) return
   switch (action.kind) {
     case 'typing':
-      await conn.sendChatAction(turn.channel)
+      await conn.sendChatAction(turn.channel, turn.thread)
       return
     case 'post': {
       const id = await conn.postMessage(turn.channel, action.text, turn.thread)
@@ -90,7 +90,8 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
       // streams. Skip an update when unchanged; not recorded (the `recordOnly` posts do).
       if (turn.liveReplyText === action.text) return
       turn.liveReplyText = action.text
-      if (turn.liveReplyTs) await conn.updateMessage(turn.channel, turn.liveReplyTs, action.text)
+      if (turn.liveReplyTs)
+        await conn.updateMessage(turn.channel, turn.liveReplyTs, action.text, { threadTs: turn.thread })
       else if (!turn.liveReplyAttempted) {
         turn.liveReplyAttempted = true
         turn.liveReplyTs = await conn.postMessage(turn.channel, action.text, turn.thread)
@@ -104,21 +105,23 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
       await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
       return
     case 'progress':
-      if (turn.progressTs) await conn.updateMessage(turn.channel, turn.progressTs, action.text)
+      if (turn.progressTs)
+        await conn.updateMessage(turn.channel, turn.progressTs, action.text, { threadTs: turn.thread })
       else if (!turn.progressAttempted) {
         turn.progressAttempted = true
         turn.progressTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
       }
       return
     case 'plan':
-      if (turn.planTs) await conn.updateMessage(turn.channel, turn.planTs, action.text)
+      if (turn.planTs) await conn.updateMessage(turn.channel, turn.planTs, action.text, { threadTs: turn.thread })
       else if (!turn.planAttempted) {
         turn.planAttempted = true
         turn.planTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
       }
       return
     case 'reasoning':
-      if (turn.reasoningTs) await conn.updateMessage(turn.channel, turn.reasoningTs, action.text)
+      if (turn.reasoningTs)
+        await conn.updateMessage(turn.channel, turn.reasoningTs, action.text, { threadTs: turn.thread })
       else if (!turn.reasoningAttempted) {
         turn.reasoningAttempted = true
         turn.reasoningTs = await conn.postChrome(turn.channel, action.text, { threadTs: turn.thread })
@@ -128,7 +131,10 @@ export async function applyDiscordAction<TTurn extends DiscordTurn>(
       // Per-turn status line + button row: post once (registering the message →
       // sessionKey so its button interactions resolve), then edit in place.
       if (turn.statusBarTs)
-        await conn.updateMessage(turn.channel, turn.statusBarTs, action.text, { keyboard: action.keyboard })
+        await conn.updateMessage(turn.channel, turn.statusBarTs, action.text, {
+          threadTs: turn.thread,
+          keyboard: action.keyboard
+        })
       else if (!turn.statusBarAttempted) {
         turn.statusBarAttempted = true
         turn.statusBarTs = await conn.postChrome(turn.channel, action.text, {

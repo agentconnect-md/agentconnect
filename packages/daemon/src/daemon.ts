@@ -3995,10 +3995,6 @@ export class Daemon {
         group,
         newTraceId: () => randomUUID(),
         onMessage: (msg) => {
-          // The gateway message already knows where it sits — record it before the
-          // (async, TTL-cached) name lookup so channel discovery can fold this thread
-          // onto its channel on the very first turn.
-          this.noteChannelScope(msg)
           // Unlike Telegram, Discord CAN resolve an arbitrary user id — collect the
           // sender's (and mentioned users') display names so session read-back labels
           // them by name the way Slack does.
@@ -4165,18 +4161,6 @@ export class Daemon {
   }
 
   /**
-   * Record the enclosing channel of an inbound conversation straight from the message,
-   * which already carries it — no platform call, and no waiting on the TTL-cached name
-   * lookup. Channel discovery folds a thread onto the channel it belongs to with it; a
-   * message that carries none is a no-op.
-   */
-  private noteChannelScope(msg: NormalizedMessage): void {
-    if (!msg.parentChannel) return
-    this.store.setChannelScope(msg.channel, { parentId: msg.parentChannel }, this.clock.now())
-    this.refreshObservedChannels()
-  }
-
-  /**
    * Observed-conversation discovery for every platform the §5 manifest marks
    * `membershipEnumeration: 'observed'` — today Telegram, Discord and Feishu. These
    * platforms do not give us an authoritative set of chats the bot is engaged in, so
@@ -4189,8 +4173,8 @@ export class Daemon {
    * preserving and enriching the cached entry an async Telegram getChat result
    * could never replace the console's raw numeric id.
    *
-   * Discord rows are folded onto the channel they belong to first (a session keys on
-   * the thread, so raw history repeats one channel per thread) — see collapseObserved.
+   * Legacy Discord rows are folded onto the channel they belong to first; current
+   * Discord sessions already persist that enclosing channel directly.
    */
   private refreshObservedChannels(): void {
     for (const agent of this.agents.values()) {
@@ -4202,10 +4186,8 @@ export class Daemon {
           // retracted set is subtracted from BOTH sources — the fresh observations and
           // the cached rows carried forward — or the rebuild would resurrect it.
           //
-          // Subtracted AFTER the collapse, never before: a Discord observation is a
-          // THREAD id, and only the collapse turns it into the channel the tombstone
-          // names. Filtering the raw ids would match nothing and let the thread fold
-          // straight back onto the channel that was just left.
+          // Subtracted AFTER the compatibility collapse: a legacy Discord observation
+          // may still be a thread id, while the tombstone names its enclosing channel.
           const retracted = this.store.retractedConversations(integ.id)
           const observed = this.collapseObserved(
             this.store.observedChannels(agent.id, platform, this.transportScopeForIntegration(integ)),
@@ -4353,11 +4335,9 @@ export class Daemon {
     for (const integrationId of srcIntegrationIds) {
       const retracted = this.store.retractedConversations(integrationId)
       if (retracted.size === 0) continue
-      for (const channel of [msg.channel, msg.parentChannel]) {
-        if (channel && retracted.has(channel)) {
-          this.store.clearRetractedConversation(integrationId, channel)
-          this.log.debug(`channels: ${channel} is active again — retraction cleared for ${integrationId}`)
-        }
+      if (retracted.has(msg.channel)) {
+        this.store.clearRetractedConversation(integrationId, msg.channel)
+        this.log.debug(`channels: ${msg.channel} is active again — retraction cleared for ${integrationId}`)
       }
     }
   }
@@ -4445,12 +4425,9 @@ export class Daemon {
   }
 
   /**
-   * Fold the observed conversations of one platform onto the channel set the console
-   * should offer. Discord sessions key on a THREAD channel (the daemon opens one off
-   * every top-level mention), so the raw observed set repeats the same channel once per
-   * thread — collapse each row onto its enclosing channel and dedupe on the channel
-   * snowflake, labelling each row with the guild it sits in (a bot in several servers
-   * reaches a "#general" in each). Telegram chats have neither notion; they pass through.
+   * Fold legacy observed conversations onto the channel set the console should offer
+   * and attach platform-specific space metadata. Current Discord rows already name the
+   * enclosing channel; older thread-as-channel rows still collapse through the strategy.
    */
   private collapseObserved(
     observed: { id: string; name?: string }[],
@@ -6151,7 +6128,7 @@ export class Daemon {
     const rules = this.mergedRules().filter((rule) => rule.agentId === agentId)
     if (rules.length === 0) return false
     const covers = (scopeChannel: string | undefined): boolean =>
-      scopeChannel === undefined || scopeChannel === msg.channel || scopeChannel === msg.parentChannel
+      scopeChannel === undefined || scopeChannel === msg.channel
     if (rules.some((rule) => rule.mutedChannels?.some((muted) => covers(muted)))) return false
     return rules.some((rule) => covers(rule.scope.channel))
   }
@@ -6618,14 +6595,13 @@ export class Daemon {
    * Discord top-level channel @mention (§Slack-parity threading): open a thread off the
    * triggering message so the whole turn — reply + progress/status chrome — lands in a
    * thread instead of flooding the channel. The new thread's id equals the message id, so
-   * we re-key the turn onto the thread channel; every follow-up posted there arrives with
-   * `channelId` = thread id and normalizes to the SAME session, giving the conversation
-   * continuity. Best-effort: if thread creation fails (e.g. the bot lacks Create Public
+   * we set it as the thread coordinate while retaining the enclosing channel; every
+   * follow-up normalizes to the same `{ channel, thread }` session. Best-effort: if
+   * thread creation fails (e.g. the bot lacks Create Public
    * Threads), we fall back to replying in the channel (the pre-thread behavior).
    */
   /** Run the platform's thread promotion (§7.4), then dispatch onto the re-keyed
-   *  coordinates. The strategy owns everything platform-shaped; core supplies the
-   *  channel-scope/labeling bookkeeping it cannot reach. */
+   *  coordinates. The strategy owns everything platform-shaped. */
   private async dispatchPromotedTopLevel(
     promotion: NonNullable<ReturnType<typeof threadPromotionFor>>,
     agentId: string,
@@ -6634,8 +6610,6 @@ export class Daemon {
   ): Promise<void> {
     await promotion.promote(
       {
-        setChannelScope: (channel, scope) => this.store.setChannelScope(channel, scope, this.clock.now()),
-        noteChannel: (conn, channel) => this.channelNameResolver?.noteChannel(conn as never, channel),
         info: (m) => this.log.info(m),
         debug: (m) => this.log.debug(m)
       },
@@ -10578,7 +10552,7 @@ export class Daemon {
     srcIntegrationIds?: readonly string[]
   ): { agentId: string; integrationId: string; via: RouteVia } | null {
     const transportScope = msg.transportScope ?? this.transportScopeForIntegrationIds(srcIntegrationIds)
-    // Only where the thread coordinate identifies the session (Slack) does it
+    // Only where the thread coordinate identifies the session (Slack/Discord) does it
     // participate in the lookup; reply-threading platforms mint a fresh thread per
     // command, so their commands resolve through the channel's latest session.
     const thread = this.commandChrome.threadIdentifiesSession(msg.platform) ? msg.thread : undefined
@@ -10679,7 +10653,7 @@ export class Daemon {
     // Control commands resolve their target OUTSIDE routeRules' scope filter (latest-
     // session fallbacks), so they must repeat the admission check — a channel switched
     // Off, or an Off conversation of a gated integration, takes no commands either.
-    return conversationAdmitted(routing, msg.channel, msg.parentChannel)
+    return conversationAdmitted(routing, msg.channel)
   }
 
   /**
@@ -16166,7 +16140,7 @@ export class Daemon {
   private gatedAdmission(integrationId: string, msg: NormalizedMessage): boolean {
     const int = this.integrationConfigById(integrationId)
     if (!int) return true // unknown here — agent/integration existence is checked separately
-    return conversationAdmitted(integrationRouting(int), msg.channel, msg.parentChannel)
+    return conversationAdmitted(integrationRouting(int), msg.channel)
   }
 
   /** Observed-conversation discovery, report-only: surface every human direct
@@ -16205,7 +16179,7 @@ export class Daemon {
       // An ENABLED conversation never gets a report/notice — this guard makes the
       // helper safe from the pre-command call site, which sees every DM. A thread of an
       // enabled channel is enabled too (the rule is scoped to the enclosing channel).
-      if (routing.bindRules.some((r) => r.channel === msg.channel || r.channel === msg.parentChannel)) continue
+      if (routing.bindRules.some((r) => r.channel === msg.channel)) continue
       const botUserId = this.botUserIds[integrationId] ?? routing.staticBotUserId ?? ''
       const addressed = isDm || (botUserId !== '' && msg.mentionedBots.includes(botUserId))
       if (!addressed) continue
@@ -16238,10 +16212,7 @@ export class Daemon {
   private reportObservedConversation(integrationId: string, msg: NormalizedMessage, isDm: boolean): void {
     const cached = this.channelSnapshots.get(integrationId)
     const existing = cached?.channels ?? []
-    // A channel row is reported as the ENCLOSING channel when the message arrived in a
-    // thread: that is the conversation an operator enables, and the one observed
-    // discovery reports (a per-thread row would be a duplicate of it).
-    const channel = (!isDm && msg.parentChannel) || msg.channel
+    const channel = msg.channel
     const current = existing.find((c) => c.id === channel)
     // A group DM is neither: reported on observation like a DM, mention-gated like a
     // channel. `app_mention` payloads carry no channel_type, so a row already resolved

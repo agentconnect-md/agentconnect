@@ -100,7 +100,11 @@ export const NormalizedPlatformMessageSchema = z.object({
   // S1a open reader (frames/route.ts Platform policy): writers emit only known
   // ids; an unknown id decodes and is handled fail-closed downstream.
   platform: Platform,
+  /** Enclosing configurable conversation id. A provider that models threads as
+   * channels (Discord) still emits the parent channel here. */
   channel: z.string(),
+  /** Stable logical thread id within `channel`. The output adapter maps this
+   * provider-neutral pair onto the provider's concrete send target. */
   thread: z.string().optional(),
   /** Platform-native HTTPS link for the integration represented by this
    *  message's session coordinates. The adapter owns construction; core only
@@ -165,10 +169,6 @@ export const NormalizedPlatformMessageSchema = z.object({
   // `discordTopLevel`) RETIRED here (S1b cleanup): the generic fields above are the
   // only emitted shape since the §6.5 flip; an older peer's named fields are simply
   // stripped by this non-strict object schema.
-  /** Enclosing container channel when `channel` is itself a thread channel (Discord
-   *  threads). GENERIC and core-read (bind-rule admission spans thread→parent), so it
-   *  is part of the coordinate model, not adapterExt (D2: pre-dispatch core read). */
-  parentChannel: z.string().optional(),
   trigger: z.enum(['mention', 'dm', 'keyword', 'auto', 'cron']).optional(),
   /** Provider-reported send time (epoch ms). Set when the platform's message id
    *  is not itself chronological (Telegram sequence ids, Feishu om_ ids) or the

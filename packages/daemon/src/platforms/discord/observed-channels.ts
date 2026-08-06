@@ -1,14 +1,12 @@
 /**
  * Discord's **observed-channels strategy** (§7.4) — the one platform whose
- * observed rows need folding.
+ * observed rows need guild metadata and legacy folding.
  *
- * Sessions key on a THREAD channel (the daemon opens one off every top-level
- * mention), so the raw observed set repeats the same channel once per thread:
- * collapse each row onto its enclosing channel, dedupe on the channel
- * snowflake, and label each row with the guild it sits in — a bot in several
- * servers reaches a "#general" in each, and the name alone cannot keep those
- * rows apart. The pure folding rules live in `discord/channels.ts`; this
- * strategy binds them to the host's scope/name lookups.
+ * Current sessions already use the enclosing channel as `channel`; the folding
+ * step is retained for legacy rows written before that coordinate migration.
+ * The strategy also labels each row with the guild it sits in — a bot in several
+ * servers reaches a "#general" in each, and the name alone cannot keep those rows
+ * apart. The pure compatibility rules live in `discord/channels.ts`.
  */
 import { collapseDiscordChannels, collapseNameLookupIds } from '../../discord/channels.js'
 import type { ObservedChannelsHost, ObservedChannelsStrategy } from '../observed-channels.js'

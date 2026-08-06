@@ -272,10 +272,9 @@ describe('conversationAdmitted', () => {
     expect(conversationAdmitted(routing(), 'C1')).toBe(true)
   })
 
-  it('refuses a muted channel, and a thread inside it', () => {
+  it('refuses a muted channel', () => {
     const r = routing({ mutedChannels: ['C1'] })
     expect(conversationAdmitted(r, 'C1')).toBe(false)
-    expect(conversationAdmitted(r, 'THREAD', 'C1')).toBe(false)
     expect(conversationAdmitted(r, 'C2')).toBe(true)
   })
 
@@ -283,7 +282,6 @@ describe('conversationAdmitted', () => {
   it('admits a gated conversation only when a scoped rule enables it', () => {
     const r = routing({ gated: true, bindRules: [{ channel: 'C1', match: { kind: 'mention' } }] })
     expect(conversationAdmitted(r, 'C1')).toBe(true)
-    expect(conversationAdmitted(r, 'THREAD', 'C1')).toBe(true)
     expect(conversationAdmitted(r, 'C2')).toBe(false)
   })
 

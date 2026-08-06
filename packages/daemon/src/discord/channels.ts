@@ -1,12 +1,10 @@
 /**
  * Collapsing observed Discord conversations into the channel set the console shows.
  *
- * A Discord session keys on the concrete channel a message arrived in — which is the
- * THREAD's own id whenever the bot answers in a thread (see discord/normalize.ts), and
- * the daemon opens a thread off every top-level @mention. Approach-A discovery
- * (daemon.refreshObservedChannels) derives the reachable set from that session history,
- * so a channel the bot has been mentioned in three times surfaced as three rows, all
- * labelled with the same enclosing channel name ("#general" ×3).
+ * Current Discord sessions use Slack-parity `{ channel: parent, thread: threadId }`
+ * coordinates and therefore need no folding. Older daemon versions persisted the
+ * thread id in both slots, so their history can still surface several rows labelled
+ * with the same enclosing channel name ("#general" ×3).
  *
  * Fold each observed id onto its enclosing channel (LocalStore `channel_scopes`, learnt
  * from the inbound message and from the channel-name lookup) and dedupe on the resulting

@@ -41,7 +41,7 @@ describe('normalizeDiscordMessage', () => {
       sender: { id: 'U123', isBot: false },
       isDm: false
     })
-    // Discord: channel == conversation == session; top-level msg flagged for threading.
+    // Before promotion there is no separate thread id yet.
     expect(m.thread).toBe('C777')
     // §6.5 emission flip: the generic coordinate only — discordTopLevel retired.
     expect(m.promoteToThread).toBe(true)
@@ -50,8 +50,11 @@ describe('normalizeDiscordMessage', () => {
   })
 
   it('does not flag an in-thread message for auto-threading (it already is a thread)', () => {
-    const m = normalizeDiscordMessage({ ...base, channelId: 'T555', isThread: true }, { traceId: 't' })
-    expect(m.channel).toBe('T555')
+    const m = normalizeDiscordMessage(
+      { ...base, channelId: 'T555', isThread: true, parentChannelId: 'C777' },
+      { traceId: 't' }
+    )
+    expect(m.channel).toBe('C777')
     expect(m.thread).toBe('T555')
     expect(m.promoteToThread).toBeUndefined()
   })
@@ -79,20 +82,20 @@ describe('normalizeDiscordMessage', () => {
     expect(normalizeDiscordMessage({ ...base, authorIsBot: true }, { traceId: 't' }).sender.isBot).toBe(true)
   })
 
-  it('carries the enclosing channel of a thread message', () => {
+  it('uses the enclosing channel plus the concrete thread id for a thread message', () => {
     const m = normalizeDiscordMessage(
       { ...base, channelId: 'T555', isThread: true, parentChannelId: 'C777' },
       { traceId: 't' }
     )
-    // The session still keys on the thread; `parentChannel` is the reachable channel it
-    // belongs to (channel-scoped triggers + channel discovery both key on it).
-    expect(m.channel).toBe('T555')
-    expect(m.parentChannel).toBe('C777')
+    expect(m.channel).toBe('C777')
+    expect(m.thread).toBe('T555')
+    expect('parentChannel' in m).toBe(false)
   })
 
-  it('leaves parentChannel unset outside a thread (the channel IS the conversation)', () => {
+  it('ignores a stray parent id outside a thread', () => {
     const m = normalizeDiscordMessage({ ...base, parentChannelId: 'C777' }, { traceId: 't' })
-    expect(m.parentChannel).toBeUndefined()
+    expect(m.channel).toBe('C777')
+    expect('parentChannel' in m).toBe(false)
   })
 
   it('renders a mention with the gateway-supplied handle, so a derived title reads a name', () => {

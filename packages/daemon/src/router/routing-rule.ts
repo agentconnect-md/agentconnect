@@ -55,7 +55,7 @@ export function integrationRouting(int: Integration): {
 
 /**
  * Is this conversation open to `int` at all? Two independent fences, both applying
- * to the enclosing channel of a thread (which is the row an operator configures):
+ * to the channel coordinate (the enclosing configurable channel on every platform):
  *
  *  - Off — the operator muted this channel. Applies to every integration.
  *  - Gating (resource-visibility.md §14) — a restricted agent's integration admits
@@ -67,11 +67,9 @@ export function integrationRouting(int: Integration): {
  */
 export function conversationAdmitted(
   routing: Pick<ReturnType<typeof integrationRouting>, 'bindRules' | 'mutedChannels' | 'gated'>,
-  channel: string,
-  parentChannel?: string
+  channel: string
 ): boolean {
-  const covers = (candidate: string | undefined): boolean =>
-    candidate !== undefined && (candidate === channel || candidate === parentChannel)
+  const covers = (candidate: string | undefined): boolean => candidate === channel
   if (routing.mutedChannels.some((muted) => covers(muted))) return false
   return !routing.gated || routing.bindRules.some((rule) => covers(rule.channel))
 }

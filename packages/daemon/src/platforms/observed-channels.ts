@@ -4,13 +4,14 @@
  *
  * Platforms without an authoritative membership snapshot get their console
  * channel list rebuilt from OBSERVED conversations (session history, service
- * records). Two Discord facts made that rebuild platform-conditional:
+ * records). Discord needs a platform strategy because:
  *
- *  - Discord sessions key on a THREAD channel (the daemon opens one off every
- *    top-level mention), so the raw observed set repeats the same channel once
- *    per thread — rows must COLLAPSE onto their enclosing channel;
  *  - a bot in several servers reaches a "#general" in each, so a row is only
  *    unambiguous with the SPACE (guild) it sits in.
+ *
+ * Current sessions already store the enclosing channel. The collapse facet remains
+ * backward-compatible with pre-coordinate-migration rows that stored the Discord
+ * thread channel in `sessions.channel`.
  *
  * Telegram and Feishu chats have neither notion; their rows pass through. That
  * is the default: no collapse, no spaces — any platform without a registered

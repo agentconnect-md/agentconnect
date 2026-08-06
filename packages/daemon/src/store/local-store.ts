@@ -961,6 +961,7 @@ export class LocalStore {
     this.migrateInboxHookContext()
     this.migrateRuntimeCatalogDefaultMode()
     this.migrateChannelScopeSpace()
+    this.migrateDiscordSessionCoordinates()
     // A daemon restart loses the in-memory ACP resolver. Retain the audit row but
     // never present it as actionable after recovery.
     this.db
@@ -978,6 +979,115 @@ export class LocalStore {
     if (!cols.some((c) => c.name === 'spaceId')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN spaceId TEXT')
     // `isIm` shares this migration: both columns arrived with the same discovery fix.
     if (!cols.some((c) => c.name === 'isIm')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN isIm INTEGER')
+  }
+
+  /**
+   * Discord originally persisted a thread channel as both `{ channel, thread }` and
+   * kept its enclosing channel in `channel_scopes.parentId`. The normalized contract
+   * now matches Slack: `{ channel: parentId, thread: threadId }`.
+   *
+   * A target session that already exists means a partial rollout has written both
+   * shapes and automatic merging could discard runtime state. Those rare rows remain
+   * readable as legacy sessions instead of being guessed together. Durable inbox rows
+   * move atomically with the session and have their normalized JSON canonicalized, so
+   * startup replay cannot recreate the retired coordinate shape.
+   */
+  private migrateDiscordSessionCoordinates(): void {
+    this.db.exec('BEGIN')
+    try {
+      this.db.exec(`
+        CREATE TEMP TABLE IF NOT EXISTS discord_coordinate_migration (
+          oldKey TEXT PRIMARY KEY,
+          newKey TEXT NOT NULL,
+          oldTranscriptChannel TEXT NOT NULL,
+          newTranscriptChannel TEXT NOT NULL,
+          thread TEXT NOT NULL,
+          parentChannel TEXT NOT NULL
+        );
+        DELETE FROM discord_coordinate_migration;
+        INSERT INTO discord_coordinate_migration (
+          oldKey, newKey, oldTranscriptChannel, newTranscriptChannel, thread, parentChannel
+        )
+        SELECT
+          s.key,
+          'discord:' || cs.parentId || ':' || s.thread || ':' || s.agentId ||
+            CASE WHEN s.transportScope IS NOT NULL AND s.transportScope <> ''
+              THEN ':' || s.transportScope ELSE '' END,
+          s.thread || CASE WHEN s.transportScope IS NOT NULL AND s.transportScope <> ''
+            THEN char(31) || s.transportScope ELSE '' END,
+          cs.parentId || CASE WHEN s.transportScope IS NOT NULL AND s.transportScope <> ''
+            THEN char(31) || s.transportScope ELSE '' END,
+          s.thread,
+          cs.parentId
+        FROM sessions s
+        JOIN channel_scopes cs ON cs.id = s.thread
+        WHERE s.platform = 'discord'
+          AND s.channel = s.thread
+          AND cs.parentId IS NOT NULL
+          AND cs.parentId <> s.thread
+          AND NOT EXISTS (
+            SELECT 1 FROM sessions current
+            WHERE current.platform = 'discord'
+              AND current.channel = cs.parentId
+              AND current.thread = s.thread
+              AND COALESCE(current.transportScope, '') = COALESCE(s.transportScope, '')
+          );
+
+        INSERT OR IGNORE INTO session_mutes (key)
+          SELECT m.newKey FROM discord_coordinate_migration m
+          JOIN session_mutes muted ON muted.key = m.oldKey;
+        DELETE FROM session_mutes
+          WHERE key IN (SELECT oldKey FROM discord_coordinate_migration);
+
+        UPDATE inbox
+        SET sessionKey = (
+              SELECT m.newKey FROM discord_coordinate_migration m WHERE m.oldKey = inbox.sessionKey
+            ),
+            msg = json_remove(
+              json_set(
+                msg,
+                '$.channel',
+                (SELECT m.parentChannel FROM discord_coordinate_migration m WHERE m.oldKey = inbox.sessionKey)
+              ),
+              '$.parentChannel'
+            )
+        WHERE sessionKey IN (SELECT oldKey FROM discord_coordinate_migration);
+
+        UPDATE transcript
+        SET channel = (
+          SELECT m.newTranscriptChannel FROM discord_coordinate_migration m
+          WHERE m.oldTranscriptChannel = transcript.channel AND m.thread = transcript.thread
+          LIMIT 1
+        )
+        WHERE EXISTS (
+          SELECT 1 FROM discord_coordinate_migration m
+          WHERE m.oldTranscriptChannel = transcript.channel AND m.thread = transcript.thread
+        );
+        UPDATE transcript_recipient
+        SET channel = (
+          SELECT m.newTranscriptChannel FROM discord_coordinate_migration m
+          WHERE m.oldTranscriptChannel = transcript_recipient.channel
+            AND m.thread = transcript_recipient.thread
+          LIMIT 1
+        )
+        WHERE EXISTS (
+          SELECT 1 FROM discord_coordinate_migration m
+          WHERE m.oldTranscriptChannel = transcript_recipient.channel
+            AND m.thread = transcript_recipient.thread
+        );
+
+        UPDATE sessions
+        SET key = (SELECT m.newKey FROM discord_coordinate_migration m WHERE m.oldKey = sessions.key),
+            channel = (SELECT m.parentChannel FROM discord_coordinate_migration m WHERE m.oldKey = sessions.key)
+        WHERE key IN (SELECT oldKey FROM discord_coordinate_migration);
+
+        DROP TABLE discord_coordinate_migration;
+      `)
+      this.db.exec('COMMIT')
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
   }
 
   /** Add the `transcript.recipient` column (the agent a row was delivered to) to a

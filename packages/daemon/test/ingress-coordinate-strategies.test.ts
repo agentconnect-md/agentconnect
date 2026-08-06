@@ -76,31 +76,20 @@ describe('thread promotion', () => {
     expect(discordThreadPromotion.wants(base)).toBe(false)
   })
 
-  it('re-keys the turn onto the opened thread, recording the parent first', () => {
-    const events: string[] = []
+  it('keeps the enclosing channel and sets the opened thread coordinate', () => {
     const host: ThreadPromotionHost = {
-      setChannelScope: (channel, scope) => void events.push(`scope:${channel}<-${scope.parentId}`),
-      noteChannel: (_conn, channel) => void events.push(`note:${channel}`),
       info: () => {},
       debug: () => {}
     }
     const conn = { createThread: async () => 'T9' }
     const msg = { platform: 'discord', channel: 'C1', msgId: 'discord:C1:M1', text: 'do the thing' }
     return discordThreadPromotion.promote(host, conn, msg).then(() => {
-      expect(msg).toMatchObject({ parentChannel: 'C1', channel: 'T9', thread: 'T9' })
-      // Parent scope is recorded while msg.channel still names the parent.
-      expect(events).toEqual(['scope:T9<-C1', 'note:T9'])
+      expect(msg).toMatchObject({ channel: 'C1', thread: 'T9' })
     })
   })
 
   it('leaves coordinates untouched when no thread opens', async () => {
     const host: ThreadPromotionHost = {
-      setChannelScope: () => {
-        throw new Error('must not record scope')
-      },
-      noteChannel: () => {
-        throw new Error('must not label')
-      },
       info: () => {},
       debug: () => {}
     }

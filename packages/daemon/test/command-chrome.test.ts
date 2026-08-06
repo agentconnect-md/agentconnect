@@ -30,9 +30,10 @@ describe('command chrome registry', () => {
 
   it('answers the thread-identity fact with the OPPOSITE default', () => {
     // Rendering fails open to Slack; coordinates fail closed to the
-    // latest-session fallback. Only Slack's thread identifies the session.
+    // latest-session fallback. Slack and Discord carry exact thread coordinates.
     expect(registry.threadIdentifiesSession('slack')).toBe(true)
-    for (const p of ['telegram', 'discord', 'feishu', 'some-future-platform', 'constructor']) {
+    expect(registry.threadIdentifiesSession('discord')).toBe(true)
+    for (const p of ['telegram', 'feishu', 'some-future-platform', 'constructor']) {
       expect(registry.threadIdentifiesSession(p)).toBe(false)
     }
   })
@@ -100,7 +101,7 @@ describe('per-platform reply anchoring', () => {
       discordCommandChrome.selectCard!(conn, undefined, ctx, { kind: 'model', options: ['a', 'b'], header: 'h' })
     ).toBe(true)
     // The resolved session key rides the card so a tap routes back by key.
-    expect(posts[0]![2]).toMatchObject({ sessionKey: 'k1' })
+    expect(posts[0]![2]).toMatchObject({ threadTs: '1700000000.001', sessionKey: 'k1' })
   })
 
   it('feishu offers no select card at all', () => {
