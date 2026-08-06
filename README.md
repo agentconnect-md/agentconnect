@@ -105,9 +105,8 @@ cd agentconnect
 docker compose up -d --pull always
 ```
 
-Open `http://app.agentconnect.localhost:3000`. The special-use `.localhost`
-name resolves to loopback without DNS; the default stack still listens only on
-`127.0.0.1`, uses local no-auth mode, and is intended for local evaluation.
+Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
+uses local no-auth mode, and is intended for local evaluation.
 
 The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,

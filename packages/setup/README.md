@@ -20,13 +20,17 @@ docker compose -f compose.yaml -f compose.logto.yaml up -d
 Open:
 
 - Tenant Admin: `http://localhost:8091`
-- Logto Console: `http://admin.agentconnect.localhost:3002`
-- AgentConnect: `http://app.agentconnect.localhost:3000`
+- Logto Console: `http://localhost:3002`
+- AgentConnect: `http://localhost:3000`
 
 Tenant Admin first guides the operator through Logto Management API setup. It
 does not display deployment configuration until an administrator has signed
 in. The first signed-in user is assigned the shared `ADMIN` role; sign in once
 more so the refreshed token contains that role.
+
+Google is the shortest local sign-in path because its Web OAuth client accepts
+the bundled bare `localhost` origins. Slack remains disabled until every
+required public origin uses HTTPS.
 
 ## Run from source
 
@@ -44,9 +48,9 @@ are needed before the deployment database can be opened.
 The public service origins are also startup environment:
 
 ```dotenv
-AGENTCONNECT_PUBLIC_WEB_URL=http://app.agentconnect.localhost:3000
-AGENTCONNECT_PUBLIC_CP_URL=http://api.agentconnect.localhost:8080
-AGENTCONNECT_PUBLIC_RELAY_URL=http://relay.agentconnect.localhost:8090
+AGENTCONNECT_PUBLIC_WEB_URL=http://localhost:3000
+AGENTCONNECT_PUBLIC_CP_URL=http://localhost:8080
+AGENTCONNECT_PUBLIC_RELAY_URL=http://localhost:8090
 ```
 
 Tenant Admin shows these values at the top because GitHub and Slack manifests

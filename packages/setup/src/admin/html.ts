@@ -78,7 +78,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     <p id="access-message" class="muted" aria-live="polite">Checking Logto sign-in…</p>
     <div class="row">
       <button id="login" hidden>Sign in with Logto</button>
-      <a id="open-logto" class="button" href="http://admin.agentconnect.localhost:3002" target="_blank" rel="noopener" hidden>Open Logto Console</a>
+      <a id="open-logto" class="button" href="http://localhost:3002" target="_blank" rel="noopener" hidden>Open Logto Console</a>
       <button id="show-bootstrap" hidden>Continue setup</button>
     </div>
 
@@ -986,7 +986,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('bootstrap-slack-submit').disabled = !bootstrapInfo.slackAvailable;
       el('bootstrap-slack-note').textContent = bootstrapInfo.slackAvailable
         ? 'Creates one complete Slack App. Sign-in uses a separate openid profile email flow from workspace installation.'
-        : 'Slack sign-in needs HTTPS Logto, Web, Control Plane, and Relay URLs. Use Google locally or expose the stack through a trusted HTTPS endpoint.';
+        : 'Slack sign-in needs all public service URLs to use HTTPS. Use Google locally or expose the stack through trusted HTTPS endpoints.';
       if (!bootstrapInfo.slackAvailable && el('bootstrap-provider').value === 'slack') {
         el('bootstrap-provider').value = 'google';
         updateBootstrapProvider();
@@ -1059,7 +1059,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     }
 
     async function bootstrapSlack() {
-      if (!bootstrapInfo || !bootstrapInfo.slackAvailable) throw new Error('Slack sign-in requires saved HTTPS Logto, Web, Control Plane, and Relay URLs.');
+      if (!bootstrapInfo || !bootstrapInfo.slackAvailable) throw new Error('Slack sign-in requires all public service URLs to use HTTPS.');
       await createSlack('bootstrap-slack', true);
       await reconcileLogto();
       await load();

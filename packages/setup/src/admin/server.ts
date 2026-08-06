@@ -55,6 +55,7 @@ import type { ProviderAppConfig } from '../provider-app.js'
 import {
   TenantAdminAuthError,
   TenantAdminAuthenticator,
+  urlAtOrigin,
   type AdminOidcConfig,
   type TenantAdminPrincipal,
   type VerifyOidcToken
@@ -199,7 +200,7 @@ function isLoopbackHostname(raw: string): boolean {
     .toLowerCase()
     .replace(/^\[|\]$/g, '')
     .replace(/\.$/, '')
-  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
 }
 
 function isLocalRequest(publicUrl: string, allowContainerLoopbackProxy: boolean, request: FastifyRequest): boolean {
@@ -235,12 +236,14 @@ function toStatus(record: DeploymentConfigAdmin | null) {
   }
 }
 
-function oidcOf(record: DeploymentConfigAdmin | null, issuer: string): AdminOidcConfig | null {
+function oidcOf(record: DeploymentConfigAdmin | null, issuer: string, upstream?: string): AdminOidcConfig | null {
   const auth = record?.values.auth
   // Logto emits the `roles` scope into the ID token. Tenant Admin therefore
   // validates that token against the browser application's client id. The CP
   // continues to validate API access tokens against auth.audience separately.
-  return auth?.mode === 'oidc' ? { issuer, audience: auth.browserClient.appId } : null
+  return auth?.mode === 'oidc'
+    ? { issuer, ...(upstream ? { upstream } : {}), audience: auth.browserClient.appId }
+    : null
 }
 
 function authFailure(reply: FastifyReply, error: TenantAdminAuthError): FastifyReply {
@@ -392,7 +395,7 @@ export function buildTenantAdminServer(
   const slackConfigApi = deps.slackConfigApi ?? createSlackConfigApi({ fetch: fetchImpl })
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
   const authenticator = new TenantAdminAuthenticator(
-    { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer) },
+    { get: async () => oidcOf(await deps.store.getAdmin(), localAuthBootstrap.issuer, logtoManagementEndpoint) },
     deps.verifyOidcToken
   )
   const discovery = new Map<string, Promise<OidcDiscovery>>()
@@ -401,13 +404,12 @@ export function buildTenantAdminServer(
   const localAuthBootstrap = deps.localAuthBootstrap ?? {
     issuer: defaultEnvironment.issuer,
     managementEndpoint: defaultEnvironment.managementEndpoint,
-    adminEndpoint: 'http://admin.agentconnect.localhost:3002',
+    adminEndpoint: 'http://localhost:3002',
     services: defaultEnvironment.services
   }
   const logtoEndpoint = new URL(localAuthBootstrap.issuer).origin
   const logtoManagementEndpoint = localAuthBootstrap.managementEndpoint ?? logtoEndpoint
-  const logtoAdminEndpoint =
-    localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://admin.agentconnect.localhost:3002'
+  const logtoAdminEndpoint = localAuthBootstrap.adminEndpoint?.replace(/\/+$/, '') ?? 'http://localhost:3002'
   const githubFlows = new Map<
     string,
     {
@@ -543,13 +545,18 @@ export function buildTenantAdminServer(
     const cached = discovery.get(normalized)
     if (cached) return cached
     const pending = (async () => {
-      const response = await fetchImpl(`${normalized}/.well-known/openid-configuration`)
+      const upstream = urlAtOrigin(normalized, logtoManagementEndpoint).toString().replace(/\/$/, '')
+      const response = await fetchImpl(`${upstream}/.well-known/openid-configuration`)
       if (!response.ok) throw new Error(`OIDC discovery failed: HTTP ${response.status}`)
       const body = (await response.json()) as { authorization_endpoint?: unknown; token_endpoint?: unknown }
       if (typeof body.authorization_endpoint !== 'string' || typeof body.token_endpoint !== 'string') {
         throw new Error('OIDC discovery is missing authorization_endpoint or token_endpoint')
       }
-      return { authorizationEndpoint: body.authorization_endpoint, tokenEndpoint: body.token_endpoint }
+      const publicOrigin = new URL(normalized).origin
+      return {
+        authorizationEndpoint: urlAtOrigin(body.authorization_endpoint, publicOrigin).toString(),
+        tokenEndpoint: urlAtOrigin(body.token_endpoint, publicOrigin).toString()
+      }
     })().catch((error) => {
       discovery.delete(normalized)
       throw error

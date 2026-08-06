@@ -17,9 +17,10 @@ describe('resolveLogtoMgmtConfig', () => {
     expect(resolveLogtoMgmtConfig({})).toBeUndefined()
   })
 
-  it('fails fast on a partial trio, naming the missing vars', () => {
-    expect(() => resolveLogtoMgmtConfig({ LOGTO_MGMT_ENDPOINT: 'https://x.logto.app' })).toThrow(
-      /missing LOGTO_MGMT_APP_ID, LOGTO_MGMT_APP_SECRET/
+  it('treats an endpoint without credentials as topology, not feature enablement', () => {
+    expect(resolveLogtoMgmtConfig({ LOGTO_MGMT_ENDPOINT: 'https://x.logto.app' })).toBeUndefined()
+    expect(() => resolveLogtoMgmtConfig({ LOGTO_MGMT_APP_ID: 'id' })).toThrow(
+      /missing LOGTO_MGMT_ENDPOINT, LOGTO_MGMT_APP_SECRET/
     )
   })
 
