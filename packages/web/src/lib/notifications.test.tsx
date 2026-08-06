@@ -278,13 +278,19 @@ describe('NotificationProvider', () => {
       )
     }
 
+    const onMount = vi.fn()
+    function MountSentinel() {
+      useEffect(() => onMount(), [])
+      return <VisibleTitles />
+    }
+
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
     await act(async () => {
       root.render(
         <NotificationProvider orgId="org-a">
-          <VisibleTitles />
+          <MountSentinel />
         </NotificationProvider>
       )
     })
@@ -294,12 +300,13 @@ describe('NotificationProvider', () => {
       flushSync(() => {
         root.render(
           <NotificationProvider orgId="org-b">
-            <VisibleTitles />
+            <MountSentinel />
           </NotificationProvider>
         )
       })
       expect(host.textContent).toBe('Organization B notice')
     })
+    expect(onMount).toHaveBeenCalledOnce()
 
     await act(async () => root.unmount())
     host.remove()

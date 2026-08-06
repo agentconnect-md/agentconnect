@@ -183,27 +183,30 @@ export function clearNotificationHistory(state: NotificationStoreState): Notific
 }
 
 interface ProviderState {
+  orgId: string | null
   store: NotificationStoreState
   toasts: NotificationItem[]
 }
 
 export function NotificationProvider({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
-  return (
-    <NotificationProviderForOrg key={orgId ?? '__default__'} orgId={orgId}>
-      {children}
-    </NotificationProviderForOrg>
-  )
-}
-
-function NotificationProviderForOrg({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
+  const normalizedOrgId = orgId ?? null
   const [providerState, setProviderState] = useState<ProviderState>(() => ({
-    store: loadNotificationState(orgId),
+    orgId: normalizedOrgId,
+    store: loadNotificationState(normalizedOrgId),
     toasts: []
   }))
 
+  if (providerState.orgId !== normalizedOrgId) {
+    setProviderState({
+      orgId: normalizedOrgId,
+      store: loadNotificationState(normalizedOrgId),
+      toasts: []
+    })
+  }
+
   useEffect(() => {
-    saveNotificationState(providerState.store, orgId)
-  }, [providerState.store, orgId])
+    saveNotificationState(providerState.store, providerState.orgId)
+  }, [providerState.store, providerState.orgId])
 
   const addNotification = useCallback((item: AddNotificationInput) => {
     const notification: NotificationItem = {
@@ -213,6 +216,7 @@ function NotificationProviderForOrg({ orgId, children }: { orgId?: string | null
       read: false
     }
     setProviderState((prev) => ({
+      ...prev,
       store: {
         ...prev.store,
         notifications: [notification, ...prev.store.notifications].slice(0, MAX_NOTIFICATIONS)
@@ -227,6 +231,7 @@ function NotificationProviderForOrg({ orgId, children }: { orgId?: string | null
       const resolvedKeys = new Set(prev.store.activeSources[scope].filter((key) => !nextKeys.has(key)))
       const result = syncNotificationSourceSnapshot(prev.store, scope, items)
       return {
+        ...prev,
         store: result.state,
         toasts: [
           ...result.added,
