@@ -89,13 +89,6 @@ async function tenantAccessToken(
   }
 }
 
-export type FeishuAppCredentialVerification = { status: 'ok' | 'invalid' | 'unavailable' }
-export type FeishuAppCredentialVerifier = (
-  appId: string,
-  appSecret: string,
-  region: FeishuRegion
-) => Promise<FeishuAppCredentialVerification>
-
 export interface FeishuAppSetupDiff {
   field: string
   current: unknown
@@ -273,14 +266,6 @@ export function createFeishuAppSetupAuditor(fetcher: typeof fetch = fetch): Feis
     } catch {
       return { status: 'unavailable', appName: null, version: null, diff: [] }
     }
-  }
-}
-
-/** Lightweight credential check shared by the runtime installer and Tenant Admin. */
-export function createFeishuAppCredentialVerifier(fetcher?: typeof fetch): FeishuAppCredentialVerifier {
-  return async (appId, appSecret, region) => {
-    const result = await tenantAccessToken(appId, appSecret, region, fetcher ?? fetch)
-    return { status: result.status }
   }
 }
 
