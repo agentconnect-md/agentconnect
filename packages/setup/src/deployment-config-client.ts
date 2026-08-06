@@ -21,20 +21,12 @@ export interface GithubDeploymentCredentials {
   webhookSecret?: string
 }
 
-export interface GithubConfiguredUrls {
-  externalUrl: string
-  setupUrl: string
-  webhookUrl: string
-  webhookActive: boolean
-  callbackUrls: string[]
-}
-
 type CurrentDeploymentConfig = { values: DeploymentConfigValuesV1 }
 
 export function githubDeploymentPut(
   current: CurrentDeploymentConfig,
   credentials: GithubDeploymentCredentials,
-  options: { configuredUrls?: GithubConfiguredUrls; connectLogto?: boolean } = {}
+  options: { webhookEnabled?: boolean; connectLogto?: boolean } = {}
 ): DeploymentConfigPut {
   const appId = Number(credentials.appId)
   if (!Number.isSafeInteger(appId) || appId <= 0) throw new Error('GitHub App creation returned an invalid app id')
@@ -46,8 +38,7 @@ export function githubDeploymentPut(
         appId,
         slug: credentials.slug,
         clientId: credentials.clientId,
-        webhookEnabled: options.configuredUrls?.webhookActive ?? true,
-        ...(options.configuredUrls ? { configuredUrls: options.configuredUrls } : {})
+        webhookEnabled: options.webhookEnabled ?? true
       },
       ...(connectLogto
         ? {
@@ -158,18 +149,9 @@ export interface SlackDeploymentCredentials {
   signingSecret: string
 }
 
-export interface SlackConfiguredUrls {
-  oauthRedirectUrl: string
-  eventsUrl: string
-  interactionsUrl: string
-  loginRedirectUrl?: string
-  socialLinkRedirectUrl?: string
-}
-
 export function slackDeploymentPut(
   current: CurrentDeploymentConfig,
   credentials: SlackDeploymentCredentials,
-  configuredUrls?: SlackConfiguredUrls,
   connectLogto = false
 ): DeploymentConfigPut {
   const logto = connectLogto && current.values.logto
@@ -178,8 +160,7 @@ export function slackDeploymentPut(
       ...current.values,
       slack: {
         appId: credentials.appId,
-        clientId: credentials.clientId,
-        ...(configuredUrls ? { configuredUrls } : {})
+        clientId: credentials.clientId
       },
       ...(logto
         ? {

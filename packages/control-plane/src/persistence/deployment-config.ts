@@ -32,18 +32,6 @@ const HttpUrlSchema = z
     }
   })
 
-function isSecureHttpUrl(value: string): boolean {
-  const url = new URL(value)
-  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const loopback =
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
-  return url.protocol === 'https:' || loopback
-}
-const SecureHttpUrlSchema = HttpUrlSchema.refine(isSecureHttpUrl, 'must use HTTPS unless it is loopback')
-const SecureOriginUrlSchema = SecureHttpUrlSchema.refine(
-  (value) => new URL(value).pathname === '/',
-  'must be an origin without a path'
-)
 const NullableUrlSchema = HttpUrlSchema.nullable()
 
 const AuthSchema = z.discriminatedUnion('mode', [
@@ -85,6 +73,12 @@ function withoutGoogleProviderSnapshot(value: unknown): unknown {
   return stored
 }
 
+function withoutProviderUrlSnapshot(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const { configuredUrls: _configuredUrls, ...stored } = value as Record<string, unknown>
+  return stored
+}
+
 const LogtoGithubConnectorSchema = z.preprocess(
   withoutDerivedConnectorId,
   z.strictObject({
@@ -109,49 +103,35 @@ const LogtoSlackConnectorSchema = z.preprocess(
   })
 )
 
-const GithubAppConfiguredUrlsSchema = z.strictObject({
-  externalUrl: SecureOriginUrlSchema,
-  setupUrl: SecureHttpUrlSchema,
-  webhookUrl: SecureHttpUrlSchema,
-  webhookActive: z.boolean().optional(),
-  callbackUrls: z.array(SecureHttpUrlSchema)
-})
-
-const SlackAppConfiguredUrlsSchema = z.strictObject({
-  oauthRedirectUrl: SecureHttpUrlSchema,
-  eventsUrl: SecureHttpUrlSchema,
-  interactionsUrl: SecureHttpUrlSchema,
-  loginRedirectUrl: SecureHttpUrlSchema.optional(),
-  socialLinkRedirectUrl: SecureHttpUrlSchema.optional()
-})
-
 const RegionalLoginAppSchema = z.strictObject({
   loginAppId: z.string().trim().min(1)
 })
+
+const GithubAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    appId: z.number().int().positive(),
+    slug: z.string().trim().min(1),
+    clientId: z.string().trim().min(1).nullable(),
+    /** Whether Relay should accept GitHub webhook delivery for this App. Omitted means enabled. */
+    webhookEnabled: z.boolean().optional()
+  })
+)
+
+const SlackAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    appId: z.string().trim().min(1),
+    clientId: z.string().trim().min(1)
+  })
+)
 
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
     auth: AuthSchema,
-    github: z
-      .strictObject({
-        appId: z.number().int().positive(),
-        slug: z.string().trim().min(1),
-        clientId: z.string().trim().min(1).nullable(),
-        /** Whether Relay should accept GitHub webhook delivery for this App. Omitted means enabled. */
-        webhookEnabled: z.boolean().optional(),
-        /** Provider URL settings submitted by setup during GitHub App Manifest creation. Never live verification. */
-        configuredUrls: GithubAppConfiguredUrlsSchema.optional()
-      })
-      .nullable(),
-    slack: z
-      .strictObject({
-        appId: z.string().trim().min(1),
-        clientId: z.string().trim().min(1),
-        /** Provider settings last verified through Slack's manifest API. */
-        configuredUrls: SlackAppConfiguredUrlsSchema.optional()
-      })
-      .nullable(),
+    github: GithubAppSchema.nullable(),
+    slack: SlackAppSchema.nullable(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
     lark: RegionalLoginAppSchema.nullable().optional(),

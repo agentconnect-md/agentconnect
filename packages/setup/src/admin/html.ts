@@ -382,7 +382,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     };
     const base64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const random = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
-    const same = (a, b) => JSON.stringify([...(a || [])].sort()) === JSON.stringify([...(b || [])].sort());
     const configured = (byKey, key) => Boolean(byKey.get(key) && byKey.get(key).configured);
 
     function showIdentityEditors(provider, show) {
@@ -494,22 +493,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       return { owner: 'organization', organization };
     }
 
-    function valuesMatch(current, expected) {
-      if (Array.isArray(expected)) return same(current, expected);
-      return JSON.stringify(current) === JSON.stringify(expected);
-    }
-
-    function objectDiff(current, expected, labels = {}) {
-      if (!expected) return [];
-      return Object.keys(expected)
-        .filter((key) => !current || !valuesMatch(current[key], expected[key]))
-        .map((key) => ({
-          field: labels[key] || key,
-          current: current ? current[key] : 'Not verified',
-          expected: expected[key]
-        }));
-    }
-
     function formatDiffValue(value) {
       if (value === null || value === undefined || value === '') return 'Not configured';
       if (Array.isArray(value)) return value.length ? value.map(formatDiffValue).join('\n') : '[]';
@@ -602,13 +585,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         ? github.slug + ' is configured. Webhook secret: ' + (webhookStored ? 'stored' : webhookInactive ? 'not required yet' : 'missing') + '.' +
           (webhookInactive ? ' Relay webhook delivery is disabled.' : '')
         : 'Creates the complete App used for repository installation, webhooks, and optional GitHub sign-in.';
-      const githubSubmitted = Boolean(github && github.configuredUrls);
       const githubDrift = github
         ? expected.github
-          ? githubSubmitted ? objectDiff(github.configuredUrls, expected.github, {
-              externalUrl: 'Homepage URL', setupUrl: 'Setup URL', webhookUrl: 'Webhook URL',
-              webhookActive: 'Webhook active', callbackUrls: 'Callback URLs'
-            }) : []
+          ? []
           : [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'Valid Web, API, and ingress URLs' }]
         : [];
       match('github-match', !github ? '' : githubDrift.length ? 'warn' : '', !github ? 'Not configured' : githubDrift.length ? 'Expected URLs changed' : 'Ready to check');
@@ -633,15 +612,10 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('slack-status').textContent = slack ? slack.appId + ' is configured.' : 'Creates the default AgentConnect integration manifest.';
       const slackDrift = slack
         ? expected.slack
-          ? objectDiff(slack.configuredUrls, expected.slack, {
-              oauthRedirectUrl: 'OAuth redirect URL', eventsUrl: 'Events request URL',
-              interactionsUrl: 'Interactivity request URL', loginRedirectUrl: 'Logto redirect URL',
-              socialLinkRedirectUrl: 'Account linking redirect URL'
-            })
+          ? []
           : [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'HTTPS Web, API, and ingress URLs' }]
         : [];
-      const slackVerified = Boolean(slack && slack.configuredUrls);
-      match('slack-match', !slack ? '' : !slackVerified || slackDrift.length ? 'warn' : '', !slack ? 'Not configured' : !slackVerified ? 'Not verified' : slackDrift.length ? 'Update required' : 'Ready to check');
+      match('slack-match', !slack ? '' : slackDrift.length ? 'warn' : '', !slack ? 'Not configured' : slackDrift.length ? 'Update required' : 'Ready to check');
       el('slack-name-field').hidden = Boolean(slack);
       el('create-slack').hidden = Boolean(slack);
       el('connect-slack-login').hidden = !slack || !values.logto || Boolean(values.logto.slackConnector) || !bootstrapInfo?.slackAvailable;
@@ -650,7 +624,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('slack-settings').hidden = !slack;
       if (slack) {
         el('slack-settings').href = 'https://api.slack.com/apps/' + encodeURIComponent(slack.appId);
-        showDiff('slack-drift', slackDrift, slackVerified ? 'Update required' : 'Not verified');
+        showDiff('slack-drift', slackDrift);
       } else el('slack-drift').hidden = true;
 
       const google = values.logto && values.logto.googleConnector;
@@ -861,7 +835,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       await replaceConfiguration(
         {
           ...values,
-          github: { ...previous, appId, slug, clientId, webhookEnabled, ...(appChanged ? { configuredUrls: undefined } : {}) },
+          github: { ...previous, appId, slug, clientId, webhookEnabled },
           ...(nextLogto ? { logto: nextLogto } : {})
         },
         Object.keys(secrets).length ? secrets : undefined,
@@ -892,7 +866,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       await replaceConfiguration(
         {
           ...values,
-          slack: { ...previous, appId, clientId, ...(changed ? { configuredUrls: undefined } : {}) },
+          slack: { ...previous, appId, clientId },
           ...(nextLogto ? { logto: nextLogto } : {})
         },
         Object.keys(secrets).length ? secrets : undefined,
@@ -1144,11 +1118,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         body: JSON.stringify({ configToken: token })
       }));
       el('slack-token').value = '';
-      if (result.status === 'pass' && currentStatus && currentStatus.values.slack) {
-        currentRevision = result.revision;
-        currentStatus.revision = result.revision;
-        currentStatus.values.slack = { ...currentStatus.values.slack, configuredUrls: result.expected };
-      }
       showDiff('slack-drift', result.diff || []);
       match('slack-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : 'Update required');
       message(result.status === 'pass' ? 'Slack App matches the default integration manifest.' : 'Slack App settings need an update.', result.status !== 'pass');

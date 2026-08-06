@@ -298,10 +298,6 @@ function googleRedirectUris(endpoint: string, connectorId: string, webUrl: strin
   ]
 }
 
-function sameStrings(left: readonly string[] | undefined, right: readonly string[]): boolean {
-  return JSON.stringify([...(left ?? [])].sort()) === JSON.stringify([...right].sort())
-}
-
 type ServiceTopology = { web: string; controlPlane: string; relay: string }
 
 function providerAppConfig(services: ServiceTopology): ProviderAppConfig {
@@ -411,7 +407,7 @@ export function buildTenantAdminServer(
     {
       expectedRevision: number
       connectLogto: boolean
-      configuredUrls: ReturnType<typeof githubConfiguredUrls>
+      webhookEnabled: boolean
       expires: ReturnType<typeof setTimeout>
     }
   >()
@@ -753,7 +749,7 @@ export function buildTenantAdminServer(
     githubFlows.set(state, {
       expectedRevision: current.revision,
       connectLogto,
-      configuredUrls: githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest),
+      webhookEnabled: githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest).webhookActive,
       expires
     })
     return {
@@ -789,7 +785,7 @@ export function buildTenantAdminServer(
       }
       try {
         const put = githubDeploymentPut(current, credentials, {
-          configuredUrls: pending.configuredUrls,
+          webhookEnabled: pending.webhookEnabled,
           connectLogto: pending.connectLogto
         })
         await deps.store.replace({ expectedRevision: current.revision, ...put })
@@ -1040,7 +1036,7 @@ export function buildTenantAdminServer(
       const created = await slackConfigApi.createApp(parsed.data.configToken, manifest)
       if (!created.ok) return problem(reply, 502, `Slack App creation failed: ${created.error}`)
       const credentials = created.app
-      const put = slackDeploymentPut(current, credentials, slackConfiguredUrls(manifest), parsed.data.connectLogto)
+      const put = slackDeploymentPut(current, credentials, parsed.data.connectLogto)
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
 
       try {
@@ -1086,29 +1082,23 @@ export function buildTenantAdminServer(
       return problem(reply, 502, error instanceof Error ? error.message : 'GitHub App settings could not be checked')
     }
     const expectedUrls = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
-    const lastSubmitted = github.configuredUrls
     const missing = [...audited.missing]
     const unverified = ['setup_url', 'callback_urls', 'webhook_active']
     const diff = audited.diff.map(({ field, current, expected }) => ({ field, current, expected }))
-    const setupUrlChanged = Boolean(lastSubmitted && lastSubmitted.setupUrl !== expectedUrls.setupUrl)
-    const callbackUrlsChanged = Boolean(
-      lastSubmitted && !sameStrings(lastSubmitted.callbackUrls, expectedUrls.callbackUrls)
-    )
-    const webhookActiveChanged = Boolean(lastSubmitted && lastSubmitted.webhookActive !== expectedUrls.webhookActive)
     diff.push(
       {
-        field: setupUrlChanged ? 'Setup URL (last submitted)' : 'Setup URL',
-        current: setupUrlChanged ? lastSubmitted!.setupUrl : "Can't verify automatically",
+        field: 'Setup URL',
+        current: "Can't verify automatically",
         expected: expectedUrls.setupUrl
       },
       {
-        field: callbackUrlsChanged ? 'Callback URLs (last submitted)' : 'Callback URLs',
-        current: callbackUrlsChanged ? lastSubmitted!.callbackUrls : "Can't verify automatically",
+        field: 'Callback URLs',
+        current: "Can't verify automatically",
         expected: expectedUrls.callbackUrls
       },
       {
-        field: webhookActiveChanged ? 'Webhook active (last submitted)' : 'Webhook active',
-        current: webhookActiveChanged ? lastSubmitted!.webhookActive : "Can't verify automatically",
+        field: 'Webhook active',
+        current: "Can't verify automatically",
         expected: expectedUrls.webhookActive
       }
     )
@@ -1127,48 +1117,37 @@ export function buildTenantAdminServer(
   app.post('/api/v1/check/slack', { preHandler: requireDiagnosticAccess }, async (request, reply) => {
     const parsed = CheckSlackBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'a Slack App configuration token is required')
-    return serializeMutation(async () => {
-      const current = await deps.store.getAdmin()
-      const slack = current?.values.slack
-      if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
-      let manifest: Record<string, unknown>
-      try {
-        manifest = expectedSlackManifest(current.values, await resolveLogtoConnectorIds())
-      } catch (error) {
-        return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
-      }
-      const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
-      if (!exported.ok) return problem(reply, 502, `Slack App settings could not be checked: ${exported.error}`)
-      const actual = exported.manifest
-      const manifestDiff = diffSlackManifest(actual, manifest)
-      const missing = auditSlackManifest(actual, manifest)
-      const expected = slackConfiguredUrls(manifest)
-      let observed: ReturnType<typeof slackConfiguredUrls> | null = null
-      try {
-        observed = slackConfiguredUrls(actual)
-      } catch {
-        // The stable missing field names still explain malformed exported URLs.
-      }
-      let revision = current.revision
-      if (missing.length === 0 && JSON.stringify(slack.configuredUrls) !== JSON.stringify(expected)) {
-        const saved = await deps.store.replace({
-          expectedRevision: current.revision,
-          values: { ...current.values, slack: { ...slack, configuredUrls: expected } }
-        })
-        revision = saved.revision
-      }
-      return {
-        provider: 'slack' as const,
-        status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
-        missing,
-        diff: manifestDiff.map(({ field, current, expected }) => ({ field, current, expected })),
-        actual: observed,
-        expected,
-        settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
-        revision,
-        restartRequired: false as const
-      }
-    })
+    const current = await deps.store.getAdmin()
+    const slack = current?.values.slack
+    if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
+    let manifest: Record<string, unknown>
+    try {
+      manifest = expectedSlackManifest(current.values, await resolveLogtoConnectorIds())
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
+    }
+    const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
+    if (!exported.ok) return problem(reply, 502, `Slack App settings could not be checked: ${exported.error}`)
+    const actual = exported.manifest
+    const manifestDiff = diffSlackManifest(actual, manifest)
+    const missing = auditSlackManifest(actual, manifest)
+    const expected = slackConfiguredUrls(manifest)
+    let observed: ReturnType<typeof slackConfiguredUrls> | null = null
+    try {
+      observed = slackConfiguredUrls(actual)
+    } catch {
+      // The stable missing field names still explain malformed exported URLs.
+    }
+    return {
+      provider: 'slack' as const,
+      status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
+      missing,
+      diff: manifestDiff.map(({ field, current, expected }) => ({ field, current, expected })),
+      actual: observed,
+      expected,
+      settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
+      restartRequired: false as const
+    }
   })
 
   app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (request, reply) =>
