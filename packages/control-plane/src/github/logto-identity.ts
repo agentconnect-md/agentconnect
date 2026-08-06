@@ -30,7 +30,7 @@ export interface LogtoMgmtConfig {
   resource: string
 }
 
-/** All-or-none decode of LOGTO_MGMT_* (resource optional). Undefined ⇒ feature off. */
+/** Credentials enable the feature; an endpoint alone is topology-only. */
 export function resolveLogtoMgmtConfig(env: {
   LOGTO_MGMT_ENDPOINT?: string
   LOGTO_MGMT_APP_ID?: string
@@ -38,7 +38,7 @@ export function resolveLogtoMgmtConfig(env: {
   LOGTO_MGMT_RESOURCE?: string
 }): LogtoMgmtConfig | undefined {
   const { LOGTO_MGMT_ENDPOINT, LOGTO_MGMT_APP_ID, LOGTO_MGMT_APP_SECRET } = env
-  if (!LOGTO_MGMT_ENDPOINT && !LOGTO_MGMT_APP_ID && !LOGTO_MGMT_APP_SECRET) return undefined
+  if (!LOGTO_MGMT_APP_ID && !LOGTO_MGMT_APP_SECRET) return undefined
   const missing = [
     !LOGTO_MGMT_ENDPOINT && 'LOGTO_MGMT_ENDPOINT',
     !LOGTO_MGMT_APP_ID && 'LOGTO_MGMT_APP_ID',
