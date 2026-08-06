@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act, useEffect } from 'react'
+import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import type { SessionAccessNotificationInput } from '@/lib/session-access-notifications'
@@ -248,6 +249,62 @@ function CaptureNotifications({
 }
 
 describe('NotificationProvider', () => {
+  it('does not render the previous organization during the first commit after a switch', async () => {
+    localStorage.clear()
+    const orgAState = syncNotificationSourceSnapshot(
+      emptyNotificationState(),
+      'sessions-access',
+      [{ ...quotaItem, title: 'Organization A notice' }],
+      '2026-08-06T01:00:00.000Z',
+      () => 'org-a-notification'
+    ).state
+    const orgBState = syncNotificationSourceSnapshot(
+      emptyNotificationState(),
+      'usage-access',
+      [{ ...quotaItem, sourceKey: 'usage:feishu:lark:quota', title: 'Organization B notice' }],
+      '2026-08-06T02:00:00.000Z',
+      () => 'org-b-notification'
+    ).state
+    saveNotificationState(orgAState, 'org-a')
+    saveNotificationState(orgBState, 'org-b')
+
+    function VisibleTitles() {
+      return (
+        <div>
+          {useNotifications()
+            .notifications.map((item) => item.title)
+            .join(',')}
+        </div>
+      )
+    }
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    await act(async () => {
+      root.render(
+        <NotificationProvider orgId="org-a">
+          <VisibleTitles />
+        </NotificationProvider>
+      )
+    })
+    expect(host.textContent).toBe('Organization A notice')
+
+    act(() => {
+      flushSync(() => {
+        root.render(
+          <NotificationProvider orgId="org-b">
+            <VisibleTitles />
+          </NotificationProvider>
+        )
+      })
+      expect(host.textContent).toBe('Organization B notice')
+    })
+
+    await act(async () => root.unmount())
+    host.remove()
+  })
+
   it('never writes the previous organization state under the next organization key', async () => {
     localStorage.clear()
     const orgAState = syncNotificationSourceSnapshot(

@@ -183,29 +183,27 @@ export function clearNotificationHistory(state: NotificationStoreState): Notific
 }
 
 interface ProviderState {
-  orgId: string | null | undefined
   store: NotificationStoreState
   toasts: NotificationItem[]
 }
 
 export function NotificationProvider({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
+  return (
+    <NotificationProviderForOrg key={orgId ?? '__default__'} orgId={orgId}>
+      {children}
+    </NotificationProviderForOrg>
+  )
+}
+
+function NotificationProviderForOrg({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
   const [providerState, setProviderState] = useState<ProviderState>(() => ({
-    orgId,
     store: loadNotificationState(orgId),
     toasts: []
   }))
 
   useEffect(() => {
-    setProviderState((previous) =>
-      previous.orgId === orgId ? previous : { orgId, store: loadNotificationState(orgId), toasts: [] }
-    )
-  }, [orgId])
-
-  useEffect(() => {
-    if (providerState.orgId === orgId) {
-      saveNotificationState(providerState.store, providerState.orgId)
-    }
-  }, [providerState, orgId])
+    saveNotificationState(providerState.store, orgId)
+  }, [providerState.store, orgId])
 
   const addNotification = useCallback((item: AddNotificationInput) => {
     const notification: NotificationItem = {
@@ -215,7 +213,6 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
       read: false
     }
     setProviderState((prev) => ({
-      orgId: prev.orgId,
       store: {
         ...prev.store,
         notifications: [notification, ...prev.store.notifications].slice(0, MAX_NOTIFICATIONS)
@@ -230,7 +227,6 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
       const resolvedKeys = new Set(prev.store.activeSources[scope].filter((key) => !nextKeys.has(key)))
       const result = syncNotificationSourceSnapshot(prev.store, scope, items)
       return {
-        orgId: prev.orgId,
         store: result.state,
         toasts: [
           ...result.added,
