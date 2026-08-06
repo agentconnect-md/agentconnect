@@ -346,7 +346,6 @@ function logtoSetup(
       applicationName: browser.applicationName,
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
-      corsAllowedOrigins: [...new Set([webOrigin, adminOrigin])],
       socialProviders: [...browser.socialProviders],
       ...(logto.githubConnector && githubSecret
         ? {
@@ -898,7 +897,7 @@ export function buildTenantAdminServer(
               : ('unknown' as const),
         message:
           result.status === 'ok'
-            ? `${label} accepted the saved App ID and secret.`
+            ? `${label} accepted the saved App ID and secret. API permissions, event subscriptions, and the published version were not checked.`
             : result.status === 'invalid'
               ? `${label} rejected the saved App ID or secret.`
               : `${label} could not be reached.`
@@ -1424,13 +1423,13 @@ export function buildTenantAdminServer(
         ? {
             id: 'logto.application',
             status: 'pass',
-            message: `Logto SPA ${setupInspection.application.id} has the expected redirects and CORS origins.`
+            message: `Logto SPA ${setupInspection.application.id} has all required redirects.`
           }
         : {
             id: 'logto.application',
             status: 'fail',
             message: setupInspection.application.exists
-              ? 'The selected Logto SPA does not match the expected redirects and CORS origins.'
+              ? 'The selected Logto SPA is missing one or more required redirects.'
               : 'The AgentConnect Logto SPA does not exist.',
             diff: setupInspection.application.diff
           }

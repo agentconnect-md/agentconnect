@@ -16,7 +16,6 @@ export interface LogtoSetupDesired {
   applicationName: string
   redirectUris: readonly string[]
   postLogoutRedirectUris: readonly string[]
-  corsAllowedOrigins: readonly string[]
   socialProviders: readonly string[]
   github?: { connectorId: string; clientId: string; clientSecret: string }
   google?: { connectorId: string; clientId: string; clientSecret: string }
@@ -35,7 +34,6 @@ interface LogtoApplication {
   name: string
   type: string
   oidcClientMetadata: Record<string, unknown>
-  customClientMetadata: Record<string, unknown>
   customData: Record<string, unknown>
 }
 
@@ -49,7 +47,6 @@ interface LogtoConnector {
 interface LogtoSignInExperience {
   signIn: Record<string, unknown>
   signUp: Record<string, unknown>
-  socialSignIn: Record<string, unknown>
   socialSignInConnectorTargets: string[]
   signInMode: unknown
 }
@@ -125,6 +122,15 @@ function sameStrings(left: unknown, right: readonly string[]): boolean {
   return JSON.stringify(stringArray(left)) === JSON.stringify(right)
 }
 
+function containsStrings(current: unknown, required: readonly string[]): boolean {
+  const values = new Set(stringArray(current))
+  return required.every((value) => values.has(value))
+}
+
+function mergeStrings(current: unknown, required: readonly string[]): string[] {
+  return [...new Set([...stringArray(current), ...required])]
+}
+
 function addDiff(
   diff: LogtoConfigurationDiff[],
   field: string,
@@ -150,7 +156,6 @@ function parseApplication(value: unknown): LogtoApplication {
     name: row.name,
     type: row.type,
     oidcClientMetadata: asRecord(row.oidcClientMetadata),
-    customClientMetadata: asRecord(row.customClientMetadata),
     customData: asRecord(row.customData)
   }
 }
@@ -275,21 +280,14 @@ export class LogtoAdminClaimClient {
         'Redirect URIs',
         stringArray(application.oidcClientMetadata.redirectUris),
         desired.redirectUris,
-        sameStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris)
+        containsStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris)
       )
       addDiff(
         applicationDiff,
         'Post sign-out redirect URIs',
         stringArray(application.oidcClientMetadata.postLogoutRedirectUris),
         desired.postLogoutRedirectUris,
-        sameStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
-      )
-      addDiff(
-        applicationDiff,
-        'CORS allowed origins',
-        stringArray(application.customClientMetadata.corsAllowedOrigins),
-        desired.corsAllowedOrigins,
-        sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
+        containsStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
       )
     }
     const signInExperienceDiff: LogtoConfigurationDiff[] = []
@@ -298,12 +296,6 @@ export class LogtoAdminClaimClient {
     addDiff(signInExperienceDiff, 'Secondary identifiers', signInExperience.signUp.secondaryIdentifiers ?? [], [])
     addDiff(signInExperienceDiff, 'Password sign-up', signInExperience.signUp.password ?? null, false)
     addDiff(signInExperienceDiff, 'Sign-up verification', signInExperience.signUp.verify ?? null, false)
-    addDiff(
-      signInExperienceDiff,
-      'Skip required identifiers',
-      signInExperience.socialSignIn.skipRequiredIdentifiers ?? null,
-      true
-    )
     addDiff(
       signInExperienceDiff,
       'Social providers',
@@ -437,7 +429,6 @@ export class LogtoAdminClaimClient {
             redirectUris: desired.redirectUris,
             postLogoutRedirectUris: desired.postLogoutRedirectUris
           },
-          customClientMetadata: { corsAllowedOrigins: desired.corsAllowedOrigins },
           customData: { [MANAGED_APP_TAG]: MANAGED_APP_TAG_VALUE }
         })
       })
@@ -453,12 +444,11 @@ export class LogtoAdminClaimClient {
       body: JSON.stringify({
         oidcClientMetadata: {
           ...existing.oidcClientMetadata,
-          redirectUris: desired.redirectUris,
-          postLogoutRedirectUris: desired.postLogoutRedirectUris
-        },
-        customClientMetadata: {
-          ...existing.customClientMetadata,
-          corsAllowedOrigins: desired.corsAllowedOrigins
+          redirectUris: mergeStrings(existing.oidcClientMetadata.redirectUris, desired.redirectUris),
+          postLogoutRedirectUris: mergeStrings(
+            existing.oidcClientMetadata.postLogoutRedirectUris,
+            desired.postLogoutRedirectUris
+          )
         },
         customData: { ...existing.customData, [MANAGED_APP_TAG]: MANAGED_APP_TAG_VALUE }
       })
@@ -502,9 +492,8 @@ export class LogtoAdminClaimClient {
     return (
       application.type === 'SPA' &&
       (application.id === desired.applicationId || hasManagedTag(application)) &&
-      sameStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris) &&
-      sameStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris) &&
-      sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
+      containsStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris) &&
+      containsStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
     )
   }
 
@@ -589,13 +578,12 @@ export class LogtoAdminClaimClient {
 
   private async getSignInExperience(): Promise<LogtoSignInExperience> {
     const value = asRecord(await this.getJson('/api/sign-in-exp'))
-    if (!Array.isArray(value.socialSignInConnectorTargets) || !value.signIn || !value.signUp || !value.socialSignIn) {
+    if (!Array.isArray(value.socialSignInConnectorTargets) || !value.signIn || !value.signUp) {
       throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto returned an invalid sign-in experience')
     }
     return {
       signIn: asRecord(value.signIn),
       signUp: asRecord(value.signUp),
-      socialSignIn: asRecord(value.socialSignIn),
       socialSignInConnectorTargets: stringArray(value.socialSignInConnectorTargets),
       signInMode: value.signInMode
     }
@@ -614,7 +602,6 @@ export class LogtoAdminClaimClient {
       current.signUp.verify === false &&
       (secondaryIdentifiers === undefined ||
         (Array.isArray(secondaryIdentifiers) && secondaryIdentifiers.length === 0)) &&
-      current.socialSignIn.skipRequiredIdentifiers === true &&
       current.signInMode === 'SignInAndRegister' &&
       sameStrings(current.socialSignInConnectorTargets, targets)
     )
@@ -629,7 +616,6 @@ export class LogtoAdminClaimClient {
       body: JSON.stringify({
         signIn: { methods: [] },
         signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
-        socialSignIn: { ...current.socialSignIn, skipRequiredIdentifiers: true },
         socialSignInConnectorTargets: targets,
         signInMode: 'SignInAndRegister'
       })
