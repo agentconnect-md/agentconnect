@@ -25,6 +25,7 @@ import {
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { grantKeyHash } from '../../src/orchestrator/mcpProvider.js'
 import type { RelayControlSender } from '../../src/orchestrator/relayControl.js'
+import { OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 /**
@@ -289,7 +290,9 @@ describe('external-memory connections — secret/grant discipline', () => {
     expect(connectionResponse.statusCode).toBe(201)
     expect(connectionResponse.body).not.toContain('local-upstream-secret')
     const connectionId = (connectionResponse.json() as { id: string }).id
-    expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connectionId)).toEqual([])
+    expect(await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connectionId)).toEqual(
+      []
+    )
     expect(relay.assigns).toEqual([])
 
     const agent = await app.app.inject({
@@ -396,8 +399,10 @@ describe('external-memory connections — secret/grant discipline', () => {
     expect(created.body).not.toContain('upstream-secret')
     const dto = created.json() as { id: string; secretKeys: string[]; status: string; revision: number }
     expect(dto).toMatchObject({ secretKeys: ['apiKey'], status: 'probing', revision: 1 })
-    expect(await app.deps.repos.externalMemoryConnectionSecret.get(dto.id)).toEqual({ apiKey: 'upstream-secret' })
-    const grants = await app.deps.repos.externalMemoryGrant.activeForConnection(dto.id)
+    expect(await app.deps.repos.externalMemoryConnectionSecret.get(OrgId(DEFAULT_ORG_ID), dto.id)).toEqual({
+      apiKey: 'upstream-secret'
+    })
+    const grants = await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), dto.id)
     expect(grants).toHaveLength(1)
     expect(created.body).not.toContain(grants[0]!.key)
 
@@ -421,7 +426,9 @@ describe('external-memory connections — secret/grant discipline', () => {
     const app = build({ relay })
     const installationId = await createInstallation(app)
     const connection = await createConnection(app, installationId)
-    const firstGrant = (await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id))[0]!
+    const firstGrant = (
+      await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)
+    )[0]!
 
     const updated = await app.app.inject({
       method: 'PATCH',
@@ -441,7 +448,7 @@ describe('external-memory connections — secret/grant discipline', () => {
     // retirement (4) — revoke + bump commit together so the post-retirement
     // allowlist is republished strictly newer than any concurrent assignment.
     expect(rotated.json()).toMatchObject({ revision: 4, status: 'probing', probedRevision: null })
-    const active = await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)
+    const active = await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)
     expect(active).toHaveLength(1)
     expect(active[0]!.id).not.toBe(firstGrant.id)
     expect(rotated.body).not.toContain(active[0]!.key)
@@ -482,7 +489,9 @@ describe('external-memory connections — secret/grant discipline', () => {
       url: `${CONNECTIONS}/${connection.id}/grant/rotate`
     })
     expect(deferred.statusCode).toBe(503)
-    expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(2)
+    expect(
+      await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)
+    ).toHaveLength(2)
     expect(relay.assigns.at(-1)?.grantKeyHashes).toHaveLength(2)
     expect(relay.unassigns).toHaveLength(0)
 
@@ -494,7 +503,9 @@ describe('external-memory connections — secret/grant discipline', () => {
     expect(retried.statusCode, retried.body).toBe(200)
     // Overlap re-publish (3, reusing the pending grant) + fenced retirement (4).
     expect(retried.json()).toMatchObject({ revision: 4, status: 'probing' })
-    expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
+    expect(
+      await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)
+    ).toHaveLength(1)
     expect(relay.assigns.at(-1)).toMatchObject({ revision: 4 })
     expect(relay.assigns.at(-1)!.grantKeyHashes).toHaveLength(1)
     expect(relay.unassigns).toHaveLength(0)
@@ -533,7 +544,9 @@ describe('external-memory connections — secret/grant discipline', () => {
     })
     expect(first.statusCode).toBe(200)
     expect(await repo.get(DEF_ORG, connection.id)).toMatchObject({ revision: 2, config: { projectId: 'serialized' } })
-    expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
+    expect(
+      await app.deps.repos.externalMemoryGrant.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id)
+    ).toHaveLength(1)
   })
 
   it('a config-only PATCH republishes a concurrently replaced secret, never its stale pre-transaction read', async () => {
@@ -603,7 +616,7 @@ describe('external-memory connections — secret/grant discipline', () => {
     const installationId = await createInstallation(app)
     const connection = await createConnection(app, installationId)
     const grants = app.deps.repos.externalMemoryGrant
-    const firstGrant = (await grants.activeForConnection(connection.id))[0]!
+    const firstGrant = (await grants.activeForConnection(OrgId(DEFAULT_ORG_ID), connection.id))[0]!
 
     // Park the rotation at its overlap push's grant read (prepare committed:
     // revision 2, old+new active) so the config PATCH can slip in fully.
@@ -643,7 +656,7 @@ describe('external-memory connections — secret/grant discipline', () => {
     expect(last.revision).toBeGreaterThan(racerAssign.revision)
     expect(last.grantKeyHashes).toHaveLength(1)
     expect(last.grantKeyHashes).not.toContain(grantKeyHash(firstGrant.key))
-    const active = await realActive(connection.id)
+    const active = await realActive(OrgId(DEFAULT_ORG_ID), connection.id)
     expect(active).toHaveLength(1)
     expect(active[0]!.id).not.toBe(firstGrant.id)
   })

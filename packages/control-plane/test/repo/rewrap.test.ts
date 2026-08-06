@@ -20,7 +20,7 @@ import {
 } from '../../src/persistence/repositories/memory-connection.repo.js'
 import type { SecretCipher } from '../../src/secrets/cipher.js'
 import { seedAgent } from '../fixtures/seed.js'
-import { AgentId, BotId } from '../../src/domain/ids.js'
+import { AgentId, BotId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 /** The port-contract sealing fake: seal prefixes, open strips or passes through. */
@@ -89,6 +89,39 @@ async function seedAllSecretTables(): Promise<void> {
     }
   })
 
+  // Short-lived install-flow state — the table this sweep did not reach until
+  // per-org keys made an unswept value an unshreddable one.
+  const feishuIntegration = await prisma.integration.create({
+    data: {
+      id: randomUUID(),
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT,
+      botId: BOT,
+      platform: 'slack',
+      name: 'sweep-feishu'
+    }
+  })
+  await prisma.feishuAppRegistration.create({
+    data: {
+      id: randomUUID(),
+      targetKey: `${DEFAULT_ORG_ID}:${AGENT}`,
+      orgId: DEFAULT_ORG_ID,
+      agentId: AGENT,
+      fallbackRegion: 'lark',
+      transport: 'socket',
+      authorizationUrl: 'https://open.example.test/authorize',
+      providerDomain: 'open.example.test',
+      deviceCode: 'device-plain',
+      appSecret: 'feishu-app-secret-plain',
+      intervalMs: 5000,
+      nextPollAt: new Date('2026-01-01T00:00:00Z'),
+      expiresAt: new Date('2026-01-01T01:00:00Z'),
+      botId: BOT,
+      integrationId: feishuIntegration.id,
+      createdByUserId: DEFAULT_OWNER_ID
+    }
+  })
+
   await prisma.slackUserConfig.create({
     data: {
       orgId: DEFAULT_ORG_ID,
@@ -131,6 +164,7 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
       'deployment_secret',
       'external_memory_connection_secret',
       'external_memory_grant',
+      'feishu_app_registration',
       'hook_secret',
       'mcp_grant',
       'mcp_provider_secret',
@@ -143,6 +177,8 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     // connection secret both entries of its JSONB values map.
     expect(stats.every((s) => s.rows === 1 && s.skipped === 0)).toBe(true)
     expect(stats.find((s) => s.table === 'bot_secret')!.values).toBe(2)
+    // Both nullable columns were populated on the seeded registration row.
+    expect(stats.find((s) => s.table === 'feishu_app_registration')!.values).toBe(2)
     expect(stats.find((s) => s.table === 'external_memory_connection_secret')!.values).toBe(2)
 
     // At rest: sealed everywhere; nullable columns stay null; header NAMES readable.
@@ -177,24 +213,30 @@ describe('rewrapAllSecrets — converge lazy migration / post-rotation rewrap (r
     expect((await prisma.organizationEnvironmentSecret.findFirstOrThrow()).value).toBe('sealed:org-secret-plain')
 
     // The typed seams (same cipher) still hand back the original plaintexts.
-    expect(await new PgBotSecretStore(prisma, cipher).get(BotId(BOT))).toEqual({
+    expect(await new PgBotSecretStore(prisma, cipher).get(OrgId(DEFAULT_ORG_ID), BotId(BOT))).toEqual({
       botToken: 'xoxb-plain',
       appToken: 'xapp-plain',
       signingSecret: null,
       verificationToken: null,
       encryptKey: null
     })
-    expect(await new PgAgentSecretStore(prisma, cipher).get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-agent' })
+    expect(await new PgAgentSecretStore(prisma, cipher).get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({
+      API_KEY: 'sk-agent'
+    })
     const orgEntry = await prisma.organizationEnvironmentEntry.findFirstOrThrow({ where: { key: 'ORG_API_KEY' } })
-    expect(await new PgOrganizationEnvironmentSecretStore(prisma, cipher).values([orgEntry.id])).toEqual(
-      new Map([[orgEntry.id, 'org-secret-plain']])
-    )
-    expect(await new PgExternalMemoryConnectionSecretStore(prisma, cipher).get(MEM_CONNECTION)).toEqual({
+    expect(
+      await new PgOrganizationEnvironmentSecretStore(prisma, cipher).values(OrgId(DEFAULT_ORG_ID), [orgEntry.id])
+    ).toEqual(new Map([[orgEntry.id, 'org-secret-plain']]))
+    expect(
+      await new PgExternalMemoryConnectionSecretStore(prisma, cipher).get(OrgId(DEFAULT_ORG_ID), MEM_CONNECTION)
+    ).toEqual({
       apiKey: 'mem-plain',
       projectToken: 'mem-token-plain'
     })
     expect(
-      (await new PgExternalMemoryGrantRepo(prisma, cipher).activeForConnection(MEM_CONNECTION)).map((g) => g.key)
+      (
+        await new PgExternalMemoryGrantRepo(prisma, cipher).activeForConnection(OrgId(DEFAULT_ORG_ID), MEM_CONNECTION)
+      ).map((g) => g.key)
     ).toEqual(['memgrant-plain'])
 
     // Idempotent: a second sweep re-seals to the SAME values (no double prefix).

@@ -36,6 +36,7 @@ import type {
 import { visibilityWhere } from '../../authorization/policy.js'
 import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../../domain/ids.js'
 
 // The bot row plus its joined creator and current installs (for `agentIds` /
@@ -358,13 +359,21 @@ export class PgBotSecretStore implements BotSecretStore {
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(botId: BotId, material: BotSecretMaterial): Promise<void> {
+  async put(orgId: OrgId, botId: BotId, material: BotSecretMaterial): Promise<void> {
+    // `bot_secret` is keyed by botId alone, so the upsert below cannot carry the
+    // org in its predicate — check the parent row once instead. A mismatch is a
+    // caller bug: refuse rather than seal one org's material onto another's bot.
+    if ((await this.db.bot.count({ where: { id: botId, orgId } })) === 0) {
+      throw new Error('bot secret write outside its organization')
+    }
+    const scope = orgScope(orgId)
     const sealed = {
-      botToken: await this.cipher.seal(material.botToken),
-      appToken: material.appToken === null ? null : await this.cipher.seal(material.appToken),
-      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret),
-      verificationToken: material.verificationToken == null ? null : await this.cipher.seal(material.verificationToken),
-      encryptKey: material.encryptKey == null ? null : await this.cipher.seal(material.encryptKey)
+      botToken: await this.cipher.seal(material.botToken, scope),
+      appToken: material.appToken === null ? null : await this.cipher.seal(material.appToken, scope),
+      signingSecret: material.signingSecret === null ? null : await this.cipher.seal(material.signingSecret, scope),
+      verificationToken:
+        material.verificationToken == null ? null : await this.cipher.seal(material.verificationToken, scope),
+      encryptKey: material.encryptKey == null ? null : await this.cipher.seal(material.encryptKey, scope)
     }
     await this.db.botSecret.upsert({
       where: { botId },
@@ -373,21 +382,23 @@ export class PgBotSecretStore implements BotSecretStore {
     })
   }
 
-  async get(botId: BotId): Promise<BotSecretMaterial | null> {
-    const s = await this.db.botSecret.findUnique({ where: { botId } })
+  async get(orgId: OrgId, botId: BotId): Promise<BotSecretMaterial | null> {
+    // Fences through the parent relation: a cross-org pair reads as "no row".
+    const s = await this.db.botSecret.findFirst({ where: { botId, bot: { orgId } } })
     if (!s) return null
+    const scope = orgScope(orgId)
     return {
-      botToken: await this.cipher.open(s.botToken),
-      appToken: s.appToken === null ? null : await this.cipher.open(s.appToken),
-      signingSecret: s.signingSecret === null ? null : await this.cipher.open(s.signingSecret),
-      verificationToken: s.verificationToken === null ? null : await this.cipher.open(s.verificationToken),
-      encryptKey: s.encryptKey === null ? null : await this.cipher.open(s.encryptKey)
+      botToken: await this.cipher.open(s.botToken, scope),
+      appToken: s.appToken === null ? null : await this.cipher.open(s.appToken, scope),
+      signingSecret: s.signingSecret === null ? null : await this.cipher.open(s.signingSecret, scope),
+      verificationToken: s.verificationToken === null ? null : await this.cipher.open(s.verificationToken, scope),
+      encryptKey: s.encryptKey === null ? null : await this.cipher.open(s.encryptKey, scope)
     }
   }
 
-  async delete(botId: BotId): Promise<void> {
+  async delete(orgId: OrgId, botId: BotId): Promise<void> {
     // deleteMany → idempotent (the FK cascade may already have removed it).
-    await this.db.botSecret.deleteMany({ where: { botId } })
+    await this.db.botSecret.deleteMany({ where: { botId, bot: { orgId } } })
   }
 }
 

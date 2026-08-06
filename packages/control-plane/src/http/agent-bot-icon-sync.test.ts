@@ -149,7 +149,7 @@ describe('syncAgentBotIcons', () => {
             },
             bot: { getUnscoped: async (id) => bots.get(id) ?? null },
             botSecret: {
-              get: async (id) => {
+              get: async (_orgId, id) => {
                 secretGets.push(id)
                 return {
                   botToken: `token-${id}`,

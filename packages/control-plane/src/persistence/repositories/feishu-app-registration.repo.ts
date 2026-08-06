@@ -13,6 +13,7 @@ import type {
   FeishuAppRegistrationStore
 } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import type { FeishuRegion } from '@agentconnect.md/protocol'
 
@@ -26,7 +27,12 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
     private readonly cipher: SecretCipher
   ) {}
 
+  // These rows are worked by a background poller that serves no tenant, so the
+  // at-rest key scope comes from the row itself (ports.ts documents why: the
+  // polling methods are lease-fenced system-tier, org-scoped-data-layer.md §3.4).
+  // On `get` the query is org-fenced first, so the row's org IS the caller's.
   private async toRecord(row: FeishuAppRegistration): Promise<FeishuAppRegistrationRecord> {
+    const scope = orgScope(OrgId(row.orgId))
     return {
       id: row.id,
       targetKey: row.targetKey,
@@ -37,14 +43,14 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
       transport: row.transport,
       authorizationUrl: row.authorizationUrl,
       providerDomain: row.providerDomain,
-      deviceCode: row.deviceCode === null ? null : await this.cipher.open(row.deviceCode),
+      deviceCode: row.deviceCode === null ? null : await this.cipher.open(row.deviceCode, scope),
       intervalMs: row.intervalMs,
       nextPollAt: row.nextPollAt,
       expiresAt: row.expiresAt,
       status: row.status,
       failureReason: row.failureReason,
       appId: row.appId,
-      appSecret: row.appSecret === null ? null : await this.cipher.open(row.appSecret),
+      appSecret: row.appSecret === null ? null : await this.cipher.open(row.appSecret, scope),
       resolvedRegion: region(row.resolvedRegion),
       botId: BotId(row.botId),
       integrationId: IntegrationId(row.integrationId),
@@ -68,7 +74,7 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
         transport: input.transport,
         authorizationUrl: input.authorizationUrl,
         providerDomain: input.providerDomain,
-        deviceCode: await this.cipher.seal(input.deviceCode),
+        deviceCode: await this.cipher.seal(input.deviceCode, orgScope(input.orgId)),
         intervalMs: input.intervalMs,
         nextPollAt: input.nextPollAt,
         expiresAt: input.expiresAt,
@@ -80,7 +86,13 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
     return this.toRecord(row)
   }
 
-  async get(id: string): Promise<FeishuAppRegistrationRecord | null> {
+  async get(orgId: OrgId, id: string): Promise<FeishuAppRegistrationRecord | null> {
+    const row = await this.prisma.feishuAppRegistration.findUnique({ where: { id, orgId } })
+    return row ? this.toRecord(row) : null
+  }
+
+  /** System-tier read for the lease-fenced worker paths below (see ports.ts). */
+  private async getSystem(id: string): Promise<FeishuAppRegistrationRecord | null> {
     const row = await this.prisma.feishuAppRegistration.findUnique({ where: { id } })
     return row ? this.toRecord(row) : null
   }
@@ -150,7 +162,7 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
       },
       data: { claimToken, claimedUntil }
     })
-    return claimed.count === 1 ? this.get(id) : null
+    return claimed.count === 1 ? this.getSystem(id) : null
   }
 
   async release(
@@ -175,17 +187,21 @@ export class PgFeishuAppRegistrationStore implements FeishuAppRegistrationStore 
     claimToken: string,
     input: { appId: string; appSecret: string; region: FeishuRegion }
   ): Promise<FeishuAppRegistrationRecord | null> {
+    // The key scope has to be known BEFORE the sealing update, and this path is
+    // fenced by the claim token rather than an org — read the owner off the row.
+    const owner = await this.prisma.feishuAppRegistration.findUnique({ where: { id }, select: { orgId: true } })
+    if (!owner) return null
     const updated = await this.prisma.feishuAppRegistration.updateMany({
       where: { id, status: 'pending', claimToken },
       data: {
         status: 'authorized',
         appId: input.appId,
-        appSecret: await this.cipher.seal(input.appSecret),
+        appSecret: await this.cipher.seal(input.appSecret, orgScope(OrgId(owner.orgId))),
         resolvedRegion: input.region,
         deviceCode: null
       }
     })
-    return updated.count === 1 ? this.get(id) : null
+    return updated.count === 1 ? this.getSystem(id) : null
   }
 
   async releaseAuthorized(id: string, claimToken: string): Promise<void> {

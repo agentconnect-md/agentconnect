@@ -88,7 +88,7 @@ async function syncBotIconUntilCurrent(
 ): Promise<void> {
   let state = await currentBotIconState(deps, botId)
   while (state) {
-    const secret = await deps.repos.botSecret.get(state.bot.id)
+    const secret = await deps.repos.botSecret.get(state.bot.orgId, state.bot.id)
     if (!secret) {
       log.warn(
         { agentId: state.agent.id, botId: state.bot.id, platform: state.bot.platform },

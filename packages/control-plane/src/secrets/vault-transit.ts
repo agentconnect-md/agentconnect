@@ -4,12 +4,19 @@
  *
  * Envelope encryption as a service: the data key never leaves Vault; the CP
  * sends base64 plaintext to `transit/encrypt/<key>` and stores the returned
- * self-describing `vault:vN:…` ciphertext in the existing text columns.
+ * ciphertext, behind this deployment's envelope tag, in the existing text
+ * columns. WHICH key is chosen comes from the {@link SecretScope} the caller
+ * passes — the deployment's key, or `<orgKeyPrefix><orgId>` — so an
+ * organization's material can be destroyed with its key
+ * (docs/designs/per-org-secret-encryption.md).
  *
  * Contract (pinned on the port):
- * - `open` PASSES THROUGH values it did not seal (no `vault:vN:` prefix ⇒
- *   return as-is): existing plaintext rows keep reading after the flip, and the
- *   next write re-seals them — the rollout is online, no backfill required.
+ * - `open` PASSES THROUGH values it did not seal (neither the envelope tag nor
+ *   a bare `vault:vN:` prefix ⇒ return as-is): existing plaintext rows keep
+ *   reading after the flip, and the next write re-seals them — the rollout is
+ *   online, no backfill required.
+ * - A value sealed under one scope does NOT open under another: Transit rejects
+ *   a ciphertext presented to a different key, which is the cross-tenant fence.
  * - No argument or response body is ever logged; errors carry only the HTTP
  *   status and Vault's `errors[]` strings.
  *
@@ -20,14 +27,17 @@
  * that exact login wire shape ({role, jwt}), so nothing here is bound to
  * Kubernetes — a k8s ServiceAccount token is just the common jwtPath.
  *
- * `open` results are cached in-process keyed by ciphertext (bounded, insertion-
- * order eviction): reconcile opens every owned agent's secrets per register, and
- * Transit ciphertexts are stable until re-sealed, so the cache turns that into
- * one network call per distinct value. `seal` is never cached — Transit returns
- * fresh ciphertext per call by design.
+ * `open` results are cached in-process keyed by key name AND ciphertext
+ * (bounded, insertion-order eviction): reconcile opens every owned agent's
+ * secrets per register, and Transit ciphertexts are stable until re-sealed, so
+ * the cache turns that into one network call per distinct value. The key name
+ * belongs in the cache key because the stored string alone no longer implies
+ * one. `seal` is never cached — Transit returns fresh ciphertext per call by
+ * design.
  */
 import { readFile } from 'node:fs/promises'
 import type { SecretCipher } from './cipher.js'
+import { SECRET_ENVELOPE_PREFIX, type SecretScope } from './scope.js'
 
 type FetchLike = typeof fetch
 
@@ -37,8 +47,10 @@ export type VaultTransitAuth =
 export interface VaultTransitOpts {
   /** Vault origin, e.g. `https://vault.example.com:8200`. */
   addr: string
-  /** Transit key name (`transit/encrypt/<key>`). */
+  /** Deployment-scope transit key name (`transit/encrypt/<key>`). */
   key: string
+  /** Org-scope key names are this prefix + the org id. MUST NOT prefix `key`. */
+  orgKeyPrefix: string
   /** Transit engine mount path (default `transit`). */
   mount?: string
   /** Vault Enterprise namespace (sent as `X-Vault-Namespace`). */
@@ -60,6 +72,7 @@ const RENEW_FRACTION = 0.8
 export class VaultTransitSecretCipher implements SecretCipher {
   private readonly base: string
   private readonly key: string
+  private readonly orgKeyPrefix: string
   private readonly mount: string
   private readonly namespace: string | undefined
   private readonly auth: VaultTransitAuth
@@ -74,6 +87,7 @@ export class VaultTransitSecretCipher implements SecretCipher {
   constructor(opts: VaultTransitOpts) {
     this.base = `${opts.addr.replace(/\/+$/, '')}/v1`
     this.key = opts.key
+    this.orgKeyPrefix = opts.orgKeyPrefix
     this.mount = opts.mount ?? 'transit'
     this.namespace = opts.namespace
     this.auth = opts.auth
@@ -82,24 +96,43 @@ export class VaultTransitSecretCipher implements SecretCipher {
     this.openCacheMax = opts.openCacheMax ?? 5000
   }
 
-  async seal(plaintext: string): Promise<string> {
-    const data = await this.transit('encrypt', {
+  /**
+   * The key a scope resolves to. Org keys are created lazily by Transit on the
+   * first encrypt (the policy must permit creation on that path); nothing here
+   * is coupled to organization creation.
+   */
+  private keyFor(scope: SecretScope): string {
+    return scope.kind === 'deployment' ? this.key : `${this.orgKeyPrefix}${scope.orgId}`
+  }
+
+  async seal(plaintext: string, scope: SecretScope): Promise<string> {
+    const data = await this.transit('encrypt', this.keyFor(scope), {
       plaintext: Buffer.from(plaintext, 'utf8').toString('base64')
     })
     if (typeof data.ciphertext !== 'string') throw new Error('vault transit encrypt: no ciphertext in response')
-    return data.ciphertext
+    return `${SECRET_ENVELOPE_PREFIX}${data.ciphertext}`
   }
 
-  async open(stored: string): Promise<string> {
-    // The pass-through arm of the contract: a value without the transit prefix
-    // was never sealed (legacy plaintext row) — return it unchanged.
-    if (!CIPHERTEXT_RE.test(stored)) return stored
-    const hit = this.openCache.get(stored)
+  async open(stored: string, scope: SecretScope): Promise<string> {
+    // Three arms, in order (docs/designs/per-org-secret-encryption.md §4):
+    //   envelope-tagged ⇒ scoped value, opens under THIS scope's key — a value
+    //     of another scope fails here, which is the reason scope is a parameter;
+    //   bare `vault:vN:` ⇒ sealed before scoping existed, opens under the
+    //     deployment key regardless of scope (the migration arm, §7);
+    //   anything else ⇒ never sealed, return unchanged (pass-through contract).
+    const scoped = stored.startsWith(SECRET_ENVELOPE_PREFIX)
+    if (!scoped && !CIPHERTEXT_RE.test(stored)) return stored
+    const key = scoped ? this.keyFor(scope) : this.key
+    const ciphertext = scoped ? stored.slice(SECRET_ENVELOPE_PREFIX.length) : stored
+    // Cache by KEY + ciphertext: the stored string no longer implies a key, and
+    // two scopes must never share an entry.
+    const cacheKey = `${key}\u0000${ciphertext}`
+    const hit = this.openCache.get(cacheKey)
     if (hit !== undefined) return hit
-    const data = await this.transit('decrypt', { ciphertext: stored })
+    const data = await this.transit('decrypt', key, { ciphertext })
     if (typeof data.plaintext !== 'string') throw new Error('vault transit decrypt: no plaintext in response')
     const value = Buffer.from(data.plaintext, 'base64').toString('utf8')
-    this.cacheOpen(stored, value)
+    this.cacheOpen(cacheKey, value)
     return value
   }
 
@@ -114,9 +147,10 @@ export class VaultTransitSecretCipher implements SecretCipher {
 
   private async transit(
     op: 'encrypt' | 'decrypt',
+    key: string,
     body: Record<string, string>
   ): Promise<{ ciphertext?: string; plaintext?: string }> {
-    const path = `${this.mount}/${op}/${this.key}`
+    const path = `${this.mount}/${op}/${key}`
     let res = await this.post(path, body, await this.token())
     if (res.status === 403 && this.auth.method === 'jwt') {
       // Client token revoked/expired server-side — drop it, re-login, retry ONCE.

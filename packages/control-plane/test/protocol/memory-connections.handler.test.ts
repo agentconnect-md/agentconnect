@@ -66,10 +66,10 @@ async function fixture() {
     config: { projectId: 'p2' },
     createdByUserId: DEFAULT_OWNER_ID
   })
-  await secrets.put(connection1.id, { apiKey: 'upstream-secret-1' })
-  await secrets.put(connection2.id, { apiKey: 'upstream-secret-2' })
-  const grant1 = await grants.mintFor(connection1.id)
-  await grants.mintFor(connection2.id)
+  await secrets.put(OrgId(DEFAULT_ORG_ID), connection1.id, { apiKey: 'upstream-secret-1' })
+  await secrets.put(OrgId(DEFAULT_ORG_ID), connection2.id, { apiKey: 'upstream-secret-2' })
+  const grant1 = await grants.mintFor(OrgId(DEFAULT_ORG_ID), connection1.id)
+  await grants.mintFor(OrgId(DEFAULT_ORG_ID), connection2.id)
 
   await seedDaemon(prisma, DAEMON_1)
   await seedDaemon(prisma, DAEMON_2)
@@ -106,7 +106,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
       config: { projectId: 'local' },
       createdByUserId: DEFAULT_OWNER_ID
     })
-    await secrets.put(connection.id, { apiKey: 'daemon-private-local-secret' })
+    await secrets.put(OrgId(DEFAULT_ORG_ID), connection.id, { apiKey: 'daemon-private-local-secret' })
     await seedDaemon(prisma, DAEMON_1)
     await seedAgent(prisma, AGENT_1, { daemonId: DAEMON_1 })
     await prisma.agent.update({

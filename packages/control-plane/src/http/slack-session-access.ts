@@ -170,7 +170,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     credentialRevision: number,
     signal: AbortSignal
   ): Promise<Decision> {
-    const secret = await this.deps.botSecrets.get(BotId(botId)).catch(() => null)
+    const secret = await this.deps.botSecrets.get(scope.orgId, BotId(botId)).catch(() => null)
     if (!secret?.botToken) return 'unknown'
     try {
       const audience = await this.conversationAudience(scope.resourceKey, secret.botToken, signal)

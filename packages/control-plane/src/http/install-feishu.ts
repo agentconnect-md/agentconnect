@@ -76,7 +76,7 @@ export async function installNewFeishuBot(
   }
   // Feishu reuses the established two-slot secret shape:
   // botToken = appSecret (secret), appToken = appId (identifier).
-  await deps.repos.botSecret.put(botId, {
+  await deps.repos.botSecret.put(orgId, botId, {
     botToken: appSecret,
     appToken: appId,
     signingSecret: null,
@@ -106,7 +106,7 @@ export async function installNewFeishuBot(
   // now assembles the spec payload (`orchestrator/placement.ts`). It was created
   // or matched above, so this read always hits.
   const [secret, channels, botRow] = await Promise.all([
-    deps.repos.botSecret.get(botId),
+    deps.repos.botSecret.get(orgId, botId),
     deps.repos.integrationChannel.listForIntegration(id),
     deps.repos.bot.get(orgId, botId)
   ])

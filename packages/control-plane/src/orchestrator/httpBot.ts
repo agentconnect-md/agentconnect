@@ -142,7 +142,7 @@ export class HttpBotOrchestrator {
       await this.unassign(bot)
       return
     }
-    const secret = await this.botSecret.get(bot.id)
+    const secret = await this.botSecret.get(bot.orgId, bot.id)
     if (!secret) {
       this.log.warn({ botId }, 'http-bot: no secret for http bot — cannot assign')
       return
@@ -208,7 +208,7 @@ export class HttpBotOrchestrator {
         ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
     )
-    const secret = await this.botSecret.get(bot.id)
+    const secret = await this.botSecret.get(bot.orgId, bot.id)
     if (secret) await this.pushSpecs(compiled, secret, bot)
   }
 
@@ -327,7 +327,7 @@ export class HttpBotOrchestrator {
     for (const bot of bots) {
       const compiled = await this.compile(bot)
       if (!compiled) continue
-      const secret = await this.botSecret.get(bot.id)
+      const secret = await this.botSecret.get(bot.orgId, bot.id)
       if (!secret) continue
       if (this.missingAssignSecrets(bot, secret).length > 0) continue
       // Built OUTSIDE the try on purpose: the catch below means "dead socket",

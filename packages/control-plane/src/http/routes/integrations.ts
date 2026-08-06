@@ -106,7 +106,7 @@ export function integrationRoutes(deps: HttpDeps) {
       // caller here is already on the socket-transport arm, so the projector
       // returns the same direct-mode payload this path emitted before.
       const [secret, channels, owner, bot] = await Promise.all([
-        deps.repos.botSecret.get(i.botId),
+        deps.repos.botSecret.get(i.orgId, i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id),
         deps.repos.agent.get(i.orgId, i.agentId),
         deps.repos.bot.get(i.orgId, i.botId)

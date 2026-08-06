@@ -49,6 +49,7 @@ import type {
 } from '../ports.js'
 import { toDbPlatform } from '../platform.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { AgentId, HookId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
 import { ORPHANED_RUN_REASON } from './cron.repo.js'
 import {
@@ -3105,8 +3106,13 @@ export class PgHookSecretStore implements HookSecretStore {
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(hookId: HookId, hmacSecret: string): Promise<void> {
-    const sealed = await this.cipher.seal(hmacSecret)
+  async put(orgId: OrgId, hookId: HookId, hmacSecret: string): Promise<void> {
+    // `hook_secret` is keyed by hookId alone, so the upsert cannot carry the org
+    // in its predicate — check the parent row once instead.
+    if ((await this.db.hookDef.count({ where: { id: hookId, orgId } })) === 0) {
+      throw new Error('hook secret write outside its organization')
+    }
+    const sealed = await this.cipher.seal(hmacSecret, orgScope(orgId))
     await this.db.hookSecret.upsert({
       where: { hookId },
       create: { hookId, hmacSecret: sealed },
@@ -3114,12 +3120,13 @@ export class PgHookSecretStore implements HookSecretStore {
     })
   }
 
-  async get(hookId: HookId): Promise<string | null> {
-    const s = await this.db.hookSecret.findUnique({ where: { hookId } })
-    return s ? this.cipher.open(s.hmacSecret) : null
+  async get(orgId: OrgId, hookId: HookId): Promise<string | null> {
+    const s = await this.db.hookSecret.findFirst({ where: { hookId, hook: { orgId } } })
+    return s ? this.cipher.open(s.hmacSecret, orgScope(orgId)) : null
   }
 
-  async delete(hookId: HookId): Promise<void> {
-    await this.db.hookSecret.deleteMany({ where: { hookId } }) // idempotent (FK cascade may have run)
+  async delete(orgId: OrgId, hookId: HookId): Promise<void> {
+    // idempotent (FK cascade may have run)
+    await this.db.hookSecret.deleteMany({ where: { hookId, hook: { orgId } } })
   }
 }

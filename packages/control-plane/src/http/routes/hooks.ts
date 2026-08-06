@@ -412,7 +412,7 @@ export function hookRoutes(deps: HttpDeps) {
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
-        if (hmacSecret) await deps.repos.hookSecret.put(hookId, hmacSecret)
+        if (hmacSecret) await deps.repos.hookSecret.put(orgOf(req), hookId, hmacSecret)
         void deps.repos.audit
           .append({
             kind: 'hook_change',

@@ -61,7 +61,7 @@ async function connectionDto(
     id: row.id,
     installationId: row.installationId,
     config: row.config,
-    secretKeys: await deps.repos.externalMemoryConnectionSecret.keys(row.id),
+    secretKeys: await deps.repos.externalMemoryConnectionSecret.keys(row.orgId, row.id),
     status: row.status,
     revision: row.revision,
     probedRevision: row.probedRevision,
@@ -109,7 +109,7 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
           if (daemonIds.size === 0) return true
           spec = stdioMemoryConnectionSpec(connection, installation, secrets)
         } else {
-          const grants = await deps.repos.externalMemoryGrant.activeForConnection(connection.id)
+          const grants = await deps.repos.externalMemoryGrant.activeForConnection(connection.orgId, connection.id)
           if (grants.length === 0) return false
           deps.relayControl.memoryConnectionAssign(
             memoryRcAssign(
@@ -348,7 +348,7 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         if (!installation) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
         }
-        const priorSecrets = (await deps.repos.externalMemoryConnectionSecret.get(existing.id)) ?? {}
+        const priorSecrets = (await deps.repos.externalMemoryConnectionSecret.get(existing.orgId, existing.id)) ?? {}
         const secrets = req.body.secrets ?? priorSecrets
         const config = req.body.config ?? existing.config
         const configError = boundedMemoryConfig(config)

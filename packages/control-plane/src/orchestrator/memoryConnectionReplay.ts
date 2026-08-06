@@ -31,9 +31,9 @@ export async function replayMemoryConnectionsTo(
     try {
       const installation = await deps.installations.get(connection.installationId)
       if (!installation || installation.transport !== 'streamable-http' || !installation.endpoint) continue
-      const grants = await deps.grants.activeForConnection(connection.id)
+      const grants = await deps.grants.activeForConnection(connection.orgId, connection.id)
       if (grants.length === 0) continue
-      const secrets = (await deps.secrets.get(connection.id)) ?? {}
+      const secrets = (await deps.secrets.get(connection.orgId, connection.id)) ?? {}
       channel.send(
         'rc/memoryconnection-assign',
         memoryRcAssign(
@@ -67,7 +67,7 @@ export async function syncMemoryConnectionsToDaemons(
             const installation = await deps.installations.get(connection.installationId)
             if (!installation) return
             if (installation.transport === 'stdio') {
-              const secrets = (await deps.secrets.get(connection.id)) ?? {}
+              const secrets = (await deps.secrets.get(connection.orgId, connection.id)) ?? {}
               await deps.control.memoryConnectionUpsert(
                 daemon.id,
                 stdioMemoryConnectionSpec(connection, installation, secrets)
@@ -75,8 +75,8 @@ export async function syncMemoryConnectionsToDaemons(
               return
             }
             const [grants, secretKeys] = await Promise.all([
-              deps.grants.activeForConnection(connection.id),
-              deps.secrets.keys(connection.id)
+              deps.grants.activeForConnection(connection.orgId, connection.id),
+              deps.secrets.keys(connection.orgId, connection.id)
             ])
             const grant = grants.at(-1)
             if (!grant) return

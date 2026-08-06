@@ -570,8 +570,8 @@ export function agentRoutes(deps: HttpDeps) {
     }
 
     // The agent's secret KEY NAMES for the DTO ([] when none) — never the values.
-    const secretKeysOf = async (agentId: string): Promise<string[]> =>
-      (await deps.repos.agentSecret.keys([AgentId(agentId)])).get(agentId) ?? []
+    const secretKeysOf = async (orgId: OrgId, agentId: string): Promise<string[]> =>
+      (await deps.repos.agentSecret.keys(orgId, [AgentId(agentId)])).get(agentId) ?? []
 
     /** Assigned organization rows for ONE agent's DTO. Metadata only — this path
      *  never decrypts an organization secret (design §6). */
@@ -673,7 +673,7 @@ export function agentRoutes(deps: HttpDeps) {
           for (const name of added) {
             const provider = base ? byName.get(name) : undefined
             if (!provider) continue
-            const grant = (await deps.repos.mcpGrant.activeForProvider(provider.id))[0]
+            const grant = (await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))[0]
             if (grant) await send(() => deps.control.mcpServerUpsert(daemonId, mcpProxyDef(provider, grant.key, base!)))
           }
         }
@@ -864,7 +864,7 @@ export function agentRoutes(deps: HttpDeps) {
         const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
         if (!installation) return false
         if (installation.transport === 'stdio') {
-          const secrets = (await deps.repos.externalMemoryConnectionSecret.get(connection.id)) ?? {}
+          const secrets = (await deps.repos.externalMemoryConnectionSecret.get(connection.orgId, connection.id)) ?? {}
           await deps.control.memoryConnectionUpsert(
             daemonId,
             stdioMemoryConnectionSpec(connection, installation, secrets)
@@ -872,8 +872,10 @@ export function agentRoutes(deps: HttpDeps) {
           return true
         }
         const [grant, secretKeys, base] = await Promise.all([
-          deps.repos.externalMemoryGrant.activeForConnection(connection.id).then((rows) => rows.at(-1)),
-          deps.repos.externalMemoryConnectionSecret.keys(connection.id),
+          deps.repos.externalMemoryGrant
+            .activeForConnection(connection.orgId, connection.id)
+            .then((rows) => rows.at(-1)),
+          deps.repos.externalMemoryConnectionSecret.keys(connection.orgId, connection.id),
           relayProxyBase()
         ])
         if (!grant || !base) return false
@@ -1255,7 +1257,7 @@ export function agentRoutes(deps: HttpDeps) {
             ...toDto(
               agent,
               ctxOf(req),
-              await secretKeysOf(agent.id),
+              await secretKeysOf(agent.orgId, agent.id),
               await hookKindsOf(deps, agent.id),
               iconBasesOf(deps),
               sandboxPolicy,
@@ -1302,7 +1304,10 @@ export function agentRoutes(deps: HttpDeps) {
         const ctx = ctxOf(req)
         const rows = await deps.repos.agent.list(orgOf(req), ctx)
         const hookKinds = await deps.repos.hook.kindsByAgent(orgOf(req))
-        const secretKeys = await deps.repos.agentSecret.keys(rows.map((a) => a.id))
+        const secretKeys = await deps.repos.agentSecret.keys(
+          orgOf(req),
+          rows.map((a) => a.id)
+        )
         // ONE batched resolve for the whole page (design §6) — never a query per agent.
         const organizationEnvironment = await organizationEnvironmentOfAll(orgOf(req), rows)
         const daemonIds = [...new Set(rows.flatMap((a) => (a.daemonId ? [a.daemonId] : [])))]
@@ -1345,7 +1350,7 @@ export function agentRoutes(deps: HttpDeps) {
         return toDto(
           agent,
           ctxOf(req),
-          await secretKeysOf(agent.id),
+          await secretKeysOf(agent.orgId, agent.id),
           await hookKindsOf(deps, agent.id),
           iconBasesOf(deps),
           await sandboxPolicyFor(deps, agent),
@@ -1702,7 +1707,7 @@ export function agentRoutes(deps: HttpDeps) {
           return toDto(
             agent,
             ctxOf(req),
-            await secretKeysOf(agent.id),
+            await secretKeysOf(agent.orgId, agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
             sandboxPolicy,
@@ -1847,7 +1852,7 @@ export function agentRoutes(deps: HttpDeps) {
           return toDto(
             converted,
             ctxOf(req),
-            await secretKeysOf(converted.id),
+            await secretKeysOf(converted.orgId, converted.id),
             await hookKindsOf(deps, converted.id),
             iconBasesOf(deps),
             await sandboxPolicyFor(deps, converted),
@@ -2049,7 +2054,7 @@ export function agentRoutes(deps: HttpDeps) {
               return toDto(
                 repaired,
                 ctxOf(req),
-                await secretKeysOf(repaired.id),
+                await secretKeysOf(repaired.orgId, repaired.id),
                 await hookKindsOf(deps, repaired.id),
                 iconBasesOf(deps),
                 sandboxPolicyOf(target),
@@ -2094,7 +2099,7 @@ export function agentRoutes(deps: HttpDeps) {
           return toDto(
             moved,
             ctxOf(req),
-            await secretKeysOf(moved.id),
+            await secretKeysOf(moved.orgId, moved.id),
             await hookKindsOf(deps, moved.id),
             iconBasesOf(deps),
             sandboxPolicyOf(target),
@@ -2261,7 +2266,7 @@ export function agentRoutes(deps: HttpDeps) {
           return toDto(
             agent,
             ctxOf(req),
-            await secretKeysOf(agent.id),
+            await secretKeysOf(agent.orgId, agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
             await sandboxPolicyFor(deps, agent),
@@ -2342,7 +2347,7 @@ export function agentRoutes(deps: HttpDeps) {
           return toDto(
             agent,
             ctxOf(req),
-            await secretKeysOf(agent.id),
+            await secretKeysOf(agent.orgId, agent.id),
             await hookKindsOf(deps, agent.id),
             iconBasesOf(deps),
             await sandboxPolicyFor(deps, agent),
