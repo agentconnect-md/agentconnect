@@ -37,6 +37,7 @@ import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-v
 import { NotificationProvider } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
+import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
 
 interface NavItem {
   href: string
@@ -396,8 +397,9 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const params = useParams<{ slug?: string }>()
   const { orgPath, orgs, activeOrg, setActiveOrg } = useOrgs()
   const { openModal } = useModal()
-  const { daemons, agents, crons, allSessions } = useConsoleData()
+  const { daemons, agents, crons, allSessions, sessionAccessSnapshot, usageAccessSnapshot } = useConsoleData()
   useDaemonNotifier(daemons)
+  useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
   // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
   const [mobileSheet, setMobileSheet] = useState<'more' | 'org' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)
@@ -773,7 +775,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                   </button>
                 )}
                 <div className="flex-none">
-                  <NotificationBell placement="top-left" />
+                  <NotificationBell variant="rail" />
                 </div>
                 {/* Same 22px box as the brand row's search button, and the same 2px
               inset from the rail's edge — the two sit on one vertical centre line. */}
@@ -930,7 +932,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
                       <Icon name="search" size={20} />
                     </button>
-                    <NotificationBell />
+                    <NotificationBell variant="mobile" />
                     <button
                       className="mappbtn"
                       aria-label="Toggle theme"

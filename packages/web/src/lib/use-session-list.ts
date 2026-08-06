@@ -3,6 +3,7 @@
 import { useCallback, useMemo } from 'react'
 import useSWRInfinite from 'swr/infinite'
 import { fetchConversations, fetchSessions, type SessionListFilters, type SessionListPage } from '@/lib/api'
+import { accessNotificationSnapshot } from '@/lib/access-notification-snapshot'
 import { consoleKeys } from '@/lib/swr-keys'
 
 const SESSION_PAGE_LIMIT = 50
@@ -120,6 +121,16 @@ export function useSessionList(
     ],
     [pages]
   )
+  const accessSnapshot = useMemo(
+    () =>
+      accessNotificationSnapshot(pages[0], {
+        authoritative: !agentId && !integration && !platform && !channel && !triggeredBy && !githubRepoId,
+        isLoading,
+        isValidating,
+        error
+      }),
+    [agentId, channel, error, githubRepoId, integration, isLoading, isValidating, pages, platform, triggeredBy]
+  )
   const loadingMore = isValidating && size > pages.length
   const loadMore = useCallback(async () => {
     if (!nextCursor || loadingMore) return
@@ -137,6 +148,7 @@ export function useSessionList(
     orgHasSessions: pages[0]?.orgHasSessions,
     accessSyncDegraded: pages.some((page) => page.accessSyncDegraded === true),
     accessIssues,
+    accessSnapshot,
     nextCursor,
     loadingMore,
     loadMore,

@@ -12,6 +12,7 @@ import useSWR, { useSWRConfig } from 'swr'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useSessionList } from '@/lib/use-session-list'
+import { accessNotificationSnapshot, type AccessNotificationSnapshot } from '@/lib/access-notification-snapshot'
 import {
   AGENTS,
   INTEGRATIONS,
@@ -173,6 +174,9 @@ interface ConsoleData {
   deleteBot: (id: string) => Promise<void>
   /** Last-24h usage rollup (GET /usage?range=d1); null until loaded / on failure. */
   usage24h: UsageDto | null
+  /** Trustworthy unfiltered access snapshots; null while loading, validating, failed, or absent on an older server. */
+  sessionAccessSnapshot: AccessNotificationSnapshot | null
+  usageAccessSnapshot: AccessNotificationSnapshot | null
   /** Resolve an agent by id; undefined for an unknown id (live console, no demo fallback). */
   getAgent: (id: string) => Agent | undefined
   getSessions: (id: string) => Session[]
@@ -796,7 +800,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   } = useSWR<MemberDto[]>(MOCK_MODE ? null : consoleKeys.members(orgKey), ([, orgId]) => fetchMembers(orgId as string))
   const {
     data: usage24hData,
+    error: usage24hError,
     isLoading: usage24hIsLoading,
+    isValidating: usage24hIsValidating,
     mutate: mutateUsage24h
   } = useSWR<UsageDto>(consoleKeys.usage(orgKey, 'd1'), ([, orgId, , range]) =>
     fetchUsage(range as UsageRange, orgId as string)
@@ -809,7 +815,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     loadingMore: sessionsLoadingMore,
     loadMore: loadMoreSessions,
     error: sessionsError,
-    isLoading: sessionsIsLoading
+    isLoading: sessionsIsLoading,
+    accessSnapshot: sessionAccessSnapshot
   } = useSessionList(orgKey)
   const {
     data: sessionFacets = EMPTY_SESSION_FACETS,
@@ -929,6 +936,16 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const members = MOCK_MODE ? MOCK_MEMBERS : (fetchedMembers ?? [])
   const membersLoaded = MOCK_MODE || fetchedMembers !== undefined
   const usage24h = usage24hData ?? null
+  const usageAccessSnapshot = useMemo(
+    () =>
+      accessNotificationSnapshot(usage24hData, {
+        authoritative: true,
+        isLoading: usage24hIsLoading,
+        isValidating: usage24hIsValidating,
+        error: usage24hError
+      }),
+    [usage24hData, usage24hError, usage24hIsLoading, usage24hIsValidating]
+  )
   useEffect(() => {
     setMemberDirectory(members)
   }, [members])
@@ -1458,6 +1475,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       members,
       membersLoaded,
       usage24h,
+      sessionAccessSnapshot,
+      usageAccessSnapshot,
       getAgent,
       getSessions,
       createAgent,
@@ -1528,6 +1547,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       members,
       membersLoaded,
       usage24h,
+      sessionAccessSnapshot,
+      usageAccessSnapshot,
       getAgent,
       getSessions,
       createAgent,

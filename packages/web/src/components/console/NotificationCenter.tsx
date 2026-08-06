@@ -30,7 +30,36 @@ function SeverityIcon({ severity }: { severity: NotificationSeverity }) {
   }
 }
 
-export function NotificationBell({ placement = 'bottom-right' }: { placement?: 'bottom-right' | 'top-left' }) {
+export function NotificationActionLink({
+  item,
+  onActivate
+}: {
+  item: NotificationItem
+  onActivate: (id: string) => void
+}) {
+  if (!item.action || item.resolvedAt) return null
+
+  return (
+    <a
+      className="lnk mt-1 inline-flex text-[11.5px]"
+      href={item.action.href}
+      target={item.action.external ? '_blank' : undefined}
+      rel={item.action.external ? 'noreferrer' : undefined}
+      onClick={(event) => {
+        event.stopPropagation()
+        onActivate(item.id)
+      }}
+    >
+      {item.action.label}
+    </a>
+  )
+}
+
+export function notificationBellLabel(unreadCount: number): string {
+  return unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'
+}
+
+export function NotificationBell({ variant }: { variant: 'rail' | 'mobile' }) {
   const { notifications, unreadCount, markAllAsRead, clearAll, markAsRead } = useNotifications()
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState<'all' | 'unread'>('all')
@@ -50,21 +79,23 @@ export function NotificationBell({ placement = 'bottom-right' }: { placement?: '
 
   const items = filter === 'unread' ? notifications.filter((n) => !n.read) : notifications
 
-  const dropdownPositionCls =
-    placement === 'top-left' ? 'absolute bottom-[calc(100%_+_8px)] left-0 z-50' : 'absolute right-0 top-10 z-50'
+  const rail = variant === 'rail'
+  const dropdownPositionCls = rail
+    ? 'absolute bottom-[calc(100%_+_8px)] left-0 z-50'
+    : 'absolute right-0 top-[calc(100%_+_8px)] z-50'
 
   return (
-    <div ref={menuRef} className="relative inline-block">
+    <div ref={menuRef} className="relative inline-flex flex-none">
       <button
         type="button"
-        className="iconbtn relative flex h-8 w-8 items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-card) text-(--text-secondary) transition-colors hover:bg-(--surface-hover) hover:text-(--text-primary)"
-        aria-label="Notifications"
+        className={`${rail ? 'railiconbtn' : 'mappbtn'} relative`}
+        aria-label={notificationBellLabel(unreadCount)}
         title="Notifications"
         onClick={() => setOpen((prev) => !prev)}
       >
-        <Icon name="bell" size={16} />
+        <Icon name="bell" size={rail ? 16 : 20} />
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-(--magenta-600) px-1 text-[10px] font-semibold leading-none text-white shadow-(--shadow-xs)">
+          <span className="absolute -top-[5px] -right-[7px] flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-(--magenta-600) px-[3px] text-[9px] font-semibold leading-none text-white shadow-(--shadow-xs)">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
@@ -169,6 +200,13 @@ export function NotificationBell({ placement = 'bottom-right' }: { placement?: '
                         Daemon: {item.daemonName}
                       </span>
                     )}
+                    {item.resolvedAt ? (
+                      <span className="mt-1 inline-flex rounded-full bg-(--status-online-soft) px-2 py-[1px] font-sans text-[10.5px] font-semibold leading-normal text-(--status-online)">
+                        Resolved
+                      </span>
+                    ) : (
+                      <NotificationActionLink item={item} onActivate={markAsRead} />
+                    )}
                   </div>
                   {!item.read && <span className="mt-1 h-2 w-2 flex-none rounded-full bg-(--brand)" title="Unread" />}
                 </div>
@@ -182,20 +220,28 @@ export function NotificationBell({ placement = 'bottom-right' }: { placement?: '
 }
 
 export function NotificationToastContainer() {
-  const { toasts, dismissToast } = useNotifications()
+  const { toasts, dismissToast, markAsRead } = useNotifications()
 
   if (toasts.length === 0) return null
 
   return (
     <div className="fixed top-4 right-4 z-50 flex w-[380px] max-w-[calc(100vw-32px)] flex-col gap-2 pointer-events-none">
       {toasts.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} onDismiss={dismissToast} />
+        <ToastItem key={toast.id} toast={toast} onDismiss={dismissToast} onMarkAsRead={markAsRead} />
       ))}
     </div>
   )
 }
 
-function ToastItem({ toast, onDismiss }: { toast: NotificationItem; onDismiss: (id: string) => void }) {
+function ToastItem({
+  toast,
+  onDismiss,
+  onMarkAsRead
+}: {
+  toast: NotificationItem
+  onDismiss: (id: string) => void
+  onMarkAsRead: (id: string) => void
+}) {
   const id = toast.id
 
   useEffect(() => {
@@ -208,7 +254,7 @@ function ToastItem({ toast, onDismiss }: { toast: NotificationItem; onDismiss: (
   return (
     <div
       role={toast.severity === 'error' || toast.severity === 'warning' ? 'alert' : 'status'}
-      className="pointer-events-auto flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) transition-all duration-200 ease-out"
+      className="pointer-events-auto flex items-start gap-3 rounded-md border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-md) transition-all"
     >
       <SeverityIcon severity={toast.severity} />
       <div className="min-w-0 flex-1">
@@ -218,6 +264,13 @@ function ToastItem({ toast, onDismiss }: { toast: NotificationItem; onDismiss: (
         <span className="mt-0.5 block font-sans text-[12px] font-normal leading-relaxed text-(--text-secondary) break-words">
           {toast.message}
         </span>
+        <NotificationActionLink
+          item={toast}
+          onActivate={(notificationId) => {
+            onMarkAsRead(notificationId)
+            onDismiss(notificationId)
+          }}
+        />
       </div>
       <button
         type="button"
