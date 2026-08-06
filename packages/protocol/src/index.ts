@@ -84,6 +84,10 @@ export type { DecodeResult, BuildOpts, InboundControlExt } from './codec.js'
 
 // ── relay wires (separate frame unions; shared-bot-relay.md §7/§8) ──
 export * from './frames/relay-cp.js'
+// Manifest-declared Slack shortcut id — defined in the bundler-facing
+// `./slack-app-manifest.ts` leaf, re-exported here so the package root keeps
+// serving it next to the runtime Slack action ids above.
+export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './slack-app-manifest.js'
 export * from './frames/relay-daemon.js'
 export { decodeEnvelopeWith, buildEnvelopeRaw } from './wire.js'
 export type { DecodeResultOf } from './wire.js'

@@ -1,6 +1,26 @@
-import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from './frames/relay-cp.js'
+// ⚠️ THIS MODULE MUST NOT IMPORT ANYTHING RELATIVE. ⚠️
+//
+// It is the one protocol source file a *bundler* compiles directly: the web
+// console imports `@agentconnect.md/protocol/slack-app-manifest`, and in dev the
+// `development` export condition points that subpath at this `.ts` file rather
+// than at `dist/`. Turbopack does not implement TypeScript's `.js` → `.ts`
+// extension substitution, and its only escape hatch (`experimental.extensionAlias`)
+// is on Next's Turbopack-unsupported list — so a NodeNext-style `./foo.js`
+// specifier here fails to resolve and 500s every console route, while
+// `pnpm typecheck` / `pnpm test` / `next build` (which reads `dist/`) all stay
+// green. `slack-app-manifest.leaf.test.ts` enforces this.
+//
+// Anything this module needs is defined here and imported *from* here by the rest
+// of protocol — not the other way around.
 
-export { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID }
+/** App-level Slack message shortcut for opening the controls of the session that
+ * owns the selected message's conversation. Direct apps receive it over Socket
+ * Mode; shared apps receive the same callback through the relay HTTP edge.
+ *
+ * Declared to Slack by {@link buildSlackAppManifest} below, which is why it lives
+ * here rather than beside the runtime Block Kit action ids in `frames/relay-cp.ts`:
+ * those name controls on messages we post, this one names a manifest feature. */
+export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 
 /** Public platform profile copy. Never derive this from an Agent description. */
 export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
