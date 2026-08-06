@@ -144,12 +144,13 @@ function hookMetadataForSession(metadata: Map<string, HookSessionMetadata>, sess
 async function hookMetadataForSessions(
   deps: HttpDeps,
   sessions: HookSessionRow[],
-  orgId: string
+  orgId: OrgId
 ): Promise<Map<string, HookSessionMetadata>> {
   const ids = [...new Set(sessions.map(hookIdForSession).filter((id): id is string => Boolean(id)))]
   const metadata = new Map<string, HookSessionMetadata>()
-  for (const hook of await deps.repos.hook.getMany(ids.map(HookId))) {
-    if (hook.orgId !== orgId) continue
+  // The batch read is org-fenced (org-scoped-data-layer.md §3), so foreign ids
+  // are simply absent — no post-filter needed.
+  for (const hook of await deps.repos.hook.getMany(orgId, ids.map(HookId))) {
     metadata.set(hook.id, { agentId: hook.agentId, kind: hook.kind, name: hook.name, repoId: hook.repoId })
   }
   return metadata

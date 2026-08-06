@@ -1544,12 +1544,12 @@ describe('R1/R2a persistence foundation', () => {
       reportingMode: 'check',
       gateMode: 'informational'
     })
-    expect((await hooks.get(hookId))?.dispatchRevision).toBe(1n)
+    expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(1n)
 
     expect(await agents.movePlacement(agentId, D1, D2)).not.toBeNull()
-    expect((await hooks.get(hookId))?.dispatchRevision).toBe(2n)
+    expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(2n)
     await agents.setPlacement(agentId, null)
-    expect((await hooks.get(hookId))?.dispatchRevision).toBe(3n)
+    expect((await hooks.getUnscoped(hookId))?.dispatchRevision).toBe(3n)
   })
 
   it('converges renamed GitHub display fields without changing session affinity or accepting stale names', async () => {
@@ -2185,7 +2185,7 @@ describe('R1/R2a persistence foundation', () => {
     expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
 
     // Hook deletion must not erase the historical run or durable external-effect row.
-    await repo.remove(hookId)
+    await repo.remove(OrgId(DEFAULT_ORG_ID), hookId)
     expect(await repo.getRun(hookId, accepted.deliveryKey)).not.toBeNull()
     expect(await repo.getReviewProjection(projection.id)).not.toBeNull()
   })

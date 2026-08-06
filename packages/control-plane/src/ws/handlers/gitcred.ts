@@ -61,7 +61,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
       // environment. Its authority is the enabled hook itself, not the
       // workspace contents gitAccess (read workspaces must still be able to
       // deliver the reply promised by an always-on GitHub hook).
-      const hook = await deps.hook.get(HookId(hookId))
+      // Daemon trust domain: the hook named by the requesting daemon's own run (§4).
+      const hook = await deps.hook.getUnscoped(HookId(hookId))
       if (!hook || hook.agentId !== AgentId(agentId) || hook.kind !== 'github' || !hook.enabled) {
         conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not an enabled github hook of this agent', false)
         return

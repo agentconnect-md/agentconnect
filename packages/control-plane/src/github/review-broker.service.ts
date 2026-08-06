@@ -44,7 +44,7 @@ export class GithubReviewBrokerError extends Error {
 }
 
 export interface GithubReviewBrokerDeps {
-  hook: Pick<HookRepo, 'get' | 'getRun' | 'recordStart' | 'reserveReviewAttempt' | 'recordReviewResult'>
+  hook: Pick<HookRepo, 'getUnscoped' | 'getRun' | 'recordStart' | 'reserveReviewAttempt' | 'recordReviewResult'>
   agent: Pick<AgentRepo, 'getUnscoped'>
   github: Pick<GithubService, 'mintReviewForAgent' | 'validateReviewForAgent'>
   clock: Pick<Clock, 'now'>
@@ -329,7 +329,7 @@ export class GithubReviewBrokerService {
       reportingDaemonId,
       { started: recovering }
     )
-    requireCurrentHookForStart(await this.deps.hook.get(hookId), run, reportingDaemonId)
+    requireCurrentHookForStart(await this.deps.hook.getUnscoped(hookId), run, reportingDaemonId)
     const agent = await this.deps.agent.getUnscoped(run.agentId!)
     if (!agent || agent.status !== 'active' || agent.daemonId !== reportingDaemonId) {
       denied('agent is no longer active on the accepted dispatch daemon')
@@ -354,7 +354,7 @@ export class GithubReviewBrokerService {
     }
     const target = requireTrustedPullTarget(initial)
     const current = requireCurrentActionAuthority(
-      await this.deps.hook.get(hookId),
+      await this.deps.hook.getUnscoped(hookId),
       await this.deps.agent.getUnscoped(initial.agentId),
       initial,
       reportingDaemonId,
@@ -407,7 +407,7 @@ export class GithubReviewBrokerService {
     )
     try {
       const finalAuthority = requireCurrentActionAuthority(
-        await this.deps.hook.get(hookId),
+        await this.deps.hook.getUnscoped(hookId),
         await this.deps.agent.getUnscoped(initial.agentId),
         finalRun,
         reportingDaemonId,
@@ -435,7 +435,7 @@ export class GithubReviewBrokerService {
         'review attempt reservation changed while authorizing'
       )
       requireCurrentActionAuthority(
-        await this.deps.hook.get(hookId),
+        await this.deps.hook.getUnscoped(hookId),
         await this.deps.agent.getUnscoped(initial.agentId),
         exposureRun,
         reportingDaemonId,
