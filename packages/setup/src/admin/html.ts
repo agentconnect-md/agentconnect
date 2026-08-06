@@ -1146,7 +1146,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         body: JSON.stringify({ configToken: token })
       }));
       el('slack-token').value = '';
-      if (result.status === 'pass') await load();
+      if (result.status === 'pass' && currentStatus && currentStatus.values.slack) {
+        currentRevision = result.revision;
+        currentStatus.revision = result.revision;
+        currentStatus.values.slack = { ...currentStatus.values.slack, configuredUrls: result.expected };
+      }
       showDiff('slack-drift', result.diff || []);
       match('slack-match', result.status === 'pass' ? 'pass' : 'warn', result.status === 'pass' ? 'Matches' : 'Update required');
       message(result.status === 'pass' ? 'Slack App matches the default integration manifest.' : 'Slack App settings need an update.', result.status !== 'pass');
