@@ -8,7 +8,7 @@
  * `lastRunAt` here is advisory — the daemon is authoritative for firing.
  */
 import type { Platform } from '@agentconnect.md/protocol'
-import type { CronDef, User } from '../../generated/prisma/client.js'
+import { Prisma, type CronDef, type User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import type { CronRepo, CronRecord, CronReportInput, CronRunRecord, UpsertCronInput, ViewCtx } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
@@ -16,6 +16,23 @@ import { toDbPlatform } from '../platform.js'
 import { AgentId, CronId, IntegrationId, OrgId, type DaemonId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 import { CronMissing } from '../errors.js'
+
+/**
+ * Serialize every `upsert` of ONE cron id, whichever organization claims it.
+ *
+ * The tenancy fence in `upsert` is a read-before-write whose critical case is a
+ * row that does not exist yet, so a row-level lock cannot cover it (there is no
+ * row to lock) and READ COMMITTED would let a concurrent insert for another org
+ * slip between the read and the write. Keying the advisory scope on the id ALONE
+ * — not on (org, id) — is the point: the two racing writers must contend, and
+ * they only do so if their keys match.
+ */
+async function lockCronUpsertScope(tx: Prisma.TransactionClient, cronId: CronId): Promise<void> {
+  const key = JSON.stringify(['cron-upsert', cronId])
+  await tx.$queryRaw(Prisma.sql`
+    SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0)) IS NULL AS "locked"
+  `)
+}
 
 // The cron row plus its joined creator + last-modifier users — reads surface both
 // for the console (same model as agents/daemons).
@@ -71,8 +88,15 @@ export class PgCronRepo implements CronRepo {
       // and this is a create-or-edit, so an id that already names a row in
       // another organization must NOT fall through to the update branch — that
       // branch rewrites `orgId` along with the definition, which would be a
-      // takeover rather than a leak. A brand-new id still creates; a concurrent
-      // create of the same id elsewhere loses to the unique constraint below.
+      // takeover rather than a leak.
+      //
+      // The check is a read-before-write, and the case it must cover is the one
+      // no row lock can: the id does not exist yet. Under READ COMMITTED a
+      // concurrent transaction could insert it for another org between this read
+      // and the upsert below, whose update branch would then take it over. The
+      // advisory scope closes that window — it is keyed on the id alone, so
+      // every upsert of this cron serializes here whatever org it claims.
+      await lockCronUpsertScope(tx, input.cronId)
       const owner = await tx.cronDef.findUnique({ where: { id: input.cronId }, select: { orgId: true } })
       if (owner && owner.orgId !== input.orgId) throw new CronMissing(input.cronId)
       const memberships = await lockResourceWriteMemberships(tx, {

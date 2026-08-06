@@ -594,4 +594,35 @@ describe('tenant isolation — IntegrationRepo and CronRepo fences under the rou
 
     await foreignCronUnmodified()
   })
+
+  it('the upsert fence holds when two organizations race for the same fresh cron id', async () => {
+    const repo = new PgCronRepo(prisma)
+    // The fence's hard case is an id that exists in NEITHER org yet: a plain
+    // read-before-write under READ COMMITTED would let the loser's update branch
+    // adopt the winner's row. The advisory scope keyed on the id makes the two
+    // contend, so exactly one create wins and the other is refused as missing.
+    for (let i = 0; i < 6; i++) {
+      const contestedId = CronId(randomUUID())
+      const input = (orgId: OrgId, agentId: string) => ({
+        cronId: contestedId,
+        orgId,
+        agentId: AgentId(agentId),
+        schedule: '*/5 * * * *',
+        timezone: 'UTC',
+        trigger: `race-${i}`
+      })
+      const settled = await Promise.allSettled([
+        repo.upsert(input(CALLER_ORG, ownAgentId)),
+        repo.upsert(input(OrgId(foreignOrgId), foreignAgentId))
+      ])
+      // Exactly one writer commits. The loser is refused — as CronMissing when it
+      // observed the winner's row, or by the id's unique constraint when both
+      // reached the insert; either way it never adopts the other org's row.
+      expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      const winner = settled.findIndex((r) => r.status === 'fulfilled')
+      const row = await prisma.cronDef.findUnique({ where: { id: contestedId } })
+      expect(row!.orgId).toBe(winner === 0 ? DEFAULT_ORG_ID : foreignOrgId)
+      await prisma.cronDef.delete({ where: { id: contestedId } })
+    }
+  })
 })
