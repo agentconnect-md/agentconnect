@@ -10,10 +10,7 @@ import {
   OfficialFeishuRegistrationProvider,
   type FeishuRegistrationProvider
 } from '@agentconnect.md/control-plane/feishu-registration-provider'
-import {
-  createFeishuAppCredentialVerifier,
-  type FeishuAppCredentialVerifier
-} from '@agentconnect.md/control-plane/feishu-identity'
+import { createFeishuAppSetupAuditor, type FeishuAppSetupAuditor } from '@agentconnect.md/control-plane/feishu-identity'
 import { createSlackConfigApi, type SlackConfigApi } from '@agentconnect.md/control-plane/slack-config-api'
 import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
@@ -153,7 +150,7 @@ export interface TenantAdminServerDeps {
   ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
   makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
-  verifyFeishuAppCredentials?: FeishuAppCredentialVerifier
+  auditFeishuAppSetup?: FeishuAppSetupAuditor
   slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp'>
   localAuthBootstrap?: {
     issuer: string
@@ -382,7 +379,7 @@ export function buildTenantAdminServer(
 ): FastifyInstance {
   const app = Fastify({ logger: false, ...options })
   const fetchImpl = deps.fetch ?? fetch
-  const verifyFeishuAppCredentials = deps.verifyFeishuAppCredentials ?? createFeishuAppCredentialVerifier(fetchImpl)
+  const auditFeishuAppSetup = deps.auditFeishuAppSetup ?? createFeishuAppSetupAuditor(fetchImpl)
   const slackConfigApi = deps.slackConfigApi ?? createSlackConfigApi({ fetch: fetchImpl })
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
   const authenticator = new TenantAdminAuthenticator(
@@ -881,22 +878,25 @@ export function buildTenantAdminServer(
         return problem(reply, 409, `${region === 'feishu' ? 'Feishu' : 'Lark'} App credentials are not configured`)
       }
 
-      const result = await verifyFeishuAppCredentials(regionalApp.loginAppId, appSecret, region)
+      const result = await auditFeishuAppSetup(regionalApp.loginAppId, appSecret, region)
       const label = region === 'feishu' ? 'Feishu' : 'Lark'
       return {
         provider: region,
         status:
           result.status === 'ok'
             ? ('pass' as const)
-            : result.status === 'invalid'
+            : result.status === 'invalid' || result.status === 'mismatch'
               ? ('fail' as const)
               : ('unknown' as const),
+        diff: result.diff,
         message:
           result.status === 'ok'
-            ? `${label} accepted the saved App ID and secret. API permissions, event subscriptions, and the published version were not checked.`
+            ? `${label} published App${result.version ? ` version ${result.version}` : ''} has the required Bot capability, API permissions, and event subscription.`
             : result.status === 'invalid'
               ? `${label} rejected the saved App ID or secret.`
-              : `${label} could not be reached.`
+              : result.status === 'mismatch'
+                ? `${label} App setup needs an update.`
+                : `${label} setup could not be audited${result.message ? `: ${result.message}` : '.'}`
       }
     }
   )
