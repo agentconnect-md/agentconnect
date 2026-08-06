@@ -1,9 +1,14 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type {
+  SessionAccessNotificationAction,
+  SessionAccessNotificationInput
+} from '@/lib/session-access-notifications'
 
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error'
-export type NotificationCategory = 'daemon_lifecycle' | 'session_retention'
+export type NotificationCategory = 'daemon_lifecycle' | 'session_retention' | 'session_access'
+export type NotificationSourceScope = 'sessions-access' | 'usage-access'
 
 export interface NotificationItem {
   id: string
@@ -13,15 +18,27 @@ export interface NotificationItem {
   message: string
   daemonId?: string
   daemonName?: string
-  timestamp: string // ISO string
+  sourceKey?: string
+  action?: SessionAccessNotificationAction
+  resolvedAt?: string
+  timestamp: string
   read: boolean
 }
+
+export interface NotificationStoreState {
+  notifications: NotificationItem[]
+  activeSources: Record<NotificationSourceScope, string[]>
+}
+
+type AddNotificationInput = Omit<NotificationItem, 'id' | 'timestamp' | 'read'>
+type NotificationStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 interface NotificationContextValue {
   notifications: NotificationItem[]
   unreadCount: number
   toasts: NotificationItem[]
-  addNotification: (item: Omit<NotificationItem, 'id' | 'timestamp' | 'read'>) => void
+  addNotification: (item: AddNotificationInput) => void
+  syncSourceSnapshot: (scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => void
   markAsRead: (id: string) => void
   markAllAsRead: () => void
   clearAll: () => void
@@ -31,94 +48,243 @@ interface NotificationContextValue {
 const NotificationContext = createContext<NotificationContextValue | null>(null)
 
 const BASE_STORAGE_KEY = 'agentconnect_notifications_v1'
+const ACTIVE_STORAGE_KEY = 'agentconnect_notification_sources_v1'
 const MAX_NOTIFICATIONS = 50
 
-function getStorageKey(orgId?: string | null): string {
-  return orgId ? `${BASE_STORAGE_KEY}_${orgId}` : BASE_STORAGE_KEY
+function getStorageKey(base: string, orgId?: string | null): string {
+  return orgId ? `${base}_${orgId}` : base
 }
 
-function loadStoredNotifications(orgId?: string | null): NotificationItem[] {
-  if (typeof window === 'undefined') return []
-  try {
-    const raw = localStorage.getItem(getStorageKey(orgId))
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as NotificationItem[]
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
+function browserStorage(storage?: NotificationStorage): NotificationStorage | undefined {
+  if (storage) return storage
+  if (typeof window === 'undefined') return undefined
+  return window.localStorage
+}
+
+export function emptyNotificationState(): NotificationStoreState {
+  return {
+    notifications: [],
+    activeSources: {
+      'sessions-access': [],
+      'usage-access': []
+    }
   }
 }
 
-function saveStoredNotifications(items: NotificationItem[], orgId?: string | null): void {
-  if (typeof window === 'undefined') return
+export function loadNotificationState(orgId?: string | null, storage?: NotificationStorage): NotificationStoreState {
+  const target = browserStorage(storage)
+  if (!target) return emptyNotificationState()
   try {
-    localStorage.setItem(getStorageKey(orgId), JSON.stringify(items.slice(0, MAX_NOTIFICATIONS)))
+    const historyRaw = target.getItem(getStorageKey(BASE_STORAGE_KEY, orgId))
+    const activeRaw = target.getItem(getStorageKey(ACTIVE_STORAGE_KEY, orgId))
+    const history = historyRaw ? (JSON.parse(historyRaw) as unknown) : []
+    const active = activeRaw ? (JSON.parse(activeRaw) as unknown) : {}
+    const activeRecord = active && typeof active === 'object' ? (active as Record<string, unknown>) : {}
+    return {
+      notifications: Array.isArray(history) ? (history as NotificationItem[]).slice(0, MAX_NOTIFICATIONS) : [],
+      activeSources: {
+        'sessions-access': Array.isArray(activeRecord['sessions-access'])
+          ? activeRecord['sessions-access'].filter((key): key is string => typeof key === 'string')
+          : [],
+        'usage-access': Array.isArray(activeRecord['usage-access'])
+          ? activeRecord['usage-access'].filter((key): key is string => typeof key === 'string')
+          : []
+      }
+    }
   } catch {
-    // Ignore storage quota / privacy mode errors
+    return emptyNotificationState()
   }
+}
+
+export function saveNotificationState(
+  state: NotificationStoreState,
+  orgId?: string | null,
+  storage?: NotificationStorage
+): void {
+  const target = browserStorage(storage)
+  if (!target) return
+  try {
+    target.setItem(
+      getStorageKey(BASE_STORAGE_KEY, orgId),
+      JSON.stringify(state.notifications.slice(0, MAX_NOTIFICATIONS))
+    )
+    target.setItem(getStorageKey(ACTIVE_STORAGE_KEY, orgId), JSON.stringify(state.activeSources))
+  } catch {
+    // Ignore storage quota / privacy mode errors; the provider keeps in-memory state.
+  }
+}
+
+function defaultNotificationId(): string {
+  return `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+export function syncNotificationSourceSnapshot(
+  state: NotificationStoreState,
+  scope: NotificationSourceScope,
+  items: SessionAccessNotificationInput[],
+  now = new Date().toISOString(),
+  makeId: () => string = defaultNotificationId
+): { state: NotificationStoreState; added: NotificationItem[] } {
+  const previousKeys = new Set(state.activeSources[scope])
+  const nextItems = new Map(items.map((item) => [item.sourceKey, item]))
+  let notifications = state.notifications.map((item) => ({ ...item }))
+  const added: NotificationItem[] = []
+
+  for (const [sourceKey, input] of nextItems) {
+    if (previousKeys.has(sourceKey)) {
+      const index = notifications.findIndex((item) => item.sourceKey === sourceKey && !item.resolvedAt)
+      if (index >= 0) {
+        const current = notifications[index]!
+        notifications[index] = {
+          ...current,
+          ...input,
+          id: current.id,
+          timestamp: current.timestamp,
+          read: current.read,
+          resolvedAt: undefined
+        }
+      }
+      continue
+    }
+
+    const notification: NotificationItem = {
+      ...input,
+      id: makeId(),
+      timestamp: now,
+      read: false
+    }
+    notifications.unshift(notification)
+    added.push(notification)
+  }
+
+  for (const sourceKey of previousKeys) {
+    if (nextItems.has(sourceKey)) continue
+    const index = notifications.findIndex((item) => item.sourceKey === sourceKey && !item.resolvedAt)
+    if (index >= 0) {
+      const { action: _action, ...current } = notifications[index]!
+      notifications[index] = { ...current, resolvedAt: now }
+    }
+  }
+
+  return {
+    state: {
+      notifications: notifications.slice(0, MAX_NOTIFICATIONS),
+      activeSources: {
+        ...state.activeSources,
+        [scope]: [...nextItems.keys()]
+      }
+    },
+    added
+  }
+}
+
+export function clearNotificationHistory(state: NotificationStoreState): NotificationStoreState {
+  return { ...state, notifications: [] }
+}
+
+interface ProviderState {
+  store: NotificationStoreState
+  toasts: NotificationItem[]
 }
 
 export function NotificationProvider({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
-  const [notifications, setNotifications] = useState<NotificationItem[]>(() => loadStoredNotifications(orgId))
-  const [toasts, setToasts] = useState<NotificationItem[]>([])
+  const [providerState, setProviderState] = useState<ProviderState>(() => ({
+    store: loadNotificationState(orgId),
+    toasts: []
+  }))
   const activeOrgRef = useRef(orgId)
 
   useEffect(() => {
     activeOrgRef.current = orgId
-    setNotifications(loadStoredNotifications(orgId))
-    setToasts([])
+    setProviderState({ store: loadNotificationState(orgId), toasts: [] })
   }, [orgId])
 
   useEffect(() => {
     if (activeOrgRef.current === orgId) {
-      saveStoredNotifications(notifications, orgId)
+      saveNotificationState(providerState.store, orgId)
     }
-  }, [notifications, orgId])
+  }, [providerState.store, orgId])
 
-  const addNotification = useCallback((item: Omit<NotificationItem, 'id' | 'timestamp' | 'read'>) => {
-    const id = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-    const newNotif: NotificationItem = {
+  const addNotification = useCallback((item: AddNotificationInput) => {
+    const notification: NotificationItem = {
       ...item,
-      id,
+      id: defaultNotificationId(),
       timestamp: new Date().toISOString(),
       read: false
     }
+    setProviderState((prev) => ({
+      store: {
+        ...prev.store,
+        notifications: [notification, ...prev.store.notifications].slice(0, MAX_NOTIFICATIONS)
+      },
+      toasts: [notification, ...prev.toasts].slice(0, 5)
+    }))
+  }, [])
 
-    setNotifications((prev) => [newNotif, ...prev].slice(0, MAX_NOTIFICATIONS))
-    setToasts((prev) => [newNotif, ...prev].slice(0, 5))
+  const syncSourceSnapshot = useCallback((scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => {
+    setProviderState((prev) => {
+      const result = syncNotificationSourceSnapshot(prev.store, scope, items)
+      return {
+        store: result.state,
+        toasts: [...result.added, ...prev.toasts].slice(0, 5)
+      }
+    })
   }, [])
 
   const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id))
+    setProviderState((prev) => ({ ...prev, toasts: prev.toasts.filter((toast) => toast.id !== id) }))
   }, [])
 
   const markAsRead = useCallback((id: string) => {
-    setNotifications((prev) => prev.map((item) => (item.id === id ? { ...item, read: true } : item)))
+    setProviderState((prev) => ({
+      ...prev,
+      store: {
+        ...prev.store,
+        notifications: prev.store.notifications.map((item) => (item.id === id ? { ...item, read: true } : item))
+      }
+    }))
   }, [])
 
   const markAllAsRead = useCallback(() => {
-    setNotifications((prev) => prev.map((item) => ({ ...item, read: true })))
+    setProviderState((prev) => ({
+      ...prev,
+      store: {
+        ...prev.store,
+        notifications: prev.store.notifications.map((item) => ({ ...item, read: true }))
+      }
+    }))
   }, [])
 
   const clearAll = useCallback(() => {
-    setNotifications([])
-    setToasts([])
+    setProviderState((prev) => ({ store: clearNotificationHistory(prev.store), toasts: [] }))
   }, [])
 
-  const unreadCount = useMemo(() => notifications.filter((n) => !n.read).length, [notifications])
+  const notifications = providerState.store.notifications
+  const unreadCount = useMemo(() => notifications.filter((notification) => !notification.read).length, [notifications])
 
   const value = useMemo(
     () => ({
       notifications,
       unreadCount,
-      toasts,
+      toasts: providerState.toasts,
       addNotification,
+      syncSourceSnapshot,
       markAsRead,
       markAllAsRead,
       clearAll,
       dismissToast
     }),
-    [notifications, unreadCount, toasts, addNotification, markAsRead, markAllAsRead, clearAll, dismissToast]
+    [
+      notifications,
+      unreadCount,
+      providerState.toasts,
+      addNotification,
+      syncSourceSnapshot,
+      markAsRead,
+      markAllAsRead,
+      clearAll,
+      dismissToast
+    ]
   )
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>
