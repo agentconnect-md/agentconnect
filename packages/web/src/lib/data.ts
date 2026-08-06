@@ -871,6 +871,10 @@ export interface SessionStep {
    *  history view gets, via the existing `fetchToolBody` read. */
   toolCallId?: string
   toolStatus?: string
+  /** The daemon session that recorded this tool call — set on live multi-agent
+   *  steps where the owning participant's session differs from the row's
+   *  primary `realSessionId`; the on-demand tool-body read targets it. */
+  toolSessionId?: string
 }
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.

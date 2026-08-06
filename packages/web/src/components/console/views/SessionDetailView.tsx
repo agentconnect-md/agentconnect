@@ -520,7 +520,10 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
             text: stp.text,
             toolCallId: stp.toolCallId,
             toolStatus: stp.toolStatus
-          } satisfies SessionMessageDto
+          } satisfies SessionMessageDto,
+          // A member participant's call lives in ITS daemon session, not the
+          // row's primary — carry it so StepExtras targets the right session.
+          ...(stp.toolSessionId ? { toolSessionId: stp.toolSessionId } : {})
         }
       : {})
   }
@@ -3433,13 +3436,15 @@ export default function SessionDetailView() {
                                     appears once the turn completes. */}
                                     {(streaming ? workSteps.slice(-1) : workSteps).map((st, si) => (
                                       <div
-                                        // Keyed by tool identity + index: the streaming
-                                        // ticker renders index 0 for every successive step,
-                                        // and a bare index key would carry one tool's open
-                                        // detail state over to the next; the index keeps
-                                        // keys unique when a merged conversation repeats a
-                                        // session-local toolCallId across agents.
-                                        key={`${st.msg?.toolCallId ?? ''}:${si}`}
+                                        // Keyed by tool identity where there is one, so the
+                                        // key survives the streaming→completed transition
+                                        // (the ticker's slice(-1) renders index 0, the full
+                                        // list the original index — an index-bearing key
+                                        // would remount ToolBodyDetail at turn end and slam
+                                        // an expanded panel shut). Steps without a tool id
+                                        // (THINK rows) fall back to the index; within one
+                                        // agent's turn a toolCallId appears once.
+                                        key={st.msg?.toolCallId ?? `i:${si}`}
                                         className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
                                           si > 0 ? 'border-t border-(--border-subtle)' : ''
                                         }`}
