@@ -303,7 +303,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
       <section id="feishu-section" class="panel admin-section" aria-labelledby="feishu-heading">
         <div class="provider-head">
-          <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Tenant App used to admit Feishu Bot Apps.</p></div>
+          <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Validates the App ID and secret only. API permissions, event subscriptions, and the published version are not audited.</p></div>
           <span id="feishu-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -327,7 +327,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
       <section id="lark-section" class="panel admin-section" aria-labelledby="lark-heading">
         <div class="provider-head">
-          <div><h3 id="lark-heading">Lark</h3><p class="muted">Tenant App used to admit Lark Bot Apps.</p></div>
+          <div><h3 id="lark-heading">Lark</h3><p class="muted">Validates the App ID and secret only. API permissions, event subscriptions, and the published version are not audited.</p></div>
           <span id="lark-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -1191,7 +1191,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     async function checkRegionalLoginApp(region) {
       const result = await json(await fetch(api + '/check/regional-login-app/' + region, { headers: bearer() }));
       const label = region === 'feishu' ? 'Feishu' : 'Lark';
-      match(region + '-match', result.status === 'pass' ? 'pass' : result.status === 'fail' ? 'fail' : 'warn', result.status === 'pass' ? 'Credentials match' : result.status === 'fail' ? 'Invalid credentials' : 'Could not check');
+      match(region + '-match', result.status === 'pass' ? 'pass' : result.status === 'fail' ? 'fail' : 'warn', result.status === 'pass' ? 'Credentials valid' : result.status === 'fail' ? 'Invalid credentials' : 'Could not check');
       message(result.message || (label + ' credential check completed.'), result.status === 'fail');
     }
 

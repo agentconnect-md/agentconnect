@@ -897,7 +897,7 @@ export function buildTenantAdminServer(
               : ('unknown' as const),
         message:
           result.status === 'ok'
-            ? `${label} accepted the saved App ID and secret.`
+            ? `${label} accepted the saved App ID and secret. API permissions, event subscriptions, and the published version were not checked.`
             : result.status === 'invalid'
               ? `${label} rejected the saved App ID or secret.`
               : `${label} could not be reached.`
