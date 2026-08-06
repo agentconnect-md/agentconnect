@@ -34,6 +34,9 @@ import { useProfile } from '@/lib/profile'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { applyTheme, clearThemeAttr, getStoredTheme, type Theme } from '@/lib/theme'
 import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-view'
+import { NotificationProvider } from '@/lib/notifications'
+import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
+import { useDaemonNotifier } from '@/lib/daemon-notifications'
 
 interface NavItem {
   href: string
@@ -370,12 +373,22 @@ function RailAccount({
 }
 
 function ShellChrome({ children }: { children: ReactNode }) {
+  const { activeOrg } = useOrgs()
+  return (
+    <NotificationProvider orgId={activeOrg?.id}>
+      <ShellChromeInner>{children}</ShellChromeInner>
+    </NotificationProvider>
+  )
+}
+
+function ShellChromeInner({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const params = useParams<{ slug?: string }>()
   const { orgPath, orgs, activeOrg, setActiveOrg } = useOrgs()
   const { openModal } = useModal()
   const { daemons, agents, crons, allSessions } = useConsoleData()
+  useDaemonNotifier(daemons)
   // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
   const [mobileSheet, setMobileSheet] = useState<'more' | 'org' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)
@@ -745,6 +758,9 @@ function ShellChrome({ children }: { children: ReactNode }) {
                     <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
                   </button>
                 )}
+                <div className="flex-none">
+                  <NotificationBell placement="top-left" />
+                </div>
                 {/* Same 22px box as the brand row's search button, and the same 2px
               inset from the rail's edge — the two sit on one vertical centre line. */}
                 <div className="railhelp relative mr-[2px] flex-none">
@@ -900,6 +916,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
                     <button className="mappbtn" aria-label="Search" onClick={() => setMobileSearch(true)}>
                       <Icon name="search" size={20} />
                     </button>
+                    <NotificationBell />
                     <button
                       className="mappbtn"
                       aria-label="Toggle theme"
@@ -1008,6 +1025,7 @@ function ShellChrome({ children }: { children: ReactNode }) {
             <GettingStarted />
             {/* Renders every `title` in the console on the design system's timing
           instead of the browser's ~1s native tooltip. Portals to <body>. */}
+            <NotificationToastContainer />
             <TooltipLayer />
           </div>
         </CrumbContext.Provider>
