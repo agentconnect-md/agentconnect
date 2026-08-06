@@ -44,14 +44,19 @@ import EditMemberModal, { type MemberTarget } from '@/components/console/modals/
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
 
-// One short sub-line per state — the full access policy (who keeps seeing what,
-// and what turning the toggle off does NOT undo) lives in `details`, shown by the
-// row's info hint so the card stays two readable lines per provider.
+// A session-access row shows only the effect of the current setting ("People with
+// Slack access" / "Agent viewers"). What the toggle means at all is said once, in
+// the card header; the per-platform detail — which conversations qualify, what
+// turning it off does NOT undo — is hover copy on the platform name, so every row
+// stays one line.
+const SESSION_ACCESS_HINT =
+  "On — session visibility follows the platform's own access. Off — anyone who can view the agent can view its sessions."
+
 const SESSION_ACCESS_COPY: Record<
   SessionAccessProvider,
   {
     name: string
-    title: string
+    label: string
     details: string
     unavailable: string
     enabled: string
@@ -62,46 +67,46 @@ const SESSION_ACCESS_COPY: Record<
 > = {
   slack: {
     name: 'Slack',
-    title: 'Follow Slack access',
+    label: 'Follow Slack access',
     details: [
       'Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.',
       'DMs stay private, and agent memory learned earlier is not erased.',
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
       'Turning this off leaves already-synced sessions following Slack.'
     ].join('\n'),
-    unavailable: 'Needs OIDC sign-in and linked Slack identities.',
-    enabled: 'Session visibility follows Slack conversation access.',
-    disabled: 'New sessions are visible to everyone who can view the agent.',
+    unavailable: 'Needs sign-in and linked Slack identities',
+    enabled: 'People with Slack access',
+    disabled: 'Agent viewers',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted Slack scope.`,
     degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
   },
   github: {
     name: 'GitHub',
-    title: 'Follow GitHub access',
+    label: 'Follow GitHub access',
     details: [
       'Public-repository sessions stay visible to members who can view the agent; private-repository sessions need a linked GitHub profile with current access.',
       'Agent memory learned earlier is not erased.',
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
       'Turning this off leaves already-synced sessions following GitHub.'
     ].join('\n'),
-    unavailable: 'Needs OIDC sign-in and GitHub access checks.',
-    enabled: 'Session visibility follows GitHub repository access.',
-    disabled: 'New sessions are visible to everyone who can view the agent.',
+    unavailable: 'Needs sign-in and GitHub access checks',
+    enabled: 'People with GitHub access',
+    disabled: 'Agent viewers',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   },
   feishu: {
     name: 'Feishu / Lark',
-    title: 'Follow Feishu / Lark access',
+    label: 'Follow Feishu / Lark access',
     details: [
       'Group sessions created through the matching AgentConnect app follow current chat membership.',
       'DMs stay private, and agent memory learned earlier is not erased.',
       'User-built apps with a different App ID keep the ordinary organization visibility model.',
       'Turning this off leaves already-synced sessions following Feishu / Lark.'
     ].join('\n'),
-    unavailable: 'Needs OIDC sign-in, a linked Feishu / Lark profile, and the matching platform app.',
-    enabled: 'Session visibility follows Feishu / Lark chat membership.',
-    disabled: 'New sessions are visible to everyone who can view the agent.',
+    unavailable: 'Needs sign-in and a linked Feishu / Lark profile',
+    enabled: 'People with Feishu / Lark access',
+    disabled: 'Agent viewers',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
     degraded: 'Feishu / Lark scopes stopped resolving — new sessions are being hidden.'
   }
@@ -145,46 +150,29 @@ function SessionAccessRow({
     }
   }
 
+  const unavailable = access?.available === false && !access.enabled
+  // The effective answer to "who can see these sessions" — the only sentence the
+  // row spends space on. Blank until the row has loaded, so it never states a
+  // policy the org may not be on.
+  const value = !access ? '' : unavailable ? copy.unavailable : access.enabled ? copy.enabled : copy.disabled
+
   return (
     <div className={`flex items-center gap-3 px-4 py-[15px] ${bordered ? 'border-t border-(--border-subtle)' : ''}`}>
-      {/* Same platform tile as the Bots / GitHub rows above — a 14px mark on the
-          bordered plate, so both providers read at one weight. */}
-      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card) text-(--text-primary)">
-        <span className="flex h-[14px] w-[14px] items-center justify-center">
-          <PlatformMark platform={provider} fillPct={100} />
-        </span>
+      <span className="flex h-[18px] w-[18px] flex-none items-center justify-center text-(--text-primary)">
+        <PlatformMark platform={provider} fillPct={100} />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-[5px]">
-          <span className="font-sans text-[13px] font-semibold leading-normal">{copy.title}</span>
-          <button
-            type="button"
-            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-            aria-label={`${copy.title} — what this covers`}
-            title={copy.details}
-          >
-            <Icon name="info" size={13} />
-          </button>
-        </div>
-        <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          {access?.available === false && !access.enabled
-            ? copy.unavailable
-            : access?.enabled
-              ? copy.enabled
-              : copy.disabled}
-        </div>
-        {/* Amber is reserved for the actionable case — a scope that stopped
-            resolving AFTER enablement. The hidden-session backlog is expected
-            and permanent (the CP freezes it as the policy's legacy mark), so it
-            reads as a muted fact, not a fault the owner is failing to clear. */}
-        {access?.state === 'degraded' && (
-          <div className="mt-1 font-sans text-[11.5px] font-medium leading-normal text-(--status-paused)">
-            {copy.degraded}
-          </div>
-        )}
-        {hiddenSessions > 0 && (
-          <div className="mt-[2px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-            {copy.unresolved(hiddenSessions)}
+        <span
+          className="cursor-help font-sans text-[13px] font-medium leading-normal"
+          title={`${copy.label}\n\n${copy.details}`}
+        >
+          {copy.name}
+        </span>
+        {/* Desktop keeps the effect in its own column; on a phone there is no room
+            beside the toggle, so it drops under the platform name. */}
+        {value && (
+          <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary) desktop:hidden">
+            {value}
           </div>
         )}
         {(currentActionError || loadError) && (
@@ -193,11 +181,34 @@ function SessionAccessRow({
           </div>
         )}
       </div>
+      {/* Amber is reserved for the actionable case — a scope that stopped
+          resolving AFTER enablement. The hidden-session backlog is expected and
+          permanent (the CP freezes it as the policy's legacy mark), so its chip
+          reads as a muted fact, not a fault the owner is failing to clear. Both
+          carry the full sentence as hover copy. */}
+      {access?.state === 'degraded' && (
+        <span className="badge flex-none bg-(--status-paused-soft) text-(--status-paused)" title={copy.degraded}>
+          Scopes not resolving
+        </span>
+      )}
+      {hiddenSessions > 0 && (
+        <span
+          className="badge flex-none bg-(--surface-sunken) text-(--text-tertiary)"
+          title={copy.unresolved(hiddenSessions)}
+        >
+          {hiddenSessions} hidden
+        </span>
+      )}
+      {value && (
+        <span className="hidden font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:block">
+          {value}
+        </span>
+      )}
       <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
         <Toggle
           checked={access?.enabled === true}
-          disabled={!isOwner || !access || busy || (access.available === false && access.enabled === false)}
-          ariaLabel={copy.title}
+          disabled={!isOwner || !access || busy || unavailable}
+          ariaLabel={copy.label}
           onChange={(next) => void setEnabled(next)}
         />
       </span>
@@ -205,11 +216,13 @@ function SessionAccessRow({
   )
 }
 
+// Only the chosen option's consequence is spelled out — the unchosen one is a
+// segment label, not a second paragraph.
 const AGENT_VISIBILITY_OPTIONS = [
   {
     key: 'all',
     label: 'All agents',
-    sub: 'Open in both directions to every agent in the organization.'
+    sub: 'Open in both directions to every agent.'
   },
   {
     key: 'selected',
@@ -246,19 +259,25 @@ function AgentVisibilityCard({
   }
 
   const disabled = !orgId || !isOwner || busy
+  const selected = AGENT_VISIBILITY_OPTIONS.find((option) => option.key === policy)
 
   return (
     <div className="card mt-[18px]">
-      <div className="cardhead">
+      <div className="cardhead justify-between">
         <span className="cardtitle">Default agent visibility</span>
+        <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          Applies to new agents only
+        </span>
       </div>
-      <div className="px-4 py-[15px]">
-        <div className="font-sans text-[11.5px] font-normal leading-[1.45] text-(--text-tertiary)">
-          Choose whether newly created agents can collaborate with every agent or start isolated. Existing agents keep
-          their own settings.
+      <div className="flex flex-col gap-3 px-4 py-[15px] desktop:flex-row desktop:items-center desktop:gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="font-sans text-[13px] font-medium leading-normal">New agents start</div>
+          <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            {selected?.sub}
+          </div>
         </div>
         <div
-          className="mt-3 grid grid-cols-2 gap-[6px]"
+          className="pillbar self-start desktop:flex-none desktop:self-auto"
           role="radiogroup"
           aria-label="Default agent visibility"
           aria-busy={busy}
@@ -272,27 +291,29 @@ function AgentVisibilityCard({
               disabled={disabled}
               aria-checked={policy === option.key}
               onClick={() => void setPolicy(option.key)}
-              className={`flex flex-col items-start gap-[1px] rounded-md border px-[11px] py-[8px] text-left ${
+              className={
                 policy === option.key
-                  ? 'border-(--brand) bg-(--surface-active)'
-                  : 'border-(--border-default) bg-(--surface-app)'
-              } ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                  ? disabled
+                    ? 'pill on cursor-not-allowed opacity-50'
+                    : 'pill on'
+                  : disabled
+                    ? 'pill cursor-not-allowed opacity-50'
+                    : 'pill'
+              }
             >
-              <span className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
-                {option.label}
-              </span>
-              <span className="font-sans text-[11px] font-normal leading-[1.4] text-(--text-tertiary)">
-                {option.sub}
-              </span>
+              {option.label}
             </button>
           ))}
         </div>
-        {error && (
-          <div role="alert" className="mt-2 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
-            {error}
-          </div>
-        )}
       </div>
+      {error && (
+        <div
+          role="alert"
+          className="border-t border-(--border-subtle) px-4 py-3 font-sans text-[12px] font-normal leading-normal text-(--status-error)"
+        >
+          {error}
+        </div>
+      )}
     </div>
   )
 }
@@ -608,8 +629,19 @@ export default function SettingsView() {
       />
 
       <div className="card mt-[18px]">
-        <div className="cardhead">
+        <div className="cardhead justify-between">
           <span className="cardtitle">Session access</span>
+          <span className="flex items-center gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+            Follow platform access
+            <button
+              type="button"
+              className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+              aria-label="Session access — what the toggles do"
+              title={SESSION_ACCESS_HINT}
+            >
+              <Icon name="info" size={13} />
+            </button>
+          </span>
         </div>
         <SessionAccessRow provider="slack" orgId={activeOrg?.id} isOwner={isOwner} />
         <SessionAccessRow provider="github" orgId={activeOrg?.id} isOwner={isOwner} bordered />
