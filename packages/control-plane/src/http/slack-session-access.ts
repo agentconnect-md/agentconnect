@@ -81,6 +81,12 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       clock: Clock
       fetchImpl?: FetchLike
       identity?: Pick<LogtoIdentityService, 'slackIdentityFor'>
+      /** Optional so tests can omit it. Without one a degraded check leaves NO
+       *  trace anywhere: every failure below collapses to `unknown`, which is
+       *  reported to the caller as a hidden session and to the operator as
+       *  nothing at all — which is what made an intermittent Slack blip
+       *  indistinguishable, after the fact, from a real authorization denial. */
+      log?: { warn: (obj: object, msg: string) => void }
     }
   ) {}
 
@@ -110,6 +116,20 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
           if (decision === 'unknown') degraded = true
           return { scope, decision }
         }))
+      )
+    }
+    // One line per degraded RESOLVE, not per scope: enough to correlate a user
+    // reporting a vanished conversation with a Slack-side blip, without a log
+    // entry per channel on a busy list. Counts only — a scope key names a
+    // channel, and the operator needs the rate, not the targets.
+    if (degraded) {
+      this.deps.log?.warn(
+        {
+          provider: 'slack',
+          unknownScopes: decisions.filter(({ decision }) => decision === 'unknown').length,
+          totalScopes: decisions.length
+        },
+        'slack access check degraded — affected sessions are hidden until access can be verified'
       )
     }
     return {

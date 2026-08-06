@@ -2014,13 +2014,32 @@ export async function fetchSessions(
   }
 }
 
+/** What the key-addressed resolver answered for one conversation. */
+export interface ConversationResolution {
+  /** The conversation's currently visible member sessions, or null when the
+   *  caller can see none of them. */
+  conversation: ConversationDto | null
+  /** Whether an external access check could not be completed for this answer.
+   *  The CP fails those CLOSED — a member whose visibility it could not
+   *  determine is omitted — so a degraded empty answer means "we could not
+   *  check", NOT "you cannot see it". Dropping this flag is what made a Slack
+   *  API blip read as a permanent authorization verdict. */
+  accessSyncDegraded: boolean
+  accessIssues: SessionAccessIssue[]
+}
+
 /** Resolve one conversation's current visible member sessions by its §5.1 key
- *  (the bounded key-addressed resolver). Null when the caller can see none of
- *  the members (indistinguishable from a conversation that never existed). */
-export async function fetchConversationByKey(key: string, orgId?: string): Promise<ConversationDto | null> {
+ *  (the bounded key-addressed resolver). An empty answer is only a real
+ *  "nothing here you can see" when `accessSyncDegraded` is false — see above;
+ *  a caller that reports absence must consult it. */
+export async function fetchConversationByKey(key: string, orgId?: string): Promise<ConversationResolution> {
   const q = new URLSearchParams({ conversationKey: key })
   const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
-  return page.conversations?.[0] ?? null
+  return {
+    conversation: page.conversations?.[0] ?? null,
+    accessSyncDegraded: page.accessSyncDegraded === true,
+    accessIssues: page.accessIssues ?? []
+  }
 }
 
 /** The grouped sessions list (merged-conversation-view.md §5.2): one row per
