@@ -62,7 +62,7 @@ services:
       - migration-files:/migration:ro
 
   # Loopback-only deployment administration surface. It reuses the Control
-  # Plane image but runs the self-contained @agentconnect.md/setup bundle
+  # Plane image but runs the @agentconnect.md/setup server
   # instead of the Control Plane process. It is never published beyond the
   # Docker host's loopback interface.
   tenant-admin:

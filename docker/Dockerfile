@@ -15,7 +15,7 @@
 #
 # Control Plane — Fastify BFF + daemon WS gateway (packages/control-plane). The
 #   runtime also carries schema/migration files for the external migration
-#   runner and the self-contained Tenant Admin server;
+#   runner and the Tenant Admin server;
 #   it deliberately contains no Prisma CLI.
 # Relay — shared integration ingress (packages/relay).
 # Memory plugin — centralized Mem0 MCP wrapper (packages/memory-plugin-mem0).
@@ -56,8 +56,8 @@ COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
-# Install the control-plane, the self-contained Tenant Admin package, and
-# their workspace deps (skips the daemon and its native better-sqlite3 build).
+# Install the control-plane, Tenant Admin, and their workspace deps (skips the
+# daemon and its native better-sqlite3 build).
 FROM manifests AS cp-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile \
@@ -76,7 +76,7 @@ RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/control-plane" \
   -r build
 
-# Bundle the Tenant Admin server and its runtime dependencies.
+# Compile the Tenant Admin server.
 RUN pnpm --filter "@agentconnect.md/setup" build
 
 # Materialize the same portable production bundle used by the other plain Node
@@ -86,6 +86,11 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm --config.inject-workspace-packages=true \
   --filter "@agentconnect.md/control-plane" \
   deploy --prod /control-plane
+
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm --config.inject-workspace-packages=true \
+  --filter "@agentconnect.md/setup" \
+  deploy --prod /tenant-admin
 
 # ──────────────────────── control-plane: runtime ────────────────────────────
 FROM node:24-bookworm-slim AS control-plane
@@ -102,8 +107,7 @@ RUN apt-get update \
 # Production dependencies, built workspace packages, and the version-matched
 # Prisma schema/migrations used by the schema-export init container.
 COPY --from=cp-builder /control-plane ./
-COPY --from=cp-builder /app/packages/setup/dist /app/packages/setup/dist
-COPY --from=cp-builder /app/packages/setup/package.json /app/packages/setup/package.json
+COPY --from=cp-builder /tenant-admin /app/packages/setup
 
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

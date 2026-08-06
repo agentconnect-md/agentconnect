@@ -1,6 +1,6 @@
 #!/bin/sh
-# Publish @agentconnect.md/setup only when its self-contained bundle inputs
-# changed on the current release channel.
+# Publish @agentconnect.md/setup only when its inputs changed on the current
+# release channel.
 set -eu
 
 LAST_TAG="${1:-}"
@@ -53,7 +53,6 @@ if [ "$MODE" = prepare ]; then
   cd "$REPO_ROOT/packages/setup"
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
   pnpm run build
-  pnpm exec json -I -f package.json -e 'this.dependencies={}'
   exit 0
 fi
 
