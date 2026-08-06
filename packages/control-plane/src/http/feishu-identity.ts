@@ -103,10 +103,15 @@ export interface FeishuAppSetupAudit {
   message?: string
 }
 
+export interface FeishuAppSetupExpectation {
+  redirectUris?: readonly string[]
+}
+
 export type FeishuAppSetupAuditor = (
   appId: string,
   appSecret: string,
-  region: FeishuRegion
+  region: FeishuRegion,
+  expectation?: FeishuAppSetupExpectation
 ) => Promise<FeishuAppSetupAudit>
 
 type JsonRecord = Record<string, unknown>
@@ -150,7 +155,7 @@ function applicationReadPermissionMissing(body: JsonRecord): boolean {
 /** Audit the actual published regional App instead of treating a successful
  * credential exchange as proof that its Bot, scopes, events and release are ready. */
 export function createFeishuAppSetupAuditor(fetcher: typeof fetch = fetch): FeishuAppSetupAuditor {
-  return async (appId, appSecret, region) => {
+  return async (appId, appSecret, region, expectation = {}) => {
     const base = REGION_BASE[region]
     const token = await tenantAccessToken(appId, appSecret, region, fetcher)
     if (token.status !== 'ok') {
@@ -197,6 +202,10 @@ export function createFeishuAppSetupAuditor(fetcher: typeof fetch = fetch): Feis
       const appName = typeof app.app_name === 'string' ? app.app_name : null
       const onlineVersionId = typeof app.online_version_id === 'string' ? app.online_version_id.trim() : ''
       const diff: FeishuAppSetupDiff[] = []
+      const redirectUris = strings(app.redirect_urls)
+      if (expectation.redirectUris?.some((redirectUri) => !redirectUris.includes(redirectUri))) {
+        diff.push({ field: 'OAuth redirect URLs', current: redirectUris, expected: expectation.redirectUris })
+      }
       if (app.status !== 1) diff.push({ field: 'App status', current: 'Disabled', expected: 'Enabled' })
       if (!onlineVersionId) {
         diff.push({ field: 'Published version', current: 'None', expected: 'Published' })
