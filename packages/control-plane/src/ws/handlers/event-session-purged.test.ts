@@ -30,7 +30,7 @@ function depsWith(
 ): { deps: DaemonWsDeps; release: ReturnType<typeof vi.fn> } {
   const release = vi.fn()
   const deps = {
-    agent: { get: vi.fn().mockResolvedValue(placedOn === null ? null : { daemonId: placedOn }) },
+    agent: { getUnscoped: vi.fn().mockResolvedValue(placedOn === null ? null : { daemonId: placedOn }) },
     agentMutations: { tryBeginMutation: vi.fn(() => (lease === 'free' ? release : null)) },
     session: { markContentPurged }
   } as unknown as DaemonWsDeps

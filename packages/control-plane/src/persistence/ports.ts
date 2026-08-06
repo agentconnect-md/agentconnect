@@ -714,7 +714,16 @@ export interface AgentRepo {
    *  re-verifies the connection inside the transaction — MemoryConnectionBusy /
    *  MemoryConnectionMissing abort it. */
   create(input: CreateAgentInput, opts?: AgentCreateOpts): Promise<AgentRecord>
-  get(agentId: AgentId): Promise<AgentRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. This is the
+   *  only agent read the HTTP/MCP surface may use. */
+  get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — orchestration,
+   *  reconciliation, WS handlers, platform machinery — which resolve an agent
+   *  from system state (a run row, an integration row, signed claims) and
+   *  derive the org from the returned record. Never call this from the HTTP
+   *  surface; lint enforces it (org-scoped-data-layer.md §6). */
+  getUnscoped(agentId: AgentId): Promise<AgentRecord | null>
   /** `opts.authorizeMcpServers` / `opts.skillSources.authorize` (only
    *  meaningful when the patch includes `mcpServers` / `skills`) run INSIDE the
    *  row-locked transaction, right after the committed runtimeOverrides read,
@@ -724,11 +733,16 @@ export interface AgentRepo {
    *  transaction. A patch touching the external-memory binding additionally
    *  try-locks the old+new connections' advisory mutation scopes and
    *  re-verifies a newly bound connection inside the transaction
-   *  (MemoryConnectionBusy / MemoryConnectionMissing). */
-  update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
+   *  (MemoryConnectionBusy / MemoryConnectionMissing).
+   *
+   *  Org-fenced: throws {@link AgentMissing} when `agentId` does not exist in
+   *  `orgId` — a cross-org id is indistinguishable from a missing row. */
+  update(orgId: OrgId, agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord>
   /** Compare-and-set a workspace edit. The caller has already drained/proved
-   *  an owning daemon when one exists. */
+   *  an owning daemon when one exists. Org-fenced: a cross-org id misses the
+   *  CAS exactly like a stale expectation (null). */
   setWorkspace(
+    orgId: OrgId,
     agentId: AgentId,
     expectedLastModifiedAt: Date,
     expectedMode: AgentWorkspace['mode'],
@@ -736,8 +750,11 @@ export interface AgentRepo {
     workspaceRepoId?: bigint,
     byUserId?: string
   ): Promise<AgentRecord | null>
-  /** Compensation for a daemon NACK whose non-activation is known. */
+  /** Compensation for a daemon NACK whose non-activation is known.
+   *  Org-fenced like {@link AgentRepo.setWorkspace}; the orchestrator passes
+   *  the org of the record it holds. */
   restoreWorkspace(
+    orgId: OrgId,
     agentId: AgentId,
     expectedLastModifiedAt: Date,
     expectedWorkspace: AgentWorkspace,
@@ -754,15 +771,19 @@ export interface AgentRepo {
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;
-   *  `byUserId` is the editing WebUI principal (absent under devAuth). */
+   *  `byUserId` is the editing WebUI principal (absent under devAuth).
+   *  Org-fenced: a cross-org id surfaces as the missing-row error. */
   setSharing(
+    orgId: OrgId,
     agentId: AgentId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<AgentRecord>
   /** Set both directions of the agent-call policy. Stamps last-modified audit
-   *  because it is a human configuration edit. */
+   *  because it is a human configuration edit. Org-fenced: a cross-org id
+   *  surfaces as the missing-row error. */
   setCallPolicy(
+    orgId: OrgId,
     agentId: AgentId,
     policy: {
       callPolicy: AgentCallPolicy
@@ -790,8 +811,9 @@ export interface AgentRepo {
   ): Promise<AgentRecord | null>
   /** Atomically enumerate the agent's HookDefs, tombstone their durable review
    *  projections, and delete the Agent (cascading the HookDefs). The returned
-   *  snapshots let the route remove the corresponding relay rules. */
-  delete(agentId: AgentId): Promise<HookRecord[]>
+   *  snapshots let the route remove the corresponding relay rules.
+   *  Org-fenced: a cross-org id preserves the missing-row error semantics. */
+  delete(orgId: OrgId, agentId: AgentId): Promise<HookRecord[]>
   /** The org's agents. Every supplied human principal is resource-filtered;
    *  undefined is reserved for unfiltered internal reads
    *  (authorization/policy.ts#visibilityWhere). */
@@ -2804,8 +2826,10 @@ export interface AgentConfigWriter {
    *  (fenced per {@link AgentRepo.create}). */
   create(input: CreateAgentInput, secrets?: Record<string, string>, opts?: AgentCreateOpts): Promise<AgentRecord>
   /** Apply a PATCH: secret merge (see {@link AgentSecretStore.merge} semantics)
-   *  + row update in one transaction (fenced per {@link AgentRepo.update}). */
+   *  + row update in one transaction (fenced per {@link AgentRepo.update},
+   *  including its org fence). */
   update(
+    orgId: OrgId,
     agentId: AgentId,
     patch: UpdateAgentInput,
     secrets?: Record<string, string | null>,

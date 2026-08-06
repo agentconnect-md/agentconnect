@@ -78,7 +78,7 @@ function make(
   } = {}
 ) {
   const agents: HookAgentReads = {
-    get: vi.fn(async () =>
+    getUnscoped: vi.fn(async () =>
       opts.daemonId === null
         ? null
         : ({ id: AGENT, name: 'review-agent', daemonId: opts.daemonId ?? DAEMON } as AgentRecord)
@@ -233,7 +233,7 @@ describe('HookService.replayTo', () => {
       repoFullName: 'acme/infra',
       events: ['issues:*']
     })
-    const agents: HookAgentReads = { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON }) as AgentRecord) }
+    const agents: HookAgentReads = { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON }) as AgentRecord) }
     const secrets = { get: vi.fn(async () => null) } as unknown as HookSecretStore
     const hooks = { listEnabled: vi.fn(async () => [github, webhook]) } as unknown as HookRepo
     const installations = {

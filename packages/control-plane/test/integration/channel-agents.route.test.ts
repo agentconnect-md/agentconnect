@@ -32,7 +32,7 @@ import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { isFrame, type AnyFrame, type IntegrationChannel } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { AgentId } from '../../src/domain/ids.js'
+import { AgentId, OrgId } from '../../src/domain/ids.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -239,7 +239,7 @@ describe('channel/agents (agent collaboration directory)', () => {
 
     // private-peer only allows some OTHER agent to call it — not `caller`.
     const agentRepo = new PgAgentRepo(prisma)
-    await agentRepo.setCallPolicy(AgentId(privatePeer.agentId), {
+    await agentRepo.setCallPolicy(OrgId(DEFAULT_ORG_ID), AgentId(privatePeer.agentId), {
       callPolicy: 'selected',
       allowedCallerAgentIds: [randomUUID()]
     })
@@ -260,7 +260,7 @@ describe('channel/agents (agent collaboration directory)', () => {
     await reportChannels(DAEMON, privatePeer.integrationId, [{ id: 'C1', name: 'deploys' }])
 
     const agentRepo = new PgAgentRepo(prisma)
-    await agentRepo.setCallPolicy(AgentId(privatePeer.agentId), {
+    await agentRepo.setCallPolicy(OrgId(DEFAULT_ORG_ID), AgentId(privatePeer.agentId), {
       callPolicy: 'selected',
       allowedCallerAgentIds: [caller.agentId]
     })
@@ -282,7 +282,7 @@ describe('channel/agents (agent collaboration directory)', () => {
     }
 
     const agentRepo = new PgAgentRepo(prisma)
-    await agentRepo.setCallPolicy(AgentId(caller.agentId), {
+    await agentRepo.setCallPolicy(OrgId(DEFAULT_ORG_ID), AgentId(caller.agentId), {
       callPolicy: 'all',
       allowedCallerAgentIds: [],
       outboundPolicy: 'selected',
@@ -358,13 +358,13 @@ describe('channel/agents — ORG-WIDE scope (no channel)', () => {
     const unlistedPeer = await createAgent(running, DAEMON, { name: 'unlisted-peer' })
 
     // Inbound: refusing-peer admits somebody else, not the caller.
-    await agentRepo.setCallPolicy(AgentId(refusingPeer), {
+    await agentRepo.setCallPolicy(OrgId(DEFAULT_ORG_ID), AgentId(refusingPeer), {
       callPolicy: 'selected',
       allowedCallerAgentIds: [randomUUID()]
     })
     // Outbound: the caller only targets open-peer + refusing-peer, so unlisted-peer is
     // invisible even though ITS inbound policy is open.
-    await agentRepo.setCallPolicy(AgentId(caller), {
+    await agentRepo.setCallPolicy(OrgId(DEFAULT_ORG_ID), AgentId(caller), {
       callPolicy: 'all',
       allowedCallerAgentIds: [],
       outboundPolicy: 'selected',

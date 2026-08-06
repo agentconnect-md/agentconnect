@@ -92,8 +92,8 @@ export function hookRoutes(deps: HttpDeps) {
     const getOrgHook = async (req: FastifyRequest, id: string): Promise<HookRecord | null> => {
       const hook = await deps.repos.hook.get(HookId(id))
       if (!hook || hook.orgId !== req.orgCtx!.orgId || !hook.agentId) return null
-      const agent = await deps.repos.agent.get(hook.agentId)
-      if (!agent || agent.orgId !== req.orgCtx!.orgId || !canView(agent, ctxOf(req))) return null
+      const agent = await deps.repos.agent.get(orgOf(req), hook.agentId)
+      if (!agent || !canView(agent, ctxOf(req))) return null
       return hook
     }
 
@@ -204,7 +204,9 @@ export function hookRoutes(deps: HttpDeps) {
             const ref = await deps.github.repoRefFor(ins, owner!, repo)
             if (ref?.repoId === repoId) {
               if (await deps.repos.agent.setWorkspaceRepoId(agent.id, repoId)) return { ok: true }
-              return (await deps.repos.agent.get(agent.id))?.workspaceRepoId === repoId ? { ok: true } : denied
+              return (await deps.repos.agent.get(agent.orgId, agent.id))?.workspaceRepoId === repoId
+                ? { ok: true }
+                : denied
             }
           } catch (e) {
             if (!(e instanceof GithubApiError)) throw e
@@ -320,8 +322,8 @@ export function hookRoutes(deps: HttpDeps) {
         }
         // The hook's agent must exist IN THIS ORG and be VISIBLE to the caller —
         // same no-oracle rule as cron create (no binding a restricted agent).
-        const agent = await deps.repos.agent.get(AgentId(req.body.agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'unknown agentId' })
         }
         const target = await resolveTarget(orgId, agent.id, req.body)
@@ -450,8 +452,8 @@ export function hookRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await deps.repos.agent.get(AgentId(req.params.agentId))
-        if (!agent || agent.orgId !== orgOf(req) || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         const rows = await deps.repos.hook.listForAgent(agent.id)
@@ -519,8 +521,8 @@ export function hookRoutes(deps: HttpDeps) {
             message: 'kind is immutable — delete and re-create to change it'
           })
         }
-        const agent = await deps.repos.agent.get(AgentId(req.body.agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'unknown agentId' })
         }
         const target = await resolveTarget(orgId, agent.id, req.body)

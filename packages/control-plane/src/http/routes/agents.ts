@@ -505,8 +505,8 @@ export function agentRoutes(deps: HttpDeps) {
     // to them — a cross-org id OR a restricted agent they can't see both read as
     // absent (404), never as someone else's resource.
     const getOrgAgent = async (req: FastifyRequest, id: string): Promise<AgentRecord | null> => {
-      const agent = await deps.repos.agent.get(AgentId(id))
-      if (!agent || agent.orgId !== req.orgCtx!.orgId) return null
+      const agent = await deps.repos.agent.get(orgOf(req), AgentId(id))
+      if (!agent) return null
       return canView(agent, ctxOf(req)) ? agent : null
     }
 
@@ -947,7 +947,8 @@ export function agentRoutes(deps: HttpDeps) {
       log: app.log
     })
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.id)
+      // `observed` came through an org-fenced read, so its own org scopes the refresh.
+      const current = await deps.repos.agent.get(observed.orgId, observed.id)
       if (
         !current ||
         current.daemonId !== observed.daemonId ||
@@ -1667,6 +1668,7 @@ export function agentRoutes(deps: HttpDeps) {
               req.body.mcpServers,
               (authorizeMcpServers) =>
                 deps.repos.agentConfig.update(
+                  orgOf(req),
                   AgentId(req.params.id),
                   {
                     ...bodyPatch,
@@ -2162,7 +2164,7 @@ export function agentRoutes(deps: HttpDeps) {
           // AgentRepo holds the shared agent lifecycle lock while it captures
           // every HookDef, tombstones their durable review projections, and
           // cascades the Agent/HookDef rows in one transaction.
-          const removedHooks = await deps.repos.agent.delete(AgentId(req.params.id))
+          const removedHooks = await deps.repos.agent.delete(orgOf(req), AgentId(req.params.id))
           // WITHDRAW it from the peer directory now, the mirror of the create path above.
           // Discovery (`channel/agents`) reads the DB live while a peer WAKE is authorized
           // against the pushed snapshot, so without this every daemon in the org keeps a flat
@@ -2244,6 +2246,7 @@ export function agentRoutes(deps: HttpDeps) {
           }
           const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
           const agent = await deps.repos.agent.setSharing(
+            orgOf(req),
             AgentId(req.params.id),
             { visibility: req.body.visibility, sharedWith },
             req.principal?.userId
@@ -2318,6 +2321,7 @@ export function agentRoutes(deps: HttpDeps) {
               ? await resolvePolicyAgentIds(req, req.params.id, requestedTargetAgentIds, current.allowedTargetAgentIds)
               : []
           const agent = await deps.repos.agent.setCallPolicy(
+            orgOf(req),
             AgentId(req.params.id),
             {
               callPolicy: req.body.callPolicy,

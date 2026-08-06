@@ -29,7 +29,11 @@ export function agentIconRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply): Promise<FastifyReply> => {
-        const agent = await deps.repos.agent.get(AgentId(req.params.id)).catch(() => null)
+        // Public by design: chat platforms (Slack icon_url, Lark's launcher)
+        // fetch this PNG with no credentials, so there is no org principal to
+        // fence on — the raw agent UUID is the capability.
+        // eslint-disable-next-line no-restricted-syntax -- org-scoped-data-layer.md §4: public-by-design endpoint
+        const agent = await deps.repos.agent.getUnscoped(AgentId(req.params.id)).catch(() => null)
         if (!agent) return reply.code(404).send()
         // Lark's app launcher loads this with `crossOrigin = "anonymous"` before
         // rasterizing it on a canvas, so the public image response must allow CORS.

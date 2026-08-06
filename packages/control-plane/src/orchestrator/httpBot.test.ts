@@ -266,8 +266,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         return row
       }
     }
-    const agentRepo: Pick<AgentRepo, 'get'> = {
-      get: async (id) => {
+    const agentRepo: Pick<AgentRepo, 'getUnscoped'> = {
+      getUnscoped: async (id) => {
         const a = agents[id]
         if (!a) return null
         return { ...a, visibility: gatedAgents.has(id) ? 'restricted' : 'org' } as AgentRecord

@@ -139,7 +139,7 @@ describe('syncAgentBotIcons', () => {
       syncAgentBotIcons(
         {
           repos: {
-            agent: { get: async () => currentAgent },
+            agent: { getUnscoped: async () => currentAgent },
             integration: {
               listForAgent: async () => integrations,
               listForBot: async (id) => {
@@ -195,7 +195,7 @@ describe('syncAgentBotIcons', () => {
     const warn = vi.fn()
     const deps = {
       repos: {
-        agent: { get: async () => agentRecord(agent.icon) },
+        agent: { getUnscoped: async () => agentRecord(agent.icon) },
         integration: { listForAgent: async () => [membership], listForBot: async () => [membership] },
         bot: { get: async () => bot(feishuId, 'feishu', { feishuAppId: 'cli_feishu' }) },
         botSecret: {
@@ -242,7 +242,7 @@ describe('syncAgentBotIcons', () => {
     })
     const deps = {
       repos: {
-        agent: { get: async () => currentAgent },
+        agent: { getUnscoped: async () => currentAgent },
         integration: {
           listForAgent: async () => [membership],
           listForBot: async () => [membership]
@@ -297,7 +297,7 @@ describe('syncAgentBotIcons', () => {
     })
     const deps = {
       repos: {
-        agent: { get: async () => currentAgent },
+        agent: { getUnscoped: async () => currentAgent },
         integration: {
           listForAgent: async () => [membership],
           listForBot: async () => [membership]

@@ -124,7 +124,7 @@ export interface GithubRunCoordinatorDeps {
     | 'setProjectionDesired'
     | 'upsertReviewSubject'
   >
-  agents: Pick<AgentRepo, 'get'>
+  agents: Pick<AgentRepo, 'getUnscoped'>
   clock: Clock
   /** Immediate wake-up only; the worker's periodic scan is authoritative. */
   kick?: () => void
@@ -218,7 +218,7 @@ export class GithubRunCoordinator {
     )
       return
 
-    const agent = await this.deps.agents.get(run.agentId)
+    const agent = await this.deps.agents.getUnscoped(run.agentId)
     if (!agent) return
     const now = new Date(this.deps.clock.now())
     const projection = await this.deps.hooks.upsertReviewProjection({
@@ -289,7 +289,7 @@ export interface GithubRunReporterDeps {
     | 'refreshReviewProjectionTarget'
     | 'getRunById'
   >
-  agents: Pick<AgentRepo, 'get'>
+  agents: Pick<AgentRepo, 'getUnscoped'>
   orgs?: Pick<OrgRepo, 'slugById'>
   /** Console origin used for Check Run links; unset keeps GitHub's default App link. */
   webAppUrl?: string
@@ -475,7 +475,7 @@ export class GithubRunReporter {
       return
     }
 
-    const agent = await this.deps.agents.get(projection.agentId)
+    const agent = await this.deps.agents.getUnscoped(projection.agentId)
     let token: string
     let repoFullName: string
     let resolvedRepoId: bigint

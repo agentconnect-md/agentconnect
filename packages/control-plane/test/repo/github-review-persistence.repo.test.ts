@@ -425,11 +425,12 @@ describe('R1/R2a persistence foundation', () => {
       gitAccess: 'write'
     })
     await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
-    const original = await agents.get(agentId)
+    const original = await agents.get(OrgId(DEFAULT_ORG_ID), agentId)
     if (!original || original.workspace.mode !== 'github') throw new Error('expected GitHub workspace fixture')
 
     const settled = await Promise.allSettled([
       agents.setWorkspace(
+        OrgId(DEFAULT_ORG_ID),
         agentId,
         original.lastModifiedAt,
         'github',
@@ -628,7 +629,7 @@ describe('R1/R2a persistence foundation', () => {
       const hookId = HookId(randomUUID())
       await seedAgent(prisma, agentId)
       const [deleted] = await Promise.allSettled([
-        agents.delete(agentId),
+        agents.delete(OrgId(DEFAULT_ORG_ID), agentId),
         hooks.upsert(hookInput(agentId, hookId, `create-race-${i}`))
       ])
       expect(deleted.status).toBe('fulfilled')
@@ -658,7 +659,7 @@ describe('R1/R2a persistence foundation', () => {
         nextAttemptAt: new Date('2026-07-11T00:00:00.000Z')
       })
       const [deleted] = await Promise.allSettled([
-        agents.delete(agentId),
+        agents.delete(OrgId(DEFAULT_ORG_ID), agentId),
         hooks.upsert(hookInput(agentId, hookId, `update-race-${i}`))
       ])
       expect(deleted.status).toBe('fulfilled')
@@ -680,7 +681,7 @@ describe('R1/R2a persistence foundation', () => {
     await seedAgent(prisma, deletedOwner)
     await seedAgent(prisma, liveTarget)
     await hooks.upsert(hookInput(deletedOwner, reboundHookId, 'before-owner-delete'))
-    await agents.delete(deletedOwner)
+    await agents.delete(OrgId(DEFAULT_ORG_ID), deletedOwner)
     await expect(
       hooks.upsert({
         ...hookInput(liveTarget, reboundHookId, 'must-not-resurrect'),
@@ -1526,7 +1527,7 @@ describe('R1/R2a persistence foundation', () => {
       workspace: { mode: 'github', gitRepo: 'github.com/acme/infra', installationId: randomUUID() },
       workspaceRepoId: 987654321n
     })
-    expect((await agents.get(agentId))?.workspaceRepoId).toBe(987654321n)
+    expect((await agents.get(OrgId(DEFAULT_ORG_ID), agentId))?.workspaceRepoId).toBe(987654321n)
 
     const hookId = HookId(randomUUID())
     await hooks.upsert({
@@ -1681,12 +1682,12 @@ describe('R1/R2a persistence foundation', () => {
         select: { repoFullName: true }
       })
     ).toEqual({ repoFullName: 'acme/new-name' })
-    expect(await agents.get(workspaceAgentId)).toMatchObject({
+    expect(await agents.get(OrgId(DEFAULT_ORG_ID), workspaceAgentId)).toMatchObject({
       workspace: { mode: 'github', gitRepo: 'https://github.com/acme/new-name' },
       workspaceRepoId: 44n,
       lastModifiedAt: workspaceBefore.lastModifiedAt
     })
-    expect(await agents.get(manualWorkspaceAgentId)).toMatchObject({
+    expect(await agents.get(OrgId(DEFAULT_ORG_ID), manualWorkspaceAgentId)).toMatchObject({
       workspace: { mode: 'github', gitRepo: 'git@github.com:acme/old-name.git' },
       workspaceRepoId: 44n
     })

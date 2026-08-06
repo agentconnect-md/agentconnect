@@ -846,7 +846,7 @@ describe('managed organization skills', () => {
     expect(createdAgent.statusCode).toBe(201)
     const agentDto = createdAgent.json() as { id: string; managedSkills: string[] }
     expect(agentDto.managedSkills).toEqual([skillId])
-    const agent = await owner.deps.repos.agent.get(AgentId(agentDto.id))
+    const agent = await owner.deps.repos.agent.get(DEF_ORG, AgentId(agentDto.id))
     expect((await owner.deps.agentSpecs.assemble(agent!)).managedSkills).toEqual([
       {
         id: skillId,
@@ -953,7 +953,8 @@ describe('managed organization skills', () => {
       ).statusCode
     ).toBe(200)
     expect(
-      (await owner.deps.agentSpecs.assemble((await owner.deps.repos.agent.get(AgentId(agentDto.id)))!)).managedSkills
+      (await owner.deps.agentSpecs.assemble((await owner.deps.repos.agent.get(DEF_ORG, AgentId(agentDto.id)))!))
+        .managedSkills
     ).toEqual([])
     expect(
       (

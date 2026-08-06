@@ -162,7 +162,7 @@ describe('GithubRunCoordinator', () => {
         | 'setProjectionDesired'
         | 'upsertReviewSubject'
       >,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW),
       kick
     })
@@ -201,7 +201,7 @@ describe('GithubRunCoordinator', () => {
     const kick = vi.fn()
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW),
       kick
     })
@@ -225,7 +225,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
     await coordinator.afterAccepted(hookId, 'delivery-1')
@@ -255,7 +255,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -285,7 +285,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
     await coordinator.afterReport(hookId, row.deliveryKey)
@@ -318,7 +318,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -358,7 +358,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -385,7 +385,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -422,7 +422,7 @@ describe('GithubRunCoordinator', () => {
     const kick = vi.fn()
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW),
       kick
     })
@@ -453,7 +453,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -482,7 +482,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -504,7 +504,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -585,7 +585,7 @@ describe('GithubRunReporter', () => {
         | 'listReviewSubjects'
         | 'getRunById'
       >,
-      agents: { get: vi.fn(async () => currentAgent) },
+      agents: { getUnscoped: vi.fn(async () => currentAgent) },
       orgs: { slugById: vi.fn(async () => 'acme') },
       webAppUrl: 'https://console.example.com/',
       ...(appSlug ? { appSlug } : {}),

@@ -65,7 +65,7 @@ function fakeDeps(
           'parent' in over ? over.parent : { id: PARENT_SESSION, daemonId: ASKING_DAEMON, agentId: CHILD_AGENT }
       },
       agent: {
-        get: async () =>
+        getUnscoped: async () =>
           'childAgent' in over ? over.childAgent : { id: CHILD_AGENT, orgId: ORG, daemonId: OWNING_DAEMON }
       },
       connReg: { get: () => owner }

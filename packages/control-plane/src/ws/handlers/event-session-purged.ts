@@ -38,7 +38,7 @@ export const handleSessionPurged: Handler = async (frame, conn, deps) => {
     return
   }
   try {
-    const agent = await deps.agent.get(agentId)
+    const agent = await deps.agent.getUnscoped(agentId)
     if (agent?.daemonId === DaemonId(conn.daemonId)) {
       await deps.session.markContentPurged(
         agentId,

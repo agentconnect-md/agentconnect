@@ -21,7 +21,7 @@ import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { ensurePersonalOrg } from '../../src/persistence/repositories/user.repo.js'
 import { ensureDefaultTenant } from '../../src/persistence/ensure-default-tenant.js'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
-import { AgentId, DaemonId } from '../../src/domain/ids.js'
+import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 
 const silentLog = { info() {}, warn() {} }
 
@@ -266,7 +266,7 @@ describe('one-time backfill', () => {
     expect(kept?.runtime).toBe('claude')
 
     // Delete the clean org's preset, run again: the state row stops resurrection.
-    await new PgAgentRepo(prisma).delete(AgentId(provisioned!.id))
+    await new PgAgentRepo(prisma).delete(OrgId(clean.id), AgentId(provisioned!.id))
     const second = await backfill.run()
     expect(second.provisioned).toBe(0)
     expect(second.skipped).toBe(0)

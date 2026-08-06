@@ -27,7 +27,7 @@ describe('handleSessionActivity', () => {
     const publishActivity = vi.fn()
     const release = vi.fn()
     const deps = {
-      agent: { get: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
+      agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
       agentMutations: { tryBeginMutation: vi.fn(() => release) },
       events: { publishActivity }
     } as unknown as DaemonWsDeps
@@ -42,7 +42,7 @@ describe('handleSessionActivity', () => {
   it('drops activity from a daemon that does not own the agent', async () => {
     const publishActivity = vi.fn()
     const deps = {
-      agent: { get: vi.fn().mockResolvedValue({ daemonId: crypto.randomUUID() }) },
+      agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: crypto.randomUUID() }) },
       agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
       events: { publishActivity }
     } as unknown as DaemonWsDeps

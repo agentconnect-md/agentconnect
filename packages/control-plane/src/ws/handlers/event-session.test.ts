@@ -15,7 +15,7 @@ const GITHUB_INSTALLATION_ROW_ID = '44444444-4444-4444-8444-444444444444'
 
 function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
-    agent: { get: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
+    agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
     hook: { get: vi.fn().mockResolvedValue(null) },
     ...extra
@@ -604,7 +604,7 @@ describe('handleEventSession', () => {
     const recordMilestone = vi.fn()
     const publish = vi.fn()
     const deps = scopedDeps({
-      agent: { get: vi.fn().mockResolvedValue({ daemonId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }) },
+      agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee' }) },
       agentMutations: { tryBeginMutation: vi.fn(() => release) },
       session: { recordMilestone },
       events: { publish }

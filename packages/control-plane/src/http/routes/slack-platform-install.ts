@@ -33,7 +33,7 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
-import { denyViewerWrite, ctxOf } from '../rbac.js'
+import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
@@ -117,8 +117,8 @@ export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeam
               message: 'no target agent: pass agentId (the agentconnect preset is absent in this org)'
             })
           }
-          const agent = await deps.repos.agent.get(AgentId(requestedAgentId))
-          if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+          const agent = await deps.repos.agent.get(orgOf(req), AgentId(requestedAgentId))
+          if (!agent || !canView(agent, ctxOf(req))) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
           }
           if (!canEdit(agent, ctxOf(req))) {
@@ -275,8 +275,10 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           return fail('workspace_mismatch')
         }
 
-        const agent = row.agentId ? await deps.repos.agent.get(row.agentId) : null
-        if (row.agentId && (!agent || agent.orgId !== row.orgId)) {
+        // Unauthenticated callback: no request org context — the pending-install
+        // row (minted org-scoped; its id is the OAuth state) carries the tenancy.
+        const agent = row.agentId ? await deps.repos.agent.get(row.orgId, row.agentId) : null
+        if (row.agentId && !agent) {
           // Target deleted while the tab was open — nothing sane to bind to.
           return fail('error')
         }

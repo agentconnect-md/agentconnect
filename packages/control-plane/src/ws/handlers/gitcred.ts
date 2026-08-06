@@ -33,7 +33,7 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   // Placement scope: the agent must currently live on the REQUESTING daemon.
   // A daemon that lost the agent (re-placement while offline) gets a terminal
   // SCOPE_DENIED — its cache layer clears the entry and stops asking.
-  const agent = await deps.agent.get(AgentId(agentId))
+  const agent = await deps.agent.getUnscoped(AgentId(agentId))
   if (!agent || agent.daemonId !== conn.daemonId) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'agent is not placed on this daemon', false)
     return

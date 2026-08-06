@@ -20,9 +20,9 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { AgentId } from '../../domain/ids.js'
+import { AgentId, type OrgId } from '../../domain/ids.js'
 import { canEdit } from '../../authorization/policy.js'
-import { ctxOf, denyNonOwner } from '../rbac.js'
+import { ctxOf, denyNonOwner, orgOf } from '../rbac.js'
 import { Tag } from '../plugins/openapi.js'
 import { AgentIconDto, ErrorDto } from '../dto/index.js'
 import { agentIconKey, orgIconKey } from '../../icons/icon-store.js'
@@ -58,8 +58,8 @@ export function iconUploadRoutes(deps: HttpDeps) {
 
     // Best-effort: replicate the agent's new icon to its owning daemon so the Slack
     // per-message avatar refreshes now (the reconnect roster is the backstop).
-    const replicateAgent = async (agentId: string): Promise<void> => {
-      const agent = await deps.repos.agent.get(AgentId(agentId))
+    const replicateAgent = async (orgId: OrgId, agentId: string): Promise<void> => {
+      const agent = await deps.repos.agent.get(orgId, AgentId(agentId))
       if (!agent?.daemonId) return
       try {
         await deps.control.agentUpsert(agent.daemonId, {
@@ -90,8 +90,8 @@ export function iconUploadRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await deps.repos.agent.get(AgentId(req.params.agentId))
-        if (!agent || agent.orgId !== req.orgCtx!.orgId) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
+        if (!agent) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         if (!canEdit(agent, ctxOf(req))) {
@@ -109,11 +109,11 @@ export function iconUploadRoutes(deps: HttpDeps) {
 
         await iconStore.put(agentIconKey(agent.id), bytes, v.contentType)
         const imageIcon = { kind: 'image' as const, generation: randomUUID() }
-        const updated = await deps.repos.agent.update(AgentId(agent.id), {
+        const updated = await deps.repos.agent.update(orgOf(req), AgentId(agent.id), {
           icon: imageIcon,
           ...(req.principal?.userId ? { lastModifiedByUserId: req.principal.userId } : {})
         })
-        void replicateAgent(agent.id)
+        void replicateAgent(agent.orgId, agent.id)
         void syncAgentBotIcons(deps, updated, app.log)
         return reply.send({
           icon: { kind: 'image' as const },
@@ -135,8 +135,8 @@ export function iconUploadRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const agent = await deps.repos.agent.get(AgentId(req.params.agentId))
-        if (!agent || agent.orgId !== req.orgCtx!.orgId) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.params.agentId))
+        if (!agent) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         if (!canEdit(agent, ctxOf(req))) {
@@ -149,14 +149,14 @@ export function iconUploadRoutes(deps: HttpDeps) {
             .send({ error: 'Forbidden', statusCode: 403, message: 'built-in agent icon cannot be changed' })
         }
         const glyph = randomGlyphIcon()
-        const updated = await deps.repos.agent.update(AgentId(agent.id), {
+        const updated = await deps.repos.agent.update(orgOf(req), AgentId(agent.id), {
           icon: glyph,
           ...(req.principal?.userId ? { lastModifiedByUserId: req.principal.userId } : {})
         })
         await iconStore.delete(agentIconKey(agent.id)).catch((err) => {
           app.log.warn({ err, agentId: agent.id }, 'icon store delete failed (row already reset)')
         })
-        void replicateAgent(agent.id)
+        void replicateAgent(agent.orgId, agent.id)
         void syncAgentBotIcons(deps, updated, app.log)
         return reply.send({ icon: glyph, iconUrl: null })
       }
