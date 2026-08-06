@@ -65,7 +65,7 @@ or `https://api.example.com/v1` behind the rewrite) rather than hard-coding `/ap
 in the client (§5.4). So a host can present the API as `api.example.com/v1/…` and the
 console follows, with no rebuild.
 
-> Note: the browser API Resource configured in Tenant Admin is an **OIDC audience
+> Note: the browser API Resource configured in Setup is an **OIDC audience
 > identifier URI**, not a routable host — unrelated to this design.
 
 ## 4. Surface inventory — what is versioned, what is not

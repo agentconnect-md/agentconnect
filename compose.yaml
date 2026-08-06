@@ -65,7 +65,7 @@ services:
   # Plane image but runs the self-contained @agentconnect.md/setup bundle
   # instead of the Control Plane process. It is never published beyond the
   # Docker host's loopback interface.
-  tenant-admin:
+  setup-server:
     <<: *control-plane-image
     build:
       context: .
@@ -91,8 +91,8 @@ services:
       - VAULT_JWT_ROLE
       - VAULT_JWT_PATH
       - VAULT_AUTH_MOUNT
-      - TENANT_ADMIN_URL=http://localhost:8091
-      - TENANT_ADMIN_ALLOW_CONTAINER_PROXY=true
+      - SETUP_SERVER_URL=http://localhost:8091
+      - SETUP_SERVER_ALLOW_CONTAINER_PROXY=true
       - LOGTO_ADMIN_ENDPOINT=${LOGTO_ADMIN_ENDPOINT:-http://localhost:3002}
       - AGENTCONNECT_PUBLIC_CP_URL
       - AGENTCONNECT_PUBLIC_WEB_URL

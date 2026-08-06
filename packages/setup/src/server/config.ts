@@ -1,5 +1,5 @@
 /**
- * Process bootstrap configuration for the Tenant Admin server.
+ * Process bootstrap configuration for the Setup Server.
  *
  * Product/provider settings intentionally do not live here: they are loaded
  * from the deployment config singleton after initialization, or held only in
@@ -31,13 +31,13 @@ const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
   }
 })
 
-export const TenantAdminProcessConfigSchema = z
+export const SetupServerProcessConfigSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     HOST: z.string().default('127.0.0.1'),
     PORT: z.coerce.number().int().min(1).max(65_535).default(8091),
-    TENANT_ADMIN_URL: SecureOriginSchema.default('http://localhost:8091'),
-    TENANT_ADMIN_ALLOW_CONTAINER_PROXY: z.stringbool().default(false),
+    SETUP_SERVER_URL: SecureOriginSchema.default('http://localhost:8091'),
+    SETUP_SERVER_ALLOW_CONTAINER_PROXY: z.stringbool().default(false),
     LOGTO_ADMIN_ENDPOINT: SecureOriginSchema.default('http://localhost:3002'),
     DATABASE_URL: z
       .string()
@@ -75,8 +75,8 @@ export const TenantAdminProcessConfigSchema = z
     }
   })
 
-export type TenantAdminProcessConfig = z.infer<typeof TenantAdminProcessConfigSchema>
+export type SetupServerProcessConfig = z.infer<typeof SetupServerProcessConfigSchema>
 
-export function loadTenantAdminProcessConfig(env: NodeJS.ProcessEnv = process.env): TenantAdminProcessConfig {
-  return TenantAdminProcessConfigSchema.parse(env)
+export function loadSetupServerProcessConfig(env: NodeJS.ProcessEnv = process.env): SetupServerProcessConfig {
+  return SetupServerProcessConfigSchema.parse(env)
 }

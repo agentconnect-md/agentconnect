@@ -84,7 +84,7 @@ function normalizeSlackRelayUrl(relayUrl: string): string {
   return relayUrl.replace(/^ws(s?):\/\//i, 'http$1://').replace(/\/+$/, '')
 }
 
-/** One canonical Slack manifest shared by browser, Control Plane, and Tenant Admin. */
+/** One canonical Slack manifest shared by browser, Control Plane, and Setup Server. */
 export function buildSlackAppManifest(name: string, options: SlackAppManifestOptions = {}): SlackAppManifest {
   const appName = name.trim() || DEFAULT_SLACK_APP_NAME
   const displayName = options.displayName?.trim() || appName

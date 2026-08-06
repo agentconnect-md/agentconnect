@@ -393,7 +393,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
 
 function runtimeSecretKeys(values: DeploymentConfigValuesV1): Set<DeploymentSecretKey> {
   const keys = new Set(requiredSecrets(values))
-  // Tenant Admin may reuse the deployment App for Logto sign-in. Keep this
+  // Setup Server may reuse the deployment App for Logto sign-in. Keep this
   // optional for the GitHub runtime, but allow an explicit setup-side read.
   if (values.github) keys.add('github.clientSecret')
   return keys
