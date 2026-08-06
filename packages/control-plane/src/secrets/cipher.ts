@@ -17,12 +17,12 @@
  * Contract for an encrypting implementation (e.g. Vault Transit):
  * - `seal` returns a self-describing value carrying the envelope version
  *   (`acv1:` + Transit's own `vault:v1:…`).
- * - `open` MUST pass through values it did not seal (no recognizable prefix ⇒
- *   return as-is): existing plaintext rows keep working, and re-sealing on the
- *   next write migrates them lazily — the flip is online, no backfill required.
- *   Values sealed before scoping existed (a bare `vault:vN:`) open under the
- *   deployment key whatever `scope` says; only the envelope-tagged arm is
- *   scoped.
+ * - `open` MUST pass through values it did not seal (no envelope tag ⇒ return
+ *   as-is): existing plaintext rows keep working, and re-sealing on the next
+ *   write migrates them lazily — the flip is online, no backfill required. It
+ *   must NOT pass through a value that is sealed but unreadable (a pre-scoping
+ *   `vault:vN:`, or a newer envelope version) — that has to throw, since
+ *   returning ciphertext as plaintext would be shipped onward as a credential.
  * - A value sealed under one scope MUST NOT open under another. Failing closed
  *   there is the point of passing the scope in.
  * - Neither side ever logs its argument.
