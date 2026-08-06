@@ -4,7 +4,7 @@ import type { GithubInstallationRepo, HookRecord, HookRepo } from '../persistenc
 import type { GithubService } from './service.js'
 
 export interface GithubCommentAuthzDeps {
-  hooks: Pick<HookRepo, 'getMany'>
+  hooks: Pick<HookRepo, 'getManyUnscoped'>
   installations: Pick<GithubInstallationRepo, 'getByInstallationId'>
   github: Pick<GithubService, 'repoRefForCommentAuthz' | 'userRepoPermissionForCommentAuthz'>
   /** Test override; production stays below the relay's 5 second correlator. */
@@ -51,7 +51,10 @@ export class GithubCommentAuthzService {
     ]
     if (new Set(fences.map((fence) => fence.hookId)).size !== fences.length) return false
 
-    const hooks = await this.deps.hooks.getMany(fences.map((fence) => HookId(fence.hookId)))
+    // GitHub machinery (org-scoped-data-layer.md §4): the fences arrive on a
+    // durable run row, which already fixes the organization; the repo/fence
+    // matching below is the authority.
+    const hooks = await this.deps.hooks.getManyUnscoped(fences.map((fence) => HookId(fence.hookId)))
     const currentById = new Map<string, HookRecord>(hooks.map((hook) => [hook.id, hook]))
     const authorized = fences.map((fence) => {
       const hook = currentById.get(fence.hookId) ?? null
@@ -91,7 +94,7 @@ export class GithubCommentAuthzService {
     // The GitHub calls above can take seconds. Re-read immediately before the
     // allow verdict so a concurrent disable, retarget, or reassignment cannot
     // authorize any fan-out sibling whose durable snapshot is no longer current.
-    const refreshed = await this.deps.hooks.getMany(fences.map((fence) => HookId(fence.hookId)))
+    const refreshed = await this.deps.hooks.getManyUnscoped(fences.map((fence) => HookId(fence.hookId)))
     const refreshedById = new Map<string, HookRecord>(refreshed.map((candidate) => [candidate.id, candidate]))
     return fences.every((fence, index) => {
       const expected = authorizedHooks[index]

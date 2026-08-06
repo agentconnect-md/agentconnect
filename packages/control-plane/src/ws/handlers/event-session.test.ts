@@ -17,7 +17,7 @@ function scopedDeps(extra: Record<string, unknown>): DaemonWsDeps {
   return {
     agent: { getUnscoped: vi.fn().mockResolvedValue({ daemonId: DAEMON_ID }) },
     agentMutations: { tryBeginMutation: vi.fn(() => vi.fn()) },
-    hook: { get: vi.fn().mockResolvedValue(null) },
+    hook: { getUnscoped: vi.fn().mockResolvedValue(null) },
     ...extra
   } as unknown as DaemonWsDeps
 }
@@ -555,7 +555,7 @@ describe('handleEventSession', () => {
     const deps = scopedDeps({
       session: { recordMilestone },
       hook: {
-        get: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
+        getUnscoped: vi.fn().mockResolvedValue({ kind: 'github', agentId: AGENT_ID })
       },
       events: { publish: vi.fn() }
     })

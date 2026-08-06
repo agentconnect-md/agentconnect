@@ -110,7 +110,7 @@ function authorizeInput(
 function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
   let currentRun = run()
   const hookRepo = {
-    get: vi.fn(async () => hook()),
+    getUnscoped: vi.fn(async () => hook()),
     getRun: vi.fn(async () => currentRun),
     recordStart: vi.fn(async () => true),
     reserveReviewAttempt: vi.fn(async (_hookId, _daemonId, input) => {
@@ -273,7 +273,7 @@ describe('GithubReviewBrokerService', () => {
 
   it('takes the lower of the fire snapshot and current policy before reserving', async () => {
     const { service, hookRepo } = setup()
-    hookRepo.get.mockResolvedValue(hook({ reviewPolicy: 'comment' }))
+    hookRepo.getUnscoped.mockResolvedValue(hook({ reviewPolicy: 'comment' }))
     await expect(service.authorize(authorizeInput('APPROVE'), DAEMON)).rejects.toMatchObject({
       code: 'SCOPE_DENIED'
     })
@@ -401,7 +401,7 @@ describe('GithubReviewBrokerService', () => {
 
   it('rejects an accepted turn after its hook is retargeted to another repository', async () => {
     const { service, hookRepo } = setup()
-    hookRepo.get.mockResolvedValue(hook({ repoId: 999n, repoFullName: 'acme/other' }))
+    hookRepo.getUnscoped.mockResolvedValue(hook({ repoId: 999n, repoFullName: 'acme/other' }))
 
     await expect(service.authorize(authorizeInput(), DAEMON)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(hookRepo.reserveReviewAttempt).not.toHaveBeenCalled()
@@ -412,7 +412,7 @@ describe('GithubReviewBrokerService', () => {
     ['dispatch placement', { dispatchRevision: 10n }]
   ] as const)('rejects an old turn after a same-value %s ABA', async (_label, changed) => {
     const { service, hookRepo } = setup()
-    hookRepo.get.mockResolvedValue(hook(changed))
+    hookRepo.getUnscoped.mockResolvedValue(hook(changed))
 
     await expect(service.authorize(authorizeInput(), DAEMON)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(hookRepo.reserveReviewAttempt).not.toHaveBeenCalled()
@@ -420,7 +420,7 @@ describe('GithubReviewBrokerService', () => {
 
   it('does not expose a token when the review lifecycle epoch changes during mint', async () => {
     const { service, hookRepo } = setup()
-    hookRepo.get.mockResolvedValueOnce(hook()).mockResolvedValue(hook({ projectionEpoch: 2n }))
+    hookRepo.getUnscoped.mockResolvedValueOnce(hook()).mockResolvedValue(hook({ projectionEpoch: 2n }))
 
     await expect(service.authorize(authorizeInput(), DAEMON)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(hookRepo.recordReviewResult).toHaveBeenCalledWith(HOOK, DAEMON, {
@@ -458,7 +458,7 @@ describe('GithubReviewBrokerService', () => {
     const { service, hookRepo, setRun } = setup()
     setRun(run({ reviewAttemptId: ATTEMPT, reviewAttemptState: 'blocked', reviewEvent: 'APPROVE', verdict: 'pass' }))
     hookRepo.reserveReviewAttempt.mockResolvedValue('idempotent')
-    hookRepo.get.mockResolvedValueOnce(hook()).mockResolvedValueOnce(hook({ reviewPolicy: 'off' }))
+    hookRepo.getUnscoped.mockResolvedValueOnce(hook()).mockResolvedValueOnce(hook({ reviewPolicy: 'off' }))
 
     await expect(service.authorize(authorizeInput(), DAEMON)).rejects.toMatchObject({ code: 'SCOPE_DENIED' })
     expect(hookRepo.recordReviewResult).not.toHaveBeenCalled()

@@ -81,7 +81,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     const deps = {
       agent: { getUnscoped: async () => PLACED_AGENT },
       hook: {
-        get: async () => ({
+        getUnscoped: async () => ({
           agentId: AGENT_ID,
           kind: 'github',
           enabled: true,
@@ -123,7 +123,7 @@ describe('handleGitCredRequest — repoFullName passthrough (issue #457)', () =>
     const mintForHookReply = vi.fn()
     const deps = {
       agent: { getUnscoped: async () => PLACED_AGENT },
-      hook: { get: async () => null },
+      hook: { getUnscoped: async () => null },
       github: { mintForHookReply }
     } as unknown as DaemonWsDeps
     const conn = fakeConn()

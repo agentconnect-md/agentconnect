@@ -4,7 +4,11 @@ import type { HookRecord, HookRepo, HookReviewProjectionRecord, HookRunRecord } 
 export interface GithubRerequestDeps {
   hooks: Pick<
     HookRepo,
-    'findReviewProjectionByCheckRunId' | 'listReviewProjectionsForSuiteRerequest' | 'get' | 'getMany' | 'getRunById'
+    | 'findReviewProjectionByCheckRunId'
+    | 'listReviewProjectionsForSuiteRerequest'
+    | 'getUnscoped'
+    | 'getManyUnscoped'
+    | 'getRunById'
   >
   appId: number
 }
@@ -36,7 +40,8 @@ export class GithubRerequestService {
     if (!this.matchesProjection(projection, req)) return { allowed: false }
 
     const [hook, run] = await Promise.all([
-      this.deps.hooks.get(projection.hookId),
+      // The hook behind a durable Check projection this resolver already matched.
+      this.deps.hooks.getUnscoped(projection.hookId),
       this.deps.hooks.getRunById(projection.currentHookRunId)
     ])
     if (!this.matchesCurrentHook(hook, projection) || !this.matchesCurrentRun(run, projection)) {
@@ -71,7 +76,7 @@ export class GithubRerequestService {
 
     const current = projections as Array<HookReviewProjectionRecord & { checkRunId: string; currentHookRunId: string }>
     const [hooks, runs] = await Promise.all([
-      this.deps.hooks.getMany(current.map((projection) => projection.hookId)),
+      this.deps.hooks.getManyUnscoped(current.map((projection) => projection.hookId)),
       Promise.all(current.map((projection) => this.deps.hooks.getRunById(projection.currentHookRunId)))
     ])
     const hooksById = new Map(hooks.map((hook) => [hook.id, hook]))

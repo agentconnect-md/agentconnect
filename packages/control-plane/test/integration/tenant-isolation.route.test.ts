@@ -20,8 +20,9 @@ import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { PgBotRepo, PgIntegrationRepo } from '../../src/persistence/repositories/integration.repo.js'
 import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
-import { AgentMissing, BotMissing, CronMissing } from '../../src/persistence/errors.js'
-import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../../src/domain/ids.js'
+import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
+import { AgentMissing, BotMissing, CronMissing, HookMissing } from '../../src/persistence/errors.js'
+import { AgentId, BotId, CronId, DaemonId, HookId, IntegrationId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -40,6 +41,8 @@ let ownIntegrationId: string
 let foreignChannelId: string
 let foreignCronId: string
 let ownCronId: string
+let foreignHookId: string
+let foreignHookRunId: string
 
 afterEach(async () => {
   await running?.close()
@@ -146,6 +149,33 @@ beforeEach(async () => {
       trigger: 'foreign trigger'
     }
   })
+
+  // A foreign hook plus one historical run, so the fence has both the definition
+  // and its child run rows to keep out of reach.
+  foreignHookId = randomUUID()
+  await prisma.hookDef.create({
+    data: {
+      id: foreignHookId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      kind: 'webhook',
+      name: 'foreign-hook',
+      sessionMode: 'perDelivery',
+      urlToken: randomUUID().replace(/-/g, ''),
+      enabled: true
+    }
+  })
+  foreignHookRunId = randomUUID()
+  await prisma.hookRun.create({
+    data: {
+      id: foreignHookRunId,
+      hookId: foreignHookId,
+      orgId: foreignOrgId,
+      deliveryKey: `delivery-${randomUUID()}`,
+      startedAt: new Date('2026-08-01T00:00:00.000Z'),
+      status: 'success'
+    }
+  })
 })
 
 function build(): HttpApp {
@@ -191,6 +221,17 @@ async function foreignCronUnmodified(): Promise<void> {
   expect(row!.agentId).toBe(foreignAgentId)
   expect(row!.name).toBe('foreign-cron')
   expect(row!.trigger).toBe('foreign trigger')
+}
+
+async function foreignHookUnmodified(): Promise<void> {
+  const row = await prisma.hookDef.findUnique({ where: { id: foreignHookId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.agentId).toBe(foreignAgentId)
+  expect(row!.name).toBe('foreign-hook')
+  expect(row!.enabled).toBe(true)
+  // The run row hangs off the hook; a removal would have tombstoned it too.
+  expect(await prisma.hookRun.findUnique({ where: { id: foreignHookRunId } })).not.toBeNull()
 }
 
 async function foreignBotUnmodified(): Promise<void> {
@@ -624,5 +665,75 @@ describe('tenant isolation — IntegrationRepo and CronRepo fences under the rou
       expect(row!.orgId).toBe(winner === 0 ? DEFAULT_ORG_ID : foreignOrgId)
       await prisma.cronDef.delete({ where: { id: contestedId } })
     }
+  })
+})
+
+describe('tenant isolation — Hook over the REST surface', () => {
+  it('point-GET of a foreign hook id reads as absent (404)', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/hooks/${foreignHookId}` })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('PUT of a foreign hook id is 404 and provably writes nothing', async () => {
+    const app = build()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${foreignHookId}`,
+      payload: { kind: 'webhook', agentId: ownAgentId, name: 'hijacked', enabled: false }
+    })
+    expect(res.statusCode).toBe(404)
+    await foreignHookUnmodified()
+  })
+
+  it('DELETE of a foreign hook id is 404, and its runs and projections survive', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'DELETE', url: `${ORG}/hooks/${foreignHookId}` })
+    expect(res.statusCode).toBe(404)
+    await foreignHookUnmodified()
+  })
+
+  it('the run history of a foreign hook id is 404', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/hooks/${foreignHookId}/runs` })
+    expect(res.statusCode).toBe(404)
+  })
+})
+
+describe('tenant isolation — HookRepo fences under the routes', () => {
+  it('hook reads and mutations treat a cross-org id exactly like a missing row', async () => {
+    const repo = new PgHookRepo(prisma)
+
+    expect(await repo.get(CALLER_ORG, HookId(foreignHookId))).toBeNull()
+    expect(await repo.get(CALLER_ORG, HookId(randomUUID()))).toBeNull()
+    // The batch read simply drops foreign ids, exactly like unknown ones.
+    expect(await repo.getMany(CALLER_ORG, [HookId(foreignHookId)])).toEqual([])
+
+    // `upsert` is create-or-edit on an id the caller supplies, so its update
+    // branch would rewrite the foreign row's orgId and agentId — refused inside
+    // the transaction, before the definition or its projections are touched.
+    await expect(
+      repo.upsert({
+        hookId: HookId(foreignHookId),
+        orgId: CALLER_ORG,
+        agentId: AgentId(ownAgentId),
+        kind: 'webhook',
+        name: 'hijacked',
+        sessionMode: 'perDelivery'
+      })
+    ).rejects.toBeInstanceOf(HookMissing)
+
+    // `remove` refuses BEFORE it tombstones the hook's durable review projections.
+    await expect(repo.remove(CALLER_ORG, HookId(foreignHookId))).rejects.toBeInstanceOf(HookMissing)
+
+    // Run rows carry their own org, so the history reads empty rather than
+    // another organization's delivery record.
+    expect(await repo.listRuns(CALLER_ORG, HookId(foreignHookId))).toEqual([])
+
+    await foreignHookUnmodified()
+
+    // The unscoped reads are the GitHub-machinery / daemon escape hatches.
+    expect(await repo.getUnscoped(HookId(foreignHookId))).not.toBeNull()
+    expect(await repo.getManyUnscoped([HookId(foreignHookId)])).toHaveLength(1)
   })
 })

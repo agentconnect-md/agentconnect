@@ -2258,15 +2258,39 @@ export interface ProjectionWriteResultInput {
 }
 
 export interface HookRepo {
+  /** Create-or-edit. `hookId` is minted server-side on create, so the update
+   *  branch is only ever reached with an id the route already resolved — but the
+   *  fence is structural anyway (docs/designs/org-scoped-data-layer.md §3): an id
+   *  that exists in ANOTHER organization throws {@link HookMissing} inside the
+   *  same transaction rather than letting the update rewrite that row's `orgId`. */
   upsert(input: UpsertHookInput): Promise<HookRecord>
-  remove(hookId: HookId, expectedAgentId?: AgentId): Promise<void>
-  get(hookId: HookId): Promise<HookRecord | null>
-  getMany(hookIds: HookId[]): Promise<HookRecord[]>
-  /** Every enabled hook, all orgs — the relay-register full-replay source. */
+  /** Org-fenced: a cross-org id throws the same missing-row error as an absent
+   *  one. `expectedAgentId` is the independent owner CAS (a rebind loser), kept. */
+  remove(orgId: OrgId, hookId: HookId, expectedAgentId?: AgentId): Promise<void>
+  /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
+   *  missing row. The only hook read the HTTP/MCP surface may use. */
+  get(orgId: OrgId, hookId: HookId): Promise<HookRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — the GitHub review broker
+   *  and rerequest machinery resolving the hook behind a run/projection row, and
+   *  WS handlers resolving the hook a reporting daemon named. Never call this
+   *  from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(hookId: HookId): Promise<HookRecord | null>
+  /** Org-fenced batch read: ids outside `orgId` are simply absent from the
+   *  result, exactly like unknown ids. */
+  getMany(orgId: OrgId, hookIds: HookId[]): Promise<HookRecord[]>
+  /** Tenancy-UNSCOPED batch read for the GitHub machinery: the comment-authorization
+   *  fences and the rerequest resolver address hooks by ids carried on durable
+   *  run/projection rows, which already fix the organization. Never call this
+   *  from the HTTP surface; lint enforces it (§6). */
+  getManyUnscoped(hookIds: HookId[]): Promise<HookRecord[]>
+  /** Every enabled hook, all orgs — the relay-register full-replay source.
+   *  System-tier: the relay pool is deployment-level infrastructure. */
   listEnabled(): Promise<HookRecord[]>
   /** A hook is subordinate to one agent and is only ever listed under it (the
    *  console detail page); access is gated by the AGENT's visibility, so no
-   *  viewer-filter here. Also the re-compile source on a placement change. */
+   *  viewer-filter here. Also the re-compile source on a placement change.
+   *  System-tier (§3.4): agent-fenced, and HTTP callers reach it only with an
+   *  agent id resolved through the org-fenced `AgentRepo.get`. */
   listForAgent(agentId: AgentId): Promise<HookRecord[]>
   /** Distinct kinds of ENABLED hooks per agent, org-wide in one query — feeds
    *  the agents-list read model (each agent's own row; no org hook list). */
@@ -2293,6 +2317,8 @@ export interface HookRepo {
     repoFullName: string,
     observedAt: Date
   ): Promise<GithubRepoFullNameRefreshResult>
+  /** System-tier: the run row behind a relay/daemon report or a durable
+   *  projection, always reached from system state that already fixes the org. */
   getRun(hookId: HookId, deliveryKey: string): Promise<HookRunRecord | null>
   /** Direct lookup for projection-owned metadata such as the terminal session deep link. */
   getRunById(runId: string): Promise<HookRunRecord | null>
@@ -2312,8 +2338,10 @@ export interface HookRepo {
    *  no prior delivery row (rc/run-report lost) still creates one, with
    *  `startedAt` estimated as `at − durationMs`. Returns acceptance. */
   recordReport(hookId: HookId, reportingDaemonId: DaemonId, input: HookReportInput, at: Date): Promise<boolean>
-  /** Run history for the console detail page, newest first. */
-  listRuns(hookId: HookId, limit?: number): Promise<HookRunRecord[]>
+  /** Run history for the console detail page, newest first. Run rows carry their
+   *  own `orgId`, so the fence rides this query directly rather than only through
+   *  the parent hook (§3.6). */
+  listRuns(orgId: OrgId, hookId: HookId, limit?: number): Promise<HookRunRecord[]>
   /** Which of `deliveryKeys` already have a run row (any hook) — the redelivery
    *  reconciler's "did this GUID land at all" probe. */
   existingDeliveryKeys(deliveryKeys: string[]): Promise<Set<string>>
@@ -2436,6 +2464,14 @@ export interface HookRepo {
 
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO
  *  (BotSecretStore discipline). */
+/**
+ * The per-hook HMAC secret. Rows are keyed by `hookId` alone and carry no org of
+ * their own, so this store fences through its parent (§3.6): `put` runs on the
+ * create path with a server-minted id, and `get`/`delete` belong to the relay
+ * hook-compile and lifecycle machinery. A route reaching a secret for an
+ * existing hook must resolve that hook through the org-fenced
+ * {@link HookRepo.get} first.
+ */
 export interface HookSecretStore {
   put(hookId: HookId, hmacSecret: string): Promise<void>
   get(hookId: HookId): Promise<string | null>

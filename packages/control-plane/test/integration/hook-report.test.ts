@@ -118,7 +118,7 @@ async function recordGithubDeliveryFailure(
   reason: typeof HOOK_DELIVERY_REASON_DAEMON_OFFLINE | typeof HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   daemonId = DAEMON
 ) {
-  const hook = (await repo().get(HookId(hookId)))!
+  const hook = (await repo().getUnscoped(HookId(hookId)))!
   await repo().recordDelivery(HookId(hookId), {
     deliveryKey,
     firedAt,
@@ -140,7 +140,7 @@ async function recordGithubDeliveryFailure(
 }
 
 async function recordGithubPullDeliveryFailure(hookId: string, agentId: string, deliveryKey: string, firedAt: Date) {
-  const hook = (await repo().get(HookId(hookId)))!
+  const hook = (await repo().getUnscoped(HookId(hookId)))!
   await repo().recordDelivery(HookId(hookId), {
     deliveryKey,
     firedAt,
@@ -175,10 +175,10 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     const firedAt = new Date('2026-07-03T09:00:00.000Z')
 
     await repo().recordDelivery(HookId(hookId), { deliveryKey: 'd-1', firedAt, status: 'accepted' })
-    let runs = await repo().listRuns(HookId(hookId))
+    let runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
     expect(runs).toHaveLength(1)
     expect(runs[0]).toMatchObject({ deliveryKey: 'd-1', status: 'running', durationMs: null, sessionId: null })
-    expect((await repo().get(HookId(hookId)))!.lastFiredAt).toEqual(firedAt)
+    expect((await repo().getUnscoped(HookId(hookId)))!.lastFiredAt).toEqual(firedAt)
 
     const completion = await report(DAEMON, hookId, agentId, 'd-1', {
       status: 'success',
@@ -187,7 +187,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     })
     expect(completion.conn.replyTo).toHaveBeenCalledWith(completion.frame, 'ack', { ok: true })
     expect(completion.conn.sendError).not.toHaveBeenCalled()
-    runs = await repo().listRuns(HookId(hookId))
+    runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
     expect(runs).toHaveLength(1) // closed, not duplicated
     expect(runs[0]).toMatchObject({ status: 'success', durationMs: 5200, sessionId: 'ses_9' })
   })
@@ -200,7 +200,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       status: 'failed',
       reason: 'daemon_offline'
     })
-    const runs = await repo().listRuns(HookId(hookId))
+    const runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
     expect(runs[0]).toMatchObject({ status: 'failed', reason: 'daemon_offline' })
   })
 
@@ -274,7 +274,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     const siblingHookId = await seedGithubHook(agentId)
     const firedAt = new Date('2026-07-03T10:30:00.000Z')
     await recordGithubDeliveryFailure(hookId, agentId, 'mixed-guid', firedAt, HOOK_DELIVERY_REASON_DAEMON_OFFLINE)
-    const sibling = (await repo().get(HookId(siblingHookId)))!
+    const sibling = (await repo().getUnscoped(HookId(siblingHookId)))!
     await repo().recordDelivery(HookId(siblingHookId), {
       deliveryKey: 'mixed-guid',
       firedAt,
@@ -373,7 +373,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     await seedDaemon(prisma, OTHER_DAEMON)
     await prisma.agent.update({ where: { id: agentId }, data: { daemonId: OTHER_DAEMON } })
     await prisma.hookDef.update({ where: { id: hookId }, data: { dispatchRevision: { increment: 1 } } })
-    const current = (await repo().get(HookId(hookId)))!
+    const current = (await repo().getUnscoped(HookId(hookId)))!
     const timeoutAt = new Date(firedAt.getTime() + 1_000)
     expect(
       await repo().recordDelivery(HookId(hookId), {
@@ -431,7 +431,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     await seedDaemon(prisma, OTHER_DAEMON)
     await prisma.agent.update({ where: { id: agentId }, data: { daemonId: OTHER_DAEMON } })
     await prisma.hookDef.update({ where: { id: hookId }, data: { dispatchRevision: { increment: 1 } } })
-    const current = (await repo().get(HookId(hookId)))!
+    const current = (await repo().getUnscoped(HookId(hookId)))!
     const completion = await report(OTHER_DAEMON, hookId, agentId, 'accepted-report-lost', {
       event: 'issues:opened',
       status: 'success',
@@ -482,7 +482,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     await seedDaemon(prisma, OTHER_DAEMON)
     await prisma.agent.update({ where: { id: agentId }, data: { daemonId: OTHER_DAEMON } })
     await prisma.hookDef.update({ where: { id: hookId }, data: { dispatchRevision: { increment: 1 } } })
-    const current = (await repo().get(HookId(hookId)))!
+    const current = (await repo().getUnscoped(HookId(hookId)))!
     const startedAt = new Date(firedAt.getTime() + 1_000)
     expect(
       await repo().recordStart(HookId(hookId), DaemonId(OTHER_DAEMON), {
@@ -680,7 +680,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     await seedDaemon(prisma, OTHER_DAEMON)
     await prisma.agent.update({ where: { id: agentId }, data: { daemonId: OTHER_DAEMON } })
     await prisma.hookDef.update({ where: { id: hookId }, data: { dispatchRevision: { increment: 1 } } })
-    const claimed = (await repo().get(HookId(hookId)))!
+    const claimed = (await repo().getUnscoped(HookId(hookId)))!
     expect(
       await repo().claimRetryableDeliveryRedelivery('claim-placement-pin', [HookId(hookId)], firedAt, [30_000, 120_000])
     ).toBe(true)
@@ -748,7 +748,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
 
   it('does not create a durable GitHub retry gate for Check rererequests', async () => {
     const { agentId, hookId } = await placedGithubHook()
-    const hook = (await repo().get(HookId(hookId)))!
+    const hook = (await repo().getUnscoped(HookId(hookId)))!
     await repo().recordDelivery(HookId(hookId), {
       deliveryKey: 'check-rerequest',
       firedAt: new Date('2026-07-03T10:58:00.000Z'),
@@ -775,7 +775,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     await seedDaemon(prisma, OTHER_DAEMON)
     await prisma.agent.update({ where: { id: agentId }, data: { daemonId: OTHER_DAEMON } })
     await prisma.hookDef.update({ where: { id: hookId }, data: { dispatchRevision: { increment: 1 } } })
-    const current = (await repo().get(HookId(hookId)))!
+    const current = (await repo().getUnscoped(HookId(hookId)))!
     const acceptedAt = new Date('2026-07-03T11:00:01.000Z')
     expect(
       await repo().recordDelivery(HookId(hookId), {
@@ -839,7 +839,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       where: { id: hookId },
       data: { dispatchRevision: { increment: 1 } }
     })
-    const current = (await repo().get(HookId(hookId)))!
+    const current = (await repo().getUnscoped(HookId(hookId)))!
     expect(
       await repo().recordDelivery(HookId(hookId), {
         deliveryKey: 'same-daemon-reopen',
@@ -872,7 +872,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
 
   it('never claims or reopens nonretryable and effect-bearing failed rows', async () => {
     const { agentId, hookId } = await placedGithubHook()
-    const hook = (await repo().get(HookId(hookId)))!
+    const hook = (await repo().getUnscoped(HookId(hookId)))!
     const accepted = {
       firedAt: new Date('2026-07-03T12:00:01.000Z'),
       status: 'accepted' as const,
@@ -955,7 +955,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     await report(DAEMON, hookId, agentId, 'd-1', { status: 'success', sessionId: 'ses_1' })
     // The redelivery re-posts `accepted` — must NOT reopen the closed run.
     await repo().recordDelivery(HookId(hookId), { deliveryKey: 'd-1', firedAt, status: 'accepted' })
-    const runs = await repo().listRuns(HookId(hookId))
+    const runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
     expect(runs).toHaveLength(1)
     expect(runs[0]!.status).toBe('success')
   })
@@ -976,10 +976,13 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       false
     )
     expect(foreign.conn.replyTo).not.toHaveBeenCalled()
-    expect((await repo().listRuns(HookId(hookId)))[0]!.status).toBe('running') // untouched
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]!.status).toBe('running') // untouched
 
     await report(DAEMON, hookId, agentId, 'd-1', { status: 'success', sessionId: 'ses_ok' })
-    expect((await repo().listRuns(HookId(hookId)))[0]).toMatchObject({ status: 'success', sessionId: 'ses_ok' })
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({
+      status: 'success',
+      sessionId: 'ses_ok'
+    })
   })
 
   it('a metadata-light run still rejects a different agent on the same daemon', async () => {
@@ -999,11 +1002,11 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       'hook completion does not match the accepted dispatch',
       false
     )
-    expect((await repo().listRuns(HookId(hookId)))[0]!.status).toBe('running')
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]!.status).toBe('running')
 
     const accepted = await report(DAEMON, hookId, agentId, 'd-legacy', { status: 'success' })
     expect(accepted.conn.replyTo).toHaveBeenCalledWith(accepted.frame, 'ack', { ok: true })
-    expect((await repo().listRuns(HookId(hookId)))[0]!.status).toBe('success')
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]!.status).toBe('success')
   })
 
   it('a completion with no prior delivery row (CP down at fire) still creates the run', async () => {
@@ -1013,7 +1016,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       durationMs: 800,
       reason: 'turn failed'
     })
-    const runs = await repo().listRuns(HookId(hookId))
+    const runs = await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId))
     expect(runs).toHaveLength(1)
     expect(runs[0]).toMatchObject({ deliveryKey: 'd-late', status: 'failed', reason: 'turn failed' })
   })
@@ -1040,12 +1043,15 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
 
     const reaped = await repo().reapStaleRuns(new Date('2026-07-03T09:05:00.000Z'))
     expect(reaped).toBe(1)
-    const reapedRun = (await repo().listRuns(HookId(hookId)))[0]!
+    const reapedRun = (await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]!
     expect(reapedRun.status).toBe('failed')
     expect(reapedRun.reason).toMatch(/no completion report/)
 
     // The daemon's report finally lands — last-writer-wins overwrites the reap.
     await report(DAEMON, hookId, agentId, 'd-slow', { status: 'success', sessionId: 'ses_late' })
-    expect((await repo().listRuns(HookId(hookId)))[0]).toMatchObject({ status: 'success', sessionId: 'ses_late' })
+    expect((await repo().listRuns(OrgId(DEFAULT_ORG_ID), HookId(hookId)))[0]).toMatchObject({
+      status: 'success',
+      sessionId: 'ses_late'
+    })
   })
 })

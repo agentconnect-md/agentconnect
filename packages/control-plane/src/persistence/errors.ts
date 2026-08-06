@@ -157,6 +157,22 @@ export class MemoryConnectionMissing extends Error {
 }
 
 /**
+ * Thrown by org-fenced hook mutations whose fence sits on a transaction-time row
+ * read rather than on the write's own `where` (docs/designs/org-scoped-data-layer.md
+ * §3) — `HookRepo.upsert` (whose update branch would otherwise rewrite a foreign
+ * row's `orgId`) and `HookRepo.remove`, which must refuse before it tombstones
+ * the hook's durable review projections. A cross-org id is deliberately
+ * indistinguishable from a missing row.
+ */
+export class HookMissing extends Error {
+  readonly code = 'HOOK_MISSING' as const
+  constructor(readonly hookId: string) {
+    super(`hook ${hookId} not found in this organization`)
+    this.name = 'HookMissing'
+  }
+}
+
+/**
  * Thrown by the org-fenced `CronRepo.upsert` when the client-minted `cronId`
  * already names a row in ANOTHER organization (docs/designs/org-scoped-data-layer.md
  * §3). Unlike the other fences this one refuses a TAKEOVER rather than a leak:
