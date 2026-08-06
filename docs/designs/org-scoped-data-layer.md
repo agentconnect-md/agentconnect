@@ -1,6 +1,7 @@
 # Org-Scoped Data Layer
 
-> **Status:** M1 implemented (convention + Agent exemplar); M2 rollout tracked in §7
+> **Status:** M1 + M2 implemented (the convention, and every org-owned repository
+> migrated); M3 (Postgres RLS) is a separate design
 >
 > **Scope:** Control-plane persistence ports and their HTTP/MCP consumers.
 > Related: [`authorization-policy.md`](authorization-policy.md) (the policy layer
@@ -165,14 +166,38 @@ Two structural guards, so the convention cannot silently erode:
 - **M1 (this change):** the convention; `AgentRepo` + `AgentConfigWriter`
   migrated end-to-end; ESLint fence; contract-suite foundation with the Agent
   block.
-- **M2 (mechanical batches, same recipe per repo):** `DaemonRepo`, `BotRepo`,
-  `IntegrationRepo`, `CronRepo`, `HookRepo`, `McpProviderRepo`,
-  `SkillSourceRepo`, `SessionRepo` (+ session children via parent),
-  `WebchatConversationRepo`, `MemoryConnectionRepo`, `OrganizationKnowledge` /
-  `ManagedSkill` repos, `GithubInstallationRepo`, API-key/user-facing stores.
-  Each batch: tighten signatures → follow the type errors → classify each
-  internal caller (`Unscoped` or org-threaded) → delete the now-redundant
-  route comparisons → extend the contract suite.
+- **M2 (mechanical batches, same recipe per repo) — complete.** Each batch
+  tightened signatures → followed the type errors → classified every internal
+  caller (`Unscoped` or org-threaded) → deleted the now-redundant route
+  comparisons → extended the contract suite:
+
+  | Batch | Repositories                                                                                               |
+  | ----- | ---------------------------------------------------------------------------------------------------------- |
+  | 1     | `DaemonRepo`, `BotRepo` (+ the `DaemonRegistry` read model and `ApiKeyAdmin.mintForDaemon` above them)     |
+  | 2     | `IntegrationRepo`, `IntegrationChannelRepo` (child), `CronRepo`                                            |
+  | 3     | `HookRepo` (+ `HookSecretStore` / `HookRun` children)                                                      |
+  | 4     | `McpProviderRepo`, `SkillSourceRepo`, `OrganizationKnowledgeRepo` (knowledge, managed skills, suggestions) |
+  | 5     | `SessionRepo` (+ session children via parent), `WebchatConversationRepo`                                   |
+  | 6     | `ExternalMemoryConnectionRepo`, `GithubInstallationRepo`, `ApiKeyRepo.listForDaemon`                       |
+
+  Three patterns recurred often enough to be worth stating as rules for new code:
+
+  1. **A fence must sit ahead of any answer that would confirm the row.** Where
+     a method can respond `'referenced'`, `BotStillShared`, `'not_pending'`,
+     `'metadata_changed'` or `forbidden` before it writes, the org check goes on
+     the read that opens the critical section — not on the write's `where`.
+     Otherwise a cross-org id gets a distinguishable refusal, which is the exact
+     thing §3 forbids.
+  2. **A client-minted id makes an upsert a takeover risk, not a leak risk.**
+     `CronRepo.upsert` and `HookRepo.upsert` rewrite `orgId` on their update
+     branch. Both fence inside the transaction; the cron one additionally takes a
+     transaction-scoped advisory lock keyed on the id ALONE, because the case that
+     matters is a row that does not exist yet and no row-level lock can cover it.
+  3. **Prefer the row's own `orgId` column when a child table has one.**
+     `HookRun` and `CronRun` do, so their history reads fence directly rather than
+     resting on the parent. Rosters, revisions and secrets do not, and fence
+     relationally through the parent (§3.6).
+
 - **M3 (separate design):** Postgres row-level security as the DB-level
   backstop beneath this fence.
 
