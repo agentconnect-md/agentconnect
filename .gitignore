@@ -81,6 +81,11 @@ deployment-config.json
 # Next.js build output
 .next
 out
+# Generated from `distDir`, so `next dev` (.next/dev) and `next build` (.next)
+# each rewrite it over the other's version — tracking it dirties the tree on
+# every switch. Both commands regenerate it, and CI's web typecheck runs through
+# `next build`, so nothing depends on a committed copy. Matches create-next-app.
+next-env.d.ts
 
 # Nuxt.js build / generate output
 .nuxt
