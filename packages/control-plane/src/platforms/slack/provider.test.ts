@@ -633,4 +633,16 @@ describe('slack projectBotAssign equivalence with the live buildAssign frame (§
       ingress: frame.ingress
     })
   })
+
+  it('projects the workspace tenant fence for a NON-distributed bot (ingress-tenant-fence.md §3)', async () => {
+    // The case the fence exists for: no teamId (quick-install), but the
+    // workspace identity captured at install/backfill must reach the relay —
+    // without it, a same-secret sibling in another org verifies this bot's
+    // deliveries and nothing discriminates.
+    const quickInstall = bot({ transport: 'http', slackAppId: 'A0TESTAPP', workspaceId: 'T0WORKSPACE' })
+    const frame = await liveAssignFrame(quickInstall, HTTP_SECRET)
+    const projected = await provider.projectBotAssign!(quickInstall, HTTP_SECRET)
+    expect(projected.ingress).toEqual(frame.ingress)
+    expect(projected.ingress).toEqual({ apiAppId: 'A0TESTAPP', workspaceId: 'T0WORKSPACE' })
+  })
 })

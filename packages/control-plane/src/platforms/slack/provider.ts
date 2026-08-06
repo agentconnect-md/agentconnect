@@ -187,6 +187,12 @@ export function slackSharedIntegrationConfig(
  *    (platform) app's install, where the composite (api_app_id, team_id) is
  *    the ONLY safe demux (all sibling installs share the app id AND the
  *    signing secret).
+ *  - ingress `workspaceId` — the workspace this bot belongs to, captured for
+ *    EVERY bot kind (auth.test / OAuth). Not a demux index key: it is the
+ *    relay's tenant FENCE (ingress-tenant-fence.md §3), which is why a
+ *    quick-install bot — whose `teamId` is deliberately null — still needs it
+ *    on the wire. Without it, a second organization holding the same app's
+ *    signing secret verifies this bot's deliveries too.
  *  - ingress `botUserId` — persisted at OAuth exchange; spares an auth.test
  *    round-trip.
  *  - secrets — the send token + the signing secret the relay HMAC-verifies
@@ -195,8 +201,14 @@ export function slackSharedIntegrationConfig(
  *
  * Token-bearing — NEVER log the result.
  */
+/** The 409 copy when another organization already holds this app+workspace
+ *  (ingress-tenant-fence.md §5). Deliberately never names the holder. Shared by
+ *  the provider's create path and the two Slack funnels' tail. */
+export const SLACK_WORKSPACE_CLAIMED_MESSAGE =
+  'this Slack workspace is already connected to another organization with this app'
+
 export function slackBotAssignBags(
-  bot: Pick<BotRecord, 'slackAppId' | 'teamId' | 'botUserId'>,
+  bot: Pick<BotRecord, 'slackAppId' | 'teamId' | 'workspaceId' | 'botUserId'>,
   secret: Pick<BotSecretMaterial, 'botToken' | 'signingSecret'>
 ): { secrets: Record<string, unknown>; ingress: Record<string, unknown> } {
   return {
@@ -204,6 +216,7 @@ export function slackBotAssignBags(
     ingress: {
       ...(bot.slackAppId ? { apiAppId: bot.slackAppId } : {}),
       ...(bot.teamId ? { teamId: bot.teamId } : {}),
+      ...(bot.workspaceId ? { workspaceId: bot.workspaceId } : {}),
       ...(bot.botUserId ? { botUserId: bot.botUserId } : {})
     }
   }
@@ -406,6 +419,21 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
           ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
           ...(shareable ? { shareable: true } : {})
         },
+        // Workspace-claim admission fence (ingress-tenant-fence.md §5). This is
+        // the arm the D6 `externalIdentity` pre-check deliberately leaves open:
+        // a manual paste captures no `teamId`, so it declares no D6 identity —
+        // but `auth.test` DOES resolve the workspace, and a second org pasting
+        // the same app's credentials for it would produce two rows sharing one
+        // signing secret AND one tenant, which the relay cannot disambiguate.
+        ...(slackAppId && identity.workspaceId
+          ? {
+              workspaceClaim: {
+                appId: slackAppId,
+                tenantId: identity.workspaceId,
+                conflictMessage: SLACK_WORKSPACE_CLAIMED_MESSAGE
+              }
+            }
+          : {}),
         secrets: {
           botToken: credentials.botToken,
           appToken: credentials.appToken ?? null,

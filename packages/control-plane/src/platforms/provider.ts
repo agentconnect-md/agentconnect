@@ -216,6 +216,28 @@ export interface CpNewBotInstall {
     /** The 409 body's user-facing copy — platform-named reuse guidance. */
     conflictMessage: string
   }
+  /**
+   * The WORKSPACE this install claims, when the platform captured one
+   * (ingress-tenant-fence.md §5). Core refuses the create when a DIFFERENT
+   * organization already holds a bot for the same `(appId, tenantId)`: those
+   * two rows would share one inbound-verification secret AND one tenant, which
+   * the relay's delivery-time fence cannot tell apart, so pool order would
+   * decide attribution.
+   *
+   * DISTINCT from {@link CpNewBotInstall.externalIdentity}: that one fences the
+   * D6 composite unique and stays NULL wherever a platform preserves
+   * pre-capture semantics (Slack's manual paste captures no `teamId`). This one
+   * asks a narrower question — "is this workspace already spoken for?" — off
+   * the identity the platform *did* capture, which is exactly the case the
+   * D6 fence leaves open. Absent ⇒ no claim to check (identity unknown, e.g.
+   * `auth.test` was unavailable), which is the §3.3 fail-open arm.
+   */
+  workspaceClaim?: {
+    appId: string
+    tenantId: string
+    /** The 409 body's copy. MUST NOT name the holding organization. */
+    conflictMessage: string
+  }
 }
 
 /**

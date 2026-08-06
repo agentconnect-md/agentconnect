@@ -37,6 +37,14 @@ export interface BotAssignment {
    *  id AND the signing secret, so this bot may only be demuxed on the composite
    *  `(api_app_id, team_id)` key — never by app id or signature scan alone. */
   teamId?: string
+  /** The tenant this assignment belongs to, captured for EVERY install kind —
+   *  unlike {@link BotAssignment.teamId}, which the CP sets only for a
+   *  distributed app's install. NOT a demux index key: it is the ingress tenant
+   *  FENCE (ingress-tenant-fence.md §3). `verify` proves a delivery was signed
+   *  with this app's signing secret; the fence proves it came from this bot's
+   *  workspace, which a same-secret sibling in another organization would
+   *  otherwise satisfy just as well. */
+  workspaceId?: string
   /** Install GENERATION of `secrets` (CP-assigned). Echoed back on `rc/bot-revoked`
    *  so the CP can refuse a revocation that was observed under a credential a
    *  re-install has since replaced — Slack does not order lifecycle events. */
@@ -678,9 +686,17 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
   // (emission had already stopped, #556), so there is nothing to fall back to —
   // a non-string slot in the bag reads as absent, and an absent identity means
   // the verify-scan path, exactly as a manual-paste install always demuxed.
-  const ingress = (a.ingress ?? {}) as { apiAppId?: unknown; teamId?: unknown; botUserId?: unknown }
+  const ingress = (a.ingress ?? {}) as {
+    apiAppId?: unknown
+    teamId?: unknown
+    workspaceId?: unknown
+    botUserId?: unknown
+  }
   const apiAppId = typeof ingress.apiAppId === 'string' ? ingress.apiAppId : undefined
   const teamId = typeof ingress.teamId === 'string' ? ingress.teamId : undefined
+  // An older CP omits it; the fence then reads whatever `teamId` carries, which
+  // is exactly today's behaviour (ingress-tenant-fence.md §3.3 fail-open).
+  const workspaceId = typeof ingress.workspaceId === 'string' ? ingress.workspaceId : undefined
   const botUserId = typeof ingress.botUserId === 'string' ? ingress.botUserId : undefined
   return {
     botId: a.botId,
@@ -688,6 +704,7 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     secrets,
     ...(apiAppId ? { apiAppId } : {}),
     ...(teamId ? { teamId } : {}),
+    ...(workspaceId ? { workspaceId } : {}),
     ...(a.credentialRevision !== undefined ? { credentialRevision: a.credentialRevision } : {}),
     ...(botUserId ? { botUserId } : {}),
     members: a.members,

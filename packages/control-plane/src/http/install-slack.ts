@@ -15,7 +15,7 @@ import type { HttpDeps } from './deps.js'
 import type { AgentRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
 import type { OrgId } from '../domain/ids.js'
 import { installNewBot } from './install-bot.js'
-import { slackAppIdFromAppToken } from '../platforms/slack/provider.js'
+import { SLACK_WORKSPACE_CLAIMED_MESSAGE, slackAppIdFromAppToken } from '../platforms/slack/provider.js'
 
 // Relocated to the Slack platform provider (§9, S3): its `validateConfig` runs
 // the same same-app cross-check as the create route, and this module sits
@@ -95,6 +95,18 @@ export async function installNewSlackBot(
       ...(args.botUserId ? { botUserId: args.botUserId } : {}),
       ...(args.shareable ? { shareable: true } : {})
     },
+    // Workspace-claim admission fence — core enforces it at the shared create
+    // seam (`install-bot.ts`, ingress-tenant-fence.md §5); the funnels only
+    // declare what they captured. Absent identity ⇒ no claim ⇒ fail-open.
+    ...(slackAppId && (args.teamId ?? args.workspaceId)
+      ? {
+          workspaceClaim: {
+            appId: slackAppId,
+            tenantId: (args.teamId ?? args.workspaceId)!,
+            conflictMessage: SLACK_WORKSPACE_CLAIMED_MESSAGE
+          }
+        }
+      : {}),
     // The xapp (socket) / signing secret (http) stay CP-side for the relay — the
     // daemon never receives them.
     secrets: { botToken, appToken: appToken ?? null, signingSecret: signingSecret ?? null },

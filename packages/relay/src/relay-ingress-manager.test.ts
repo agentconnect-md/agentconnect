@@ -1869,7 +1869,7 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     manager: RelayIngressManager,
     botId: string,
     signingSecret: string,
-    opts: { apiAppId?: string; teamId?: string; indexed?: boolean } = {}
+    opts: { apiAppId?: string; teamId?: string; workspaceId?: string; indexed?: boolean } = {}
   ) => {
     const internals = internalsOf(manager)
     internals.slackPool.set(botId, {
@@ -1884,7 +1884,8 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
       botId,
       secrets: { botToken: 'xoxb', signingSecret },
       ...(opts.apiAppId ? { apiAppId: opts.apiAppId } : {}),
-      ...(opts.teamId ? { teamId: opts.teamId } : {})
+      ...(opts.teamId ? { teamId: opts.teamId } : {}),
+      ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {})
     })
     if (opts.apiAppId && opts.teamId && opts.indexed !== false) {
       internals.slackDemux.indexAssign(botId, { appId: opts.apiAppId, tenantId: opts.teamId })
@@ -1999,6 +2000,65 @@ describe('RelayIngressManager.resolveVerified composite demux', () => {
     expect(internals.slackDemux.indexes.byAppTenant.size).toBe(0)
     // The reverse map is DemuxIndex-internal now; an empty composite index IS the proof.
     await expect(resolve(manager, { apiAppId: PLATFORM_APP, teamId: 'T1' })).resolves.toBeUndefined()
+  })
+
+  // ── The ingress tenant fence (ingress-tenant-fence.md §3) ──────────────────
+  //
+  // Two NON-distributed bots (quick-install shape: no teamId, so the old scan
+  // guard never applied) that share one app id AND one signing secret — the
+  // same custom app's credentials living in two organizations. `workspaceId`
+  // is the only thing telling their workspaces apart.
+  const BOT_W1 = 'bbbbbbbb-1111-4111-8111-111111111111'
+  const BOT_W2 = 'bbbbbbbb-2222-4222-8222-222222222222'
+  const CUSTOM_APP = 'ACUSTOM'
+  const CUSTOM_SECRET = 'shared-custom-app-secret'
+
+  it('scan never attributes a delivery across workspaces once the assignment knows its tenant', async () => {
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
+    // Pool order is the adversary: W1 sits first and verifies W2's deliveries.
+    addBot(manager, BOT_W1, CUSTOM_SECRET, { workspaceId: 'T1' })
+    addBot(manager, BOT_W2, CUSTOM_SECRET, { workspaceId: 'T2' })
+
+    await expect(resolve(manager, { teamId: 'T2', secret: CUSTOM_SECRET })).resolves.toBe(BOT_W2)
+    await expect(resolve(manager, { teamId: 'T1', secret: CUSTOM_SECRET })).resolves.toBe(BOT_W1)
+  })
+
+  it('a learned app-only mapping cannot serve a cross-tenant delivery', async () => {
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_W1, CUSTOM_SECRET, { workspaceId: 'T1' })
+    addBot(manager, BOT_W2, CUSTOM_SECRET, { workspaceId: 'T2' })
+
+    // First delivery teaches the app-only map that ACUSTOM → W1…
+    await expect(resolve(manager, { apiAppId: CUSTOM_APP, teamId: 'T1', secret: CUSTOM_SECRET })).resolves.toBe(BOT_W1)
+    const internals = internalsOf(manager)
+    expect(internals.slackDemux.indexes.byApp.get(CUSTOM_APP)).toBe(BOT_W1)
+    // …and the learned fast path MUST NOT hand W2's traffic to W1: the fence
+    // rejects the learned candidate and the scan finds the right owner.
+    await expect(resolve(manager, { apiAppId: CUSTOM_APP, teamId: 'T2', secret: CUSTOM_SECRET })).resolves.toBe(BOT_W2)
+  })
+
+  it('an assignment with no captured tenant keeps today’s behaviour until backfill converges', async () => {
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
+    // Identity capture failed at install: neither teamId nor workspaceId.
+    addBot(manager, BOT_W1, CUSTOM_SECRET, {})
+
+    // Unfenced — attributable to any tenant's delivery, exactly as today.
+    await expect(resolve(manager, { teamId: 'T2', secret: CUSTOM_SECRET })).resolves.toBe(BOT_W1)
+
+    // The reconciler backfills, the CP re-broadcasts, and the fence engages.
+    addBot(manager, BOT_W1, CUSTOM_SECRET, { workspaceId: 'T1' })
+    await expect(resolve(manager, { teamId: 'T2', secret: CUSTOM_SECRET })).resolves.toBeUndefined()
+    await expect(resolve(manager, { teamId: 'T1', secret: CUSTOM_SECRET })).resolves.toBe(BOT_W1)
+  })
+
+  it('a delivery naming no tenant keeps today’s behaviour for workspace-fenced bots', async () => {
+    const manager = new RelayIngressManager(deps({ clock: new FakeClock(NOW) }))
+    addBot(manager, BOT_W1, CUSTOM_SECRET, { workspaceId: 'T1' })
+
+    // Unlike a distributed sibling set (strict teamId arm, covered above), a
+    // workspace-fenced bot still accepts a tenant-less delivery: refusing it
+    // would break payload shapes that carry no team id at all.
+    await expect(resolve(manager, { secret: CUSTOM_SECRET })).resolves.toBe(BOT_W1)
   })
 })
 

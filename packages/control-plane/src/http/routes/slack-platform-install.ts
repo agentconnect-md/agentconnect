@@ -38,6 +38,7 @@ import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
+import { BotWorkspaceClaimed } from '../../persistence/errors.js'
 import { closePageHtml, relayHttpBase } from './slack-install.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import {
@@ -366,27 +367,39 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           await deps.httpBot.syncBot(existing.id)
         } else {
           if (!agent || expectedBot) return fail('error')
-          const created = await installNewSlackBot(deps, req.log, {
-            orgId: OrgId(row.orgId),
-            agent,
-            name: result.teamName ? `AgentConnect (${result.teamName})` : 'AgentConnect',
-            botToken: result.botToken,
-            // Always http (a distributed app is Events-API-only — there is no
-            // per-workspace xapp token for Socket Mode) and always NON-shareable:
-            // one workspace install backs exactly one agent, keeping the classic
-            // 1-install cap. Widening a workspace to several agents is the
-            // quick-install upgrade path (its own Slack app), not this one.
-            transport: 'http',
-            shareable: false,
-            prebuilt: true,
-            slackAppId: platform.appId,
-            teamId: result.teamId,
-            workspaceId: result.teamId,
-            ...(result.teamName ? { workspaceName: result.teamName } : {}),
-            ...(result.botUserId ? { botUserId: result.botUserId } : {}),
-            signingSecret: platform.signingSecret,
-            ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
-          })
+          let created: Awaited<ReturnType<typeof installNewSlackBot>>
+          try {
+            created = await installNewSlackBot(deps, req.log, {
+              orgId: OrgId(row.orgId),
+              agent,
+              name: result.teamName ? `AgentConnect (${result.teamName})` : 'AgentConnect',
+              botToken: result.botToken,
+              // Always http (a distributed app is Events-API-only — there is no
+              // per-workspace xapp token for Socket Mode) and always NON-shareable:
+              // one workspace install backs exactly one agent, keeping the classic
+              // 1-install cap. Widening a workspace to several agents is the
+              // quick-install upgrade path (its own Slack app), not this one.
+              transport: 'http',
+              shareable: false,
+              prebuilt: true,
+              slackAppId: platform.appId,
+              teamId: result.teamId,
+              workspaceId: result.teamId,
+              ...(result.teamName ? { workspaceName: result.teamName } : {}),
+              ...(result.botUserId ? { botUserId: result.botUserId } : {}),
+              signingSecret: platform.signingSecret,
+              ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
+            })
+          } catch (err) {
+            // The install tail's generic workspace-claim fence
+            // (ingress-tenant-fence.md §5). This funnel's own getBySlackAppTeam
+            // pre-check covers platform-app rows; the tail additionally catches a
+            // workspace some org connected through a DIFFERENT funnel with this
+            // same app id. Callback UX, not JSON: same closing page as the
+            // pre-check's refusal.
+            if (err instanceof BotWorkspaceClaimed) return fail('workspace_taken')
+            throw err
+          }
           botId = created.botId
         }
 

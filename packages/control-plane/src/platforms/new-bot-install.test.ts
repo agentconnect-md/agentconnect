@@ -98,8 +98,29 @@ describe('slack buildNewBotInstall', () => {
     ).toEqual({
       // `botUserId` is the member id exact channel mentions render (#601).
       bot: { slackAppId: 'AXAPP', workspaceId: 'T1', workspaceName: 'Acme', botUserId: 'U1' },
-      secrets: { botToken: 'xoxb-1', appToken: 'xapp-1-AXAPP-1-deadbeef', signingSecret: null }
+      secrets: { botToken: 'xoxb-1', appToken: 'xapp-1-AXAPP-1-deadbeef', signingSecret: null },
+      // Workspace-claim admission fence (ingress-tenant-fence.md §5), keyed off
+      // the SAME app-id authority as the row above — core refuses the create if
+      // another org already runs this app in this workspace.
+      workspaceClaim: {
+        appId: 'AXAPP',
+        tenantId: 'T1',
+        conflictMessage: expect.stringContaining('already connected to another organization')
+      }
     })
+  })
+
+  it('declares NO workspace claim when auth.test resolved no workspace (§3.3 fail-open)', () => {
+    const built = provider.buildNewBotInstall({
+      credentials: { botToken: 'xoxb-1', appToken: 'xapp-1-AXAPP-1-deadbeef' },
+      identity: { name: 'acme' },
+      transport: 'socket',
+      shareable: false
+    })
+    // An install whose workspace could not be captured must still be creatable;
+    // the relay's delivery fence is likewise open for it until the identity
+    // reconciler backfills the workspace.
+    expect(built.workspaceClaim).toBeUndefined()
   })
 
   it('falls back to the auth.test app id when there is no xapp to parse (http install)', () => {

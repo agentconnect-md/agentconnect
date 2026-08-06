@@ -375,6 +375,19 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(a).toMatchObject({ apiAppId: 'A9', teamId: 'T9', botUserId: 'U9' })
   })
 
+  it('reads the workspace tenant fence from the ingress bag (ingress-tenant-fence.md §3)', () => {
+    // A quick-install bot: no teamId (not a distributed install), but the
+    // workspace it belongs to rides the bag so the ladder can fence the
+    // signature scan and the learned app-only path.
+    const a = toBotAssignment({
+      ...base,
+      secrets,
+      ingress: { apiAppId: 'A9', workspaceId: 'T9' }
+    } as never)
+    expect(a).toMatchObject({ apiAppId: 'A9', workspaceId: 'T9' })
+    expect(a && 'teamId' in a).toBe(false)
+  })
+
   it('IGNORES the retired named top-level fields (deleted from the schema; stripped on decode)', () => {
     // A frame hand-built with the pre-#556 named fields and no bag yields NO
     // demux identity: the bot serves through the bounded verify-scan, exactly

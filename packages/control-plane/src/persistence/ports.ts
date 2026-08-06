@@ -2704,6 +2704,16 @@ export interface BotRepo {
   /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
    *  by the composite demux key (a workspace binds to exactly one org). */
   getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
+  /** Workspace-claim admission predicate (ingress-tenant-fence.md §5): does a
+   *  DIFFERENT organization already hold a bot for this app+workspace? The
+   *  question is deliberately cross-org — one app installed into one workspace
+   *  by two orgs shares its inbound-verification secret AND its tenant, which
+   *  the relay's delivery-time fence cannot tell apart — but the answer is a
+   *  boolean, so no foreign row crosses the persistence seam. Revoked rows
+   *  still claim (workspace transfer is an explicit delete-then-reinstall,
+   *  never a silent capture). A DIFFERENT app in the same workspace is not a
+   *  claim: distinct apps carry distinct secrets, so nothing is ambiguous. */
+  workspaceClaimedElsewhere(orgId: OrgId, platform: string, appId: string, workspaceId: string): Promise<boolean>
   /** CROSS-ORG lookup by the generic demux identity (D6). Pass
    *  {@link TENANTLESS_SENTINEL} as `externalTenantId` for tenantless platforms —
    *  the same value {@link BotIdentityProjector} writes. Legacy rows (NULL
