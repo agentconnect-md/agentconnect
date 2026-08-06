@@ -227,6 +227,7 @@ services:
       # Topology-only bootstrap for the DB-backed browser auth snapshot. Public
       # service routes remain owned by this Web container's startup environment.
       - CP_INTERNAL_URL=http://control-plane:8080/api/v1
+      - PUBLIC_WEB_URL=${AGENTCONNECT_PUBLIC_WEB_URL:-http://app.agentconnect.localhost:${AGENTCONNECT_WEB_PORT:-3000}}
       - CP_URL=${AGENTCONNECT_PUBLIC_CP_URL:-http://api.agentconnect.localhost:${AGENTCONNECT_CP_PORT:-8080}}/api/v1
       - RELAY_URL=${AGENTCONNECT_PUBLIC_RELAY_URL:-http://relay.agentconnect.localhost:${AGENTCONNECT_RELAY_PORT:-8090}}
       - LOGTO_ENDPOINT
