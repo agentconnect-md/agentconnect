@@ -303,6 +303,24 @@ The order is therefore:
    row's scope and re-seals under the correct key.
 3. Only then is per-organization shredding a claim that holds.
 
+**Known rolling-update window — accepted, and only safe pre-release.** The
+envelope tag is new, so a binary from before this change does not recognize it:
+its `open` sees no `vault:vN:` prefix, takes the pass-through arm, and returns
+the envelope string itself as if it were plaintext. While old and new replicas
+overlap, an old replica reading a value a new one just wrote hands out
+`acv1:vault:…` verbatim — silently wrong rather than an error. The window closes
+when the rollout finishes, and reconciliation re-delivers correct values after
+it, but anything read during it is garbage.
+
+A released deployment must therefore split this into two releases: one that only
+**recognizes** the envelope, fully rolled out, and a later one that starts
+**writing** it. That was deliberately skipped here because no deployment has
+shipped to users yet. **Do not treat the single-release form as the pattern** —
+any future change to the envelope grammar owes the two-release sequence, and the
+pass-through arm is the reason: it fails open by design, which is right for
+never-sealed plaintext and wrong for a format the reader simply does not know
+yet.
+
 The deployment key is never deleted — legacy `deployment_secret` values stay
 under it permanently, and the legacy arm remains until every environment has
 converged.
