@@ -12,7 +12,21 @@ import { NextResponse, type NextRequest } from 'next/server'
 // leak one account's last org into another account and drift across devices.
 const CONSOLE_ROOTS = ['home', 'agents', 'sessions', 'daemons', 'crons', 'tools', 'usage', 'settings', 'profile']
 
+function canonicalRedirect(req: NextRequest): NextResponse | undefined {
+  const publicWebUrl = process.env.PUBLIC_WEB_URL
+  const hostname = req.headers.get('host')?.split(':', 1)[0]?.toLowerCase()
+  if (!publicWebUrl || hostname !== 'localhost') return
+
+  const canonical = new URL(publicWebUrl)
+  if (canonical.origin === req.nextUrl.origin) return
+
+  return NextResponse.redirect(new URL(`${req.nextUrl.pathname}${req.nextUrl.search}`, canonical.origin), 308)
+}
+
 export function proxy(req: NextRequest) {
+  const redirect = canonicalRedirect(req)
+  if (redirect) return redirect
+
   const { pathname } = req.nextUrl
   const first = pathname.split('/')[1]!
   const isEntry = pathname === '/' || CONSOLE_ROOTS.includes(first)
@@ -25,7 +39,7 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // Skip static assets and Next internals; /login and /auth pass through
-  // untouched (they're outside the console).
-  matcher: ['/((?!_next|favicon\\.ico|icon\\.svg|apple-icon\\.png|login|auth).*)']
+  // Skip static assets and Next internals. /login and /auth pass through the
+  // canonical-origin check, then bypass the console rewrite above.
+  matcher: ['/((?!_next|favicon\\.ico|icon\\.svg|apple-icon\\.png).*)']
 }
