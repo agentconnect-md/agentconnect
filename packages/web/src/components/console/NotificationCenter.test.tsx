@@ -1,11 +1,18 @@
+// @vitest-environment happy-dom
+
+import { act, useEffect } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { NotificationProvider, type NotificationItem } from '@/lib/notifications'
+import { NotificationProvider, useNotifications, type NotificationItem } from '@/lib/notifications'
 import {
   NotificationActionLink,
   NotificationBell,
+  NotificationToastContainer,
   notificationBellLabel
 } from '@/components/console/NotificationCenter'
+
+;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const actionableItem: NotificationItem = {
   id: 'notification-1',
@@ -75,5 +82,58 @@ describe('NotificationActionLink', () => {
         onActivate: vi.fn()
       })
     ).toBeNull()
+  })
+
+  it('marks panel actions read and dismisses toast actions in a mounted interaction', async () => {
+    localStorage.clear()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const latest: { current: ReturnType<typeof useNotifications> | null } = { current: null }
+
+    function Capture() {
+      const notifications = useNotifications()
+      useEffect(() => {
+        latest.current = notifications
+      }, [notifications])
+      return null
+    }
+
+    await act(async () => {
+      root.render(
+        <NotificationProvider orgId="org-1">
+          <Capture />
+          <NotificationBell variant="rail" />
+          <NotificationToastContainer />
+        </NotificationProvider>
+      )
+    })
+    await act(async () =>
+      latest.current?.syncSourceSnapshot('sessions-access', [
+        {
+          category: 'session_access',
+          severity: 'warning',
+          sourceKey: actionableItem.sourceKey!,
+          title: actionableItem.title,
+          message: actionableItem.message,
+          action: actionableItem.action
+        }
+      ])
+    )
+
+    await act(async () => (host.querySelector('button.railiconbtn') as HTMLButtonElement).click())
+    const actions = host.querySelectorAll<HTMLAnchorElement>('a[href="https://www.larksuite.com/admin"]')
+    expect(actions).toHaveLength(2)
+    actions[0]!.focus()
+    expect(document.activeElement).toBe(actions[0])
+    await act(async () => actions[0]!.click())
+    expect(latest.current?.notifications[0]?.read).toBe(true)
+    expect(latest.current?.toasts).toHaveLength(1)
+
+    await act(async () => actions[1]!.click())
+    expect(latest.current?.toasts).toEqual([])
+
+    await act(async () => root.unmount())
+    host.remove()
   })
 })

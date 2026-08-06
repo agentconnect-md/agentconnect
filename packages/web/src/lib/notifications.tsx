@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type {
   SessionAccessNotificationAction,
   SessionAccessNotificationInput
@@ -183,27 +183,29 @@ export function clearNotificationHistory(state: NotificationStoreState): Notific
 }
 
 interface ProviderState {
+  orgId: string | null | undefined
   store: NotificationStoreState
   toasts: NotificationItem[]
 }
 
 export function NotificationProvider({ orgId, children }: { orgId?: string | null; children: ReactNode }) {
   const [providerState, setProviderState] = useState<ProviderState>(() => ({
+    orgId,
     store: loadNotificationState(orgId),
     toasts: []
   }))
-  const activeOrgRef = useRef(orgId)
 
   useEffect(() => {
-    activeOrgRef.current = orgId
-    setProviderState({ store: loadNotificationState(orgId), toasts: [] })
+    setProviderState((previous) =>
+      previous.orgId === orgId ? previous : { orgId, store: loadNotificationState(orgId), toasts: [] }
+    )
   }, [orgId])
 
   useEffect(() => {
-    if (activeOrgRef.current === orgId) {
-      saveNotificationState(providerState.store, orgId)
+    if (providerState.orgId === orgId) {
+      saveNotificationState(providerState.store, providerState.orgId)
     }
-  }, [providerState.store, orgId])
+  }, [providerState, orgId])
 
   const addNotification = useCallback((item: AddNotificationInput) => {
     const notification: NotificationItem = {
@@ -213,6 +215,7 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
       read: false
     }
     setProviderState((prev) => ({
+      orgId: prev.orgId,
       store: {
         ...prev.store,
         notifications: [notification, ...prev.store.notifications].slice(0, MAX_NOTIFICATIONS)
@@ -223,10 +226,16 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
 
   const syncSourceSnapshot = useCallback((scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => {
     setProviderState((prev) => {
+      const nextKeys = new Set(items.map((item) => item.sourceKey))
+      const resolvedKeys = new Set(prev.store.activeSources[scope].filter((key) => !nextKeys.has(key)))
       const result = syncNotificationSourceSnapshot(prev.store, scope, items)
       return {
+        orgId: prev.orgId,
         store: result.state,
-        toasts: [...result.added, ...prev.toasts].slice(0, 5)
+        toasts: [
+          ...result.added,
+          ...prev.toasts.filter((toast) => !toast.sourceKey || !resolvedKeys.has(toast.sourceKey))
+        ].slice(0, 5)
       }
     })
   }, [])
@@ -256,7 +265,7 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
   }, [])
 
   const clearAll = useCallback(() => {
-    setProviderState((prev) => ({ store: clearNotificationHistory(prev.store), toasts: [] }))
+    setProviderState((prev) => ({ ...prev, store: clearNotificationHistory(prev.store), toasts: [] }))
   }, [])
 
   const notifications = providerState.store.notifications

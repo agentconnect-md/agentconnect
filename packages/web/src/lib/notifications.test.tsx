@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment happy-dom
+
+import { act, useEffect } from 'react'
+import { createRoot } from 'react-dom/client'
+import { describe, expect, it, vi } from 'vitest'
 import type { SessionAccessNotificationInput } from '@/lib/session-access-notifications'
 import {
   clearNotificationHistory,
@@ -8,6 +12,9 @@ import {
   syncNotificationSourceSnapshot,
   type NotificationStoreState
 } from '@/lib/notifications'
+import { NotificationProvider, useNotifications } from '@/lib/notifications'
+
+;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const quotaItem: SessionAccessNotificationInput = {
   category: 'session_access',
@@ -227,5 +234,99 @@ describe('syncNotificationSourceSnapshot', () => {
 
     expect(loadNotificationState('org-1', brokenStorage)).toEqual(emptyNotificationState())
     expect(() => saveNotificationState(emptyNotificationState(), 'org-1', brokenStorage)).not.toThrow()
+  })
+})
+
+function CaptureNotifications({
+  onChange
+}: {
+  onChange: (notifications: ReturnType<typeof useNotifications>) => void
+}) {
+  const notifications = useNotifications()
+  useEffect(() => onChange(notifications), [notifications, onChange])
+  return null
+}
+
+describe('NotificationProvider', () => {
+  it('never writes the previous organization state under the next organization key', async () => {
+    localStorage.clear()
+    const orgAState = syncNotificationSourceSnapshot(
+      emptyNotificationState(),
+      'sessions-access',
+      [quotaItem],
+      '2026-08-06T01:00:00.000Z',
+      () => 'org-a-notification'
+    ).state
+    const orgBState = syncNotificationSourceSnapshot(
+      emptyNotificationState(),
+      'usage-access',
+      [{ ...quotaItem, sourceKey: 'usage:feishu:lark:quota' }],
+      '2026-08-06T02:00:00.000Z',
+      () => 'org-b-notification'
+    ).state
+    saveNotificationState(orgAState, 'org-a')
+    saveNotificationState(orgBState, 'org-b')
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const onChange = () => {}
+    await act(async () => {
+      root.render(
+        <NotificationProvider orgId="org-a">
+          <CaptureNotifications onChange={onChange} />
+        </NotificationProvider>
+      )
+    })
+
+    const writes: Array<[string, string]> = []
+    const originalSetItem = localStorage.setItem.bind(localStorage)
+    const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => {
+      writes.push([key, value])
+      originalSetItem(key, value)
+    })
+    await act(async () => {
+      root.render(
+        <NotificationProvider orgId="org-b">
+          <CaptureNotifications onChange={onChange} />
+        </NotificationProvider>
+      )
+    })
+
+    expect(
+      writes.some(
+        ([key, value]) => key === 'agentconnect_notifications_v1_org-b' && value.includes('org-a-notification')
+      )
+    ).toBe(false)
+
+    setItem.mockRestore()
+    await act(async () => root.unmount())
+    host.remove()
+  })
+
+  it('dismisses a live toast when its source resolves', async () => {
+    localStorage.clear()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const latest: { current: ReturnType<typeof useNotifications> | null } = { current: null }
+    const onChange = (notifications: ReturnType<typeof useNotifications>) => {
+      latest.current = notifications
+    }
+    await act(async () => {
+      root.render(
+        <NotificationProvider orgId="org-a">
+          <CaptureNotifications onChange={onChange} />
+        </NotificationProvider>
+      )
+    })
+    await act(async () => latest.current?.syncSourceSnapshot('sessions-access', [quotaItem]))
+    expect(latest.current?.toasts).toEqual([expect.objectContaining({ sourceKey: quotaItem.sourceKey })])
+
+    await act(async () => latest.current?.syncSourceSnapshot('sessions-access', []))
+    expect(latest.current?.toasts).toEqual([])
+
+    await act(async () => root.unmount())
+    host.remove()
   })
 })
