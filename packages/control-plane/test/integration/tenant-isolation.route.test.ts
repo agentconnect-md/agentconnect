@@ -26,6 +26,9 @@ import { PgSkillSourceRepo } from '../../src/persistence/repositories/skill-sour
 import { PgOrganizationKnowledgeRepo } from '../../src/persistence/repositories/organization-knowledge.repo.js'
 import { PgSessionRepo } from '../../src/persistence/repositories/session.repo.js'
 import { PgWebchatConversationRepo } from '../../src/persistence/repositories/webchat-conversation.repo.js'
+import { PgGithubInstallationRepo } from '../../src/persistence/repositories/github.repo.js'
+import { PgExternalMemoryConnectionRepo } from '../../src/persistence/repositories/memory-connection.repo.js'
+import { PgApiKeyRepo } from '../../src/persistence/repositories/api-key.repo.js'
 import { AgentMissing, BotMissing, CronMissing, HookMissing } from '../../src/persistence/errors.js'
 import { AgentId, BotId, CronId, DaemonId, HookId, IntegrationId, OrgId, SessionId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
@@ -61,6 +64,9 @@ let foreignManagedSkillId: string
 let foreignSessionId: string
 let ownSessionId: string
 let foreignConversationId: string
+let foreignInstallationId: string
+let foreignMemoryConnectionId: string
+let foreignDaemonKeyId: string
 
 afterEach(async () => {
   await running?.close()
@@ -330,6 +336,51 @@ beforeEach(async () => {
       }
     }
   })
+
+  // A GitHub installation claim, an external-memory connection, and one daemon
+  // API key — the last three id-addressed org resources.
+  foreignInstallationId = randomUUID()
+  await prisma.githubInstallation.create({
+    data: {
+      id: foreignInstallationId,
+      orgId: foreignOrgId,
+      installationId: 987654321n,
+      accountLogin: 'example-foreign-org',
+      accountType: 'Organization',
+      repositorySelection: 'all',
+      permissions: { pull_requests: 'write' }
+    }
+  })
+  const foreignPluginInstallationId = randomUUID()
+  await prisma.memoryPluginInstallation.create({
+    data: {
+      id: foreignPluginInstallationId,
+      orgId: foreignOrgId,
+      pluginId: 'mem0',
+      transport: 'streamable_http',
+      endpoint: 'https://memory.example.test/foreign'
+    }
+  })
+  foreignMemoryConnectionId = randomUUID()
+  await prisma.externalMemoryConnection.create({
+    data: {
+      id: foreignMemoryConnectionId,
+      orgId: foreignOrgId,
+      installationId: foreignPluginInstallationId,
+      config: { projectId: 'foreign-project' }
+    }
+  })
+  foreignDaemonKeyId = randomUUID()
+  await prisma.apiKey.create({
+    data: {
+      id: foreignDaemonKeyId,
+      principalType: 'daemon',
+      orgId: foreignOrgId,
+      daemonId: foreignDaemonId,
+      hash: `hash-${randomUUID()}`,
+      displayTail: 'abcd'
+    }
+  })
 })
 
 function build(): HttpApp {
@@ -428,6 +479,21 @@ async function foreignSessionUnmodified(): Promise<void> {
   expect(row!.orgId).toBe(foreignOrgId)
   expect(row!.visibility).toBe('org')
   expect(row!.visibilityRev).toBe(0)
+}
+
+async function foreignInfraUnmodified(): Promise<void> {
+  const installation = await prisma.githubInstallation.findUnique({ where: { id: foreignInstallationId } })
+  expect(installation).not.toBeNull()
+  expect(installation!.orgId).toBe(foreignOrgId)
+  expect(installation!.revokedAt).toBeNull()
+  const connection = await prisma.externalMemoryConnection.findUnique({ where: { id: foreignMemoryConnectionId } })
+  expect(connection).not.toBeNull()
+  expect(connection!.orgId).toBe(foreignOrgId)
+  expect(connection!.revision).toBe(1)
+  expect(connection!.config).toEqual({ projectId: 'foreign-project' })
+  const key = await prisma.apiKey.findUnique({ where: { id: foreignDaemonKeyId } })
+  expect(key).not.toBeNull()
+  expect(key!.revokedAt).toBeNull()
 }
 
 async function foreignBotUnmodified(): Promise<void> {
@@ -584,7 +650,9 @@ describe('tenant isolation — Daemon over the REST surface', () => {
     expect(list.statusCode).toBe(404)
     const mint = await app.app.inject({ method: 'POST', url: `${ORG}/daemons/${foreignDaemonId}/keys` })
     expect(mint.statusCode).toBe(404)
-    expect(await prisma.apiKey.count({ where: { daemonId: foreignDaemonId } })).toBe(0)
+    // The foreign daemon starts with exactly one seeded key; a leaked mint would
+    // have added a second.
+    expect(await prisma.apiKey.count({ where: { daemonId: foreignDaemonId } })).toBe(1)
   })
 
   it('the daemons list never contains a foreign row', async () => {
@@ -1260,5 +1328,78 @@ describe('tenant isolation — SessionRepo and WebchatConversationRepo fences un
     await repo.addParticipant(CALLER_ORG, foreignConversationId, AgentId(ownAgentId), 'attacker')
     expect(await repo.participants(OrgId(foreignOrgId), foreignConversationId)).toHaveLength(1)
     expect(await prisma.webchatConversationAgent.count({ where: { conversationId: foreignConversationId } })).toBe(1)
+  })
+})
+
+describe('tenant isolation — GitHub installations, memory connections and daemon keys', () => {
+  // NOTE: the `/github/*` route tree self-disables when the GitHub App feature is
+  // off, which it is in this harness — a 404 there would prove nothing about the
+  // fence. The installation's tenancy is asserted at the repository instead (see
+  // the fences block below); its route callers are held to `orgOf(req)` by the
+  // tightened signature itself.
+
+  it('a foreign external-memory connection is unreachable through its read and write routes', async () => {
+    const app = build()
+    const base = `${ORG}/external-memory-connections/${foreignMemoryConnectionId}`
+    expect((await app.app.inject({ method: 'GET', url: base })).statusCode).toBe(404)
+    const patch = await app.app.inject({ method: 'PATCH', url: base, payload: { config: { projectId: 'hijacked' } } })
+    expect(patch.statusCode).toBe(404)
+    const rotate = await app.app.inject({ method: 'POST', url: `${base}/grant/rotate` })
+    expect(rotate.statusCode).toBe(404)
+    expect((await app.app.inject({ method: 'DELETE', url: base })).statusCode).toBe(404)
+    await foreignInfraUnmodified()
+  })
+
+  it('a foreign daemon’s key cannot be listed or revoked through the caller’s org', async () => {
+    const app = build()
+    const list = await app.app.inject({ method: 'GET', url: `${ORG}/daemons/${foreignDaemonId}/keys` })
+    expect(list.statusCode).toBe(404)
+    // The revoke route binds a raw key id to the org-fenced daemon key list, so
+    // even a correct foreign key id reads as absent rather than being killed.
+    const revoke = await app.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/daemons/${foreignDaemonId}/keys/${foreignDaemonKeyId}`
+    })
+    expect(revoke.statusCode).toBe(404)
+    // …and so does pairing it with a daemon the caller CAN see.
+    const crossed = await app.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/daemons/${ownDaemonId}/keys/${foreignDaemonKeyId}`
+    })
+    expect(crossed.statusCode).toBe(404)
+    await foreignInfraUnmodified()
+  })
+
+  it('the connections list never contains a foreign row', async () => {
+    const app = build()
+    const connections = await app.app.inject({ method: 'GET', url: `${ORG}/external-memory-connections` })
+    expect(connections.statusCode).toBe(200)
+    expect(JSON.stringify(connections.json())).not.toContain(foreignMemoryConnectionId)
+  })
+})
+
+describe('tenant isolation — installation, memory-connection and key fences under the routes', () => {
+  it('these reads and mutations treat a cross-org id exactly like a missing row', async () => {
+    const installations = new PgGithubInstallationRepo(prisma)
+    expect(await installations.get(CALLER_ORG, foreignInstallationId)).toBeNull()
+    // The doorbell lookup stays deliberately CROSS-ORG: resolving which
+    // organization owns an installation is the whole point of that read.
+    expect(await installations.getByInstallationId(987654321n)).not.toBeNull()
+
+    const connections = new PgExternalMemoryConnectionRepo(prisma)
+    expect(await connections.get(CALLER_ORG, foreignMemoryConnectionId)).toBeNull()
+    expect(await connections.get(OrgId(foreignOrgId), foreignMemoryConnectionId)).not.toBeNull()
+    await expect(
+      connections.update(CALLER_ORG, foreignMemoryConnectionId, { config: { projectId: 'hijacked' } })
+    ).rejects.toThrow()
+    await expect(connections.delete(CALLER_ORG, foreignMemoryConnectionId)).rejects.toThrow()
+
+    // The daemon key list is what the revoke route binds a raw key id against,
+    // so its fence is what keeps a cross-tenant kill unreachable.
+    const keys = new PgApiKeyRepo(prisma)
+    expect(await keys.listForDaemon(CALLER_ORG, DaemonId(foreignDaemonId))).toEqual([])
+    expect(await keys.listForDaemon(OrgId(foreignOrgId), DaemonId(foreignDaemonId))).toHaveLength(1)
+
+    await foreignInfraUnmodified()
   })
 })

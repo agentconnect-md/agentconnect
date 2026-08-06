@@ -370,15 +370,27 @@ export interface ApiKeyRepo {
   findByHash(hash: string): Promise<ApiKeyRecord | null>
   /** Throttled liveness write on successful auth. */
   touchLastUsed(id: string, at: Date): Promise<void>
-  /** Kill switch: set `revokedAt` (+ reason). Checked on every auth. */
+  /** Kill switch: set `revokedAt` (+ reason). Checked on every auth.
+   *  System-tier (docs/designs/org-scoped-data-layer.md §3.4): this one method
+   *  revokes daemon, user, oauth AND relay keys, and relay keys are org-less
+   *  deployment infrastructure by design (§7 non-goals). Each caller proves
+   *  ownership on a STRONGER axis first — the org-fenced daemon roster
+   *  ({@link ApiKeyRepo.listForDaemon}) or the caller's own key list
+   *  ({@link ApiKeyRepo.listForUser}) — so an org parameter here would be both
+   *  wrong for relay keys and weaker than the fence already in place. */
   revoke(id: string, reason: string, at: Date): Promise<ApiKeyRecord>
   /** Revoke every live oauth access token minted under a grant — the "disconnect"
    *  cascade so a Profile revoke kills outstanding tokens now, not in ≤1h. Returns count. */
   revokeByOAuthGrant(grantId: string, reason: string, at: Date): Promise<number>
-  /** All keys (including revoked) for a daemon — the console key list. */
-  listForDaemon(daemonId: DaemonId): Promise<ApiKeyRecord[]>
+  /** All keys (including revoked) for a daemon — the console key list, and the
+   *  ownership proof the revoke route binds a raw key id against. Org-fenced
+   *  (§3): a daemon outside `orgId` yields no keys at all, so that proof cannot
+   *  admit a cross-tenant kill even if a route forgot to resolve the daemon. */
+  listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyRecord[]>
   /** A user's personal keys (all their orgs, active-only by default), joined with each
-   *  key's org label — the profile "API keys" list, newest first. */
+   *  key's org label — the profile "API keys" list, newest first.
+   *  System-tier: fenced by the caller's own identity, which spans organizations
+   *  by design (a personal key list is per-user, not per-org). */
   listForUser(userId: string, opts?: { includeRevoked?: boolean }): Promise<UserApiKeyRecord[]>
 }
 
@@ -2769,7 +2781,10 @@ export interface GithubInstallationRepo {
   /** Claim/update by GitHub installation id. The setup callback is the only
    * path allowed to create a claim; refresh paths pass the durable claim's org. */
   upsertFromGithub(orgId: OrgId, facts: GithubInstallationFacts): Promise<GithubInstallationRecord>
-  get(id: string): Promise<GithubInstallationRecord | null>
+  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
+   *  as absent, exactly like a missing row. The claim row IS the tenancy record
+   *  for an installation, so this is the read the HTTP surface must use. */
+  get(orgId: OrgId, id: string): Promise<GithubInstallationRecord | null>
   /** Live (non-revoked) installations claimed by the org — the picker's first level. */
   listForOrg(orgId: OrgId): Promise<GithubInstallationRecord[]>
   /** Every durable claim for an org, including revoked rows. Sync refreshes
@@ -2778,9 +2793,12 @@ export interface GithubInstallationRepo {
   /** Mint-time resolution: the live installation covering `accountLogin` in this org. */
   liveByOrgAndAccount(orgId: OrgId, accountLogin: string): Promise<GithubInstallationRecord | null>
   /** Doorbell lookup by GITHUB-side id (revoked rows included — the claim row is
-   *  what maps the poke to an org; unknown ⇒ no org claim yet, ignore). */
+   *  what maps the poke to an org; unknown ⇒ no org claim yet, ignore).
+   *  System-tier and deliberately CROSS-ORG: resolving the owning organization
+   *  is the whole point of this read, so it cannot take one. */
   getByInstallationId(installationId: bigint): Promise<GithubInstallationRecord | null>
-  /** Doorbell revoke: GitHub answered 404/410 for this installation (never delete). */
+  /** Doorbell revoke: GitHub answered 404/410 for this installation (never delete).
+   *  System-tier: GitHub-driven, keyed by the same cross-org external id. */
   markRevokedByInstallationId(installationId: bigint): Promise<void>
 }
 
@@ -4448,14 +4466,22 @@ export interface ExternalMemoryConnectionRepo {
     config: Record<string, unknown>
     createdByUserId?: string
   }): Promise<ExternalMemoryConnectionRecord>
-  get(id: string): Promise<ExternalMemoryConnectionRecord | null>
+  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
+   *  as absent, exactly like a missing row. No `getUnscoped` — the daemon and
+   *  relay reach connections through `activeForDaemon` / `listAll`, never by id. */
+  get(orgId: OrgId, id: string): Promise<ExternalMemoryConnectionRecord | null>
   listForOrg(orgId: OrgId): Promise<ExternalMemoryConnectionRecord[]>
+  /** System-tier: the pool-wide set replayed to a relay that just (re)registered. */
   listAll(): Promise<ExternalMemoryConnectionRecord[]>
-  update(id: string, patch: { config?: Record<string, unknown> }): Promise<ExternalMemoryConnectionRecord>
-  delete(id: string): Promise<void>
-  /** Connections referenced by an external-memory agent placed on this daemon. */
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  update(orgId: OrgId, id: string, patch: { config?: Record<string, unknown> }): Promise<ExternalMemoryConnectionRecord>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  delete(orgId: OrgId, id: string): Promise<void>
+  /** Connections referenced by an external-memory agent placed on this daemon.
+   *  System-tier: daemon-fenced. */
   activeForDaemon(daemonId: DaemonId): Promise<ExternalMemoryConnectionRecord[]>
-  /** Revision-fenced probe fact update; stale daemon facts are ignored. */
+  /** Revision-fenced probe fact update; stale daemon facts are ignored.
+   *  System-tier: daemon-reported, fenced by the revision CAS. */
   updateProbeFact(
     id: string,
     revision: number,
@@ -4471,7 +4497,11 @@ export interface ExternalMemoryConnectionRepo {
   ): Promise<boolean>
 }
 
-/** Secret values keyed by manifest logical field name. Values never enter DTOs. */
+/** Secret values keyed by manifest logical field name. Values never enter DTOs.
+ *  Rows are keyed by `connectionId` alone and carry no org, so this store fences
+ *  through its parent (org-scoped-data-layer.md §3.6) — a route reaching a
+ *  connection's secrets must resolve it through the org-fenced
+ *  {@link ExternalMemoryConnectionRepo.get} first. */
 export interface ExternalMemoryConnectionSecretStore {
   put(connectionId: string, values: Record<string, string>): Promise<void>
   get(connectionId: string): Promise<Record<string, string> | null>
@@ -4487,6 +4517,8 @@ export interface ExternalMemoryGrantRecord {
   createdAt: Date
 }
 
+/** Grants hang off one connection and fence through it, exactly like
+ *  {@link ExternalMemoryConnectionSecretStore} (§3.6). */
 export interface ExternalMemoryGrantRepo {
   mintFor(connectionId: string): Promise<ExternalMemoryGrantRecord>
   activeForConnection(connectionId: string): Promise<ExternalMemoryGrantRecord[]>

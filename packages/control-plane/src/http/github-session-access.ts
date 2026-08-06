@@ -1,4 +1,5 @@
 import type { Clock } from '../domain/clock.js'
+import { OrgId } from '../domain/ids.js'
 import type { ExternalScopeRecord, GithubInstallationRepo } from '../persistence/ports.js'
 import type { GithubService } from '../github/service.js'
 import { UserAuthzDeniedError, type GithubUserAuthzService } from '../github/user-authz.js'
@@ -84,9 +85,11 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       return 'deny'
     }
     if (!this.deps.github) return 'unknown'
-    const installation = await this.deps.installations.get(scope.credentialId).catch(() => null)
+    // Fenced on the org recorded in the session's own external scope row — the
+    // check this replaces (org-scoped-data-layer.md §3).
+    const installation = await this.deps.installations.get(OrgId(scope.orgId), scope.credentialId).catch(() => null)
     if (!installation) return 'unknown'
-    if (installation.orgId !== scope.orgId || installation.revokedAt || installation.suspendedAt) return 'deny'
+    if (installation.revokedAt || installation.suspendedAt) return 'deny'
 
     const key = [scope.id, scope.aclRevision.toString(), installation.installationId.toString(), userId].join(':')
     const cached = this.cache.get(key)

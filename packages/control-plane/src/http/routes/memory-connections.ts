@@ -262,8 +262,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const row = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!row || row.orgId !== orgOf(req)) {
+        const row = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!row) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         return connectionDto(row, deps)
@@ -340,8 +340,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const existing = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!existing || existing.orgId !== orgOf(req)) {
+        const existing = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!existing) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         const installation = await deps.repos.memoryPluginInstallation.get(existing.installationId)
@@ -407,8 +407,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!connection || connection.orgId !== orgOf(req)) {
+        const connection = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!connection) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
@@ -491,8 +491,8 @@ export function memoryConnectionRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyNonOwner(req, reply)) return
-        const connection = await deps.repos.externalMemoryConnection.get(req.params.id)
-        if (!connection || connection.orgId !== orgOf(req)) {
+        const connection = await deps.repos.externalMemoryConnection.get(orgOf(req), req.params.id)
+        if (!connection) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'connection not found' })
         }
         const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)

@@ -290,8 +290,8 @@ export function skillSourceRoutes(deps: HttpDeps) {
         if (denyViewerWrite(req, reply)) return
         const gh = deps.github
         if (!gh) return notFound(reply) // github-app feature off — no scan possible
-        const ins = await deps.repos.githubInstallation.get(req.body.installationId)
-        if (!ins || ins.orgId !== orgOf(req) || ins.revokedAt) return notFound(reply)
+        const ins = await deps.repos.githubInstallation.get(orgOf(req), req.body.installationId)
+        if (!ins || ins.revokedAt) return notFound(reply)
         const [branches, scan] = await Promise.all([
           gh.listBranches(ins, req.body.owner, req.body.repo).catch(() => [] as string[]),
           gh.scanSkillSource(ins, req.body.owner, req.body.repo, req.body.ref)

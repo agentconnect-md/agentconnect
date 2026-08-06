@@ -75,9 +75,12 @@ export class PgApiKeyRepo implements ApiKeyRepo {
     return res.count
   }
 
-  async listForDaemon(daemonId: DaemonId): Promise<ApiKeyRecord[]> {
+  async listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyRecord[]> {
+    // Org fence on the key rows themselves (org-scoped-data-layer.md §3): a
+    // daemon outside `orgId` yields nothing, so the revoke route's ownership
+    // proof cannot admit a cross-tenant kill.
     const rows = await this.db.apiKey.findMany({
-      where: { daemonId },
+      where: { daemonId, orgId },
       orderBy: { createdAt: 'desc' }
     })
     return rows.map(toRecord)

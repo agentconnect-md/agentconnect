@@ -115,8 +115,8 @@ export class ApiKeyService implements ApiKeyAdmin {
     return { apiKeyId: rec.id, token: minted.token, displayTail: minted.displayTail }
   }
 
-  async listForDaemon(daemonId: DaemonId): Promise<ApiKeyView[]> {
-    const rows = await this.apiKeys.listForDaemon(daemonId)
+  async listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyView[]> {
+    const rows = await this.apiKeys.listForDaemon(orgId, daemonId)
     return rows.map(toView)
   }
 

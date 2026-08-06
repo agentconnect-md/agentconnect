@@ -101,8 +101,11 @@ export interface ApiKeyAdmin {
    *  — the per-relay `rc/auth` `method:'apikey'` credential (shared-bot-relay.md §8).
    *  Plaintext is returned exactly once; minting a relay key is granting relay trust. */
   mintForRelay(opts?: { name?: string; createdByUserId?: string }): Promise<MintedKeyView>
-  /** List a daemon's keys (incl. revoked) for the console. */
-  listForDaemon(daemonId: DaemonId): Promise<ApiKeyView[]>
+  /** List a daemon's keys (incl. revoked) for the console. Org-fenced
+   *  (docs/designs/org-scoped-data-layer.md §3): a daemon outside `orgId` yields
+   *  no keys, which is also what makes the revoke route's ownership check on
+   *  this list structural rather than conventional. */
+  listForDaemon(orgId: OrgId, daemonId: DaemonId): Promise<ApiKeyView[]>
   /** Revoke a key by id (kill switch). */
   revoke(apiKeyId: string, reason: string): Promise<ApiKeyView>
   /** Mint a personal key for `userId`, scoped to `orgId` (default 90-day expiry;

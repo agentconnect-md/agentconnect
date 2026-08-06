@@ -65,7 +65,7 @@ export function keyRoutes(deps: HttpDeps) {
         if (!(await getOrgDaemon(req, req.params.id))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
         }
-        const rows = await deps.apiKeys.listForDaemon(DaemonId(req.params.id))
+        const rows = await deps.apiKeys.listForDaemon(orgOf(req), DaemonId(req.params.id))
         return rows.map(toDto)
       }
     )
@@ -129,7 +129,7 @@ export function keyRoutes(deps: HttpDeps) {
         }
         // Bind the keyId to the org-checked daemon — a raw key id from ANOTHER
         // daemon/org must read as absent, not get revoked (cross-tenant kill).
-        const owned = await deps.apiKeys.listForDaemon(DaemonId(req.params.id))
+        const owned = await deps.apiKeys.listForDaemon(orgOf(req), DaemonId(req.params.id))
         if (!owned.some((k) => k.id === req.params.keyId)) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'key not found' })
         }

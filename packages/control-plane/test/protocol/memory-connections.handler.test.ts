@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { isFrame } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
-import { seedAgent, seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG, seedAgent, seedDaemon } from '../fixtures/seed.js'
 import {
   PgExternalMemoryConnectionRepo,
   PgExternalMemoryConnectionSecretStore,
@@ -206,16 +206,16 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
     })
 
     await vi.waitFor(async () => {
-      expect(await connections.get(connection1.id)).toMatchObject({
+      expect(await connections.get(DEF_ORG, connection1.id)).toMatchObject({
         status: 'ready',
         probedRevision: 1,
         declaredEgressHosts: ['api.example-memory.com']
       })
     })
     // Connection 2 belongs to DAEMON_2: a fact from DAEMON_1 cannot mutate it.
-    expect(await connections.get(connection2.id)).toMatchObject({ status: 'probing', probedRevision: null })
+    expect(await connections.get(DEF_ORG, connection2.id)).toMatchObject({ status: 'probing', probedRevision: null })
 
-    await connections.update(connection1.id, { config: { projectId: 'changed' } })
+    await connections.update(DEF_ORG, connection1.id, { config: { projectId: 'changed' } })
     stub.inject('facts/memory-connections', {
       connections: [
         {
@@ -228,7 +228,7 @@ describe('facts/memory-connections — daemon-scoped and revision-fenced', () =>
       ]
     })
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(await connections.get(connection1.id)).toMatchObject({
+    expect(await connections.get(DEF_ORG, connection1.id)).toMatchObject({
       revision: 2,
       status: 'probing',
       probedRevision: null

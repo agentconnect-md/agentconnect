@@ -153,7 +153,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
           update: { values: sealedSecrets as Prisma.InputJsonValue }
         })
       }
-      const connection = await new PgExternalMemoryConnectionRepo(tx).update(id, {
+      const connection = await new PgExternalMemoryConnectionRepo(tx).update(orgId, id, {
         ...(patch.config !== undefined ? { config: patch.config } : {})
       })
       // The projection snapshot for the revision THIS transaction commits: a
@@ -207,7 +207,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
       if (activeNow.length !== observed.length || activeNow.some((row, index) => row.id !== observed[index]!.id)) {
         return { outcome: 'busy' as const }
       }
-      const connection = await new PgExternalMemoryConnectionRepo(tx).update(id, {})
+      const connection = await new PgExternalMemoryConnectionRepo(tx).update(orgId, id, {})
       let fresh: ExternalMemoryGrantRecord
       if (reuse) {
         fresh = reuse
@@ -260,7 +260,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
         where: { id: { in: [...retiringGrantIds] }, connectionId: id },
         data: { status: 'revoked' }
       })
-      const connection = await new PgExternalMemoryConnectionRepo(tx).update(id, {})
+      const connection = await new PgExternalMemoryConnectionRepo(tx).update(orgId, id, {})
       return { outcome: 'retired' as const, connection, sealedSnapshot: await sealedSecretsInTx(tx, id) }
     })
     if (result.outcome !== 'retired') return result
