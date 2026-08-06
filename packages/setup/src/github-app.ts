@@ -41,7 +41,6 @@ export const GITHUB_APP_PERMISSIONS = {
   pull_requests: 'write',
   actions: 'write',
   checks: 'write',
-  packages: 'write',
   workflows: 'write',
   email_addresses: 'read'
 } as const
@@ -54,6 +53,7 @@ export const GITHUB_APP_EVENTS = [
   'pull_request_review',
   'pull_request_review_comment',
   'check_run',
+  'check_suite',
   'release',
   'repository'
 ] as const
