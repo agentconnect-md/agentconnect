@@ -47,10 +47,14 @@ import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEn
 // A session-access row shows only the effect of the current setting ("People with
 // Slack access" / "Agent viewers"). What the toggle means at all is said once, in
 // the card header; the per-platform detail — which conversations qualify, what
-// turning it off does NOT undo — is hover copy on the platform name, so every row
+// turning it off does NOT undo — hangs off the row's info button, so every row
 // stays one line.
+//
+// "New sessions" is load-bearing in the Off half: turning the policy off stops
+// NEW sessions binding to platform access, it does not unbind the ones already
+// synced (each `details` string below says so too).
 const SESSION_ACCESS_HINT =
-  "On — session visibility follows the platform's own access. Off — anyone who can view the agent can view its sessions."
+  "On — session visibility follows the platform's own access. Off — new sessions are visible to anyone who can view the agent."
 
 const SESSION_ACCESS_COPY: Record<
   SessionAccessProvider,
@@ -162,12 +166,20 @@ function SessionAccessRow({
         <PlatformMark platform={provider} fillPct={100} />
       </span>
       <div className="min-w-0 flex-1">
-        <span
-          className="cursor-help font-sans text-[13px] font-medium leading-normal"
-          title={`${copy.label}\n\n${copy.details}`}
-        >
-          {copy.name}
-        </span>
+        {/* The detail is hover copy, so it needs a control that keyboard focus can
+            land on — `TooltipLayer` opens from focus, and a plain span never
+            takes any. Same affordance the two-line row carried. */}
+        <div className="flex items-center gap-[5px]">
+          <span className="font-sans text-[13px] font-medium leading-normal">{copy.name}</span>
+          <button
+            type="button"
+            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+            aria-label={`${copy.label} — what this covers`}
+            title={copy.details}
+          >
+            <Icon name="info" size={13} />
+          </button>
+        </div>
         {/* Desktop keeps the effect in its own column; on a phone there is no room
             beside the toggle, so it drops under the platform name. */}
         {value && (
@@ -184,11 +196,13 @@ function SessionAccessRow({
       {/* Amber is reserved for the actionable case — a scope that stopped
           resolving AFTER enablement. The hidden-session backlog is expected and
           permanent (the CP freezes it as the policy's legacy mark), so its chip
-          reads as a muted fact, not a fault the owner is failing to clear. Both
-          carry the full sentence as hover copy. */}
+          reads as a muted fact, not a fault the owner is failing to clear.
+          A chip is a shortening, not a hiding: the full sentence is hover copy
+          for a pointer and screen-reader text for everyone else. */}
       {access?.state === 'degraded' && (
         <span className="badge flex-none bg-(--status-paused-soft) text-(--status-paused)" title={copy.degraded}>
-          Scopes not resolving
+          <span aria-hidden="true">Scopes not resolving</span>
+          <span className="sr-only">{copy.degraded}</span>
         </span>
       )}
       {hiddenSessions > 0 && (
@@ -196,7 +210,8 @@ function SessionAccessRow({
           className="badge flex-none bg-(--surface-sunken) text-(--text-tertiary)"
           title={copy.unresolved(hiddenSessions)}
         >
-          {hiddenSessions} hidden
+          <span aria-hidden="true">{hiddenSessions} hidden</span>
+          <span className="sr-only">{copy.unresolved(hiddenSessions)}</span>
         </span>
       )}
       {value && (
