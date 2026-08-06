@@ -12,7 +12,8 @@ async function featureDaemon(
   conn: Parameters<Handler>[1],
   deps: Parameters<Handler>[2]
 ): Promise<DaemonView | null> {
-  const daemon = await deps.registry.get(DaemonId(conn.daemonId))
+  // Daemon trust domain: the connection's own daemon (org-scoped-data-layer.md §4).
+  const daemon = await deps.registry.getUnscoped(DaemonId(conn.daemonId))
   if (!daemon || !daemon.capabilities.features.includes(ORGANIZATION_KNOWLEDGE_FEATURE)) {
     conn.sendError(frameId, 'SCOPE_DENIED', 'daemon did not advertise organization knowledge support', false)
     return null

@@ -42,7 +42,7 @@ function conn() {
 }
 
 const featureRegistry = {
-  get: async () => ({
+  getUnscoped: async () => ({
     id: DAEMON,
     orgId: ORG,
     capabilities: { features: [ORGANIZATION_KNOWLEDGE_FEATURE, ORGANIZATION_SUGGESTION_REVIEW_FEATURE] }
@@ -354,7 +354,7 @@ describe('handleOrganizationSuggestionsSync', () => {
     ])
     const deps = {
       registry: {
-        get: async () => ({
+        getUnscoped: async () => ({
           id: DAEMON,
           orgId: ORG,
           capabilities: { features: [ORGANIZATION_KNOWLEDGE_FEATURE] }
@@ -460,7 +460,7 @@ describe('handleManagedSkillRead', () => {
   it('refuses organization frames from a daemon that omitted the feature', async () => {
     const searchKnowledge = vi.fn()
     const deps = {
-      registry: { get: async () => ({ id: DAEMON, orgId: ORG, capabilities: { features: [] } }) },
+      registry: { getUnscoped: async () => ({ id: DAEMON, orgId: ORG, capabilities: { features: [] } }) },
       agent: { getUnscoped: vi.fn() },
       organizationKnowledge: { searchKnowledge }
     } as unknown as DaemonWsDeps

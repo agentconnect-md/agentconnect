@@ -74,7 +74,9 @@ describe('SlackBotIdentityReconciler', () => {
     expect(resolve).toHaveBeenCalledWith('xoxb-secret')
     expect(setSlackAppIdIfMissing).toHaveBeenCalledWith(BOT, 'AHTTPBOT')
     expect(setSlackBotUserIdIfMissing).toHaveBeenCalledWith(BOT, 'UHTTPBOT')
-    expect(setWorkspaceMetadata).toHaveBeenCalledWith(BOT, 'TWORKSPACE', 'Acme')
+    // Org-fenced write (org-scoped-data-layer.md §3): the reconciler passes the
+    // org of the row its fleet-wide worklist yielded, ahead of the bot id.
+    expect(setWorkspaceMetadata).toHaveBeenCalledWith(bot().orgId, BOT, 'TWORKSPACE', 'Acme')
     expect(onMentionIdentityChanged).toHaveBeenCalledWith(bot().orgId)
     expect(JSON.stringify(info.mock.calls)).not.toContain('xoxb-secret')
   })

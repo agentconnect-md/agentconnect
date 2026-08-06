@@ -43,7 +43,8 @@ export async function convergeIntegrationGating(
   const syncedBots = new Set<string>()
   for (const i of integrations) {
     try {
-      const bot = await deps.repos.bot.get(i.botId)
+      // Orchestration: the bot behind one of this agent's integration rows.
+      const bot = await deps.repos.bot.getUnscoped(i.botId)
       if (bot?.transport === 'http') {
         if (!syncedBots.has(String(bot.id))) {
           syncedBots.add(String(bot.id))

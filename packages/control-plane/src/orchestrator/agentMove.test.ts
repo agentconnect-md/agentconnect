@@ -246,7 +246,7 @@ function make(
     integrationChannels: { listForIntegration: async () => [] } as unknown as ConstructorParameters<
       typeof AgentMoveService
     >[0]['integrationChannels'],
-    bots: { get: async () => bot } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['bots'],
+    bots: { getUnscoped: async () => bot } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['bots'],
     botSecrets: {
       get: async () => ({ botToken: 'xoxb-test', appToken: 'xapp-test' })
     } as unknown as ConstructorParameters<typeof AgentMoveService>[0]['botSecrets'],

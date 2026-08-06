@@ -220,7 +220,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'slack',
@@ -276,7 +276,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'feishu',
@@ -334,7 +334,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'feishu',
@@ -428,7 +428,7 @@ describe('handleEventSession', () => {
         })
       },
       bot: {
-        get: vi.fn().mockResolvedValue({
+        getUnscoped: vi.fn().mockResolvedValue({
           id: BOT_ID,
           orgId: 'org-1',
           platform: 'slack',

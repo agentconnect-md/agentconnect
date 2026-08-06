@@ -571,7 +571,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
   const relayReg = new RelayRegistry()
   relayReg.add(ch)
   const integration: IntegrationRecord = { ...INTEGRATION, platform: botRow.platform, botId: botRow.id }
-  const bots = { get: async () => botRow, listHttpActive: async () => [botRow] }
+  const bots = { getUnscoped: async () => botRow, listHttpActive: async () => [botRow] }
   const orch = new HttpBotOrchestrator(
     bots as unknown as BotRepo,
     { get: async () => secret } as unknown as BotSecretStore,

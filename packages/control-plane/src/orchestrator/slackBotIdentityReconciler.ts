@@ -102,7 +102,8 @@ export class SlackBotIdentityReconciler {
             }
           }
           if (identity.workspaceId && SLACK_WORKSPACE_ID.test(identity.workspaceId)) {
-            await this.bots.setWorkspaceMetadata(bot.id, identity.workspaceId, identity.workspaceName)
+            // The org comes from the row this fleet-wide worklist already yielded.
+            await this.bots.setWorkspaceMetadata(bot.orgId, bot.id, identity.workspaceId, identity.workspaceName)
             this.log?.info(
               { botId: bot.id, workspaceId: identity.workspaceId },
               'slack-bot-identity: refreshed workspace metadata'

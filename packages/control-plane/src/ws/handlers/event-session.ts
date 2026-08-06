@@ -124,7 +124,9 @@ async function externalCandidate(p: EventSession, agentId: AgentId, deps: Daemon
   ) {
     return { provider: origin.provider, resolution: 'invalid' as const }
   }
-  const bot = await deps.bot?.get(BotId(integration.botId))
+  // Daemon trust domain: the bot behind an integration row this resolver already
+  // matched against the reporting agent (org-scoped-data-layer.md §4).
+  const bot = await deps.bot?.getUnscoped(BotId(integration.botId))
   const feishuRegion = bot?.platform === 'feishu' ? (bot.feishuRegion ?? 'feishu') : undefined
   const feishuAppId = bot?.feishuAppId ?? undefined
   const realmKey =

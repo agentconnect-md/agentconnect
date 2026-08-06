@@ -38,7 +38,7 @@ function json(body: unknown, status = 200): Response {
 
 function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
   return new FeishuSessionAccessService({
-    bots: { get: async () => bot() } as never,
+    bots: { getUnscoped: async () => bot() } as never,
     botSecrets: {
       get: async () => ({
         botToken: 'app-secret',

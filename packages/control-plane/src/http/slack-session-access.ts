@@ -134,7 +134,10 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     ) {
       return 'deny'
     }
-    const bot = await this.deps.bots.get(BotId(scope.credentialId)).catch(() => null)
+    // The credential behind a session's recorded external scope — system state,
+    // resolved without an org (org-scoped-data-layer.md §4). The scope row is
+    // itself reached through the session, which the caller already fenced.
+    const bot = await this.deps.bots.getUnscoped(BotId(scope.credentialId)).catch(() => null)
     const realm = bot?.workspaceId ?? bot?.teamId
     if (
       !bot ||

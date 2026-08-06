@@ -368,7 +368,9 @@ export class Placement implements ReconcileService {
   }
 
   async reconcile(daemonId: DaemonId, req: RegisterReq): Promise<RegisterOk> {
-    const daemon = await this.daemons.get(daemonId)
+    // Daemon trust domain: reconcile runs for the registering connection's own
+    // daemon (org-scoped-data-layer.md §4).
+    const daemon = await this.daemons.getUnscoped(daemonId)
     if (!daemon) {
       // Should not happen — auth created the row — but stay defensive.
       throw new Error(`reconcile: unknown daemon ${daemonId}`)
@@ -397,7 +399,8 @@ export class Placement implements ReconcileService {
           const [secret, channels, bot] = await Promise.all([
             this.botSecrets.get(i.botId),
             this.integrationChannels.listForIntegration(i.id),
-            this.bots.get(i.botId)
+            // The bot behind one of the reconciling daemon's integration rows.
+            this.bots.getUnscoped(i.botId)
           ])
           // A spec needs BOTH halves of its identity: the bot row (the projector's
           // required input — credentials shape, transport, demux identity) and the

@@ -29,7 +29,9 @@ export async function integrationPlatformAvailability(
   deps: HttpDeps,
   input: { daemonId: string; orgId: OrgId; viewer: ViewCtx; platform: string }
 ): Promise<DaemonPlatformAvailability> {
-  const daemon = await deps.registry.get(DaemonId(input.daemonId))
-  if (!daemon || daemon.orgId !== input.orgId || !canView(daemon, input.viewer)) return 'not_found'
+  // Org-fenced read (org-scoped-data-layer.md §3): a cross-org daemon id reads
+  // as absent, so only the visibility policy check remains here.
+  const daemon = await deps.registry.get(input.orgId, DaemonId(input.daemonId))
+  if (!daemon || !canView(daemon, input.viewer)) return 'not_found'
   return daemon.capabilities.platforms.includes(input.platform) ? 'available' : 'unsupported'
 }

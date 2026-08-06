@@ -298,7 +298,8 @@ function toDto(
  * Unplaced or vanished daemons are unavailable. */
 async function sandboxPolicyFor(deps: HttpDeps, a: AgentRecord): Promise<SandboxPolicy> {
   if (!a.daemonId) return UNAVAILABLE_SANDBOX
-  return sandboxPolicyOf(await deps.registry.get(a.daemonId))
+  // `a` came through an org-fenced read, so its own org scopes the daemon read.
+  return sandboxPolicyOf(await deps.registry.get(a.orgId, a.daemonId))
 }
 
 /** The dto's hook-kind marks for ONE agent (single-agent reads/writes). */
@@ -534,11 +535,12 @@ export function agentRoutes(deps: HttpDeps) {
 
     const requireSessionWorkspaceRead = async (
       reply: FastifyReply,
+      orgId: OrgId,
       daemonId: DaemonId,
       sessionId: string | undefined
     ): Promise<boolean> => {
       if (!sessionId) return true
-      const daemon = await deps.registry.get(daemonId)
+      const daemon = await deps.registry.get(orgId, daemonId)
       if (daemon?.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) return true
       reply.code(409).send({
         error: 'Conflict',
@@ -991,9 +993,9 @@ export function agentRoutes(deps: HttpDeps) {
         // restricted daemons). A cross-org id and a restricted-and-invisible one
         // both read as absent (same 404). Mirrors integrations/cron referential writes.
         const placedDaemon =
-          req.body.daemonId !== undefined ? await deps.registry.get(DaemonId(req.body.daemonId)) : null
+          req.body.daemonId !== undefined ? await deps.registry.get(orgOf(req), DaemonId(req.body.daemonId)) : null
         if (req.body.daemonId !== undefined) {
-          if (!placedDaemon || placedDaemon.orgId !== req.orgCtx!.orgId || !canView(placedDaemon, ctxOf(req))) {
+          if (!placedDaemon || !canView(placedDaemon, ctxOf(req))) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
           }
         }
@@ -1306,7 +1308,9 @@ export function agentRoutes(deps: HttpDeps) {
         const daemonIds = [...new Set(rows.flatMap((a) => (a.daemonId ? [a.daemonId] : [])))]
         const policies = new Map(
           await Promise.all(
-            daemonIds.map(async (daemonId) => [daemonId, sandboxPolicyOf(await deps.registry.get(daemonId))] as const)
+            daemonIds.map(
+              async (daemonId) => [daemonId, sandboxPolicyOf(await deps.registry.get(orgOf(req), daemonId))] as const
+            )
           )
         )
         return rows.map((a) =>
@@ -1638,7 +1642,7 @@ export function agentRoutes(deps: HttpDeps) {
             Array.isArray(req.body.managedSkills) &&
             req.body.managedSkills.some((id) => !existing.managedSkills.includes(id))
           if (addsManagedSkill && existing.daemonId) {
-            const daemon = await deps.registry.get(existing.daemonId)
+            const daemon = await deps.registry.get(orgOf(req), existing.daemonId)
             if (!organizationKnowledgeSupportedOn(daemon)) {
               return reply.code(409).send({
                 error: 'Conflict',
@@ -1767,7 +1771,7 @@ export function agentRoutes(deps: HttpDeps) {
         }
         const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
         if (existing.daemonId) {
-          const daemon = await deps.registry.get(existing.daemonId)
+          const daemon = await deps.registry.get(orgOf(req), existing.daemonId)
           const live = deps.liveness.get(existing.daemonId)
           if (!daemon || live?.reachable !== true || live.state !== 'READY') {
             return conflict('the agent must be online and ready to edit its workspace')
@@ -1903,8 +1907,8 @@ export function agentRoutes(deps: HttpDeps) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
         }
 
-        const target = await deps.registry.get(DaemonId(req.body.daemonId))
-        if (!target || target.orgId !== req.orgCtx!.orgId || !canView(target, ctxOf(req))) {
+        const target = await deps.registry.get(orgOf(req), DaemonId(req.body.daemonId))
+        if (!target || !canView(target, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
         }
 
@@ -1984,7 +1988,7 @@ export function agentRoutes(deps: HttpDeps) {
         // but there is no separate source to gate before ensureActive below.
         if (existing.daemonId !== target.daemonId) {
           if (existing.daemonId) {
-            const source = await deps.registry.get(existing.daemonId)
+            const source = await deps.registry.get(orgOf(req), existing.daemonId)
             const sourceLive = source ? deps.liveness.get(source.daemonId) : undefined
             const sourceReady = sourceLive?.reachable === true && sourceLive.state === 'READY'
             if (force) {
@@ -2378,7 +2382,7 @@ export function agentRoutes(deps: HttpDeps) {
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
-        if (!(await requireSessionWorkspaceRead(reply, agent.daemonId, req.query.sessionId))) return
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
 
         try {
           const page = await deps.control.workspaceList(agent.daemonId, {
@@ -2464,7 +2468,7 @@ export function agentRoutes(deps: HttpDeps) {
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
-        if (!(await requireSessionWorkspaceRead(reply, agent.daemonId, req.query.sessionId))) return
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
 
         try {
           const rep = await deps.control.workspaceRead(agent.daemonId, {
@@ -2536,7 +2540,7 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
 
-        const daemon = await deps.registry.get(agent.daemonId)
+        const daemon = await deps.registry.get(orgOf(req), agent.daemonId)
         if (!daemon?.capabilities.features.includes('workspace-file-edit-v1')) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -2613,7 +2617,7 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
 
-        const daemon = await deps.registry.get(agent.daemonId)
+        const daemon = await deps.registry.get(orgOf(req), agent.daemonId)
         if (!daemon?.capabilities.features.includes('workspace-file-delete-v1')) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -3342,7 +3346,7 @@ export function agentRoutes(deps: HttpDeps) {
         return null
       }
       // Version skew: refuse before we send a frame the daemon would drop.
-      if (!dreamingSupportedOn(await deps.registry.get(agent.daemonId))) {
+      if (!dreamingSupportedOn(await deps.registry.get(agent.orgId, agent.daemonId))) {
         await reply.code(409).send({
           error: 'Conflict',
           statusCode: 409,
@@ -3755,7 +3759,7 @@ export function agentRoutes(deps: HttpDeps) {
             .code(503)
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
-        if (!(await requireSessionWorkspaceRead(reply, agent.daemonId, req.query.sessionId))) return
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
 
         try {
           const rep = await deps.control.workspaceGitStatus(agent.daemonId, {
