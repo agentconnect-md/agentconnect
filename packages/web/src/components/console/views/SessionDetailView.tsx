@@ -62,7 +62,8 @@ import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/conso
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
-import { Avatar, Icon } from '@/components/ui'
+import SessionAccessNotice from '@/components/console/SessionAccessNotice'
+import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
@@ -1107,13 +1108,21 @@ export default function SessionDetailView() {
   // fan-out and the participants roster.
   const conversationKey = conversationKeyParam ? decodeURIComponent(conversationKeyParam) : null
   const {
-    data: conversationRoster,
+    data: conversationResolution,
     error: conversationError,
-    isLoading: conversationLoading
+    isLoading: conversationLoading,
+    mutate: retryConversation
   } = useSWR(
     conversationKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, conversationKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId)
   )
+  // Unwrap to the roster the rest of this view reads, keeping the two states it
+  // distinguishes: `undefined` is still "in flight", `null` still "the resolver
+  // answered with nothing". Degradation rides alongside rather than collapsing
+  // into either — an empty answer the CP could not verify is not an absence.
+  const conversationRoster = conversationResolution === undefined ? undefined : conversationResolution.conversation
+  const conversationAccessDegraded = conversationResolution?.accessSyncDegraded === true
+  const conversationAccessIssues = conversationResolution?.accessIssues ?? []
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
   const conversationSourceKey =
@@ -1449,11 +1458,16 @@ export default function SessionDetailView() {
       thread: currentSessionDetail.thread
     })
   }, [conversationKey, currentSessionDetail])
-  const { data: selfConversation, isLoading: selfConversationLoading } = useSWR(
+  const { data: selfConversationResolution, isLoading: selfConversationLoading } = useSWR(
     selfKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, selfKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
     { revalidateOnFocus: false }
   )
+  // Same unwrap as the conversation-mode roster above: `undefined` stays
+  // in-flight, so the §5.3 redirect still waits rather than reading a probe that
+  // has not answered as a single-participant thread.
+  const selfConversation =
+    selfConversationResolution === undefined ? undefined : selfConversationResolution.conversation
   const selfConversationPathname = selfConversationPath({
     flatView,
     conversationKey: selfKey,
@@ -2192,8 +2206,36 @@ export default function SessionDetailView() {
       </SessionDetailFrame>
     )
   }
-  if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
-    // conversationError, a grace-expired null, or a resolved-but-empty roster.
+  // A failed read and an unverifiable one are NOT absence, and saying "not found
+  // — or not visible to you" for either states an authorization verdict the
+  // console never actually got. The request erroring is self-evidently not an
+  // answer; a DEGRADED answer is subtler — the CP fails external access checks
+  // closed, so a Slack API blip omits the very members it could not check and
+  // the roster arrives empty with `accessSyncDegraded` set. Both are transient
+  // and retryable, so say so and offer the retry.
+  if (conversationKey && (conversationError || (conversationAccessDegraded && !conversationRoster))) {
+    return (
+      <SessionDetailFrame withRail={false}>
+        <div className="card p-6">
+          <SessionAccessNotice degraded issues={conversationAccessIssues} impact="sessions" />
+          <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">
+            {conversationError
+              ? 'This conversation could not be loaded. The console could not reach the control plane.'
+              : 'This conversation cannot be shown until its access checks can be verified.'}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button onClick={() => void retryConversation()}>Try again</Button>
+            <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={orgPath('/sessions')}>
+              Back to sessions
+            </Link>
+          </div>
+        </div>
+      </SessionDetailFrame>
+    )
+  }
+  if (conversationKey && (!conversationRoster || conversationRoster.sessions.length === 0)) {
+    // A grace-expired null or a resolved-but-empty roster, with the access
+    // checks themselves healthy — so absence here is a real answer.
     return (
       <SessionDetailFrame withRail={false}>
         <NotFound

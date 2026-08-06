@@ -9,6 +9,7 @@ import {
   deleteOrgIcon,
   fetchAllGithubRepos,
   fetchConversations,
+  fetchConversationByKey,
   fetchSessionFacets,
   fetchGithubRepoRoster,
   fetchMySessionIdentity,
@@ -819,5 +820,48 @@ describe('retention-purge projection (#485)', () => {
 
     const page = await fetchConversations(undefined, 50, 'org-1')
     expect(page.sessions[0]!.contentPurgedAt).toBeUndefined()
+  })
+})
+
+// The resolver's empty answer is the console's "not visible to you" verdict, so
+// the flag that says the CP could not actually CHECK has to survive the call.
+// The CP fails external access checks closed — an unverifiable member is simply
+// omitted — which is what made a Slack blip read as a permanent denial.
+describe('fetchConversationByKey degradation', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const respond = (body: unknown) =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    )
+
+  it('keeps a degraded empty answer distinguishable from a real absence', async () => {
+    respond({ conversations: [], total: 0, nextCursor: null, accessSyncDegraded: true, accessIssues: [] })
+
+    await expect(fetchConversationByKey('k', 'org-1')).resolves.toEqual({
+      conversation: null,
+      accessSyncDegraded: true,
+      accessIssues: []
+    })
+  })
+
+  it('reports a healthy empty answer as a real absence', async () => {
+    respond({ conversations: [], total: 0, nextCursor: null })
+
+    await expect(fetchConversationByKey('k', 'org-1')).resolves.toEqual({
+      conversation: null,
+      accessSyncDegraded: false,
+      accessIssues: []
+    })
+  })
+
+  it('carries the issues through so the notice can name the cause', async () => {
+    const issues = [{ provider: 'feishu', reason: 'quota', region: 'lark' }]
+    respond({ conversations: [], total: 0, nextCursor: null, accessSyncDegraded: true, accessIssues: issues })
+
+    await expect(fetchConversationByKey('k', 'org-1')).resolves.toMatchObject({ accessIssues: issues })
   })
 })

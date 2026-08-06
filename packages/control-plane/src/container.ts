@@ -794,7 +794,9 @@ export function buildContainer(
     botSecrets: repos.botSecret,
     clock,
     ...(logtoIdentity ? { identity: logtoIdentity } : {}),
-    ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {})
+    ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {}),
+    // Lazy over `http.log` (assigned below; only ever called at resolve time).
+    log: { warn: (o, m) => http.log.warn(o, m) }
   })
   const githubSessionAccess = new GithubSessionAccessService({
     installations: repos.githubInstallation,
