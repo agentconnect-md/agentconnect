@@ -76,7 +76,8 @@ const SESSION_ACCESS_COPY: Record<
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
       'Turning this off leaves already-synced sessions following Slack.'
     ].join('\n'),
-    unavailable: 'Needs OIDC sign-in and linked Slack identities before it can follow Slack access.',
+    unavailable:
+      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Slack identity to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted Slack scope.`,
     degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
   },
@@ -89,7 +90,8 @@ const SESSION_ACCESS_COPY: Record<
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
       'Turning this off leaves already-synced sessions following GitHub.'
     ].join('\n'),
-    unavailable: 'Needs OIDC sign-in and GitHub access checks before it can follow repository access.',
+    unavailable:
+      'Unavailable until console sign-in and GitHub access checks are configured for this deployment — without them a viewer has no linked GitHub profile to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   },
@@ -102,7 +104,8 @@ const SESSION_ACCESS_COPY: Record<
       'User-built apps with a different App ID keep the ordinary organization visibility model.',
       'Turning this off leaves already-synced sessions following Feishu / Lark.'
     ].join('\n'),
-    unavailable: 'Needs OIDC sign-in, a linked Feishu / Lark profile, and the matching platform app.',
+    unavailable:
+      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu / Lark profile to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
     degraded: 'Feishu / Lark scopes stopped resolving — new sessions are being hidden.'
   }
@@ -195,9 +198,14 @@ function SessionAccessRow({
           <span className="sr-only">{copy.unresolved(hiddenSessions)}</span>
         </span>
       )}
+      {/* Deployment wiring, not a personal to-do: the provider is unavailable
+          because this deployment has no console sign-in (and, for GitHub, no
+          access checks) behind it — `available` is false for everyone in the
+          org until an administrator configures it, so the chip must not read
+          as "you, go sign in". */}
       {unavailable && (
         <span className="badge flex-none bg-(--surface-sunken) text-(--text-tertiary)" title={copy.unavailable}>
-          <span aria-hidden="true">Needs sign-in</span>
+          <span aria-hidden="true">Not configured</span>
           <span className="sr-only">{copy.unavailable}</span>
         </span>
       )}
