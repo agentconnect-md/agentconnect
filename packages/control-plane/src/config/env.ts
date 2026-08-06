@@ -8,21 +8,28 @@
 import { z } from 'zod'
 import { composeCpPlatformEnv } from '../platforms/env.js'
 
-const SecureOriginSchema = z
+const HttpOriginSchema = z
   .string()
   .url()
   .superRefine((value, ctx) => {
     const url = new URL(value)
-    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-    const loopback =
-      hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
-    if (url.protocol !== 'https:' && !loopback) {
-      ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
     }
     if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
       ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
     }
   })
+
+const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
+  const url = new URL(value)
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const loopback =
+    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
+  if (url.protocol !== 'https:' && !loopback) {
+    ctx.addIssue({ code: 'custom', message: 'must use HTTPS unless it is loopback' })
+  }
+})
 
 /** The env keys CORE owns. Platform keys are folded in below — this object is
  *  never exported: `AppConfigSchema` is the only schema, and it is the two
@@ -76,7 +83,7 @@ const CoreConfigShape = {
   // ONLINE: open() passes existing plaintext rows through unchanged and the
   // next write re-seals them (lazy migration, no backfill required).
   SECRET_CIPHER: z.enum(['none', 'vault-transit']).default('none'),
-  VAULT_ADDR: SecureOriginSchema.optional(), // Vault origin, e.g. https://vault.example.com:8200
+  VAULT_ADDR: HttpOriginSchema.optional(), // Vault origin, e.g. http://vault.vault.svc:8200
   VAULT_TRANSIT_KEY: z.string().default('agentconnect-cp'), // transit key name
   VAULT_TRANSIT_MOUNT: z.string().default('transit'), // transit engine mount path
   VAULT_NAMESPACE: z.string().optional(), // Vault Enterprise namespace (sent as X-Vault-Namespace)

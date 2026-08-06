@@ -27,14 +27,14 @@ describe('tenant-admin process config', () => {
         VAULT_JWT_ROLE: 'role'
       })
     ).toThrow(/exactly one/)
-    expect(() =>
+    expect(
       loadTenantAdminProcessConfig({
         DATABASE_URL,
         SECRET_CIPHER: 'vault-transit',
         VAULT_ADDR: 'http://vault.example.test',
         VAULT_TOKEN: 'token'
       })
-    ).toThrow(/HTTPS/)
+    ).toMatchObject({ VAULT_ADDR: 'http://vault.example.test' })
   })
 
   it('requires HTTPS for a non-loopback Tenant Admin URL', () => {
