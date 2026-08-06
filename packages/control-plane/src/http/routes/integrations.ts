@@ -593,8 +593,8 @@ export function integrationRoutes(deps: HttpDeps) {
       req: { params: { id: string; channelId?: string } },
       reply: FastifyReply
     ): Promise<{ integration: IntegrationRecord; agent: AgentRecord; bot: BotRecord } | null> => {
-      const integration = await deps.repos.integration.get(IntegrationId(req.params.id))
-      if (!integration || integration.orgId !== orgIdOf(req as never)) {
+      const integration = await deps.repos.integration.get(orgIdOf(req as never), IntegrationId(req.params.id))
+      if (!integration) {
         reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         return null
       }
@@ -752,8 +752,8 @@ export function integrationRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const integration = await deps.repos.integration.get(IntegrationId(req.params.id))
-        if (!integration || integration.orgId !== orgIdOf(req)) {
+        const integration = await deps.repos.integration.get(orgIdOf(req), IntegrationId(req.params.id))
+        if (!integration) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         }
         // Derived visibility: gate on the parent agent — a restricted agent the
@@ -1138,8 +1138,8 @@ export function integrationRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const existing = await deps.repos.integration.get(IntegrationId(req.params.id))
-        if (!existing || existing.orgId !== orgIdOf(req)) {
+        const existing = await deps.repos.integration.get(orgIdOf(req), IntegrationId(req.params.id))
+        if (!existing) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'integration not found' })
         }
         // Derived visibility: gate on the parent agent (a restricted agent the caller
@@ -1173,7 +1173,7 @@ export function integrationRoutes(deps: HttpDeps) {
           if (botBefore?.transport === 'http') {
             await deps.httpBot.prepareIntegrationRemoval(existing.botId)
           }
-          await deps.repos.integration.delete(existing.id)
+          await deps.repos.integration.delete(orgIdOf(req), existing.id)
           // "Freed" now means NO active integration remains (a shareable bot may still
           // serve other agents — don't stamp it freed while it does, §6).
           const remaining = await deps.repos.integration.listForBot(existing.botId)

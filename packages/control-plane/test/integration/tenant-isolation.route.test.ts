@@ -18,9 +18,10 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
-import { PgBotRepo } from '../../src/persistence/repositories/integration.repo.js'
-import { AgentMissing, BotMissing } from '../../src/persistence/errors.js'
-import { AgentId, BotId, DaemonId, OrgId } from '../../src/domain/ids.js'
+import { PgBotRepo, PgIntegrationRepo } from '../../src/persistence/repositories/integration.repo.js'
+import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
+import { AgentMissing, BotMissing, CronMissing } from '../../src/persistence/errors.js'
+import { AgentId, BotId, CronId, DaemonId, IntegrationId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -34,6 +35,11 @@ let foreignDaemonId: string
 let ownDaemonId: string
 let foreignBotId: string
 let ownBotId: string
+let foreignIntegrationId: string
+let ownIntegrationId: string
+let foreignChannelId: string
+let foreignCronId: string
+let ownCronId: string
 
 afterEach(async () => {
   await running?.close()
@@ -82,6 +88,64 @@ beforeEach(async () => {
       slackAppId: `A${randomUUID().replace(/-/g, '').slice(0, 9).toUpperCase()}`
     }
   })
+
+  // Installs, one conversation row under the foreign install, and cron definitions.
+  ownIntegrationId = randomUUID()
+  await prisma.integration.create({
+    data: {
+      id: ownIntegrationId,
+      orgId: DEFAULT_ORG_ID,
+      agentId: ownAgentId,
+      botId: ownBotId,
+      platform: 'slack',
+      name: 'own-install'
+    }
+  })
+  foreignIntegrationId = randomUUID()
+  await prisma.integration.create({
+    data: {
+      id: foreignIntegrationId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      botId: foreignBotId,
+      platform: 'slack',
+      name: 'foreign-install'
+    }
+  })
+  foreignChannelId = `C${randomUUID().replace(/-/g, '').slice(0, 9).toUpperCase()}`
+  await prisma.integrationChannel.create({
+    data: {
+      integrationId: foreignIntegrationId,
+      channelId: foreignChannelId,
+      name: 'foreign-channel',
+      kind: 'channel',
+      trigger: 'mention'
+    }
+  })
+  ownCronId = randomUUID()
+  await prisma.cronDef.create({
+    data: {
+      id: ownCronId,
+      orgId: DEFAULT_ORG_ID,
+      agentId: ownAgentId,
+      name: 'own-cron',
+      schedule: '0 9 * * *',
+      timezone: 'UTC',
+      trigger: 'own trigger'
+    }
+  })
+  foreignCronId = randomUUID()
+  await prisma.cronDef.create({
+    data: {
+      id: foreignCronId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      name: 'foreign-cron',
+      schedule: '0 9 * * *',
+      timezone: 'UTC',
+      trigger: 'foreign trigger'
+    }
+  })
 })
 
 function build(): HttpApp {
@@ -104,6 +168,29 @@ async function foreignDaemonUnmodified(): Promise<void> {
   expect(row!.name).toBe('foreign-daemon')
   expect(row!.visibility).toBe('org')
   expect(row!.sessionRetention).toBe('30d')
+}
+
+async function foreignIntegrationUnmodified(): Promise<void> {
+  const row = await prisma.integration.findUnique({ where: { id: foreignIntegrationId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.status).toBe('active')
+  // The conversation row hangs off the integration and carries no org of its own
+  // — its isolation IS the parent's fence (org-scoped-data-layer.md §3.6).
+  const channel = await prisma.integrationChannel.findUnique({
+    where: { integrationId_channelId: { integrationId: foreignIntegrationId, channelId: foreignChannelId } }
+  })
+  expect(channel).not.toBeNull()
+  expect(channel!.trigger).toBe('mention')
+}
+
+async function foreignCronUnmodified(): Promise<void> {
+  const row = await prisma.cronDef.findUnique({ where: { id: foreignCronId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.agentId).toBe(foreignAgentId)
+  expect(row!.name).toBe('foreign-cron')
+  expect(row!.trigger).toBe('foreign trigger')
 }
 
 async function foreignBotUnmodified(): Promise<void> {
@@ -358,5 +445,184 @@ describe('tenant isolation — DaemonRepo and BotRepo fences under the routes', 
     // The unscoped read is the orchestration escape hatch (relay convergence
     // resolves a bot by the id relay ingress reported).
     expect(await repo.getUnscoped(BotId(foreignBotId))).not.toBeNull()
+  })
+})
+
+describe('tenant isolation — Integration and its conversation rows over the REST surface', () => {
+  it('the integrations list never contains a foreign row', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    expect(res.statusCode).toBe(200)
+    const ids = (res.json() as Array<{ id: string }>).map((i) => i.id)
+    expect(ids).toContain(ownIntegrationId)
+    expect(ids).not.toContain(foreignIntegrationId)
+  })
+
+  it('DELETE of a foreign integration id is 404 and the install survives', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${foreignIntegrationId}` })
+    expect(res.statusCode).toBe(404)
+    await foreignIntegrationUnmodified()
+  })
+
+  it('a foreign install’s conversation rows are unreachable — the child fences through its parent', async () => {
+    const app = build()
+    // PATCH the trigger, then DELETE the row, then LEAVE the space: every
+    // per-channel route resolves its integration through the org-fenced read, so
+    // all three read as absent rather than as someone else's conversation.
+    const patch = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${foreignIntegrationId}/channels/${foreignChannelId}`,
+      payload: { trigger: 'any' }
+    })
+    expect(patch.statusCode).toBe(404)
+    const del = await app.app.inject({
+      method: 'DELETE',
+      url: `${ORG}/integrations/${foreignIntegrationId}/channels/${foreignChannelId}`
+    })
+    expect(del.statusCode).toBe(404)
+    const leave = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/${foreignIntegrationId}/leave`,
+      payload: { target: { kind: 'conversation', channel: foreignChannelId } }
+    })
+    expect(leave.statusCode).toBe(404)
+    await foreignIntegrationUnmodified()
+  })
+})
+
+describe('tenant isolation — Cron over the REST surface', () => {
+  it('point-GET of a foreign cron id reads as absent (404)', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/crons/${foreignCronId}` })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('the client-minted PUT never takes over a foreign cron id', async () => {
+    const app = build()
+    // The id is the caller's to choose, so the update branch of the upsert is the
+    // one fence in this batch that would otherwise be a TAKEOVER, not a leak: it
+    // rewrites orgId and agentId along with the definition.
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${foreignCronId}`,
+      payload: {
+        agentId: ownAgentId,
+        schedule: '*/5 * * * *',
+        timezone: 'UTC',
+        trigger: 'hijacked'
+      }
+    })
+    expect(res.statusCode).toBe(404)
+    await foreignCronUnmodified()
+  })
+
+  it('DELETE of a foreign cron id is 404 and the row survives', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'DELETE', url: `${ORG}/crons/${foreignCronId}` })
+    expect(res.statusCode).toBe(404)
+    await foreignCronUnmodified()
+  })
+
+  it('the run history and sharing write of a foreign cron id are 404', async () => {
+    const app = build()
+    const runs = await app.app.inject({ method: 'GET', url: `${ORG}/crons/${foreignCronId}/runs` })
+    expect(runs.statusCode).toBe(404)
+    const sharing = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${foreignCronId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(sharing.statusCode).toBe(404)
+    await foreignCronUnmodified()
+  })
+
+  it('the crons list never contains a foreign row', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/crons` })
+    expect(res.statusCode).toBe(200)
+    const ids = (res.json() as Array<{ id: string }>).map((c) => c.id)
+    expect(ids).toContain(ownCronId)
+    expect(ids).not.toContain(foreignCronId)
+  })
+})
+
+describe('tenant isolation — IntegrationRepo and CronRepo fences under the routes', () => {
+  it('integration reads and the delete treat a cross-org id exactly like a missing row', async () => {
+    const repo = new PgIntegrationRepo(prisma)
+
+    expect(await repo.get(CALLER_ORG, IntegrationId(foreignIntegrationId))).toBeNull()
+    expect(await repo.get(CALLER_ORG, IntegrationId(randomUUID()))).toBeNull()
+    expect(await repo.get(CALLER_ORG, IntegrationId(ownIntegrationId))).not.toBeNull()
+
+    await expect(repo.delete(CALLER_ORG, IntegrationId(foreignIntegrationId))).rejects.toThrow()
+    await foreignIntegrationUnmodified()
+
+    // The unscoped read is the daemon-trust-domain escape hatch: `event/session`
+    // resolves the integration a reporting daemon named as a session's origin.
+    expect(await repo.getUnscoped(IntegrationId(foreignIntegrationId))).not.toBeNull()
+  })
+
+  it('cron reads and mutations treat a cross-org id exactly like a missing row', async () => {
+    const repo = new PgCronRepo(prisma)
+
+    expect(await repo.get(CALLER_ORG, CronId(foreignCronId))).toBeNull()
+    expect(await repo.get(CALLER_ORG, CronId(randomUUID()))).toBeNull()
+    expect(await repo.get(CALLER_ORG, CronId(ownCronId))).not.toBeNull()
+
+    // The create-or-edit upsert refuses a foreign id before the update branch can
+    // rewrite the row (CronMissing), rather than migrating it to the caller's org.
+    await expect(
+      repo.upsert({
+        cronId: CronId(foreignCronId),
+        orgId: CALLER_ORG,
+        agentId: AgentId(ownAgentId),
+        schedule: '*/5 * * * *',
+        timezone: 'UTC',
+        trigger: 'hijacked'
+      })
+    ).rejects.toBeInstanceOf(CronMissing)
+
+    await expect(
+      repo.setSharing(CALLER_ORG, CronId(foreignCronId), { visibility: 'restricted', sharedWith: [] })
+    ).rejects.toThrow()
+    await expect(repo.remove(CALLER_ORG, CronId(foreignCronId))).rejects.toThrow()
+
+    // Run rows carry their own org, so the history reads empty rather than another
+    // organization's schedule.
+    expect(await repo.listRuns(CALLER_ORG, CronId(foreignCronId))).toEqual([])
+
+    await foreignCronUnmodified()
+  })
+
+  it('the upsert fence holds when two organizations race for the same fresh cron id', async () => {
+    const repo = new PgCronRepo(prisma)
+    // The fence's hard case is an id that exists in NEITHER org yet: a plain
+    // read-before-write under READ COMMITTED would let the loser's update branch
+    // adopt the winner's row. The advisory scope keyed on the id makes the two
+    // contend, so exactly one create wins and the other is refused as missing.
+    for (let i = 0; i < 6; i++) {
+      const contestedId = CronId(randomUUID())
+      const input = (orgId: OrgId, agentId: string) => ({
+        cronId: contestedId,
+        orgId,
+        agentId: AgentId(agentId),
+        schedule: '*/5 * * * *',
+        timezone: 'UTC',
+        trigger: `race-${i}`
+      })
+      const settled = await Promise.allSettled([
+        repo.upsert(input(CALLER_ORG, ownAgentId)),
+        repo.upsert(input(OrgId(foreignOrgId), foreignAgentId))
+      ])
+      // Exactly one writer commits. The loser is refused — as CronMissing when it
+      // observed the winner's row, or by the id's unique constraint when both
+      // reached the insert; either way it never adopts the other org's row.
+      expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      const winner = settled.findIndex((r) => r.status === 'fulfilled')
+      const row = await prisma.cronDef.findUnique({ where: { id: contestedId } })
+      expect(row!.orgId).toBe(winner === 0 ? DEFAULT_ORG_ID : foreignOrgId)
+      await prisma.cronDef.delete({ where: { id: contestedId } })
+    }
   })
 })

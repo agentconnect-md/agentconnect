@@ -283,7 +283,7 @@ export function hookRoutes(deps: HttpDeps) {
     // Validate the optional anchoring target against the hook's agent (the
     // anchor posts through one of THAT agent's integrations — cron semantics).
     const resolveTarget = async (
-      orgId: string,
+      orgId: OrgId,
       agentId: string,
       // `DbPlatform` is the served set the anchor may target — the same registry
       // declaration `Platform` (the request body's own enum) and `toDbPlatform`
@@ -295,8 +295,8 @@ export function hookRoutes(deps: HttpDeps) {
       }
     ): Promise<{ ok: true; targetPlatform: DbPlatform; targetIntegrationId?: IntegrationId } | { ok: false }> => {
       if (!(body.targetIntegrationId && body.targetChannel)) return { ok: true, targetPlatform: body.targetPlatform }
-      const integ = await deps.repos.integration.get(IntegrationId(body.targetIntegrationId))
-      if (!integ || integ.orgId !== orgId || integ.agentId !== agentId) return { ok: false }
+      const integ = await deps.repos.integration.get(orgId, IntegrationId(body.targetIntegrationId))
+      if (!integ || integ.agentId !== agentId) return { ok: false }
       return { ok: true, targetPlatform: toDbPlatform(integ.platform), targetIntegrationId: integ.id }
     }
 

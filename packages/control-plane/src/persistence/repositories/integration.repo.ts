@@ -448,7 +448,14 @@ export class PgIntegrationRepo implements IntegrationRepo {
     })
   }
 
-  async get(id: IntegrationId): Promise<IntegrationRecord | null> {
+  async get(orgId: OrgId, id: IntegrationId): Promise<IntegrationRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const i = await this.db.integration.findUnique({ where: { id, orgId } })
+    return i ? toRecord(i) : null
+  }
+
+  async getUnscoped(id: IntegrationId): Promise<IntegrationRecord | null> {
     const i = await this.db.integration.findUnique({ where: { id } })
     return i ? toRecord(i) : null
   }
@@ -618,8 +625,9 @@ export class PgIntegrationRepo implements IntegrationRepo {
     return count
   }
 
-  async delete(id: IntegrationId): Promise<void> {
-    await this.db.integration.delete({ where: { id } })
+  async delete(orgId: OrgId, id: IntegrationId): Promise<void> {
+    // Org-fenced delete: a cross-org id throws the same P2025 as an absent row.
+    await this.db.integration.delete({ where: { id, orgId } })
   }
 }
 

@@ -1824,21 +1824,30 @@ export interface CronReportInput {
 }
 
 export interface CronRepo {
+  /** Create-or-edit by the CLIENT-MINTED `cronId`. Org-fenced inside the
+   *  transaction (docs/designs/org-scoped-data-layer.md §3): an id that already
+   *  exists in ANOTHER organization throws {@link CronMissing} rather than
+   *  letting the update branch rewrite that row (and its `orgId`) — the one
+   *  place in this port where a missing route check was a takeover, not a leak. */
   upsert(input: UpsertCronInput): Promise<CronRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from the content `upsert` which needs the full definition). Stamps
-   *  the last-modified audit; `byUserId` is the editing WebUI principal. */
+   *  the last-modified audit; `byUserId` is the editing WebUI principal.
+   *  Org-fenced: a cross-org id throws the same P2025 as a missing row. */
   setSharing(
+    orgId: OrgId,
     cronId: CronId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<CronRecord>
-  remove(cronId: CronId): Promise<void>
+  /** Org-fenced: a cross-org id throws the same P2025 as a missing row. */
+  remove(orgId: OrgId, cronId: CronId): Promise<void>
   /** Console list (org-wide, orphans included). Every supplied human principal
    *  is resource-filtered; undefined is reserved for unfiltered internal reads
    *  (authorization/policy.ts#visibilityWhere). */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<CronRecord[]>
-  /** Every cron definition owned by one agent (cold placement-move snapshot). */
+  /** Every cron definition owned by one agent (cold placement-move snapshot).
+   *  System-tier (§3.4): agent-fenced, orchestration-only. */
   listForAgent(agentId: AgentId): Promise<CronRecord[]>
   /** Apply a daemon `cron/report`. Scoped: the cron's owning agent must be
    *  placed on the REPORTING daemon (a daemon can never write another daemon's
@@ -1848,19 +1857,26 @@ export interface CronRepo {
    *  completion report closes it. Returns whether the report was accepted
    *  (false ⇒ unknown/foreign cron, dropped). */
   recordReport(cronId: CronId, reportingDaemonId: DaemonId, report: CronReportInput): Promise<boolean>
-  /** Run history for the console detail page, newest first. */
-  listRuns(cronId: CronId, limit?: number): Promise<CronRunRecord[]>
+  /** Run history for the console detail page, newest first. Run rows carry
+   *  their own `orgId`, so the fence rides this query directly rather than only
+   *  through the parent cron (§3.6). */
+  listRuns(orgId: OrgId, cronId: CronId, limit?: number): Promise<CronRunRecord[]>
   /** Reconcile orphaned runs: close every row still `running` whose `startedAt`
    *  is before `staleBefore` to `failed` with a marker reason (its completion
    *  report was lost — daemon offline / drained at turn end). Non-destructive: a
    *  late completion report still overwrites the outcome (the run-row upsert is
    *  last-writer-wins). Returns the number of rows reaped. Org-wide (a global
-   *  maintenance sweep, not scoped to one daemon). */
+   *  maintenance sweep, not scoped to one daemon). System-tier by construction. */
   reapStaleRuns(staleBefore: Date): Promise<number>
   /** The cron set THIS daemon should run — crons of agents placed on it
-   *  (`register/ok.crons[]`, same scope rule as integrations §3.11). */
+   *  (`register/ok.crons[]`, same scope rule as integrations §3.11).
+   *  System-tier: daemon-fenced. */
   listForDaemon(daemonId: DaemonId): Promise<CronRecord[]>
-  get(cronId: CronId): Promise<CronRecord | null>
+  /** Org-fenced point read (§3): a cross-org id reads as absent, exactly like a
+   *  missing row. Crons have no internal-trust-domain reader — the daemon-facing
+   *  paths are `listForDaemon` and `recordReport`, both fenced by the daemon
+   *  axis — so this port deliberately grows no `getUnscoped`. */
+  get(orgId: OrgId, cronId: CronId): Promise<CronRecord | null>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -3202,12 +3218,23 @@ export interface IntegrationRepo {
     | { outcome: 'not_shareable' }
     | { outcome: 'revoked' }
   >
-  get(id: IntegrationId): Promise<IntegrationRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. The only
+   *  integration read the HTTP/MCP surface may use — and, because
+   *  {@link IntegrationChannelRepo}'s rows carry no org of their own, the read
+   *  every route path to a channel row is required to pass through (§3.6). */
+  get(orgId: OrgId, id: IntegrationId): Promise<IntegrationRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — a daemon reporting the
+   *  external origin of a session it already proved it owns. Never call this
+   *  from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(id: IntegrationId): Promise<IntegrationRecord | null>
   /** Every integration in the org. When a human principal is supplied,
    *  integrations whose parent agent is restricted away from them are filtered
    *  out; undefined alone keeps internal reads unfiltered. */
   listForOrg(orgId: OrgId, viewer?: ViewCtx): Promise<IntegrationRecord[]>
-  /** Every active integration owned by one agent (cold placement-move snapshot). */
+  /** Every active integration owned by one agent (cold placement-move snapshot).
+   *  System-tier (§3.4): agent-fenced, and its only callers are orchestration
+   *  (placement move, spec push) and the dedicated-bot icon converger. */
   listForAgent(agentId: AgentId): Promise<IntegrationRecord[]>
   /**
    * Active integrations whose owning agent is placed on `daemonId` — the
@@ -3232,16 +3259,21 @@ export interface IntegrationRepo {
   channelPlacements(orgId: OrgId): Promise<ChannelPlacementRecord[]>
   /** Every ACTIVE integration installed on `botId` (all agents sharing a shared
    *  bot). The shared-bot route compiler's member set. Ordered by createdAt (the
-   *  earliest is the group's default agent). */
+   *  earliest is the group's default agent). System-tier: bot-fenced, and a bot
+   *  belongs to exactly one org — HTTP callers reach it only with a bot id that
+   *  came through the org-fenced {@link BotRepo.get}. */
   listForBot(botId: BotId): Promise<IntegrationRecord[]>
   /** Flip every ACTIVE integration of `botId` to `revoked` (workspace uninstall /
    *  token revocation), recording the credential generation that owned it.
-   *  Returns the affected integration ids. */
+   *  Returns the affected integration ids. System-tier: relay-reported lifecycle,
+   *  fenced by the credential generation. */
   markRevokedForBot(botId: BotId, credentialRevision: number): Promise<IntegrationId[]>
   /** Restore memberships revoked with exactly `credentialRevision`. Historical
-   *  revoked rows and deliberately deleted/free memberships stay untouched. */
+   *  revoked rows and deliberately deleted/free memberships stay untouched.
+   *  System-tier like {@link IntegrationRepo.markRevokedForBot}. */
   restoreRevokedForBot(botId: BotId, credentialRevision: number): Promise<number>
-  delete(id: IntegrationId): Promise<void>
+  /** Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
+  delete(orgId: OrgId, id: IntegrationId): Promise<void>
 }
 
 /** One agent visible in a channel — the collaboration directory entry (metadata only). */
@@ -3336,6 +3368,17 @@ export interface ReportedChannel {
   kind?: ConversationKind
 }
 
+/**
+ * Conversation rows carry NO `orgId` of their own: every method here is
+ * addressed by the owning `integrationId` (or `botId`), and fences through that
+ * parent (docs/designs/org-scoped-data-layer.md §3.6). The structural
+ * requirement this places on callers: an integration id that came from the HTTP
+ * surface must have been resolved through the org-fenced
+ * {@link IntegrationRepo.get} — the tenant-isolation contract suite asserts a
+ * foreign integration's conversations stay unreachable that way. Everything
+ * else here is the daemon/relay report path and the shared-bot route compiler,
+ * both internal trust domains (§4).
+ */
 export interface IntegrationChannelRepo {
   /**
    * Converge to the daemon's channel report (latest-wins): upsert every reported
