@@ -224,12 +224,14 @@ export function daemonRoutes(deps: HttpDeps) {
       }
     )
 
-    // Fetch + org-check + visibility: a cross-org id OR a restricted daemon the
-    // caller can't see both read as absent (404). The console reaches daemons only
-    // through the registry service, so the canView gate lives here (and in list).
+    // Tenancy is the repository's job now (org-scoped-data-layer.md §3): the read
+    // is org-fenced, so a cross-org id reads as absent. What stays here is the
+    // POLICY half — a restricted daemon the caller can't see is 404 too. The
+    // console reaches daemons only through the registry service, so the canView
+    // gate lives here (and in list).
     const getOrgDaemon = async (req: FastifyRequest, id: string) => {
-      const view = await deps.registry.get(DaemonId(id))
-      if (!view || view.orgId !== req.orgCtx!.orgId) return null
+      const view = await deps.registry.get(orgOf(req), DaemonId(id))
+      if (!view) return null
       return canView(view, ctxOf(req)) ? view : null
     }
 
@@ -262,9 +264,9 @@ export function daemonRoutes(deps: HttpDeps) {
         const { name, sessionRetention } = req.body
         const did = DaemonId(req.params.id)
         let view = existing
-        if (name !== undefined) view = await deps.registry.rename(did, name, req.principal?.userId)
+        if (name !== undefined) view = await deps.registry.rename(orgOf(req), did, name, req.principal?.userId)
         if (sessionRetention !== undefined) {
-          view = await deps.registry.setSessionRetention(did, sessionRetention, req.principal?.userId)
+          view = await deps.registry.setSessionRetention(orgOf(req), did, sessionRetention, req.principal?.userId)
           // Hot-push the new window to the connected daemon (config/push EVT).
           // Best-effort: an offline daemon converges from the register/ok
           // snapshot on its next connect.
@@ -345,7 +347,7 @@ export function daemonRoutes(deps: HttpDeps) {
         // webchat MCP delegations and bumps their hook dispatchRevision, exactly as an
         // operator-initiated unplacement would.
         for (const a of placedAgents) await deps.repos.agent.setPlacement(a.id, null)
-        await deps.registry.remove(DaemonId(req.params.id))
+        await deps.registry.remove(orgOf(req), DaemonId(req.params.id))
         // The daemon (and its FK-cascaded keys) is gone — tell relays to drop it (§9).
         deps.relayControl.daemonRevoke(req.params.id)
         // Its agents just became UNPLACED (Agent.daemonId is SetNull), so they leave the
@@ -406,6 +408,7 @@ export function daemonRoutes(deps: HttpDeps) {
         }
         const sharedWith = await resolveShareSet(deps.repos.user, orgOf(req), req.body.sharedWith)
         const view = await deps.registry.setSharing(
+          orgOf(req),
           DaemonId(req.params.id),
           { visibility: req.body.visibility, sharedWith },
           req.principal?.userId

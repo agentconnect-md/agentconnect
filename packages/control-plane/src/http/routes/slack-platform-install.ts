@@ -90,8 +90,8 @@ export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeam
           // Settings reauthorization: fence the callback to this exact
           // platform-app workspace. No target agent is stored, so a freed bot
           // remains free and an active bot keeps its existing memberships.
-          const bot = await deps.repos.bot.get(BotId(req.body.botId))
-          if (!bot || bot.orgId !== orgId) {
+          const bot = await deps.repos.bot.get(orgId, BotId(req.body.botId))
+          if (!bot) {
             return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
           }
           if (bot.platform !== 'slack' || !bot.prebuilt || bot.slackAppId !== platform.appId || !bot.teamId) {
@@ -254,11 +254,12 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
         // A Settings refresh puts its expected Bot id in the pending state. Its
         // durable platform-app teamId is the workspace fence: authorizing any
         // other workspace must fail before credentials or memberships change.
-        const expectedBot = row.botId ? await deps.repos.bot.get(BotId(row.botId)) : null
+        // Unauthenticated callback: no request org context — the pending-install
+        // row (minted org-scoped; its id is the OAuth state) carries the tenancy.
+        const expectedBot = row.botId ? await deps.repos.bot.get(row.orgId, BotId(row.botId)) : null
         if (
           row.botId &&
           (!expectedBot ||
-            expectedBot.orgId !== row.orgId ||
             expectedBot.platform !== 'slack' ||
             !expectedBot.prebuilt ||
             expectedBot.slackAppId !== platform.appId ||
@@ -305,7 +306,9 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           // rotate to the fresh token, clear any uninstall marker, and make sure
           // the target agent has an active install; then reconverge the pool.
           botId = existing.id
-          await deps.repos.bot.setWorkspaceMetadata(existing.id, result.teamId, result.teamName)
+          // Same-org re-install (the cross-org claim was refused above), so the
+          // pending row's org is this bot's org.
+          await deps.repos.bot.setWorkspaceMetadata(row.orgId, existing.id, result.teamId, result.teamName)
           // ONE transition: the fresh token and the generation it belongs to
           // commit together, so no reader (notably restart reconciliation, which
           // does not filter on `revokedAt`) can broadcast the new credential

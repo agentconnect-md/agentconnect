@@ -42,11 +42,11 @@ describe('DaemonRepo.upsertOnAuth — monotonic sessionEpoch (real Postgres)', (
   it('first auth creates the row; the row persists with the latest epoch', async () => {
     const repo = new PgDaemonRepo(prisma)
 
-    expect(await repo.get(DaemonId(DAEMON_A))).toBeNull()
+    expect(await repo.getUnscoped(DaemonId(DAEMON_A))).toBeNull()
     await repo.upsertOnAuth(authInput(DAEMON_A))
     await repo.upsertOnAuth(authInput(DAEMON_A))
 
-    const got = await repo.get(DaemonId(DAEMON_A))
+    const got = await repo.getUnscoped(DaemonId(DAEMON_A))
     expect(got).not.toBeNull()
     expect(got?.sessionEpoch).toBe(2n)
   })

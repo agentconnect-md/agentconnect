@@ -173,7 +173,7 @@ async function suggestionReviewAvailable(
   const live = deps.liveness.get(sourceDaemonId)
   if (live?.reachable !== true || live.state !== 'READY') return false
   const [daemon, agent] = await Promise.all([
-    deps.registry.get(DaemonId(sourceDaemonId)),
+    deps.registry.get(orgId, DaemonId(sourceDaemonId)),
     deps.repos.agent.get(orgId, AgentId(sourceAgentId))
   ])
   return (

@@ -91,8 +91,12 @@ export interface UserKeyPrincipal {
 export interface ApiKeyAdmin {
   /** Provision a new daemon (provisioned row + first key) in `orgId` — the onboarding flow. */
   provisionDaemon(opts: { orgId: string; createdByUserId?: string }): Promise<ProvisionedDaemon>
-  /** Mint an additional key for an existing daemon (rotate / regenerate). */
-  mintForDaemon(daemonId: DaemonId, opts?: { createdByUserId?: string }): Promise<MintedKeyView>
+  /** Mint an additional key for an existing daemon (rotate / regenerate).
+   *  Org-fenced (docs/designs/org-scoped-data-layer.md §3): the daemon is
+   *  resolved inside `orgId`, so minting an enrolment credential for another
+   *  organization's daemon fails as a missing row rather than relying on the
+   *  route's pre-check. */
+  mintForDaemon(orgId: OrgId, daemonId: DaemonId, opts?: { createdByUserId?: string }): Promise<MintedKeyView>
   /** Mint a relay key (`principalType='relay'`, org-less deployment infra, non-expiring)
    *  — the per-relay `rc/auth` `method:'apikey'` credential (shared-bot-relay.md §8).
    *  Plaintext is returned exactly once; minting a relay key is granting relay trust. */
@@ -258,25 +262,41 @@ export interface DaemonRegistry {
   ): Promise<void>
   markUnreachable(daemonId: DaemonId): Promise<void>
   /** Set the console-assigned display name; returns the updated read-model row.
-   *  `byUserId` is the editing WebUI principal → stamps last-modified audit. */
-  rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonView>
+   *  `byUserId` is the editing WebUI principal → stamps last-modified audit.
+   *  Org-fenced in the repository (docs/designs/org-scoped-data-layer.md §3). */
+  rename(orgId: OrgId, daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonView>
   /** Set the console's finished-session retention window ("Expire sessions");
-   *  returns the updated read-model row. `byUserId` stamps the last-modified audit. */
-  setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonView>
+   *  returns the updated read-model row. `byUserId` stamps the last-modified audit.
+   *  Org-fenced like {@link DaemonRegistry.rename}. */
+  setSessionRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonView>
   /** Set the daemon's visibility + share set (the dedicated `/sharing` write path);
-   *  returns the updated read-model row. `byUserId` stamps the last-modified audit. */
+   *  returns the updated read-model row. `byUserId` stamps the last-modified audit.
+   *  Org-fenced like {@link DaemonRegistry.rename}. */
   setSharing(
+    orgId: OrgId,
     daemonId: DaemonId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
   ): Promise<DaemonView>
-  /** Hard-delete a daemon from the fleet (DELETE /daemons/:id). Throws if absent. */
-  remove(daemonId: DaemonId): Promise<void>
+  /** Hard-delete a daemon from the fleet (DELETE /daemons/:id). Org-fenced:
+   *  throws for an absent row and for a cross-org id alike. */
+  remove(orgId: OrgId, daemonId: DaemonId): Promise<void>
   /** The org's fleet (console read model). Every supplied human principal filters
    *  out restricted daemons they cannot see; undefined keeps internal reads unfiltered. */
   list(orgId: OrgId, viewer?: ViewCtx): Promise<DaemonView[]>
-  /** One daemon (org checks on rename/delete/keys); null when absent. */
-  get(daemonId: DaemonId): Promise<DaemonView | null>
+  /** One daemon of `orgId` (the read behind rename/delete/keys); null when absent
+   *  OR when the id belongs to another organization — the two are deliberately
+   *  indistinguishable (org-scoped-data-layer.md §3). */
+  get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonView | null>
+  /** Tenancy-UNSCOPED read model for internal trust domains: WS handlers reading
+   *  their own connection's daemon, and daemon-derived platform capability
+   *  checks. Never call this from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(daemonId: DaemonId): Promise<DaemonView | null>
 }
 
 /**

@@ -14,11 +14,13 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedAgent } from '../fixtures/seed.js'
+import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
-import { AgentMissing } from '../../src/persistence/errors.js'
-import { AgentId, OrgId } from '../../src/domain/ids.js'
+import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
+import { PgBotRepo } from '../../src/persistence/repositories/integration.repo.js'
+import { AgentMissing, BotMissing } from '../../src/persistence/errors.js'
+import { AgentId, BotId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -28,6 +30,10 @@ let running: HttpApp | undefined
 let foreignOrgId: string
 let foreignAgentId: string
 let ownAgentId: string
+let foreignDaemonId: string
+let ownDaemonId: string
+let foreignBotId: string
+let ownBotId: string
 
 afterEach(async () => {
   await running?.close()
@@ -44,6 +50,38 @@ beforeEach(async () => {
   await prisma.agent.create({
     data: { id: foreignAgentId, orgId: foreignOrgId, name: 'foreign-bot', runtime: 'claude' }
   })
+
+  // The same two-org shape for the daemon fleet and the bot directory.
+  ownDaemonId = randomUUID()
+  await seedDaemon(prisma, ownDaemonId)
+  foreignDaemonId = randomUUID()
+  await prisma.daemon.create({
+    data: {
+      id: foreignDaemonId,
+      orgId: foreignOrgId,
+      name: 'foreign-daemon',
+      sessionEpoch: 1n,
+      status: 'ready',
+      // Deliberately off the column default, so the PATCH below (which sends the
+      // default) would be observable if the fence ever let it through.
+      sessionRetention: '30d'
+    }
+  })
+  ownBotId = randomUUID()
+  await prisma.bot.create({
+    data: { id: ownBotId, orgId: DEFAULT_ORG_ID, platform: 'slack', name: 'own-slack-bot' }
+  })
+  foreignBotId = randomUUID()
+  await prisma.bot.create({
+    data: {
+      id: foreignBotId,
+      orgId: foreignOrgId,
+      platform: 'slack',
+      name: 'foreign-slack-bot',
+      transport: 'http',
+      slackAppId: `A${randomUUID().replace(/-/g, '').slice(0, 9).toUpperCase()}`
+    }
+  })
 })
 
 function build(): HttpApp {
@@ -57,6 +95,23 @@ async function foreignRowUnmodified(): Promise<void> {
   expect(row).not.toBeNull()
   expect(row!.orgId).toBe(foreignOrgId)
   expect(row!.name).toBe('foreign-bot')
+}
+
+async function foreignDaemonUnmodified(): Promise<void> {
+  const row = await prisma.daemon.findUnique({ where: { id: foreignDaemonId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.name).toBe('foreign-daemon')
+  expect(row!.visibility).toBe('org')
+  expect(row!.sessionRetention).toBe('30d')
+}
+
+async function foreignBotUnmodified(): Promise<void> {
+  const row = await prisma.bot.findUnique({ where: { id: foreignBotId } })
+  expect(row).not.toBeNull()
+  expect(row!.orgId).toBe(foreignOrgId)
+  expect(row!.name).toBe('foreign-slack-bot')
+  expect(row!.shareable).toBe(false)
 }
 
 describe('tenant isolation — Agent over the REST surface', () => {
@@ -160,5 +215,148 @@ describe('tenant isolation — AgentRepo fences under the routes', () => {
     // The unscoped read is the internal-trust-domain escape hatch — it does
     // resolve the row, which is exactly why lint keeps it off the HTTP surface.
     expect(await repo.getUnscoped(AgentId(foreignAgentId))).not.toBeNull()
+  })
+})
+
+describe('tenant isolation — Daemon over the REST surface', () => {
+  it('point-GET of a foreign daemon id reads as absent (404)', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/daemons/${foreignDaemonId}` })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('PATCH of a foreign daemon id is 404 and provably writes nothing', async () => {
+    const app = build()
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/daemons/${foreignDaemonId}`,
+      payload: { name: 'hijacked', sessionRetention: '7d' }
+    })
+    expect(res.statusCode).toBe(404)
+    await foreignDaemonUnmodified()
+  })
+
+  it('DELETE of a foreign daemon id is 404 and the row survives', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'DELETE', url: `${ORG}/daemons/${foreignDaemonId}` })
+    expect(res.statusCode).toBe(404)
+    await foreignDaemonUnmodified()
+  })
+
+  it('a sharing write on a foreign daemon id is 404 and writes nothing', async () => {
+    const app = build()
+    const res = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/daemons/${foreignDaemonId}/sharing`,
+      payload: { visibility: 'restricted', sharedWith: [] }
+    })
+    expect(res.statusCode).toBe(404)
+    await foreignDaemonUnmodified()
+  })
+
+  it('a foreign daemon mints no enrolment credential — its key surface reads as absent', async () => {
+    const app = build()
+    const list = await app.app.inject({ method: 'GET', url: `${ORG}/daemons/${foreignDaemonId}/keys` })
+    expect(list.statusCode).toBe(404)
+    const mint = await app.app.inject({ method: 'POST', url: `${ORG}/daemons/${foreignDaemonId}/keys` })
+    expect(mint.statusCode).toBe(404)
+    expect(await prisma.apiKey.count({ where: { daemonId: foreignDaemonId } })).toBe(0)
+  })
+
+  it('the daemons list never contains a foreign row', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/daemons` })
+    expect(res.statusCode).toBe(200)
+    const ids = (res.json() as Array<{ daemonId: string }>).map((d) => d.daemonId)
+    expect(ids).toContain(ownDaemonId)
+    expect(ids).not.toContain(foreignDaemonId)
+  })
+})
+
+describe('tenant isolation — Bot over the REST surface', () => {
+  it('point-GET of a foreign bot id reads as absent (404)', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/bots/${foreignBotId}` })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('PATCH of a foreign bot id is 404 and the shareable flag is untouched', async () => {
+    const app = build()
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${foreignBotId}`,
+      payload: { shareable: true }
+    })
+    expect(res.statusCode).toBe(404)
+    await foreignBotUnmodified()
+  })
+
+  it('DELETE of a foreign bot id is 404 and the row survives', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'DELETE', url: `${ORG}/bots/${foreignBotId}` })
+    expect(res.statusCode).toBe(404)
+    await foreignBotUnmodified()
+  })
+
+  it('the Slack refresh action on a foreign bot id is 404', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${foreignBotId}/slack/refresh` })
+    expect(res.statusCode).toBe(404)
+    await foreignBotUnmodified()
+  })
+
+  it('the bots list never contains a foreign row', async () => {
+    const app = build()
+    const res = await app.app.inject({ method: 'GET', url: `${ORG}/bots` })
+    expect(res.statusCode).toBe(200)
+    const ids = (res.json() as Array<{ id: string }>).map((b) => b.id)
+    expect(ids).toContain(ownBotId)
+    expect(ids).not.toContain(foreignBotId)
+  })
+})
+
+describe('tenant isolation — DaemonRepo and BotRepo fences under the routes', () => {
+  it('daemon reads and mutations treat a cross-org id exactly like a missing row', async () => {
+    const repo = new PgDaemonRepo(prisma)
+
+    expect(await repo.get(CALLER_ORG, DaemonId(foreignDaemonId))).toBeNull()
+    expect(await repo.get(CALLER_ORG, DaemonId(randomUUID()))).toBeNull()
+    expect(await repo.get(CALLER_ORG, DaemonId(ownDaemonId))).not.toBeNull()
+
+    // Every throw-shaped mutation keeps its missing-row error for a foreign id.
+    await expect(repo.rename(CALLER_ORG, DaemonId(foreignDaemonId), 'hijacked')).rejects.toThrow()
+    await expect(repo.setSessionRetention(CALLER_ORG, DaemonId(foreignDaemonId), '7d')).rejects.toThrow()
+    await expect(
+      repo.setSharing(CALLER_ORG, DaemonId(foreignDaemonId), { visibility: 'restricted', sharedWith: [] })
+    ).rejects.toThrow()
+    await expect(repo.delete(CALLER_ORG, DaemonId(foreignDaemonId))).rejects.toThrow()
+
+    await foreignDaemonUnmodified()
+
+    // The unscoped read is the internal-trust-domain escape hatch (WS handlers
+    // resolve their own connection's daemon) — lint keeps it off the HTTP surface.
+    expect(await repo.getUnscoped(DaemonId(foreignDaemonId))).not.toBeNull()
+  })
+
+  it('bot reads and mutations treat a cross-org id exactly like a missing row', async () => {
+    const repo = new PgBotRepo(prisma)
+
+    expect(await repo.get(CALLER_ORG, BotId(foreignBotId))).toBeNull()
+    expect(await repo.get(CALLER_ORG, BotId(randomUUID()))).toBeNull()
+    expect(await repo.get(CALLER_ORG, BotId(ownBotId))).not.toBeNull()
+
+    // setShareable refuses at the row-lock read, BEFORE the install recount that
+    // would otherwise answer BotStillShared and disclose a foreign bot's occupancy.
+    await expect(repo.setShareable(CALLER_ORG, BotId(foreignBotId), true)).rejects.toBeInstanceOf(BotMissing)
+    await expect(repo.markFreed(CALLER_ORG, BotId(foreignBotId), new Date(), 'hijacked')).rejects.toThrow()
+    await expect(repo.setWorkspaceMetadata(CALLER_ORG, BotId(foreignBotId), 'THIJACK', 'Hijacked')).rejects.toThrow()
+    await expect(repo.delete(CALLER_ORG, BotId(foreignBotId))).rejects.toThrow()
+
+    await foreignBotUnmodified()
+    expect((await prisma.bot.findUnique({ where: { id: foreignBotId } }))!.workspaceId).toBeNull()
+
+    // The unscoped read is the orchestration escape hatch (relay convergence
+    // resolves a bot by the id relay ingress reported).
+    expect(await repo.getUnscoped(BotId(foreignBotId))).not.toBeNull()
   })
 })

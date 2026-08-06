@@ -59,7 +59,7 @@ function fakeDeps(
       : { daemonId: OWNING_DAEMON, reachable: true, sessionEpoch: 7, conn: { request } }
   return {
     deps: {
-      registry: { get: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
+      registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
       session: {
         get: async () =>
           'parent' in over ? over.parent : { id: PARENT_SESSION, daemonId: ASKING_DAEMON, agentId: CHILD_AGENT }

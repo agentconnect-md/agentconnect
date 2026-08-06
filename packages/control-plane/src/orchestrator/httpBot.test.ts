@@ -156,8 +156,8 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       [BOB]: agent(BOB, 'bob', unplacedAgents.has(BOB) ? null : D2)
     }
     let getCalls = 0
-    const bots: Pick<BotRepo, 'get' | 'listHttpActive' | 'revokeIfCurrent'> = {
-      get: async () => {
+    const bots: Pick<BotRepo, 'getUnscoped' | 'listHttpActive' | 'revokeIfCurrent'> = {
+      getUnscoped: async () => {
         getCalls += 1
         if (bumpRevisionAfterFirstGet && getCalls > 1) {
           return { ...botRow, credentialRevision: botRow.credentialRevision + 1 }

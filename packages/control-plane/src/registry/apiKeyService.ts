@@ -57,15 +57,20 @@ export class ApiKeyService implements ApiKeyAdmin {
     const daemonId = DaemonId(randomUUID())
     // Insert the provisioned row FIRST so the ApiKey FK has a parent (§4.1).
     await this.daemons.provision(daemonId, orgId, opts.createdByUserId)
-    const minted = await this.mintForDaemon(daemonId, opts)
+    const minted = await this.mintForDaemon(orgId, daemonId, opts)
     return { daemonId, ...minted }
   }
 
-  async mintForDaemon(daemonId: DaemonId, opts: { createdByUserId?: string } = {}): Promise<MintedKeyView> {
+  async mintForDaemon(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    opts: { createdByUserId?: string } = {}
+  ): Promise<MintedKeyView> {
     // Keys inherit the daemon's org — rotation can't move a daemon across tenants.
-    const daemon = await this.daemons.get(daemonId)
+    // The read is org-fenced (org-scoped-data-layer.md §3), so a daemon outside
+    // the caller's organization is refused here and not only at the route.
+    const daemon = await this.daemons.get(orgId, daemonId)
     if (!daemon) throw Object.assign(new Error('daemon not found'), { code: 'P2025' })
-    const orgId = daemon.orgId
     const minted = this.codec.mint()
     const rec = await this.apiKeys.create({
       principalType: 'daemon',

@@ -55,7 +55,7 @@ export async function installNewFeishuBot(
     throw new Error('reserved Feishu integration id is already in use')
   }
   if (!integration) {
-    const bot = await deps.repos.bot.get(botId)
+    const bot = await deps.repos.bot.get(orgId, botId)
     if (!bot) {
       await deps.repos.bot.create({
         id: botId,
@@ -111,7 +111,7 @@ export async function installNewFeishuBot(
   const [secret, channels, botRow] = await Promise.all([
     deps.repos.botSecret.get(botId),
     deps.repos.integrationChannel.listForIntegration(id),
-    deps.repos.bot.get(botId)
+    deps.repos.bot.get(orgId, botId)
   ])
   if (secret && botRow) {
     try {

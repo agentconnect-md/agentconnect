@@ -158,13 +158,15 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     }
     // Prisma "record to delete/update does not exist", a membership-dependent
     // mutation whose required membership disappeared while it was queued, or an
-    // org-fenced agent mutation whose row vanished (or never belonged to the
-    // caller's org) between the route's pre-read and the write — the fence
-    // deliberately makes those indistinguishable (org-scoped-data-layer.md §3).
+    // org-fenced mutation whose row vanished (or never belonged to the caller's
+    // org) between the route's pre-read and the write — the fence deliberately
+    // makes those indistinguishable (org-scoped-data-layer.md §3). Every
+    // `<Resource>Missing` code the data layer can raise belongs in this list.
     if (
       (err as { code?: string }).code === 'P2025' ||
       (err as { code?: string }).code === 'ORG_MEMBERSHIP_MISSING' ||
-      (err as { code?: string }).code === 'AGENT_MISSING'
+      (err as { code?: string }).code === 'AGENT_MISSING' ||
+      (err as { code?: string }).code === 'BOT_MISSING'
     ) {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'resource not found' })
     }

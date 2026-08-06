@@ -82,8 +82,10 @@ export function botRoutes(deps: HttpDeps) {
         }
       },
       async (req, reply) => {
-        const bot = await deps.repos.bot.get(BotId(req.params.id))
-        if (!bot || bot.orgId !== req.orgCtx!.orgId) {
+        // The read is org-fenced (org-scoped-data-layer.md §3): a cross-org id
+        // reads as absent, so no route-level org comparison is needed.
+        const bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
+        if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         return toDto(bot)
@@ -107,8 +109,8 @@ export function botRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        const bot = await deps.repos.bot.get(BotId(req.params.id))
-        if (!bot || bot.orgId !== req.orgCtx!.orgId) {
+        const bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
+        if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         // Any active install blocks deletion (a shareable bot may have many; the FK
@@ -118,7 +120,7 @@ export function botRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'bot is installed on an agent — uninstall first' })
         }
-        await deps.repos.bot.delete(bot.id)
+        await deps.repos.bot.delete(orgOf(req), bot.id)
         return reply.code(204).send(null)
       }
     )
@@ -145,8 +147,8 @@ export function botRoutes(deps: HttpDeps) {
       },
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
-        let bot = await deps.repos.bot.get(BotId(req.params.id))
-        if (!bot || bot.orgId !== req.orgCtx!.orgId) {
+        let bot = await deps.repos.bot.get(orgOf(req), BotId(req.params.id))
+        if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
         if (req.body.shareable === bot.shareable) return toDto(bot) // no-op
@@ -176,7 +178,7 @@ export function botRoutes(deps: HttpDeps) {
           })
         }
         try {
-          const current = await deps.repos.bot.get(bot.id)
+          const current = await deps.repos.bot.get(bot.orgId, bot.id)
           if (
             !current ||
             current.shareable !== bot.shareable ||
@@ -213,7 +215,7 @@ export function botRoutes(deps: HttpDeps) {
             })
           }
           try {
-            await deps.repos.bot.setShareable(bot.id, req.body.shareable)
+            await deps.repos.bot.setShareable(bot.orgId, bot.id, req.body.shareable)
           } catch (err) {
             if (err instanceof BotStillShared) {
               return reply.code(409).send({
@@ -227,7 +229,7 @@ export function botRoutes(deps: HttpDeps) {
           // Multi-agent capacity change only — recompile the relay pool's routes (no
           // ingest re-open; the transport, hence the ingest, is unchanged).
           await deps.httpBot.syncRoutes(bot.id)
-          const updated = await deps.repos.bot.get(bot.id)
+          const updated = await deps.repos.bot.get(bot.orgId, bot.id)
           return toDto(updated!)
         } finally {
           release()

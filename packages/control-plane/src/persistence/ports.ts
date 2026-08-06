@@ -199,15 +199,22 @@ export interface DaemonRepo {
   markUnreachable(daemonId: DaemonId, at: Date): Promise<void>
   /** Set the console-assigned display name (a human edit — stamps last-modified
    *  audit). `byUserId` is the editing WebUI principal (absent under devAuth).
-   *  Throws if the daemon row is absent. */
-  rename(daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord>
+   *  Org-fenced (docs/designs/org-scoped-data-layer.md §3): a cross-org id
+   *  throws the same missing-row error as an absent row. */
+  rename(orgId: OrgId, daemonId: DaemonId, name: string, byUserId?: string): Promise<DaemonRecord>
   /** Set the console's finished-session retention window (a human edit — stamps
-   *  last-modified audit). Throws if the daemon row is absent. */
-  setSessionRetention(daemonId: DaemonId, sessionRetention: string, byUserId?: string): Promise<DaemonRecord>
+   *  last-modified audit). Org-fenced like {@link DaemonRepo.rename}. */
+  setSessionRetention(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    sessionRetention: string,
+    byUserId?: string
+  ): Promise<DaemonRecord>
   /** Set the visibility + share set (the dedicated `/sharing` write path). Stamps
    *  the last-modified audit; `byUserId` is the editing WebUI principal (absent
-   *  under devAuth). Throws if the daemon row is absent. */
+   *  under devAuth). Org-fenced like {@link DaemonRepo.rename}. */
   setSharing(
+    orgId: OrgId,
     daemonId: DaemonId,
     sharing: { visibility: ResourceVisibility; sharedWith: string[] },
     byUserId?: string
@@ -215,14 +222,26 @@ export interface DaemonRepo {
   /**
    * Hard-delete a daemon (DELETE /daemons/:id). FK referential actions cascade its
    * api-keys / leases / launches / runtime-profiles and null out agents/assignments
-   * (those become unplaced). Throws Prisma P2025 if the row is absent (→ 404).
+   * (those become unplaced). Org-fenced: a cross-org id throws Prisma P2025
+   * exactly like an absent row (→ 404).
    */
-  delete(daemonId: DaemonId): Promise<void>
-  /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11). */
+  delete(orgId: OrgId, daemonId: DaemonId): Promise<void>
+  /** Bump THIS daemon's `routingEpoch` atomically; returns the new value (§4.11).
+   *  System-tier: the orchestrator drives it from a routing decision it already
+   *  resolved, so an org parameter would be tautological (§3.4). */
   bumpRoutingEpoch(daemonId: DaemonId): Promise<bigint>
-  /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9). */
+  /** Daemons unreachable for longer than `graceSec` — reassignment candidates (§4.9).
+   *  System-tier: the watchdog's worklist is deliberately fleet-wide. */
   findReassignable(graceSec: number, now: Date): Promise<DaemonRecord[]>
-  get(daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Org-fenced point read (org-scoped-data-layer.md §3): a cross-org id reads
+   *  as absent, exactly like a missing row. The only daemon read the HTTP/MCP
+   *  surface may use. */
+  get(orgId: OrgId, daemonId: DaemonId): Promise<DaemonRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — WS handlers resolving
+   *  their own connection's daemon, orchestration/placement resolving a daemon
+   *  from a routing row, the watchdog. Never call this from the HTTP surface;
+   *  lint enforces it (org-scoped-data-layer.md §6). */
+  getUnscoped(daemonId: DaemonId): Promise<DaemonRecord | null>
   /** The fleet, optionally filtered to one org (console reads pass the org). Every
    *  supplied human principal is resource-filtered; undefined is reserved for
    *  unfiltered internal reads (authorization/policy.ts#visibilityWhere). */
@@ -2560,26 +2579,44 @@ export interface BotRecord {
 
 export interface BotRepo {
   create(input: CreateBotInput): Promise<BotRecord>
-  get(id: BotId): Promise<BotRecord | null>
+  /** Org-fenced point read (docs/designs/org-scoped-data-layer.md §3): a
+   *  cross-org id reads as absent, exactly like a missing row. The only bot read
+   *  the HTTP/MCP surface may use. */
+  get(orgId: OrgId, id: BotId): Promise<BotRecord | null>
+  /** Tenancy-UNSCOPED read for internal trust domains — the shared-bot
+   *  orchestrator converging a relay assignment, integration/placement push
+   *  resolving the bot behind an integration row, WS-reported credential
+   *  lifecycle. Never call this from the HTTP surface; lint enforces it (§6). */
+  getUnscoped(id: BotId): Promise<BotRecord | null>
   listForOrg(orgId: OrgId): Promise<BotRecord[]>
   /** Record workspace metadata learned from OAuth/auth.test. A missing name
-   *  preserves the last known label. */
-  setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
-  /** Slack bots missing public app/workspace/member identity metadata. */
+   *  preserves the last known label. Org-fenced: a cross-org id writes nothing
+   *  (the row is filtered out of the update). */
+  setWorkspaceMetadata(orgId: OrgId, id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
+  /** Slack bots missing public app/workspace/member identity metadata.
+   *  System-tier: the identity reconciler's worklist is deliberately fleet-wide. */
   listSlackMissingIdentity(): Promise<BotRecord[]>
-  /** Backfill only a missing id; never replace an established Slack app identity. */
+  /** Backfill only a missing id; never replace an established Slack app identity.
+   *  System-tier: reconciler-only, driven off {@link BotRepo.listSlackMissingIdentity}
+   *  and fenced by its own `slackAppId IS NULL` CAS predicate, so an org
+   *  parameter re-derived from that worklist would be tautological (§3.4). */
   setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean>
-  /** Backfill only a missing Slack member id; never replace an established identity. */
+  /** Backfill only a missing Slack member id; never replace an established identity.
+   *  System-tier like {@link BotRepo.setSlackAppIdIfMissing}. */
   setSlackBotUserIdIfMissing(id: BotId, botUserId: string): Promise<boolean>
-  /** Stamp the freed-bot display hints when its LAST integration is removed. */
-  markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void>
+  /** Stamp the freed-bot display hints when its LAST integration is removed.
+   *  Org-fenced: a cross-org id writes nothing. */
+  markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>
   /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
    *  bot row with {@link IntegrationRepo.addBotMembership}; disabling recounts the
    *  ACTIVE installs under that lock and throws `BotStillShared` when >1 remain,
-   *  so a concurrent admission can never slip past the route's optimistic check. */
-  setShareable(id: BotId, shareable: boolean): Promise<void>
+   *  so a concurrent admission can never slip past the route's optimistic check.
+   *  Org-fenced: the lock read is filtered, so a cross-org id throws the same
+   *  missing-row error ({@link BotMissing}) as an absent one. */
+  setShareable(orgId: OrgId, id: BotId, shareable: boolean): Promise<void>
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
-   *  shared-bot orchestrator's convergence worklist (relay register / failover). */
+   *  shared-bot orchestrator's convergence worklist (relay register / failover).
+   *  System-tier: fleet-wide by design. */
   listHttpActive(): Promise<BotRecord[]>
   /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
    *  by the composite demux key (a workspace binds to exactly one org). */
@@ -2599,6 +2636,11 @@ export interface BotRepo {
    * This is also the ONLY way to un-revoke a bot — there is deliberately no bare
    * `setRevoked(id, null)`: reviving a credential without advancing its
    * generation would leave a delayed uninstall from the dead one able to kill it.
+   *
+   * System-tier (§3.4): reached only through {@link BotCredentialWriter}, whose
+   * install arm runs after the platform callback has resolved the row by its
+   * external demux identity — a deliberately cross-org lookup that already
+   * settles which organization owns the credential.
    */
   bumpCredential(id: BotId, at: Date): Promise<number>
   /**
@@ -2615,10 +2657,14 @@ export interface BotRepo {
    *    relay already received the newer assignment and would echo its revision).
    * Both are optional: a report carrying neither still applies (fail-open — an
    * uninstall must eventually take effect).
+   *
+   * System-tier (§3.4): relay-reported lifecycle, already fenced by the
+   * credential generation CAS above — a stronger axis than the owning org.
    */
   revokeIfCurrent(id: BotId, at: Date, fence: { revision?: number; eventAt?: Date }): Promise<boolean>
-  /** Callers must refuse while the bot is installed (FK Restrict backstops). */
-  delete(id: BotId): Promise<void>
+  /** Callers must refuse while the bot is installed (FK Restrict backstops).
+   *  Org-fenced: a cross-org id throws the same Prisma P2025 as an absent row. */
+  delete(orgId: OrgId, id: BotId): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -147,7 +147,7 @@ describe('syncAgentBotIcons', () => {
                 return membership ? [membership] : []
               }
             },
-            bot: { get: async (id) => bots.get(id) ?? null },
+            bot: { getUnscoped: async (id) => bots.get(id) ?? null },
             botSecret: {
               get: async (id) => {
                 secretGets.push(id)
@@ -197,7 +197,7 @@ describe('syncAgentBotIcons', () => {
       repos: {
         agent: { getUnscoped: async () => agentRecord(agent.icon) },
         integration: { listForAgent: async () => [membership], listForBot: async () => [membership] },
-        bot: { get: async () => bot(feishuId, 'feishu', { feishuAppId: 'cli_feishu' }) },
+        bot: { getUnscoped: async () => bot(feishuId, 'feishu', { feishuAppId: 'cli_feishu' }) },
         botSecret: {
           get: async (id: string) => {
             secretGets.push(id)
@@ -247,7 +247,7 @@ describe('syncAgentBotIcons', () => {
           listForAgent: async () => [membership],
           listForBot: async () => [membership]
         },
-        bot: { get: async () => discordBot },
+        bot: { getUnscoped: async () => discordBot },
         botSecret: {
           get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
         }
@@ -302,7 +302,7 @@ describe('syncAgentBotIcons', () => {
           listForAgent: async () => [membership],
           listForBot: async () => [membership]
         },
-        bot: { get: async () => discordBot },
+        bot: { getUnscoped: async () => discordBot },
         botSecret: {
           get: async () => ({ botToken: 'discord-token', appToken: null, signingSecret: null })
         }

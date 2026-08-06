@@ -42,7 +42,7 @@ function bot(): BotRecord {
 
 function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
   return new SlackSessionAccessService({
-    bots: { get: async () => bot() } as never,
+    bots: { getUnscoped: async () => bot() } as never,
     botSecrets: { get: async () => ({ botToken: 'xoxb-test' }) } as never,
     clock: { now: () => 1_000 } as never,
     fetchImpl

@@ -143,7 +143,7 @@ function fakeDeps(placedOn: string | null, channelExtra?: ChannelAgentRecord) {
   ])
   return {
     deps: {
-      registry: { get: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
+      registry: { getUnscoped: async () => ({ id: ASKING_DAEMON, orgId: ORG }) },
       agent: {
         // `orgDirectory` never returns an unplaced row (see PgAgentRepo), so a
         // `placedOn: null` caller is simply absent from it.

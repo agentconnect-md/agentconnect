@@ -12,7 +12,7 @@
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import { BotExternalIdentityTaken, BotStillShared } from '../errors.js'
+import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
   BotIdentityProjector,
@@ -157,7 +157,14 @@ export class PgBotRepo implements BotRepo {
     }
   }
 
-  async get(id: BotId): Promise<BotRecord | null> {
+  async get(orgId: OrgId, id: BotId): Promise<BotRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const b = await this.db.bot.findUnique({ where: { id, orgId }, include: botInclude })
+    return b ? toBotRecord(b) : null
+  }
+
+  async getUnscoped(id: BotId): Promise<BotRecord | null> {
     const b = await this.db.bot.findUnique({ where: { id }, include: botInclude })
     return b ? toBotRecord(b) : null
   }
@@ -167,9 +174,17 @@ export class PgBotRepo implements BotRepo {
     return rows.map(toBotRecord)
   }
 
-  async setWorkspaceMetadata(id: BotId, workspaceId: string, workspaceName: string | null): Promise<void> {
+  async setWorkspaceMetadata(
+    orgId: OrgId,
+    id: BotId,
+    workspaceId: string,
+    workspaceName: string | null
+  ): Promise<void> {
+    // Org fence rides the unique update (extended where): a cross-org id throws
+    // the same P2025 as a missing row (org-scoped-data-layer.md §3), preserving
+    // this method's existing missing-row behaviour rather than inventing a new one.
     await this.db.bot.update({
-      where: { id },
+      where: { id, orgId },
       data: {
         workspaceId,
         ...(workspaceName ? { workspaceName } : {})
@@ -213,23 +228,31 @@ export class PgBotRepo implements BotRepo {
     return result.count === 1
   }
 
-  async markFreed(id: BotId, at: Date, lastAgentName: string | null): Promise<void> {
-    await this.db.bot.update({ where: { id }, data: { lastUsedAt: at, lastAgentName } })
+  async markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void> {
+    // Org-fenced like `setWorkspaceMetadata`: cross-org and missing are the same P2025.
+    await this.db.bot.update({ where: { id, orgId }, data: { lastUsedAt: at, lastAgentName } })
   }
 
-  async setShareable(id: BotId, shareable: boolean): Promise<void> {
+  async setShareable(orgId: OrgId, id: BotId, shareable: boolean): Promise<void> {
     // Serialized on the bot row: membership admission (addBotMembership) takes
     // the same lock, so a disable can never commit alongside a concurrent
     // second-agent admission — whichever wins, the loser observes the winner's
     // committed state. The capacity recount lives HERE (not only in the route's
     // optimistic pre-check) because only under the lock is it authoritative.
     await withAmbientTx(this.db, async (tx) => {
-      await tx.$queryRaw`SELECT id FROM bot WHERE id = ${id} FOR UPDATE`
+      // The org fence rides the row-lock read and refuses BEFORE the recount:
+      // reaching the recount with a foreign id would answer `BotStillShared`
+      // (a 409 carrying the foreign bot's occupancy) instead of the missing-row
+      // 404 the tenancy fence owes (org-scoped-data-layer.md §3).
+      const locked = await tx.$queryRaw<
+        { id: string }[]
+      >`SELECT id FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
+      if (locked.length === 0) throw new BotMissing(id)
       if (!shareable) {
         const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
         if (active > 1) throw new BotStillShared(active)
       }
-      await tx.bot.update({ where: { id }, data: { shareable } })
+      await tx.bot.update({ where: { id, orgId }, data: { shareable } })
     })
   }
 
@@ -299,8 +322,10 @@ export class PgBotRepo implements BotRepo {
     return count > 0
   }
 
-  async delete(id: BotId): Promise<void> {
-    await this.db.bot.delete({ where: { id } }) // FK cascade drops bot_secret; Restrict blocks while installed
+  async delete(orgId: OrgId, id: BotId): Promise<void> {
+    // Org-fenced delete: FK cascade drops bot_secret, Restrict blocks while
+    // installed, and a cross-org id throws the same P2025 as an absent row.
+    await this.db.bot.delete({ where: { id, orgId } })
   }
 }
 
