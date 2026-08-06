@@ -106,10 +106,15 @@ export function railSeedKey(filter: RailAgentFilter): string {
  * still renders a Related tree and the picker — deciding from the page count alone
  * would widen that to the org-wide list and throw the seeded chips away with it.
  *
- * `seedLoading` defers the call: an in-flight page reaches the rail as no rows and
- * zero total, which is indistinguishable from a collapsed one, and widening there
- * would fire the unfiltered request on every single load.
+ * `inputsSettled` is the whole of that verdict's readiness, not just the seeded
+ * page's. Every input arrives on its OWN request — the page, the lineage, the
+ * off-page pins — and each one is indistinguishable from absent while in flight:
+ * an unsettled rail reports no rows, no family and no pins, which is exactly what
+ * a collapsed one reports. Since the decision is latched (see {@link railSeedKey}),
+ * acting on that snapshot would make a race permanent — the lineage lands a moment
+ * later, the rail becomes useful again, and the widen that was never warranted can
+ * no longer be taken back. Wait for all of it, then decide once.
  */
-export function railSeedShouldWiden(seedKey: string, railWouldHide: boolean, seedLoading: boolean): boolean {
-  return seedKey !== '' && railWouldHide && !seedLoading
+export function railSeedShouldWiden(seedKey: string, railWouldHide: boolean, inputsSettled: boolean): boolean {
+  return seedKey !== '' && railWouldHide && inputsSettled
 }

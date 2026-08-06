@@ -1130,7 +1130,7 @@ export default function SessionDetailView() {
   // lifted delegation preserves its waking member so the UI groups
   // delegations by origin.
   const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
-  const { data: conversationLineage } = useSWR(
+  const { data: conversationLineage, error: conversationLineageError } = useSWR(
     conversationMode && activeOrg?.id
       ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
       : null,
@@ -1681,14 +1681,24 @@ export default function SessionDetailView() {
   // lineage alone can keep a one-row page worth drawing. Latched to the SEED, not
   // held as a boolean — widening replaces the rows, so the collapse that
   // justified it stops being observable the moment it works.
+  //
+  // Lineage is waited on here because the rail cannot tell a conversation with no
+  // relatives from one whose relatives have not arrived: `conversationFamily` is an
+  // EMPTY family, not `undefined`, for as long as its own multi-request fetch is in
+  // flight. Latching on that would widen a rail that is about to grow a Related
+  // tree — the very regression this gate exists to prevent, reached by a race
+  // instead of a miscount. The rail withholds its verdict over its own pins.
   const railSeedKeyNow = railSeedKey(railFilter)
+  const railFamilySettled = conversationMode
+    ? conversationLineage !== undefined || conversationLineageError !== undefined
+    : !sessionDetailLoading
   const [widenedSeed, setWidenedSeed] = useState<string | null>(null)
   const handleRailWouldHide = useCallback(
     (wouldHide: boolean) => {
-      if (!railSeedShouldWiden(railSeedKeyNow, wouldHide, seededRailLoading)) return
+      if (!railSeedShouldWiden(railSeedKeyNow, wouldHide, !seededRailLoading && railFamilySettled)) return
       setWidenedSeed(railSeedKeyNow)
     },
-    [railSeedKeyNow, seededRailLoading]
+    [railSeedKeyNow, seededRailLoading, railFamilySettled]
   )
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(

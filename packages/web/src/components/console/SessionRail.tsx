@@ -196,8 +196,13 @@ export function SessionRail({
   // Hydration: the server has no localStorage, so the first client paint must match
   // the SSR markup (every row unpinned) and the stored pins land in an effect.
   const [pins, setPins] = useState<SessionPin[]>([])
+  // Tracked separately from the pins themselves: "no pins yet" is what an unread
+  // store and a genuinely empty one both look like, and the hide verdict reported
+  // below must not mistake the first for the second.
+  const [pinsRead, setPinsRead] = useState(false)
   useEffect(() => {
     setPins(readSessionPins())
+    setPinsRead(true)
   }, [])
 
   const togglePin = useCallback(
@@ -320,9 +325,17 @@ export function SessionRail({
   // HERE because this is the only place the whole verdict exists: `rows` is the
   // page merged with globally hydrated pins and the open row, and `hasFamily`
   // can keep a one-row page worth drawing on its own.
+  //
+  // Withheld until the rail's OWN inputs have settled. An unhydrated pin store and
+  // an in-flight pin fetch both read as "no pins", which is indistinguishable from
+  // a collapsed rail — and the caller latches the first verdict it is given, so
+  // reporting that snapshot would freeze a race into a permanent widen. The
+  // caller waits on lineage the same way before acting on this.
+  const pinsSettled = pinsRead && (missingPinIds.length === 0 || hydratedPins !== undefined)
   useEffect(() => {
+    if (!pinsSettled) return
     onWouldHideChange?.(empty)
-  }, [empty, onWouldHideChange])
+  }, [empty, pinsSettled, onWouldHideChange])
 
   // ≤768px has no column to hold, so the list hangs off a shell-owned app-bar
   // button (see MobileActionSlot) whose panel is rendered below. Registration has

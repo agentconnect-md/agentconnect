@@ -147,25 +147,35 @@ describe('railSeedShouldWiden', () => {
     // measured against a real org whose agents own 48 and 86 sessions apart, and
     // 474 between everyone. The rail then erased itself, taking with it the picker
     // that was the only way back to a wider list.
-    expect(railSeedShouldWiden('agent-a,agent-b', true, false)).toBe(true)
+    expect(railSeedShouldWiden('agent-a,agent-b', true, true)).toBe(true)
   })
 
   it('leaves a rail that still has something to draw alone', () => {
-    // Covers every reason the rail keeps itself: more rows than the open one, and
-    // lineage or a hydrated pin carrying a one-row page. The rail folds all of
-    // those into the one verdict, which is why this decision defers to it rather
-    // than counting the seeded page here.
-    expect(railSeedShouldWiden('agent-a,agent-b', false, false)).toBe(false)
+    // Covers every reason the rail keeps itself — more rows than the open one,
+    // lineage, an off-page pin. The rail folds all of those into the one verdict,
+    // which is why the decision defers to it instead of counting a page here.
+    expect(railSeedShouldWiden('agent-a,agent-b', false, true)).toBe(false)
   })
 
   it('never widens a filter the reader set, however narrow its answer', () => {
-    expect(railSeedShouldWiden('', true, false)).toBe(false)
+    expect(railSeedShouldWiden('', true, true)).toBe(false)
   })
 
-  it('waits for the seeded page instead of widening on an in-flight one', () => {
-    // Mid-flight reaches the rail as no rows and zero total — indistinguishable
-    // from collapsed — so widening on it would fire the unfiltered request on
-    // every single load.
-    expect(railSeedShouldWiden('agent-a', true, true)).toBe(false)
+  it('holds off while any input behind the verdict is still in flight', () => {
+    // The race this guards: the seeded page, the lineage and the off-page pins each
+    // arrive on their own request, and every one of them reads as absent until it
+    // lands — which is precisely what a collapsed rail reads as too. The seeded page
+    // resolving first would otherwise report "nothing to draw" a moment before the
+    // lineage arrives to prove otherwise.
+    expect(railSeedShouldWiden('agent-a', true, false)).toBe(false)
+  })
+
+  it('cannot be un-latched by a later verdict, which is why it waits first', () => {
+    // Widening replaces the rows, so the collapse that justified it stops being
+    // observable the moment it works; a decision that could be revisited would
+    // oscillate. That one-way door is exactly why an unsettled verdict must never
+    // be acted on — see the settled case above.
+    expect(railSeedShouldWiden('agent-a', true, false)).toBe(false)
+    expect(railSeedShouldWiden('agent-a', true, true)).toBe(true)
   })
 })
