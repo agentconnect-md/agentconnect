@@ -15,7 +15,7 @@ import type {
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
-import { seedDaemon } from '../fixtures/seed.js'
+import { DEF_ORG, seedDaemon } from '../fixtures/seed.js'
 import type { Prisma } from '../../src/generated/prisma/client.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import {
@@ -320,7 +320,7 @@ describe('external-memory connections — secret/grant discipline', () => {
     const rotation = await app.app.inject({ method: 'POST', url: `${CONNECTIONS}/${connectionId}/grant/rotate` })
     expect(rotation.statusCode).toBe(400)
     expect((rotation.json() as { message: string }).message).toContain('no relay grant')
-    expect(await app.deps.repos.externalMemoryConnection.get(connectionId)).toMatchObject({ revision: 1 })
+    expect(await app.deps.repos.externalMemoryConnection.get(DEF_ORG, connectionId)).toMatchObject({ revision: 1 })
     expect(relay.unassigns).toEqual([])
 
     const unbound = await app.app.inject({
@@ -532,7 +532,7 @@ describe('external-memory connections — secret/grant discipline', () => {
       payload: { config: { projectId: 'serialized' } }
     })
     expect(first.statusCode).toBe(200)
-    expect(await repo.get(connection.id)).toMatchObject({ revision: 2, config: { projectId: 'serialized' } })
+    expect(await repo.get(DEF_ORG, connection.id)).toMatchObject({ revision: 2, config: { projectId: 'serialized' } })
     expect(await app.deps.repos.externalMemoryGrant.activeForConnection(connection.id)).toHaveLength(1)
   })
 
@@ -694,7 +694,7 @@ describe('external-memory connections — secret/grant discipline', () => {
     const tombstone = relay.unassigns.at(-1)!
     expect(tombstone).toEqual({ connectionId: connection.id, revision: 4 })
     expect(tombstone.revision).toBeGreaterThan(lastAssign.revision)
-    expect(await realGet(connection.id)).toBeNull()
+    expect(await realGet(DEF_ORG, connection.id)).toBeNull()
   })
 })
 
@@ -746,7 +746,7 @@ describe('external-memory agent binding — placement and revocation', () => {
     expect((removing.json() as { message: string }).message).toContain('being updated')
     await hold.release()
 
-    expect(await app.deps.repos.externalMemoryConnection.get(connection.id)).not.toBeNull()
+    expect(await app.deps.repos.externalMemoryConnection.get(DEF_ORG, connection.id)).not.toBeNull()
     const settled = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${holderId}`,
@@ -853,7 +853,7 @@ describe('external-memory agent binding — placement and revocation', () => {
     const removed = await app.app.inject({ method: 'DELETE', url: `${CONNECTIONS}/${connection.id}` })
     expect(removed.statusCode).toBe(204)
     expect(relay.unassigns.at(-1)).toEqual({ connectionId: connection.id, revision: 2 })
-    expect(await app.deps.repos.externalMemoryConnection.get(connection.id)).toBeNull()
+    expect(await app.deps.repos.externalMemoryConnection.get(DEF_ORG, connection.id)).toBeNull()
   })
 
   it('keeps the ordered AgentSpec hot-sync when a probe ACK is lost', async () => {

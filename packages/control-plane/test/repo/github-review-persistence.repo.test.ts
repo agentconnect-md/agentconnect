@@ -1736,7 +1736,7 @@ describe('R1/R2a persistence foundation', () => {
         permissions: {}
       })
     ).rejects.toBeInstanceOf(GithubInstallationClaimConflict)
-    const durable = await repo.get(first.id)
+    const durable = await repo.get(OrgId(DEFAULT_ORG_ID), first.id)
     expect(durable).toMatchObject({ orgId: DEFAULT_ORG_ID, accountLogin: 'acme' })
     expect(durable?.permissions).toEqual({ pull_requests: 'write', checks: 'write' })
 

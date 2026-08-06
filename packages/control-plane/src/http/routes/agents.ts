@@ -827,8 +827,8 @@ export function agentRoutes(deps: HttpDeps) {
       orgId: OrgId
     ): Promise<string | null> => {
       if (memory?.provider !== 'external') return null
-      const connection = await deps.repos.externalMemoryConnection.get(memory.connectionId)
-      if (!connection || connection.orgId !== orgId) return 'external memory connection not found in this organization'
+      const connection = await deps.repos.externalMemoryConnection.get(orgId, memory.connectionId)
+      if (!connection) return 'external memory connection not found in this organization'
       // Probing is daemon-owned and a connection reaches a daemon through its
       // first binding, so rejecting every non-ready connection here creates a
       // bootstrap deadlock. Persist probing/degraded bindings; daemon admission
@@ -859,8 +859,8 @@ export function agentRoutes(deps: HttpDeps) {
     const pushExternalMemoryToDaemon = async (agent: AgentRecord, daemonId: string): Promise<boolean> => {
       if (agent.memory?.provider !== 'external') return true
       try {
-        const connection = await deps.repos.externalMemoryConnection.get(agent.memory.connectionId)
-        if (!connection || connection.orgId !== agent.orgId) return false
+        const connection = await deps.repos.externalMemoryConnection.get(agent.orgId, agent.memory.connectionId)
+        if (!connection) return false
         const installation = await deps.repos.memoryPluginInstallation.get(connection.installationId)
         if (!installation) return false
         if (installation.transport === 'stdio') {
@@ -1040,8 +1040,8 @@ export function agentRoutes(deps: HttpDeps) {
         }
         if (ws?.mode === 'github' && ws.installationId !== undefined) {
           if (!deps.github) return conflict('github-app workspaces are not enabled on this control plane')
-          const ins = await deps.repos.githubInstallation.get(ws.installationId)
-          if (!ins || ins.orgId !== req.orgCtx!.orgId || ins.revokedAt) {
+          const ins = await deps.repos.githubInstallation.get(orgOf(req), ws.installationId)
+          if (!ins || ins.revokedAt) {
             return conflict('github installation not found in this org')
           }
           const repoParts = gitRepoLabel(ws.gitRepo).split('/')

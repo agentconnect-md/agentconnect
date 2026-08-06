@@ -121,8 +121,10 @@ export class PgExternalMemoryConnectionRepo implements ExternalMemoryConnectionR
     )
   }
 
-  async get(id: string): Promise<ExternalMemoryConnectionRecord | null> {
-    const row = await this.db.externalMemoryConnection.findUnique({ where: { id } })
+  async get(orgId: OrgId, id: string): Promise<ExternalMemoryConnectionRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const row = await this.db.externalMemoryConnection.findUnique({ where: { id, orgId } })
     return row ? toConnection(row) : null
   }
 
@@ -137,12 +139,14 @@ export class PgExternalMemoryConnectionRepo implements ExternalMemoryConnectionR
   }
 
   async update(
+    orgId: OrgId,
     id: string,
-    patch: Parameters<ExternalMemoryConnectionRepo['update']>[1]
+    patch: Parameters<ExternalMemoryConnectionRepo['update']>[2]
   ): Promise<ExternalMemoryConnectionRecord> {
+    // Org-fenced update: a cross-org id throws the same P2025 as a missing row.
     return toConnection(
       await this.db.externalMemoryConnection.update({
-        where: { id },
+        where: { id, orgId },
         data: {
           ...(patch.config !== undefined ? { config: patch.config as Prisma.InputJsonValue } : {}),
           revision: { increment: 1 },
@@ -159,8 +163,9 @@ export class PgExternalMemoryConnectionRepo implements ExternalMemoryConnectionR
     )
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.externalMemoryConnection.delete({ where: { id } })
+  async delete(orgId: OrgId, id: string): Promise<void> {
+    // Org-fenced delete: a cross-org id throws the same P2025 as a missing row.
+    await this.db.externalMemoryConnection.delete({ where: { id, orgId } })
   }
 
   async activeForDaemon(daemonId: DaemonId): Promise<ExternalMemoryConnectionRecord[]> {

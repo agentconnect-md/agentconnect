@@ -548,7 +548,11 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
     reviewedByUserId?: string
   ): Promise<AcceptOrganizationSuggestionResult> {
     return withAmbientTx(this.db, async (tx) => {
-      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid FOR UPDATE`)
+      // The lock and the fenced read below select the SAME row set: a
+      // cross-org id locks nothing rather than parking on another org's row.
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+      )
       // Org fence on the row-locked read, BEFORE the state and snapshot-token
       // comparisons: reaching those with a foreign id would answer
       // 'not_pending' / 'metadata_changed' and confirm it exists (§3).
@@ -660,7 +664,11 @@ export class PgOrganizationKnowledgeRepo implements OrganizationKnowledgeRepo {
   ): Promise<AcceptOrganizationSuggestionResult> {
     try {
       return await withAmbientTx(this.db, async (tx) => {
-        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid FOR UPDATE`)
+        // The lock and the fenced read below select the SAME row set: a
+        // cross-org id locks nothing rather than parking on another org's row.
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "organization_suggestion" WHERE "id" = ${id}::uuid AND "orgId" = ${orgId} FOR UPDATE`
+        )
         // Org fence on the row-locked read, before the state / snapshot-token
         // comparisons and before any archive bytes are persisted (§3).
         const suggestion = await tx.organizationSuggestion.findUniqueOrThrow({ where: { id, orgId } })
