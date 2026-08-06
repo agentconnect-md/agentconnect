@@ -1,4 +1,5 @@
 import type { FastifyRequest } from 'fastify'
+import { LRUCache } from 'lru-cache'
 import type {
   ExternalScopeRecord,
   SessionExternalAccessSnapshot,
@@ -48,6 +49,9 @@ export interface SessionAccessResolver {
 const SNAPSHOT_TTL_MS = 5_000
 const MAX_SNAPSHOT_ENTRIES = 2_000
 
+/** What one sweep needs, carried to `fetchMethod` as its context. */
+type Sweep = { scopes: readonly ExternalScopeRecord[]; viewer: SessionAccessViewer }
+
 /** Exactly the inputs `forScopes` reads — org, the viewer it decides for, the
  *  identities it decides with, and the scope set it decides about. An ACL bump
  *  changes `aclRevision`, so a re-fenced scope can never hit a stale entry. */
@@ -70,8 +74,6 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
   const plugins = deps.sessionAccessPlugins ?? []
   const pluginFor = new Map(plugins.map((plugin) => [plugin.provider, plugin]))
   const providers = [...pluginFor.keys()]
-  const snapshots = new Map<string, { access: ResolvedSessionAccess; expiresAt: number }>()
-  const inFlight = new Map<string, Promise<ResolvedSessionAccess>>()
 
   const viewerFor = async (req: FastifyRequest): Promise<SessionAccessViewer> => {
     const viewer = {
@@ -142,38 +144,36 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     }
   }
 
-  /** `forScopes` behind the snapshot window, single-flighted so the concurrent
-   *  reads of one page load trigger one sweep instead of racing four. Callers
-   *  treat the record as immutable; the identity set is copied per hand-out so
-   *  a caller that does not cannot corrupt the entry. `decisionAt` is served as
-   *  recorded — a reused snapshot truthfully reports when it was decided. */
-  const cachedForScopes = (
+  /** `fetch` hands concurrent callers of one key the SAME promise, which is the
+   *  single-flight this exists for, and drops the entry when the sweep rejects —
+   *  a failed sweep is never inherited as a verdict. `perf` is the time seam;
+   *  `ttlResolution: 0` turns off lru-cache's 1 ms `now()` debounce, which is
+   *  driven by a real timer a `FakeClock` cannot advance. The clock must report
+   *  real epoch milliseconds, as `Clock` documents: lru-cache treats a falsy
+   *  entry start as "no TTL recorded", so a snapshot written at time 0 would
+   *  never expire. */
+  const snapshots = new LRUCache<string, ResolvedSessionAccess, Sweep>({
+    max: MAX_SNAPSHOT_ENTRIES,
+    ttl: SNAPSHOT_TTL_MS,
+    ttlResolution: 0,
+    perf: deps.clock,
+    fetchMethod: (_key, _stale, { context }) => forScopes(context.scopes, context.viewer)
+  })
+
+  /** `forScopes` behind the snapshot window. Callers treat the record as
+   *  immutable; the identity set is copied per hand-out so a caller that does
+   *  not cannot corrupt the entry. `decisionAt` is served as recorded — a
+   *  reused snapshot truthfully reports when it was decided. */
+  const cachedForScopes = async (
     scopes: readonly ExternalScopeRecord[],
     viewer: SessionAccessViewer
   ): Promise<ResolvedSessionAccess> => {
-    const key = snapshotKey(viewer, scopes)
-    const cached = snapshots.get(key)
-    if (cached && cached.expiresAt > deps.clock.now()) {
-      return Promise.resolve({ ...cached.access, identitySet: new Set(cached.access.identitySet) })
-    }
-    const pending = inFlight.get(key)
-    if (pending) return pending.then((access) => ({ ...access, identitySet: new Set(access.identitySet) }))
-    const tracked: Promise<ResolvedSessionAccess> = forScopes(scopes, viewer)
-      // Only a completed sweep is recorded — a rejected one skips this and the
-      // next read re-asks, rather than inheriting an error as a verdict.
-      .then((access) => {
-        if (snapshots.size >= MAX_SNAPSHOT_ENTRIES) {
-          const oldest = snapshots.keys().next().value as string | undefined
-          if (oldest !== undefined) snapshots.delete(oldest)
-        }
-        snapshots.set(key, { access, expiresAt: deps.clock.now() + SNAPSHOT_TTL_MS })
-        return access
-      })
-      .finally(() => {
-        if (inFlight.get(key) === tracked) inFlight.delete(key)
-      })
-    inFlight.set(key, tracked)
-    return tracked
+    // `fetch` resolves undefined only if the entry is dropped mid-flight. Sweep
+    // directly rather than reporting no external access, which would hide rows.
+    const access =
+      (await snapshots.fetch(snapshotKey(viewer, scopes), { context: { scopes, viewer } })) ??
+      (await forScopes(scopes, viewer))
+    return { ...access, identitySet: new Set(access.identitySet) }
   }
 
   return {

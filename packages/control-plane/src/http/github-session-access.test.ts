@@ -39,8 +39,14 @@ function scopeAt(index: number): ExternalScopeRecord {
   }
 }
 
+/** `Clock` reports wall-clock epoch milliseconds, and the verdict caches need
+ *  it to: lru-cache reads a falsy entry start as "no TTL recorded", so a clock
+ *  left at 0 would make the first entries immortal and hide every expiry
+ *  assertion below. */
+const EPOCH = 1_777_000_000_000
+
 function make(privateRepo: boolean, permissionForUser = vi.fn()) {
-  const clock = new FakeClock()
+  const clock = new FakeClock(EPOCH)
   const repoRefById = vi.fn().mockResolvedValue({
     repoId: 123n,
     fullName: 'acme/private-repo',
@@ -113,7 +119,9 @@ describe('GithubSessionAccessService', () => {
     await h.service.resolve([scope], viewer)
     expect(h.permissionForUser).toHaveBeenCalledTimes(1)
 
-    h.clock.advance(1)
+    // The lease boundary is exclusive — an entry goes stale once its age passes
+    // the TTL, so the refresh lands the millisecond after the limit.
+    h.clock.advance(2)
     await h.service.resolve([scope], viewer)
     expect(h.permissionForUser).toHaveBeenCalledTimes(2)
   })

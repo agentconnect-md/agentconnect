@@ -134,8 +134,13 @@ describe('makeSessionAccessResolver', () => {
 describe('makeSessionAccessResolver snapshot', () => {
   const query: SessionFilterQuery = { agentIds: [] } as unknown as SessionFilterQuery
 
+  /** `Clock` reports wall-clock epoch milliseconds, and the snapshot needs it
+   *  to: lru-cache reads a falsy entry start as "no TTL recorded", so a clock
+   *  left at 0 would make the first snapshot immortal. */
+  const EPOCH = 1_777_000_000_000
+
   function harness(scopes: readonly ExternalScopeRecord[] = [scope]) {
-    const clock = new FakeClock()
+    const clock = new FakeClock(EPOCH)
     const resolve = vi.fn(async (given: readonly ExternalScopeRecord[]) => ({
       allowedScopes: given.map(({ id, aclRevision }) => ({ id, aclRevision })),
       degraded: false,

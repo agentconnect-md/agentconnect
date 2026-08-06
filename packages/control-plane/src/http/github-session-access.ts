@@ -1,3 +1,4 @@
+import { LRUCache } from 'lru-cache'
 import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
 import type { ExternalScopeRecord, GithubInstallationRecord, GithubInstallationRepo } from '../persistence/ports.js'
@@ -23,11 +24,29 @@ const SCOPE_CONCURRENCY = 6
  */
 const REPO_SHAPE_TTL_MS = 120_000
 
+/**
+ * Shared `LRUCache` wiring.
+ *
+ * `perf` is THE time seam — without it the cache would read the wall clock
+ * while everything around it reads the injected one. `ttlResolution: 0` turns
+ * off lru-cache's 1 ms `now()` debounce, which is driven by a real timer a
+ * `FakeClock` cannot advance; expiry is evaluated lazily on read, so no
+ * background timer exists either way.
+ *
+ * The clock MUST report real epoch milliseconds, as `Clock` documents. lru-cache
+ * stores an entry's start time and treats a falsy one as "no TTL recorded", so an
+ * entry written at time 0 would never expire. Production passes `Date.now()`;
+ * a test clock has to be seeded with an epoch rather than left at 0.
+ */
+function cacheOptions(clock: Clock) {
+  return { max: MAX_CACHE_ENTRIES, ttlResolution: 0, perf: clock } as const
+}
+
 type Decision = 'allow' | 'deny' | 'unknown'
-type CachedDecision = { decision: Decision; expiresAt: number }
 /** Narrowed `repoRefById` result; null = outside the installation's grant. */
 type RepoShape = { fullName: string; private: boolean } | null
 type ObservedRepoShape = { shape: RepoShape; fetchedAt: number }
+type ShapeLookup = { github: Pick<GithubService, 'repoRefById'>; ins: GithubInstallationRecord; repoId: bigint }
 
 async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(values.length)
@@ -48,10 +67,13 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
  * provider-owned and only bounded verdicts are cached in process. */
 export class GithubSessionAccessService implements SessionAccessPlugin {
   readonly provider = 'github'
-  private readonly cache = new Map<string, CachedDecision>()
-  /** (installation, repo) → shape. Shared across viewers, unlike `cache`. */
-  private readonly shapes = new Map<string, ObservedRepoShape>()
-  private readonly shapesInFlight = new Map<string, Promise<ObservedRepoShape>>()
+  /** Per-viewer verdicts. Every entry carries its own TTL — see `putCache`. */
+  private readonly cache: LRUCache<string, Decision>
+  /** (installation, repo) → shape. Shared across viewers, unlike `cache`.
+   *  `fetch` hands concurrent callers of one key the same promise, and drops
+   *  the entry when the lookup rejects, so a failed lookup stays a
+   *  per-request verdict instead of pinning a transient GitHub failure. */
+  private readonly shapes: LRUCache<string, ObservedRepoShape, ShapeLookup>
 
   constructor(
     private readonly deps: {
@@ -60,7 +82,19 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       userAuthz?: Pick<GithubUserAuthzService, 'permissionForUser'>
       clock: Clock
     }
-  ) {}
+  ) {
+    this.cache = new LRUCache(cacheOptions(deps.clock))
+    this.shapes = new LRUCache({
+      ...cacheOptions(deps.clock),
+      ttl: REPO_SHAPE_TTL_MS,
+      fetchMethod: async (_key, _stale, { context }) => ({
+        shape: await context.github
+          .repoRefById(context.ins, context.repoId)
+          .then((repo) => (repo ? { fullName: repo.fullName, private: repo.private } : null)),
+        fetchedAt: deps.clock.now()
+      })
+    })
+  }
 
   get available(): boolean {
     return this.deps.github !== undefined && this.deps.userAuthz !== undefined
@@ -111,14 +145,19 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
 
     const key = [scope.id, scope.aclRevision.toString(), installation.installationId.toString(), userId].join(':')
     const cached = this.cache.get(key)
-    if (cached && cached.expiresAt > this.deps.clock.now()) return cached.decision
+    if (cached) return cached
 
     let decision: Decision
     // When the verdict rests on a reused repository shape, its lease runs from
     // when that shape was observed rather than from now.
     let evidenceAt = this.deps.clock.now()
     try {
-      const observed = await this.repoShapeOf(github, installation, BigInt(scope.resourceKey))
+      const observed = await this.shapes.fetch(`${installation.installationId}:${scope.resourceKey}`, {
+        context: { github, ins: installation, repoId: BigInt(scope.resourceKey) }
+      })
+      // Only reachable if the entry is dropped mid-flight. Fail closed rather
+      // than reading it as "no such repository", which is a deny we cannot back.
+      if (!observed) return 'unknown'
       evidenceAt = observed.fetchedAt
       const repo = observed.shape
       if (!repo) decision = 'deny'
@@ -142,54 +181,14 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     return decision
   }
 
-  /** Cached + deduped repository shape. A failed lookup propagates uncached —
-   *  the caller turns it into `unknown`, which must stay a per-request verdict
-   *  rather than pinning a transient GitHub failure for two minutes. */
-  private repoShapeOf(
-    github: Pick<GithubService, 'repoRefById'>,
-    ins: GithubInstallationRecord,
-    repoId: bigint
-  ): Promise<ObservedRepoShape> {
-    const key = `${ins.installationId}:${repoId}`
-    const cached = this.shapes.get(key)
-    if (cached && this.deps.clock.now() - cached.fetchedAt < REPO_SHAPE_TTL_MS) return Promise.resolve(cached)
-    let pending = this.shapesInFlight.get(key)
-    if (!pending) {
-      const tracked: Promise<ObservedRepoShape> = github
-        .repoRefById(ins, repoId)
-        .then((repo) => {
-          const observed: ObservedRepoShape = {
-            shape: repo ? { fullName: repo.fullName, private: repo.private } : null,
-            fetchedAt: this.deps.clock.now()
-          }
-          if (this.shapes.size >= MAX_CACHE_ENTRIES) {
-            const oldest = this.shapes.keys().next().value as string | undefined
-            if (oldest !== undefined) this.shapes.delete(oldest)
-          }
-          this.shapes.set(key, observed)
-          return observed
-        })
-        .finally(() => {
-          if (this.shapesInFlight.get(key) === tracked) this.shapesInFlight.delete(key)
-        })
-      pending = tracked
-      this.shapesInFlight.set(key, pending)
-    }
-    return pending
-  }
-
   private putCache(key: string, decision: Decision, evidenceAt: number): void {
-    if (this.cache.size >= MAX_CACHE_ENTRIES) {
-      const oldest = this.cache.keys().next().value as string | undefined
-      if (oldest) this.cache.delete(oldest)
-    }
     const ttl = decision === 'allow' ? ALLOW_TTL_MS : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    const now = this.deps.clock.now()
-    // An `allow` is leased from the EVIDENCE it rests on, so reusing a cached
-    // repository shape can never stretch the window a fresh lookup would have
-    // granted. `deny`/`unknown` keep the wall-clock lease: reused evidence can
-    // only ever narrow access, never widen it.
-    const from = decision === 'allow' ? Math.min(evidenceAt, now) : now
-    this.cache.set(key, { decision, expiresAt: from + ttl })
+    // An `allow` is leased from the EVIDENCE it rests on — `start` is the
+    // observation, not the reuse — so serving a cached repository shape can
+    // never stretch the window a fresh lookup would have granted. `deny` and
+    // `unknown` run from now: reused evidence can only narrow access, never
+    // widen it, so there is nothing to bound.
+    const start = decision === 'allow' ? Math.min(evidenceAt, this.deps.clock.now()) : undefined
+    this.cache.set(key, decision, { ttl, ...(start !== undefined ? { start } : {}) })
   }
 }
