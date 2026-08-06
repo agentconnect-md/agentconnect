@@ -176,6 +176,15 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     if ((err as { code?: string }).code === 'P2002') {
       return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'resource already exists' })
     }
+    // Workspace-claim admission fence (ingress-tenant-fence.md §5). The message
+    // deliberately never names the organization holding the workspace.
+    if ((err as { code?: string }).code === 'SLACK_WORKSPACE_CLAIMED') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'this Slack workspace is already connected to another organization'
+      })
+    }
     if ((err as { code?: string }).code === 'ORG_OWNER_REQUIRED') {
       return reply.code(409).send({
         error: 'Conflict',

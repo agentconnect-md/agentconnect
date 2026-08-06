@@ -369,6 +369,79 @@ describe('slack auto-install funnel', () => {
     expect(JSON.stringify(dto)).not.toContain('xoxb-')
   })
 
+  it('finalize refuses a workspace already connected to ANOTHER organization (ingress-tenant-fence.md §5)', async () => {
+    const { app } = withFunnel()
+    // auth.test resolves the workspace identity — the claim key.
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'acme-bot',
+      appId: 'A1TEST',
+      teamId: 'T1TEST',
+      teamName: 'Acme',
+      botUserId: 'U1',
+      scopes: null
+    })
+    // Another org already holds a bot for this exact app+workspace: the same
+    // signing secret AND the same tenant, which the relay's delivery-time fence
+    // cannot tell apart — admission is the only place to stop the second claim.
+    const foreignOrgId = `org-claim-${randomUUID().slice(0, 8)}`
+    await prisma.org.create({ data: { id: foreignOrgId, slug: foreignOrgId } })
+    await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: foreignOrgId,
+        platform: 'slack',
+        name: 'foreign-claim',
+        slackAppId: 'A1TEST',
+        workspaceId: 'T1TEST'
+      }
+    })
+
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+    expect(res.statusCode).toBe(409)
+    // The refusal never names the organization holding the workspace.
+    expect(res.body).not.toContain(foreignOrgId)
+    // Nothing was minted for the caller.
+    expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID, slackAppId: 'A1TEST' } })).toBe(0)
+  })
+
+  it('finalize proceeds when the SAME organization already holds the workspace', async () => {
+    const { app } = withFunnel()
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'acme-bot',
+      appId: 'A1TEST',
+      teamId: 'T1TEST',
+      teamName: 'Acme',
+      botUserId: 'U1',
+      scopes: null
+    })
+    // A prior install in the CALLER's org is not a foreign claim.
+    await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        name: 'own-earlier-install',
+        slackAppId: 'A1TEST',
+        workspaceId: 'T1TEST'
+      }
+    })
+
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+    expect(res.statusCode).toBe(201)
+  })
+
   it('finalize (http) mints a relay-ingress bot from the OAuth bot token + captured signing secret — no paste', async () => {
     const { app, spy } = withFunnel()
     const agentId = await placedAgent()

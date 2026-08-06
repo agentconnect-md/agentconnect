@@ -15,6 +15,7 @@ import type { HttpDeps } from './deps.js'
 import type { AgentRecord, IntegrationRecord, SlackTransport } from '../persistence/ports.js'
 import type { OrgId } from '../domain/ids.js'
 import { installNewBot } from './install-bot.js'
+import { SlackWorkspaceClaimed } from '../persistence/errors.js'
 import { slackAppIdFromAppToken } from '../platforms/slack/provider.js'
 
 // Relocated to the Slack platform provider (§9, S3): its `validateConfig` runs
@@ -74,6 +75,23 @@ export async function installNewSlackBot(
   // config-token funnel or bot-token verification. Keep the derivation as the
   // authority when both are present (the caller already rejects a mismatch).
   const slackAppId = (appToken ? slackAppIdFromAppToken(appToken) : undefined) ?? args.slackAppId
+
+  // Workspace-claim admission fence (ingress-tenant-fence.md §5): the same app
+  // installed into the same workspace by TWO organizations would share one
+  // signing secret AND one tenant — the delivery-time fence cannot tell those
+  // rows apart, so the second claim is refused here instead. Unknown identity
+  // skips the check (auth.test may legitimately be unavailable at install
+  // time), mirroring the delivery fence's fail-open arm. The check-then-create
+  // window takes no lock: a same-instant double claim is out of scope,
+  // consistent with the funnel's existing concurrency posture.
+  const claimTenant = args.teamId ?? args.workspaceId
+  if (
+    slackAppId &&
+    claimTenant &&
+    (await deps.repos.bot.slackWorkspaceClaimedElsewhere(orgId, slackAppId, claimTenant))
+  ) {
+    throw new SlackWorkspaceClaimed()
+  }
 
   // The row writes, the transport fork and the shareable coercion are core's ONE
   // create skeleton (§9, `install-bot.ts`) — the same one `POST /integrations`

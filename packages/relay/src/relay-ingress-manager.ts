@@ -510,7 +510,7 @@ export class RelayIngressManager {
     const hints = plugin.extractDemuxHints(rawBody, body, headers)
     const tryCandidate = (botId: string | undefined) => {
       const ingest = botId ? pool.get(botId) : undefined
-      if (!ingest) return undefined
+      if (!ingest || !this.tenantFencePasses(botId!, hints.tenantId)) return undefined
       const verified = plugin.verify(ingest, rawBody, body, headers, now)
       return verified === undefined ? undefined : { ingest, verified }
     }
@@ -519,14 +519,15 @@ export class RelayIngressManager {
     hit ??= hints.appId ? tryCandidate(demux.resolve({ appId: hints.appId })) : undefined
     if (!hit) {
       for (const [botId, ingest] of pool.entries()) {
-        const assignedTenant = this.router.get(botId)?.teamId
-        if (assignedTenant !== undefined && assignedTenant !== hints.tenantId) continue
+        if (!this.tenantFencePasses(botId, hints.tenantId)) continue
         const verified = plugin.verify(ingest, rawBody, body, headers, now)
         if (verified !== undefined) {
           // Learn only the app-only mapping; the index itself refuses a
           // tenant-scoped bot (registry.test.ts), keeping the invariant even if
-          // a future call site forgets this assignment check.
-          if (hints.appId && assignedTenant === undefined) demux.learn(hints.appId, botId)
+          // a future call site forgets this assignment check. What a learned
+          // entry can serve is bounded by the fence above, which is re-applied
+          // on every resolve through `tryCandidate`.
+          if (hints.appId && this.router.get(botId)?.teamId === undefined) demux.learn(hints.appId, botId)
           hit = { ingest, verified }
           break
         }
@@ -534,6 +535,38 @@ export class RelayIngressManager {
     }
     if (!hit) return undefined
     return entry.plugin.handle(hit.ingest, hit.verified, this.ingressHost)
+  }
+
+  /**
+   * The ingress tenant fence (ingress-tenant-fence.md §3): may a delivery from
+   * `deliveryTenant` be attributed to this bot at all?
+   *
+   * `plugin.verify` proves a delivery was signed with an app's signing secret —
+   * NOT that it came from the workspace this assignment belongs to. Those are
+   * different questions whenever one app's credentials live in two
+   * organizations, and a signature scan answers only the first. So every rung
+   * of the ladder asks this one before it accepts a candidate.
+   *
+   * The fence refuses only a PROVABLE mismatch — both sides must know a tenant
+   * (§3.3). An assignment whose tenant was never captured keeps today's
+   * behaviour and converges once the CP's identity reconciler backfills it; a
+   * delivery naming no tenant keeps today's behaviour too, and cannot be
+   * steered at a chosen victim in the first place.
+   */
+  private tenantFencePasses(botId: string, deliveryTenant: string | undefined): boolean {
+    const assignment = this.router.get(botId)
+    // Distributed install (`teamId` set): STRICT — same-app siblings share the
+    // signing secret, the envelope tenant id is the only discriminator, and a
+    // delivery that names no tenant has no safe owner among them. This arm
+    // preserves the pre-fence scan guard's fail-closed semantics exactly.
+    if (assignment?.teamId !== undefined) return assignment.teamId === deliveryTenant
+    // Every other install kind (`workspaceId` when captured): refuse only a
+    // PROVABLE mismatch — both sides must know a tenant (§3.3 fail-open arms:
+    // an uncaptured identity keeps today's behaviour until the reconciler
+    // backfills it; a tenant-less delivery keeps today's behaviour too).
+    const workspace = assignment?.workspaceId
+    if (workspace === undefined || deliveryTenant === undefined) return true
+    return workspace === deliveryTenant
   }
 
   /** Make the inline selector effective for the current Slack thread immediately.

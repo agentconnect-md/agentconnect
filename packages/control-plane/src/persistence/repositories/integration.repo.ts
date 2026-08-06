@@ -266,6 +266,15 @@ export class PgBotRepo implements BotRepo {
     return rows.map(toBotRecord)
   }
 
+  async slackWorkspaceClaimedElsewhere(orgId: OrgId, slackAppId: string, workspaceId: string): Promise<boolean> {
+    // Cross-org on purpose (the admission question IS cross-org), boolean on
+    // purpose (no foreign row crosses the seam) — ingress-tenant-fence.md §5.
+    const held = await this.db.bot.count({
+      where: { platform: 'slack', slackAppId, workspaceId, NOT: { orgId } }
+    })
+    return held > 0
+  }
+
   async getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null> {
     // Cross-org on purpose: (slackAppId, teamId) is globally unique — a workspace
     // install of a distributed app binds to exactly one org, and the platform
