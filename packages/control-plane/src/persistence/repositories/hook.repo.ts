@@ -2852,7 +2852,8 @@ export class PgHookRepo implements HookRepo {
    */
   async deleteOrgWithReviewProjectionCleanup(
     orgId: OrgId,
-    at: Date
+    at: Date,
+    shredTarget: { mount: string; keyName: string }
   ): Promise<{
     status: 'deleted' | 'review_cleanup_pending' | 'daemons_present'
     removedHookIds: string[]
@@ -3003,6 +3004,18 @@ export class PgHookRepo implements HookRepo {
         // in the same fenced transaction as the final Org cascade.
         await tx.hookReviewProjection.deleteMany({ where: { orgId } })
         await tx.hookRun.deleteMany({ where: { orgId } })
+        // Record the crypto-shred intent in the SAME transaction as the delete
+        // (docs/designs/per-org-secret-encryption.md §6). Deleting the Vault key
+        // is a remote effect that cannot join this transaction, and after the
+        // org row is gone nothing else remembers the id, so the tombstone is the
+        // only durable link between "this org was deleted" and "its key must
+        // die". Nothing here destroys a key — the operator-run shred CLI does,
+        // under its own identity. `createMany` + skipDuplicates keeps a re-run
+        // harmless if a prior attempt already recorded the intent.
+        await tx.pendingKeyShred.createMany({
+          data: [{ orgId, mount: shredTarget.mount, keyName: shredTarget.keyName }],
+          skipDuplicates: true
+        })
         await tx.org.delete({ where: { id: orgId } })
         return { status: 'deleted' as const, removedHookIds: hookRows.map((row) => row.id) }
       },

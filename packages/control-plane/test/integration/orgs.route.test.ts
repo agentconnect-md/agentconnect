@@ -254,6 +254,26 @@ describe('DELETE /orgs/:orgId', () => {
 
       const list = (await (await app.inject({ method: 'GET', url: '/api/v1/orgs' })).json()) as OrgBody[]
       expect(list.map((o) => o.id)).not.toContain(created.id)
+
+      // The crypto-shred intent outlives the org it names: after the cascade
+      // nothing else remembers the id, and the key must still be destroyed
+      // (docs/designs/per-org-secret-encryption.md §6). Deliberately no FK, so
+      // the cascade above cannot take it.
+      expect(await prisma.pendingKeyShred.findUnique({ where: { orgId: created.id } })).not.toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it('records NO shred intent when the deletion is refused', async () => {
+    await prisma.daemon.create({
+      data: { id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', orgId: DEFAULT_ORG_ID, sessionEpoch: 1n, status: 'ready' }
+    })
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      expect((await app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(409)
+      // A tombstone here would schedule the destruction of a LIVE org's key.
+      expect(await prisma.pendingKeyShred.findUnique({ where: { orgId: DEFAULT_ORG_ID } })).toBeNull()
     } finally {
       await close()
     }

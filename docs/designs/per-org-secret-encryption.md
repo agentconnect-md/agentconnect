@@ -1,6 +1,12 @@
 # Per-Org Secret Encryption and Crypto-Shredding
 
-> Status: Proposed. Extends
+> Status: Implemented. `SecretCipher` carries a scope, org keys derive from the
+> deployment key, organization deletion records a shred intent, and
+> `secrets/shred-cli.ts` drains it. What remains is operational: granting the
+> Vault policies of §6 and running the §7 rewrap sweep per environment, without
+> which the shred guarantee is not yet true.
+>
+> Extends
 > [`secret-store-seams.md`](./secret-store-seams.md), which established the
 > single `SecretCipher` seam and the Vault Transit implementation. This document
 > adds a **scope** to that seam so each organization's secrets are encrypted
@@ -274,8 +280,16 @@ connected daemon.
 **The CP records the intent; it never deletes a key.** Deleting a Vault key is a
 remote effect that cannot join the deletion transaction, so that transaction
 writes a tombstone instead: one `pending_key_shred` row keyed by the deleted
-organization's id, with the time it was recorded. The row has no foreign key —
-its whole purpose is to outlive the organization.
+organization's id. The row has no foreign key — its whole purpose is to outlive
+the organization.
+
+It stores the **resolved target**, not just the id: the transit mount and the
+full key name as configured at the moment of deletion. Deriving the name at
+drain time instead would read whatever configuration is current then, so
+rotating the mount or the org key prefix in between would aim the destroy at a
+name that does not exist — which the shredder reads as "already destroyed",
+clears the row, and leaves the real key alive forever. Pinning makes each
+tombstone self-describing and immune to later configuration changes.
 A separate operator-run entry point (`secrets/shred-cli.ts`, mirroring the
 existing rewrap CLI) drains the table: for each row it destroys
 `<orgKeyPrefix><orgId>` and clears the row. Both halves are idempotent, and a
@@ -296,6 +310,13 @@ check in application code, guarding an irreversible operation on another
 deployment's data. Deriving key names from ids this deployment recorded itself
 removes the failure mode by construction: the shredder cannot produce a key name
 it did not build from its own tombstone.
+
+**A separate identity means a separate configuration, too.** The job reads its
+own minimal config (`secrets/shred-config.ts`): database, Vault address, and its
+own credential. Reusing the control plane's config loader would demand the CP's
+`API_KEY_PEPPER` and its Vault credential before the job could start, so a
+least-privilege workload would have to be handed the very credential this
+separation exists to keep away from it.
 
 **A separate Vault role is not enough; it needs a separate identity.** Roles in
 a workload-identity auth method bind to the workload's service account, so a
@@ -336,7 +357,9 @@ The order is therefore:
 1. Deploy. New writes seal under org keys; legacy values keep reading.
 2. Run the rewrap sweep (`secrets/rewrap.ts`) per environment. It resolves each
    row's scope and re-seals under the correct key.
-3. Only then is per-organization shredding a claim that holds.
+3. Only then is per-organization shredding a claim that holds. Until step 2
+   completes, deleting an organization destroys a key that some of its values
+   were never sealed under — the deletion is real, the guarantee is partial.
 
 **Known rolling-update window — accepted, and only safe pre-release.** The
 envelope tag is new, so a binary from before this change does not recognize it:

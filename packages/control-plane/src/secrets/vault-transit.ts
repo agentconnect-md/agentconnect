@@ -35,14 +35,12 @@
  * one. `seal` is never cached — Transit returns fresh ciphertext per call by
  * design.
  */
-import { readFile } from 'node:fs/promises'
 import type { SecretCipher } from './cipher.js'
 import { SECRET_ENVELOPE_PREFIX, type SecretScope } from './scope.js'
+import { describeVaultError, VaultHttp, type FetchLike, type VaultAuth } from './vault-http.js'
 
-type FetchLike = typeof fetch
-
-export type VaultTransitAuth =
-  { method: 'token'; token: string } | { method: 'jwt'; role: string; jwtPath: string; authMount: string }
+/** The auth shape now lives in `vault-http.ts`; re-exported for existing callers. */
+export type VaultTransitAuth = VaultAuth
 
 export interface VaultTransitOpts {
   /** Vault origin, e.g. `https://vault.example.com:8200`. */
@@ -55,7 +53,7 @@ export interface VaultTransitOpts {
   mount?: string
   /** Vault Enterprise namespace (sent as `X-Vault-Namespace`). */
   namespace?: string
-  auth: VaultTransitAuth
+  auth: VaultAuth
   /** Test seams. */
   fetchImpl?: FetchLike
   now?: () => number
@@ -66,33 +64,26 @@ export interface VaultTransitOpts {
 /** Transit ciphertext is self-describing: `vault:v<key-version>:<base64>`. */
 const CIPHERTEXT_RE = /^vault:v\d+:/
 
-/** Renew the JWT login after 80% of the lease (floor 10s so a tiny lease can't thrash). */
-const RENEW_FRACTION = 0.8
-
 export class VaultTransitSecretCipher implements SecretCipher {
-  private readonly base: string
+  private readonly http: VaultHttp
   private readonly key: string
   private readonly orgKeyPrefix: string
   private readonly mount: string
-  private readonly namespace: string | undefined
-  private readonly auth: VaultTransitAuth
-  private readonly fetchImpl: FetchLike
-  private readonly now: () => number
   private readonly openCacheMax: number
 
   private readonly openCache = new Map<string, string>()
-  private clientToken: { value: string; renewAtMs: number } | undefined
-  private loginInFlight: Promise<string> | undefined
 
   constructor(opts: VaultTransitOpts) {
-    this.base = `${opts.addr.replace(/\/+$/, '')}/v1`
+    this.http = new VaultHttp({
+      addr: opts.addr,
+      namespace: opts.namespace,
+      auth: opts.auth,
+      fetchImpl: opts.fetchImpl,
+      now: opts.now
+    })
     this.key = opts.key
     this.orgKeyPrefix = opts.orgKeyPrefix
     this.mount = opts.mount ?? 'transit'
-    this.namespace = opts.namespace
-    this.auth = opts.auth
-    this.fetchImpl = opts.fetchImpl ?? fetch
-    this.now = opts.now ?? Date.now
     this.openCacheMax = opts.openCacheMax ?? 5000
   }
 
@@ -150,68 +141,9 @@ export class VaultTransitSecretCipher implements SecretCipher {
     key: string,
     body: Record<string, string>
   ): Promise<{ ciphertext?: string; plaintext?: string }> {
-    const path = `${this.mount}/${op}/${key}`
-    let res = await this.post(path, body, await this.token())
-    if (res.status === 403 && this.auth.method === 'jwt') {
-      // Client token revoked/expired server-side — drop it, re-login, retry ONCE.
-      this.clientToken = undefined
-      res = await this.post(path, body, await this.token())
-    }
-    if (!res.ok) throw new Error(`vault transit ${op} failed: ${await describeError(res)}`)
+    const res = await this.http.request('POST', `${this.mount}/${op}/${key}`, body)
+    if (!res.ok) throw new Error(`vault transit ${op} failed: ${await describeVaultError(res)}`)
     const json = (await res.json()) as { data?: { ciphertext?: string; plaintext?: string } }
     return json.data ?? {}
   }
-
-  private post(path: string, body: unknown, token: string): Promise<Response> {
-    return this.fetchImpl(`${this.base}/${path}`, {
-      method: 'POST',
-      headers: {
-        'X-Vault-Token': token,
-        'content-type': 'application/json',
-        ...(this.namespace ? { 'X-Vault-Namespace': this.namespace } : {})
-      },
-      body: JSON.stringify(body)
-    })
-  }
-
-  private token(): Promise<string> | string {
-    if (this.auth.method === 'token') return this.auth.token
-    if (this.clientToken && this.now() < this.clientToken.renewAtMs) return this.clientToken.value
-    // Single-flight: concurrent seals/opens during (re-)login share one exchange.
-    this.loginInFlight ??= this.jwtLogin(this.auth).finally(() => {
-      this.loginInFlight = undefined
-    })
-    return this.loginInFlight
-  }
-
-  private async jwtLogin(auth: Extract<VaultTransitAuth, { method: 'jwt' }>): Promise<string> {
-    const jwt = (await readFile(auth.jwtPath, 'utf8')).trim()
-    const res = await this.fetchImpl(`${this.base}/auth/${auth.authMount}/login`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.namespace ? { 'X-Vault-Namespace': this.namespace } : {})
-      },
-      body: JSON.stringify({ role: auth.role, jwt })
-    })
-    if (!res.ok) throw new Error(`vault jwt login failed: ${await describeError(res)}`)
-    const json = (await res.json()) as { auth?: { client_token?: string; lease_duration?: number } }
-    const token = json.auth?.client_token
-    if (!token) throw new Error('vault jwt login: no client_token in response')
-    const leaseMs = (json.auth?.lease_duration ?? 3600) * 1000
-    this.clientToken = { value: token, renewAtMs: this.now() + Math.max(leaseMs * RENEW_FRACTION, 10_000) }
-    return token
-  }
-}
-
-/** Status + Vault's `errors[]` only — NEVER the request/response payloads. */
-async function describeError(res: Response): Promise<string> {
-  let errors = ''
-  try {
-    const json = (await res.json()) as { errors?: string[] }
-    if (Array.isArray(json.errors) && json.errors.length > 0) errors = ` (${json.errors.join('; ')})`
-  } catch {
-    // non-JSON error body — status alone is enough (and never echo the body)
-  }
-  return `HTTP ${res.status}${errors}`
 }
