@@ -62,7 +62,6 @@ import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/conso
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
-import SessionAccessNotice from '@/components/console/SessionAccessNotice'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
@@ -1122,7 +1121,6 @@ export default function SessionDetailView() {
   // into either — an empty answer the CP could not verify is not an absence.
   const conversationRoster = conversationResolution === undefined ? undefined : conversationResolution.conversation
   const conversationAccessDegraded = conversationResolution?.accessSyncDegraded === true
-  const conversationAccessIssues = conversationResolution?.accessIssues ?? []
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
   const conversationSourceKey =
@@ -2217,7 +2215,6 @@ export default function SessionDetailView() {
     return (
       <SessionDetailFrame withRail={false}>
         <div className="card p-6">
-          <SessionAccessNotice degraded issues={conversationAccessIssues} impact="sessions" />
           <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">
             {conversationError
               ? 'This conversation could not be loaded. The console could not reach the control plane.'
