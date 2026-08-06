@@ -50,6 +50,7 @@ let foreignCronId: string
 let ownCronId: string
 let foreignHookId: string
 let foreignHookRunId: string
+let foreignProjectionId: string
 let foreignProviderId: string
 let ownProviderId: string
 let foreignSkillSourceId: string
@@ -191,6 +192,27 @@ beforeEach(async () => {
       deliveryKey: `delivery-${randomUUID()}`,
       startedAt: new Date('2026-08-01T00:00:00.000Z'),
       status: 'success'
+    }
+  })
+  // A durable Check projection too. `HookRepo.remove` tombstones these on its way
+  // to deleting the definition, so a foreign DELETE has an external-effect row to
+  // damage — and only seeding one can show it comes back untouched.
+  foreignProjectionId = randomUUID()
+  await prisma.hookReviewProjection.create({
+    data: {
+      id: foreignProjectionId,
+      hookId: foreignHookId,
+      orgId: foreignOrgId,
+      agentId: foreignAgentId,
+      repoId: 4242n,
+      repoFullName: 'example-org/foreign-repo',
+      headSha: 'a'.repeat(40),
+      reportSha: 'a'.repeat(40),
+      projectionEpoch: 1n,
+      externalId: `ext-${randomUUID()}`,
+      mode: 'check',
+      gateMode: 'informational',
+      desiredState: 'in_progress'
     }
   })
 
@@ -364,6 +386,14 @@ async function foreignHookUnmodified(): Promise<void> {
   expect(row!.enabled).toBe(true)
   // The run row hangs off the hook; a removal would have tombstoned it too.
   expect(await prisma.hookRun.findUnique({ where: { id: foreignHookRunId } })).not.toBeNull()
+  // And the durable Check projection. `remove` runs the tombstones and the delete
+  // in ONE transaction, so the refusal — the typed `HookMissing` from the early
+  // fence, or the delete's own P2025 if it ever regressed to fencing only there —
+  // rolls the tombstones back either way. This asserts that end state directly.
+  const projection = await prisma.hookReviewProjection.findUnique({ where: { id: foreignProjectionId } })
+  expect(projection).not.toBeNull()
+  expect(projection!.tombstonedAt).toBeNull()
+  expect(projection!.desiredState).toBe('in_progress')
 }
 
 async function foreignRegistriesUnmodified(): Promise<void> {
