@@ -1252,6 +1252,12 @@ export async function executeTool(
   // session context, NEVER from tool input; only the subtasks / deadline / replyTarget
   // come from args. The daemon owns record-first persistence, per-subtask atomic
   // delivered|failed via the messageAgent path, and the one-shot deadline.
+  //
+  // RETIRED SURFACE: these three names are no longer injected into any agent's tool set
+  // (`RETIRED_ORCHESTRATION_TOOLS` in tools.ts) because the send half duplicated
+  // `sendMessage`. The dispatch stays so a session already warm with the old descriptors,
+  // and any still-open orchestration record, keep resolving. Do not re-advertise these
+  // without resolving the overlap with `sendMessage` + `viewSessionStatus` first.
   if (name === 'startOrchestration') {
     const rawSubtasks = args.subtasks
     if (!Array.isArray(rawSubtasks) || rawSubtasks.length === 0) {
