@@ -189,13 +189,24 @@ describe('VaultTransitSecretCipher', () => {
     await expect(cipher.open(sealed, DEPLOYMENT_SCOPE)).rejects.toThrow(/unable to decrypt/)
   })
 
-  it('legacy arm: a pre-envelope vault: value opens under the DEPLOYMENT key whatever the scope says', async () => {
+  it('REFUSES a pre-scoping value instead of decrypting it under the deployment key', async () => {
     const vault = fakeVault()
     const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
-    // Shaped like a value sealed before scoping existed: no envelope tag.
-    const legacy = 'vault:v1:ac-cp.bGVnYWN5' // "legacy" base64 under the deployment key
-    expect(await cipher.open(legacy, ORG_A)).toBe('legacy')
-    expect(vault.calls.at(-1)!.url).toBe('https://vault.example.com/v1/transit/decrypt/ac-cp')
+    // Shaped like a value sealed before scoping existed: no envelope tag. The
+    // old fallback read these under the deployment key, IGNORING the asserted
+    // scope — a hole in the cross-tenant fence that only migration justified.
+    const legacy = 'vault:v1:ac-cp.bGVnYWN5'
+    await expect(cipher.open(legacy, ORG_A)).rejects.toThrow(/unscoped legacy ciphertext/)
+    expect(vault.calls).toHaveLength(0) // refused locally; Vault never asked
+  })
+
+  it('REFUSES a newer envelope version rather than passing it through as plaintext', async () => {
+    const vault = fakeVault()
+    const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+    // What an older replica sees mid-rolling-update once a newer one writes.
+    // Passing it through would hand a ciphertext onward as a live credential.
+    await expect(cipher.open('acv2:vault:v1:whatever', ORG_A)).rejects.toThrow(/newer envelope version/)
+    expect(vault.calls).toHaveLength(0)
   })
 
   it('a WARM cache does not weaken the cross-scope fence (ciphertext-only keying would leak here)', async () => {

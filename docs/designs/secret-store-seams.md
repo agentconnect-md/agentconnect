@@ -31,7 +31,7 @@ secret.
 
 1. **Keep agent secrets in the row-per-key `agent_secret` table behind `AgentSecretStore`**, matching the BotSecret discipline: values never appear on `AgentRecord` (structurally preventing accidental serialization); lists/DTOs obtain only key names through `keys()` (without loading values); and wire projections (`agent/upsert`, the `register/ok` roster, and `agent/activate`) obtain values through `get()`.
    - Row-per-key rather than a single JSONB row: PATCH's per-key merge semantics (string replaces / null deletes / omission leaves unchanged) map naturally to row-level upserts and deletes without read-modify-write races. `keys()` selects only the key column, so **key names remain available without decryption when an encrypting cipher is enabled**. Encryption operates per value, matching the shape of other stores.
-2. **Introduce the `SecretCipher` port (`secrets/cipher.ts`) as the sole at-rest transformation point.** Every secret-store implementation receives the same injected instance. The list grows with new stores, including the two external-memory stores, so construction in `container.ts` is authoritative. Write paths call `seal(plaintext)` and read paths call `open(stored)`. `PlaintextSecretCipher` is the identity implementation used when encryption is disabled.
+2. **Introduce the `SecretCipher` port (`secrets/cipher.ts`) as the sole at-rest transformation point.** Every secret-store implementation receives the same injected instance. The list grows with new stores, including the two external-memory stores, so construction in `container.ts` is authoritative. Write paths call `seal(plaintext, scope)` and read paths call `open(stored, scope)` — the scope names whose key is used, and is supplied by the caller (see [`per-org-secret-encryption.md`](./per-org-secret-encryption.md)). `PlaintextSecretCipher` is the identity implementation used when encryption is disabled.
    - The composition root (`container.ts` / `buildApp.secretCipher`) constructs one instance and passes it to every store. **Changing encryption means replacing that one instance, switching every secret together.**
 3. **Make the cipher constructor argument mandatory**, with no default. Every new store construction site must answer "what is the at-rest transform here?", preventing production wiring omissions from silently falling back to plaintext.
 4. **Do not change the C5 lease broker** (`SecretsProvider` / `secret_lease` / protocol §6). It is the end-state track in which the CP never handles plaintext and the daemon resolves references directly against Vault. That track complements the present design, where the CP must hold plaintext and deliver it over a TLS WebSocket. Future adoption is additive.
@@ -41,15 +41,22 @@ secret.
 
 ```ts
 interface SecretCipher {
-  seal(plaintext: string): Promise<string> // plaintext → persisted string
-  open(stored: string): Promise<string> // persisted string → plaintext
+  seal(plaintext: string, scope: SecretScope): Promise<string> // plaintext → persisted string
+  open(stored: string, scope: SecretScope): Promise<string> // persisted string → plaintext
 }
 ```
 
+The `scope` parameter was added by
+[`per-org-secret-encryption.md`](./per-org-secret-encryption.md), which is the
+authoritative description of the current contract. It is deliberately **not**
+encoded in the stored value: the stored string comes out of Postgres, so letting
+it select its own decryption key would mean a row of one organization, read by
+code serving another, decrypts silently.
+
 Requirements for a real implementation such as Vault Transit are documented on the port:
 
-- the output of `seal` is self-describing (Transit values such as `vault:v1:…` satisfy this naturally);
-- `open` **must pass through values that it did not seal** (unrecognized prefix ⇒ return unchanged), so compatible stored values remain readable and can be re-sealed by the convergence tool;
+- the output of `seal` carries an envelope VERSION tag (never a tenant identity);
+- `open` **must pass through values that it did not seal** (no envelope tag ⇒ return unchanged), so plaintext rows remain readable — but it must **refuse** a value that is sealed and unreadable by that build (a pre-scoping ciphertext, or a newer envelope version) rather than hand ciphertext back as plaintext;
 - neither method may log its arguments.
 
 This shape also supports the variant in which values move to Vault KV and the column stores a reference (`seal` writes KV and returns a reference; `open` resolves the reference), although Transit remains the recommendation because data stays in Postgres and backup consistency is preserved.

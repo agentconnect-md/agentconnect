@@ -11,10 +11,12 @@
  * (docs/designs/per-org-secret-encryption.md).
  *
  * Contract (pinned on the port):
- * - `open` PASSES THROUGH values it did not seal (neither the envelope tag nor
- *   a bare `vault:vN:` prefix ⇒ return as-is): existing plaintext rows keep
- *   reading after the flip, and the next write re-seals them — the rollout is
- *   online, no backfill required.
+ * - `open` PASSES THROUGH values it did not seal (no envelope tag ⇒ return
+ *   as-is): plaintext rows under `SECRET_CIPHER=none` keep reading, and the next
+ *   write seals them — the flip is online, no backfill required. It does NOT
+ *   pass through something that is sealed but unreadable here (a pre-scoping
+ *   `vault:vN:` value, or a newer envelope version); those throw, because
+ *   handing ciphertext back as plaintext is silent corruption.
  * - A value sealed under one scope does NOT open under another: Transit rejects
  *   a ciphertext presented to a different key, which is the cross-tenant fence.
  * - No argument or response body is ever logged; errors carry only the HTTP
@@ -39,9 +41,6 @@ import type { SecretCipher } from './cipher.js'
 import { SECRET_ENVELOPE_PREFIX, type SecretScope } from './scope.js'
 import { describeVaultError, VaultHttp, type FetchLike, type VaultAuth } from './vault-http.js'
 
-/** The auth shape now lives in `vault-http.ts`; re-exported for existing callers. */
-export type VaultTransitAuth = VaultAuth
-
 export interface VaultTransitOpts {
   /** Vault origin, e.g. `https://vault.example.com:8200`. */
   addr: string
@@ -61,8 +60,10 @@ export interface VaultTransitOpts {
   openCacheMax?: number
 }
 
-/** Transit ciphertext is self-describing: `vault:v<key-version>:<base64>`. */
-const CIPHERTEXT_RE = /^vault:v\d+:/
+/** A bare Transit ciphertext — what this cipher produced BEFORE scoping existed. */
+const LEGACY_CIPHERTEXT_RE = /^vault:v\d+:/
+/** Any version of our own envelope, including ones this build predates. */
+const ENVELOPE_RE = /^acv\d+:/
 
 export class VaultTransitSecretCipher implements SecretCipher {
   private readonly http: VaultHttp
@@ -105,16 +106,17 @@ export class VaultTransitSecretCipher implements SecretCipher {
   }
 
   async open(stored: string, scope: SecretScope): Promise<string> {
-    // Three arms, in order (docs/designs/per-org-secret-encryption.md §4):
-    //   envelope-tagged ⇒ scoped value, opens under THIS scope's key — a value
-    //     of another scope fails here, which is the reason scope is a parameter;
-    //   bare `vault:vN:` ⇒ sealed before scoping existed, opens under the
-    //     deployment key regardless of scope (the migration arm, §7);
+    // Two arms (docs/designs/per-org-secret-encryption.md §4):
+    //   envelope-tagged ⇒ opens under THIS scope's key — a value of another
+    //     scope fails here, which is the whole reason scope is a parameter;
     //   anything else ⇒ never sealed, return unchanged (pass-through contract).
-    const scoped = stored.startsWith(SECRET_ENVELOPE_PREFIX)
-    if (!scoped && !CIPHERTEXT_RE.test(stored)) return stored
-    const key = scoped ? this.keyFor(scope) : this.key
-    const ciphertext = scoped ? stored.slice(SECRET_ENVELOPE_PREFIX.length) : stored
+    // Everything the pass-through must NOT swallow is rejected first.
+    if (!stored.startsWith(SECRET_ENVELOPE_PREFIX)) {
+      assertNotUnreadableCiphertext(stored)
+      return stored
+    }
+    const key = this.keyFor(scope)
+    const ciphertext = stored.slice(SECRET_ENVELOPE_PREFIX.length)
     // Cache by KEY + ciphertext: the stored string no longer implies a key, and
     // two scopes must never share an entry.
     const cacheKey = `${key}\u0000${ciphertext}`
@@ -145,5 +147,29 @@ export class VaultTransitSecretCipher implements SecretCipher {
     if (!res.ok) throw new Error(`vault transit ${op} failed: ${await describeVaultError(res)}`)
     const json = (await res.json()) as { data?: { ciphertext?: string; plaintext?: string } }
     return json.data ?? {}
+  }
+}
+
+/**
+ * The pass-through arm exists for values that were never sealed (plaintext rows
+ * under `SECRET_CIPHER=none`). It must never swallow a value that IS sealed but
+ * unreadable by this build — returning ciphertext as if it were plaintext is
+ * silent corruption: the caller ships it to a daemon or a platform API as a
+ * credential. Both cases below are loud instead.
+ */
+function assertNotUnreadableCiphertext(stored: string): void {
+  if (LEGACY_CIPHERTEXT_RE.test(stored)) {
+    // Sealed before scoping (docs/designs/per-org-secret-encryption.md §7). The
+    // deployment-key fallback that used to read these is gone — it ignored the
+    // asserted scope, which was a hole in the cross-tenant fence it only earned
+    // by being temporary. Recovering such a value needs a pre-scoping build to
+    // run the rewrap sweep first.
+    throw new Error('secret cipher: unscoped legacy ciphertext — run the rewrap sweep on a pre-scoping build first')
+  }
+  if (ENVELOPE_RE.test(stored)) {
+    // A NEWER envelope version than this build knows. Happens on a rolling
+    // update where a new replica writes and an old one reads; failing here is
+    // what keeps that window loud rather than silently wrong.
+    throw new Error('secret cipher: stored value uses a newer envelope version than this build supports')
   }
 }
