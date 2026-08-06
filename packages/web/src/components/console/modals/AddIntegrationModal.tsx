@@ -6,7 +6,7 @@ import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeis
 import { GithubMark, PlatformMark } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
-import { GithubPrivateReposNotice } from '@/components/console/WorkspaceFormFields'
+import { GithubPrivateReposNotice, REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
 import type {
   WebWizardTransport,
   WizardFooterState,
@@ -46,8 +46,7 @@ import {
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
-import { REPO_ACCESS_BADGE } from '@/components/console/WorkspaceCard'
-import AddAgentRepoModal from './AddAgentRepoModal'
+import EditWorkspaceModal from './EditWorkspaceModal'
 import {
   GH_DEFAULT_FAMILIES,
   GH_DEFAULT_TRIGGER_MODE,
@@ -269,8 +268,8 @@ export default function AddIntegrationModal({
   )
   const authorizedRepos = useMemo(() => agentReposData ?? [], [agentReposData])
   const canEditAgent = agent.canEdit
-  // Non-null ⇒ the nested authorize-repo dialog is open, prefilled with this
-  // owner/repo + the minimum review/reporting tier ('' = no repo prefill).
+  // Non-null ⇒ the unified workspace dialog is open at repository
+  // authorization, prefilled with this owner/repo + minimum required tier.
   const [authRepoFor, setAuthRepoFor] = useState<{ repo: string; access: RepoAccess } | null>(null)
   const ghSelectedRepo = ghRepos?.find((repo) => repo.fullName.toLowerCase() === ghRepoPick?.toLowerCase())
   const ghSelectedAuthorization = authorizedRepos.find(
@@ -1274,7 +1273,7 @@ export default function AddIntegrationModal({
                                               workspace
                                             </span>
                                           ) : authTier ? (
-                                            <span className={REPO_ACCESS_BADGE[authTier]}>{authTier}</span>
+                                            <span className={REPOSITORY_ACCESS_BADGE[authTier]}>{authTier}</span>
                                           ) : blockedNoEdit ? null : (
                                             <span className="badge flex-none bg-(--surface-app) text-(--brand-soft-text)">
                                               authorize
@@ -1651,18 +1650,22 @@ export default function AddIntegrationModal({
           </Button>
         )}
       </div>
-      {/* Nested authorize-repo dialog (its own fixed overlay): grant the typed
-          repo, then continue creating the hook with it pre-picked. */}
+      {/* Repository shortcuts share the Workspace card's editor, then return to
+          hook creation with the new grant pre-picked. */}
       {authRepoFor !== null && (
-        <AddAgentRepoModal
+        <EditWorkspaceModal
           agent={agent}
-          workspaceRepo={isGithubAppWs ? wsRepo : null}
           authorized={authorizedRepos}
-          initialAccess={authRepoFor.access}
-          {...(!isGithubAppWs && wsRepo ? { fixedRepo: wsRepo } : {})}
-          {...(authRepoFor.repo ? { initialRepo: authRepoFor.repo } : {})}
+          initialRepositoryAuthorization={{
+            access: authRepoFor.access,
+            ...(authRepoFor.repo ? { repo: authRepoFor.repo } : {})
+          }}
           onClose={() => setAuthRepoFor(null)}
-          onCreated={(row) => {
+          onChanged={() => {
+            void refresh()
+            setAuthRepoFor(null)
+          }}
+          onRepositoryCreated={(row) => {
             void mutateAgentRepos((rows) => (rows ? [...rows, row] : [row]), { revalidate: false })
             setGhRepoPick(row.repoFullName)
             setGhQ('')

@@ -1892,7 +1892,7 @@ function UnauthorizedWatchBadge() {
   return (
     <span
       className="badge flex-none bg-(--status-paused-soft) text-(--amber-500)"
-      title="This repo isn't authorized for the agent — events still trigger it, but replies and pushes back to GitHub have no credentials. Authorize the repo in the Workspace card."
+      title="This repo isn't authorized for the agent — events still trigger it, but replies and pushes back to GitHub have no credentials. Open Edit workspace to authorize it."
     >
       <Icon name="triangle-alert" size={11} />
       write-back unauthorized

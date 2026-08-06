@@ -3,10 +3,19 @@ import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
+import type { RepoAccess } from '@/lib/api'
 
 export type WorkspaceMode = 'scratch' | 'github'
 export type WorkspaceRepoAccess = 'read' | 'write'
 type RepositoryMenuStyle = { left: number; top: number; width: number; maxHeight: number }
+
+// Complete literal class strings keep access badges consistent anywhere the
+// workspace or one of its additional repositories is shown.
+export const REPOSITORY_ACCESS_BADGE: Record<RepoAccess, string> = {
+  read: 'badge flex-none bg-(--surface-active) text-(--text-tertiary)',
+  comment: 'badge flex-none bg-(--brand-soft) text-(--brand-soft-text)',
+  write: 'badge flex-none bg-(--status-paused-soft) text-(--amber-500)'
+}
 
 export function WorkspaceModeField({
   value,

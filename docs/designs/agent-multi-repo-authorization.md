@@ -402,14 +402,17 @@ mismatch.
    - Every change uses the cold lifecycle to clear daemon credential cache.
      Return 409 when it would remove workspace write authority required by an
      enabled formal review or Check.
-   - Beside it, list each additional repository with `repoFullName`, its access
-     tier, and delete. The workspace repository itself appears here only when the
+   - Beside it, summarize each additional repository with `repoFullName` and its
+     access tier. The workspace repository itself appears here only when the
      workspace is App-backed, where the installation makes it implicit; a manual
      checkout is represented solely by its explicit grant, if one exists.
-   - "Add repository" reuses the installation/repository picker and list
-     filtering, offers three access options defaulting to read, describes each
-     level, warns on write blast radius, and reuses `/access` preflight.
-     Comment preflights as read.
+   - The same Edit workspace dialog lists, adds, and deletes additional repository
+     grants. Card and hook-editor shortcuts open that dialog directly at its
+     authorization step, so every context keeps the fast path without creating a
+     second repository-management surface.
+   - "Authorize repository" reuses the installation/repository picker and list
+     filtering, offers access options defaulting to read, describes each level,
+     warns on write blast radius, and reuses `/access` preflight.
    - The card is visible under `canView`; add and delete require `canEdit` and a
      non-viewer role.
 2. **GitHub hook editor:** candidates are workspace plus additional

@@ -2,13 +2,13 @@
 
 // Authorize a repository for one agent (issue #457,
 // agent-multi-repo-authorization.md §web 1): repo picker over the org's GitHub
-// App installations + a three-tier access choice, preflighted against the
+// App installations + an access choice, preflighted against the
 // per-user identity-assertion gate when the deployment has one.
 //
-// Unlike the ModalProvider dialogs this renders its OWN scrim/modal overlay:
-// the github hook editor opens it NESTED (authorize, then continue creating the
-// hook), which the one-at-a-time provider can't host. Escape closes only this
-// layer (capture-phase listener) so a nested open never tears down the parent.
+// This renders its own scrim/modal overlay because Edit workspace can expose it
+// as a preserved-state subview while another editor (such as GitHub hook setup)
+// remains underneath. Escape closes only this layer (capture-phase listener),
+// so a nested open never tears down the caller.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark } from '@/components/marks'
@@ -54,7 +54,10 @@ export default function AddAgentRepoModal({
   initialRepo,
   fixedRepo,
   initialAccess,
+  workspaceContext = false,
+  showBack = false,
   onClose,
+  onExit,
   onCreated
 }: {
   agent: Agent
@@ -68,6 +71,12 @@ export default function AddAgentRepoModal({
   fixedRepo?: string
   /** Default access tier — the review/hook flow opens this dialog at `write`. */
   initialAccess?: RepoAccess
+  /** Present this authorization step as part of the Edit workspace surface. */
+  workspaceContext?: boolean
+  /** The parent workspace form is preserved behind this step. */
+  showBack?: boolean
+  /** Close the whole parent editor while `onClose` returns to its prior view. */
+  onExit?: () => void
   onClose: () => void
   onCreated: (row: AgentRepoAuthDto) => void
 }) {
@@ -247,18 +256,27 @@ export default function AddAgentRepoModal({
     <div className="scrim">
       <div className="modal">
         <div className="modalhead">
-          <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
-            <span className="flex h-[17px] w-[17px] items-center justify-center">
-              <GithubMark color="var(--text-secondary)" />
+          {showBack ? (
+            <button className="iconbtn" title="Back to workspace settings" onClick={onClose}>
+              <Icon name="arrow-left" size={16} />
+            </button>
+          ) : (
+            <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
+              <span className="flex h-[17px] w-[17px] items-center justify-center">
+                <GithubMark color="var(--text-secondary)" />
+              </span>
             </span>
-          </span>
+          )}
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-[16px] font-semibold leading-normal">Add repository</div>
+            <div className="font-sans text-[16px] font-semibold leading-normal">
+              {workspaceContext ? 'Edit workspace' : 'Add repository'}
+            </div>
             <div className="mt-[1px] truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-              authorize a GitHub repository for <span className="mono">{agentLabel(agent)}</span>
+              {workspaceContext ? 'authorize an additional repository for ' : 'authorize a GitHub repository for '}
+              <span className="mono">{agentLabel(agent)}</span>
             </div>
           </div>
-          <button className="iconbtn" onClick={onClose}>
+          <button className="iconbtn" onClick={onExit ?? onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -272,8 +290,8 @@ export default function AddAgentRepoModal({
             <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
               <Icon name="info" size={15} className="mt-[1px] flex-none" />
               <span>
-                The GitHub App isn&rsquo;t configured on this deployment — set the{' '}
-                <span className="mono">GITHUB_APP_*</span> control-plane env to enable repository grants.
+                The GitHub App isn&rsquo;t configured for this deployment. Ask a deployment owner to configure it before
+                authorizing repositories.
               </span>
             </div>
           ) : gh.installations.length === 0 ? (
@@ -282,7 +300,7 @@ export default function AddAgentRepoModal({
                 Connect GitHub to grant repos
               </div>
               <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                Install the AgentConnect GitHub app — repository grants are minted through its installations.
+                Install the AgentConnect GitHub app, then choose which repositories this agent can access.
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <Button size="sm" onClick={() => void openGhInstall()}>
@@ -519,7 +537,7 @@ export default function AddAgentRepoModal({
         </div>
         <div className="modalfoot">
           <span className="flex-1 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-            Tokens are minted per repository at this tier — revoke any time.
+            Access applies only to this repository and can be revoked at any time.
           </span>
           <Button variant="ghost" onClick={onClose}>
             Cancel

@@ -8,7 +8,6 @@ vi.mock('swr', () => ({
 }))
 vi.mock('@/lib/api', () => ({
   creatorLabel: () => 'Dana Reyes',
-  deleteAgentRepo: vi.fn(),
   fetchAgentRepos: vi.fn()
 }))
 vi.mock('next/navigation', () => ({
@@ -20,7 +19,6 @@ vi.mock('@/lib/org-context', () => ({ useOrgs: () => ({ activeOrg: { id: 'org-1'
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ me: null }) }))
 vi.mock('@/lib/data-context', () => ({ useConsoleData: () => ({ refresh: vi.fn() }) }))
 vi.mock('@/lib/swr-keys', () => ({ consoleKeys: { agentRepos: () => ['repos'] } }))
-vi.mock('@/components/console/modals/AddAgentRepoModal', () => ({ default: () => null }))
 vi.mock('@/components/console/modals/EditWorkspaceModal', () => ({ default: () => null }))
 
 import { WorkspaceCard } from './WorkspaceCard'
@@ -68,13 +66,13 @@ describe('workspace repository authority', () => {
     expect(html).toContain('None explicitly authorized')
   })
 
-  it('renders a manual checkout through its explicit grant, without duplicating it', () => {
+  it('renders a manual checkout through its explicit grant summary', () => {
     repos.rows = [{ id: 'g1', repoFullName: 'acme/infra', access: 'comment', createdBy: 'u1' }]
     const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB)} />)
     expect(html).not.toContain('authorized implicitly')
-    // Exactly one chip for the repo — the explicit, revocable one, carrying its
-    // real tier. A second, non-removable implicit chip would show no Revoke.
-    expect(html.match(/Revoke access/g)).toHaveLength(1)
+    // The card summarizes the real explicit tier; edits and revocation live in
+    // the shared Edit workspace dialog rather than a second inline flow.
+    expect(html).not.toContain('Revoke access')
     expect(html).toContain('comment access')
   })
 

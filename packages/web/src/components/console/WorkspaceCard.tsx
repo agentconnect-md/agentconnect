@@ -18,11 +18,9 @@
 //      repo; manual GitHub workspaces may list only an explicit grant for their
 //      own repo so CP-owned effects can run.
 //
-// Grant rows are visible to anyone who can view the agent; conversion,
-// authorize and revoke require canEdit (viewers see a read-only card).
-// "Authorize repository" opens AddAgentRepoModal
-// (the design's inline add-expander is skipped — established precedent: the
-// modal owns the picker/tier/preflight flow).
+// Grant rows are visible to anyone who can view the agent. Every editing entry
+// point opens the same Edit workspace surface; the card stays a discoverable
+// summary instead of owning a second add/revoke flow.
 
 import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
@@ -30,21 +28,13 @@ import useSWR from 'swr'
 import { GithubMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import type { Agent, WorkspaceStatusInfo } from '@/lib/data'
-import { creatorLabel, deleteAgentRepo, fetchAgentRepos, type AgentRepoAuthDto, type RepoAccess } from '@/lib/api'
+import { creatorLabel, fetchAgentRepos } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useConsoleData } from '@/lib/data-context'
-import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
 import EditWorkspaceModal from '@/components/console/modals/EditWorkspaceModal'
-
-// Tier badges — complete literal class strings (the Tailwind scanner needs the
-// full text in source; never assemble from fragments).
-export const REPO_ACCESS_BADGE: Record<RepoAccess, string> = {
-  read: 'badge flex-none bg-(--surface-active) text-(--text-tertiary)',
-  comment: 'badge flex-none bg-(--brand-soft) text-(--brand-soft-text)',
-  write: 'badge flex-none bg-(--status-paused-soft) text-(--amber-500)'
-}
+import { REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
 
 /**
  * The live half of the Source row. The card itself only knows the agent's
@@ -88,11 +78,12 @@ export function WorkspaceCard({
   const { activeOrg } = useOrgs()
   const { me } = useProfile()
   const { refresh } = useConsoleData()
-  const [addOpen, setAddOpen] = useState(false)
-  // Non-null ⇒ the workspace editor is open, preselected on that mode.
-  const [editMode, setEditMode] = useState<'scratch' | 'github' | null>(null)
-  const [removing, setRemoving] = useState<string | null>(null)
-  const [err, setErr] = useState<string | null>(null)
+  // Non-null ⇒ the unified workspace editor is open. The authorization
+  // shortcut starts it directly in its additional-repository subview.
+  const [editState, setEditState] = useState<{
+    mode: 'scratch' | 'github'
+    authorizeRepository?: true
+  } | null>(null)
 
   const ws = agent.workspace
 
@@ -107,7 +98,7 @@ export function WorkspaceCard({
     const mode = searchParams.get('editws')
     if (autoEdited.current || !mode) return
     autoEdited.current = true
-    if (agent.canEdit) setEditMode(mode === 'scratch' ? 'scratch' : 'github')
+    if (agent.canEdit) setEditState({ mode: mode === 'scratch' ? 'scratch' : 'github' })
     const sp = new URLSearchParams(searchParams)
     sp.delete('editws')
     router.replace(`${pathname}${sp.size ? `?${sp}` : ''}`, { scroll: false })
@@ -125,31 +116,21 @@ export function WorkspaceCard({
   const repos = reposData ?? []
   const loadError = reposData === undefined && reposError
   const canEdit = agent.canEdit
+  const manualWorkspaceAuthorized =
+    ws.mode === 'github' &&
+    !isGithubApp &&
+    repos.some((authorization) => authorization.repoFullName.toLowerCase() === ws.repo.toLowerCase())
   // A manual checkout has no App installation to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.
   const workspaceAccess =
     ws.mode === 'github' ? (ws.installationId ? (ws.gitAccess ?? 'write') : ('read' as const)) : null
   const remoteLabel = header?.remoteLabel ?? 'GitHub'
 
-  const remove = async (row: AgentRepoAuthDto) => {
-    if (removing) return
-    setRemoving(row.id)
-    setErr(null)
-    try {
-      await deleteAgentRepo(agent.id, row.id)
-      void mutate((rows) => rows?.filter((r) => r.id !== row.id), { revalidate: false })
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setRemoving(null)
-    }
-  }
-
   // The segment is the conversion entry point; picking the mode the agent is
   // already on is a no-op (the pencil edits the current source's settings).
   const pickMode = (next: 'scratch' | 'github') => {
     if (!canEdit || next === ws.mode) return
-    setEditMode(next)
+    setEditState({ mode: next })
   }
   const segClass = (mode: 'scratch' | 'github') =>
     mode === ws.mode ? (canEdit ? SEG_ON : SEG_ON_LOCKED) : canEdit ? SEG_OFF : SEG_OFF_LOCKED
@@ -196,7 +177,7 @@ export function WorkspaceCard({
         {/* Effective workspace access stays visible next to the repository
             (product-conventions.md §Workspace navigation and repository access) —
             it is the blast radius of everything the agent pushes. */}
-        {workspaceAccess && <span className={REPO_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
+        {workspaceAccess && <span className={REPOSITORY_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
         {header?.status && (
           <span className="badge flex-none" style={{ background: header.status.bg, color: header.status.text }}>
             <span className="dot h-[6px] w-[6px]" style={{ background: header.status.dot }} />
@@ -235,7 +216,11 @@ export function WorkspaceCard({
           </a>
         )}
         {canEdit && (
-          <button className="iconbtn h-6 w-6 flex-none" title="Edit workspace" onClick={() => setEditMode(ws.mode)}>
+          <button
+            className="iconbtn h-6 w-6 flex-none"
+            title="Edit workspace"
+            onClick={() => setEditState({ mode: ws.mode })}
+          >
             <Icon name="pencil" size={13} />
           </button>
         )}
@@ -285,15 +270,7 @@ export function WorkspaceCard({
                   <GithubMark />
                 </span>
                 <span className="mono text-[11.5px] text-(--text-primary)">{r.repoFullName}</span>
-                {canEdit && (
-                  <button
-                    className={`iconbtn h-[18px] w-[18px] flex-none ${removing === r.id ? 'pointer-events-none opacity-50' : ''}`}
-                    title="Revoke access"
-                    onClick={() => void remove(r)}
-                  >
-                    <Icon name="x" size={11} />
-                  </button>
-                )}
+                <span className={REPOSITORY_ACCESS_BADGE[r.access]}>{r.access}</span>
               </span>
             ))}
             {repos.length === 0 && !isGithubApp && (
@@ -307,39 +284,32 @@ export function WorkspaceCard({
         {canEdit && (
           <button
             className="inline-flex h-6 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border border-dashed border-(--border-default) bg-transparent px-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:border-(--brand) hover:text-(--brand)"
-            onClick={() => setAddOpen(true)}
+            onClick={() =>
+              setEditState({
+                mode: ws.mode,
+                ...(!manualWorkspaceAuthorized ? { authorizeRepository: true as const } : {})
+              })
+            }
           >
-            <Icon name="plus" size={12} />
-            Authorize repository
+            <Icon name={manualWorkspaceAuthorized ? 'settings-2' : 'plus'} size={12} />
+            {manualWorkspaceAuthorized ? 'Manage repository' : 'Authorize repository'}
           </button>
         )}
-
-        {err && <span className="font-sans text-[12px] font-normal leading-normal text-(--status-error)">{err}</span>}
       </div>
 
-      {addOpen && (
-        <AddAgentRepoModal
-          agent={agent}
-          workspaceRepo={isGithubApp ? ws.repo : null}
-          authorized={repos}
-          {...(ws.mode === 'github' && !isGithubApp ? { fixedRepo: ws.repo } : {})}
-          onClose={() => setAddOpen(false)}
-          onCreated={(row) => {
-            void mutate((rows) => (rows ? [...rows, row] : [row]), { revalidate: false })
-            setAddOpen(false)
-          }}
-        />
-      )}
-
-      {editMode && (
+      {editState && (
         <EditWorkspaceModal
           agent={agent}
           authorized={repos}
-          initialMode={editMode}
-          onClose={() => setEditMode(null)}
+          initialMode={editState.mode}
+          {...(editState.authorizeRepository ? { initialRepositoryAuthorization: {} } : {})}
+          onAuthorizedChange={(rows) => {
+            void mutate(rows, { revalidate: false })
+          }}
+          onClose={() => setEditState(null)}
           onChanged={() => {
             void mutate()
-            setEditMode(null)
+            setEditState(null)
             refresh()
           }}
         />
