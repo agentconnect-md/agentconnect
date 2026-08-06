@@ -132,6 +132,13 @@ export const HookReviewResult = z.discriminatedUnion('state', [
 ])
 export type HookReviewResult = z.infer<typeof HookReviewResult>
 
+/** Body-free identity of the daemon's one fallback GitHub comment. */
+export const GithubPublishedComment = z.object({
+  kind: z.enum(['issue_comment', 'review_comment']),
+  commentId: HookBigIntString
+})
+export type GithubPublishedComment = z.infer<typeof GithubPublishedComment>
+
 /**
  * Hook (inbound-webhook trigger) frames — webhook-triggers-and-github-events.md.
  *
@@ -212,7 +219,9 @@ export const HookReport = z
     // A submitted result is repeated here as recovery if the immediate
     // github/review-result request was lost. No review/comment body crosses CP.
     reviewAttemptId: z.string().uuid().optional(),
-    reviewResult: HookReviewResult.optional()
+    reviewResult: HookReviewResult.optional(),
+    // Exact public fallback location. The comment body remains daemon-owned.
+    publishedComment: GithubPublishedComment.optional()
   })
   .superRefine((report, ctx) => {
     if ((report.reviewAttemptId === undefined) !== (report.reviewResult === undefined)) {
@@ -220,6 +229,13 @@ export const HookReport = z
         code: 'custom',
         path: report.reviewAttemptId === undefined ? ['reviewAttemptId'] : ['reviewResult'],
         message: 'reviewAttemptId and reviewResult must be reported together'
+      })
+    }
+    if (report.publishedComment && report.reviewResult?.state === 'submitted') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['publishedComment'],
+        message: 'a submitted formal review and fallback comment are mutually exclusive'
       })
     }
   })

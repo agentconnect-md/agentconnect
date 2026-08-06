@@ -129,7 +129,7 @@ function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
   }
   const deps = {
     hook: hookRepo,
-    agent: { get: vi.fn(async () => agent) },
+    agent: { getUnscoped: vi.fn(async () => agent) },
     github: {
       mintReviewForAgent: vi.fn(async () => ({
         token: 'broker-secret',

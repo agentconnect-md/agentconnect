@@ -5,7 +5,6 @@ import {
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { z } from 'zod'
-import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from './logto-connectors.js'
 
 export const DeploymentConfigPutSchema = z.strictObject({
   values: DeploymentConfigValuesV1Schema,
@@ -22,20 +21,12 @@ export interface GithubDeploymentCredentials {
   webhookSecret?: string
 }
 
-export interface GithubConfiguredUrls {
-  externalUrl: string
-  setupUrl: string
-  webhookUrl: string
-  webhookActive: boolean
-  callbackUrls: string[]
-}
-
 type CurrentDeploymentConfig = { values: DeploymentConfigValuesV1 }
 
 export function githubDeploymentPut(
   current: CurrentDeploymentConfig,
   credentials: GithubDeploymentCredentials,
-  options: { configuredUrls?: GithubConfiguredUrls; connectLogto?: boolean } = {}
+  options: { webhookEnabled?: boolean; connectLogto?: boolean } = {}
 ): DeploymentConfigPut {
   const appId = Number(credentials.appId)
   if (!Number.isSafeInteger(appId) || appId <= 0) throw new Error('GitHub App creation returned an invalid app id')
@@ -47,7 +38,7 @@ export function githubDeploymentPut(
         appId,
         slug: credentials.slug,
         clientId: credentials.clientId,
-        ...(options.configuredUrls ? { configuredUrls: options.configuredUrls } : {})
+        webhookEnabled: options.webhookEnabled ?? true
       },
       ...(connectLogto
         ? {
@@ -60,7 +51,6 @@ export function githubDeploymentPut(
                   }
                 : connectLogto.browser,
               githubConnector: {
-                connectorId: LOGTO_GITHUB_CONNECTOR_ID,
                 appId,
                 slug: credentials.slug,
                 clientId: credentials.clientId
@@ -142,7 +132,6 @@ export function logtoGithubConnectorPut(
             }
           : current.values.logto.browser,
         githubConnector: {
-          connectorId: current.values.logto.githubConnector?.connectorId ?? LOGTO_GITHUB_CONNECTOR_ID,
           appId,
           slug: credentials.slug,
           clientId: credentials.clientId
@@ -160,17 +149,9 @@ export interface SlackDeploymentCredentials {
   signingSecret: string
 }
 
-export interface SlackConfiguredUrls {
-  oauthRedirectUrl: string
-  eventsUrl: string
-  interactionsUrl: string
-  loginRedirectUrl?: string
-}
-
 export function slackDeploymentPut(
   current: CurrentDeploymentConfig,
   credentials: SlackDeploymentCredentials,
-  configuredUrls?: SlackConfiguredUrls,
   connectLogto = false
 ): DeploymentConfigPut {
   const logto = connectLogto && current.values.logto
@@ -179,8 +160,7 @@ export function slackDeploymentPut(
       ...current.values,
       slack: {
         appId: credentials.appId,
-        clientId: credentials.clientId,
-        ...(configuredUrls ? { configuredUrls } : {})
+        clientId: credentials.clientId
       },
       ...(logto
         ? {
@@ -193,7 +173,6 @@ export function slackDeploymentPut(
                   }
                 : logto.browser,
               slackConnector: {
-                connectorId: logto.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID,
                 appId: credentials.appId,
                 clientId: credentials.clientId
               }
@@ -209,10 +188,8 @@ export function slackDeploymentPut(
 }
 
 export interface LogtoGoogleConnectorCredentials {
-  connectorId?: string
   clientId: string
   clientSecret?: string
-  configuredRedirectUris: string[]
 }
 
 export function logtoGoogleConnectorPut(
@@ -235,10 +212,7 @@ export function logtoGoogleConnectorPut(
             }
           : current.values.logto.browser,
         googleConnector: {
-          connectorId:
-            credentials.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID,
-          clientId: credentials.clientId,
-          configuredRedirectUris: credentials.configuredRedirectUris
+          clientId: credentials.clientId
         }
       }
     },

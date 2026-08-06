@@ -12,7 +12,7 @@ import { Tag } from '../plugins/openapi.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, OrgId } from '../../domain/ids.js'
 import { resolveAgentIconUrl } from '../../agents/agent-icon.js'
-import { denyViewerWrite, ctxOf } from '../rbac.js'
+import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canEdit, canView } from '../../authorization/policy.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import {
@@ -64,8 +64,8 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
           return reply.code(401).send({ error: 'Unauthorized', statusCode: 401, message: 'authentication required' })
         }
         const orgId = orgIdOf(req)
-        const agent = await deps.repos.agent.get(AgentId(req.body.agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
         }
         if (!canEdit(agent, ctxOf(req))) {
@@ -213,14 +213,8 @@ export function feishuRegistrationRoutes(deps: HttpDeps, feishu: FeishuRouteSeam
           if (!release) throw new FeishuRegistrationRetryError()
           let httpAppConfig: ConfigureFeishuHttpAppInput | undefined
           try {
-            const current = await deps.repos.agent.get(registration.agentId)
-            if (
-              !current ||
-              current.orgId !== registration.orgId ||
-              !current.daemonId ||
-              !canView(current, ctxOf(req)) ||
-              !canEdit(current, ctxOf(req))
-            ) {
+            const current = await deps.repos.agent.get(orgOf(req), registration.agentId)
+            if (!current || !current.daemonId || !canView(current, ctxOf(req)) || !canEdit(current, ctxOf(req))) {
               throw new FeishuRegistrationSetupError('agent_unavailable')
             }
             const availability = await integrationPlatformAvailability(deps, {

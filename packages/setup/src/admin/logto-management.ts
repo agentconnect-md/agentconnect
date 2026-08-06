@@ -1,4 +1,5 @@
 /** Minimal Logto Management API client for setup reconciliation and ADMIN claim. */
+import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
 import { ADMIN_ROLE } from './auth.js'
 
 const MANAGED_APP_TAG = 'agentconnectSetup'
@@ -16,11 +17,10 @@ export interface LogtoSetupDesired {
   applicationName: string
   redirectUris: readonly string[]
   postLogoutRedirectUris: readonly string[]
-  corsAllowedOrigins: readonly string[]
   socialProviders: readonly string[]
-  github?: { connectorId: string; clientId: string; clientSecret: string }
-  google?: { connectorId: string; clientId: string; clientSecret: string }
-  slack?: { connectorId: string; clientId: string; clientSecret: string; scope: string }
+  github?: { clientId: string; clientSecret: string }
+  google?: { clientId: string; clientSecret: string }
+  slack?: { clientId: string; clientSecret: string; scope: string }
 }
 
 interface LogtoRole {
@@ -35,7 +35,6 @@ interface LogtoApplication {
   name: string
   type: string
   oidcClientMetadata: Record<string, unknown>
-  customClientMetadata: Record<string, unknown>
   customData: Record<string, unknown>
 }
 
@@ -49,7 +48,6 @@ interface LogtoConnector {
 interface LogtoSignInExperience {
   signIn: Record<string, unknown>
   signUp: Record<string, unknown>
-  socialSignIn: Record<string, unknown>
   socialSignInConnectorTargets: string[]
   signInMode: unknown
 }
@@ -93,6 +91,11 @@ export interface LogtoSetupReconcileResult {
   adminRoleCreated: boolean
 }
 
+export interface LogtoSetupReconcileOptions {
+  /** Explicit secret replacement cannot be verified through Logto's masked read response. */
+  refreshConnectorSecrets?: boolean
+}
+
 export class LogtoManagementError extends Error {
   constructor(
     readonly code:
@@ -125,6 +128,15 @@ function sameStrings(left: unknown, right: readonly string[]): boolean {
   return JSON.stringify(stringArray(left)) === JSON.stringify(right)
 }
 
+function containsStrings(current: unknown, required: readonly string[]): boolean {
+  const values = new Set(stringArray(current))
+  return required.every((value) => values.has(value))
+}
+
+function mergeStrings(current: unknown, required: readonly string[]): string[] {
+  return [...new Set([...stringArray(current), ...required])]
+}
+
 function addDiff(
   diff: LogtoConfigurationDiff[],
   field: string,
@@ -150,7 +162,6 @@ function parseApplication(value: unknown): LogtoApplication {
     name: row.name,
     type: row.type,
     oidcClientMetadata: asRecord(row.oidcClientMetadata),
-    customClientMetadata: asRecord(row.customClientMetadata),
     customData: asRecord(row.customData)
   }
 }
@@ -174,8 +185,7 @@ function desiredConnector(
         'the Logto GitHub connector needs the deployment GitHub App client id and secret'
       )
     }
-    const { connectorId: id, ...config } = desired.github
-    return { id, connectorId: 'github-universal', config }
+    return { id: LOGTO_GITHUB_CONNECTOR_ID, connectorId: 'github-universal', config: desired.github }
   }
   if (target === 'google') {
     if (!desired.google) {
@@ -184,8 +194,7 @@ function desiredConnector(
         'the Logto Google connector needs a Google OAuth client id and secret'
       )
     }
-    const { connectorId: id, ...config } = desired.google
-    return { id, connectorId: 'google-universal', config }
+    return { id: LOGTO_GOOGLE_CONNECTOR_ID, connectorId: 'google-universal', config: desired.google }
   }
   if (target === 'slack') {
     if (!desired.slack) {
@@ -194,15 +203,25 @@ function desiredConnector(
         'the Logto Slack connector needs the deployment Slack App client id and secret'
       )
     }
-    const { connectorId: id, ...config } = desired.slack
-    return { id, connectorId: 'slack-universal', config }
+    return { id: LOGTO_SLACK_CONNECTOR_ID, connectorId: 'slack-universal', config: desired.slack }
   }
   throw new Error(`unsupported managed Logto connector target: ${target}`)
 }
 
 function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof desiredConnector>): boolean {
   return (
-    connector.connectorId === desired.connectorId && JSON.stringify(connector.config) === JSON.stringify(desired.config)
+    connector.connectorId === desired.connectorId &&
+    connector.config.clientId === desired.config.clientId &&
+    (desired.connectorId !== 'slack-universal' || connector.config.scope === desired.config.scope)
+  )
+}
+
+function selectConnector(connectors: readonly LogtoConnector[], target: string): LogtoConnector | undefined {
+  const matches = connectors.filter((connector) => connector.target === target)
+  if (matches.length <= 1) return matches[0]
+  throw new LogtoManagementError(
+    'SOCIAL_CONNECTOR_AMBIGUOUS',
+    `Logto has more than one social connector for target ${target}`
   )
 }
 
@@ -235,6 +254,17 @@ export class LogtoAdminClaimClient {
     await this.accessToken()
   }
 
+  /** Resolve provider callback IDs from Logto. These are remote identities, not deployment configuration. */
+  async resolveConnectorIds(targets: readonly string[]): Promise<Record<string, string>> {
+    const connectors = await this.listConnectors()
+    return Object.fromEntries(
+      targets.flatMap((target) => {
+        const connector = selectConnector(connectors, target)
+        return connector ? [[target, connector.id]] : []
+      })
+    )
+  }
+
   /** Read roles without mutating Logto and report the exact ADMIN role. */
   async inspectAdminRole(): Promise<LogtoAdminRoleInspection> {
     const role = (await this.listRoles()).find((candidate) => candidate.name === ADMIN_ROLE)
@@ -260,23 +290,15 @@ export class LogtoAdminClaimClient {
         'Redirect URIs',
         stringArray(application.oidcClientMetadata.redirectUris),
         desired.redirectUris,
-        sameStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris)
+        containsStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris)
       )
       addDiff(
         applicationDiff,
         'Post sign-out redirect URIs',
         stringArray(application.oidcClientMetadata.postLogoutRedirectUris),
         desired.postLogoutRedirectUris,
-        sameStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
+        containsStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
       )
-      addDiff(
-        applicationDiff,
-        'CORS allowed origins',
-        stringArray(application.customClientMetadata.corsAllowedOrigins),
-        desired.corsAllowedOrigins,
-        sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
-      )
-      addDiff(applicationDiff, 'AgentConnect managed application', hasManagedTag(application), true)
     }
     const signInExperienceDiff: LogtoConfigurationDiff[] = []
     addDiff(signInExperienceDiff, 'Sign-in methods', signInExperience.signIn.methods ?? null, [])
@@ -284,12 +306,6 @@ export class LogtoAdminClaimClient {
     addDiff(signInExperienceDiff, 'Secondary identifiers', signInExperience.signUp.secondaryIdentifiers ?? [], [])
     addDiff(signInExperienceDiff, 'Password sign-up', signInExperience.signUp.password ?? null, false)
     addDiff(signInExperienceDiff, 'Sign-up verification', signInExperience.signUp.verify ?? null, false)
-    addDiff(
-      signInExperienceDiff,
-      'Skip required identifiers',
-      signInExperience.socialSignIn.skipRequiredIdentifiers ?? null,
-      true
-    )
     addDiff(
       signInExperienceDiff,
       'Social providers',
@@ -306,15 +322,8 @@ export class LogtoAdminClaimClient {
         diff: applicationDiff
       },
       connectors: desired.socialProviders.map((target) => {
-        const matches = connectors.filter((connector) => connector.target === target)
-        if (matches.length > 1) {
-          throw new LogtoManagementError(
-            'SOCIAL_CONNECTOR_AMBIGUOUS',
-            `Logto has more than one social connector for target ${target}`
-          )
-        }
-        const connector = matches[0]
         if (!isManagedConnectorTarget(target)) {
+          const connector = selectConnector(connectors, target)
           return {
             target,
             id: connector?.id ?? null,
@@ -324,11 +333,11 @@ export class LogtoAdminClaimClient {
           }
         }
         const expected = desiredConnector(target, desired)
+        const connector = selectConnector(connectors, target)
         const diff: LogtoConfigurationDiff[] = []
         if (!connector) {
           diff.push({ field: `${target} connector`, current: 'Missing', expected: expected.id })
         } else {
-          addDiff(diff, `${target} connector ID`, connector.id, expected.id)
           addDiff(diff, `${target} connector type`, connector.connectorId, expected.connectorId)
           addDiff(diff, `${target} client ID`, connector.config.clientId ?? null, expected.config.clientId ?? null)
           if (target === 'slack') {
@@ -342,7 +351,7 @@ export class LogtoAdminClaimClient {
           target,
           id: connector?.id ?? null,
           exists: connector !== undefined,
-          matches: connector ? connector.id === expected.id && connectorMatches(connector, expected) : false,
+          matches: connector ? connectorMatches(connector, expected) : false,
           diff
         }
       }),
@@ -351,9 +360,12 @@ export class LogtoAdminClaimClient {
     }
   }
 
-  async reconcileSetup(desired: LogtoSetupDesired): Promise<LogtoSetupReconcileResult> {
+  async reconcileSetup(
+    desired: LogtoSetupDesired,
+    options: LogtoSetupReconcileOptions = {}
+  ): Promise<LogtoSetupReconcileResult> {
     const application = await this.ensureApplication(desired)
-    const connectors = await this.ensureConnectors(desired)
+    const connectors = await this.ensureConnectors(desired, options.refreshConnectorSecrets ?? false)
     const signInExperienceChanged = await this.ensureSignInExperience(desired.socialProviders)
     const adminRoleCreated = (await this.ensureAdminRole()).created
     return {
@@ -430,7 +442,6 @@ export class LogtoAdminClaimClient {
             redirectUris: desired.redirectUris,
             postLogoutRedirectUris: desired.postLogoutRedirectUris
           },
-          customClientMetadata: { corsAllowedOrigins: desired.corsAllowedOrigins },
           customData: { [MANAGED_APP_TAG]: MANAGED_APP_TAG_VALUE }
         })
       })
@@ -446,12 +457,11 @@ export class LogtoAdminClaimClient {
       body: JSON.stringify({
         oidcClientMetadata: {
           ...existing.oidcClientMetadata,
-          redirectUris: desired.redirectUris,
-          postLogoutRedirectUris: desired.postLogoutRedirectUris
-        },
-        customClientMetadata: {
-          ...existing.customClientMetadata,
-          corsAllowedOrigins: desired.corsAllowedOrigins
+          redirectUris: mergeStrings(existing.oidcClientMetadata.redirectUris, desired.redirectUris),
+          postLogoutRedirectUris: mergeStrings(
+            existing.oidcClientMetadata.postLogoutRedirectUris,
+            desired.postLogoutRedirectUris
+          )
         },
         customData: { ...existing.customData, [MANAGED_APP_TAG]: MANAGED_APP_TAG_VALUE }
       })
@@ -494,10 +504,9 @@ export class LogtoAdminClaimClient {
   private applicationMatches(application: LogtoApplication, desired: LogtoSetupDesired): boolean {
     return (
       application.type === 'SPA' &&
-      hasManagedTag(application) &&
-      sameStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris) &&
-      sameStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris) &&
-      sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
+      (application.id === desired.applicationId || hasManagedTag(application)) &&
+      containsStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris) &&
+      containsStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
     )
   }
 
@@ -514,45 +523,41 @@ export class LogtoAdminClaimClient {
   }
 
   private async ensureConnectors(
-    desired: LogtoSetupDesired
+    desired: LogtoSetupDesired,
+    refreshSecrets: boolean
   ): Promise<Array<{ target: string; id: string; created: boolean; changed: boolean }>> {
     const existing = await this.listConnectors()
     const result: Array<{ target: string; id: string; created: boolean; changed: boolean }> = []
     for (const target of desired.socialProviders) {
-      const matches = existing.filter((connector) => connector.target === target)
-      if (matches.length > 1) {
-        throw new LogtoManagementError(
-          'SOCIAL_CONNECTOR_AMBIGUOUS',
-          `Logto has more than one social connector for target ${target}`
-        )
-      }
       if (!isManagedConnectorTarget(target)) {
-        if (!matches[0]) {
+        const connector = selectConnector(existing, target)
+        if (!connector) {
           throw new LogtoManagementError(
             'SOCIAL_CONNECTOR_UNSUPPORTED',
             `automatic creation is not supported for the missing Logto social connector ${target}`
           )
         }
-        result.push({ target, id: matches[0].id, created: false, changed: false })
+        result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
       const expected = desiredConnector(target, desired)
-      if (matches[0] && connectorMatches(matches[0], expected)) {
-        result.push({ target, id: matches[0].id, created: false, changed: false })
+      const connector = selectConnector(existing, target)
+      if (connector && connectorMatches(connector, expected) && !refreshSecrets) {
+        result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
-      if (matches[0]) {
-        const response = await this.request(`/api/connectors/${encodeURIComponent(matches[0].id)}`, {
+      if (connector) {
+        const response = await this.request(`/api/connectors/${encodeURIComponent(connector.id)}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ config: expected.config, syncProfile: true })
         })
-        const connector = parseConnector(await response.json().catch(() => null))
-        if (!connector || connector.target !== target) {
+        const updated = parseConnector(await response.json().catch(() => null))
+        if (!updated || updated.target !== target) {
           throw new LogtoManagementError('LOGTO_UNAVAILABLE', `Logto returned an invalid ${target} connector`)
         }
-        existing.splice(existing.indexOf(matches[0]), 1, connector)
-        result.push({ target, id: connector.id, created: false, changed: true })
+        existing.splice(existing.indexOf(connector), 1, updated)
+        result.push({ target, id: updated.id, created: false, changed: true })
         continue
       }
       const response = await this.request('/api/connectors', {
@@ -565,16 +570,16 @@ export class LogtoAdminClaimClient {
           syncProfile: true
         })
       })
-      const connector = parseConnector(await response.json().catch(() => null))
-      if (!connector || connector.target !== target) {
+      const created = parseConnector(await response.json().catch(() => null))
+      if (!created || created.target !== target) {
         throw new LogtoManagementError(
           'LOGTO_UNAVAILABLE',
           `Logto returned an invalid ${target} connector`,
           response.status
         )
       }
-      existing.push(connector)
-      result.push({ target, id: connector.id, created: true, changed: true })
+      existing.push(created)
+      result.push({ target, id: created.id, created: true, changed: true })
     }
     return result
   }
@@ -587,13 +592,12 @@ export class LogtoAdminClaimClient {
 
   private async getSignInExperience(): Promise<LogtoSignInExperience> {
     const value = asRecord(await this.getJson('/api/sign-in-exp'))
-    if (!Array.isArray(value.socialSignInConnectorTargets) || !value.signIn || !value.signUp || !value.socialSignIn) {
+    if (!Array.isArray(value.socialSignInConnectorTargets) || !value.signIn || !value.signUp) {
       throw new LogtoManagementError('LOGTO_UNAVAILABLE', 'Logto returned an invalid sign-in experience')
     }
     return {
       signIn: asRecord(value.signIn),
       signUp: asRecord(value.signUp),
-      socialSignIn: asRecord(value.socialSignIn),
       socialSignInConnectorTargets: stringArray(value.socialSignInConnectorTargets),
       signInMode: value.signInMode
     }
@@ -612,7 +616,6 @@ export class LogtoAdminClaimClient {
       current.signUp.verify === false &&
       (secondaryIdentifiers === undefined ||
         (Array.isArray(secondaryIdentifiers) && secondaryIdentifiers.length === 0)) &&
-      current.socialSignIn.skipRequiredIdentifiers === true &&
       current.signInMode === 'SignInAndRegister' &&
       sameStrings(current.socialSignInConnectorTargets, targets)
     )
@@ -627,7 +630,6 @@ export class LogtoAdminClaimClient {
       body: JSON.stringify({
         signIn: { methods: [] },
         signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
-        socialSignIn: { ...current.socialSignIn, skipRequiredIdentifiers: true },
         socialSignInConnectorTargets: targets,
         signInMode: 'SignInAndRegister'
       })

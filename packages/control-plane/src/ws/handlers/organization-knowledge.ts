@@ -39,7 +39,7 @@ export const handleKnowledgeSearch: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
     return
   }
-  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
   if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
     return
@@ -81,7 +81,7 @@ export const handleKnowledgeList: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'INTERNAL', 'organization knowledge is unavailable', true)
     return
   }
-  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
   if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
     return
@@ -121,7 +121,7 @@ export const handleOrgSkills: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'INTERNAL', 'organization skills are unavailable', true)
     return
   }
-  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
   if (!requester || requester.daemonId !== DaemonId(conn.daemonId)) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'requesting agent is not placed on this daemon', false)
     return
@@ -184,7 +184,7 @@ export const handleManagedSkillRead: Handler = async (frame, conn, deps) => {
     conn.sendError(frame.id, 'INTERNAL', 'managed skills are unavailable', true)
     return
   }
-  const requester = await deps.agent.get(AgentId(frame.payload.requesterAgentId))
+  const requester = await deps.agent.getUnscoped(AgentId(frame.payload.requesterAgentId))
   if (
     !requester ||
     requester.daemonId !== DaemonId(conn.daemonId) ||

@@ -20,6 +20,7 @@
  * a lost comment never fails the turn (the transcript remains authoritative).
  */
 
+import type { GithubPublishedComment } from '@agentconnect.md/protocol'
 import { renderAttributionMessage } from '../messages/attribution.js'
 import { isNoResponseBody } from '../session/no-response.js'
 
@@ -343,7 +344,7 @@ function truncatedMarkdownPrefix(text: string, budget: number): string {
 
 export class GithubFinalPoster {
   private abandoned = false
-  private publishPromise?: Promise<void>
+  private publishPromise?: Promise<GithubPublishedComment | undefined>
   private readonly abort = new AbortController()
   private readonly sched: PosterScheduler
   private readonly finalizeTimeoutMs: number
@@ -373,33 +374,34 @@ export class GithubFinalPoster {
    * settles (or the bounded wait expires); never rejects. Idempotent: the first
    * call wins, including an empty final.
    */
-  publish(finalBody?: string): Promise<void> {
+  publish(finalBody?: string): Promise<GithubPublishedComment | undefined> {
     if (!this.publishPromise) this.publishPromise = this.publishOnce(finalBody)
     return this.publishPromise
   }
 
-  private async publishOnce(finalBody?: string): Promise<void> {
+  private async publishOnce(finalBody?: string): Promise<GithubPublishedComment | undefined> {
     if (!finalBody?.trim()) return
 
     let deadlineHandle: unknown
     try {
       const deadlineAt = this.sched.now() + this.finalizeTimeoutMs
-      const deadline = new Promise<void>((resolve) => {
+      const deadline = new Promise<undefined>((resolve) => {
         try {
           deadlineHandle = this.sched.setTimeout(() => {
             this.abandonTimedOut()
-            resolve()
+            resolve(undefined)
           }, this.finalizeTimeoutMs)
         } catch (err) {
           this.abandon()
           this.safeWarn(`github poster: publish deadline failed on ${this.repo}#${this.issueNumber} (${String(err)})`)
-          resolve()
+          resolve(undefined)
         }
       })
-      await Promise.race([this.post(finalBody, deadlineAt), deadline])
+      return await Promise.race([this.post(finalBody, deadlineAt), deadline])
     } catch (err) {
       if (!this.abandoned)
         this.safeWarn(`github poster: create failed on ${this.repo}#${this.issueNumber} (${String(err)})`)
+      return undefined
     } finally {
       if (deadlineHandle !== undefined) {
         try {
@@ -411,7 +413,7 @@ export class GithubFinalPoster {
     }
   }
 
-  private async post(text: string, deadlineAt: number): Promise<void> {
+  private async post(text: string, deadlineAt: number): Promise<GithubPublishedComment | undefined> {
     // Resolve dynamic attribution exactly once, immediately before the public write.
     // A session runtime may only expose its final model after the prompt completes.
     const attribution = typeof this.attribution === 'function' ? this.attribution() : this.attribution
@@ -441,16 +443,39 @@ export class GithubFinalPoster {
         signal: this.abort.signal,
         body: JSON.stringify({ body })
       })
-      // Undici requires response bodies to be consumed or cancelled so the
-      // connection can be released. The final-only poster does not need the
-      // returned comment id, and a cancellation failure must not reclassify an
-      // already-created comment as a failed turn.
+      if (res.ok) {
+        // Comment ids are control metadata: retaining one lets the CP point the
+        // informational Check at this exact public result without reading the
+        // comment body. Preserve ids beyond JS's safe integer range.
+        let commentId: string | undefined
+        try {
+          const body = await res.text()
+          const parsed = record(JSON.parse(body.replace(/"id"\s*:\s*(\d{15,})/g, '"id":"$1"')))
+          const rawId = parsed?.id
+          if (typeof rawId === 'string' && /^[1-9]\d*$/.test(rawId)) commentId = rawId
+          if (typeof rawId === 'number' && Number.isSafeInteger(rawId) && rawId > 0) commentId = String(rawId)
+        } catch {
+          // The comment already exists. A missing id only loses the deep link;
+          // it must not reclassify or retry the public write.
+        }
+        if (!commentId) {
+          this.safeWarn(`github poster: created comment has no usable id on ${this.repo}#${this.issueNumber}`)
+          return undefined
+        }
+        return {
+          kind: this.reviewThreadRootCommentId ? 'review_comment' : 'issue_comment',
+          commentId
+        }
+      }
+
+      // Undici requires a failed response body to be cancelled so the
+      // connection can be released. Cancellation cannot change the known
+      // non-effect response.
       try {
         await res.body?.cancel()
       } catch {
         // Best-effort resource cleanup only.
       }
-      if (res.ok) return
 
       const refreshable = attempt === 0 && (res.status === 401 || res.status === 403) && this.deps.invalidateToken
       if (!refreshable) throw new Error(`GitHub POST ${res.status}`)

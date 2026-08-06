@@ -156,9 +156,16 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
         message: 'response does not match schema'
       })
     }
-    // Prisma "record to delete/update does not exist", or a membership-dependent
-    // mutation whose required membership disappeared while it was queued.
-    if ((err as { code?: string }).code === 'P2025' || (err as { code?: string }).code === 'ORG_MEMBERSHIP_MISSING') {
+    // Prisma "record to delete/update does not exist", a membership-dependent
+    // mutation whose required membership disappeared while it was queued, or an
+    // org-fenced agent mutation whose row vanished (or never belonged to the
+    // caller's org) between the route's pre-read and the write — the fence
+    // deliberately makes those indistinguishable (org-scoped-data-layer.md §3).
+    if (
+      (err as { code?: string }).code === 'P2025' ||
+      (err as { code?: string }).code === 'ORG_MEMBERSHIP_MISSING' ||
+      (err as { code?: string }).code === 'AGENT_MISSING'
+    ) {
       return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'resource not found' })
     }
     // Prisma unique-constraint violation (e.g. duplicate agent slug in an org).

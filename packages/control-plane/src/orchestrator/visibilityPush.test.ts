@@ -85,7 +85,7 @@ function deps(
           countUnackedVisibility,
           get: vi.fn(async () => null)
         } as never,
-        agent: { get: vi.fn(async () => (daemonId ? { id: AGENT, daemonId } : { id: AGENT })) } as never
+        agent: { getUnscoped: vi.fn(async () => (daemonId ? { id: AGENT, daemonId } : { id: AGENT })) } as never
       },
       control: { sessionVisibility, sessionVisibilitySnapshot } as never,
       connReg: over.connReg ?? connReg(),
@@ -218,7 +218,7 @@ describe('replayTo — register-time convergence', () => {
             countUnackedVisibility,
             get: vi.fn(async () => null)
           } as never,
-          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -260,7 +260,7 @@ describe('replayTo — register-time convergence', () => {
             countUnackedVisibility: vi.fn(async () => 0),
             get: vi.fn(async () => null)
           } as never,
-          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -291,7 +291,7 @@ describe('replayTo — register-time convergence', () => {
             countUnackedVisibility: vi.fn(async () => 5_000),
             get: vi.fn(async () => null)
           } as never,
-          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot: vi.fn(async () => ({ ok: true })) } as never,
         connReg: connReg(),
@@ -329,7 +329,7 @@ describe('replayTo — register-time convergence', () => {
             countUnackedVisibility: vi.fn(async () => 0),
             get: vi.fn(async () => null)
           } as never,
-          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -359,7 +359,7 @@ describe('replayTo — register-time convergence', () => {
             countUnackedVisibility: vi.fn(async () => 0),
             get: vi.fn(async () => null)
           } as never,
-          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),
@@ -392,7 +392,7 @@ describe('replayTo — register-time convergence', () => {
             countUnackedVisibility: vi.fn(async () => 10),
             get: vi.fn(async () => null)
           } as never,
-          agent: { get: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
+          agent: { getUnscoped: vi.fn(async () => ({ id: AGENT, daemonId: DAEMON })) } as never
         },
         control: { sessionVisibility: vi.fn(), sessionVisibilitySnapshot } as never,
         connReg: connReg(),

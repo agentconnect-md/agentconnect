@@ -68,7 +68,7 @@ export function cronRoutes(deps: HttpDeps) {
   return async function cronRoutesPlugin(app: FastifyInstance): Promise<void> {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const refreshMutationAgent = async (observed: AgentRecord): Promise<AgentRecord | null> => {
-      const current = await deps.repos.agent.get(observed.id)
+      const current = await deps.repos.agent.get(observed.orgId, observed.id)
       if (
         !current ||
         current.daemonId !== observed.daemonId ||
@@ -141,8 +141,8 @@ export function cronRoutes(deps: HttpDeps) {
         // defines both the fire target and the owning daemon. A restricted agent they
         // can't see is rejected identically to a nonexistent id (no existence oracle,
         // and no binding-then-firing a restricted agent). Mirrors integrations create.
-        let agent = await deps.repos.agent.get(AgentId(req.body.agentId))
-        if (!agent || agent.orgId !== orgId || !canView(agent, ctxOf(req))) {
+        let agent = await deps.repos.agent.get(orgOf(req), AgentId(req.body.agentId))
+        if (!agent || !canView(agent, ctxOf(req))) {
           return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: 'unknown agentId' })
         }
         // The target rides one of THIS agent's integrations — the anchor is
@@ -174,7 +174,9 @@ export function cronRoutes(deps: HttpDeps) {
         try {
           const current = await refreshMutationAgent(agent)
           const previousAgent =
-            existing?.agentId && existing.agentId !== agent.id ? await deps.repos.agent.get(existing.agentId) : current
+            existing?.agentId && existing.agentId !== agent.id
+              ? await deps.repos.agent.get(orgOf(req), existing.agentId)
+              : current
           if (!current || !previousAgent) {
             return reply.code(409).send({
               error: 'Conflict',
@@ -335,7 +337,7 @@ export function cronRoutes(deps: HttpDeps) {
         if (!canEdit(cron, ctxOf(req))) {
           return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot run this cron' })
         }
-        let agent = cron.agentId ? await deps.repos.agent.get(cron.agentId) : null
+        let agent = cron.agentId ? await deps.repos.agent.get(orgOf(req), cron.agentId) : null
         if (!agent?.daemonId) {
           return reply
             .code(503)
@@ -409,7 +411,7 @@ export function cronRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'cron has no agent; refresh and retry' })
         }
-        let agent = await deps.repos.agent.get(existingAgentId)
+        let agent = await deps.repos.agent.get(orgOf(req), existingAgentId)
         if (!agent) {
           return reply
             .code(409)
@@ -486,7 +488,7 @@ export function cronRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'cron has no agent; refresh and retry' })
         }
-        const observedAgent = await deps.repos.agent.get(existingAgentId)
+        const observedAgent = await deps.repos.agent.get(orgOf(req), existingAgentId)
         if (!observedAgent) {
           return reply
             .code(409)

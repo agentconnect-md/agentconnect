@@ -32,7 +32,12 @@ import { lockSkillSourceNameScopes } from '../skill-source-lock.js'
 import { tryLockMemoryConnectionScopes } from '../memory-connection-lock.js'
 import { PgHookRepo } from './hook.repo.js'
 import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
-import { AgentWorkspaceIntegrationConflict, MemoryConnectionBusy, MemoryConnectionMissing } from '../errors.js'
+import {
+  AgentMissing,
+  AgentWorkspaceIntegrationConflict,
+  MemoryConnectionBusy,
+  MemoryConnectionMissing
+} from '../errors.js'
 
 /**
  * Enter an agent write's skill-source fence: take the (orgId, name) advisory
@@ -402,17 +407,25 @@ export class PgAgentRepo implements AgentRepo {
     })
   }
 
-  async get(agentId: AgentId): Promise<AgentRecord | null> {
+  async get(orgId: OrgId, agentId: AgentId): Promise<AgentRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const a = await this.db.agent.findUnique({ where: { id: agentId, orgId }, include: withUsers })
+    return a ? toRecord(a) : null
+  }
+
+  async getUnscoped(agentId: AgentId): Promise<AgentRecord | null> {
     const a = await this.db.agent.findUnique({ where: { id: agentId }, include: withUsers })
     return a ? toRecord(a) : null
   }
 
-  async update(agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord> {
-    return this.transaction(async (tx) => this.updateInTx(tx, agentId, patch, opts))
+  async update(orgId: OrgId, agentId: AgentId, patch: UpdateAgentInput, opts?: AgentUpdateOpts): Promise<AgentRecord> {
+    return this.transaction(async (tx) => this.updateInTx(tx, orgId, agentId, patch, opts))
   }
 
   private async updateInTx(
     tx: Prisma.TransactionClient,
+    orgId: OrgId,
     agentId: AgentId,
     patch: UpdateAgentInput,
     opts?: AgentUpdateOpts
@@ -436,7 +449,12 @@ export class PgAgentRepo implements AgentRepo {
     // holding that name scope while waiting on the org row). `create` DOES take it,
     // because a not-yet-inserted row is invisible to a concurrent `all` enrollment
     // scan — see the comment there.
-    const orgId = await orgIdOfAgent(tx, agentId)
+    // Tenancy fence (org-scoped-data-layer.md §3): the caller's org must own
+    // the row. An agent's orgId is immutable, so this unlocked read cannot be
+    // invalidated by a concurrent write — a row deleted after it just reaches
+    // the update below and keeps its missing-row error semantics.
+    const rowOrgId = await orgIdOfAgent(tx, agentId)
+    if (rowOrgId !== orgId) throw new AgentMissing(agentId)
     // The skill-source fence opens BEFORE the agent row lock (its blocking
     // name scopes wrap the rest of this transaction, mirroring how the old
     // per-name chains wrapped the whole write); the visibility set it returns
@@ -578,11 +596,12 @@ export class PgAgentRepo implements AgentRepo {
     // above. This is also where an agent-local secret that would sit beneath an
     // assigned organization variable is refused — the write direction the design
     // rejects from both sides (§3.2).
-    if (orgId) await fenceAgentLocalConfigWrite(tx, orgId, agentId, patch.lastModifiedByUserId)
+    await fenceAgentLocalConfigWrite(tx, orgId, agentId, patch.lastModifiedByUserId)
     return toRecord(a)
   }
 
   async setWorkspace(
+    orgId: OrgId,
     agentId: AgentId,
     expectedLastModifiedAt: Date,
     expectedMode: AgentWorkspace['mode'],
@@ -597,8 +616,10 @@ export class PgAgentRepo implements AgentRepo {
         // this edit with HookDef configuration and projection/grant writes, so a
         // concurrent write-requiring integration cannot race a read downgrade.
         await lockHookReviewAgentLifecycleScope(tx, agentId)
+        // Org fence rides the CAS read + write: a cross-org id misses exactly
+        // like a stale expectation (org-scoped-data-layer.md §3).
         const current = await tx.agent.findUnique({
-          where: { id: agentId },
+          where: { id: agentId, orgId },
           select: { workspaceMode: true, workspaceRepoId: true, lastModifiedAt: true }
         })
         if (
@@ -616,7 +637,7 @@ export class PgAgentRepo implements AgentRepo {
         }
         await assertWorkspaceIntegrationCompatible(tx, agentId, affectedRepoIds, workspace, workspaceRepoId)
         const a = await tx.agent.update({
-          where: { id: agentId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
+          where: { id: agentId, orgId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {
             workspaceMode: workspace.mode,
             workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
@@ -643,6 +664,7 @@ export class PgAgentRepo implements AgentRepo {
   }
 
   async restoreWorkspace(
+    orgId: OrgId,
     agentId: AgentId,
     expectedLastModifiedAt: Date,
     expectedWorkspace: AgentWorkspace,
@@ -664,6 +686,7 @@ export class PgAgentRepo implements AgentRepo {
         const a = await tx.agent.update({
           where: {
             id: agentId,
+            orgId,
             workspaceMode: expectedWorkspace.mode,
             workspaceRepoId: expectedWorkspaceRepoId ?? null,
             lastModifiedAt: expectedLastModifiedAt
@@ -724,13 +747,15 @@ export class PgAgentRepo implements AgentRepo {
   }
 
   async setSharing(
+    orgId: OrgId,
     agentId: AgentId,
     sharing: { visibility: AgentRecord['visibility']; sharedWith: string[] },
     byUserId?: string
   ): Promise<AgentRecord> {
     return this.transaction(async (tx) => {
+      // Org fence: a cross-org id throws the same P2025 as a missing row.
       const existing = await tx.agent.findUniqueOrThrow({
-        where: { id: agentId },
+        where: { id: agentId, orgId },
         select: { orgId: true, visibility: true }
       })
       const memberships = await lockResourceWriteMemberships(tx, {
@@ -772,6 +797,7 @@ export class PgAgentRepo implements AgentRepo {
   }
 
   async setCallPolicy(
+    orgId: OrgId,
     agentId: AgentId,
     policy: {
       callPolicy: AgentCallPolicy
@@ -781,8 +807,9 @@ export class PgAgentRepo implements AgentRepo {
     },
     byUserId?: string
   ): Promise<AgentRecord> {
+    // Org fence: a cross-org id throws the same P2025 as a missing row.
     const a = await this.db.agent.update({
-      where: { id: agentId },
+      where: { id: agentId, orgId },
       data: {
         callPolicy: policy.callPolicy,
         allowedCallerAgentIds: policy.allowedCallerAgentIds,
@@ -865,7 +892,7 @@ export class PgAgentRepo implements AgentRepo {
     }
   }
 
-  async delete(agentId: AgentId): Promise<HookRecord[]> {
+  async delete(orgId: OrgId, agentId: AgentId): Promise<HookRecord[]> {
     return this.transaction(async (tx) => {
       // Keep the agent-owned hook set stable from enumeration through cleanup
       // and the cascading delete. Hook create/rebind/remove takes this same lock
@@ -880,8 +907,11 @@ export class PgAgentRepo implements AgentRepo {
       // connection's advisory mutation scope with connection/grant mutations —
       // an in-flight one fail-fasts this delete to 409 rather than tearing down
       // an agent whose connection state is mid-change.
+      // Org fence on the read AND the delete below: a cross-org id skips the
+      // side-effects here and reaches the fenced Prisma delete, preserving the
+      // missing-row error semantics the comment above documents.
       const row = await tx.agent.findUnique({
-        where: { id: agentId },
+        where: { id: agentId, orgId },
         select: { orgId: true, runtimeOverrides: true }
       })
       if (row) {
@@ -898,7 +928,7 @@ export class PgAgentRepo implements AgentRepo {
       // Deleting a preset is the explicit opt-out — settle BEFORE the delete
       // (the FK SetNull would orphan the row from this agentId lookup).
       await settlePresetPlacement(tx, agentId)
-      await tx.agent.delete({ where: { id: agentId } })
+      await tx.agent.delete({ where: { id: agentId, orgId } })
       return removedHooks
     })
   }

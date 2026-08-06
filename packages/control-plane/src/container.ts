@@ -1341,7 +1341,7 @@ export function buildContainer(
               Promise.all([
                 ...hooks.map((hook) => hookService.broadcast(hook)),
                 ...agentIds.map(async (agentId) => {
-                  const agent = await repos.agent.get(agentId)
+                  const agent = await repos.agent.getUnscoped(agentId)
                   if (!agent?.daemonId) return
                   try {
                     await sender.agentUpsert(agent.daemonId, {

@@ -162,7 +162,7 @@ describe('GithubRunCoordinator', () => {
         | 'setProjectionDesired'
         | 'upsertReviewSubject'
       >,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW),
       kick
     })
@@ -201,7 +201,7 @@ describe('GithubRunCoordinator', () => {
     const kick = vi.fn()
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW),
       kick
     })
@@ -225,7 +225,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
     await coordinator.afterAccepted(hookId, 'delivery-1')
@@ -255,7 +255,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -285,7 +285,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
     await coordinator.afterReport(hookId, row.deliveryKey)
@@ -318,7 +318,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -358,7 +358,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -385,7 +385,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -422,7 +422,7 @@ describe('GithubRunCoordinator', () => {
     const kick = vi.fn()
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW),
       kick
     })
@@ -453,7 +453,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -482,7 +482,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -504,7 +504,7 @@ describe('GithubRunCoordinator', () => {
     }
     const coordinator = new GithubRunCoordinator({
       hooks: hooks as never,
-      agents: { get: vi.fn(async () => agent()) },
+      agents: { getUnscoped: vi.fn(async () => agent()) },
       clock: new FakeClock(NOW)
     })
 
@@ -585,7 +585,7 @@ describe('GithubRunReporter', () => {
         | 'listReviewSubjects'
         | 'getRunById'
       >,
-      agents: { get: vi.fn(async () => currentAgent) },
+      agents: { getUnscoped: vi.fn(async () => currentAgent) },
       orgs: { slugById: vi.fn(async () => 'acme') },
       webAppUrl: 'https://console.example.com/',
       ...(appSlug ? { appSlug } : {}),
@@ -863,6 +863,53 @@ describe('GithubRunReporter', () => {
     expect(hooks.completeProjectionWrite).toHaveBeenCalledWith(
       expect.objectContaining({ checkRunId: p.checkRunId, observedState: 'action_required' })
     )
+  })
+
+  it.each([
+    [
+      'formal review',
+      {
+        reviewAttemptState: 'submitted',
+        reviewId: '4870130035',
+        reviewEvent: 'APPROVE',
+        verdict: 'pass'
+      } satisfies Partial<HookRunRecord>,
+      'https://github.com/acme/repo/pull/9#pullrequestreview-4870130035'
+    ],
+    [
+      'fallback PR comment',
+      { publishedCommentKind: 'issue_comment', publishedCommentId: '5199581711' } satisfies Partial<HookRunRecord>,
+      'https://github.com/acme/repo/pull/9#issuecomment-5199581711'
+    ],
+    [
+      'fallback inline reply',
+      { publishedCommentKind: 'review_comment', publishedCommentId: '3566000000' } satisfies Partial<HookRunRecord>,
+      'https://github.com/acme/repo/pull/9#discussion_r3566000000'
+    ]
+  ])('links the Check to its own %s', async (_label, runOverrides, expectedUrl) => {
+    const p = projection({
+      desiredState: 'success',
+      observedState: 'in_progress',
+      checkRunId: '90071992547409931'
+    })
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes(`/commits/${p.headSha}/pulls?`)) return Response.json([associatedPull(p)])
+      return Response.json({
+        id: p.checkRunId,
+        external_id: p.externalId,
+        status: 'completed',
+        conclusion: 'success',
+        output: { summary: JSON.parse(String(init?.body)).output.summary }
+      })
+    })
+    const { reporter } = worker(p, fetchImpl, {
+      getRunById: vi.fn(async () => run({ status: 'success', ...runOverrides }))
+    })
+
+    await reporter.tick()
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[1]![1]?.body)) as { output: { summary: string } }
+    expect(body.output.summary).toContain(`Pull requests: [#9](<${expectedUrl}>)`)
   })
 
   it.each([

@@ -748,6 +748,10 @@ Every active informational review Check completed as `skipped` or `failure` offe
 `Request review` action. It targets only that Check's Agent and opens a new generation
 for the same revision after the same live maintainer authorization and revision fences.
 A retired Check offers no action because it no longer has a live integration to run.
+Each Check's pull-request reference links to that Agent's exact published result when
+known: its submitted formal review first, otherwise its fallback comment. Parallel
+reviewers must never link to one another's result. Before a result exists, or when its
+public identity could not be retained, the reference continues to open the pull request.
 A new review generation following a terminal Check publishes a fresh Check Run: GitHub
 keeps a completed run terminal, so reusing it would leave the top-level status and icon
 completed while its output claims the review is queued or in progress. The fresh run is

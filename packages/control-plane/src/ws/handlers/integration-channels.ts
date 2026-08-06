@@ -42,7 +42,7 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // Conversation gating (resource-visibility.md §14): a gated (restricted-agent)
     // integration's fresh conversations start Off — an editor must enable them in
     // the console. Known rows keep their operator-chosen trigger either way.
-    const owner = await deps.agent.get(AgentId(integration.agentId))
+    const owner = await deps.agent.getUnscoped(AgentId(integration.agentId))
     const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
     await deps.integrationChannel.replaceSnapshot(
       integration.id,

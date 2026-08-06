@@ -10,10 +10,7 @@ import {
   OfficialFeishuRegistrationProvider,
   type FeishuRegistrationProvider
 } from '@agentconnect.md/control-plane/feishu-registration-provider'
-import {
-  createFeishuAppCredentialVerifier,
-  type FeishuAppCredentialVerifier
-} from '@agentconnect.md/control-plane/feishu-identity'
+import { createFeishuAppSetupAuditor, type FeishuAppSetupAuditor } from '@agentconnect.md/control-plane/feishu-identity'
 import { createSlackConfigApi, type SlackConfigApi } from '@agentconnect.md/control-plane/slack-config-api'
 import {
   DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1,
@@ -108,7 +105,6 @@ const CreateSlackBody = z.strictObject({
 })
 
 const ConfigureGoogleBody = z.strictObject({
-  connectorId: z.string().trim().min(1).max(500).optional(),
   clientId: z.string().trim().min(1).max(500),
   clientSecret: z.string().min(1).max(10_000).optional()
 })
@@ -134,6 +130,10 @@ const CheckSlackBody = z.strictObject({
   configToken: z.string().trim().min(1).max(10_000)
 })
 
+const ReconcileLogtoBody = z.strictObject({
+  refreshConnectorSecrets: z.boolean().optional().default(false)
+})
+
 interface OidcDiscovery {
   authorizationEndpoint: string
   tokenEndpoint: string
@@ -150,7 +150,7 @@ export interface TenantAdminServerDeps {
   ) => Pick<LogtoAdminClaimClient, 'verifyClientCredentials' | 'inspectAdminRole' | 'inspectSetup'>
   makeLogtoSetupClient?: (config: LogtoManagementConfig) => Pick<LogtoAdminClaimClient, 'reconcileSetup'>
   feishuRegistrationProvider?: Pick<FeishuRegistrationProvider, 'begin' | 'poll'>
-  verifyFeishuAppCredentials?: FeishuAppCredentialVerifier
+  auditFeishuAppSetup?: FeishuAppSetupAuditor
   slackConfigApi?: Pick<SlackConfigApi, 'createApp' | 'exportApp'>
   localAuthBootstrap?: {
     issuer: string
@@ -287,15 +287,12 @@ function appendPath(origin: string, path: string): string {
   return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
 }
 
-function googleRedirectUris(endpoint: string, connectorId: string): string[] {
+function googleRedirectUris(endpoint: string, connectorId: string, webUrl: string): string[] {
   return [
     appendPath(endpoint, `/callback/${connectorId}`),
-    appendPath(endpoint, `/account/callback/social/${connectorId}`)
+    appendPath(endpoint, `/account/callback/social/${connectorId}`),
+    appendPath(webUrl, '/auth/social/callback')
   ]
-}
-
-function sameStrings(left: readonly string[] | undefined, right: readonly string[]): boolean {
-  return JSON.stringify([...(left ?? [])].sort()) === JSON.stringify([...right].sort())
 }
 
 type ServiceTopology = { web: string; controlPlane: string; relay: string }
@@ -345,12 +342,10 @@ function logtoSetup(
       applicationName: browser.applicationName,
       redirectUris: [appendPath(webOrigin, '/auth/callback'), appendPath(adminOrigin, '/auth/callback')],
       postLogoutRedirectUris: [appendPath(webOrigin, '/login')],
-      corsAllowedOrigins: [...new Set([webOrigin, adminOrigin])],
       socialProviders: [...browser.socialProviders],
       ...(logto.githubConnector && githubSecret
         ? {
             github: {
-              connectorId: logto.githubConnector.connectorId,
               clientId: logto.githubConnector.clientId,
               clientSecret: githubSecret
             }
@@ -359,7 +354,6 @@ function logtoSetup(
       ...(logto.googleConnector && googleSecret
         ? {
             google: {
-              connectorId: logto.googleConnector.connectorId,
               clientId: logto.googleConnector.clientId,
               clientSecret: googleSecret
             }
@@ -368,38 +362,11 @@ function logtoSetup(
       ...(logto.slackConnector && slackSecret
         ? {
             slack: {
-              connectorId: logto.slackConnector.connectorId,
               clientId: logto.slackConnector.clientId,
               clientSecret: slackSecret,
               scope: 'openid profile email'
             }
           }
-        : {})
-    }
-  }
-}
-
-function withResolvedConnectorIds(
-  values: DeploymentConfigValuesV1,
-  connectors: readonly { target: string; id: string }[]
-): DeploymentConfigValuesV1 {
-  if (!values.logto) return values
-  const connectorIds = new Map(connectors.map((connector) => [connector.target, connector.id]))
-  const githubId = connectorIds.get('github')
-  const googleId = connectorIds.get('google')
-  const slackId = connectorIds.get('slack')
-  return {
-    ...values,
-    logto: {
-      ...values.logto,
-      ...(values.logto.githubConnector && githubId
-        ? { githubConnector: { ...values.logto.githubConnector, connectorId: githubId } }
-        : {}),
-      ...(values.logto.googleConnector && googleId
-        ? { googleConnector: { ...values.logto.googleConnector, connectorId: googleId } }
-        : {}),
-      ...(values.logto.slackConnector && slackId
-        ? { slackConnector: { ...values.logto.slackConnector, connectorId: slackId } }
         : {})
     }
   }
@@ -412,7 +379,7 @@ export function buildTenantAdminServer(
 ): FastifyInstance {
   const app = Fastify({ logger: false, ...options })
   const fetchImpl = deps.fetch ?? fetch
-  const verifyFeishuAppCredentials = deps.verifyFeishuAppCredentials ?? createFeishuAppCredentialVerifier(fetchImpl)
+  const auditFeishuAppSetup = deps.auditFeishuAppSetup ?? createFeishuAppSetupAuditor(fetchImpl)
   const slackConfigApi = deps.slackConfigApi ?? createSlackConfigApi({ fetch: fetchImpl })
   const requireLocal = localOnly(deps.publicUrl, deps.allowContainerLoopbackProxy)
   const authenticator = new TenantAdminAuthenticator(
@@ -437,7 +404,7 @@ export function buildTenantAdminServer(
     {
       expectedRevision: number
       connectLogto: boolean
-      configuredUrls: ReturnType<typeof githubConfiguredUrls>
+      webhookEnabled: boolean
       expires: ReturnType<typeof setTimeout>
     }
   >()
@@ -464,7 +431,19 @@ export function buildTenantAdminServer(
     return result
   }
 
-  const expectedGithubManifest = (values: DeploymentConfigValuesV1): Record<string, unknown> => {
+  type ManagedConnectorIds = Partial<Record<'github' | 'google' | 'slack', string>>
+
+  const resolveLogtoConnectorIds = async (): Promise<ManagedConnectorIds> => {
+    const runtime = await deps.store.getRuntime(['logto.managementAppSecret'])
+    const config = logtoConfig(runtime, logtoManagementEndpoint)
+    if (!config) return {}
+    return new LogtoAdminClaimClient(config, fetchImpl).resolveConnectorIds(['github', 'google', 'slack'])
+  }
+
+  const expectedGithubManifest = (
+    values: DeploymentConfigValuesV1,
+    connectorIds: ManagedConnectorIds
+  ): Record<string, unknown> => {
     const browser = values.logto?.browser
     const connectLogto = Boolean(values.logto?.githubConnector && browser)
     return buildGithubAppManifest(
@@ -475,34 +454,37 @@ export function buildTenantAdminServer(
         ? {
             webUrl: localAuthBootstrap.services.web,
             logtoEndpoint,
-            connectorId: values.logto!.githubConnector!.connectorId
+            connectorId: connectorIds.github ?? LOGTO_GITHUB_CONNECTOR_ID
           }
         : undefined
     )
   }
 
-  const expectedSlackManifest = (values: DeploymentConfigValuesV1): Record<string, unknown> => {
+  const expectedSlackManifest = (
+    values: DeploymentConfigValuesV1,
+    connectorIds: ManagedConnectorIds
+  ): Record<string, unknown> => {
     const browser = values.logto?.browser
     return buildSlackDeploymentManifest(
       slackProviderAppConfig(localAuthBootstrap.services),
       'AgentConnect',
       values.logto?.slackConnector && browser
-        ? { logtoEndpoint, connectorId: values.logto.slackConnector.connectorId }
+        ? { logtoEndpoint, connectorId: connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID }
         : undefined
     )
   }
 
-  const providerExpectations = (values: DeploymentConfigValuesV1) => {
+  const providerExpectations = (values: DeploymentConfigValuesV1, connectorIds: ManagedConnectorIds) => {
     let github: ReturnType<typeof githubConfiguredUrls> | null = null
     let slack: ReturnType<typeof slackConfiguredUrls> | null = null
     try {
-      const manifest = expectedGithubManifest(values)
+      const manifest = expectedGithubManifest(values, connectorIds)
       github = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
     } catch {
       // Invalid startup URLs are surfaced as an unavailable expectation in the UI.
     }
     try {
-      slack = slackConfiguredUrls(expectedSlackManifest(values))
+      slack = slackConfiguredUrls(expectedSlackManifest(values, connectorIds))
     } catch {
       // Slack requires HTTPS startup URLs; the UI keeps creation/check disabled.
     }
@@ -514,16 +496,23 @@ export function buildTenantAdminServer(
             origins: [logtoEndpoint],
             redirects: googleRedirectUris(
               logtoEndpoint,
-              values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
+              connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID,
+              localAuthBootstrap.services.web
             )
           }
         : { origins: [], redirects: [] }
     }
   }
 
-  const statusWithExpectations = (record: DeploymentConfigAdmin | null) => {
+  const statusWithExpectations = async (record: DeploymentConfigAdmin | null) => {
     const status = toStatus(record)
-    return { ...status, providerExpectations: providerExpectations(status.values) }
+    let connectorIds: ManagedConnectorIds = {}
+    try {
+      connectorIds = await resolveLogtoConnectorIds()
+    } catch {
+      // Logto availability is reported by the dedicated check. Fixed IDs remain correct for connectors we create.
+    }
+    return { ...status, providerExpectations: providerExpectations(status.values, connectorIds) }
   }
 
   app.addHook('onClose', async () => {
@@ -624,9 +613,15 @@ export function buildTenantAdminServer(
 
   app.get('/api/v1/bootstrap-info', { preHandler: requireLocal }, async () => {
     const current = await deps.store.getAdmin()
-    const googleConnectorId = current?.values.logto?.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
-    const slackConnectorId = current?.values.logto?.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID
-    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId)
+    let connectorIds: ManagedConnectorIds = {}
+    try {
+      connectorIds = await resolveLogtoConnectorIds()
+    } catch {
+      // The setup check reports Logto errors; new connectors still use the fixed IDs below.
+    }
+    const googleConnectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
+    const slackConnectorId = connectorIds.slack ?? LOGTO_SLACK_CONNECTOR_ID
+    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId, localAuthBootstrap.services.web)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
       current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
@@ -660,18 +655,18 @@ export function buildTenantAdminServer(
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
-      googleConnectorId,
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
       githubAvailable,
       githubWebhookActive,
       slackAvailable,
-      slackConnectorId,
       slackLoginRedirectUrl: appendPath(slackLoginEndpoint, `/callback/${slackConnectorId}`)
     }
   })
 
-  app.get('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async () =>
-    statusWithExpectations(await deps.store.getAdmin())
+  app.get(
+    '/api/v1/deployment-config',
+    { preHandler: requireConfigurationAccess },
+    async () => await statusWithExpectations(await deps.store.getAdmin())
   )
 
   app.put('/api/v1/deployment-config', { preHandler: requireConfigurationAccess }, async (request, reply) => {
@@ -684,7 +679,7 @@ export function buildTenantAdminServer(
       values: parsed.data.values
     })
     return {
-      ...statusWithExpectations(saved),
+      ...(await statusWithExpectations(saved)),
       restartRequired: true as const
     }
   })
@@ -706,7 +701,7 @@ export function buildTenantAdminServer(
         }
       )
       const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
-      return { ...statusWithExpectations(saved), restartRequired: true as const }
+      return { ...(await statusWithExpectations(saved)), restartRequired: true as const }
     })
   })
 
@@ -727,6 +722,7 @@ export function buildTenantAdminServer(
         !current.values.logto?.githubConnector &&
         (parsed.data.connectLogto || browser.socialProviders.includes('github'))
       )
+      const connectorIds = connectLogto ? await resolveLogtoConnectorIds() : {}
       manifest = buildGithubAppManifest(
         providerAppConfig(localAuthBootstrap.services),
         parsed.data.name,
@@ -735,7 +731,7 @@ export function buildTenantAdminServer(
           ? {
               webUrl: localAuthBootstrap.services.web,
               logtoEndpoint,
-              connectorId: LOGTO_GITHUB_CONNECTOR_ID
+              connectorId: connectorIds.github ?? LOGTO_GITHUB_CONNECTOR_ID
             }
           : undefined
       )
@@ -750,7 +746,7 @@ export function buildTenantAdminServer(
     githubFlows.set(state, {
       expectedRevision: current.revision,
       connectLogto,
-      configuredUrls: githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest),
+      webhookEnabled: githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest).webhookActive,
       expires
     })
     return {
@@ -786,7 +782,7 @@ export function buildTenantAdminServer(
       }
       try {
         const put = githubDeploymentPut(current, credentials, {
-          configuredUrls: pending.configuredUrls,
+          webhookEnabled: pending.webhookEnabled,
           connectLogto: pending.connectLogto
         })
         await deps.store.replace({ expectedRevision: current.revision, ...put })
@@ -827,14 +823,12 @@ export function buildTenantAdminServer(
     return serializeMutation(async () => {
       const current = await deps.store.getAdmin()
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
-      const connectorId =
-        parsed.data.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
-      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId)
+      const connectorIds = await resolveLogtoConnectorIds()
+      const connectorId = connectorIds.google ?? LOGTO_GOOGLE_CONNECTOR_ID
+      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId, localAuthBootstrap.services.web)
       const put = logtoGoogleConnectorPut(current, {
-        ...(parsed.data.connectorId ? { connectorId: parsed.data.connectorId } : {}),
         clientId: parsed.data.clientId,
-        ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {}),
-        configuredRedirectUris: redirectUris
+        ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {})
       })
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
       return { revision: saved.revision, redirectUris, restartRequired: true as const }
@@ -884,22 +878,25 @@ export function buildTenantAdminServer(
         return problem(reply, 409, `${region === 'feishu' ? 'Feishu' : 'Lark'} App credentials are not configured`)
       }
 
-      const result = await verifyFeishuAppCredentials(regionalApp.loginAppId, appSecret, region)
+      const result = await auditFeishuAppSetup(regionalApp.loginAppId, appSecret, region)
       const label = region === 'feishu' ? 'Feishu' : 'Lark'
       return {
         provider: region,
         status:
           result.status === 'ok'
             ? ('pass' as const)
-            : result.status === 'invalid'
+            : result.status === 'invalid' || result.status === 'mismatch'
               ? ('fail' as const)
               : ('unknown' as const),
+        diff: result.diff,
         message:
           result.status === 'ok'
-            ? `${label} accepted the saved App ID and secret.`
+            ? `${label} published App${result.version ? ` version ${result.version}` : ''} has the required Bot capability, API permissions, and event subscription.`
             : result.status === 'invalid'
               ? `${label} rejected the saved App ID or secret.`
-              : `${label} could not be reached.`
+              : result.status === 'mismatch'
+                ? `${label} App setup needs an update.`
+                : `${label} setup could not be audited${result.message ? `: ${result.message}` : '.'}`
       }
     }
   )
@@ -1025,7 +1022,12 @@ export function buildTenantAdminServer(
         manifest = buildSlackDeploymentManifest(
           slackProviderAppConfig(localAuthBootstrap.services),
           parsed.data.name,
-          parsed.data.connectLogto && browser ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID } : undefined
+          parsed.data.connectLogto && browser
+            ? {
+                logtoEndpoint,
+                connectorId: (await resolveLogtoConnectorIds()).slack ?? LOGTO_SLACK_CONNECTOR_ID
+              }
+            : undefined
         )
       } catch (error) {
         return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
@@ -1034,7 +1036,7 @@ export function buildTenantAdminServer(
       const created = await slackConfigApi.createApp(parsed.data.configToken, manifest)
       if (!created.ok) return problem(reply, 502, `Slack App creation failed: ${created.error}`)
       const credentials = created.app
-      const put = slackDeploymentPut(current, credentials, slackConfiguredUrls(manifest), parsed.data.connectLogto)
+      const put = slackDeploymentPut(current, credentials, parsed.data.connectLogto)
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
 
       try {
@@ -1069,7 +1071,7 @@ export function buildTenantAdminServer(
     }
     let manifest: Record<string, unknown>
     try {
-      manifest = expectedGithubManifest(runtime.values)
+      manifest = expectedGithubManifest(runtime.values, await resolveLogtoConnectorIds())
     } catch (error) {
       return problem(reply, 409, error instanceof Error ? error.message : 'GitHub App configuration is incomplete')
     }
@@ -1080,31 +1082,26 @@ export function buildTenantAdminServer(
       return problem(reply, 502, error instanceof Error ? error.message : 'GitHub App settings could not be checked')
     }
     const expectedUrls = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
-    const confirmed = github.configuredUrls
     const missing = [...audited.missing]
-    const unverified: string[] = []
+    const unverified = ['setup_url', 'callback_urls', 'webhook_active']
     const diff = audited.diff.map(({ field, current, expected }) => ({ field, current, expected }))
-    if (!confirmed) {
-      unverified.push('setup_url', 'callback_urls', 'webhook_active')
-      diff.push(
-        { field: 'Setup URL', current: 'Not verified', expected: expectedUrls.setupUrl },
-        { field: 'Callback URLs', current: 'Not verified', expected: expectedUrls.callbackUrls },
-        { field: 'Webhook active', current: 'Not verified', expected: expectedUrls.webhookActive }
-      )
-    } else {
-      if (confirmed.setupUrl !== expectedUrls.setupUrl) {
-        missing.push('setup_url')
-        diff.push({ field: 'Setup URL', current: confirmed.setupUrl, expected: expectedUrls.setupUrl })
+    diff.push(
+      {
+        field: 'Setup URL',
+        current: "Can't verify automatically",
+        expected: expectedUrls.setupUrl
+      },
+      {
+        field: 'Callback URLs',
+        current: "Can't verify automatically",
+        expected: expectedUrls.callbackUrls
+      },
+      {
+        field: 'Webhook active',
+        current: "Can't verify automatically",
+        expected: expectedUrls.webhookActive
       }
-      if (!sameStrings(confirmed.callbackUrls, expectedUrls.callbackUrls)) {
-        missing.push('callback_urls')
-        diff.push({ field: 'Callback URLs', current: confirmed.callbackUrls, expected: expectedUrls.callbackUrls })
-      }
-      if (confirmed.webhookActive !== expectedUrls.webhookActive) {
-        missing.push('webhook_active')
-        diff.push({ field: 'Webhook active', current: confirmed.webhookActive, expected: expectedUrls.webhookActive })
-      }
-    }
+    )
     return {
       provider: 'github' as const,
       status: missing.length > 0 ? ('fail' as const) : unverified.length > 0 ? ('unknown' as const) : ('pass' as const),
@@ -1113,92 +1110,50 @@ export function buildTenantAdminServer(
       diff,
       expected: expectedUrls,
       settingsUrl: audited.app.settingsUrl,
-      note: 'GitHub exposes permissions, events, external URL, and webhook URL to this check. Callback, setup, and webhook-active settings require operator confirmation.'
+      note: "GitHub exposes permissions, events, external URL, and webhook URL to this check. Callback, setup, and webhook-active settings can't be verified automatically."
     }
   })
-
-  app.post('/api/v1/confirm/github-urls', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
-    serializeMutation(async () => {
-      const runtime = await deps.store.getRuntime(['github.privateKeyB64'])
-      const github = runtime?.values.github
-      const privateKey = runtime?.secrets['github.privateKeyB64']
-      if (!runtime || !github || !privateKey) {
-        return problem(reply, 409, 'the deployment GitHub App is not fully configured')
-      }
-      let manifest: Record<string, unknown>
-      let audited: Awaited<ReturnType<typeof auditGithubApp>>
-      try {
-        manifest = expectedGithubManifest(runtime.values)
-        audited = await auditGithubApp(github, privateKey, manifest, fetchImpl)
-      } catch (error) {
-        return problem(reply, 502, error instanceof Error ? error.message : 'GitHub App settings could not be checked')
-      }
-      if (audited.missing.length > 0) {
-        return problem(
-          reply,
-          409,
-          `GitHub App still differs in: ${audited.missing.join(', ')}`,
-          'GITHUB_APP_MANIFEST_DRIFT'
-        )
-      }
-      const configuredUrls = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
-      const saved = await deps.store.replace({
-        expectedRevision: runtime.revision,
-        values: { ...runtime.values, github: { ...github, configuredUrls } }
-      })
-      return { revision: saved.revision, configuredUrls, restartRequired: false as const }
-    })
-  )
 
   app.post('/api/v1/check/slack', { preHandler: requireDiagnosticAccess }, async (request, reply) => {
     const parsed = CheckSlackBody.safeParse(request.body)
     if (!parsed.success) return problem(reply, 400, 'a Slack App configuration token is required')
-    return serializeMutation(async () => {
-      const current = await deps.store.getAdmin()
-      const slack = current?.values.slack
-      if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
-      let manifest: Record<string, unknown>
-      try {
-        manifest = expectedSlackManifest(current.values)
-      } catch (error) {
-        return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
-      }
-      const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
-      if (!exported.ok) return problem(reply, 502, `Slack App settings could not be checked: ${exported.error}`)
-      const actual = exported.manifest
-      const manifestDiff = diffSlackManifest(actual, manifest)
-      const missing = auditSlackManifest(actual, manifest)
-      const expected = slackConfiguredUrls(manifest)
-      let observed: ReturnType<typeof slackConfiguredUrls> | null = null
-      try {
-        observed = slackConfiguredUrls(actual)
-      } catch {
-        // The stable missing field names still explain malformed exported URLs.
-      }
-      let revision = current.revision
-      if (missing.length === 0 && JSON.stringify(slack.configuredUrls) !== JSON.stringify(expected)) {
-        const saved = await deps.store.replace({
-          expectedRevision: current.revision,
-          values: { ...current.values, slack: { ...slack, configuredUrls: expected } }
-        })
-        revision = saved.revision
-      }
-      return {
-        provider: 'slack' as const,
-        status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
-        missing,
-        diff: manifestDiff.map(({ field, current, expected }) => ({ field, current, expected })),
-        actual: observed,
-        expected,
-        settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
-        revision,
-        restartRequired: false as const
-      }
-    })
+    const current = await deps.store.getAdmin()
+    const slack = current?.values.slack
+    if (!current || !slack) return problem(reply, 409, 'the deployment Slack App is not configured')
+    let manifest: Record<string, unknown>
+    try {
+      manifest = expectedSlackManifest(current.values, await resolveLogtoConnectorIds())
+    } catch (error) {
+      return problem(reply, 409, error instanceof Error ? error.message : 'Slack App configuration is incomplete')
+    }
+    const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
+    if (!exported.ok) return problem(reply, 502, `Slack App settings could not be checked: ${exported.error}`)
+    const actual = exported.manifest
+    const manifestDiff = diffSlackManifest(actual, manifest)
+    const missing = auditSlackManifest(actual, manifest)
+    const expected = slackConfiguredUrls(manifest)
+    let observed: ReturnType<typeof slackConfiguredUrls> | null = null
+    try {
+      observed = slackConfiguredUrls(actual)
+    } catch {
+      // The stable missing field names still explain malformed exported URLs.
+    }
+    return {
+      provider: 'slack' as const,
+      status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
+      missing,
+      diff: manifestDiff.map(({ field, current, expected }) => ({ field, current, expected })),
+      actual: observed,
+      expected,
+      settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
+      restartRequired: false as const
+    }
   })
 
-  app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (_request, reply) =>
+  app.post('/api/v1/reconcile/logto', { preHandler: requireConfigurationAccess }, async (request, reply) =>
     serializeMutation(async () => {
+      const parsed = ReconcileLogtoBody.safeParse(request.body ?? {})
+      if (!parsed.success) return problem(reply, 400, 'invalid Logto reconciliation options')
       const secretKeys = [
         'logto.managementAppSecret',
         'logto.githubConnectorClientSecret',
@@ -1245,7 +1200,9 @@ export function buildTenantAdminServer(
       }
 
       const client = deps.makeLogtoSetupClient?.(config) ?? new LogtoAdminClaimClient(config)
-      const reconciled = await client.reconcileSetup(setup.desired)
+      const reconciled = await client.reconcileSetup(setup.desired, {
+        refreshConnectorSecrets: parsed.data.refreshConnectorSecrets
+      })
       const auth = {
         mode: 'oidc' as const,
         audience: setup.apiResource ?? reconciled.application.id,
@@ -1255,7 +1212,7 @@ export function buildTenantAdminServer(
         },
         socialProviders: setup.socialProviders
       }
-      const nextValues = withResolvedConnectorIds({ ...runtime.values, auth }, reconciled.connectors)
+      const nextValues = { ...runtime.values, auth }
       const configChanged = JSON.stringify(runtime.values) !== JSON.stringify(nextValues)
       const saved = configChanged
         ? await deps.store.replace({
@@ -1440,13 +1397,13 @@ export function buildTenantAdminServer(
         ? {
             id: 'logto.application',
             status: 'pass',
-            message: `Logto SPA ${setupInspection.application.id} has the expected redirects and CORS origins.`
+            message: `Logto SPA ${setupInspection.application.id} has all required redirects.`
           }
         : {
             id: 'logto.application',
             status: 'fail',
             message: setupInspection.application.exists
-              ? 'The selected Logto SPA does not match the expected redirects and CORS origins.'
+              ? 'The selected Logto SPA is missing one or more required redirects.'
               : 'The AgentConnect Logto SPA does not exist.',
             diff: setupInspection.application.diff
           }

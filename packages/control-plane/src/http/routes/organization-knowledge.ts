@@ -165,6 +165,7 @@ function unavailable(reply: FastifyReply) {
 
 async function suggestionReviewAvailable(
   deps: HttpDeps,
+  orgId: OrgId,
   sourceDaemonId: string | null,
   sourceAgentId: string
 ): Promise<boolean> {
@@ -173,7 +174,7 @@ async function suggestionReviewAvailable(
   if (live?.reachable !== true || live.state !== 'READY') return false
   const [daemon, agent] = await Promise.all([
     deps.registry.get(DaemonId(sourceDaemonId)),
-    deps.repos.agent.get(AgentId(sourceAgentId))
+    deps.repos.agent.get(orgId, AgentId(sourceAgentId))
   ])
   return (
     agent?.daemonId === sourceDaemonId &&
@@ -471,7 +472,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         const names = new Map<string, string | null>()
         await Promise.all(
           [...new Set(rows.map((row) => row.sourceAgentId))].map(async (id) => {
-            const agent = await deps.repos.agent.get(AgentId(id))
+            const agent = await deps.repos.agent.get(orgOf(req), AgentId(id))
             names.set(id, agent?.displayName ?? agent?.name ?? null)
           })
         )
@@ -485,7 +486,10 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
               )
             ).entries()
           ].map(async ([key, row]) => {
-            availability.set(key, await suggestionReviewAvailable(deps, row.sourceDaemonId, row.sourceAgentId))
+            availability.set(
+              key,
+              await suggestionReviewAvailable(deps, orgOf(req), row.sourceDaemonId, row.sourceAgentId)
+            )
           })
         )
         return rows.map((row) =>
@@ -527,7 +531,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
           return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: 'suggestion is already reviewed' })
         }
         if (!suggestion.sourceDaemonId) return unavailable(reply)
-        if (!(await suggestionReviewAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
+        if (!(await suggestionReviewAvailable(deps, orgOf(req), suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
           return unavailable(reply)
         }
         try {
@@ -600,7 +604,9 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
 
         if (req.body.decision === 'reject') {
           if (!suggestion.sourceDaemonId) return unavailable(reply)
-          if (!(await suggestionReviewAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
+          if (
+            !(await suggestionReviewAvailable(deps, orgOf(req), suggestion.sourceDaemonId, suggestion.sourceAgentId))
+          ) {
             return unavailable(reply)
           }
           const rejected = await repo.rejectSuggestion(suggestion.id, ctxOf(req).userId, req.body.reason)
@@ -624,7 +630,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
                 'organization suggestion decision convergence deferred'
               )
             )
-          const agent = await deps.repos.agent.get(AgentId(suggestion.sourceAgentId))
+          const agent = await deps.repos.agent.get(orgOf(req), AgentId(suggestion.sourceAgentId))
           return suggestionDto(rejected, agent?.displayName ?? agent?.name ?? null, false)
         }
 
@@ -637,7 +643,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
         }
 
         if (!suggestion.sourceDaemonId) return unavailable(reply)
-        if (!(await suggestionReviewAvailable(deps, suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
+        if (!(await suggestionReviewAvailable(deps, orgOf(req), suggestion.sourceDaemonId, suggestion.sourceAgentId))) {
           return unavailable(reply)
         }
         let content
@@ -726,7 +732,7 @@ export function organizationKnowledgeRoutes(deps: HttpDeps) {
               'organization suggestion decision convergence deferred'
             )
           )
-        const agent = await deps.repos.agent.get(AgentId(suggestion.sourceAgentId))
+        const agent = await deps.repos.agent.get(orgOf(req), AgentId(suggestion.sourceAgentId))
         return suggestionDto(result.suggestion, agent?.displayName ?? agent?.name ?? null, false)
       }
     )

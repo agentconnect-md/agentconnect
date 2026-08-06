@@ -11,7 +11,7 @@ import type { CpPlatformRegistry } from '../platforms/provider.js'
 
 interface AgentBotIconSyncDeps {
   repos: {
-    agent: Pick<AgentRepo, 'get'>
+    agent: Pick<AgentRepo, 'getUnscoped'>
     integration: Pick<IntegrationRepo, 'listForAgent' | 'listForBot'>
     bot: Pick<BotRepo, 'get'>
     botSecret: Pick<BotSecretStore, 'get'>
@@ -69,7 +69,7 @@ async function currentBotIconState(
   const membership = memberships[0]!
   if (membership.platform !== bot.platform) return null
 
-  const agent = await deps.repos.agent.get(membership.agentId)
+  const agent = await deps.repos.agent.getUnscoped(membership.agentId)
   if (!agent || agent.orgId !== bot.orgId) return null
   return {
     bot,

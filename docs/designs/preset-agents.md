@@ -3,7 +3,7 @@
 **Status:** M0 implemented (reserved slugs, nullable `Agent.runtime`, org-creation
 seam + one-time backfill + `preset_agent` state, the `agentconnect` general preset,
 console tolerance for unplaced agents), together with §5.3 Fulfillment B — the
-platform-published "Add to Slack" app (env credentials, state-bound install route,
+platform-published "Add to Slack" app (deployment credentials, state-bound install route,
 `Bot.teamId` + composite relay demux, uninstall/revocation lifecycle) — pulled
 forward from M4 so the preset agent is Slack-connectable from day one. M1–M2 remain
 proposed. The dedicated assistant agent is **cancelled** (§4) — see the direction
@@ -172,8 +172,7 @@ from that moment on, owned and editable like any other. Auto-placement writes an
 audit row carrying the daemon and the affected agent.
 
 **Opt-out.** An org-level setting (default on) checked by the creation seam and the
-backfill. Self-hosted fleets that want it off globally can set the org default at
-deploy time.
+backfill. Tenant Admin controls the deployment default for self-hosted fleets.
 
 ### 3.3 Reserved slugs and collisions
 
@@ -259,10 +258,10 @@ checklist wiring. Token storage, rotation, server-side OAuth, and finalize all e
 The true "just click Install" path: a platform-published, distributable Slack app
 installed via standard OAuth v2. Verified gaps against current code:
 
-- **Platform credentials.** No platform-level Slack credentials exist (`config/env.ts`
-  has the `GITHUB_APP_*` precedent but no `SLACK_*`). Add
-  `SLACK_PLATFORM_CLIENT_ID/_CLIENT_SECRET/_SIGNING_SECRET/_APP_ID`; unset ⇒ the
-  feature is absent (self-hosted default). Values live only in deployment config.
+- **Platform credentials.** The distributed Slack App identity and its write-only
+  client and signing secrets live in the DB-backed deployment configuration and
+  are edited through Tenant Admin. Without that provider configuration, the
+  one-click platform App is absent and the per-agent setup paths remain available.
 - **Install starts from the console.** The OAuth callback strictly requires a `state`
   resolving to a pending-install row (`routes/slack-install.ts` renders denied/expired
   otherwise), and a bare share URL cannot carry org/agent tenancy. A new route mints

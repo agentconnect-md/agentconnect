@@ -15,7 +15,7 @@
 >
 > Configure the GitHub App Setup URL as
 > `<PUBLIC_CP_URL>/v1/github/setup/callback`. The origin and edge routing are
-> supplied through runtime configuration.
+> supplied by startup topology.
 >
 > Credential-degradation telemetry and the corresponding web warnings remain
 > planned; the rest of this document states the current security contract.
@@ -96,15 +96,15 @@ stale until a network fetch succeeds.
 
 ## Decisions
 
-| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Rationale                                                                                                                                                                                                                                                                                                                                                                       |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Reuse the GitHub App used for sign-in as instance-level configuration:** CP environment variables `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_B64` (base64 of the PEM) / `GITHUB_APP_SLUG` (and optional `GITHUB_APP_CLIENT_ID`). The fields are `.optional()`; if they are not configured, the entire feature is disabled (the picker is hidden and only public-URL mode remains).                                                                                                                                                                                                                       | This mirrors the OIDC opt-in model (unset `OIDC_ISSUER` means the devAuth stub). An instance can use distinct Apps for separate trust boundaries, while a single entry point for sign-in and repository authorization is natural for users. Self-hosted installations can configure their own App. **Do not** create Apps through a per-organization manifest; defer that work. |
-| 2   | **The private key exists only in the CP process environment**, supplied through the operator's secret-management channel; it is not stored in PG and never sent over WS.                                                                                                                                                                                                                                                                                                                                                                                                                                  | Long-lived credentials never leave the CP or reach the database. The daemon sees only a short-lived installation token.                                                                                                                                                                                                                                                         |
-| 3   | **Pull tokens on demand:** the daemon sends the D->C REQ `gitcred/request`; after minting, the CP returns the REP `gitcred/grant` containing the token itself.                                                                                                                                                                                                                                                                                                                                                                                                                                            | Pulling aligns credential delivery with the operation that needs it and avoids placing an expiring token in a long-lived registration snapshot.                                                                                                                                                                                                                                 |
-| 4   | **Minimize token scope:** mint for one authorized repository and only the requested capability subset. Read access excludes write operations; write access admits the current contents/issues/pull-request/actions matrix, with metadata read always available. See `installation-token.service.ts` for the authoritative matrix.                                                                                                                                                                                                                                                                         | A coding agent needs only the capabilities required for the current Git or GitHub operation. Per-repository, per-capability minting keeps unrelated repositories and actions out of each token. Sensitive use cases can switch to read-only with one control.                                                                                                                   |
-| 5   | **Use git credential-helper injection uniformly on the daemon, through two channels:** (1) repository-local `credential.helper` points to `agentconnect git-credential`, which asks the daemon for a token through a local Unix socket; (2) the agent session process environment injects the same helper at host scope, covering submodules/nested repositories and preventing personal-credential leakage (see "Subrepositories"). Operations such as clone, where repository config does not yet exist, use `GIT_CONFIG_*` environment injection. The token never enters argv, disk, or `.git/config`. | This is the only clean solution that covers git operations initiated by both the **daemon** and the **agent**. The helper script itself contains no secret and is not a credential.                                                                                                                                                                                             |
-| 6   | **Two layers of token caches plus two layers of single-flight in the CP and daemon, with nested TTL thresholds**; see "TTL and Idempotency" for details.                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Controls GitHub token-minting API traffic and rate-limit pressure, absorbs retransmissions and thundering herds, and ensures the token handed to git has sufficient remaining lifetime.                                                                                                                                                                                         |
-| 7   | **Resolve the installation dynamically at mint time:** the agent record does not separately store the repository's full name; derive `owner/repo` from `gitRepo`. `installationId` records the selection observation but is not an authoritative binding. At mint time, find a live installation in the organization for the repository owner. The daemon does not need to know the installation; the wire adds only a `gitCredential?: 'github-app'` marker.                                                                                                                                             | Uninstalling and reinstalling an App produces a **new** installation ID. Dynamic resolution lets an existing agent recover without retargeting its workspace. Repository ownership resolution stays in the CP, minimizing the wire surface.                                                                                                                                     |
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Rationale                                                                                                                                                                                                                                                     |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Reuse one deployment-wide GitHub App for repository access and sign-in.** Tenant Admin creates or adopts the App and stores its identity in the typed deployment configuration. Without that provider configuration, the picker is hidden and only public-URL mode remains.                                                                                                                                                                                                                                                                                                                             | An instance can use its own App as a trust boundary, while one entry point for sign-in and repository authorization is natural for users. The App is deployment-wide rather than per organization.                                                            |
+| 2   | **Store the private key as a write-only deployment secret.** Ordinary admin reads expose only configured state and a fingerprint. The Control Plane opens the key when assembling the GitHub service and never sends it to a daemon.                                                                                                                                                                                                                                                                                                                                                                      | The database-backed configuration gives self-hosters one managed setup surface while the deployment's `SecretCipher` policy controls protection at rest. Daemons still receive only short-lived installation tokens.                                          |
+| 3   | **Pull tokens on demand:** the daemon sends the D->C REQ `gitcred/request`; after minting, the CP returns the REP `gitcred/grant` containing the token itself.                                                                                                                                                                                                                                                                                                                                                                                                                                            | Pulling aligns credential delivery with the operation that needs it and avoids placing an expiring token in a long-lived registration snapshot.                                                                                                               |
+| 4   | **Minimize token scope:** mint for one authorized repository and only the requested capability subset. Read access excludes write operations; write access admits the current contents/issues/pull-request/actions matrix, with metadata read always available. See `installation-token.service.ts` for the authoritative matrix.                                                                                                                                                                                                                                                                         | A coding agent needs only the capabilities required for the current Git or GitHub operation. Per-repository, per-capability minting keeps unrelated repositories and actions out of each token. Sensitive use cases can switch to read-only with one control. |
+| 5   | **Use git credential-helper injection uniformly on the daemon, through two channels:** (1) repository-local `credential.helper` points to `agentconnect git-credential`, which asks the daemon for a token through a local Unix socket; (2) the agent session process environment injects the same helper at host scope, covering submodules/nested repositories and preventing personal-credential leakage (see "Subrepositories"). Operations such as clone, where repository config does not yet exist, use `GIT_CONFIG_*` environment injection. The token never enters argv, disk, or `.git/config`. | This is the only clean solution that covers git operations initiated by both the **daemon** and the **agent**. The helper script itself contains no secret and is not a credential.                                                                           |
+| 6   | **Two layers of token caches plus two layers of single-flight in the CP and daemon, with nested TTL thresholds**; see "TTL and Idempotency" for details.                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Controls GitHub token-minting API traffic and rate-limit pressure, absorbs retransmissions and thundering herds, and ensures the token handed to git has sufficient remaining lifetime.                                                                       |
+| 7   | **Resolve the installation dynamically at mint time:** the agent record does not separately store the repository's full name; derive `owner/repo` from `gitRepo`. `installationId` records the selection observation but is not an authoritative binding. At mint time, find a live installation in the organization for the repository owner. The daemon does not need to know the installation; the wire adds only a `gitCredential?: 'github-app'` marker.                                                                                                                                             | Uninstalling and reinstalling an App produces a **new** installation ID. Dynamic resolution lets an existing agent recover without retargeting its workspace. Repository ownership resolution stays in the CP, minimizing the wire surface.                   |
 
 ## Security Boundary
 
@@ -161,7 +161,7 @@ stale until a network fetch succeeds.
 
 | Material                            | Location                                                                                               | Lifetime                                                                                        | Notes                                                                                                                                                              |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| App private key (PEM)               | CP process environment only (`GITHUB_APP_PRIVATE_KEY_B64`)                                             | Long-lived; keys can be added, removed, or rotated in GitHub (the App supports multiple keys)   | Never enters PG, any HTTP response, WS, or logs; supplied through the operator's secret-management channel                                                         |
+| App private key (PEM)               | Write-only `github.privateKeyB64` deployment secret at rest → CP memory                                | Long-lived; keys can be added, removed, or rotated in GitHub (the App supports multiple keys)   | Admin reads return only configured state and a fingerprint; `SecretCipher` controls at-rest protection; the value never enters HTTP responses, daemon WS, or logs  |
 | App JWT (RS256, exp <= 10 min)      | CP memory only                                                                                         | Minutes                                                                                         | Used only to call the GitHub App API (mint tokens and query installations)                                                                                         |
 | Installation access token (`ghs_…`) | CP memory cache -> TLS WS (`gitcred/grant`) -> daemon memory cache -> helper stdout pipe -> git memory | Fixed 1 hour, nonrenewable; **GitHub immediately revokes existing tokens on uninstall/suspend** | **Single-repository scope + narrowed permissions**; never log it or place it in argv, `.git/config`, or any file on disk                                           |
 | Local helper capability             | Daemon memory -> managed runtime/git subprocess environment for the corresponding agent                | Daemon lifetime; revoked on agent remove/detach                                                 | Bound to an agent; never enters the shim, config, logs, or disk; prevents a normal shell from invoking the hidden helper directly or connecting to the bare socket |
@@ -203,30 +203,22 @@ stale until a network fetch succeeds.
 
 ## Configuration and Data Model
 
-**CP configuration** (`config/env.ts`; the first three values must all be
-configured to enable the feature, following the `OIDC_ISSUER` opt-in model):
+The singleton deployment document is the source of truth. Tenant Admin stores:
 
-```text
-GITHUB_APP_ID=<github-app-id>
-GITHUB_APP_PRIVATE_KEY_B64=<base64-encoded-pem>
-GITHUB_APP_SLUG=<github-app-slug>
-GITHUB_APP_CLIENT_ID=<github-app-client-id> # Optional; when absent, App JWT uses GITHUB_APP_ID
-# (Reuse PUBLIC_WEB_URL/resolveWebAppUrl for the 302 back to the console;
-#  do not add configuration. If unset, ensure CORS_ORIGIN
-#  already contains the console origin.)
-```
+- App ID, slug, optional client ID, and webhook state in `values.github`;
+- the base64-encoded private key in the write-only `github.privateKeyB64` deployment
+  secret; and
+- the webhook and OAuth client secrets as separate write-only deployment secrets.
 
-- **The fields are optional as a group.** Missing values disable the feature
-  and hide the picker; a partially configured group fails validation.
-- **Base64 is the canonical PEM encoding.** It keeps multiline key material
-  unambiguous across environment-injection mechanisms. At startup, decode the
-  value, validate that it is a valid RSA key, and fail fast without logging
-  the key.
-- Operators supply these variables through runtime configuration.
+Clearing the GitHub provider removes its stored identity and secrets, disables
+the module, and hides the picker. The private key is decoded and validated when
+the Control Plane assembles the GitHub service, without logging the key. Public
+Web, Control Plane, and Relay origins remain startup topology because Tenant
+Admin uses them to build the App manifest callbacks.
 
-App identity is not stored in the database. `GithubInstallation` stores App
-installation metadata; repository lists are fetched from GitHub on demand. An
-installation is organization-scoped infrastructure and has no
+`GithubInstallation` separately stores App installation metadata; repository
+lists are fetched from GitHub on demand. An installation is
+organization-scoped infrastructure and has no
 `visibility`/`sharedWith` columns. A restricted agent's `gitRepo` remains part
 of the visibility-gated `AgentDto.workspace`.
 
@@ -326,8 +318,8 @@ gitCredential: z.enum(['github-app']).optional(), // Absent means anonymous, pre
 ### GitHub Module: `src/github/`
 
 - `api.ts`: use `@octokit/auth-app` to sign an App JWT from the configured PEM
-  (`iss = GITHUB_APP_CLIENT_ID ?? GITHUB_APP_ID`, RS256, lifetime no longer
-  than 10 minutes), with a very thin fetch wrapper for
+  (`iss` is the client ID when configured, otherwise the App ID; RS256,
+  lifetime no longer than 10 minutes), with a very thin fetch wrapper for
   `Accept: application/vnd.github+json`, timeouts, and rate-limit response
   parsing. Inject `fetch` so integration tests can stub it.
 - `installation-token.service.ts`: minting + cache + **single-flight**:
@@ -358,9 +350,9 @@ gitCredential: z.enum(['github-app']).optional(), // Absent means anonymous, pre
     exceeded. The daemon's 5-second retransmission must honor that backoff and
     cannot bypass it. `src/github/rate-limit.ts` owns this limit and is wired
     into the mint path.
-- When `GITHUB_APP_*` is not configured, do not assemble the module at all.
-  Treat it as an optional dependency in `buildContainer`; related routes return
-  404 and the picker is hidden.
+- When the persisted GitHub provider configuration is absent, do not assemble
+  the module at all. Treat it as an optional dependency in `buildContainer`;
+  related routes return 404 and the picker is hidden.
 
 ### Persistence Layer
 
@@ -812,7 +804,7 @@ Injection uses **two channels**:
      `[include] path=<original ~/.gitconfig>` to preserve other host settings,
      then reset `credential.https://github.com.helper=`, point it at the shim,
      and set `useHttpPath=true`. The CP queries the numeric user ID of the
-     `<slug>[bot]` corresponding to the configured `GITHUB_APP_SLUG` and
+     `<slug>[bot]` corresponding to the deployment-configured App slug and
      caches it in-process; if the query fails, do not deliver an identity. It
      then delivers the public bot identity in
      `ID+<slug>[bot]@users.noreply.github.com` form through
@@ -1162,13 +1154,12 @@ the cache and stops requesting.
 
    **Configuration and enforcement:**
 
-   - **Configuration gateway:**
-     `LOGTO_MGMT_ENDPOINT / LOGTO_MGMT_APP_ID / LOGTO_MGMT_APP_SECRET`
-     must be configured all together or not at all. `LOGTO_MGMT_RESOURCE` is
-     optional and defaults to `${endpoint}/api`. Assemble the authorization
+   - **Configuration gateway:** the persisted Logto Management connection must
+     contain its application identity, write-only secret, and API Resource. Its
+     service origin remains startup topology. Assemble the authorization
      service only when all three conditions hold:
-     **GitHub-App is enabled + Logto Management is configured + `OIDC_ISSUER`
-     is set**. A devAuth principal has no real identity to attest. If the
+     **GitHub App is enabled + Logto Management is configured + OIDC auth is
+     enabled**. A devAuth principal has no real identity to attest. If the
      gateway is disabled, selection uses the organization-level installation
      authorization set. This authorization path in
      `github/logto-identity.ts` reads only identity metadata, specifically the
@@ -1229,5 +1220,6 @@ the cache and stops requesting.
      Read without write pins "Allow push" to read-only and submits
      `gitAccess: 'read'`. `GITHUB_IDENTITY_REQUIRED` points to the existing
      Profile GitHub-linking action.
-   - Identity-provider application IDs and `LOGTO_MGMT_*` values are supplied
-     through runtime configuration.
+   - Identity-provider application IDs and Logto Management credentials are
+     loaded from the deployment configuration; secret values are never exposed
+     to the Web client.

@@ -580,7 +580,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     { listForBot: async () => [integration] } as unknown as IntegrationRepo,
     { listForBot: async () => [] } as unknown as IntegrationChannelRepo,
     {
-      get: async () => ({ id: integration.agentId, name: 'alice', daemonId: 'd1', visibility: 'org' })
+      getUnscoped: async () => ({ id: integration.agentId, name: 'alice', daemonId: 'd1', visibility: 'org' })
     } as unknown as AgentRepo,
     relayReg,
     { integrationUpsert: async () => {} } as never,

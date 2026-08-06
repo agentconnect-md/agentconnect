@@ -539,8 +539,8 @@ describe('PUT /agents/:id/daemon', () => {
     const moveAfterFirstRead = (app: HttpApp) => {
       const original = app.deps.repos.agent.get.bind(app.deps.repos.agent)
       let first = true
-      app.deps.repos.agent.get = async (id) => {
-        const observed = await original(id)
+      app.deps.repos.agent.get = async (orgId, id) => {
+        const observed = await original(orgId, id)
         if (first && observed?.id === agentId) {
           first = false
           await prisma.agent.update({ where: { id: agentId }, data: { daemonId: TARGET } })

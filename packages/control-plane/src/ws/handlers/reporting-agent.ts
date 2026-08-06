@@ -15,7 +15,7 @@ export async function runForReportingAgent(
   const release = deps.agentMutations.tryBeginMutation(agentId)
   if (!release) return false
   try {
-    const agent = await deps.agent.get(agentId)
+    const agent = await deps.agent.getUnscoped(agentId)
     if (agent?.daemonId !== daemonId) return false
     await write()
     return true

@@ -11,6 +11,7 @@ export interface SlackConfiguredUrls {
   eventsUrl: string
   interactionsUrl: string
   loginRedirectUrl?: string
+  socialLinkRedirectUrl?: string
 }
 
 export interface SlackLoginAppConfig {
@@ -44,12 +45,15 @@ export function buildSlackDeploymentManifest(
   requireProviderAppEndpoints(config)
   const redirectUrl = slackPlatformOAuthRedirectUri(config.services.controlPlane)
   const loginRedirectUrl = login ? appendPath(login.logtoEndpoint, `/callback/${login.connectorId}`) : undefined
+  const socialLinkRedirectUrl = login ? appendPath(config.services.web, '/auth/social/callback') : undefined
   if (loginRedirectUrl && new URL(loginRedirectUrl).protocol !== 'https:') {
     throw new Error('Slack sign-in requires an HTTPS Logto endpoint')
   }
   return buildInstallManifest(name, redirectUrl, {
     httpRelayBase: config.services.relay,
-    ...(loginRedirectUrl ? { additionalRedirectUrls: [loginRedirectUrl] } : {})
+    ...(loginRedirectUrl && socialLinkRedirectUrl
+      ? { additionalRedirectUrls: [loginRedirectUrl, socialLinkRedirectUrl] }
+      : {})
   })
 }
 
@@ -60,7 +64,7 @@ export function slackConfiguredUrls(manifest: SlackManifest): SlackConfiguredUrl
   const interactivity = asRecord(settings.interactivity)
   const redirects = asStrings(oauth.redirect_urls)
   if (
-    (redirects.length !== 1 && redirects.length !== 2) ||
+    (redirects.length !== 1 && redirects.length !== 3) ||
     typeof events.request_url !== 'string' ||
     typeof interactivity.request_url !== 'string'
   ) {
@@ -70,7 +74,8 @@ export function slackConfiguredUrls(manifest: SlackManifest): SlackConfiguredUrl
     oauthRedirectUrl: redirects[0]!,
     eventsUrl: events.request_url,
     interactionsUrl: interactivity.request_url,
-    ...(redirects[1] ? { loginRedirectUrl: redirects[1] } : {})
+    ...(redirects[1] ? { loginRedirectUrl: redirects[1] } : {}),
+    ...(redirects[2] ? { socialLinkRedirectUrl: redirects[2] } : {})
   }
 }
 

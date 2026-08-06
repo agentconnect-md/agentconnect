@@ -165,8 +165,9 @@ function make(
   const releasedLive: (typeof SESSION_KEY)[] = []
   const mutations = new AgentMutationGate()
   const repo = {
-    get: async () => current,
+    getUnscoped: async () => current,
     setWorkspace: async (
+      _orgId: string,
       _id: string,
       _expected: Date,
       _expectedMode: 'scratch' | 'github',
@@ -184,6 +185,7 @@ function make(
       return current
     },
     restoreWorkspace: async (
+      _orgId: string,
       _id: string,
       _expected: Date,
       _expectedWorkspace: AgentWorkspace,

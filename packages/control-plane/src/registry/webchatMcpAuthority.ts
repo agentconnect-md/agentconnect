@@ -22,7 +22,7 @@ interface LiveDaemon {
 export interface LiveWebchatMcpAuthorityDeps {
   conversations: Pick<WebchatConversationRepo, 'findOwner' | 'owns' | 'participants'>
   orgs: Pick<OrgRepo, 'roleOf'>
-  agents: Pick<AgentRepo, 'get'>
+  agents: Pick<AgentRepo, 'getUnscoped'>
   presets: Pick<PresetAgentStore, 'get'>
   daemons: { get(daemonId: string): LiveDaemon | undefined }
 }
@@ -66,7 +66,7 @@ export async function resolveLiveWebchatMcpAuthority(
   const role = await deps.orgs.roleOf(input.orgId, owner)
   if (!role) return { ok: false, reason: 'membership_missing' }
 
-  const agent = await deps.agents.get(AgentId(input.agentId))
+  const agent = await deps.agents.getUnscoped(AgentId(input.agentId))
   if (!agent || agent.id !== input.agentId || agent.orgId !== input.orgId || !canView(agent, { userId: owner, role })) {
     return { ok: false, reason: 'agent_not_visible' }
   }

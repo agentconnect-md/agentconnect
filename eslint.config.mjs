@@ -61,5 +61,22 @@ export default defineConfig([
       'import-x/no-unresolved': ['off'],
       'unused-imports/no-unused-imports': 'error'
     }
+  },
+  {
+    // Tenancy fence (docs/designs/org-scoped-data-layer.md §6): the HTTP
+    // surface resolves resources through org-fenced repo methods only; the
+    // `*Unscoped` escape hatches belong to internal trust domains. A
+    // public-by-design endpoint may disable this inline with a justification.
+    files: ['packages/control-plane/src/http/routes/**/*.ts', 'packages/control-plane/src/http/mcp/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'CallExpression[callee.property.name=/Unscoped$/]',
+          message:
+            'Tenancy-unscoped reads are forbidden on the HTTP surface — use the org-fenced method with the request org (docs/designs/org-scoped-data-layer.md §6).'
+        }
+      ]
+    }
   }
 ])

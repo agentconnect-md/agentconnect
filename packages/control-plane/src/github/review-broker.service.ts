@@ -45,7 +45,7 @@ export class GithubReviewBrokerError extends Error {
 
 export interface GithubReviewBrokerDeps {
   hook: Pick<HookRepo, 'get' | 'getRun' | 'recordStart' | 'reserveReviewAttempt' | 'recordReviewResult'>
-  agent: Pick<AgentRepo, 'get'>
+  agent: Pick<AgentRepo, 'getUnscoped'>
   github: Pick<GithubService, 'mintReviewForAgent' | 'validateReviewForAgent'>
   clock: Pick<Clock, 'now'>
 }
@@ -124,7 +124,9 @@ function isClaimedOfflineRecoveryCandidate(run: HookRunRecord): boolean {
     run.reviewId === null &&
     run.reviewEvent === null &&
     run.verdict === null &&
-    run.reviewCommitId === null
+    run.reviewCommitId === null &&
+    run.publishedCommentKind === null &&
+    run.publishedCommentId === null
   )
 }
 
@@ -328,7 +330,7 @@ export class GithubReviewBrokerService {
       { started: recovering }
     )
     requireCurrentHookForStart(await this.deps.hook.get(hookId), run, reportingDaemonId)
-    const agent = await this.deps.agent.get(run.agentId!)
+    const agent = await this.deps.agent.getUnscoped(run.agentId!)
     if (!agent || agent.status !== 'active' || agent.daemonId !== reportingDaemonId) {
       denied('agent is no longer active on the accepted dispatch daemon')
     }
@@ -353,7 +355,7 @@ export class GithubReviewBrokerService {
     const target = requireTrustedPullTarget(initial)
     const current = requireCurrentActionAuthority(
       await this.deps.hook.get(hookId),
-      await this.deps.agent.get(initial.agentId),
+      await this.deps.agent.getUnscoped(initial.agentId),
       initial,
       reportingDaemonId,
       input.requestedEvent
@@ -406,7 +408,7 @@ export class GithubReviewBrokerService {
     try {
       const finalAuthority = requireCurrentActionAuthority(
         await this.deps.hook.get(hookId),
-        await this.deps.agent.get(initial.agentId),
+        await this.deps.agent.getUnscoped(initial.agentId),
         finalRun,
         reportingDaemonId,
         input.requestedEvent
@@ -434,7 +436,7 @@ export class GithubReviewBrokerService {
       )
       requireCurrentActionAuthority(
         await this.deps.hook.get(hookId),
-        await this.deps.agent.get(initial.agentId),
+        await this.deps.agent.getUnscoped(initial.agentId),
         exposureRun,
         reportingDaemonId,
         input.requestedEvent

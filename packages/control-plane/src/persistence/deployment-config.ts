@@ -32,18 +32,6 @@ const HttpUrlSchema = z
     }
   })
 
-function isSecureHttpUrl(value: string): boolean {
-  const url = new URL(value)
-  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const loopback =
-    hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1'
-  return url.protocol === 'https:' || loopback
-}
-const SecureHttpUrlSchema = HttpUrlSchema.refine(isSecureHttpUrl, 'must use HTTPS unless it is loopback')
-const SecureOriginUrlSchema = SecureHttpUrlSchema.refine(
-  (value) => new URL(value).pathname === '/',
-  'must be an origin without a path'
-)
 const NullableUrlSchema = HttpUrlSchema.nullable()
 
 const AuthSchema = z.discriminatedUnion('mode', [
@@ -69,66 +57,81 @@ const LogtoBrowserSchema = z.strictObject({
   socialProviders: z.array(z.string().trim().min(1)).default([])
 })
 
-const LogtoGithubConnectorSchema = z.strictObject({
-  connectorId: z.string().trim().min(1).default('agentconnect-github'),
-  appId: z.number().int().positive(),
-  slug: z.string().trim().min(1),
-  clientId: z.string().trim().min(1)
-})
+function withoutDerivedConnectorId(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const { connectorId: _connectorId, ...stored } = value as Record<string, unknown>
+  return stored
+}
 
-const LogtoGoogleConnectorSchema = z.strictObject({
-  connectorId: z.string().trim().min(1).default('agentconnect-google'),
-  clientId: z.string().trim().min(1),
-  /** Provider-console callbacks last confirmed by the operator. */
-  configuredRedirectUris: z.array(SecureHttpUrlSchema).min(1)
-})
+function withoutGoogleProviderSnapshot(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const {
+    connectorId: _connectorId,
+    configuredRedirectUris: _configuredRedirectUris,
+    ...stored
+  } = value as Record<string, unknown>
+  return stored
+}
 
-const LogtoSlackConnectorSchema = z.strictObject({
-  connectorId: z.string().trim().min(1).default('agentconnect-slack'),
-  appId: z.string().trim().min(1),
-  clientId: z.string().trim().min(1)
-})
+function withoutProviderUrlSnapshot(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value
+  const { configuredUrls: _configuredUrls, ...stored } = value as Record<string, unknown>
+  return stored
+}
 
-const GithubAppConfiguredUrlsSchema = z.strictObject({
-  externalUrl: SecureOriginUrlSchema,
-  setupUrl: SecureHttpUrlSchema,
-  webhookUrl: SecureHttpUrlSchema,
-  webhookActive: z.boolean().optional(),
-  callbackUrls: z.array(SecureHttpUrlSchema)
-})
+const LogtoGithubConnectorSchema = z.preprocess(
+  withoutDerivedConnectorId,
+  z.strictObject({
+    appId: z.number().int().positive(),
+    slug: z.string().trim().min(1),
+    clientId: z.string().trim().min(1)
+  })
+)
 
-const SlackAppConfiguredUrlsSchema = z.strictObject({
-  oauthRedirectUrl: SecureHttpUrlSchema,
-  eventsUrl: SecureHttpUrlSchema,
-  interactionsUrl: SecureHttpUrlSchema,
-  loginRedirectUrl: SecureHttpUrlSchema.optional()
-})
+const LogtoGoogleConnectorSchema = z.preprocess(
+  withoutGoogleProviderSnapshot,
+  z.strictObject({
+    clientId: z.string().trim().min(1)
+  })
+)
+
+const LogtoSlackConnectorSchema = z.preprocess(
+  withoutDerivedConnectorId,
+  z.strictObject({
+    appId: z.string().trim().min(1),
+    clientId: z.string().trim().min(1)
+  })
+)
 
 const RegionalLoginAppSchema = z.strictObject({
   loginAppId: z.string().trim().min(1)
 })
 
+const GithubAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    appId: z.number().int().positive(),
+    slug: z.string().trim().min(1),
+    clientId: z.string().trim().min(1).nullable(),
+    /** Whether Relay should accept GitHub webhook delivery for this App. Omitted means enabled. */
+    webhookEnabled: z.boolean().optional()
+  })
+)
+
+const SlackAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    appId: z.string().trim().min(1),
+    clientId: z.string().trim().min(1)
+  })
+)
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
     auth: AuthSchema,
-    github: z
-      .strictObject({
-        appId: z.number().int().positive(),
-        slug: z.string().trim().min(1),
-        clientId: z.string().trim().min(1).nullable(),
-        /** Provider settings last created or explicitly confirmed by setup. */
-        configuredUrls: GithubAppConfiguredUrlsSchema.optional()
-      })
-      .nullable(),
-    slack: z
-      .strictObject({
-        appId: z.string().trim().min(1),
-        clientId: z.string().trim().min(1),
-        /** Provider settings last verified through Slack's manifest API. */
-        configuredUrls: SlackAppConfiguredUrlsSchema.optional()
-      })
-      .nullable(),
+    github: GithubAppSchema.nullable(),
+    slack: SlackAppSchema.nullable(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
     lark: RegionalLoginAppSchema.nullable().optional(),
@@ -350,9 +353,7 @@ export function deploymentSecretsRequiringRefresh(
   const githubAppChanged = next.github && previous?.github?.appId !== next.github.appId
   const githubClientChanged =
     next.github !== null && next.github.clientId !== null && previous?.github?.clientId !== next.github.clientId
-  const githubWebhookEnabled = next.github?.configuredUrls?.webhookActive !== false
-  const githubWebhookActivated =
-    next.github !== null && githubWebhookEnabled && previous?.github?.configuredUrls?.webhookActive === false
+  const githubWebhookEnabled = next.github !== null && next.github.webhookEnabled !== false
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
@@ -366,9 +367,7 @@ export function deploymentSecretsRequiringRefresh(
     next.logto?.googleConnector && previous?.logto?.googleConnector?.clientId !== next.logto.googleConnector.clientId
   return [
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
-    ...(next.github && githubWebhookEnabled && (githubAppChanged || githubWebhookActivated)
-      ? (['github.webhookSecret'] as const)
-      : []),
+    ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
@@ -382,9 +381,7 @@ export function deploymentSecretsRequiringRefresh(
 function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[] {
   return [
     ...(values.github ? (['github.privateKeyB64'] as const) : []),
-    ...(values.github && values.github.configuredUrls?.webhookActive !== false
-      ? (['github.webhookSecret'] as const)
-      : []),
+    ...(values.github && values.github.webhookEnabled !== false ? (['github.webhookSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),

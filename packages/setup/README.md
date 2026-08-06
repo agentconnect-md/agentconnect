@@ -2,7 +2,7 @@
 
 Browser-based Tenant Admin for AgentConnect self-hosting. It configures Logto,
 GitHub, Slack, Google, Feishu, and Lark through one authenticated local admin
-surface. Provider identities and encrypted credentials are stored in the
+surface. Provider identities and write-only credentials are stored in the
 deployment database; the UI never returns stored secret values.
 
 This package has no command-line setup interface. Provider creation, match

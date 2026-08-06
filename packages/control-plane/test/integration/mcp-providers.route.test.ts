@@ -403,8 +403,8 @@ describe('DELETE /mcp-providers/:id — serialized against agent enable-list wri
     let notifyParked!: () => void
     const parked = new Promise<void>((r) => (notifyParked = r))
     let calls = 0
-    repo.get = async (id) => {
-      const row = await realGet(id)
+    repo.get = async (orgId, id) => {
+      const row = await realGet(orgId, id)
       if (++calls === 2) {
         notifyParked()
         await gate

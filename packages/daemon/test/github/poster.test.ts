@@ -61,9 +61,12 @@ function fakeFetch(opts: { failFirst?: number; failStatus?: number } = {}) {
     n += 1
     calls.push({ method: init?.method ?? 'GET', url: String(url), body: JSON.parse(String(init?.body)).body })
     if (opts.failFirst && n <= opts.failFirst) {
-      return { ok: false, status: opts.failStatus ?? 500 } as Response
+      return new Response('', { status: opts.failStatus ?? 500 })
     }
-    return { ok: true, status: 201 } as Response
+    return new Response('{"id":90071992547409931}', {
+      status: 201,
+      headers: { 'content-type': 'application/json' }
+    })
   }) as typeof fetch
   return { fetchImpl, calls }
 }
@@ -385,22 +388,17 @@ describe('GithubFinalPoster', () => {
     }
   })
 
-  it('releases but does not parse a successful response body when no comment id is needed', async () => {
+  it('returns the exact comment identity without rounding a large GitHub id', async () => {
     const clock = fakeScheduler()
-    const parse = vi.fn(() => {
-      throw new Error('response body must stay unread')
-    })
-    const cancel = vi.fn(async () => {})
-    const fetchImpl = vi.fn(
-      async () => ({ ok: true, status: 201, json: parse, body: { cancel } }) as unknown as Response
-    )
+    const fetchImpl = vi.fn(async () => new Response('{"id":90071992547409931}', { status: 201 }))
     const poster = make(fetchImpl as typeof fetch, clock.sched)
 
-    await expect(poster.publish('Final answer.')).resolves.toBeUndefined()
+    await expect(poster.publish('Final answer.')).resolves.toEqual({
+      kind: 'issue_comment',
+      commentId: '90071992547409931'
+    })
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
-    expect(cancel).toHaveBeenCalledTimes(1)
-    expect(parse).not.toHaveBeenCalled()
   })
 
   it('adds agent attribution and the session deep link to the completed body', async () => {
@@ -502,7 +500,10 @@ describe('GithubFinalPoster', () => {
     const invalidateToken = vi.fn()
     const poster = make(f.fetchImpl, clock.sched, { token, invalidateToken })
 
-    await expect(poster.publish('final answer')).resolves.toBeUndefined()
+    await expect(poster.publish('final answer')).resolves.toEqual({
+      kind: 'issue_comment',
+      commentId: '90071992547409931'
+    })
 
     expect(f.calls).toHaveLength(2)
     expect(token).toHaveBeenCalledTimes(2)
@@ -521,7 +522,10 @@ describe('GithubFinalPoster', () => {
       reviewThreadRootCommentId: '3565283658'
     })
 
-    await expect(poster.publish('inline final')).resolves.toBeUndefined()
+    await expect(poster.publish('inline final')).resolves.toEqual({
+      kind: 'review_comment',
+      commentId: '90071992547409931'
+    })
 
     expect(f.calls).toEqual([
       expect.objectContaining({
