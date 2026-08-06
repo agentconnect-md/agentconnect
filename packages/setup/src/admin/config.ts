@@ -39,7 +39,7 @@ export const TenantAdminProcessConfigSchema = z
     PORT: z.coerce.number().int().min(1).max(65_535).default(8091),
     TENANT_ADMIN_URL: SecureOriginSchema.default('http://localhost:8091'),
     TENANT_ADMIN_ALLOW_CONTAINER_PROXY: z.stringbool().default(false),
-    LOGTO_ADMIN_ENDPOINT: SecureOriginSchema.default('http://admin.agentconnect.localhost:3002'),
+    LOGTO_ADMIN_ENDPOINT: SecureOriginSchema.default('http://localhost:3002'),
     DATABASE_URL: z
       .string()
       .url()

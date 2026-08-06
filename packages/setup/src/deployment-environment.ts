@@ -2,9 +2,7 @@ import { z } from 'zod'
 
 type Environment = Readonly<Record<string, string | undefined>>
 
-const LOCAL_WEB_HOST = 'app.agentconnect.localhost'
-const LOCAL_CONTROL_PLANE_HOST = 'api.agentconnect.localhost'
-const LOCAL_RELAY_HOST = 'relay.agentconnect.localhost'
+const LOCAL_HOST = 'localhost'
 
 function isLoopback(hostname: string): boolean {
   const value = hostname.replace(/^\[|\]$/g, '').toLowerCase()
@@ -24,6 +22,19 @@ const OriginSchema = z
     }
   })
 
+const InternalOriginSchema = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
+    }
+    if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+      ctx.addIssue({ code: 'custom', message: 'must be an origin without credentials, path, query, or fragment' })
+    }
+  })
+
 const IssuerSchema = z
   .string()
   .url()
@@ -37,6 +48,19 @@ const IssuerSchema = z
     }
     if (!url.pathname.replace(/\/$/, '').endsWith('/oidc')) {
       ctx.addIssue({ code: 'custom', message: 'must end in /oidc' })
+    }
+  })
+
+const InternalIssuerSchema = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      ctx.addIssue({ code: 'custom', message: 'must not contain credentials, query, or fragment' })
     }
   })
 
@@ -72,30 +96,38 @@ export interface DeploymentEnvironment {
     relay: string
   }
   issuer: string
+  internalOidcEndpoint?: string
   managementEndpoint: string
+  internalManagementEndpoint?: string
 }
 
 export function loadDeploymentEnvironment(environment: Environment = process.env): DeploymentEnvironment {
   const logtoEndpoint = environmentValue(environment, 'LOGTO_ENDPOINT')
   const logtoOrigin = logtoEndpoint ? new URL(OriginSchema.parse(logtoEndpoint)).origin : undefined
-  const defaultLogtoOrigin = 'http://login.agentconnect.localhost:3001'
+  const defaultLogtoOrigin = 'http://localhost:3001'
+  const internalOidcEndpoint = environmentValue(environment, 'OIDC_INTERNAL_ENDPOINT')
+  const internalManagementEndpoint = environmentValue(environment, 'LOGTO_INTERNAL_ENDPOINT')
   return {
     services: {
       web: OriginSchema.parse(
-        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_WEB_URL', 'AGENTCONNECT_WEB_PORT', LOCAL_WEB_HOST, 3000)
+        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_WEB_URL', 'AGENTCONNECT_WEB_PORT', LOCAL_HOST, 3000)
       ),
       controlPlane: OriginSchema.parse(
-        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_CP_URL', 'AGENTCONNECT_CP_PORT', LOCAL_CONTROL_PLANE_HOST, 8080)
+        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_CP_URL', 'AGENTCONNECT_CP_PORT', LOCAL_HOST, 8080)
       ),
       relay: OriginSchema.parse(
-        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_RELAY_URL', 'AGENTCONNECT_RELAY_PORT', LOCAL_RELAY_HOST, 8090)
+        serviceUrl(environment, 'AGENTCONNECT_PUBLIC_RELAY_URL', 'AGENTCONNECT_RELAY_PORT', LOCAL_HOST, 8090)
       )
     },
     issuer: IssuerSchema.parse(
       environmentValue(environment, 'OIDC_ISSUER') ?? `${logtoOrigin ?? defaultLogtoOrigin}/oidc`
     ),
+    ...(internalOidcEndpoint ? { internalOidcEndpoint: InternalIssuerSchema.parse(internalOidcEndpoint) } : {}),
     managementEndpoint: OriginSchema.parse(
       environmentValue(environment, 'LOGTO_MGMT_ENDPOINT') ?? logtoOrigin ?? defaultLogtoOrigin
-    )
+    ),
+    ...(internalManagementEndpoint
+      ? { internalManagementEndpoint: InternalOriginSchema.parse(internalManagementEndpoint) }
+      : {})
   }
 }

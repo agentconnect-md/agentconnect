@@ -30,6 +30,8 @@ export interface HumanPrincipal {
 export interface HumanAuthConfig {
   /** When set, verify a bearer JWT against this issuer's JWKS. Unset ⇒ devAuth stub. */
   OIDC_ISSUER?: string
+  /** Optional server-only address for discovery/JWKS when the public issuer is browser-local. */
+  OIDC_INTERNAL_ENDPOINT?: string
   /** OIDC audience to require (optional). */
   OIDC_AUDIENCE?: string
   /** The user the devAuth stub injects (the bootstrapped owner of the local default org). */
@@ -181,15 +183,22 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
   // the promise is cleared so the next request retries. `jose` caches/rotates the
   // key set internally thereafter.
   const issuer = cfg.OIDC_ISSUER.replace(/\/$/, '')
+  const discoveryEndpoint = (cfg.OIDC_INTERNAL_ENDPOINT ?? issuer).replace(/\/$/, '')
   let jwksPromise: Promise<ReturnType<typeof createRemoteJWKSet>> | undefined
   function getJwks(): Promise<ReturnType<typeof createRemoteJWKSet>> {
     if (!jwksPromise) {
       jwksPromise = (async () => {
-        const res = await fetch(`${issuer}/.well-known/openid-configuration`)
+        const res = await fetch(`${discoveryEndpoint}/.well-known/openid-configuration`)
         if (!res.ok) throw new Error(`OIDC discovery failed: ${res.status}`)
         const doc = (await res.json()) as { jwks_uri?: string }
         if (!doc.jwks_uri) throw new Error('OIDC discovery doc missing jwks_uri')
-        return createRemoteJWKSet(new URL(doc.jwks_uri))
+        const jwksUrl = new URL(doc.jwks_uri)
+        if (cfg.OIDC_INTERNAL_ENDPOINT && jwksUrl.origin === new URL(issuer).origin) {
+          const internal = new URL(discoveryEndpoint)
+          jwksUrl.protocol = internal.protocol
+          jwksUrl.host = internal.host
+        }
+        return createRemoteJWKSet(jwksUrl)
       })().catch((err) => {
         jwksPromise = undefined // allow retry on the next request
         throw err

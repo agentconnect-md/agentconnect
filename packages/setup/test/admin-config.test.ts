@@ -9,7 +9,7 @@ describe('tenant-admin process config', () => {
       HOST: '127.0.0.1',
       PORT: 8091,
       TENANT_ADMIN_URL: 'http://localhost:8091',
-      LOGTO_ADMIN_ENDPOINT: 'http://admin.agentconnect.localhost:3002',
+      LOGTO_ADMIN_ENDPOINT: 'http://localhost:3002',
       SECRET_CIPHER: 'none'
     })
   })

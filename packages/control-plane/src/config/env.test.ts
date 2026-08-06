@@ -40,6 +40,18 @@ describe('loadConfig', () => {
 
     expect(config.LOGTO_MGMT_ENDPOINT).toBe('https://tenant.example.com')
   })
+
+  it('keeps the internal OIDC endpoint separate from the public token issuer', () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+      API_KEY_PEPPER: 'a'.repeat(32),
+      OIDC_ISSUER: 'http://localhost:3001/oidc',
+      OIDC_INTERNAL_ENDPOINT: 'http://logto:3001/oidc'
+    })
+
+    expect(config.OIDC_ISSUER).toBe('http://localhost:3001/oidc')
+    expect(config.OIDC_INTERNAL_ENDPOINT).toBe('http://logto:3001/oidc')
+  })
 })
 
 describe('corsWebOrigin', () => {

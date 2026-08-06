@@ -17,6 +17,7 @@ export const ADMIN_ROLE = 'ADMIN'
 
 export interface AdminOidcConfig {
   issuer: string
+  internalEndpoint?: string
   audience?: string
 }
 
@@ -43,31 +44,43 @@ export class TenantAdminAuthError extends Error {
 
 export type VerifyOidcToken = (token: string, config: AdminOidcConfig) => Promise<JWTPayload>
 
+/** Replace only an OIDC URL's network origin while preserving its provider path. */
+export function oidcUrlAt(value: string, fromEndpoint: string, toEndpoint: string): URL {
+  const url = new URL(value)
+  if (url.origin !== new URL(fromEndpoint).origin) return url
+  const target = new URL(toEndpoint)
+  url.protocol = target.protocol
+  url.host = target.host
+  return url
+}
+
 /** Production JWT verifier. Discovery/JWKS are cached per normalized issuer. */
 export function createOidcTokenVerifier(fetchImpl: typeof fetch = fetch): VerifyOidcToken {
   const jwksByIssuer = new Map<string, Promise<ReturnType<typeof createRemoteJWKSet>>>()
 
-  const jwks = (issuer: string): Promise<ReturnType<typeof createRemoteJWKSet>> => {
+  const jwks = (issuer: string, internalEndpoint?: string): Promise<ReturnType<typeof createRemoteJWKSet>> => {
     const normalized = issuer.replace(/\/+$/, '')
-    const cached = jwksByIssuer.get(normalized)
+    const discoveryEndpoint = (internalEndpoint ?? normalized).replace(/\/+$/, '')
+    const cacheKey = `${normalized}\n${discoveryEndpoint}`
+    const cached = jwksByIssuer.get(cacheKey)
     if (cached) return cached
     const pending = (async () => {
-      const response = await fetchImpl(`${normalized}/.well-known/openid-configuration`)
+      const response = await fetchImpl(`${discoveryEndpoint}/.well-known/openid-configuration`)
       if (!response.ok) throw new Error(`OIDC discovery failed: HTTP ${response.status}`)
       const document = (await response.json()) as { jwks_uri?: unknown }
       if (typeof document.jwks_uri !== 'string') throw new Error('OIDC discovery document is missing jwks_uri')
-      return createRemoteJWKSet(new URL(document.jwks_uri))
+      return createRemoteJWKSet(oidcUrlAt(document.jwks_uri, normalized, discoveryEndpoint))
     })().catch((error) => {
-      jwksByIssuer.delete(normalized)
+      jwksByIssuer.delete(cacheKey)
       throw error
     })
-    jwksByIssuer.set(normalized, pending)
+    jwksByIssuer.set(cacheKey, pending)
     return pending
   }
 
   return async (token, config) => {
     const issuer = config.issuer.replace(/\/+$/, '')
-    const verified = await jwtVerify(token, await jwks(issuer), {
+    const verified = await jwtVerify(token, await jwks(issuer, config.internalEndpoint), {
       issuer,
       ...(config.audience ? { audience: config.audience } : {})
     })

@@ -31,6 +31,19 @@ const SecureOriginSchema = HttpOriginSchema.superRefine((value, ctx) => {
   }
 })
 
+const HttpEndpointSchema = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', message: 'must use HTTP or HTTPS' })
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      ctx.addIssue({ code: 'custom', message: 'must not contain credentials, query, or fragment' })
+    }
+  })
+
 /** The env keys CORE owns. Platform keys are folded in below — this object is
  *  never exported: `AppConfigSchema` is the only schema, and it is the two
  *  halves together. */
@@ -99,6 +112,10 @@ const CoreConfigShape = {
   VAULT_JWT_PATH: z.string().default('/var/run/secrets/kubernetes.io/serviceaccount/token'),
   VAULT_AUTH_MOUNT: z.string().default('kubernetes'), // login auth method mount (e.g. kubernetes | jwt)
   OIDC_ISSUER: z.string().url().optional(), // human-auth (C2); unset ⇒ devAuth stub
+  // Optional container-network address for OIDC discovery and JWKS reads. Token
+  // validation still requires the public OIDC_ISSUER exactly, so browser-facing
+  // localhost issuers do not become Docker-internal identities.
+  OIDC_INTERNAL_ENDPOINT: HttpEndpointSchema.optional(),
   OIDC_AUDIENCE: z.string().optional(), // required `aud` on the bearer JWT (C2)
   // ── Waitlist / closed-beta admission gate ──
   // When on, a signed-in user must be a formal (activated) user OR an existing org

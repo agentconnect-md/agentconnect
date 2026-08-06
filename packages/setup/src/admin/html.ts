@@ -78,7 +78,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     <p id="access-message" class="muted" aria-live="polite">Checking Logto sign-in…</p>
     <div class="row">
       <button id="login" hidden>Sign in with Logto</button>
-      <a id="open-logto" class="button" href="http://admin.agentconnect.localhost:3002" target="_blank" rel="noopener" hidden>Open Logto Console</a>
+      <a id="open-logto" class="button" href="http://localhost:3002" target="_blank" rel="noopener" hidden>Open Logto Console</a>
       <button id="show-bootstrap" hidden>Continue setup</button>
     </div>
 
@@ -98,11 +98,11 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <h3>Choose a sign-in provider</h3>
         <p class="muted">Logto Management API access is ready. Configure one provider to enable sign-in.</p>
         <label class="field">Sign-in provider
-          <select id="bootstrap-provider"><option id="bootstrap-google-option" value="google">Google OAuth client</option><option value="github">GitHub integration App</option><option id="bootstrap-slack-option" value="slack">Slack integration App</option></select>
+          <select id="bootstrap-provider"><option value="google">Google (works on localhost)</option><option value="github">GitHub integration App</option><option id="bootstrap-slack-option" value="slack">Slack integration App</option></select>
         </label>
         <div id="bootstrap-google" class="panel">
           <h3>Google OAuth client</h3>
-          <p id="bootstrap-google-note" class="muted">Create a Web application client in Google Auth Platform, then paste its credentials here.</p>
+          <p class="muted">Create a Web application client in Google Auth Platform, then paste its credentials here.</p>
           <p>Authorized JavaScript origin:</p><ul id="bootstrap-google-origins" class="uris"></ul>
           <p>Authorized redirect URIs:</p><ul id="bootstrap-google-redirects" class="uris"></ul>
           <a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google settings</a>
@@ -974,11 +974,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       renderUriList('bootstrap-google-redirects', bootstrapInfo.google.redirectUris);
       renderUriList('bootstrap-slack-redirects', [bootstrapInfo.slackLoginRedirectUrl]);
       el('logto-management-api-resource').value = bootstrapInfo.logtoManagementResource;
-      el('bootstrap-google-option').disabled = !bootstrapInfo.googleAvailable;
-      el('bootstrap-google-submit').disabled = !bootstrapInfo.googleAvailable;
-      el('bootstrap-google-note').textContent = bootstrapInfo.googleAvailable
-        ? 'Create a Web application client in Google Auth Platform, then paste its credentials here.'
-        : 'Google sign-in needs HTTPS Logto and Web URLs. Use GitHub locally or expose both services through trusted HTTPS endpoints.';
       el('bootstrap-github-submit').disabled = !bootstrapInfo.githubAvailable;
       if (!bootstrapInfo.githubAvailable) {
         el('bootstrap-github-note').textContent = 'GitHub App creation needs valid saved Web, API, and ingress URLs.';
@@ -991,10 +986,9 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('bootstrap-slack-submit').disabled = !bootstrapInfo.slackAvailable;
       el('bootstrap-slack-note').textContent = bootstrapInfo.slackAvailable
         ? 'Creates one complete Slack App. Sign-in uses a separate openid profile email flow from workspace installation.'
-        : 'Slack sign-in needs all public service URLs to use HTTPS. Use GitHub locally or expose the stack through trusted HTTPS endpoints.';
-      if ((!bootstrapInfo.googleAvailable && el('bootstrap-provider').value === 'google') ||
-          (!bootstrapInfo.slackAvailable && el('bootstrap-provider').value === 'slack')) {
-        el('bootstrap-provider').value = 'github';
+        : 'Slack sign-in needs all public service URLs to use HTTPS. Use Google locally or expose the stack through trusted HTTPS endpoints.';
+      if (!bootstrapInfo.slackAvailable && el('bootstrap-provider').value === 'slack') {
+        el('bootstrap-provider').value = 'google';
         updateBootstrapProvider();
       }
       return bootstrapInfo;
@@ -1049,7 +1043,6 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     }
 
     async function bootstrapGoogle() {
-      if (!bootstrapInfo || !bootstrapInfo.googleAvailable) throw new Error('Google sign-in requires HTTPS Logto and Web URLs.');
       const secret = el('bootstrap-google-secret').value;
       await json(await fetch(api + '/configure/google', {
         method: 'POST', headers: { 'content-type': 'application/json' },
