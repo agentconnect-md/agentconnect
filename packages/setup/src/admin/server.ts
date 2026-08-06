@@ -703,8 +703,7 @@ export function buildTenantAdminServer(
           managementAppId: parsed.data.managementAppId,
           managementAppSecret: parsed.data.managementAppSecret,
           socialProvider: parsed.data.socialProvider
-        },
-        logtoManagementEndpoint
+        }
       )
       const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
       return { ...statusWithExpectations(saved), restartRequired: true as const }

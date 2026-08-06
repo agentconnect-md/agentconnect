@@ -94,8 +94,7 @@ export interface LocalAuthLogtoBootstrap {
 /** Fill the local Logto defaults without replacing existing provider state. */
 export function localAuthLogtoPut(
   current: CurrentDeploymentConfig,
-  bootstrap: LocalAuthLogtoBootstrap,
-  managementEndpoint: string
+  bootstrap: LocalAuthLogtoBootstrap
 ): DeploymentConfigPut {
   const existing = current.values.logto
   const managementAppId = bootstrap.managementAppId ?? existing?.managementAppId
@@ -105,7 +104,7 @@ export function localAuthLogtoPut(
       ...current.values,
       logto: {
         managementAppId,
-        managementResource: existing?.managementResource ?? new URL('/api', managementEndpoint).toString(),
+        managementResource: existing?.managementResource ?? 'https://default.logto.app/api',
         browser:
           existing?.browser ??
           ({
