@@ -101,7 +101,16 @@ expects to be destroyed on deletion.
 | `slack_user_config`                 | `SlackUserConfigStore`                | org, on the row                 |
 | `feishu_app_registration`           | `FeishuAppRegistrationStore`          | org, on the row                 |
 
-No secret-bearing table is more than one foreign key from an organization.
+Every secret-bearing table either carries `orgId` on its own row or is one
+relation hop from a row that does — nothing is further away than that.
+
+Two of the on-row ones carry **no foreign key at all**: `slack_install` and
+`feishu_app_registration` are short-lived install-flow state, deliberately
+FK-less so a dangling row after an org or agent delete is harmless, and a TTL
+reaper sweeps them by age. They are therefore _not_ cascade-deleted with the
+organization — which is precisely the case shredding covers best. The rows may
+briefly outlive the organization, but their values were sealed under its key and
+become unreadable the moment that key is destroyed.
 
 **The invariant that makes shredding true:** no org-owned value may ever be
 sealed under the deployment scope. A single such value turns that organization's
@@ -165,9 +174,35 @@ org namespace would become a shreddable name (§6) — an unrecoverable loss of 
 deployment's entire trust root. `loadConfig` refuses to start; the derived
 default satisfies the check automatically.
 
-The existing discipline is unchanged: arguments and response bodies are never
-logged, `open` results stay cached by ciphertext (the cache key already includes
-the envelope, so it remains correct across scopes), and `seal` is never cached.
+Arguments and response bodies are still never logged, and `seal` is still never
+cached.
+
+**The `open` cache must be keyed by KEY NAME + ciphertext, not by ciphertext
+alone.** Under a single key the stored string implied its key, so caching on it
+was sound. It no longer does — and a ciphertext-only key would quietly undo the
+whole point of §2.1: a legitimate `open` under org A warms the entry, and a
+later erroneous `open` of that same stored value under org B is served from
+memory without Vault ever being asked to check B's key. The cross-scope fence
+would hold on a cold cache and leak on a warm one. §8 tests exactly that
+sequence.
+
+**Shredding and the cache.** An entry warmed before an organization's key is
+destroyed still holds plaintext in that replica's memory; destroying a Vault key
+does not reach into process memory. This is bounded rather than papered over.
+
+Ciphertexts only ever enter the CP by being read out of Postgres, so the
+question is whether anything can still present one after the shred. For the
+cascade-deleted tables nothing can — those rows go in the same transaction that
+records the shred intent, leaving the warmed entry unreachable until the bounded
+cache evicts it or the process restarts. For the two FK-less tables (§3) a row
+can briefly outlive its organization, and there a cold read fails closed against
+the destroyed key, while an already-warmed entry in that one replica would
+not.
+
+The guarantee this design makes is about data at rest and in backups (§6). It
+deliberately does not extend to plaintext already resident in a running process
+— the same boundary that keeps it from reaching plaintext already delivered to a
+daemon.
 
 ## 5. Port changes
 

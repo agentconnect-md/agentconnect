@@ -23,6 +23,7 @@ type Call = { url: string; token: string | null; namespace: string | null; body:
  *  ciphertext envelope; "decrypt" unwraps it. Records every call. */
 function fakeVault(opts: { failFirstWith403?: boolean; leaseSec?: number } = {}) {
   const calls: Call[] = []
+  const destroyed = new Set<string>()
   let fail403Remaining = opts.failFirstWith403 ? 1 : 0
   let loginCount = 0
   const json = (status: number, body: unknown): Response =>
@@ -47,6 +48,7 @@ function fakeVault(opts: { failFirstWith403?: boolean; leaseSec?: number } = {})
     // the key name in and refuses a mismatch — that refusal IS the cross-tenant
     // fence under test.
     const keyName = url.slice(url.lastIndexOf('/') + 1)
+    if (destroyed.has(keyName)) return json(400, { errors: ['unknown key: ' + keyName] })
     if (url.includes('/encrypt/')) {
       return json(200, { data: { ciphertext: `vault:v1:${keyName}.${body.plaintext as string}` } })
     }
@@ -58,7 +60,7 @@ function fakeVault(opts: { failFirstWith403?: boolean; leaseSec?: number } = {})
     }
     return json(404, { errors: ['no handler'] })
   }
-  return { fetchImpl, calls, loginCount: () => loginCount }
+  return { fetchImpl, calls, loginCount: () => loginCount, destroyKey: (k: string) => destroyed.add(k) }
 }
 
 const TOKEN_OPTS = {
@@ -196,16 +198,38 @@ describe('VaultTransitSecretCipher', () => {
     expect(vault.calls.at(-1)!.url).toBe('https://vault.example.com/v1/transit/decrypt/ac-cp')
   })
 
-  it('the open cache is keyed by KEY + ciphertext, so scopes cannot share an entry', async () => {
+  it('a WARM cache does not weaken the cross-scope fence (ciphertext-only keying would leak here)', async () => {
     const vault = fakeVault()
     const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
-    const sealed = await cipher.seal('shared-looking', ORG_A)
-    await cipher.open(sealed, ORG_A)
-    const before = vault.calls.length
-    // A different scope must NOT be served the cached plaintext — it must go ask
-    // Vault (and be refused). A ciphertext-only cache key would leak here.
-    await expect(cipher.open(sealed, ORG_B)).rejects.toThrow()
-    expect(vault.calls.length).toBe(before + 1)
+    const sealed = await cipher.seal('org-a-only', ORG_A)
+
+    // Warm the entry with the LEGITIMATE scope first — this is the sequence that
+    // makes a ciphertext-only cache key dangerous: cold reads would still fail
+    // closed, so only the warm path exposes it.
+    expect(await cipher.open(sealed, ORG_A)).toBe('org-a-only')
+    const afterWarm = vault.calls.length
+
+    await expect(cipher.open(sealed, ORG_B)).rejects.toThrow(/unable to decrypt/)
+    // It actually asked Vault rather than answering from memory.
+    expect(vault.calls.length).toBe(afterWarm + 1)
+  })
+
+  it('a warm entry survives its key being destroyed — the shred guarantee is about data at rest', async () => {
+    const vault = fakeVault()
+    const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+    const sealed = await cipher.seal('org-a-bot-token', ORG_A)
+    expect(await cipher.open(sealed, ORG_A)).toBe('org-a-bot-token')
+
+    // Destroying the transit key cannot reach into a replica's memory.
+    vault.destroyKey('ac-cp-org-org-aaa')
+
+    // A COLD read fails closed…
+    const cold = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+    await expect(cold.open(sealed, ORG_A)).rejects.toThrow(/unknown key/)
+    // …while the already-warmed replica still answers from memory. Documented in
+    // §4: the guarantee covers data at rest and backups, not process memory, and
+    // deletion removes the rows that are the only way to present this ciphertext.
+    expect(await cipher.open(sealed, ORG_A)).toBe('org-a-bot-token')
   })
 
   it('errors carry status + Vault errors[], never the secret payload', async () => {
