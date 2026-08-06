@@ -32,6 +32,7 @@ import {
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { loadDeploymentEnvironment } from '../deployment-environment.js'
+import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
 import {
   githubDeploymentPut,
   localAuthLogtoPut,
@@ -49,6 +50,7 @@ import {
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
+  diffSlackManifest,
   requireProviderAppEndpoints,
   slackConfiguredUrls
 } from '../slack-app.js'
@@ -63,9 +65,6 @@ import {
 import { loadTenantAdminProcessConfig } from './config.js'
 import { TENANT_ADMIN_HTML } from './html.js'
 import {
-  LOGTO_GITHUB_CONNECTOR_ID,
-  LOGTO_GOOGLE_CONNECTOR_ID,
-  LOGTO_SLACK_CONNECTOR_ID,
   LogtoAdminClaimClient,
   LogtoManagementError,
   type LogtoManagementConfig,
@@ -109,6 +108,7 @@ const CreateSlackBody = z.strictObject({
 })
 
 const ConfigureGoogleBody = z.strictObject({
+  connectorId: z.string().trim().min(1).max(500).optional(),
   clientId: z.string().trim().min(1).max(500),
   clientSecret: z.string().min(1).max(10_000).optional()
 })
@@ -244,6 +244,7 @@ interface CheckFinding {
   id: string
   status: 'pass' | 'fail' | 'unknown'
   message: string
+  diff?: Array<{ field: string; current: unknown; expected: unknown }>
 }
 
 function checkReport(findings: CheckFinding[], now: () => Date) {
@@ -286,10 +287,10 @@ function appendPath(origin: string, path: string): string {
   return new URL(path, `${origin.replace(/\/+$/, '')}/`).toString()
 }
 
-function googleRedirectUris(endpoint: string): string[] {
+function googleRedirectUris(endpoint: string, connectorId: string): string[] {
   return [
-    appendPath(endpoint, `/callback/${LOGTO_GOOGLE_CONNECTOR_ID}`),
-    appendPath(endpoint, `/account/callback/social/${LOGTO_GOOGLE_CONNECTOR_ID}`)
+    appendPath(endpoint, `/callback/${connectorId}`),
+    appendPath(endpoint, `/account/callback/social/${connectorId}`)
   ]
 }
 
@@ -347,19 +348,58 @@ function logtoSetup(
       corsAllowedOrigins: [...new Set([webOrigin, adminOrigin])],
       socialProviders: [...browser.socialProviders],
       ...(logto.githubConnector && githubSecret
-        ? { github: { clientId: logto.githubConnector.clientId, clientSecret: githubSecret } }
+        ? {
+            github: {
+              connectorId: logto.githubConnector.connectorId,
+              clientId: logto.githubConnector.clientId,
+              clientSecret: githubSecret
+            }
+          }
         : {}),
       ...(logto.googleConnector && googleSecret
-        ? { google: { clientId: logto.googleConnector.clientId, clientSecret: googleSecret } }
+        ? {
+            google: {
+              connectorId: logto.googleConnector.connectorId,
+              clientId: logto.googleConnector.clientId,
+              clientSecret: googleSecret
+            }
+          }
         : {}),
       ...(logto.slackConnector && slackSecret
         ? {
             slack: {
+              connectorId: logto.slackConnector.connectorId,
               clientId: logto.slackConnector.clientId,
               clientSecret: slackSecret,
               scope: 'openid profile email'
             }
           }
+        : {})
+    }
+  }
+}
+
+function withResolvedConnectorIds(
+  values: DeploymentConfigValuesV1,
+  connectors: readonly { target: string; id: string }[]
+): DeploymentConfigValuesV1 {
+  if (!values.logto) return values
+  const connectorIds = new Map(connectors.map((connector) => [connector.target, connector.id]))
+  const githubId = connectorIds.get('github')
+  const googleId = connectorIds.get('google')
+  const slackId = connectorIds.get('slack')
+  return {
+    ...values,
+    logto: {
+      ...values.logto,
+      ...(values.logto.githubConnector && githubId
+        ? { githubConnector: { ...values.logto.githubConnector, connectorId: githubId } }
+        : {}),
+      ...(values.logto.googleConnector && googleId
+        ? { googleConnector: { ...values.logto.googleConnector, connectorId: googleId } }
+        : {}),
+      ...(values.logto.slackConnector && slackId
+        ? { slackConnector: { ...values.logto.slackConnector, connectorId: slackId } }
         : {})
     }
   }
@@ -435,7 +475,7 @@ export function buildTenantAdminServer(
         ? {
             webUrl: localAuthBootstrap.services.web,
             logtoEndpoint,
-            connectorId: LOGTO_GITHUB_CONNECTOR_ID
+            connectorId: values.logto!.githubConnector!.connectorId
           }
         : undefined
     )
@@ -446,7 +486,9 @@ export function buildTenantAdminServer(
     return buildSlackDeploymentManifest(
       slackProviderAppConfig(localAuthBootstrap.services),
       'AgentConnect',
-      values.logto?.slackConnector && browser ? { logtoEndpoint, connectorId: LOGTO_SLACK_CONNECTOR_ID } : undefined
+      values.logto?.slackConnector && browser
+        ? { logtoEndpoint, connectorId: values.logto.slackConnector.connectorId }
+        : undefined
     )
   }
 
@@ -468,7 +510,13 @@ export function buildTenantAdminServer(
       github,
       slack,
       google: values.logto?.browser
-        ? { origins: [logtoEndpoint], redirects: googleRedirectUris(logtoEndpoint) }
+        ? {
+            origins: [logtoEndpoint],
+            redirects: googleRedirectUris(
+              logtoEndpoint,
+              values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
+            )
+          }
         : { origins: [], redirects: [] }
     }
   }
@@ -575,8 +623,10 @@ export function buildTenantAdminServer(
   })
 
   app.get('/api/v1/bootstrap-info', { preHandler: requireLocal }, async () => {
-    const redirectUris = googleRedirectUris(logtoEndpoint)
     const current = await deps.store.getAdmin()
+    const googleConnectorId = current?.values.logto?.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
+    const slackConnectorId = current?.values.logto?.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID
+    const redirectUris = googleRedirectUris(logtoEndpoint, googleConnectorId)
     const logtoConfigured = Boolean(
       current?.values.logto?.managementAppId &&
       current.secrets.some((secret) => secret.key === 'logto.managementAppSecret' && secret.configured)
@@ -610,11 +660,13 @@ export function buildTenantAdminServer(
       logtoAdminEndpoint,
       logtoConfigured,
       logtoManagementAppId: current?.values.logto?.managementAppId ?? null,
+      googleConnectorId,
       google: { javascriptOrigins: [logtoEndpoint], redirectUris },
       githubAvailable,
       githubWebhookActive,
       slackAvailable,
-      slackLoginRedirectUrl: appendPath(slackLoginEndpoint, `/callback/${LOGTO_SLACK_CONNECTOR_ID}`)
+      slackConnectorId,
+      slackLoginRedirectUrl: appendPath(slackLoginEndpoint, `/callback/${slackConnectorId}`)
     }
   })
 
@@ -651,7 +703,8 @@ export function buildTenantAdminServer(
           managementAppId: parsed.data.managementAppId,
           managementAppSecret: parsed.data.managementAppSecret,
           socialProvider: parsed.data.socialProvider
-        }
+        },
+        logtoManagementEndpoint
       )
       const saved = await deps.store.replace({ expectedRevision: current?.revision ?? 0, ...put })
       return { ...statusWithExpectations(saved), restartRequired: true as const }
@@ -775,8 +828,11 @@ export function buildTenantAdminServer(
     return serializeMutation(async () => {
       const current = await deps.store.getAdmin()
       if (!current?.values.logto?.browser) return problem(reply, 409, 'save Logto browser configuration first')
-      const redirectUris = googleRedirectUris(logtoEndpoint)
+      const connectorId =
+        parsed.data.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID
+      const redirectUris = googleRedirectUris(logtoEndpoint, connectorId)
       const put = logtoGoogleConnectorPut(current, {
+        ...(parsed.data.connectorId ? { connectorId: parsed.data.connectorId } : {}),
         clientId: parsed.data.clientId,
         ...(parsed.data.clientSecret ? { clientSecret: parsed.data.clientSecret } : {}),
         configuredRedirectUris: redirectUris
@@ -1027,16 +1083,38 @@ export function buildTenantAdminServer(
     const expectedUrls = githubConfiguredUrls(providerAppConfig(localAuthBootstrap.services), manifest)
     const confirmed = github.configuredUrls
     const missing = [...audited.missing]
-    if (confirmed?.setupUrl !== expectedUrls.setupUrl) missing.push('setup_url')
-    if (!sameStrings(confirmed?.callbackUrls, expectedUrls.callbackUrls)) missing.push('callback_urls')
-    if (confirmed?.webhookActive !== expectedUrls.webhookActive) missing.push('webhook_active')
+    const unverified: string[] = []
+    const diff = audited.diff.map(({ field, current, expected }) => ({ field, current, expected }))
+    if (!confirmed) {
+      unverified.push('setup_url', 'callback_urls', 'webhook_active')
+      diff.push(
+        { field: 'Setup URL', current: 'Not verified', expected: expectedUrls.setupUrl },
+        { field: 'Callback URLs', current: 'Not verified', expected: expectedUrls.callbackUrls },
+        { field: 'Webhook active', current: 'Not verified', expected: expectedUrls.webhookActive }
+      )
+    } else {
+      if (confirmed.setupUrl !== expectedUrls.setupUrl) {
+        missing.push('setup_url')
+        diff.push({ field: 'Setup URL', current: confirmed.setupUrl, expected: expectedUrls.setupUrl })
+      }
+      if (!sameStrings(confirmed.callbackUrls, expectedUrls.callbackUrls)) {
+        missing.push('callback_urls')
+        diff.push({ field: 'Callback URLs', current: confirmed.callbackUrls, expected: expectedUrls.callbackUrls })
+      }
+      if (confirmed.webhookActive !== expectedUrls.webhookActive) {
+        missing.push('webhook_active')
+        diff.push({ field: 'Webhook active', current: confirmed.webhookActive, expected: expectedUrls.webhookActive })
+      }
+    }
     return {
       provider: 'github' as const,
-      status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
+      status: missing.length > 0 ? ('fail' as const) : unverified.length > 0 ? ('unknown' as const) : ('pass' as const),
       missing: [...new Set(missing)],
+      unverified,
+      diff,
       expected: expectedUrls,
       settingsUrl: audited.app.settingsUrl,
-      note: 'GitHub exposes permissions, events, and webhook URL to this check. Callback, setup, and webhook-active settings require operator confirmation after editing the App.'
+      note: 'GitHub exposes permissions, events, external URL, and webhook URL to this check. Callback, setup, and webhook-active settings require operator confirmation.'
     }
   })
 
@@ -1089,8 +1167,15 @@ export function buildTenantAdminServer(
       const exported = await slackConfigApi.exportApp(parsed.data.configToken, slack.appId)
       if (!exported.ok) return problem(reply, 502, `Slack App settings could not be checked: ${exported.error}`)
       const actual = exported.manifest
+      const manifestDiff = diffSlackManifest(actual, manifest)
       const missing = auditSlackManifest(actual, manifest)
       const expected = slackConfiguredUrls(manifest)
+      let observed: ReturnType<typeof slackConfiguredUrls> | null = null
+      try {
+        observed = slackConfiguredUrls(actual)
+      } catch {
+        // The stable missing field names still explain malformed exported URLs.
+      }
       let revision = current.revision
       if (missing.length === 0 && JSON.stringify(slack.configuredUrls) !== JSON.stringify(expected)) {
         const saved = await deps.store.replace({
@@ -1103,6 +1188,8 @@ export function buildTenantAdminServer(
         provider: 'slack' as const,
         status: missing.length === 0 ? ('pass' as const) : ('fail' as const),
         missing,
+        diff: manifestDiff.map(({ field, current, expected }) => ({ field, current, expected })),
+        actual: observed,
         expected,
         settingsUrl: `https://api.slack.com/apps/${encodeURIComponent(slack.appId)}`,
         revision,
@@ -1169,7 +1256,7 @@ export function buildTenantAdminServer(
         },
         socialProviders: setup.socialProviders
       }
-      const nextValues = { ...runtime.values, auth }
+      const nextValues = withResolvedConnectorIds({ ...runtime.values, auth }, reconciled.connectors)
       const configChanged = JSON.stringify(runtime.values) !== JSON.stringify(nextValues)
       const saved = configChanged
         ? await deps.store.replace({
@@ -1206,7 +1293,8 @@ export function buildTenantAdminServer(
       findings.push({
         id: 'logto.configuration',
         status: 'fail',
-        message: 'Deployment configuration has not been saved.'
+        message: 'Deployment configuration has not been saved.',
+        diff: [{ field: 'Logto configuration', current: 'Missing', expected: 'Configured' }]
       })
       return report()
     }
@@ -1214,7 +1302,8 @@ export function buildTenantAdminServer(
       findings.push({
         id: 'logto.configuration',
         status: 'fail',
-        message: 'Logto Management API configuration is missing.'
+        message: 'Logto Management API configuration is missing.',
+        diff: [{ field: 'Management API configuration', current: 'Missing', expected: 'Configured' }]
       })
       return report()
     }
@@ -1222,7 +1311,8 @@ export function buildTenantAdminServer(
       findings.push({
         id: 'logto.configuration',
         status: 'fail',
-        message: 'Logto Management API application secret is missing.'
+        message: 'Logto Management API application secret is missing.',
+        diff: [{ field: 'Management App secret', current: 'Not configured', expected: '***' }]
       })
       return report()
     }
@@ -1252,7 +1342,14 @@ export function buildTenantAdminServer(
         message:
           status === 'fail'
             ? `Logto rejected the Management API client_credentials grant (HTTP ${upstreamStatus}).`
-            : 'The Management API client_credentials grant could not be verified because Logto or the network is unavailable.'
+            : 'The Management API client_credentials grant could not be verified because Logto or the network is unavailable.',
+        diff: [
+          {
+            field: 'Management API credentials',
+            current: status === 'fail' ? `Rejected (HTTP ${upstreamStatus})` : 'Could not check',
+            expected: 'Accepted'
+          }
+        ]
       })
       return report()
     }
@@ -1274,7 +1371,14 @@ export function buildTenantAdminServer(
         message:
           status === 'fail'
             ? `The Management API application cannot read Logto roles (HTTP ${upstreamStatus}).`
-            : 'The Logto roles permission could not be verified because Logto or the network is unavailable.'
+            : 'The Logto roles permission could not be verified because Logto or the network is unavailable.',
+        diff: [
+          {
+            field: 'Management API roles access',
+            current: status === 'fail' ? `Denied (HTTP ${upstreamStatus})` : 'Could not check',
+            expected: 'Allowed'
+          }
+        ]
       })
       return report()
     }
@@ -1291,14 +1395,22 @@ export function buildTenantAdminServer(
             status: 'fail',
             message: adminRole.exists
               ? 'A role named ADMIN exists, but it is not a non-default User role.'
-              : 'The exact global User role ADMIN does not exist; the first Tenant Admin sign-in will create it.'
+              : 'The exact global User role ADMIN does not exist; the first Tenant Admin sign-in will create it.',
+            diff: [
+              {
+                field: 'ADMIN role',
+                current: adminRole.exists ? { type: adminRole.type, default: adminRole.isDefault } : 'Missing',
+                expected: { type: 'User', default: false }
+              }
+            ]
           }
     )
     if (!setup) {
       findings.push({
         id: 'logto.setup_configuration',
         status: 'fail',
-        message: 'Logto browser desired state is missing.'
+        message: 'Logto browser desired state is missing.',
+        diff: [{ field: 'Browser application configuration', current: 'Missing', expected: 'Configured' }]
       })
       return report()
     }
@@ -1313,7 +1425,14 @@ export function buildTenantAdminServer(
         message:
           status === 'fail'
             ? 'Logto browser resources are invalid or ambiguous.'
-            : 'Logto browser resources could not be checked because Logto or the network is unavailable.'
+            : 'Logto browser resources could not be checked because Logto or the network is unavailable.',
+        diff: [
+          {
+            field: 'Browser resources',
+            current: status === 'fail' ? 'Invalid or ambiguous' : 'Could not check',
+            expected: 'Configured once'
+          }
+        ]
       })
       return report()
     }
@@ -1329,7 +1448,8 @@ export function buildTenantAdminServer(
             status: 'fail',
             message: setupInspection.application.exists
               ? 'The selected Logto SPA does not match the expected redirects and CORS origins.'
-              : 'The AgentConnect Logto SPA does not exist.'
+              : 'The AgentConnect Logto SPA does not exist.',
+            diff: setupInspection.application.diff
           }
     )
     const invalidConnectors = setupInspection.connectors
@@ -1345,7 +1465,10 @@ export function buildTenantAdminServer(
         : {
             id: 'logto.connectors',
             status: 'fail',
-            message: `Missing or mismatched Logto social connectors: ${invalidConnectors.join(', ')}.`
+            message: `Missing or mismatched Logto social connectors: ${invalidConnectors.join(', ')}.`,
+            diff: setupInspection.connectors
+              .filter((connector) => !connector.exists || !connector.matches)
+              .flatMap((connector) => connector.diff)
           }
     )
     findings.push(
@@ -1358,7 +1481,8 @@ export function buildTenantAdminServer(
         : {
             id: 'logto.sign_in_experience',
             status: 'fail',
-            message: 'Logto sign-in methods do not match the deployment configuration.'
+            message: 'Logto sign-in methods do not match the deployment configuration.',
+            diff: setupInspection.signInExperienceDiff
           }
     )
     return report()

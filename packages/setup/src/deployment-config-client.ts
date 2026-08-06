@@ -5,6 +5,7 @@ import {
   type DeploymentConfigValuesV1
 } from '@agentconnect.md/control-plane/deployment-config-store'
 import { z } from 'zod'
+import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from './logto-connectors.js'
 
 export const DeploymentConfigPutSchema = z.strictObject({
   values: DeploymentConfigValuesV1Schema,
@@ -58,7 +59,12 @@ export function githubDeploymentPut(
                     socialProviders: [...new Set([...connectLogto.browser.socialProviders, 'github'])]
                   }
                 : connectLogto.browser,
-              githubConnector: { appId, slug: credentials.slug, clientId: credentials.clientId }
+              githubConnector: {
+                connectorId: LOGTO_GITHUB_CONNECTOR_ID,
+                appId,
+                slug: credentials.slug,
+                clientId: credentials.clientId
+              }
             }
           }
         : {})
@@ -88,7 +94,8 @@ export interface LocalAuthLogtoBootstrap {
 /** Fill the local Logto defaults without replacing existing provider state. */
 export function localAuthLogtoPut(
   current: CurrentDeploymentConfig,
-  bootstrap: LocalAuthLogtoBootstrap
+  bootstrap: LocalAuthLogtoBootstrap,
+  managementEndpoint: string
 ): DeploymentConfigPut {
   const existing = current.values.logto
   const managementAppId = bootstrap.managementAppId ?? existing?.managementAppId
@@ -98,7 +105,7 @@ export function localAuthLogtoPut(
       ...current.values,
       logto: {
         managementAppId,
-        managementResource: existing?.managementResource ?? 'https://default.logto.app/api',
+        managementResource: existing?.managementResource ?? new URL('/api', managementEndpoint).toString(),
         browser:
           existing?.browser ??
           ({
@@ -135,7 +142,12 @@ export function logtoGithubConnectorPut(
               socialProviders: [...new Set([...current.values.logto.browser.socialProviders, 'github'])]
             }
           : current.values.logto.browser,
-        githubConnector: { appId, slug: credentials.slug, clientId: credentials.clientId }
+        githubConnector: {
+          connectorId: current.values.logto.githubConnector?.connectorId ?? LOGTO_GITHUB_CONNECTOR_ID,
+          appId,
+          slug: credentials.slug,
+          clientId: credentials.clientId
+        }
       }
     },
     secrets: { 'logto.githubConnectorClientSecret': credentials.clientSecret }
@@ -181,7 +193,11 @@ export function slackDeploymentPut(
                     socialProviders: [...new Set([...logto.browser.socialProviders, 'slack'])]
                   }
                 : logto.browser,
-              slackConnector: { appId: credentials.appId, clientId: credentials.clientId }
+              slackConnector: {
+                connectorId: logto.slackConnector?.connectorId ?? LOGTO_SLACK_CONNECTOR_ID,
+                appId: credentials.appId,
+                clientId: credentials.clientId
+              }
             }
           }
         : {})
@@ -194,6 +210,7 @@ export function slackDeploymentPut(
 }
 
 export interface LogtoGoogleConnectorCredentials {
+  connectorId?: string
   clientId: string
   clientSecret?: string
   configuredRedirectUris: string[]
@@ -219,6 +236,8 @@ export function logtoGoogleConnectorPut(
             }
           : current.values.logto.browser,
         googleConnector: {
+          connectorId:
+            credentials.connectorId ?? current.values.logto.googleConnector?.connectorId ?? LOGTO_GOOGLE_CONNECTOR_ID,
           clientId: credentials.clientId,
           configuredRedirectUris: credentials.configuredRedirectUris
         }

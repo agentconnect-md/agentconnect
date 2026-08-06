@@ -41,6 +41,7 @@ export const GITHUB_APP_PERMISSIONS = {
   pull_requests: 'write',
   actions: 'write',
   checks: 'write',
+  packages: 'write',
   workflows: 'write',
   email_addresses: 'read'
 } as const
@@ -50,9 +51,11 @@ export const GITHUB_APP_EVENTS = [
   'issues',
   'issue_comment',
   'pull_request',
+  'pull_request_review',
   'pull_request_review_comment',
   'check_run',
-  'check_suite'
+  'release',
+  'repository'
 ] as const
 
 const GITHUB_ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/
@@ -192,6 +195,7 @@ interface GithubWebhookApiResponse {
 export interface GithubAppAuditResult {
   app: { id: number; slug: string; owner: string | null; settingsUrl: string }
   missing: string[]
+  diff: Array<{ id: string; field: string; current: unknown; expected: unknown }>
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -205,6 +209,12 @@ function sameRecord(left: unknown, right: Record<string, string>): boolean {
   return (
     JSON.stringify(actualKeys) === JSON.stringify(expectedKeys) &&
     expectedKeys.every((key) => actual[key] === right[key])
+  )
+}
+
+function githubApiPermissions(manifestPermissions: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(manifestPermissions).map(([key, value]) => [key === 'email_addresses' ? 'emails' : key, value])
   )
 }
 
@@ -228,21 +238,35 @@ export async function auditGithubApp(
       ? githubRequest<GithubWebhookApiResponse>('/app/hook/config', { auth: jwt, fetchImpl })
       : Promise.resolve(undefined)
   ])
-  const missing: string[] = []
+  const diff: GithubAppAuditResult['diff'] = []
+  const addDiff = (id: string, field: string, current: unknown, expected: unknown) => {
+    diff.push({ id, field, current, expected })
+  }
+  const currentIdentity = { appId: app.id, slug: app.slug, clientId: app.client_id ?? null }
+  const expectedIdentity = { appId: identity.appId, slug: identity.slug, clientId: identity.clientId }
   if (
     app.id !== identity.appId ||
     app.slug !== identity.slug ||
     (identity.clientId !== null && app.client_id !== identity.clientId)
   ) {
-    missing.push('identity')
+    addDiff('identity', 'App identity', currentIdentity, expectedIdentity)
   }
-  if (app.external_url !== expectedManifest.url) missing.push('external_url')
-  if (!sameRecord(app.permissions, GITHUB_APP_PERMISSIONS)) missing.push('permissions')
+  if (app.external_url !== expectedManifest.url) {
+    addDiff('external_url', 'Homepage URL', app.external_url ?? null, expectedManifest.url ?? null)
+  }
+  const expectedPermissions = githubApiPermissions(GITHUB_APP_PERMISSIONS)
+  if (!sameRecord(app.permissions, expectedPermissions)) {
+    addDiff('permissions', 'Repository permissions', asRecord(app.permissions), expectedPermissions)
+  }
   const expectedEvents = Array.isArray(expectedManifest.default_events)
     ? expectedManifest.default_events.filter((event): event is string => typeof event === 'string')
     : []
-  if (!sameStringSet(app.events, expectedEvents)) missing.push('events')
-  if (typeof expectedHook.url === 'string' && hook?.url !== expectedHook.url) missing.push('webhook_url')
+  if (!sameStringSet(app.events, expectedEvents)) {
+    addDiff('events', 'Webhook events', Array.isArray(app.events) ? app.events : [], expectedEvents)
+  }
+  if (typeof expectedHook.url === 'string' && hook?.url !== expectedHook.url) {
+    addDiff('webhook_url', 'Webhook URL', hook?.url ?? null, expectedHook.url)
+  }
 
   const owner = asRecord(app.owner)
   const ownerLogin = typeof owner.login === 'string' ? owner.login : null
@@ -251,7 +275,11 @@ export async function auditGithubApp(
     ownerType === 'Organization' && ownerLogin
       ? `https://github.com/organizations/${encodeURIComponent(ownerLogin)}/settings/apps/${encodeURIComponent(identity.slug)}`
       : `https://github.com/settings/apps/${encodeURIComponent(identity.slug)}`
-  return { app: { id: identity.appId, slug: identity.slug, owner: ownerLogin, settingsUrl }, missing }
+  return {
+    app: { id: identity.appId, slug: identity.slug, owner: ownerLogin, settingsUrl },
+    missing: [...new Set(diff.map((item) => item.id))],
+    diff
+  }
 }
 
 function closeServer(server: Server): Promise<void> {

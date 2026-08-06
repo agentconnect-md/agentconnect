@@ -1,10 +1,6 @@
 /** Minimal Logto Management API client for setup reconciliation and ADMIN claim. */
 import { ADMIN_ROLE } from './auth.js'
 
-export const LOGTO_GITHUB_CONNECTOR_ID = 'agentconnect-github'
-export const LOGTO_GOOGLE_CONNECTOR_ID = 'agentconnect-google'
-export const LOGTO_SLACK_CONNECTOR_ID = 'agentconnect-slack'
-
 const MANAGED_APP_TAG = 'agentconnectSetup'
 const MANAGED_APP_TAG_VALUE = { version: 1, resource: 'browser' } as const
 
@@ -22,9 +18,9 @@ export interface LogtoSetupDesired {
   postLogoutRedirectUris: readonly string[]
   corsAllowedOrigins: readonly string[]
   socialProviders: readonly string[]
-  github?: { clientId: string; clientSecret: string }
-  google?: { clientId: string; clientSecret: string }
-  slack?: { clientId: string; clientSecret: string; scope: string }
+  github?: { connectorId: string; clientId: string; clientSecret: string }
+  google?: { connectorId: string; clientId: string; clientSecret: string }
+  slack?: { connectorId: string; clientId: string; clientSecret: string; scope: string }
 }
 
 interface LogtoRole {
@@ -58,16 +54,35 @@ interface LogtoSignInExperience {
   signInMode: unknown
 }
 
+type ManagedConnectorTarget = 'github' | 'google' | 'slack'
+
+function isManagedConnectorTarget(target: string): target is ManagedConnectorTarget {
+  return target === 'github' || target === 'google' || target === 'slack'
+}
+
 export interface LogtoAdminRoleInspection {
   exists: boolean
   type: LogtoRole['type'] | null
   isDefault: boolean | null
 }
 
+export interface LogtoConfigurationDiff {
+  field: string
+  current: unknown
+  expected: unknown
+}
+
 export interface LogtoSetupInspection {
-  application: { id: string | null; exists: boolean; matches: boolean }
-  connectors: Array<{ target: string; id: string | null; exists: boolean; matches: boolean }>
+  application: { id: string | null; exists: boolean; matches: boolean; diff: LogtoConfigurationDiff[] }
+  connectors: Array<{
+    target: string
+    id: string | null
+    exists: boolean
+    matches: boolean
+    diff: LogtoConfigurationDiff[]
+  }>
   signInExperienceMatches: boolean
+  signInExperienceDiff: LogtoConfigurationDiff[]
 }
 
 export interface LogtoSetupReconcileResult {
@@ -110,6 +125,16 @@ function sameStrings(left: unknown, right: readonly string[]): boolean {
   return JSON.stringify(stringArray(left)) === JSON.stringify(right)
 }
 
+function addDiff(
+  diff: LogtoConfigurationDiff[],
+  field: string,
+  current: unknown,
+  expected: unknown,
+  matches: boolean = JSON.stringify(current) === JSON.stringify(expected)
+): void {
+  if (!matches) diff.push({ field, current: current ?? null, expected: expected ?? null })
+}
+
 function hasManagedTag(application: LogtoApplication): boolean {
   const tag = asRecord(application.customData[MANAGED_APP_TAG])
   return tag.version === MANAGED_APP_TAG_VALUE.version && tag.resource === MANAGED_APP_TAG_VALUE.resource
@@ -139,7 +164,7 @@ function parseConnector(value: unknown): LogtoConnector | null {
 }
 
 function desiredConnector(
-  target: string,
+  target: ManagedConnectorTarget,
   desired: LogtoSetupDesired
 ): { id: string; connectorId: string; config: Record<string, string> } {
   if (target === 'github') {
@@ -149,7 +174,8 @@ function desiredConnector(
         'the Logto GitHub connector needs the deployment GitHub App client id and secret'
       )
     }
-    return { id: LOGTO_GITHUB_CONNECTOR_ID, connectorId: 'github-universal', config: desired.github }
+    const { connectorId: id, ...config } = desired.github
+    return { id, connectorId: 'github-universal', config }
   }
   if (target === 'google') {
     if (!desired.google) {
@@ -158,7 +184,8 @@ function desiredConnector(
         'the Logto Google connector needs a Google OAuth client id and secret'
       )
     }
-    return { id: LOGTO_GOOGLE_CONNECTOR_ID, connectorId: 'google-universal', config: desired.google }
+    const { connectorId: id, ...config } = desired.google
+    return { id, connectorId: 'google-universal', config }
   }
   if (target === 'slack') {
     if (!desired.slack) {
@@ -167,12 +194,10 @@ function desiredConnector(
         'the Logto Slack connector needs the deployment Slack App client id and secret'
       )
     }
-    return { id: LOGTO_SLACK_CONNECTOR_ID, connectorId: 'slack-universal', config: desired.slack }
+    const { connectorId: id, ...config } = desired.slack
+    return { id, connectorId: 'slack-universal', config }
   }
-  throw new LogtoManagementError(
-    'SOCIAL_CONNECTOR_UNSUPPORTED',
-    `automatic creation is not supported for the missing Logto social connector ${target}`
-  )
+  throw new Error(`unsupported managed Logto connector target: ${target}`)
 }
 
 function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof desiredConnector>): boolean {
@@ -222,11 +247,63 @@ export class LogtoAdminClaimClient {
     const application = await this.findApplication(desired.applicationId)
     const connectors = await this.listConnectors()
     const signInExperience = await this.getSignInExperience()
+    const applicationDiff: LogtoConfigurationDiff[] = []
+    if (!application) {
+      applicationDiff.push({
+        field: 'SPA application',
+        current: 'Missing',
+        expected: desired.applicationId ?? desired.applicationName
+      })
+    } else {
+      addDiff(
+        applicationDiff,
+        'Redirect URIs',
+        stringArray(application.oidcClientMetadata.redirectUris),
+        desired.redirectUris,
+        sameStrings(application.oidcClientMetadata.redirectUris, desired.redirectUris)
+      )
+      addDiff(
+        applicationDiff,
+        'Post sign-out redirect URIs',
+        stringArray(application.oidcClientMetadata.postLogoutRedirectUris),
+        desired.postLogoutRedirectUris,
+        sameStrings(application.oidcClientMetadata.postLogoutRedirectUris, desired.postLogoutRedirectUris)
+      )
+      addDiff(
+        applicationDiff,
+        'CORS allowed origins',
+        stringArray(application.customClientMetadata.corsAllowedOrigins),
+        desired.corsAllowedOrigins,
+        sameStrings(application.customClientMetadata.corsAllowedOrigins, desired.corsAllowedOrigins)
+      )
+      addDiff(applicationDiff, 'AgentConnect managed application', hasManagedTag(application), true)
+    }
+    const signInExperienceDiff: LogtoConfigurationDiff[] = []
+    addDiff(signInExperienceDiff, 'Sign-in methods', signInExperience.signIn.methods ?? null, [])
+    addDiff(signInExperienceDiff, 'Sign-up identifiers', signInExperience.signUp.identifiers ?? null, [])
+    addDiff(signInExperienceDiff, 'Secondary identifiers', signInExperience.signUp.secondaryIdentifiers ?? [], [])
+    addDiff(signInExperienceDiff, 'Password sign-up', signInExperience.signUp.password ?? null, false)
+    addDiff(signInExperienceDiff, 'Sign-up verification', signInExperience.signUp.verify ?? null, false)
+    addDiff(
+      signInExperienceDiff,
+      'Skip required identifiers',
+      signInExperience.socialSignIn.skipRequiredIdentifiers ?? null,
+      true
+    )
+    addDiff(
+      signInExperienceDiff,
+      'Social providers',
+      signInExperience.socialSignInConnectorTargets,
+      desired.socialProviders,
+      sameStrings(signInExperience.socialSignInConnectorTargets, desired.socialProviders)
+    )
+    addDiff(signInExperienceDiff, 'Sign-in mode', signInExperience.signInMode ?? null, 'SignInAndRegister')
     return {
       application: {
         id: application?.id ?? null,
         exists: application !== undefined,
-        matches: application ? this.applicationMatches(application, desired) : false
+        matches: application ? this.applicationMatches(application, desired) : false,
+        diff: applicationDiff
       },
       connectors: desired.socialProviders.map((target) => {
         const matches = connectors.filter((connector) => connector.target === target)
@@ -237,14 +314,40 @@ export class LogtoAdminClaimClient {
           )
         }
         const connector = matches[0]
+        if (!isManagedConnectorTarget(target)) {
+          return {
+            target,
+            id: connector?.id ?? null,
+            exists: connector !== undefined,
+            matches: connector !== undefined,
+            diff: connector ? [] : [{ field: `${target} connector`, current: 'Missing', expected: 'Configured' }]
+          }
+        }
+        const expected = desiredConnector(target, desired)
+        const diff: LogtoConfigurationDiff[] = []
+        if (!connector) {
+          diff.push({ field: `${target} connector`, current: 'Missing', expected: expected.id })
+        } else {
+          addDiff(diff, `${target} connector ID`, connector.id, expected.id)
+          addDiff(diff, `${target} connector type`, connector.connectorId, expected.connectorId)
+          addDiff(diff, `${target} client ID`, connector.config.clientId ?? null, expected.config.clientId ?? null)
+          if (target === 'slack') {
+            addDiff(diff, 'Slack OIDC scope', connector.config.scope ?? null, expected.config.scope ?? null)
+          }
+          if (!connectorMatches(connector, expected) && diff.length === 0) {
+            diff.push({ field: `${target} OAuth client settings`, current: '*** (different)', expected: '***' })
+          }
+        }
         return {
           target,
           id: connector?.id ?? null,
           exists: connector !== undefined,
-          matches: connector ? connectorMatches(connector, desiredConnector(target, desired)) : false
+          matches: connector ? connector.id === expected.id && connectorMatches(connector, expected) : false,
+          diff
         }
       }),
-      signInExperienceMatches: this.signInExperienceMatches(signInExperience, desired.socialProviders)
+      signInExperienceMatches: this.signInExperienceMatches(signInExperience, desired.socialProviders),
+      signInExperienceDiff
     }
   }
 
@@ -422,6 +525,16 @@ export class LogtoAdminClaimClient {
           'SOCIAL_CONNECTOR_AMBIGUOUS',
           `Logto has more than one social connector for target ${target}`
         )
+      }
+      if (!isManagedConnectorTarget(target)) {
+        if (!matches[0]) {
+          throw new LogtoManagementError(
+            'SOCIAL_CONNECTOR_UNSUPPORTED',
+            `automatic creation is not supported for the missing Logto social connector ${target}`
+          )
+        }
+        result.push({ target, id: matches[0].id, created: false, changed: false })
+        continue
       }
       const expected = desiredConnector(target, desired)
       if (matches[0] && connectorMatches(matches[0], expected)) {

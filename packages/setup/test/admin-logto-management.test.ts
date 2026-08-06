@@ -212,9 +212,14 @@ describe('Logto setup reconciliation', () => {
       postLogoutRedirectUris: ['http://localhost:3000/login'],
       corsAllowedOrigins: ['http://localhost:3000', 'http://localhost:8091'],
       socialProviders: ['github', 'google', 'slack'],
-      github: { clientId: 'github-client', clientSecret: 'github-secret' },
-      google: { clientId: 'google-client', clientSecret: 'google-secret' },
-      slack: { clientId: 'slack-client', clientSecret: 'slack-secret', scope: 'openid profile email' }
+      github: { connectorId: 'agentconnect-github', clientId: 'github-client', clientSecret: 'github-secret' },
+      google: { connectorId: 'agentconnect-google', clientId: 'google-client', clientSecret: 'google-secret' },
+      slack: {
+        connectorId: 'agentconnect-slack',
+        clientId: 'slack-client',
+        clientSecret: 'slack-secret',
+        scope: 'openid profile email'
+      }
     }
 
     await expect(client.reconcileSetup(desired)).resolves.toMatchObject({
