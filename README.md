@@ -42,7 +42,6 @@
 <p align="center">
   <a href="https://github.com/agentconnect-md/agentconnect/actions/workflows/test.yaml"><img src="https://github.com/agentconnect-md/agentconnect/actions/workflows/test.yaml/badge.svg" alt="Test status" /></a>
   <a href="https://www.npmjs.com/package/@agentconnect.md/daemon/v/latest"><img src="https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/latest?label=daemon%20latest" alt="Latest daemon version" /></a>
-  <a href="https://www.npmjs.com/package/@agentconnect.md/daemon/v/rc"><img src="https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/rc?label=daemon%20rc" alt="RC daemon version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
 </p>
 
