@@ -99,6 +99,8 @@ import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
   railSeedAgentIds,
+  railSeedKey,
+  railSeedShouldWiden,
   seedRailAgentFilter,
   type RailAgentFilter
 } from '@/lib/session-rail-filter'
@@ -1129,7 +1131,7 @@ export default function SessionDetailView() {
   // lifted delegation preserves its waking member so the UI groups
   // delegations by origin.
   const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
-  const { data: conversationLineage } = useSWR(
+  const { data: conversationLineage, error: conversationLineageError } = useSWR(
     conversationMode && activeOrg?.id
       ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
       : null,
@@ -1666,11 +1668,50 @@ export default function SessionDetailView() {
   // grouped list or hide superseded sessions again.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
-  const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
-    MOCK_MODE || !railQuery ? null : activeOrg?.id,
-    railQuery ?? {},
+  const {
+    sessions: seededRailRows,
+    total: seededRailTotal,
+    isLoading: seededRailLoading
+  } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {}, { grouped: !flatView })
+  // A seed that narrows the rail down to the conversation already on screen would
+  // hide the rail — and the picker that could widen it — behind SessionRail's
+  // `empty`. Re-ask that question unfiltered instead of stranding the reader.
+  //
+  // The rail reports the verdict because only it can reach the whole of it: its
+  // rows are this page merged with globally hydrated pins and the open row, and
+  // lineage alone can keep a one-row page worth drawing. Latched to the SEED, not
+  // held as a boolean — widening replaces the rows, so the collapse that
+  // justified it stops being observable the moment it works.
+  //
+  // Lineage is waited on here because the rail cannot tell a conversation with no
+  // relatives from one whose relatives have not arrived: `conversationFamily` is an
+  // EMPTY family, not `undefined`, for as long as its own multi-request fetch is in
+  // flight. Latching on that would widen a rail that is about to grow a Related
+  // tree — the very regression this gate exists to prevent, reached by a race
+  // instead of a miscount. The rail withholds its verdict over its own pins.
+  const railSeedKeyNow = railSeedKey(railFilter)
+  const railFamilySettled = conversationMode
+    ? conversationLineage !== undefined || conversationLineageError !== undefined
+    : !sessionDetailLoading
+  const [widenedSeed, setWidenedSeed] = useState<string | null>(null)
+  const handleRailWouldHide = useCallback(
+    (wouldHide: boolean) => {
+      if (!railSeedShouldWiden(railSeedKeyNow, wouldHide, !seededRailLoading && railFamilySettled)) return
+      setWidenedSeed(railSeedKeyNow)
+    },
+    [railSeedKeyNow, seededRailLoading, railFamilySettled]
+  )
+  const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
+  const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
+    railSeedWidened ? activeOrg?.id : null,
+    {},
     { grouped: !flatView }
   )
+  const railSessionRows = railSeedWidened ? widenedRailRows : seededRailRows
+  const railSessionTotal = railSeedWidened ? widenedRailTotal : seededRailTotal
+  // The chips have to describe the list actually on screen — a widened rail is
+  // unfiltered, and leaving the seed's chips up would misname it.
+  const railDisplayAgentIds = railSeedWidened ? [] : railFilter.agentIds
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
@@ -3952,7 +3993,7 @@ export default function SessionDetailView() {
         // the roster resolver is not agent-filtered, so its members are complete.
         current={railCurrent ?? session}
         total={railSessionTotal}
-        agentIds={railFilter.agentIds}
+        agentIds={railDisplayAgentIds}
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
@@ -3960,6 +4001,7 @@ export default function SessionDetailView() {
         flatView={flatView}
         childOriginById={conversationLineage?.childOriginById}
         onSelect={setRouteSession}
+        onWouldHideChange={handleRailWouldHide}
       />
     </div>
   )

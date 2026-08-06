@@ -111,6 +111,27 @@ function pinIdsOf(session: Session): string[] {
  * that padding equals the fixed 250px panel the real rail pins to the viewport
  * edge. Keep these box classes identical to the real rail's container below.
  */
+/**
+ * Whether the rail has nothing worth drawing, over the inputs it settles from.
+ *
+ * `rowCount` is the FULL row set — the agent-filtered page merged with globally
+ * hydrated pins and the open session — not the page the caller fetched: a pin from
+ * another agent is a row the page never carried. `hasFamily` keeps a one-row page
+ * worth drawing on its own, since lineage renders its own Related tree.
+ *
+ * Exported because a caller that widens a collapsed seed has to gate on the same
+ * verdict, and re-deriving it from the page count alone gets the lineage and pin
+ * cases wrong in the direction that throws a good rail away.
+ */
+export function railWouldHide(input: {
+  total: number
+  rowCount: number
+  hasFamily: boolean
+  filterTouched: boolean
+}): boolean {
+  return Math.max(input.total, input.rowCount) < 2 && !input.hasFamily && !input.filterTouched
+}
+
 export function SessionRailSlot() {
   return <div aria-hidden="true" className="-mr-[30px] hidden w-[250px] flex-none wide:block" />
 }
@@ -126,7 +147,8 @@ export function SessionRail({
   conversation = false,
   flatView = false,
   childOriginById,
-  onSelect
+  onSelect,
+  onWouldHideChange
 }: {
   /** The filtered first page of sessions, newest first. */
   sessions: Session[]
@@ -151,6 +173,9 @@ export function SessionRail({
   childOriginById?: ReadonlyMap<string, string>
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
+  /** Whether the rail is about to draw nothing — see the `empty` note below. The
+   *  caller owns the fetches, so a collapsed SEED is re-asked there, not here. */
+  onWouldHideChange?: (wouldHide: boolean) => void
 }) {
   const { orgPath, activeOrg } = useOrgs()
   const flatSearch = flatView ? '?view=flat' : ''
@@ -171,8 +196,13 @@ export function SessionRail({
   // Hydration: the server has no localStorage, so the first client paint must match
   // the SSR markup (every row unpinned) and the stored pins land in an effect.
   const [pins, setPins] = useState<SessionPin[]>([])
+  // Tracked separately from the pins themselves: "no pins yet" is what an unread
+  // store and a genuinely empty one both look like, and the hide verdict reported
+  // below must not mistake the first for the second.
+  const [pinsRead, setPinsRead] = useState(false)
   useEffect(() => {
     setPins(readSessionPins())
+    setPinsRead(true)
   }, [])
 
   const togglePin = useCallback(
@@ -286,7 +316,26 @@ export function SessionRail({
   // This test is also true while the rail's page is still in flight, since `rows` is
   // the open session alone until it lands. Same answer either way: hold the column,
   // fill it when there is something to fill it with.
-  const empty = Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched
+  const empty = railWouldHide({ total, rowCount: rows.length, hasFamily, filterTouched })
+
+  // Hiding takes the agent picker with it, so a SEEDED filter that narrowed the
+  // list this far would strand the reader with an empty gutter and no way to
+  // widen it. The caller re-asks that question unfiltered — reported rather than
+  // decided here because the rail does not own its fetches, and REPORTED FROM
+  // HERE because this is the only place the whole verdict exists: `rows` is the
+  // page merged with globally hydrated pins and the open row, and `hasFamily`
+  // can keep a one-row page worth drawing on its own.
+  //
+  // Withheld until the rail's OWN inputs have settled. An unhydrated pin store and
+  // an in-flight pin fetch both read as "no pins", which is indistinguishable from
+  // a collapsed rail — and the caller latches the first verdict it is given, so
+  // reporting that snapshot would freeze a race into a permanent widen. The
+  // caller waits on lineage the same way before acting on this.
+  const pinsSettled = pinsRead && (missingPinIds.length === 0 || hydratedPins !== undefined)
+  useEffect(() => {
+    if (!pinsSettled) return
+    onWouldHideChange?.(empty)
+  }, [empty, pinsSettled, onWouldHideChange])
 
   // ≤768px has no column to hold, so the list hangs off a shell-owned app-bar
   // button (see MobileActionSlot) whose panel is rendered below. Registration has
