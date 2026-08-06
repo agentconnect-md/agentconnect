@@ -297,7 +297,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
 
       <section id="feishu-section" class="panel admin-section" aria-labelledby="feishu-heading">
         <div class="provider-head">
-          <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Validates the App ID and secret only. API permissions, event subscriptions, and the published version are not audited.</p></div>
+          <div><h3 id="feishu-heading">Feishu</h3><p class="muted">Audits the published Bot capability, API permissions, and message event subscription.</p></div>
           <span id="feishu-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -305,6 +305,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <dt>App secret</dt><dd class="secret-line"><span id="feishu-app-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="feishu.loginAppSecret" data-secret-display="feishu-app-secret-display">Edit</button></dd>
         </dl>
         <p id="feishu-login-status" class="muted"></p>
+        <div id="feishu-drift" class="notice" hidden></div>
         <div id="feishu-config-controls" class="subsection">
           <label id="feishu-create-name-field" class="field">New App name<input id="feishu-create-name" value="AgentConnect"></label>
           <label class="field">Existing App ID<input id="feishu-login-id" autocomplete="off"></label>
@@ -314,14 +315,14 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <button id="create-feishu-login-app">Create Feishu App</button>
           <button id="save-feishu-login-app">Save existing App</button>
           <button id="cancel-feishu-configuration" hidden>Cancel</button>
-          <button id="check-feishu-login-app" hidden>Check credentials</button>
+          <button id="check-feishu-login-app" hidden>Check setup</button>
           <button id="clear-feishu" class="danger" hidden>Clear configuration</button>
         </div>
       </section>
 
       <section id="lark-section" class="panel admin-section" aria-labelledby="lark-heading">
         <div class="provider-head">
-          <div><h3 id="lark-heading">Lark</h3><p class="muted">Validates the App ID and secret only. API permissions, event subscriptions, and the published version are not audited.</p></div>
+          <div><h3 id="lark-heading">Lark</h3><p class="muted">Audits the published Bot capability, API permissions, and message event subscription.</p></div>
           <span id="lark-match" class="badge">Not configured</span>
         </div>
         <dl class="credentials">
@@ -329,6 +330,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <dt>App secret</dt><dd class="secret-line"><span id="lark-app-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="lark.loginAppSecret" data-secret-display="lark-app-secret-display">Edit</button></dd>
         </dl>
         <p id="lark-login-status" class="muted"></p>
+        <div id="lark-drift" class="notice" hidden></div>
         <div id="lark-config-controls" class="subsection">
           <label id="lark-create-name-field" class="field">New App name<input id="lark-create-name" value="AgentConnect"></label>
           <label class="field">Existing App ID<input id="lark-login-id" autocomplete="off"></label>
@@ -338,7 +340,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <button id="create-lark-login-app">Create Lark App</button>
           <button id="save-lark-login-app">Save existing App</button>
           <button id="cancel-lark-configuration" hidden>Cancel</button>
-          <button id="check-lark-login-app" hidden>Check credentials</button>
+          <button id="check-lark-login-app" hidden>Check setup</button>
           <button id="clear-lark" class="danger" hidden>Clear configuration</button>
         </div>
       </section>
@@ -693,6 +695,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         : 'No Lark tenant App is configured.';
       match('feishu-match', values.feishu && configured(byKey, 'feishu.loginAppSecret') ? '' : '', values.feishu && configured(byKey, 'feishu.loginAppSecret') ? 'Ready to check' : 'Not configured');
       match('lark-match', values.lark && configured(byKey, 'lark.loginAppSecret') ? '' : '', values.lark && configured(byKey, 'lark.loginAppSecret') ? 'Ready to check' : 'Not configured');
+      showDiff('feishu-drift', []);
+      showDiff('lark-drift', []);
       el('feishu-config-controls').hidden = Boolean(values.feishu);
       el('lark-config-controls').hidden = Boolean(values.lark);
       el('feishu-create-name-field').hidden = Boolean(values.feishu);
@@ -1182,7 +1186,8 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
     async function checkRegionalLoginApp(region) {
       const result = await json(await fetch(api + '/check/regional-login-app/' + region, { headers: bearer() }));
       const label = region === 'feishu' ? 'Feishu' : 'Lark';
-      match(region + '-match', result.status === 'pass' ? 'pass' : result.status === 'fail' ? 'fail' : 'warn', result.status === 'pass' ? 'Credentials valid' : result.status === 'fail' ? 'Invalid credentials' : 'Could not check');
+      showDiff(region + '-drift', result.diff || []);
+      match(region + '-match', result.status === 'pass' ? 'pass' : result.status === 'fail' ? 'fail' : 'warn', result.status === 'pass' ? 'Matches' : result.status === 'fail' ? 'Update required' : 'Could not check');
       message(result.message || (label + ' credential check completed.'), result.status === 'fail');
     }
 

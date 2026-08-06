@@ -18,6 +18,7 @@
  * This is the only spot the CP touches the appSecret to reach Feishu; it NEVER logs it.
  */
 import type { FeishuRegion } from '@agentconnect.md/protocol'
+import { AGENTCONNECT_FEISHU_EVENTS, AGENTCONNECT_FEISHU_SCOPES } from './feishu-app-template.js'
 
 /** tenant-access-token exchange outcome: valid creds (with the derived bot name), creds
  *  Feishu rejected, or an inconclusive reachability failure. */
@@ -94,6 +95,186 @@ export type FeishuAppCredentialVerifier = (
   appSecret: string,
   region: FeishuRegion
 ) => Promise<FeishuAppCredentialVerification>
+
+export interface FeishuAppSetupDiff {
+  field: string
+  current: unknown
+  expected: unknown
+}
+
+export interface FeishuAppSetupAudit {
+  status: 'ok' | 'mismatch' | 'invalid' | 'unavailable'
+  appName: string | null
+  version: string | null
+  diff: FeishuAppSetupDiff[]
+  message?: string
+}
+
+export type FeishuAppSetupAuditor = (
+  appId: string,
+  appSecret: string,
+  region: FeishuRegion
+) => Promise<FeishuAppSetupAudit>
+
+type JsonRecord = Record<string, unknown>
+
+function record(value: unknown): JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as JsonRecord) : {}
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function scopeNames(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((item) => {
+        const scope = record(item).scope
+        return typeof scope === 'string' ? [scope] : []
+      })
+    : []
+}
+
+async function responseJson(response: Response): Promise<JsonRecord> {
+  try {
+    return record(await response.json())
+  } catch {
+    return {}
+  }
+}
+
+function applicationReadPermissionMissing(body: JsonRecord): boolean {
+  const code = body.code
+  const message = typeof body.msg === 'string' ? body.msg : ''
+  return (
+    code === 210508 ||
+    code === 99991672 ||
+    message.includes('application:application:self_manage') ||
+    message.toLowerCase().includes('insufficient permission')
+  )
+}
+
+/** Audit the actual published regional App instead of treating a successful
+ * credential exchange as proof that its Bot, scopes, events and release are ready. */
+export function createFeishuAppSetupAuditor(fetcher: typeof fetch = fetch): FeishuAppSetupAuditor {
+  return async (appId, appSecret, region) => {
+    const base = REGION_BASE[region]
+    const token = await tenantAccessToken(appId, appSecret, region, fetcher)
+    if (token.status !== 'ok') {
+      return {
+        status: token.status === 'invalid' ? 'invalid' : 'unavailable',
+        appName: null,
+        version: null,
+        diff: []
+      }
+    }
+
+    try {
+      const headers = { authorization: `Bearer ${token.token}` }
+      const appResponse = await fetcher(`${base}/application/v6/applications/${encodeURIComponent(appId)}?lang=en_us`, {
+        headers,
+        signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
+      })
+      const appBody = await responseJson(appResponse)
+      if (!appResponse.ok || appBody.code !== 0) {
+        if (applicationReadPermissionMissing(appBody)) {
+          return {
+            status: 'mismatch',
+            appName: null,
+            version: null,
+            diff: [
+              {
+                field: 'API permission: application:application:self_manage',
+                current: 'Missing',
+                expected: 'Required for setup audit'
+              }
+            ]
+          }
+        }
+        return {
+          status: 'unavailable',
+          appName: null,
+          version: null,
+          diff: [],
+          ...(typeof appBody.msg === 'string' ? { message: appBody.msg } : {})
+        }
+      }
+
+      const app = record(record(appBody.data).app)
+      const appName = typeof app.app_name === 'string' ? app.app_name : null
+      const onlineVersionId = typeof app.online_version_id === 'string' ? app.online_version_id.trim() : ''
+      const diff: FeishuAppSetupDiff[] = []
+      if (app.status !== 1) diff.push({ field: 'App status', current: 'Disabled', expected: 'Enabled' })
+      if (!onlineVersionId) {
+        diff.push({ field: 'Published version', current: 'None', expected: 'Published' })
+        return { status: 'mismatch', appName, version: null, diff }
+      }
+
+      const versionResponse = await fetcher(
+        `${base}/application/v6/applications/${encodeURIComponent(appId)}/app_versions/${encodeURIComponent(onlineVersionId)}?lang=en_us`,
+        { headers, signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS) }
+      )
+      const versionBody = await responseJson(versionResponse)
+      if (!versionResponse.ok || versionBody.code !== 0) {
+        return {
+          status: 'unavailable',
+          appName,
+          version: null,
+          diff,
+          ...(typeof versionBody.msg === 'string' ? { message: versionBody.msg } : {})
+        }
+      }
+
+      const appVersion = record(record(versionBody.data).app_version)
+      const version = typeof appVersion.version === 'string' ? appVersion.version : null
+      if (appVersion.status !== 1 || !appVersion.publish_time) {
+        diff.push({ field: 'Published version', current: version ?? 'Not published', expected: 'Published' })
+      }
+
+      const publishedScopes = new Set(scopeNames(appVersion.scopes))
+      for (const scope of AGENTCONNECT_FEISHU_SCOPES) {
+        if (!publishedScopes.has(scope)) {
+          diff.push({ field: `API permission: ${scope}`, current: 'Missing', expected: 'Required' })
+        }
+      }
+
+      const publishedEvents = new Set([
+        ...strings(appVersion.events),
+        ...(Array.isArray(appVersion.event_infos)
+          ? appVersion.event_infos.flatMap((item) => {
+              const eventType = record(item).event_type
+              return typeof eventType === 'string' ? [eventType] : []
+            })
+          : [])
+      ])
+      for (const event of AGENTCONNECT_FEISHU_EVENTS) {
+        if (!publishedEvents.has(event)) {
+          diff.push({ field: `Event subscription: ${event}`, current: 'Missing', expected: 'Required' })
+        }
+      }
+
+      if (!Object.hasOwn(record(appVersion.ability), 'bot')) {
+        diff.push({ field: 'Bot capability', current: 'Disabled', expected: 'Enabled' })
+      } else {
+        const botResponse = await fetcher(`${base}/bot/v3/info`, {
+          headers,
+          signal: AbortSignal.timeout(FEISHU_TIMEOUT_MS)
+        })
+        const botBody = await responseJson(botResponse)
+        if (!botResponse.ok) {
+          return { status: 'unavailable', appName, version, diff }
+        }
+        if (botBody.code !== 0) {
+          diff.push({ field: 'Bot capability', current: 'Unavailable', expected: 'Enabled' })
+        }
+      }
+
+      return { status: diff.length ? 'mismatch' : 'ok', appName, version, diff }
+    } catch {
+      return { status: 'unavailable', appName: null, version: null, diff: [] }
+    }
+  }
+}
 
 /** Lightweight credential check shared by the runtime installer and Tenant Admin. */
 export function createFeishuAppCredentialVerifier(fetcher?: typeof fetch): FeishuAppCredentialVerifier {
