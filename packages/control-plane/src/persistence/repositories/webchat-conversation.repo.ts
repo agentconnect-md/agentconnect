@@ -56,18 +56,29 @@ export class PgWebchatConversationRepo implements WebchatConversationRepo {
     })
   }
 
-  async participants(conversationId: string): Promise<WebchatParticipant[]> {
+  async participants(orgId: OrgId, conversationId: string): Promise<WebchatParticipant[]> {
     if (!UUID_RE.test(conversationId)) return []
+    // Roster rows carry no org of their own, so the fence rides the relational
+    // filter on the owning conversation (org-scoped-data-layer.md §3.6): a
+    // cross-org id yields the same empty roster as an unknown one, and every
+    // caller already fails closed on empty.
     const rows = await this.db.webchatConversationAgent.findMany({
-      where: { conversationId },
+      where: { conversationId, conversation: { orgId } },
       orderBy: { ord: 'asc' },
       select: { agentId: true, role: true }
     })
     return rows.map((r) => ({ agentId: AgentId(r.agentId), role: r.role === 'primary' ? 'primary' : 'member' }))
   }
 
-  async addParticipant(conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void> {
+  async addParticipant(orgId: OrgId, conversationId: string, agentId: AgentId, addedByUserId: string): Promise<void> {
     await this.inTx(async (tx) => {
+      // Org fence on the conversation itself, inside the same transaction as the
+      // roster insert: a cross-org id adds nothing (§3.6).
+      const conversation = await tx.webchatConversation.findFirst({
+        where: { id: conversationId, orgId },
+        select: { id: true }
+      })
+      if (!conversation) return
       const last = await tx.webchatConversationAgent.aggregate({
         where: { conversationId },
         _max: { ord: true }

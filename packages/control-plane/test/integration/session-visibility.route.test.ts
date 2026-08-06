@@ -278,7 +278,7 @@ describe('session visibility — external conversation audiences', () => {
       ).sessions
     ).toHaveLength(0)
     const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'feishu', true)
-    const external = await repo.get(SessionId(sessionId))
+    const external = await repo.getUnscoped(SessionId(sessionId))
     expect(external).toMatchObject({ visibility: 'external', externalProvider: 'feishu' })
     expect(
       (
@@ -521,7 +521,7 @@ describe('session visibility — external conversation audiences', () => {
       at: new Date(),
       classification: { inherit: true }
     })
-    expect(await repo.get(SessionId(childId))).toMatchObject({
+    expect(await repo.getUnscoped(SessionId(childId))).toMatchObject({
       visibilitySource: 'inherited',
       externalProvider: 'slack',
       externalResolution: 'pending',
@@ -623,7 +623,7 @@ describe('session visibility — external conversation audiences', () => {
 
     const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
     expect(enabled.policy.state).toBe('enabled')
-    const external = await repo.get(SessionId(sessionId))
+    const external = await repo.getUnscoped(SessionId(sessionId))
     expect(external).toMatchObject({ visibility: 'external', externalResolution: 'settled' })
 
     const denied = await repo.listPage({
@@ -747,7 +747,7 @@ describe('session visibility — membership across an agent filter', () => {
       }
     })
     const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
-    expect((await repo.get(SessionId(sessionB)))?.visibility).toBe('external')
+    expect((await repo.getUnscoped(SessionId(sessionB)))?.visibility).toBe('external')
 
     const filtered = { agentIds: [AgentId(agentA)] }
     const widened = { ...filtered, memberAgentIds: [AgentId(agentA), AgentId(agentB)] }
@@ -853,7 +853,10 @@ describe('session visibility — GitHub repository audience', () => {
     })
 
     await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'github', true)
-    expect(await repo.get(githubSessionId)).toMatchObject({ visibility: 'external', externalResolution: 'settled' })
+    expect(await repo.getUnscoped(githubSessionId)).toMatchObject({
+      visibility: 'external',
+      externalResolution: 'settled'
+    })
 
     const response = await appAs(viewer, {
       sessionAccessPlugins: [
@@ -1047,21 +1050,21 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
 
     // -1 is "never acknowledged" — distinct from an ack of revision 0, which is
     // a real revision for a session ingested and never re-classified.
-    expect((await repo.get(SessionId(session)))?.visibilityAckedRev).toBe(-1)
-    const { affected } = await repo.setVisibility(SessionId(session), 'private')
+    expect((await repo.getUnscoped(SessionId(session)))?.visibilityAckedRev).toBe(-1)
+    const { affected } = await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(session), 'private')
     expect(affected[0]).toMatchObject({ visibilityRev: 1, visibilityAckedRev: -1 })
 
     // At-least-once delivery means acks can arrive out of order; the watermark
     // is monotonic so a late one for an older revision cannot un-apply a change.
     await repo.recordVisibilityAck(SessionId(session), 0)
-    expect((await repo.get(SessionId(session)))?.visibilityAckedRev).toBe(0)
+    expect((await repo.getUnscoped(SessionId(session)))?.visibilityAckedRev).toBe(0)
     await repo.recordVisibilityAck(SessionId(session), 1)
     await repo.recordVisibilityAck(SessionId(session), 0)
-    expect((await repo.get(SessionId(session)))?.visibilityAckedRev).toBe(1)
+    expect((await repo.getUnscoped(SessionId(session)))?.visibilityAckedRev).toBe(1)
 
     // A no-op re-set neither bumps the revision nor re-opens the cutover.
-    expect((await repo.setVisibility(SessionId(session), 'private')).affected).toEqual([])
-    expect((await repo.get(SessionId(session)))?.visibilityRev).toBe(1)
+    expect((await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(session), 'private')).affected).toEqual([])
+    expect((await repo.getUnscoped(SessionId(session)))?.visibilityRev).toBe(1)
   })
 
   it('replays an unacknowledged gate ahead of newer acknowledged ones', async () => {
@@ -1076,7 +1079,7 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
       daemonId,
       lastActivityAt: new Date(Date.now() - 86_400_000)
     })
-    await repo.setVisibility(SessionId(stale), 'private')
+    await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(stale), 'private')
     const fresh = await seedSessionMeta(prisma, `s-fresh-${randomUUID()}`, agentId, {
       daemonId,
       lastActivityAt: new Date()
@@ -1099,7 +1102,7 @@ describe('session visibility — §5.1 daemon-ack cutover', () => {
       daemonId,
       parentSessionId: root
     })
-    const { affected } = await repo.setVisibility(SessionId(root), 'private')
+    const { affected } = await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(root), 'private')
     expect(affected.map((a) => a.id).sort()).toEqual([child, root].sort())
 
     // Only the root's daemon acks. The child holds text copied from the root, so
@@ -1223,17 +1226,18 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
     })
 
     // The ancestor cascade re-owns the child to the root's owner.
-    await repo.setVisibility(SessionId(root), 'private')
+    await repo.setVisibility(OrgId(DEFAULT_ORG_ID), SessionId(root), 'private')
 
     // The child's FORMER owner now tries to publish it. The route's own check
     // could have passed on a pre-cascade read; the lock-time re-check refuses.
     const denied = await repo.setVisibility(
+      OrgId(DEFAULT_ORG_ID),
       SessionId(child),
       'org',
       (row) => row.ownerIdentity === `user:${child_owner}`
     )
     expect(denied).toMatchObject({ forbidden: true, affected: [] })
-    expect((await repo.get(SessionId(child)))?.visibility).toBe('private')
+    expect((await repo.getUnscoped(SessionId(child)))?.visibility).toBe('private')
   })
 
   it('settles an out-of-order child once, and never over a human decision', async () => {
@@ -1262,7 +1266,7 @@ describe('session visibility — §4.5 inheritance and cascade', () => {
       classification: { inherit: true },
       at: new Date()
     })
-    await repo.setVisibility(pinned.session!.id, 'org')
+    await repo.setVisibility(OrgId(DEFAULT_ORG_ID), pinned.session!.id, 'org')
 
     // Now the parent lands as an org channel session.
     const parent = await repo.recordMilestone({

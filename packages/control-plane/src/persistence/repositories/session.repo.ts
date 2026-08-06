@@ -1212,7 +1212,14 @@ export class PgSessionRepo implements SessionRepo {
     return this.hydrate(rows)
   }
 
-  async get(id: SessionId): Promise<SessionMetaRecord | null> {
+  async get(orgId: OrgId, id: SessionId): Promise<SessionMetaRecord | null> {
+    // The org filter rides the unique lookup (extended where): a cross-org id
+    // is indistinguishable from a missing row (org-scoped-data-layer.md §3).
+    const s = await this.db.sessionMeta.findUnique({ where: { id, orgId } })
+    return s ? toRecord(s) : null
+  }
+
+  async getUnscoped(id: SessionId): Promise<SessionMetaRecord | null> {
     const s = await this.db.sessionMeta.findUnique({ where: { id } })
     return s ? toRecord(s) : null
   }
@@ -1461,6 +1468,7 @@ export class PgSessionRepo implements SessionRepo {
    * mid-level parent could commit a stale `org` snapshot after the scan passed.
    */
   async setVisibility(
+    orgId: OrgId,
     sessionId: SessionId,
     visibility: SessionVisibility,
     authorize?: (row: {
@@ -1474,8 +1482,12 @@ export class PgSessionRepo implements SessionRepo {
         Array<{ visibility: string; ownerIdentity: string | null; externalProvider: string | null }>
       >(Prisma.sql`
         SELECT "visibility", "ownerIdentity", "externalProvider"
-        FROM "session_meta" WHERE "id" = ${sessionId} FOR UPDATE
+        FROM "session_meta" WHERE "id" = ${sessionId} AND "orgId" = ${orgId} FOR UPDATE
       `)
+      // The org fence rides the row-lock read, so a cross-org id takes the same
+      // silent no-op exit as a missing row — never the `forbidden: true` the
+      // immutable-audience guard below would answer, which would confirm it
+      // exists (org-scoped-data-layer.md §3).
       if (locked.length !== 1) return { affected: [] }
       const current = {
         visibility: locked[0]!.visibility as SessionVisibility,

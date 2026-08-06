@@ -4,7 +4,7 @@ import {
   type RcWebchatParticipant,
   type RegisterReq
 } from '@agentconnect.md/protocol'
-import { AgentId } from '../domain/ids.js'
+import { AgentId, OrgId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from './webchatRemoteMcpService.js'
 import type { WebchatTokenService } from './webchatToken.js'
 
@@ -19,7 +19,7 @@ export interface WebchatVerificationDeps {
   daemons: { get(daemonId: string): VerificationDaemon | undefined }
   /** Roster reads for multi-agent conversations (webchat-multi-agents.md §6.2). */
   conversations: {
-    participants(conversationId: string): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member' }>>
+    participants(orgId: OrgId, conversationId: string): Promise<Array<{ agentId: AgentId; role: 'primary' | 'member' }>>
   }
   remoteMcp: Pick<WebchatRemoteMcpService, 'establish'>
 }
@@ -47,7 +47,8 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
     // Resolve the roster. An empty result (a conversation minted before the
     // participant backfill, or a mid-deploy create) degrades to the token's
     // primary — exactly the single-agent shape.
-    const roster = await deps.conversations.participants(claims.conversationId)
+    // Fenced on the org the signed token asserts (org-scoped-data-layer.md §3).
+    const roster = await deps.conversations.participants(OrgId(claims.orgId), claims.conversationId)
     const participants: RcWebchatParticipant[] = []
     for (const p of roster) {
       if (p.agentId === claims.agentId) {

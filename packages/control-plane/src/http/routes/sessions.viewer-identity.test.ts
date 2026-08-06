@@ -81,7 +81,12 @@ function fakeDeps(overrides: {
         get: vi.fn(async () => agent)
       },
       session: {
-        get: vi.fn(async () => overrides.session ?? slackDmSession()),
+        // The repo read is org-fenced now (org-scoped-data-layer.md §3), so the
+        // fake enforces the fence instead of the route's deleted comparison.
+        get: vi.fn(async (orgId: string) => {
+          const row = overrides.session ?? slackDmSession()
+          return row.orgId === orgId ? row : null
+        }),
         orgHasAny: vi.fn(async () => true),
         listExternalScopes: vi.fn(async () => []),
         getExternalScopes: vi.fn(async () => []),
