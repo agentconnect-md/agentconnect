@@ -30,6 +30,7 @@ import type {
 } from '../ports.js'
 import { visibilityWhere } from '../../authorization/policy.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import { lockResourceWriteMemberships } from '../resource-membership-lock.js'
 
@@ -173,11 +174,17 @@ export class PgMcpProviderSecretStore implements McpProviderSecretStore {
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(providerId: string, headers: McpHeader[]): Promise<void> {
+  async put(orgId: OrgId, providerId: string, headers: McpHeader[]): Promise<void> {
+    // The row is keyed by providerId alone, so the upsert cannot carry the org in
+    // its predicate — check the parent row once instead.
+    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
+      throw new Error('mcp provider secret write outside its organization')
+    }
     // Header NAMES stay readable (they're config, not secrets); each VALUE passes
     // through the configured cipher before persistence.
+    const scope = orgScope(orgId)
     const sealed = await Promise.all(
-      headers.map(async (h) => ({ name: h.name, value: await this.cipher.seal(h.value) }))
+      headers.map(async (h) => ({ name: h.name, value: await this.cipher.seal(h.value, scope) }))
     )
     const value = sealed as unknown as Prisma.InputJsonValue
     await this.db.mcpProviderSecret.upsert({
@@ -187,16 +194,19 @@ export class PgMcpProviderSecretStore implements McpProviderSecretStore {
     })
   }
 
-  async get(providerId: string): Promise<McpHeader[] | null> {
-    const s = await this.db.mcpProviderSecret.findUnique({ where: { mcpProviderId: providerId } })
+  async get(orgId: OrgId, providerId: string): Promise<McpHeader[] | null> {
+    const s = await this.db.mcpProviderSecret.findFirst({
+      where: { mcpProviderId: providerId, provider: { orgId } }
+    })
     if (!s) return null
+    const scope = orgScope(orgId)
     const stored = s.headers as unknown as McpHeader[]
-    return Promise.all(stored.map(async (h) => ({ name: h.name, value: await this.cipher.open(h.value) })))
+    return Promise.all(stored.map(async (h) => ({ name: h.name, value: await this.cipher.open(h.value, scope) })))
   }
 
-  async delete(providerId: string): Promise<void> {
+  async delete(orgId: OrgId, providerId: string): Promise<void> {
     // deleteMany → idempotent (the FK cascade may already have removed it).
-    await this.db.mcpProviderSecret.deleteMany({ where: { mcpProviderId: providerId } })
+    await this.db.mcpProviderSecret.deleteMany({ where: { mcpProviderId: providerId, provider: { orgId } } })
   }
 }
 
@@ -216,18 +226,24 @@ export class PgMcpGrantRepo implements McpGrantRepo {
     private readonly cipher: SecretCipher
   ) {}
 
-  async mintFor(providerId: string): Promise<McpGrantRecord> {
+  async mintFor(orgId: OrgId, providerId: string): Promise<McpGrantRecord> {
+    if ((await this.db.mcpProvider.count({ where: { id: providerId, orgId } })) === 0) {
+      throw new Error('mcp grant mint outside its organization')
+    }
     const key = mintGrantKey() // the one mint path (orchestrator/mcpProvider) — opaque, header-safe
-    const g = await this.db.mcpGrant.create({ data: { mcpProviderId: providerId, key: await this.cipher.seal(key) } })
+    const g = await this.db.mcpGrant.create({
+      data: { mcpProviderId: providerId, key: await this.cipher.seal(key, orgScope(orgId)) }
+    })
     return { ...toGrantRecord(g), key } // callers get the plaintext they must ship, not the stored form
   }
 
-  async activeForProvider(providerId: string): Promise<McpGrantRecord[]> {
+  async activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]> {
     const rows = await this.db.mcpGrant.findMany({
-      where: { mcpProviderId: providerId, status: 'active' },
+      where: { mcpProviderId: providerId, status: 'active', provider: { orgId } },
       orderBy: { createdAt: 'asc' }
     })
-    return Promise.all(rows.map(async (g) => ({ ...toGrantRecord(g), key: await this.cipher.open(g.key) })))
+    const scope = orgScope(orgId)
+    return Promise.all(rows.map(async (g) => ({ ...toGrantRecord(g), key: await this.cipher.open(g.key, scope) })))
   }
 
   async revoke(grantId: string): Promise<void> {

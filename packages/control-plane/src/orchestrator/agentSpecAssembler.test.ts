@@ -47,7 +47,7 @@ const AGENT: AgentRecord = {
 
 function storeWith(values: Record<string, Record<string, string>>): AgentSecretStore {
   return {
-    get: async (agentId) => values[agentId] ?? {},
+    get: async (_orgId, agentId) => values[agentId] ?? {},
     merge: async () => {},
     keys: async () => new Map()
   }
@@ -89,9 +89,9 @@ describe('AgentSpecAssembler', () => {
     const store = storeWith({ [AGENT.id]: { LIVE: 'now' } })
     const counting: AgentSecretStore = {
       ...store,
-      get: async (id) => {
+      get: async (_orgId, id) => {
         reads += 1
-        return store.get(id)
+        return store.get(_orgId, id)
       }
     }
     const specs = new AgentSpecAssembler(counting)

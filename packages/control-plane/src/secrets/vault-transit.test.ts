@@ -10,7 +10,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VaultTransitSecretCipher } from './vault-transit.js'
 import { makeSecretCipher, PlaintextSecretCipher } from './cipher.js'
+import { DEPLOYMENT_SCOPE, orgScope } from './scope.js'
+import { OrgId } from '../domain/ids.js'
 import { loadConfig } from '../config/env.js'
+
+const ORG_A = orgScope(OrgId('org-aaa'))
+const ORG_B = orgScope(OrgId('org-bbb'))
 
 type Call = { url: string; token: string | null; namespace: string | null; body: Record<string, unknown> }
 
@@ -38,12 +43,18 @@ function fakeVault(opts: { failFirstWith403?: boolean; leaseSec?: number } = {})
       fail403Remaining -= 1
       return json(403, { errors: ['permission denied'] })
     }
+    // Transit binds a ciphertext to the key that produced it, so the fake stamps
+    // the key name in and refuses a mismatch — that refusal IS the cross-tenant
+    // fence under test.
+    const keyName = url.slice(url.lastIndexOf('/') + 1)
     if (url.includes('/encrypt/')) {
-      return json(200, { data: { ciphertext: `vault:v1:${body.plaintext as string}` } })
+      return json(200, { data: { ciphertext: `vault:v1:${keyName}.${body.plaintext as string}` } })
     }
     if (url.includes('/decrypt/')) {
-      const stored = body.ciphertext as string
-      return json(200, { data: { plaintext: stored.replace(/^vault:v\d+:/, '') } })
+      const stored = (body.ciphertext as string).replace(/^vault:v\d+:/, '')
+      const dot = stored.indexOf('.')
+      if (stored.slice(0, dot) !== keyName) return json(400, { errors: ['invalid ciphertext: unable to decrypt'] })
+      return json(200, { data: { plaintext: stored.slice(dot + 1) } })
     }
     return json(404, { errors: ['no handler'] })
   }
@@ -53,6 +64,7 @@ function fakeVault(opts: { failFirstWith403?: boolean; leaseSec?: number } = {})
 const TOKEN_OPTS = {
   addr: 'https://vault.example.com',
   key: 'ac-cp',
+  orgKeyPrefix: 'ac-cp-org-',
   auth: { method: 'token', token: 't-static' }
 } as const
 
@@ -61,30 +73,30 @@ describe('VaultTransitSecretCipher', () => {
     const vault = fakeVault()
     const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
 
-    const sealed = await cipher.seal('xoxb-secret-🔐-token')
-    expect(sealed).toMatch(/^vault:v1:/)
+    const sealed = await cipher.seal('xoxb-secret-🔐-token', DEPLOYMENT_SCOPE)
+    expect(sealed).toMatch(/^acv1:vault:v1:/)
     expect(vault.calls[0]!.url).toBe('https://vault.example.com/v1/transit/encrypt/ac-cp')
     expect(vault.calls[0]!.token).toBe('t-static')
     expect(vault.calls[0]!.body.plaintext).toBe(Buffer.from('xoxb-secret-🔐-token', 'utf8').toString('base64'))
 
-    expect(await cipher.open(sealed)).toBe('xoxb-secret-🔐-token')
+    expect(await cipher.open(sealed, DEPLOYMENT_SCOPE)).toBe('xoxb-secret-🔐-token')
     expect(vault.calls[1]!.url).toBe('https://vault.example.com/v1/transit/decrypt/ac-cp')
   })
 
   it('open PASSES THROUGH values it did not seal — no network call (lazy migration arm)', async () => {
     const vault = fakeVault()
     const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
-    expect(await cipher.open('xoxb-legacy-plaintext')).toBe('xoxb-legacy-plaintext')
+    expect(await cipher.open('xoxb-legacy-plaintext', ORG_A)).toBe('xoxb-legacy-plaintext')
     expect(vault.calls).toHaveLength(0)
   })
 
   it('caches open() by ciphertext — the second read costs no request', async () => {
     const vault = fakeVault()
     const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
-    const sealed = await cipher.seal('sk-1')
-    await cipher.open(sealed)
+    const sealed = await cipher.seal('sk-1', ORG_A)
+    await cipher.open(sealed, ORG_A)
     const callsAfterFirstOpen = vault.calls.length
-    expect(await cipher.open(sealed)).toBe('sk-1')
+    expect(await cipher.open(sealed, ORG_A)).toBe('sk-1')
     expect(vault.calls.length).toBe(callsAfterFirstOpen)
   })
 
@@ -96,7 +108,7 @@ describe('VaultTransitSecretCipher', () => {
       namespace: 'team-a',
       fetchImpl: vault.fetchImpl
     })
-    await cipher.seal('v')
+    await cipher.seal('v', DEPLOYMENT_SCOPE)
     expect(vault.calls[0]!.url).toBe('https://vault.example.com/v1/transit-eu/encrypt/ac-cp')
     expect(vault.calls[0]!.namespace).toBe('team-a')
   })
@@ -110,13 +122,14 @@ describe('VaultTransitSecretCipher', () => {
     const cipher = new VaultTransitSecretCipher({
       addr: 'https://vault.example.com',
       key: 'ac-cp',
+      orgKeyPrefix: 'ac-cp-org-',
       auth: { method: 'jwt', role: 'agentconnect-cp', jwtPath, authMount: 'kubernetes' },
       fetchImpl: vault.fetchImpl,
       now: () => nowMs
     })
 
-    await cipher.seal('a')
-    await cipher.seal('b')
+    await cipher.seal('a', DEPLOYMENT_SCOPE)
+    await cipher.seal('b', DEPLOYMENT_SCOPE)
     // One login serves both seals; the login carried the role + trimmed JWT.
     expect(vault.loginCount()).toBe(1)
     const login = vault.calls.find((c) => c.url.endsWith('/auth/kubernetes/login'))!
@@ -125,7 +138,7 @@ describe('VaultTransitSecretCipher', () => {
 
     // Past 80% of the 100s lease ⇒ the next call re-logs-in.
     nowMs += 81_000
-    await cipher.seal('c')
+    await cipher.seal('c', DEPLOYMENT_SCOPE)
     expect(vault.loginCount()).toBe(2)
     expect(vault.calls.at(-1)!.token).toBe('k8s-token-2')
   })
@@ -138,12 +151,61 @@ describe('VaultTransitSecretCipher', () => {
     const cipher = new VaultTransitSecretCipher({
       addr: 'https://vault.example.com',
       key: 'ac-cp',
+      orgKeyPrefix: 'ac-cp-org-',
       auth: { method: 'jwt', role: 'r', jwtPath, authMount: 'kubernetes' },
       fetchImpl: vault.fetchImpl
     })
 
-    expect(await cipher.seal('v')).toMatch(/^vault:v1:/)
+    expect(await cipher.seal('v', DEPLOYMENT_SCOPE)).toMatch(/^acv1:vault:v1:/)
     expect(vault.loginCount()).toBe(2) // initial login + the post-403 re-login
+  })
+
+  it('picks the key from the SCOPE: deployment key vs <prefix><orgId> per org', async () => {
+    const vault = fakeVault()
+    const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+
+    await cipher.seal('d', DEPLOYMENT_SCOPE)
+    await cipher.seal('a', ORG_A)
+    await cipher.seal('b', ORG_B)
+
+    expect(vault.calls.map((c) => c.url)).toEqual([
+      'https://vault.example.com/v1/transit/encrypt/ac-cp',
+      'https://vault.example.com/v1/transit/encrypt/ac-cp-org-org-aaa',
+      'https://vault.example.com/v1/transit/encrypt/ac-cp-org-org-bbb'
+    ])
+  })
+
+  it('FAILS CLOSED across scopes: org A ciphertext handed to org B does not decrypt', async () => {
+    const vault = fakeVault()
+    const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+    const sealed = await cipher.seal('org-a-bot-token', ORG_A)
+
+    expect(await cipher.open(sealed, ORG_A)).toBe('org-a-bot-token')
+    // The whole reason scope is a parameter: a row fetched for the wrong tenant
+    // errors instead of silently handing back another org's plaintext.
+    await expect(cipher.open(sealed, ORG_B)).rejects.toThrow(/unable to decrypt/)
+    await expect(cipher.open(sealed, DEPLOYMENT_SCOPE)).rejects.toThrow(/unable to decrypt/)
+  })
+
+  it('legacy arm: a pre-envelope vault: value opens under the DEPLOYMENT key whatever the scope says', async () => {
+    const vault = fakeVault()
+    const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+    // Shaped like a value sealed before scoping existed: no envelope tag.
+    const legacy = 'vault:v1:ac-cp.bGVnYWN5' // "legacy" base64 under the deployment key
+    expect(await cipher.open(legacy, ORG_A)).toBe('legacy')
+    expect(vault.calls.at(-1)!.url).toBe('https://vault.example.com/v1/transit/decrypt/ac-cp')
+  })
+
+  it('the open cache is keyed by KEY + ciphertext, so scopes cannot share an entry', async () => {
+    const vault = fakeVault()
+    const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl: vault.fetchImpl })
+    const sealed = await cipher.seal('shared-looking', ORG_A)
+    await cipher.open(sealed, ORG_A)
+    const before = vault.calls.length
+    // A different scope must NOT be served the cached plaintext — it must go ask
+    // Vault (and be refused). A ciphertext-only cache key would leak here.
+    await expect(cipher.open(sealed, ORG_B)).rejects.toThrow()
+    expect(vault.calls.length).toBe(before + 1)
   })
 
   it('errors carry status + Vault errors[], never the secret payload', async () => {
@@ -151,7 +213,7 @@ describe('VaultTransitSecretCipher', () => {
       new Response(JSON.stringify({ errors: ['permission denied'] }), { status: 403 })
     const cipher = new VaultTransitSecretCipher({ ...TOKEN_OPTS, fetchImpl })
     // token auth has no re-login arm — the 403 surfaces directly.
-    const err = await cipher.seal('super-secret-value').catch((e: unknown) => e as Error)
+    const err = await cipher.seal('super-secret-value', DEPLOYMENT_SCOPE).catch((e: unknown) => e as Error)
     expect(err).toBeInstanceOf(Error)
     expect((err as Error).message).toContain('403')
     expect((err as Error).message).toContain('permission denied')
@@ -179,6 +241,17 @@ describe('makeSecretCipher / SECRET_CIPHER config', () => {
       VAULT_TOKEN: 't'
     })
     expect(makeSecretCipher(config)).toBeInstanceOf(VaultTransitSecretCipher)
+  })
+
+  it('refuses to boot when VAULT_TRANSIT_KEY falls inside the org key prefix', () => {
+    // Whatever the cipher mode: the naming mistake is what makes the deployment
+    // key shreddable, so it must never reach a running process.
+    expect(() =>
+      loadConfig({ ...BASE_ENV, VAULT_TRANSIT_KEY: 'ac-org-shared', VAULT_TRANSIT_ORG_KEY_PREFIX: 'ac-org-' })
+    ).toThrow()
+    expect(() => loadConfig({ ...BASE_ENV, VAULT_TRANSIT_ORG_KEY_PREFIX: '' })).toThrow()
+    // The derived default is always safe.
+    expect(() => loadConfig({ ...BASE_ENV, VAULT_TRANSIT_KEY: 'ac-cp-prod' })).not.toThrow()
   })
 
   it('fail-fast: vault-transit without VAULT_ADDR, or with both/neither auth mode', () => {

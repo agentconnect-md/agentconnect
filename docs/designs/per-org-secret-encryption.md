@@ -68,9 +68,12 @@ complementary layer.
 5. **Secret-store ports become org-scoped** (§5). This is what makes decision 1
    implementable: a port that accepts only a child id cannot assert a tenant.
 
-6. **Crypto-shredding is a reconciler, not a transactional side effect** (§6).
+6. **The CP records a shred intent; a separate workload performs it** (§6).
    Deleting a Vault key is a remote effect that cannot join the Postgres
-   transaction that deletes the organization.
+   transaction that deletes the organization, so that transaction writes a
+   tombstone and an operator-run CLI under its own identity destroys the key. No
+   code path inside the CP can delete a key, and the shredder never enumerates
+   them.
 
 ## 3. Which scope a secret gets
 
@@ -134,19 +137,33 @@ acv1:vault:v<key-version>:<base64>
 
 Key names:
 
-| Scope                 | Key name                                                                    |
-| --------------------- | --------------------------------------------------------------------------- |
-| `{kind:'deployment'}` | `VAULT_TRANSIT_KEY` (default `agentconnect-cp`)                             |
-| `{kind:'org', orgId}` | `VAULT_TRANSIT_ORG_KEY_PREFIX + orgId` (default prefix `agentconnect-org-`) |
+| Scope                 | Key name                               |
+| --------------------- | -------------------------------------- |
+| `{kind:'deployment'}` | `VAULT_TRANSIT_KEY`                    |
+| `{kind:'org', orgId}` | `VAULT_TRANSIT_ORG_KEY_PREFIX + orgId` |
 
-Org keys are created lazily: Transit creates a key on first `encrypt` when the
-token carries `create` on that path, so no provisioning step is coupled to
-organization creation.
+`VAULT_TRANSIT_ORG_KEY_PREFIX` **defaults to `${VAULT_TRANSIT_KEY}-org-`**, so
+org keys inherit whatever namespace the deployment key already occupies. That
+matters whenever several deployments share one transit mount and rely on key
+naming alone to stay separated: a fixed prefix would collide their org keys,
+while a derived one cannot.
 
-**Boot assertion.** `VAULT_TRANSIT_KEY` must not begin with
-`VAULT_TRANSIT_ORG_KEY_PREFIX`. Without it, a deployment key named inside the
-org namespace would be deleted by the shred reconciler (§6) — an unrecoverable
-loss of the deployment's entire trust root. `loadConfig` refuses to start.
+**The identifier is the organization id, never its name or slug.** Names and
+slugs are mutable, so a rename would orphan the key — subsequent writes would go
+to a new key while existing ciphertext silently became unopenable, surfacing
+only at the next read. Key names are also visible to anyone able to list the
+mount, and an opaque id leaks no tenant identity. Shredding (§6) likewise has
+only the id to work from, because the row is already gone.
+
+Org keys are created lazily on first `encrypt`, which requires the Vault policy
+to permit creation on that path. A deployment that would rather pre-create keys
+can do so and grant update only.
+
+**Boot assertion.** `VAULT_TRANSIT_ORG_KEY_PREFIX` must be non-empty, and
+`VAULT_TRANSIT_KEY` must not begin with it. A deployment key sitting inside the
+org namespace would become a shreddable name (§6) — an unrecoverable loss of the
+deployment's entire trust root. `loadConfig` refuses to start; the derived
+default satisfies the check automatically.
 
 The existing discipline is unchanged: arguments and response bodies are never
 logged, `open` results stay cached by ciphertext (the cache key already includes
@@ -154,11 +171,15 @@ the envelope, so it remains correct across scopes), and `seal` is never cached.
 
 ## 5. Port changes
 
-The scope must come from the caller, so ports that accept only a child id cannot
-supply it. Resolving the organization inside the repository — joining to the
-parent row and reading its `orgId` — is **not** an acceptable substitute: it is
-still the data choosing its own key, which is the failure mode §2.1 exists to
-prevent.
+[`org-scoped-data-layer.md`](./org-scoped-data-layer.md) already establishes the
+shape — `get(orgId, id)` for tenant-facing reads, `*Unscoped` for internal trust
+domains — and its §3.6 deliberately leaves secret child tables fenced _through
+their parent_: a caller reaches `hook_secret` only after `HookRepo.get(orgId, …)`
+has already fenced. **That is still true; the org parameter added here is not a
+second fence.** It is here because the org now selects the at-rest KEY, which
+only the caller can assert: resolving it inside the repository, by joining to the
+parent and reading its `orgId`, would be the data choosing its own key — the
+failure mode §2.1 exists to prevent. The fence is a by-product.
 
 Ten ports take an `orgId` as their first parameter, matching the shape
 `SlackUserConfigStore` and `McpProviderRepo` already use:
@@ -183,15 +204,29 @@ enforcing nothing. Child tables filter through the parent relation
 Denormalizing `orgId` onto child tables with `(childId, orgId)` composite
 foreign keys is the stronger form and is left to the broader org-scoping work.
 
-**One carve-out.** The Slack OAuth callback resolves an install by its
-unforgeable `state` value and is not mounted under the org subtree, so no
-ambient organization exists before the read. It splits: read the row (metadata
-only, no secret), take `orgId` from it, then open secrets under that scope. The
-authority there is the state token, which is the correct trust root for that
-path.
+**Callers with no serving tenant** use the existing `*Unscoped` convention
+(`org-scoped-data-layer.md` §4) rather than a new exemption of their own, so the
+exemption stays greppable instead of hiding behind a row-derived `orgId` that
+merely looks like a fence:
+
+| Path                                    | Why it has no ambient org                                                                 | Shape                                                                  |
+| --------------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Slack OAuth callback                    | unauthenticated, keyed by the unforgeable `state` we minted — that token is the authority | `SlackInstallStore.getUnscoped`, with the inline ESLint exemption      |
+| Feishu registration polling             | a background worker fenced by its claim-token lease, a stronger axis than an org          | system-tier methods keep their shape; scope comes from the claimed row |
+| Orchestration / reconciliation / replay | processes rows already selected by daemon or relay identity                               | org taken from the record in hand, per §4 of that document             |
+
+The fence catches "a request serving org B fetched org A's row". A worker serving
+no tenant has no org B, so there is nothing for it to compare against — the
+exemption is honest rather than a weakening.
 
 **Reapers** operate across organizations by design (`SlackInstallStore.reapExpired`,
 registration expiry). They touch no secret values and keep their current shape.
+
+The honest boundary: this fence is only as strong as where the `orgId` comes
+from. In routes it is `req.orgCtx`; in orchestration it is the fetched record.
+The second is equivalent to the first exactly when that fetch was itself
+org-scoped — which is what `org-scoped-data-layer.md` M1/M2 already delivered
+for the parent repositories.
 
 ## 6. Crypto-shredding on organization deletion
 
@@ -201,40 +236,47 @@ that could trigger a shred, and the edge is guaranteed to be detached before it
 happens — the CP is not shredding a key whose plaintext is still live on a
 connected daemon.
 
-Deleting the Vault key cannot be part of that transaction. Rather than persist a
-pending-shred intent and reap it, the design uses a **reconciler**, which needs
-no new table and is self-healing after any crash:
+**The CP records the intent; it never deletes a key.** Deleting a Vault key is a
+remote effect that cannot join the deletion transaction, so that transaction
+writes a tombstone instead: one `pending_key_shred` row keyed by the deleted
+organization's id, with the time it was recorded. The row has no foreign key —
+its whole purpose is to outlive the organization.
+A separate operator-run entry point (`secrets/shred-cli.ts`, mirroring the
+existing rewrap CLI) drains the table: for each row it destroys
+`<orgKeyPrefix><orgId>` and clears the row. Both halves are idempotent, and a
+crash between them leaves the tombstone for the next run.
 
-```
-keys   = LIST transit/keys                 # at T0
-orgIds = SELECT id FROM org                # at T1 > T0
-for key in keys:
-    if not key.startsWith(orgPrefix): continue
-    suffix = key.slice(orgPrefix.length)
-    if not isUuid(suffix): continue
-    if suffix not in orgIds: shred(key)
-```
+Two properties drive that shape, and both follow from how transit deployments
+are commonly arranged.
 
-**The ordering is load-bearing and must not be swapped.** An org key is created
-only when a secret of that organization is first sealed, and every org-scoped
-secret hangs off a row with a foreign key to `org` — so a key's existence
-implies its organization row existed earlier. Listing keys _before_ reading
-organization ids therefore guarantees: a key observed at T0 had a live
-organization at T0, so its absence at T1 means a real deletion. A key created
-after T0 is simply not in the list and is handled by the next pass. There is no
-window in which a live organization's key can be selected.
+**Never enumerate keys.** The obvious alternative reconciles `LIST transit/keys`
+against `SELECT id FROM org` and shreds the difference, needing no new table.
+It is unsafe as soon as one transit mount is shared by more than one deployment
+— a common arrangement, since per-deployment key names are themselves the
+isolation mechanism. Vault cannot restrict a list to a prefix (the capability
+sits on the parent path), so each deployment's reconciler would observe every
+other deployment's org keys, and any id absent from _its own_ database looks
+exactly like a deletion. Correctness would then rest entirely on a string-prefix
+check in application code, guarding an irreversible operation on another
+deployment's data. Deriving key names from ids this deployment recorded itself
+removes the failure mode by construction: the shredder cannot produce a key name
+it did not build from its own tombstone.
 
-The two filters — prefix, then UUID-parseable suffix — are what keep the
-deployment key and any operator-created key outside the reconciler's reach.
-Together with the §4 boot assertion they form the two independent barriers
-around an irreversible operation.
+**A separate Vault role is not enough; it needs a separate identity.** Roles in
+a workload-identity auth method bind to the workload's service account, so a
+second role bound to the same account is reachable by the same process merely by
+naming it at login. The destructive capability is genuinely separated only when
+the shredder runs as its own workload under its own identity — which is also why
+it is a CLI rather than a loop inside the CP. The CP's own credential keeps the
+encrypt/decrypt capability it has today, widened only to the org key prefix, and
+**no code path inside the CP can delete a key.**
 
-**Vault privileges.** Shredding is two calls: `POST transit/keys/<name>/config`
-with `deletion_allowed=true`, then `DELETE transit/keys/<name>`. The capability
-to destroy tenant data should not be attached to the credential the CP uses for
-ordinary encrypt/decrypt. The reconciler therefore takes its own Vault role,
-configured separately, and is **disabled unless configured** — self-hosted and
-development deployments run without it and simply retain unreferenced keys.
+**Vault privileges for the shredder.** Two calls per key: `POST
+transit/keys/<name>/config` with `deletion_allowed=true`, then `DELETE
+transit/keys/<name>`, scoped to the org key prefix. No list capability is
+required. A deployment that never configures a shredder simply accumulates
+unreferenced keys, which is the right default for self-hosted and development
+installs.
 
 **What the guarantee is.** After a successful shred, database backups taken
 before the deletion no longer decrypt that organization's secrets. This is a
@@ -273,24 +315,37 @@ joins the sweep as part of this work.
 
 ## 8. Testing
 
-- **Envelope unit tests**: the three `open` arms, round-trip under two distinct
-  org scopes, and a cross-scope open failing rather than returning plaintext.
-- **Scope binding**: a table-driven test asserting the scope kind each store
-  binds, so a newly added secret table cannot default into the deployment scope.
+- **Envelope unit tests** (`secrets/vault-transit.test.ts`): key selection per
+  scope, the legacy arm decrypting under the deployment key whatever the scope
+  says, the plaintext pass-through arm, and — the one that matters — a
+  cross-scope open FAILING rather than returning another org's plaintext. The
+  fake Transit binds each ciphertext to the key that produced it, so that
+  refusal is the real mechanism, not a stub.
+- **Cache key**: a second scope must not be served a cached plaintext; the test
+  asserts the extra Vault call, since a ciphertext-only cache key would leak.
+- **Key naming** (`secrets/cipher.test.ts`): the prefix derives from the
+  deployment key, two deployments on one mount cannot collide, and the derived
+  default can never conflict with its own deployment key.
 - **Boot matrix**: startup refuses when `VAULT_TRANSIT_KEY` falls inside the org
-  prefix.
-- **Cross-tenant contract (integration)**: seal under two organizations, destroy
-  one key, assert the other organization's values still open and the destroyed
-  organization's values fail closed.
-- **Reconciler**: against a stubbed Vault, assert that non-prefixed keys,
-  non-UUID suffixes, and live organizations are never selected, and that the
-  list-then-read ordering is preserved.
+  prefix, or when the prefix is empty — checked in every cipher mode, because
+  the naming mistake is what makes the deployment key shreddable.
+- **Cross-tenant contract (integration)**: the two-organization fixture in
+  `test/integration/tenant-isolation.route.test.ts` gains the secret-bearing
+  resources — a foreign id reads as absent rather than returning a value sealed
+  under another key. Extending that suite is the acceptance gate, not a new one.
+- **Tombstone lifecycle**: organization deletion writes exactly one tombstone in
+  the same transaction (none written when the deletion is refused), and the
+  shredder is idempotent — a re-run over an already-destroyed key clears its row
+  without error, and a failure mid-key leaves the row for the next run.
+- **Shredder key naming**: the destroyed name is always
+  `<orgKeyPrefix><tombstone.orgId>`, asserted against a stubbed Vault, and no
+  list call is ever issued.
 
 ## 9. Open questions
 
 1. **Eager or lazy key creation.** Lazy (first encrypt) is proposed. Eager
    creation at organization creation would make the Vault key list a complete
-   inventory, which the reconciler does not need but auditing might.
+   inventory, which nothing in this design needs but auditing might.
 2. **Per-organization rotation cadence.** Rotation is per key, so a policy that
    was deployment-wide becomes per tenant. Rewrap already supports it; the
    schedule is an operations decision.

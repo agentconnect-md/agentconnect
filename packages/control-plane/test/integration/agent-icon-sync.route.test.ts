@@ -78,7 +78,7 @@ describe('Agent icon bot profile fan-out', () => {
         name: `${platform}-bot`,
         ...(platform === 'feishu' ? { feishuAppId: 'cli_feishu', feishuRegion: 'lark' } : {})
       })
-      await running.deps.repos.botSecret.put(botId, {
+      await running.deps.repos.botSecret.put(OrgId(DEFAULT_ORG_ID), botId, {
         botToken: token,
         appToken: platform === 'feishu' ? 'cli_feishu' : null,
         signingSecret: null

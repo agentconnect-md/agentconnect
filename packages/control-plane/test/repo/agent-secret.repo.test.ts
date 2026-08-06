@@ -31,21 +31,25 @@ describe('AgentSecretStore — row-per-key, merge semantics, cipher seam (real P
     await seedAgent(prisma, AGENT)
     const store = new PgAgentSecretStore(prisma, new PlaintextSecretCipher())
 
-    await store.merge(AgentId(AGENT), { API_KEY: 'sk-1', DB_PASSWORD: 'p@ss' })
-    expect(await store.get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-1', DB_PASSWORD: 'p@ss' })
+    await store.merge(OrgId(DEFAULT_ORG_ID), AgentId(AGENT), { API_KEY: 'sk-1', DB_PASSWORD: 'p@ss' })
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({ API_KEY: 'sk-1', DB_PASSWORD: 'p@ss' })
 
     // Replace one, add one, delete one — the untouched key survives.
-    await store.merge(AgentId(AGENT), { API_KEY: 'sk-2', SLACK_TOKEN: 'xoxb', DB_PASSWORD: null })
-    expect(await store.get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-2', SLACK_TOKEN: 'xoxb' })
+    await store.merge(OrgId(DEFAULT_ORG_ID), AgentId(AGENT), {
+      API_KEY: 'sk-2',
+      SLACK_TOKEN: 'xoxb',
+      DB_PASSWORD: null
+    })
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({ API_KEY: 'sk-2', SLACK_TOKEN: 'xoxb' })
 
     // keys() lists sorted names only — and batches across agents ({} agents absent).
-    const keys = await store.keys([AgentId(AGENT), AgentId(OTHER)])
+    const keys = await store.keys(OrgId(DEFAULT_ORG_ID), [AgentId(AGENT), AgentId(OTHER)])
     expect(keys.get(AGENT)).toEqual(['API_KEY', 'SLACK_TOKEN'])
     expect(keys.has(OTHER)).toBe(false)
 
     // Deleting the rest leaves no rows.
-    await store.merge(AgentId(AGENT), { API_KEY: null, SLACK_TOKEN: null })
-    expect(await store.get(AgentId(AGENT))).toEqual({})
+    await store.merge(OrgId(DEFAULT_ORG_ID), AgentId(AGENT), { API_KEY: null, SLACK_TOKEN: null })
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({})
     expect(await prisma.agentSecret.count({ where: { agentId: AGENT } })).toBe(0)
   })
 
@@ -53,19 +57,19 @@ describe('AgentSecretStore — row-per-key, merge semantics, cipher seam (real P
     await seedAgent(prisma, AGENT)
     const store = new PgAgentSecretStore(prisma, new PrefixCipher())
 
-    await store.merge(AgentId(AGENT), { API_KEY: 'sk-1' })
+    await store.merge(OrgId(DEFAULT_ORG_ID), AgentId(AGENT), { API_KEY: 'sk-1' })
     const row = await prisma.agentSecret.findUniqueOrThrow({
       where: { agentId_key: { agentId: AGENT, key: 'API_KEY' } }
     })
     expect(row.value).toBe('sealed:sk-1') // stored representation uses the injected transform
-    expect(await store.get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' }) // read = opened
-    expect((await store.keys([AgentId(AGENT)])).get(AGENT)).toEqual(['API_KEY']) // names never sealed
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' }) // read = opened
+    expect((await store.keys(OrgId(DEFAULT_ORG_ID), [AgentId(AGENT)])).get(AGENT)).toEqual(['API_KEY']) // names never sealed
   })
 
   it('cascades away with its agent (FK), like bot_secret', async () => {
     await seedAgent(prisma, AGENT)
     const store = new PgAgentSecretStore(prisma, new PlaintextSecretCipher())
-    await store.merge(AgentId(AGENT), { API_KEY: 'sk-1' })
+    await store.merge(OrgId(DEFAULT_ORG_ID), AgentId(AGENT), { API_KEY: 'sk-1' })
 
     await prisma.agent.delete({ where: { id: AGENT } })
     expect(await prisma.agentSecret.count({ where: { agentId: AGENT } })).toBe(0)
@@ -81,7 +85,7 @@ describe('AgentConfigWriter — agent row + secret rows commit atomically (real 
     )
     expect(agent.name).toBe('atomic-bot')
     const store = new PgAgentSecretStore(prisma, new PlaintextSecretCipher())
-    expect(await store.get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' })
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' })
   })
 
   it('rolls the secret merge back when the row update fails — no half-applied edit', async () => {
@@ -101,6 +105,6 @@ describe('AgentConfigWriter — agent row + secret rows commit atomically (real 
         { API_KEY: 'sk-2' }
       )
     ).rejects.toThrow()
-    expect(await store.get(AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' })
+    expect(await store.get(OrgId(DEFAULT_ORG_ID), AgentId(AGENT))).toEqual({ API_KEY: 'sk-1' })
   })
 })

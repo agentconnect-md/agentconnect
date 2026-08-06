@@ -17,21 +17,36 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma/client.js'
 import { withTx } from '../prisma.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import type { OrgId } from '../../domain/ids.js'
 import { mintGrantKey } from '../../orchestrator/mcpProvider.js'
 import type { ExternalMemoryConnectionRecord, ExternalMemoryGrantRecord, MemoryConnectionWriter } from '../ports.js'
 import { tryLockMemoryConnectionScope, tryLockMemoryInstallationScope } from '../memory-connection-lock.js'
 import { PgExternalMemoryConnectionRepo } from './memory-connection.repo.js'
 
-async function sealValues(cipher: SecretCipher, values: Record<string, string>): Promise<Record<string, string>> {
+async function sealValues(
+  cipher: SecretCipher,
+  orgId: OrgId,
+  values: Record<string, string>
+): Promise<Record<string, string>> {
+  const scope = orgScope(orgId)
   return Object.fromEntries(
-    await Promise.all(Object.entries(values).map(async ([name, value]) => [name, await cipher.seal(value)] as const))
+    await Promise.all(
+      Object.entries(values).map(async ([name, value]) => [name, await cipher.seal(value, scope)] as const)
+    )
   )
 }
 
-async function openValues(cipher: SecretCipher, sealed: Record<string, string>): Promise<Record<string, string>> {
+async function openValues(
+  cipher: SecretCipher,
+  orgId: OrgId,
+  sealed: Record<string, string>
+): Promise<Record<string, string>> {
+  const scope = orgScope(orgId)
   return Object.fromEntries(
-    await Promise.all(Object.entries(sealed).map(async ([name, value]) => [name, await cipher.open(value)] as const))
+    await Promise.all(
+      Object.entries(sealed).map(async ([name, value]) => [name, await cipher.open(value, scope)] as const)
+    )
   )
 }
 
@@ -52,6 +67,7 @@ async function sealedSecretsInTx(tx: Prisma.TransactionClient, connectionId: str
 async function readActiveGrants(
   db: PrismaClient,
   cipher: SecretCipher,
+  orgId: OrgId,
   connectionId: string
 ): Promise<ExternalMemoryGrantRecord[]> {
   const rows = await db.externalMemoryGrant.findMany({
@@ -62,7 +78,7 @@ async function readActiveGrants(
     rows.map(async (row) => ({
       id: row.id,
       connectionId: row.connectionId,
-      key: await cipher.open(row.key),
+      key: await cipher.open(row.key, orgScope(orgId)),
       status: row.status as ExternalMemoryGrantRecord['status'],
       createdAt: row.createdAt
     }))
@@ -107,9 +123,9 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     | { outcome: 'installation_missing' }
     | { outcome: 'busy' }
   > {
-    const sealedSecrets = await sealValues(this.cipher, secrets)
+    const sealedSecrets = await sealValues(this.cipher, input.orgId, secrets)
     const grantKey = mintGrant ? mintGrantKey() : undefined
-    const sealedGrantKey = grantKey ? await this.cipher.seal(grantKey) : undefined
+    const sealedGrantKey = grantKey ? await this.cipher.seal(grantKey, orgScope(input.orgId)) : undefined
     return withTx(this.prisma, async (tx) => {
       if (!(await tryLockMemoryInstallationScope(tx, input.installationId))) return { outcome: 'busy' as const }
       // Authoritative existence re-check under the scope: the installation
@@ -141,7 +157,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     | { outcome: 'not_found' }
     | { outcome: 'busy' }
   > {
-    const sealedSecrets = patch.secrets !== undefined ? await sealValues(this.cipher, patch.secrets) : undefined
+    const sealedSecrets = patch.secrets !== undefined ? await sealValues(this.cipher, orgId, patch.secrets) : undefined
     const result = await withTx(this.prisma, async (tx) => {
       if (!(await tryLockMemoryConnectionScope(tx, id))) return { outcome: 'busy' as const }
       const existing = await tx.externalMemoryConnection.findUnique({ where: { id }, select: { orgId: true } })
@@ -166,7 +182,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     return {
       outcome: 'updated',
       connection: result.connection,
-      secrets: await openValues(this.cipher, result.sealedSnapshot)
+      secrets: await openValues(this.cipher, orgId, result.sealedSnapshot)
     }
   }
 
@@ -188,10 +204,10 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     // plaintext keys for the push and the retire hashes). A failed earlier
     // rotation leaves old+new active: reuse the newest instead of minting an
     // unbounded chain of pending grants.
-    const observed = await readActiveGrants(this.prisma, this.cipher, id)
+    const observed = await readActiveGrants(this.prisma, this.cipher, orgId, id)
     const reuse = observed.length > 1 ? observed.at(-1)! : undefined
     const freshKey = reuse ? undefined : mintGrantKey()
-    const sealedFreshKey = freshKey ? await this.cipher.seal(freshKey) : undefined
+    const sealedFreshKey = freshKey ? await this.cipher.seal(freshKey, orgScope(orgId)) : undefined
     const result = await withTx(this.prisma, async (tx) => {
       if (!(await tryLockMemoryConnectionScope(tx, id))) return { outcome: 'busy' as const }
       const existing = await tx.externalMemoryConnection.findUnique({ where: { id }, select: { orgId: true } })
@@ -233,7 +249,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     })
     if (result.outcome !== 'prepared') return result
     const { sealedSnapshot, ...prepared } = result
-    return { ...prepared, secrets: await openValues(this.cipher, sealedSnapshot) }
+    return { ...prepared, secrets: await openValues(this.cipher, orgId, sealedSnapshot) }
   }
 
   async finalizeGrantRotation(
@@ -267,7 +283,7 @@ export class PgMemoryConnectionWriter implements MemoryConnectionWriter {
     return {
       outcome: 'retired',
       connection: result.connection,
-      secrets: await openValues(this.cipher, result.sealedSnapshot)
+      secrets: await openValues(this.cipher, orgId, result.sealedSnapshot)
     }
   }
 

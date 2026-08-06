@@ -39,6 +39,7 @@ import type {
 } from '../ports.js'
 import type { AgentId, OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import {
   emptyOrganizationEnvironmentValues,
   type AssignedOrganizationEntry,
@@ -511,18 +512,20 @@ export class PgOrganizationEnvironmentSecretStore implements OrganizationEnviron
     private readonly cipher: SecretCipher
   ) {}
 
-  seal(value: string): Promise<string> {
-    return this.cipher.seal(value)
+  seal(orgId: OrgId, value: string): Promise<string> {
+    return this.cipher.seal(value, orgScope(orgId))
   }
 
-  async values(entryIds: readonly string[]): Promise<Map<string, string>> {
+  async values(orgId: OrgId, entryIds: readonly string[]): Promise<Map<string, string>> {
     if (entryIds.length === 0) return new Map()
     const rows = await this.db.organizationEnvironmentSecret.findMany({
-      where: { entryId: { in: [...new Set(entryIds)] } },
+      // Fences through the owning entry: ids from another org read as absent.
+      where: { entryId: { in: [...new Set(entryIds)] }, entry: { orgId } },
       select: { entryId: true, value: true }
     })
+    const scope = orgScope(orgId)
     const out = new Map<string, string>()
-    for (const row of rows) out.set(row.entryId, await this.cipher.open(row.value))
+    for (const row of rows) out.set(row.entryId, await this.cipher.open(row.value, scope))
     return out
   }
 }
@@ -554,7 +557,7 @@ export class PgOrganizationEnvironmentResolver implements OrganizationEnvironmen
     const secretEntryIds = assignments
       .filter((assignment) => assignment.entry.kind === 'secret')
       .map((assignment) => assignment.entry.id)
-    const values = await this.secrets.values([...new Set(secretEntryIds)])
+    const values = await this.secrets.values(orgId, [...new Set(secretEntryIds)])
 
     for (const assignment of assignments) {
       const resolved = out.get(assignment.agentId)

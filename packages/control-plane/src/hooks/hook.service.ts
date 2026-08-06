@@ -99,7 +99,7 @@ export class HookService {
     }
     if (hook.kind === 'webhook') {
       if (!hook.urlToken) return null
-      const hmacSecret = await this.secrets.get(hook.id)
+      const hmacSecret = await this.secrets.get(hook.orgId, hook.id)
       return {
         ...base,
         kind: 'webhook',

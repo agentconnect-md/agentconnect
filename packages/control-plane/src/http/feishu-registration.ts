@@ -148,19 +148,21 @@ export class FeishuAppRegistrationService {
     orgId: OrgId,
     finalize: (input: FinalizeFeishuRegistration) => Promise<void>
   ): Promise<FeishuRegistrationSnapshot | null> {
-    let row = await this.store.get(id)
-    if (!row || row.orgId !== orgId) return null
+    // Org-fenced read: a foreign id now reads as absent inside the store
+    // (org-scoped-data-layer.md §3.1), so no comparison is left to forget here.
+    let row = await this.store.get(orgId, id)
+    if (!row) return null
 
     const now = new Date(this.now())
     if (row.status === 'pending' && row.expiresAt <= now) {
       await this.store.expire(id, now)
-      row = (await this.store.get(id)) ?? row
+      row = (await this.store.get(orgId, id)) ?? row
     }
     if (row.status === 'completed' || row.status === 'failed') return publicSnapshot(row)
 
     const claimToken = randomUUID()
     const claimed = await this.store.claim(id, claimToken, now, new Date(now.getTime() + CLAIM_MS))
-    if (!claimed) return publicSnapshot((await this.store.get(id)) ?? row)
+    if (!claimed) return publicSnapshot((await this.store.get(orgId, id)) ?? row)
 
     let current = claimed
     if (current.status === 'pending') {
@@ -196,20 +198,20 @@ export class FeishuAppRegistrationService {
           // finalizer will reuse those rows on the next browser poll.
           await this.store.releaseAuthorized(id, claimToken)
         }
-        return publicSnapshot((await this.store.get(id)) ?? current)
+        return publicSnapshot((await this.store.get(orgId, id)) ?? current)
       }
       // Keep settlement outside the finalize catch. If this DB write itself is
       // transient, the authorized row and reserved IDs remain retryable instead
       // of reporting failure after the integration was already installed.
       await this.store.settle(id, claimToken, { status: 'completed' })
     }
-    return publicSnapshot((await this.store.get(id)) ?? current)
+    return publicSnapshot((await this.store.get(orgId, id)) ?? current)
   }
 
   private async poll(row: FeishuAppRegistrationRecord, claimToken: string): Promise<FeishuAppRegistrationRecord> {
     if (!row.deviceCode) {
       await this.store.settle(row.id, claimToken, { status: 'failed', failureReason: 'setup_failed' })
-      return (await this.store.get(row.id)) ?? row
+      return (await this.store.get(row.orgId, row.id)) ?? row
     }
 
     let result
@@ -217,7 +219,7 @@ export class FeishuAppRegistrationService {
       result = await this.provider.poll(row.providerDomain, row.deviceCode)
     } catch {
       await this.release(row, claimToken, row.intervalMs)
-      return (await this.store.get(row.id)) ?? row
+      return (await this.store.get(row.orgId, row.id)) ?? row
     }
 
     switch (result.outcome) {
@@ -249,7 +251,7 @@ export class FeishuAppRegistrationService {
         await this.store.settle(row.id, claimToken, { status: 'failed', failureReason: 'setup_failed' })
         break
     }
-    return (await this.store.get(row.id)) ?? row
+    return (await this.store.get(row.orgId, row.id)) ?? row
   }
 
   private async release(

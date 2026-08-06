@@ -2503,10 +2503,13 @@ export interface HookRepo {
  * existing hook must resolve that hook through the org-fenced
  * {@link HookRepo.get} first.
  */
+/** Child of `HookDef`, so the parent's fence already covers tenancy
+ *  (org-scoped-data-layer.md §3.6). `orgId` is here because it now selects the
+ *  at-rest KEY (per-org-secret-encryption.md §4); the extra fence is a bonus. */
 export interface HookSecretStore {
-  put(hookId: HookId, hmacSecret: string): Promise<void>
-  get(hookId: HookId): Promise<string | null>
-  delete(hookId: HookId): Promise<void>
+  put(orgId: OrgId, hookId: HookId, hmacSecret: string): Promise<void>
+  get(orgId: OrgId, hookId: HookId): Promise<string | null>
+  delete(orgId: OrgId, hookId: HookId): Promise<void>
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2896,9 +2899,9 @@ export interface BotSecretMaterial {
 }
 
 export interface BotSecretStore {
-  put(botId: BotId, material: BotSecretMaterial): Promise<void>
-  get(botId: BotId): Promise<BotSecretMaterial | null>
-  delete(botId: BotId): Promise<void>
+  put(orgId: OrgId, botId: BotId, material: BotSecretMaterial): Promise<void>
+  get(orgId: OrgId, botId: BotId): Promise<BotSecretMaterial | null>
+  delete(orgId: OrgId, botId: BotId): Promise<void>
 }
 
 /** Outcome of a fenced revocation: `applied: false` ⇒ the report was stale and
@@ -2927,6 +2930,7 @@ export interface BotCredentialWriter {
    *  also restore only memberships revoked with the credential being replaced;
    *  all three writes remain one transaction. Returns the new revision. */
   install(
+    orgId: OrgId,
     botId: BotId,
     material: BotSecretMaterial,
     at: Date,
@@ -2950,12 +2954,12 @@ export interface AgentSecretStore {
    *  deletes it, an omitted key is left untouched (the client never holds values).
    *  This is the standalone row primitive — REST create/PATCH go through
    *  {@link AgentConfigWriter} so the agent row and its secrets commit atomically. */
-  merge(agentId: AgentId, patch: Record<string, string | null>): Promise<void>
+  merge(orgId: OrgId, agentId: AgentId, patch: Record<string, string | null>): Promise<void>
   /** Every secret of one agent ({} when none) — the wire-projection read
    *  (agent/upsert, register/ok roster, agent/activate). NEVER DTO this. */
-  get(agentId: AgentId): Promise<Record<string, string>>
+  get(orgId: OrgId, agentId: AgentId): Promise<Record<string, string>>
   /** Key names only (sorted), batched for list DTOs — never touches values. */
-  keys(agentIds: readonly AgentId[]): Promise<Map<string, string[]>>
+  keys(orgId: OrgId, agentIds: readonly AgentId[]): Promise<Map<string, string[]>>
 }
 
 /**
@@ -3040,10 +3044,14 @@ export interface SlackInstallRecord {
 
 export interface SlackInstallStore {
   create(input: CreateSlackInstallInput): Promise<SlackInstallRecord>
-  get(id: string): Promise<SlackInstallRecord | null>
+  get(orgId: OrgId, id: string): Promise<SlackInstallRecord | null>
+  /** The OAuth callback resolves a pending install by its unforgeable `state`
+   *  before any org context exists — the state token is the authority there
+   *  (org-scoped-data-layer.md §4). Callers take the org from the row. */
+  getUnscoped(id: string): Promise<SlackInstallRecord | null>
   /** Backfill the OAuth-obtained bot token (xoxb) on the callback. False ⇒ row gone. */
-  setBotToken(id: string, botToken: string): Promise<boolean>
-  delete(id: string): Promise<void>
+  setBotToken(orgId: OrgId, id: string, botToken: string): Promise<boolean>
+  delete(orgId: OrgId, id: string): Promise<void>
   /** TTL sweep: delete pending rows created before `staleBefore`; returns the count. */
   reapExpired(staleBefore: Date): Promise<number>
 }
@@ -3159,9 +3167,16 @@ export interface CreateFeishuAppRegistrationInput {
   createdByUserId: string
 }
 
+/**
+ * The route-facing read is org-scoped; everything below it is SYSTEM-TIER
+ * (org-scoped-data-layer.md §3.4). The polling/finalization methods are fenced
+ * by the claim-token lease or the target reservation — a stronger axis than an
+ * org — and run in a background worker that serves no tenant, so they take the
+ * at-rest key scope from the row they just claimed rather than from a caller.
+ */
 export interface FeishuAppRegistrationStore {
   create(input: CreateFeishuAppRegistrationInput): Promise<FeishuAppRegistrationRecord>
-  get(id: string): Promise<FeishuAppRegistrationRecord | null>
+  get(orgId: OrgId, id: string): Promise<FeishuAppRegistrationRecord | null>
   getActiveTarget(targetKey: string): Promise<FeishuAppRegistrationRecord | null>
   /** Atomically fail an expired open row and release its target reservation. */
   expire(id: string, now: Date): Promise<void>
@@ -4059,10 +4074,11 @@ export interface McpHeader {
  *  through its parent (org-scoped-data-layer.md §3.6): a route reaching a
  *  secret must have resolved its provider through the org-fenced
  *  {@link McpProviderRepo.get} (or just created it) first. */
+/** Child of `McpProvider` — see {@link HookSecretStore} for why `orgId` is here. */
 export interface McpProviderSecretStore {
-  put(providerId: string, headers: McpHeader[]): Promise<void>
-  get(providerId: string): Promise<McpHeader[] | null>
-  delete(providerId: string): Promise<void>
+  put(orgId: OrgId, providerId: string, headers: McpHeader[]): Promise<void>
+  get(orgId: OrgId, providerId: string): Promise<McpHeader[] | null>
+  delete(orgId: OrgId, providerId: string): Promise<void>
 }
 
 /** Domain view of an `mcp_grant` row. `key` is the PLAINTEXT bearer grant key —
@@ -4083,10 +4099,10 @@ export interface McpGrantRepo {
   /** Mint a fresh active grant (generates a new plaintext key) for a provider.
    *  v1 keeps exactly one active grant per provider — the caller revokes any prior
    *  active grant first (shared org identity). Returns the row WITH the plaintext. */
-  mintFor(providerId: string): Promise<McpGrantRecord>
+  mintFor(orgId: OrgId, providerId: string): Promise<McpGrantRecord>
   /** The provider's active grants (v1: 0 or 1). Carries plaintext — internal use only. */
-  activeForProvider(providerId: string): Promise<McpGrantRecord[]>
-  /** Mark a grant revoked (idempotent). */
+  activeForProvider(orgId: OrgId, providerId: string): Promise<McpGrantRecord[]>
+  /** Mark a grant revoked (idempotent). No value is opened, so no scope needed. */
   revoke(grantId: string): Promise<void>
 }
 
@@ -4512,11 +4528,13 @@ export interface ExternalMemoryConnectionRepo {
  *  through its parent (org-scoped-data-layer.md §3.6) — a route reaching a
  *  connection's secrets must resolve it through the org-fenced
  *  {@link ExternalMemoryConnectionRepo.get} first. */
+/** Child of `ExternalMemoryConnection` — see {@link HookSecretStore} for why
+ *  `orgId` is here. `keys` touches no value but keeps the fence for symmetry. */
 export interface ExternalMemoryConnectionSecretStore {
-  put(connectionId: string, values: Record<string, string>): Promise<void>
-  get(connectionId: string): Promise<Record<string, string> | null>
-  keys(connectionId: string): Promise<string[]>
-  delete(connectionId: string): Promise<void>
+  put(orgId: OrgId, connectionId: string, values: Record<string, string>): Promise<void>
+  get(orgId: OrgId, connectionId: string): Promise<Record<string, string> | null>
+  keys(orgId: OrgId, connectionId: string): Promise<string[]>
+  delete(orgId: OrgId, connectionId: string): Promise<void>
 }
 
 export interface ExternalMemoryGrantRecord {
@@ -4530,8 +4548,9 @@ export interface ExternalMemoryGrantRecord {
 /** Grants hang off one connection and fence through it, exactly like
  *  {@link ExternalMemoryConnectionSecretStore} (§3.6). */
 export interface ExternalMemoryGrantRepo {
-  mintFor(connectionId: string): Promise<ExternalMemoryGrantRecord>
-  activeForConnection(connectionId: string): Promise<ExternalMemoryGrantRecord[]>
+  mintFor(orgId: OrgId, connectionId: string): Promise<ExternalMemoryGrantRecord>
+  activeForConnection(orgId: OrgId, connectionId: string): Promise<ExternalMemoryGrantRecord[]>
+  /** No value is opened, so no scope needed. */
   revoke(grantId: string): Promise<void>
 }
 
@@ -4804,12 +4823,13 @@ export interface OrganizationEnvironmentRepo {
  * the value table.
  */
 export interface OrganizationEnvironmentSecretStore {
-  /** Seal one value for a create/replacement. Runs OUTSIDE any transaction — a
-   *  real cipher may make network calls and a transaction must never wait on one. */
-  seal(value: string): Promise<string>
+  /** Seal one value for a create/replacement, under the owning org's key. Runs
+   *  OUTSIDE any transaction — a real cipher may make network calls and a
+   *  transaction must never wait on one. */
+  seal(orgId: OrgId, value: string): Promise<string>
   /** Decrypted values for the given entry ids, keyed by entry id. Missing rows
    *  are simply absent; the resolver turns that into a tombstone (§9). */
-  values(entryIds: readonly string[]): Promise<Map<string, string>>
+  values(orgId: OrgId, entryIds: readonly string[]): Promise<Map<string, string>>
 }
 
 /**

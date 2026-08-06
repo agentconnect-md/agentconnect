@@ -265,8 +265,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         }
       },
       async (req, reply) => {
-        const row = await deps.repos.slackInstall.get(req.params.id)
-        if (!row || row.orgId !== orgIdOf(req)) {
+        const row = await deps.repos.slackInstall.get(orgIdOf(req), req.params.id)
+        if (!row) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'install not found' })
         }
         const status = row.botToken ? ('bot_ready' as const) : ('awaiting_oauth' as const)
@@ -291,8 +291,8 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
       async (req, reply) => {
         if (denyViewerWrite(req, reply)) return
         const orgId = orgIdOf(req)
-        const row = await deps.repos.slackInstall.get(req.params.id)
-        if (!row || row.orgId !== orgId) {
+        const row = await deps.repos.slackInstall.get(orgId, req.params.id)
+        if (!row) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'install not found' })
         }
         if (!row.botToken) {
@@ -416,7 +416,7 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             ...(req.principal ? { createdByUserId: req.principal.userId } : {})
           })
           // Tokens now live in bot_secret — drop the pending row so no copy lingers.
-          await deps.repos.slackInstall.delete(row.id)
+          await deps.repos.slackInstall.delete(orgId, row.id)
           return reply.code(201).send({
             id: integration.id,
             name: integration.name,
@@ -670,7 +670,11 @@ export function slackOauthCallbackRoutes(deps: HttpDeps, slack: SlackRouteSeams)
 
         // User denied, or Slack sent us back without the bits we need.
         if (req.query.error || !req.query.code || !req.query.state) return back('denied')
-        const row = await deps.repos.slackInstall.get(req.query.state)
+        // The callback carries no org: Slack returns only the unforgeable
+        // `state` we minted, and that token IS the authority here
+        // (org-scoped-data-layer.md §4). Every read below uses the row's own org.
+        // eslint-disable-next-line no-restricted-syntax -- unauthenticated OAuth callback keyed by the minted state token
+        const row = await deps.repos.slackInstall.getUnscoped(req.query.state)
         if (!row) return back('expired') // unknown / already-finalized / reaped state
 
         const exchanged = await api.exchangeOAuth({
@@ -683,7 +687,7 @@ export function slackOauthCallbackRoutes(deps: HttpDeps, slack: SlackRouteSeams)
           req.log.warn({ installId: row.id, error: exchanged.error }, 'slack oauth exchange failed')
           return back('error')
         }
-        await deps.repos.slackInstall.setBotToken(row.id, exchanged.result.botToken)
+        await deps.repos.slackInstall.setBotToken(row.orgId, row.id, exchanged.result.botToken)
         return back('connected')
       }
     )

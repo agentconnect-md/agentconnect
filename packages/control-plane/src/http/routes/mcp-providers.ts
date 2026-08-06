@@ -126,8 +126,8 @@ async function rotateOnce(
   pushAssign: (p: McpProviderRecord, h: McpHeader[], grantKey: string, org: OrgId) => Promise<void>,
   unassignHash: (providerId: string, hash: string) => void
 ): Promise<string> {
-  const prior = await grants.activeForProvider(provider.id) // before mint — both would read active otherwise
-  const fresh = await grants.mintFor(provider.id)
+  const prior = await grants.activeForProvider(provider.orgId, provider.id) // before mint — both would read active otherwise
+  const fresh = await grants.mintFor(provider.orgId, provider.id)
   await pushAssign(provider, headers, fresh.key, orgId) // new binding + proxy def in place first
   for (const g of prior) {
     await grants.revoke(g.id)
@@ -179,7 +179,9 @@ export function mcpProviderRoutes(deps: HttpDeps) {
       async (req) => {
         const ctx = ctxOf(req)
         const rows = await deps.repos.mcpProvider.listForOrg(orgOf(req), ctx)
-        return Promise.all(rows.map(async (p) => toDto(p, ctx, (await deps.repos.mcpProviderSecret.get(p.id)) ?? [])))
+        return Promise.all(
+          rows.map(async (p) => toDto(p, ctx, (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? []))
+        )
       }
     )
 
@@ -203,7 +205,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         if (!p || !canView(p, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
-        return toDto(p, ctxOf(req), (await deps.repos.mcpProviderSecret.get(p.id)) ?? [])
+        return toDto(p, ctxOf(req), (await deps.repos.mcpProviderSecret.get(p.orgId, p.id)) ?? [])
       }
     )
 
@@ -253,9 +255,9 @@ export function mcpProviderRoutes(deps: HttpDeps) {
             ...(sharedWith ? { sharedWith } : {}),
             ...(req.principal ? { createdByUserId: req.principal.userId } : {})
           })
-          await deps.repos.mcpProviderSecret.put(provider.id, req.body.headers)
+          await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, req.body.headers)
           // Exactly one active grant per provider (v1). Plaintext returned once.
-          const grant = await deps.repos.mcpGrant.mintFor(provider.id)
+          const grant = await deps.repos.mcpGrant.mintFor(provider.orgId, provider.id)
           await pushAssign(provider, req.body.headers, grant.key, orgOf(req))
           return { provider, grant }
         })
@@ -314,13 +316,14 @@ export function mcpProviderRoutes(deps: HttpDeps) {
           req.body.url !== undefined
             ? await deps.repos.mcpProvider.update(orgOf(req), existing.id, { url: req.body.url })
             : existing
-        if (req.body.headers !== undefined) await deps.repos.mcpProviderSecret.put(provider.id, req.body.headers)
-        const headers = req.body.headers ?? (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
+        if (req.body.headers !== undefined)
+          await deps.repos.mcpProviderSecret.put(provider.orgId, provider.id, req.body.headers)
+        const headers = req.body.headers ?? (await deps.repos.mcpProviderSecret.get(provider.orgId, provider.id)) ?? []
         // Re-push the binding + proxy def (name/url/headers may have changed). The grant key
         // is unchanged (patch never re-mints), so read the active one — but INSIDE the
         // per-provider lock, so a concurrent rotation can't leave us pushing its revoked key.
         await serializeByProvider(orgOf(req), provider.name, async () => {
-          const grant = (await deps.repos.mcpGrant.activeForProvider(provider.id))[0]
+          const grant = (await deps.repos.mcpGrant.activeForProvider(provider.orgId, provider.id))[0]
           if (grant) await pushAssign(provider, headers, grant.key, orgOf(req))
         })
         return toDto(provider, ctxOf(req), headers)
@@ -346,7 +349,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
         if (!provider || !canView(provider, ctxOf(req))) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'mcp provider not found' })
         }
-        const headers = (await deps.repos.mcpProviderSecret.get(provider.id)) ?? []
+        const headers = (await deps.repos.mcpProviderSecret.get(provider.orgId, provider.id)) ?? []
         const grantKey = await rotateProviderGrant(
           provider,
           headers,
@@ -400,7 +403,7 @@ export function mcpProviderRoutes(deps: HttpDeps) {
             req.principal?.userId
           )
         )
-        return toDto(provider, ctxOf(req), (await deps.repos.mcpProviderSecret.get(provider.id)) ?? [])
+        return toDto(provider, ctxOf(req), (await deps.repos.mcpProviderSecret.get(provider.orgId, provider.id)) ?? [])
       }
     )
 

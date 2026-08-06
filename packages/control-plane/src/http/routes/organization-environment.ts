@@ -342,7 +342,9 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         // transaction must never wait on one. Material prepared for a losing write is
         // discarded, never logged.
         const sealedSecret =
-          req.body.kind === 'secret' ? await deps.repos.organizationEnvironmentSecret.seal(req.body.value) : undefined
+          req.body.kind === 'secret'
+            ? await deps.repos.organizationEnvironmentSecret.seal(orgOf(req), req.body.value)
+            : undefined
         const result = await repo.create(
           orgId,
           {
@@ -404,7 +406,7 @@ export function organizationEnvironmentRoutes(deps: HttpDeps) {
         }
         const sealedSecret =
           existing.kind === 'secret' && req.body.value !== undefined
-            ? await deps.repos.organizationEnvironmentSecret.seal(req.body.value)
+            ? await deps.repos.organizationEnvironmentSecret.seal(orgOf(req), req.body.value)
             : undefined
         const result = await repo.update(
           orgId,

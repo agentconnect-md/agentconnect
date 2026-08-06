@@ -98,7 +98,7 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             message: 'Slack app id is unavailable — update this app manually in Slack'
           })
         }
-        const secret = await deps.repos.botSecret.get(bot.id)
+        const secret = await deps.repos.botSecret.get(bot.orgId, bot.id)
         if (!secret) {
           return reply
             .code(409)

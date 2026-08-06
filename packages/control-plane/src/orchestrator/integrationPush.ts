@@ -58,7 +58,7 @@ export async function convergeIntegrationGating(
       if (!bot) continue
       if (!agent.daemonId) continue
       const [secret, channels] = await Promise.all([
-        deps.repos.botSecret.get(i.botId),
+        deps.repos.botSecret.get(i.orgId, i.botId),
         deps.repos.integrationChannel.listForIntegration(i.id)
       ])
       if (!secret) continue

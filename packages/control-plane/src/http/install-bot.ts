@@ -96,7 +96,7 @@ export async function installNewBot(
   // identity under `none` and encrypts with an encrypting provider. Slots the
   // relay needs (Slack's signing secret, Feishu's verification token) stay
   // CP-side; the daemon never receives them.
-  await deps.repos.botSecret.put(botId, secrets)
+  await deps.repos.botSecret.put(orgId, botId, secrets)
 
   const id = IntegrationId(randomUUID())
   const integration = await deps.repos.integration.create({
@@ -126,7 +126,7 @@ export async function installNewBot(
   // assembles the spec payload (`orchestrator/placement.ts`). `bot` was created
   // above, so this is the same row, not a second fetch.
   const [secret, channels] = await Promise.all([
-    deps.repos.botSecret.get(botId),
+    deps.repos.botSecret.get(orgId, botId),
     deps.repos.integrationChannel.listForIntegration(id)
   ])
   if (secret) {

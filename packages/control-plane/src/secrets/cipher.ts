@@ -10,11 +10,21 @@
  * as Vault Transit stores ciphertext. The composition root selects one provider,
  * so every store switches together.
  *
+ * Every call carries a {@link SecretScope} naming WHOSE key to use — the
+ * deployment's, or one organization's (docs/designs/per-org-secret-encryption.md).
+ * The scope comes from the caller, never from the stored value.
+ *
  * Contract for an encrypting implementation (e.g. Vault Transit):
- * - `seal` returns a self-describing value (Transit's `vault:v1:…` is already one).
+ * - `seal` returns a self-describing value carrying the envelope version
+ *   (`acv1:` + Transit's own `vault:v1:…`).
  * - `open` MUST pass through values it did not seal (no recognizable prefix ⇒
  *   return as-is): existing plaintext rows keep working, and re-sealing on the
  *   next write migrates them lazily — the flip is online, no backfill required.
+ *   Values sealed before scoping existed (a bare `vault:vN:`) open under the
+ *   deployment key whatever `scope` says; only the envelope-tagged arm is
+ *   scoped.
+ * - A value sealed under one scope MUST NOT open under another. Failing closed
+ *   there is the point of passing the scope in.
  * - Neither side ever logs its argument.
  *
  * This is NOT the C5 `SecretsProvider` lease broker (`providers/provider.ts`),
@@ -23,11 +33,15 @@
  * replicate to daemons over the TLS WS.
  */
 import { VaultTransitSecretCipher } from './vault-transit.js'
+import { effectiveOrgKeyPrefix, type SecretScope } from './scope.js'
+
+export { DEPLOYMENT_SCOPE, orgScope, type SecretScope } from './scope.js'
+
 export interface SecretCipher {
-  /** Plaintext → the string persisted at rest. */
-  seal(plaintext: string): Promise<string>
+  /** Plaintext → the string persisted at rest, sealed under `scope`'s key. */
+  seal(plaintext: string, scope: SecretScope): Promise<string>
   /** Persisted string → plaintext. Must pass through values it did not seal. */
-  open(stored: string): Promise<string>
+  open(stored: string, scope: SecretScope): Promise<string>
 }
 
 /**
@@ -49,6 +63,7 @@ export interface SecretCipherConfig {
   SECRET_CIPHER: 'none' | 'vault-transit'
   VAULT_ADDR?: string | undefined
   VAULT_TRANSIT_KEY: string
+  VAULT_TRANSIT_ORG_KEY_PREFIX?: string | undefined
   VAULT_TRANSIT_MOUNT: string
   VAULT_NAMESPACE?: string | undefined
   VAULT_TOKEN?: string | undefined
@@ -79,6 +94,7 @@ export function makeSecretCipher(config: SecretCipherConfig): SecretCipher {
   return new VaultTransitSecretCipher({
     addr: config.VAULT_ADDR,
     key: config.VAULT_TRANSIT_KEY,
+    orgKeyPrefix: effectiveOrgKeyPrefix(config.VAULT_TRANSIT_KEY, config.VAULT_TRANSIT_ORG_KEY_PREFIX),
     mount: config.VAULT_TRANSIT_MOUNT,
     ...(config.VAULT_NAMESPACE ? { namespace: config.VAULT_NAMESPACE } : {}),
     auth

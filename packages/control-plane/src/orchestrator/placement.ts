@@ -397,7 +397,7 @@ export class Placement implements ReconcileService {
       Promise.all(
         activeIntegrations.map(async (i) => {
           const [secret, channels, bot] = await Promise.all([
-            this.botSecrets.get(i.botId),
+            this.botSecrets.get(i.orgId, i.botId),
             this.integrationChannels.listForIntegration(i.id),
             // The bot behind one of the reconciling daemon's integration rows.
             this.bots.getUnscoped(i.botId)
@@ -569,7 +569,7 @@ export class Placement implements ReconcileService {
     const relayBaseUrl = relayHttpOrigin(relay.url)
     const specs: McpServerSpec[] = []
     for (const p of providers) {
-      const grant = (await mcp.grants.activeForProvider(p.id))[0]
+      const grant = (await mcp.grants.activeForProvider(p.orgId, p.id))[0]
       if (grant) specs.push(mcpProxyDef(p, grant.key, relayBaseUrl))
     }
     return specs
@@ -589,7 +589,7 @@ export class Placement implements ReconcileService {
       const installation = await memory.installations.get(connection.installationId)
       if (!installation) continue
       if (installation.transport === 'stdio') {
-        const secrets = (await memory.secrets.get(connection.id)) ?? {}
+        const secrets = (await memory.secrets.get(connection.orgId, connection.id)) ?? {}
         specs.push(stdioMemoryConnectionSpec(connection, installation, secrets))
         continue
       }
@@ -601,8 +601,8 @@ export class Placement implements ReconcileService {
         // Rotation overlaps old+new grants until every projection has the fresh
         // key. Prefer the newest active grant so a reconnect in that window does
         // not receive the key that is about to be retired.
-        memory.grants.activeForConnection(connection.id).then((rows) => rows.at(-1)),
-        memory.secrets.keys(connection.id)
+        memory.grants.activeForConnection(connection.orgId, connection.id).then((rows) => rows.at(-1)),
+        memory.secrets.keys(connection.orgId, connection.id)
       ])
       if (!grant) continue
       specs.push(memoryConnectionSpec(connection, installation, secretKeys, grant.key, relayBaseUrl))

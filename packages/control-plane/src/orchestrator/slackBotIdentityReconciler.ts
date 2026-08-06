@@ -83,7 +83,7 @@ export class SlackBotIdentityReconciler {
     try {
       for (const bot of await this.bots.listSlackMissingIdentity()) {
         try {
-          const secret = await this.secrets.get(bot.id)
+          const secret = await this.secrets.get(bot.orgId, bot.id)
           if (!secret) continue
           const identity = await this.resolveIdentity(secret.botToken)
           if (!identity) continue

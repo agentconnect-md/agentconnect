@@ -317,6 +317,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           // the revocation marker, and serializes against a concurrent revoke on
           // the bot row. MUST precede the syncBot below (§5.3 lifecycle).
           const revision = await deps.repos.botCredential.install(
+            existing.orgId,
             BotId(existing.id),
             { botToken: result.botToken, appToken: null, signingSecret: platform.signingSecret },
             new Date(),

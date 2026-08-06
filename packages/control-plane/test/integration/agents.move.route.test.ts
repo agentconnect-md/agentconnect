@@ -183,8 +183,10 @@ describe('PUT /agents/:id/daemon', () => {
       installationId: installation.id,
       config: { projectId: 'move' }
     })
-    await running.deps.repos.externalMemoryConnectionSecret.put(connection.id, { apiKey: 'secret' })
-    await running.deps.repos.externalMemoryGrant.mintFor(connection.id)
+    await running.deps.repos.externalMemoryConnectionSecret.put(OrgId(DEFAULT_ORG_ID), connection.id, {
+      apiKey: 'secret'
+    })
+    await running.deps.repos.externalMemoryGrant.mintFor(OrgId(DEFAULT_ORG_ID), connection.id)
     await prisma.agent.update({
       where: { id: agentId },
       data: {

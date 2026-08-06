@@ -593,7 +593,7 @@ export class AgentMoveService {
           // Orchestration: the bot behind an integration row of the agent being
           // moved — org derived from the record in hand (org-scoped-data-layer.md §4).
           this.deps.bots.getUnscoped(integration.botId),
-          this.deps.botSecrets.get(integration.botId),
+          this.deps.botSecrets.get(integration.orgId, integration.botId),
           this.deps.integrationChannels.listForIntegration(integration.id)
         ])
         if (!bot) throw new AgentMoveConflict(`integration ${integration.id} has no bot`)

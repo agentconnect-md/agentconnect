@@ -12,6 +12,7 @@ import type {
 import { mintGrantKey } from '../../orchestrator/mcpProvider.js'
 import { DaemonId, OrgId } from '../../domain/ids.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
+import { orgScope } from '../../secrets/scope.js'
 import type { PrismaLike } from '../prisma.js'
 import type {
   ExternalMemoryConnectionRecord,
@@ -210,10 +211,16 @@ export class PgExternalMemoryConnectionSecretStore implements ExternalMemoryConn
     private readonly cipher: SecretCipher
   ) {}
 
-  async put(connectionId: string, values: Record<string, string>): Promise<void> {
+  async put(orgId: OrgId, connectionId: string, values: Record<string, string>): Promise<void> {
+    // Keyed by connectionId alone, so the upsert cannot carry the org — check the
+    // parent row once instead.
+    if ((await this.db.externalMemoryConnection.count({ where: { id: connectionId, orgId } })) === 0) {
+      throw new Error('memory connection secret write outside its organization')
+    }
+    const scope = orgScope(orgId)
     const sealed = Object.fromEntries(
       await Promise.all(
-        Object.entries(values).map(async ([name, value]) => [name, await this.cipher.seal(value)] as const)
+        Object.entries(values).map(async ([name, value]) => [name, await this.cipher.seal(value, scope)] as const)
       )
     )
     await this.db.externalMemoryConnectionSecret.upsert({
@@ -223,28 +230,31 @@ export class PgExternalMemoryConnectionSecretStore implements ExternalMemoryConn
     })
   }
 
-  async get(connectionId: string): Promise<Record<string, string> | null> {
-    const row = await this.db.externalMemoryConnectionSecret.findUnique({ where: { connectionId } })
+  async get(orgId: OrgId, connectionId: string): Promise<Record<string, string> | null> {
+    const row = await this.db.externalMemoryConnectionSecret.findFirst({
+      where: { connectionId, connection: { orgId } }
+    })
     if (!row) return null
+    const scope = orgScope(orgId)
     return Object.fromEntries(
       await Promise.all(
         Object.entries(row.values as Record<string, string>).map(
-          async ([name, value]) => [name, await this.cipher.open(value)] as const
+          async ([name, value]) => [name, await this.cipher.open(value, scope)] as const
         )
       )
     )
   }
 
-  async keys(connectionId: string): Promise<string[]> {
-    const row = await this.db.externalMemoryConnectionSecret.findUnique({
-      where: { connectionId },
+  async keys(orgId: OrgId, connectionId: string): Promise<string[]> {
+    const row = await this.db.externalMemoryConnectionSecret.findFirst({
+      where: { connectionId, connection: { orgId } },
       select: { values: true }
     })
     return row ? Object.keys(row.values as Record<string, string>).sort() : []
   }
 
-  async delete(connectionId: string): Promise<void> {
-    await this.db.externalMemoryConnectionSecret.deleteMany({ where: { connectionId } })
+  async delete(orgId: OrgId, connectionId: string): Promise<void> {
+    await this.db.externalMemoryConnectionSecret.deleteMany({ where: { connectionId, connection: { orgId } } })
   }
 }
 
@@ -264,20 +274,24 @@ export class PgExternalMemoryGrantRepo implements ExternalMemoryGrantRepo {
     private readonly cipher: SecretCipher
   ) {}
 
-  async mintFor(connectionId: string): Promise<ExternalMemoryGrantRecord> {
+  async mintFor(orgId: OrgId, connectionId: string): Promise<ExternalMemoryGrantRecord> {
+    if ((await this.db.externalMemoryConnection.count({ where: { id: connectionId, orgId } })) === 0) {
+      throw new Error('memory grant mint outside its organization')
+    }
     const key = mintGrantKey()
     const row = await this.db.externalMemoryGrant.create({
-      data: { connectionId, key: await this.cipher.seal(key) }
+      data: { connectionId, key: await this.cipher.seal(key, orgScope(orgId)) }
     })
     return { ...toGrant(row), key }
   }
 
-  async activeForConnection(connectionId: string): Promise<ExternalMemoryGrantRecord[]> {
+  async activeForConnection(orgId: OrgId, connectionId: string): Promise<ExternalMemoryGrantRecord[]> {
     const rows = await this.db.externalMemoryGrant.findMany({
-      where: { connectionId, status: 'active' },
+      where: { connectionId, status: 'active', connection: { orgId } },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
     })
-    return Promise.all(rows.map(async (row) => ({ ...toGrant(row), key: await this.cipher.open(row.key) })))
+    const scope = orgScope(orgId)
+    return Promise.all(rows.map(async (row) => ({ ...toGrant(row), key: await this.cipher.open(row.key, scope) })))
   }
 
   async revoke(grantId: string): Promise<void> {
