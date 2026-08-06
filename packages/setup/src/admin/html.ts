@@ -103,7 +103,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <p class="muted">Create a Web application client in Google Auth Platform, then paste its credentials here.</p>
           <p>Authorized JavaScript origin:</p><ul id="bootstrap-google-origins" class="uris"></ul>
           <p>Authorized redirect URIs:</p><ul id="bootstrap-google-redirects" class="uris"></ul>
-          <a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google Auth Platform</a>
+          <a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google settings</a>
           <label class="field">Client ID<input id="bootstrap-google-id" autocomplete="off"></label>
           <label class="field">Client Secret<input id="bootstrap-google-secret" type="password" autocomplete="new-password"></label>
           <button id="bootstrap-google-submit">Save Google OAuth and configure Logto</button>
@@ -288,7 +288,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
         <p>Authorized JavaScript origin:</p><ul id="google-origins" class="uris"></ul>
         <p>Authorized redirect URIs:</p><ul id="google-redirects" class="uris"></ul>
         <p class="muted">Google does not expose OAuth client redirect settings through an API. Copy these required values into Google Auth Platform; Tenant Admin can verify only the Logto connector.</p>
-        <div class="row"><a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google Auth Platform</a></div>
+        <div class="row"><a class="button" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">Open Google settings</a></div>
         <div id="google-config-controls" class="subsection">
           <label class="field">Client ID<input id="google-id" autocomplete="off"></label>
           <label id="google-initial-secret-field" class="field">Client secret<input id="google-secret" type="password" autocomplete="new-password" placeholder="Required when Client ID changes"></label>
@@ -318,6 +318,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <button id="cancel-feishu-configuration" hidden>Cancel</button>
           <button id="check-feishu-login-app" hidden>Check setup</button>
           <button id="clear-feishu" class="danger" hidden>Clear configuration</button>
+          <a id="feishu-settings" class="button" target="_blank" rel="noopener" hidden>Open Feishu settings</a>
         </div>
       </section>
 
@@ -343,6 +344,7 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
           <button id="cancel-lark-configuration" hidden>Cancel</button>
           <button id="check-lark-login-app" hidden>Check setup</button>
           <button id="clear-lark" class="danger" hidden>Clear configuration</button>
+          <a id="lark-settings" class="button" target="_blank" rel="noopener" hidden>Open Lark settings</a>
         </div>
       </section>
     </div>
@@ -683,6 +685,10 @@ export const TENANT_ADMIN_HTML = String.raw`<!doctype html>
       el('clear-lark').hidden = !values.lark;
       el('check-feishu-login-app').hidden = !values.feishu || !configured(byKey, 'feishu.loginAppSecret');
       el('check-lark-login-app').hidden = !values.lark || !configured(byKey, 'lark.loginAppSecret');
+      el('feishu-settings').hidden = !values.feishu;
+      el('lark-settings').hidden = !values.lark;
+      if (values.feishu) el('feishu-settings').href = 'https://open.feishu.cn/app/' + encodeURIComponent(values.feishu.loginAppId);
+      if (values.lark) el('lark-settings').href = 'https://open.larksuite.com/app/' + encodeURIComponent(values.lark.loginAppId);
     }
 
     function requiredInput(id, label) {
