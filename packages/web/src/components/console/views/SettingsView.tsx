@@ -44,11 +44,14 @@ import EditMemberModal, { type MemberTarget } from '@/components/console/modals/
 import InviteMembersModal from '@/components/console/modals/InviteMembersModal'
 import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEnvironmentCard'
 
-// A session-access row shows only the effect of the current setting ("People with
-// Slack access" / "Agent viewers"). What the toggle means at all is said once, in
-// the card header; the per-platform detail — which conversations qualify, what
-// turning it off does NOT undo — hangs off the row's info button, so every row
-// stays one line.
+// A session-access row is a platform name and its switch. What the switch does is
+// said once, in the card header — restating it per row ("People with Slack access"
+// beside an on switch in a row already labelled Slack) is the same sentence three
+// times. Only EXCEPTIONS get words: a chip when the setting is not fully taking
+// effect, and the per-platform detail on the row's info button.
+//
+// A provider this deployment cannot offer at all is not an exception to explain,
+// it is a row to leave out — see `hasNothingToOffer`.
 //
 // "New sessions" is load-bearing in the Off half: turning the policy off stops
 // NEW sessions binding to platform access, it does not unbind the ones already
@@ -63,8 +66,6 @@ const SESSION_ACCESS_COPY: Record<
     label: string
     details: string
     unavailable: string
-    enabled: string
-    disabled: string
     unresolved: (count: number) => string
     degraded: string
   }
@@ -78,9 +79,8 @@ const SESSION_ACCESS_COPY: Record<
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
       'Turning this off leaves already-synced sessions following Slack.'
     ].join('\n'),
-    unavailable: 'Needs sign-in and linked Slack identities',
-    enabled: 'People with Slack access',
-    disabled: 'Agent viewers',
+    unavailable:
+      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Slack identity to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted Slack scope.`,
     degraded: 'Slack scopes stopped resolving — new sessions are being hidden.'
   },
@@ -93,9 +93,8 @@ const SESSION_ACCESS_COPY: Record<
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
       'Turning this off leaves already-synced sessions following GitHub.'
     ].join('\n'),
-    unavailable: 'Needs sign-in and GitHub access checks',
-    enabled: 'People with GitHub access',
-    disabled: 'Agent viewers',
+    unavailable:
+      'Unavailable until console sign-in and GitHub access checks are configured for this deployment — without them a viewer has no linked GitHub profile to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted repository scope.`,
     degraded: 'Repository scopes stopped resolving — new sessions are being hidden.'
   },
@@ -108,26 +107,15 @@ const SESSION_ACCESS_COPY: Record<
       'User-built apps with a different App ID keep the ordinary organization visibility model.',
       'Turning this off leaves already-synced sessions following Feishu / Lark.'
     ].join('\n'),
-    unavailable: 'Needs sign-in and a linked Feishu / Lark profile',
-    enabled: 'People with Feishu / Lark access',
-    disabled: 'Agent viewers',
+    unavailable:
+      'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu / Lark profile to check.',
     unresolved: (count) => `${count} session${count === 1 ? '' : 's'} hidden — no trusted chat scope.`,
     degraded: 'Feishu / Lark scopes stopped resolving — new sessions are being hidden.'
   }
 }
 
-function SessionAccessRow({
-  provider,
-  orgId,
-  isOwner,
-  bordered = false
-}: {
-  provider: SessionAccessProvider
-  orgId?: string
-  isOwner: boolean
-  bordered?: boolean
-}) {
-  const copy = SESSION_ACCESS_COPY[provider]
+/** The live policy for one provider, plus the owner's write path. */
+function useSessionAccess(provider: SessionAccessProvider, orgId: string | undefined, isOwner: boolean) {
   const key = consoleKeys.sessionAccess(orgId, provider)
   const {
     data: access,
@@ -136,9 +124,8 @@ function SessionAccessRow({
   } = useSWR(key, ([, scopedOrgId, , scopedProvider]) => fetchSessionExternalAccess(scopedProvider, scopedOrgId))
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<{ scope: string; message: string } | null>(null)
-  const hiddenSessions = access?.hiddenSessions ?? 0
+  // Keyed by org+provider: switching orgs re-keys SWR but keeps this state.
   const scope = `${orgId ?? ''}:${provider}`
-  const currentActionError = actionError?.scope === scope ? actionError.message : null
 
   const setEnabled = async (enabled: boolean) => {
     if (!orgId || !isOwner || busy) return
@@ -154,11 +141,50 @@ function SessionAccessRow({
     }
   }
 
-  const unavailable = access?.available === false && !access.enabled
-  // The effective answer to "who can see these sessions" — the only sentence the
-  // row spends space on. Blank until the row has loaded, so it never states a
-  // policy the org may not be on.
-  const value = !access ? '' : unavailable ? copy.unavailable : access.enabled ? copy.enabled : copy.disabled
+  return {
+    provider,
+    access,
+    loadError,
+    busy,
+    actionError: actionError?.scope === scope ? actionError.message : null,
+    setEnabled
+  }
+}
+
+type SessionAccessState = ReturnType<typeof useSessionAccess>
+
+/**
+ * Whether the row would be a dead control: this deployment has no sign-in (and,
+ * for GitHub, no access checks) wiring behind the provider, and the org is not
+ * on the policy either. Nothing an owner does here can change that — the CP
+ * refuses to enable it (409) and there is nothing to turn off — so the row is
+ * left out rather than shown greyed with an explanation nobody can act on.
+ *
+ * `available === false` with the policy still ENABLED is the opposite case: the
+ * wiring went away under a live policy, so sessions are being hidden and the
+ * owner needs the switch to turn it back off. That row stays, with a chip.
+ *
+ * Unknown (still loading, or the read failed) is never hidden — absence has to
+ * be a fact, not a default.
+ */
+function hasNothingToOffer(state: SessionAccessState): boolean {
+  return state.access !== undefined && !state.access.available && !state.access.enabled
+}
+
+function SessionAccessRow({
+  state,
+  isOwner,
+  bordered = false
+}: {
+  state: SessionAccessState
+  isOwner: boolean
+  bordered?: boolean
+}) {
+  const { provider, access, loadError, busy, actionError } = state
+  const copy = SESSION_ACCESS_COPY[provider]
+  const hiddenSessions = access?.hiddenSessions ?? 0
+  // The wiring disappeared under a live policy (the hidden-row case inverted).
+  const stranded = access?.available === false && access.enabled
 
   return (
     <div className={`flex items-center gap-3 px-4 py-[15px] ${bordered ? 'border-t border-(--border-subtle)' : ''}`}>
@@ -180,26 +206,26 @@ function SessionAccessRow({
             <Icon name="info" size={13} />
           </button>
         </div>
-        {/* Desktop keeps the effect in its own column; on a phone there is no room
-            beside the toggle, so it drops under the platform name. */}
-        {value && (
-          <div className="mt-[2px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary) desktop:hidden">
-            {value}
-          </div>
-        )}
-        {(currentActionError || loadError) && (
+        {(actionError || loadError) && (
           <div role="alert" className="mt-1 font-sans text-[11.5px] font-normal leading-normal text-(--status-error)">
-            {currentActionError ?? `Could not load ${copy.name} session access.`}
+            {actionError ?? `Could not load ${copy.name} session access.`}
           </div>
         )}
       </div>
-      {/* Amber is reserved for the actionable case — a scope that stopped
-          resolving AFTER enablement. The hidden-session backlog is expected and
-          permanent (the CP freezes it as the policy's legacy mark), so its chip
-          reads as a muted fact, not a fault the owner is failing to clear.
+      {/* Amber is reserved for the actionable cases — a scope that stopped
+          resolving after enablement, or configuration pulled out from under a
+          live policy. The hidden-session backlog is expected and permanent (the
+          CP freezes it as the policy's legacy mark), so its chip reads as a
+          muted fact, not a fault the owner is failing to clear.
           A chip is a shortening, not a hiding: the full sentence is hover copy
           for a pointer and screen-reader text for everyone else. */}
-      {access?.state === 'degraded' && (
+      {stranded && (
+        <span className="badge flex-none bg-(--status-paused-soft) text-(--status-paused)" title={copy.unavailable}>
+          <span aria-hidden="true">Not configured</span>
+          <span className="sr-only">{copy.unavailable}</span>
+        </span>
+      )}
+      {access?.state === 'degraded' && !stranded && (
         <span className="badge flex-none bg-(--status-paused-soft) text-(--status-paused)" title={copy.degraded}>
           <span aria-hidden="true">Scopes not resolving</span>
           <span className="sr-only">{copy.degraded}</span>
@@ -214,19 +240,57 @@ function SessionAccessRow({
           <span className="sr-only">{copy.unresolved(hiddenSessions)}</span>
         </span>
       )}
-      {value && (
-        <span className="hidden font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary) desktop:block">
-          {value}
-        </span>
-      )}
       <span title={isOwner ? undefined : 'Only organization owners can change this setting'}>
         <Toggle
           checked={access?.enabled === true}
-          disabled={!isOwner || !access || busy || unavailable}
+          disabled={!isOwner || !access || busy || (!access.available && !access.enabled)}
           ariaLabel={copy.label}
-          onChange={(next) => void setEnabled(next)}
+          onChange={(next) => void state.setEnabled(next)}
         />
       </span>
+    </div>
+  )
+}
+
+export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner: boolean }) {
+  // Three fixed hooks, one per provider — the card decides what to render, so it
+  // has to hold the reads.
+  const providers = [
+    useSessionAccess('slack', orgId, isOwner),
+    useSessionAccess('github', orgId, isOwner),
+    useSessionAccess('feishu', orgId, isOwner)
+  ]
+  const pending = providers.some((state) => state.access === undefined && !state.loadError)
+  const rows = providers.filter((state) => !hasNothingToOffer(state))
+
+  // Nothing wired and nothing enabled: no header over an empty card either.
+  if (!pending && rows.length === 0) return null
+
+  return (
+    <div className="card mt-[18px]">
+      <div className="cardhead justify-between">
+        <span className="cardtitle">Session access</span>
+        <span className="flex items-center gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          Follow platform access
+          <button
+            type="button"
+            className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
+            aria-label="Session access — what the toggles do"
+            title={SESSION_ACCESS_HINT}
+          >
+            <Icon name="info" size={13} />
+          </button>
+        </span>
+      </div>
+      {/* Hold the rows until every provider has answered: a row that appears and
+          then vanishes reads as a glitch, and this card can vanish whole. */}
+      {pending ? (
+        <LoadingState size={22} padding={20} />
+      ) : (
+        rows.map((state, index) => (
+          <SessionAccessRow key={state.provider} state={state} isOwner={isOwner} bordered={index > 0} />
+        ))
+      )}
     </div>
   )
 }
@@ -643,25 +707,7 @@ export default function SettingsView() {
         }}
       />
 
-      <div className="card mt-[18px]">
-        <div className="cardhead justify-between">
-          <span className="cardtitle">Session access</span>
-          <span className="flex items-center gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-            Follow platform access
-            <button
-              type="button"
-              className="flex h-4 w-4 flex-none items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-              aria-label="Session access — what the toggles do"
-              title={SESSION_ACCESS_HINT}
-            >
-              <Icon name="info" size={13} />
-            </button>
-          </span>
-        </div>
-        <SessionAccessRow provider="slack" orgId={activeOrg?.id} isOwner={isOwner} />
-        <SessionAccessRow provider="github" orgId={activeOrg?.id} isOwner={isOwner} bordered />
-        <SessionAccessRow provider="feishu" orgId={activeOrg?.id} isOwner={isOwner} bordered />
-      </div>
+      <SessionAccessCard orgId={activeOrg?.id} isOwner={isOwner} />
 
       {/* Sits with the other organization-wide agent policies. Owner-only, so the
           card renders nothing at all for collaborators and viewers (§8.1). */}
