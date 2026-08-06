@@ -74,16 +74,17 @@ export class BotExternalIdentityTaken extends Error {
   }
 }
 
-/** A Slack workspace already connected to a DIFFERENT organization refuses a
- *  second claim (ingress-tenant-fence.md §5): same app + same workspace in two
- *  orgs would share one signing secret AND one tenant, which the delivery-time
- *  fence cannot tell apart — admission is the only place to stop it. Mapped to
- *  409 at the HTTP edge; the message never names the holding organization. */
-export class SlackWorkspaceClaimed extends Error {
-  readonly code = 'SLACK_WORKSPACE_CLAIMED' as const
-  constructor() {
-    super('this Slack workspace is already connected to another organization')
-    this.name = 'SlackWorkspaceClaimed'
+/** A workspace already connected to a DIFFERENT organization refuses a second
+ *  claim (ingress-tenant-fence.md §5): one app installed into one workspace by
+ *  two orgs would share its inbound-verification secret AND its tenant, which
+ *  the relay's delivery-time fence cannot tell apart — admission is the only
+ *  place to stop it. Mapped to 409 at the HTTP edge; the platform supplies the
+ *  copy, and it never names the holding organization. */
+export class BotWorkspaceClaimed extends Error {
+  readonly code = 'BOT_WORKSPACE_CLAIMED' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'BotWorkspaceClaimed'
   }
 }
 

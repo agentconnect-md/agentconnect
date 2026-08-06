@@ -38,7 +38,7 @@ import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
 import { SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
-import { SlackWorkspaceClaimed } from '../../persistence/errors.js'
+import { BotWorkspaceClaimed } from '../../persistence/errors.js'
 import { closePageHtml, relayHttpBase } from './slack-install.js'
 import type { SlackRouteSeams } from '../platform-route-seams.js'
 import {
@@ -397,7 +397,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
             // workspace some org connected through a DIFFERENT funnel with this
             // same app id. Callback UX, not JSON: same closing page as the
             // pre-check's refusal.
-            if (err instanceof SlackWorkspaceClaimed) return fail('workspace_taken')
+            if (err instanceof BotWorkspaceClaimed) return fail('workspace_taken')
             throw err
           }
           botId = created.botId

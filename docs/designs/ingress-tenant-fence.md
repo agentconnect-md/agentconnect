@@ -140,15 +140,32 @@ check can break that tie; only refusing the second claim can.
 That refusal already exists for the distributed platform app: its OAuth
 callback resolves the `(slackAppId, teamId)` claim globally and answers a
 cross-organization hit with `workspace_taken`, deliberately not naming the
-holding organization. This change extends the same admission rule to the
-funnels that lack it — `installNewSlackBot`, the tail both the quick-install
-finalize and the platform callback share, refuses to create a bot when
-**another** organization already holds one for the same
-`(slackAppId, workspaceId)`:
+holding organization. This change generalizes the same rule to every create
+path.
+
+**The check lives at the one seam they all pass through** — `installNewBot`,
+core's shared create skeleton — rather than on any single funnel. There are
+three ways a bot is minted (the generic `POST /integrations`, the quick-install
+finalize, and the platform-app callback), and a fence installed on one of them
+leaves the other two open, which is precisely the failure this exists to close.
+Core stays platform-agnostic: the platform _declares_ the claim
+(`CpNewBotInstall.workspaceClaim` — app id, tenant, and the 409 copy), core
+_enforces_ it, mirroring the existing `externalIdentity` seam next to it.
+
+The claim is deliberately distinct from the D6 `externalIdentity` pre-check:
+that one fences the composite unique and stays NULL wherever a platform
+preserves pre-capture semantics (a Slack manual paste captures no `teamId`) —
+which is exactly the arm this one covers, because `auth.test` _does_ resolve
+the workspace even when no OAuth exchange happened.
+
+Refusal semantics:
 
 - the repository answers a boolean predicate
-  (`BotRepo.slackWorkspaceClaimedElsewhere`) — the question is deliberately
+  (`BotRepo.workspaceClaimedElsewhere`) — the question is deliberately
   cross-organization, but no foreign row ever crosses the persistence seam;
+- **a different app in the same workspace is not a claim**: distinct apps carry
+  distinct signing secrets, so nothing is ambiguous at delivery time and
+  admission must not over-refuse;
 - the refusal is a 409 whose message never names the holding organization;
 - revoked rows still claim: transferring a workspace between organizations is
   an explicit delete-then-reinstall, never a silent capture;
@@ -182,10 +199,13 @@ signing secret** but belong to different workspaces:
   stops being attributable cross-tenant once its tenant is known;
 - a delivery with no tenant hint keeps today's behavior.
 
-Plus control-plane tests that the projected ingress bag carries the fence
-value for a non-distributed bot (the case that has none today), and that a
-second organization's claim of an already-connected workspace is refused with
-409 while a same-organization re-install proceeds.
+Plus control-plane tests that the projected ingress bag carries the fence value
+for a non-distributed bot (the case that has none today), and — on **both** the
+funnel tail and the generic `POST /integrations` path, since each is a distinct
+way into the shared create seam — that a second organization's claim of an
+already-connected workspace is refused with 409 without naming the holder,
+while a same-organization re-install and a _different_ app in the same
+workspace both proceed.
 
 ## 7. Non-goals
 

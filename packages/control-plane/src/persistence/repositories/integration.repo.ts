@@ -266,11 +266,25 @@ export class PgBotRepo implements BotRepo {
     return rows.map(toBotRecord)
   }
 
-  async slackWorkspaceClaimedElsewhere(orgId: OrgId, slackAppId: string, workspaceId: string): Promise<boolean> {
+  async workspaceClaimedElsewhere(
+    orgId: OrgId,
+    platform: string,
+    appId: string,
+    workspaceId: string
+  ): Promise<boolean> {
     // Cross-org on purpose (the admission question IS cross-org), boolean on
     // purpose (no foreign row crosses the seam) — ingress-tenant-fence.md §5.
+    //
+    // The app id matches EITHER column: `externalAppId` is the D6 generic one
+    // every new row dual-writes, `slackAppId` is the legacy one pre-D6 rows
+    // still carry alone. Matching both is what lets a legacy row hold a claim.
     const held = await this.db.bot.count({
-      where: { platform: 'slack', slackAppId, workspaceId, NOT: { orgId } }
+      where: {
+        platform: toDbPlatform(platform),
+        workspaceId,
+        NOT: { orgId },
+        OR: [{ externalAppId: appId }, { slackAppId: appId }]
+      }
     })
     return held > 0
   }
