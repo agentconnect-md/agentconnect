@@ -210,7 +210,6 @@ describe('Logto setup reconciliation', () => {
       applicationName: 'AgentConnect',
       redirectUris: ['http://localhost:3000/auth/callback', 'http://localhost:8091/auth/callback'],
       postLogoutRedirectUris: ['http://localhost:3000/login'],
-      corsAllowedOrigins: ['http://localhost:3000', 'http://localhost:8091'],
       socialProviders: ['github', 'google', 'slack'],
       github: { connectorId: 'agentconnect-github', clientId: 'github-client', clientSecret: 'github-secret' },
       google: { connectorId: 'agentconnect-google', clientId: 'google-client', clientSecret: 'google-secret' },
@@ -247,7 +246,7 @@ describe('Logto setup reconciliation', () => {
     expect(signInExperience).toMatchObject({
       signIn: { methods: [] },
       signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
-      socialSignIn: { automaticAccountLinking: false, skipRequiredIdentifiers: true },
+      socialSignIn: { automaticAccountLinking: false, skipRequiredIdentifiers: false },
       socialSignInConnectorTargets: ['github', 'google', 'slack'],
       signInMode: 'SignInAndRegister'
     })
