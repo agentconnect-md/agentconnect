@@ -10,6 +10,7 @@
  * a not-yet-registered pod out of the Service until it can actually route.
  */
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyServerOptions } from 'fastify'
+import { relayOtelFastifyPlugin } from './observability.js'
 
 export interface RelayServerDeps {
   /** True once the relay↔CP link has registered and is heartbeating. */
@@ -70,6 +71,11 @@ function withRedactedRequestLog(opts?: FastifyServerOptions): FastifyServerOptio
 
 export function buildRelayServer(deps: RelayServerDeps, opts?: FastifyServerOptions): FastifyInstance {
   const app = Fastify(withRedactedRequestLog(opts))
+
+  // Route-level spans. Absent unless the SDK started, so tests and
+  // self-hosted relays build the same server without it.
+  const otelPlugin = relayOtelFastifyPlugin()
+  if (otelPlugin) void app.register(otelPlugin)
 
   // Fastify's built-in 404 logs `Route POST:/webhooks/in/<token> not found`, which
   // would re-leak the very token the serializer redacts — and an unknown or typo'd

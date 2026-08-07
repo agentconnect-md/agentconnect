@@ -31,6 +31,11 @@ import { McpBindingTable } from './mcp/binding-table.js'
 import { registerMcpProxy, registerMemoryPluginProxy } from './mcp/proxy.js'
 import { MemoryConnectionBindingTable } from './memory/binding-table.js'
 import type { Logger } from './log.js'
+import { startRelayOpenTelemetry } from './observability.js'
+
+// Before `main()` so the SDK has patched http/undici by the time the server
+// and the CP client build theirs. No-ops unless an OTLP endpoint is set.
+const telemetry = startRelayOpenTelemetry()
 
 const RELAY_WS_PATH = '/api/v1/relays/ws'
 
@@ -335,6 +340,10 @@ async function main(): Promise<void> {
     await held.relayIngress?.stopAll()
     await client.stop()
     await server.close()
+    // Last, so spans from the drain above still make it out.
+    await telemetry
+      .shutdown()
+      .catch((err: unknown) => log.error(`relay: opentelemetry shutdown failed: ${(err as Error).message}`))
     process.exit(0)
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
