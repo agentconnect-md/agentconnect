@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify'
 import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type {
   ExternalScopeRecord,
   SessionExternalAccessSnapshot,
@@ -31,23 +32,61 @@ export interface SessionAccessResolver {
 }
 
 /**
- * How long one resolved provider snapshot is reused.
+ * How long a snapshot is served with no provider work at all.
  *
- * Deliberately short. One console page load asks the SAME authorization
- * question from `/sessions`, `/sessions/facets` and `/usage` within the same
- * tick, and each answer used to pay its own full provider sweep — which is why
- * those three were the only reads on the page costing seconds while every other
- * read model returned in tens of milliseconds. This window collapses them into
- * one sweep and nothing more: the plugins' own decision leases (allow 120 s,
- * deny 30 s, unknown 5 s) remain the real freshness bound, and this can only add
- * seconds to them.
- *
- * The post-resolution policy re-read (see `forScopes`) is reused for the same
- * window. That fence is backstopped by SQL, which repeats the current-policy
- * check per row on every list read.
+ * One console page load asks the SAME authorization question from `/sessions`,
+ * `/sessions/facets` and `/usage` within the same tick, and each answer used to
+ * pay its own full provider sweep — which is why those three were the only reads
+ * on the page costing seconds while every other read model returned in tens of
+ * milliseconds. Collapsing them fixed the common case but not the tail: whenever
+ * this window and a plugin's own decision lease both lapsed, some unlucky
+ * request still wore the whole sweep.
  */
-const SNAPSHOT_TTL_MS = 5_000
+const SNAPSHOT_FRESH_MS = 30_000
+
+/**
+ * The ceiling on serving a snapshot while its refresh runs behind the request.
+ *
+ * Past the fresh window a read hands back what it has and re-sweeps in the
+ * background, so no console read waits on Slack or GitHub. Past THIS window the
+ * entry is gone and the next read blocks on a real sweep — an unbounded
+ * stale-while-revalidate would mean a revoked user is never re-checked until
+ * they happen to come back.
+ *
+ * It is not free, and the arithmetic is worth stating: a sweep reuses plugin
+ * verdicts that are themselves already up to their own allow lease (120 s) old,
+ * so the worst-case age of the evidence behind a served answer is this window
+ * PLUS that lease. The pre-SWR 5 s window made that ~125 s; 60 s makes it
+ * ~180 s. Every second added here is a second added to the revocation window,
+ * one for one — that is the entire price of never blocking, and no setting of
+ * this constant avoids it.
+ */
+const SNAPSHOT_MAX_STALE_MS = 60_000
+
 const MAX_SNAPSHOT_ENTRIES = 2_000
+
+/**
+ * Hand back the entry we have and refresh behind the request.
+ *
+ * `noDeleteOnFetchRejection` keeps the snapshot a failed refresh was refreshing,
+ * so a provider blip inside the window does not empty the answer.
+ *
+ * `allowStaleOnFetchRejection` is deliberately NOT set, and its absence is
+ * load-bearing. A refresh started inside the stale window can still be running
+ * once the entry passes the ceiling; `fetch` coalesces the caller that arrives
+ * then onto the SAME promise — its in-flight branch runs before any staleness
+ * check — and lru-cache settles that promise with the options of the fetch that
+ * CREATED it. Allowing stale on rejection here would therefore hand the old
+ * snapshot to a caller that was supposed to block, so the ceiling would stop
+ * being hard in exactly the case it exists for. Without it, that caller observes
+ * the failure, while the reader that never waited still gets its stale value and
+ * the entry still survives.
+ *
+ * A COLD sweep that fails is unaffected either way: it rejects, because
+ * resolving it to "no external access" would silently hide every external row
+ * instead of reporting an error.
+ */
+const REFRESH_BEHIND = { forceRefresh: true, allowStale: true, noDeleteOnFetchRejection: true } as const
 
 /** What one sweep needs, carried to `fetchMethod` as its context. */
 type Sweep = { scopes: readonly ExternalScopeRecord[]; viewer: SessionAccessViewer }
@@ -146,33 +185,38 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
 
   /** `fetch` hands concurrent callers of one key the SAME promise, which is the
    *  single-flight this exists for, and drops the entry when the sweep rejects —
-   *  a failed sweep is never inherited as a verdict. `perf` is the time seam;
-   *  `ttlResolution: 0` turns off lru-cache's 1 ms `now()` debounce, which is
-   *  driven by a real timer a `FakeClock` cannot advance. The clock must report
-   *  real epoch milliseconds, as `Clock` documents: lru-cache treats a falsy
-   *  entry start as "no TTL recorded", so a snapshot written at time 0 would
-   *  never expire. */
+   *  a failed sweep is never inherited as a verdict. */
   const snapshots = new LRUCache<string, ResolvedSessionAccess, Sweep>({
-    max: MAX_SNAPSHOT_ENTRIES,
-    ttl: SNAPSHOT_TTL_MS,
-    ttlResolution: 0,
-    perf: deps.clock,
+    ...cacheOptions(deps.clock, MAX_SNAPSHOT_ENTRIES),
+    // The entry's lifetime is the CEILING, not the fresh window: an entry has to
+    // outlive its own freshness for there to be anything to serve while the
+    // refresh runs. `SNAPSHOT_FRESH_MS` is applied by the reader below.
+    ttl: SNAPSHOT_MAX_STALE_MS,
     fetchMethod: (_key, _stale, { context }) => forScopes(context.scopes, context.viewer)
   })
 
   /** `forScopes` behind the snapshot window. Callers treat the record as
    *  immutable; the identity set is copied per hand-out so a caller that does
    *  not cannot corrupt the entry. `decisionAt` is served as recorded — a
-   *  reused snapshot truthfully reports when it was decided. */
+   *  reused snapshot truthfully reports when it was decided, which is the only
+   *  honest thing to report once one can be served stale. */
   const cachedForScopes = async (
     scopes: readonly ExternalScopeRecord[],
     viewer: SessionAccessViewer
   ): Promise<ResolvedSessionAccess> => {
+    const key = snapshotKey(viewer, scopes)
+    // The entry's lifetime IS the ceiling, so what remains of it gives the age.
+    // A missing or expired key reports 0 and takes the blocking path, which is
+    // also what a cold start and anything past the ceiling should do.
+    const remaining = snapshots.getRemainingTTL(key)
+    const refreshBehind = remaining > 0 && remaining <= SNAPSHOT_MAX_STALE_MS - SNAPSHOT_FRESH_MS
     // `fetch` resolves undefined only if the entry is dropped mid-flight. Sweep
     // directly rather than reporting no external access, which would hide rows.
     const access =
-      (await snapshots.fetch(snapshotKey(viewer, scopes), { context: { scopes, viewer } })) ??
-      (await forScopes(scopes, viewer))
+      (await snapshots.fetch(key, {
+        context: { scopes, viewer },
+        ...(refreshBehind ? REFRESH_BEHIND : {})
+      })) ?? (await forScopes(scopes, viewer))
     return { ...access, identitySet: new Set(access.identitySet) }
   }
 
