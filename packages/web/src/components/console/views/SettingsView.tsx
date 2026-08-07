@@ -269,8 +269,8 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
   // Three fixed hooks, one per provider — the card decides what to render, so it
   // has to hold the reads.
   const providers = [
-    useSessionAccess('slack', orgId, isOwner),
     useSessionAccess('github', orgId, isOwner),
+    useSessionAccess('slack', orgId, isOwner),
     useSessionAccess('feishu', orgId, isOwner)
   ]
   const pending = providers.some((state) => state.access === undefined && !state.loadError)
