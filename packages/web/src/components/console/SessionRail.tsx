@@ -408,6 +408,36 @@ export function SessionRail({
     const ids = pinIdsOf(s)
     return { pinned: ids.some(isPinned), id: ids.find(isPinned) ?? canonicalSessionId(s) }
   }
+  // An attribution row is NOT navigation (§9.1's own title). Its target is a
+  // fellow participant of the conversation already on screen, so
+  // `/sessions/:id` would redirect straight back here (§5.3, which deliberately
+  // carries no `?focus`) — a full round trip that lands the reader exactly where
+  // they started. Render the fact, not a link to it. No pin toggle either: the
+  // row is a statement about this conversation, not a shortcut to another one.
+  const attributionRow = (relation: SessionRelationDto, depth: 0 | 1 | 2 = 0) => {
+    const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
+    return (
+      <div
+        key={`attribution-${relation.id}`}
+        title={title}
+        className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[9px] text-(--text-secondary) ${
+          depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
+        }`}
+      >
+        {depth > 0 && (
+          <span
+            aria-hidden="true"
+            className="-mt-2 h-[15px] w-[13px] flex-none rounded-bl-[4px] border-b-[1.5px] border-l-[1.5px] border-(--border-strong)"
+          />
+        )}
+        <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
+          <PlatformMark platform={relation.platform} fillPct={100} />
+        </span>
+        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">{title}</span>
+      </div>
+    )
+  }
+
   const row = (item: RailRow, pinnedRow: boolean, depth: 0 | 1 | 2 = 0, on = false) => {
     return (
       <div
@@ -513,14 +543,14 @@ export function SessionRail({
                 Delegated by
               </div>
             )}
-            {wokenBy && row(relationRow(wokenBy), isPinned(wokenBy.id), parent ? 1 : 0)}
+            {wokenBy && attributionRow(wokenBy, parent ? 1 : 0)}
             {row(sessionRow(current), rowPin(current).pinned, parent || wokenBy ? 1 : 0, true)}
             {woke.length > 0 && (
               <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
                 Delegated to
               </div>
             )}
-            {woke.map((target) => row(relationRow(target), isPinned(target.id), parent || wokenBy ? 2 : 1))}
+            {woke.map((target) => attributionRow(target, parent || wokenBy ? 2 : 1))}
             {conversation && children.length > 0 && (
               <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
                 Delegations

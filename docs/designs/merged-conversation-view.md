@@ -434,6 +434,13 @@ side-agnostic filter would mislabel one of the two. Rows are deduplicated
 against the ordinary list exactly as family rows are, which preserves the
 displayed-once invariant above.
 
+These rows do NOT navigate, which is this section's title taken literally.
+Their target is a participant of the conversation already on screen, so
+`/sessions/:id` would redirect straight back to this page — §5.3 carries no
+`?focus`, by decision — costing a round trip to land the reader where they
+already were. They render the fact instead: platform mark, title, no link and
+no pin.
+
 Co-membership itself is NOT siblinghood: "sibling sessions" keeps its precise
 lineage meaning (other children of the same parent session). Sessions in one
 room are already fully related by conversation membership — encoding that
