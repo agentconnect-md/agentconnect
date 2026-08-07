@@ -102,8 +102,11 @@ describe('GithubSessionAccessService', () => {
     )
 
     expect((await allowed.service.resolve([scope], viewer)).allowedScopes).toHaveLength(1)
+    // The permission itself is demanded age-zero; the login resolution rides
+    // the same 120 s identity lease as the Slack/Feishu session-access checks.
     expect(allowed.permissionForUser).toHaveBeenCalledWith('user-1', installation, 'acme', 'private-repo', {
-      maxCacheAgeMs: 0
+      maxCacheAgeMs: 0,
+      loginMaxAgeMs: 120_000
     })
     await expect(denied.service.resolve([scope], viewer)).resolves.toEqual({
       allowedScopes: [],

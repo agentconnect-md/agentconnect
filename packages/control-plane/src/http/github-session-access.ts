@@ -4,6 +4,7 @@ import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
 import type { ExternalScopeRecord, GithubInstallationRecord, GithubInstallationRepo } from '../persistence/ports.js'
 import type { GithubService } from '../github/service.js'
+import { PROVIDER_IDENTITY_TTL_MS } from '../github/logto-identity.js'
 import { UserAuthzDeniedError, type GithubUserAuthzService } from '../github/user-authz.js'
 import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 
@@ -152,7 +153,13 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
         else
           decision =
             (await this.deps.userAuthz.permissionForUser(userId, installation, owner, name, {
-              maxCacheAgeMs: 0
+              // The permission is the revocable fact — demand it age-zero.
+              // WHICH GitHub account the viewer is, is identity metadata that
+              // changes only through link/unlink (both invalidate the cache),
+              // so it rides the same 120 s identity lease the Slack and Feishu
+              // session-access plugins already run on.
+              maxCacheAgeMs: 0,
+              loginMaxAgeMs: PROVIDER_IDENTITY_TTL_MS
             })) !== 'none'
               ? 'allow'
               : 'deny'

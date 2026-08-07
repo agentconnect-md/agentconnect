@@ -214,9 +214,14 @@ function authz(opts: {
   // entry's start time and read a falsy one as "no TTL", which would make every
   // entry immortal and quietly pass the expiry assertions below (see `cache.ts`).
   const clock = new FakeClock(EPOCH)
-  const calls = { permission: 0 }
+  const calls = { permission: 0, loginCaps: [] as Array<number | undefined> }
   const svc = new GithubUserAuthzService({
-    identity: { githubLoginFor: async () => opts.login ?? null },
+    identity: {
+      githubLoginFor: async (_sub, maxAgeMs) => {
+        calls.loginCaps.push(maxAgeMs)
+        return opts.login ?? null
+      }
+    },
     users: { getOidcSubject: async () => (opts.sub === undefined ? 'sub-1' : opts.sub) },
     github: {
       getRepoMeta: async () => (opts.repo === undefined ? { private: true } : opts.repo),
@@ -320,6 +325,23 @@ describe('GithubUserAuthzService', () => {
 
     await svc.permissionForUser('u1', INS, 'o', 'r', { maxCacheAgeMs: 0 })
     expect(calls.permission).toBe(2)
+  })
+
+  it('splits the caps: the login leg rides the identity lease while the permission is re-proved', async () => {
+    const { svc, calls } = authz({ login: 'me', permission: 'read' })
+
+    await svc.permissionForUser('u1', INS, 'o', 'r', { maxCacheAgeMs: 0, loginMaxAgeMs: 120_000 })
+    await svc.permissionForUser('u1', INS, 'o', 'r', { maxCacheAgeMs: 0, loginMaxAgeMs: 120_000 })
+    // The identity leg may accept a ≤120 s cached login — it answers "which
+    // GitHub account", invalidated on link/unlink — while the permission, the
+    // revocable fact, is still re-proved against GitHub on every call.
+    expect(calls.loginCaps).toEqual([120_000, 120_000])
+    expect(calls.permission).toBe(2)
+
+    // One cap without the split option keeps its old both-legs meaning.
+    await svc.permissionForUser('u1', INS, 'o', 'r', { maxCacheAgeMs: 0 })
+    expect(calls.loginCaps).toEqual([120_000, 120_000, 0])
+    expect(calls.permission).toBe(3)
   })
 
   it('filters the repo list: public stays, readable private stays, no-access private drops', async () => {
