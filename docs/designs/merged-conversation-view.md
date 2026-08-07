@@ -415,12 +415,38 @@ The classifying rule is **whether the edge's two sessions share the
 conversation key** — not the wake form. An in-thread `sendMessage` wakes an
 agent into the same `(platform, channel, thread)`, so both endpoints are
 already in the room; the merged view shows both parties in full, and the
-lineage edge contributes only attribution: the woken agent's first turn can
-carry a "woken by <agent>" affordance (C3 chrome). Membership neither grows
+lineage edge contributes only attribution. Membership neither grows
 nor splits because of the edge, and intra-conversation edges are **excluded**
 from the lifted navigation in §9.2 — otherwise a co-participant that is also
 a lineage child (A wakes B and C into the same thread: room-mates AND
 lineage-siblings) would be listed twice.
+
+Attribution still has to be **surfaced**, and the merged transcript cannot do
+it: it interleaves its members by time, so "who woke whom" is unreadable from
+the ordering. The rail carries it, anchored on the OPEN row and labelled as
+delegation — **"Delegated by"** for the participant that woke it, **"Delegated
+to"** for the ones it woke — never as "Parent conversation", which would name a
+member of this room as another conversation and link back to the page you are
+already on. Anchoring on the open row is what keeps it directional: the
+representative is the newest visible member and rotates whenever either agent
+speaks, and one A → B edge is A's child and B's parent at once, so a
+side-agnostic filter would mislabel one of the two. Rows are deduplicated
+against the ordinary list exactly as family rows are, which preserves the
+displayed-once invariant above.
+
+Each row is built around the AGENT, not the session: agent mark and agent name
+(org roster, then the relation's own projection, then the raw id). A session
+title cannot carry attribution here — participants of one thread routinely
+share one, since it is derived from the same first message, and they
+necessarily share the platform — so a row showing title and platform would
+name nobody.
+
+These rows do NOT navigate, which is this section's title taken literally.
+Their target is a participant of the conversation already on screen, so
+`/sessions/:id` would redirect straight back to this page — §5.3 carries no
+`?focus`, by decision — costing a round trip to land the reader where they
+already were. They render the fact instead: no link, and no pin, which is a
+shortcut to another conversation.
 
 Co-membership itself is NOT siblinghood: "sibling sessions" keeps its precise
 lineage meaning (other children of the same parent session). Sessions in one
@@ -552,3 +578,6 @@ how divergence starts.
    (same parent session). An edge whose endpoints share the conversation key
    renders as attribution and is excluded from lifted navigation — the
    room-mates-AND-siblings overlap is displayed once, not twice (§9.1).
+   Attribution is surfaced in the rail as "Delegated by" / "Delegated to",
+   anchored on the open row and kept out of the family shape, whose parent
+   slot means "another conversation" and navigates away (§9.1).
