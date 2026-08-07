@@ -75,12 +75,12 @@ const relation = (id: string): SessionRelationDto => ({
 })
 
 interface Family {
-  parentSession: SessionRelationDto | null
-  siblingSessions: SessionRelationDto[]
+  parentSessions: SessionRelationDto[]
+  siblingSessions?: SessionRelationDto[]
   childSessions: SessionRelationDto[]
 }
 
-const NO_FAMILY: Family = { parentSession: null, siblingSessions: [], childSessions: [] }
+const NO_FAMILY: Family = { parentSessions: [], siblingSessions: [], childSessions: [] }
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined

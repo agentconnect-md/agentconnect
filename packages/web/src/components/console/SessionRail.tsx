@@ -58,7 +58,7 @@ import {
   type Agent,
   type Session
 } from '@/lib/data'
-import { fetchSessionDetail, sessionFromDetailDto, type SessionDetailDto, type SessionRelationDto } from '@/lib/api'
+import { fetchSessionDetail, sessionFromDetailDto, type SessionRelationDto } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
@@ -165,8 +165,21 @@ export function SessionRail({
   filterTouched: boolean
   /** Edit the filter. The caller owns it — the rail is not the only thing it scopes. */
   onAgentIdsChange: (agentIds: string[]) => void
-  /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
-  family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
+  /** Direct lineage, in the rail's own three levels rather than either source's
+   *  wire shape. Undefined while it is unavailable. */
+  family?: {
+    /** LEVEL 0 — whatever woke the open row. A single session has at most one
+     *  parent; a merged conversation has one per member that was woken from
+     *  elsewhere, and all of them belong on this level. */
+    parentSessions: SessionRelationDto[]
+    /** LEVEL 1, beside the open row under a divider — LINEAGE siblings, i.e.
+     *  the other children of the open session's parent (the CP derives these
+     *  per session). A conversation has no such relation, so its caller leaves
+     *  this out rather than lending the slot to something else. */
+    siblingSessions?: SessionRelationDto[]
+    /** LEVEL 2 — whatever the open row woke. */
+    childSessions: SessionRelationDto[]
+  }
   /** Keep raw session rows and links instead of collapsing into conversations. */
   flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
@@ -221,7 +234,7 @@ export function SessionRail({
   )
 
   const currentId = canonicalSessionId(current)
-  const parent = family?.parentSession ?? null
+  const parents = family?.parentSessions ?? EMPTY_RELATIONS
   const siblings = family?.siblingSessions ?? EMPTY_RELATIONS
   const children = family?.childSessions ?? EMPTY_RELATIONS
   // Attribution inside the open conversation, kept apart from `family` on
@@ -230,18 +243,20 @@ export function SessionRail({
   // navigate-away meaning.
   const wokenBy = roomLineage?.wokenBy ?? null
   const woke = roomLineage?.woke ?? EMPTY_RELATIONS
-  const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0 || wokenBy || woke.length > 0)
+  const hasFamily = Boolean(
+    parents.length > 0 || siblings.length > 0 || children.length > 0 || wokenBy || woke.length > 0
+  )
   const relatedIds = useMemo(() => {
     const ids = new Set<string>()
     if (!hasFamily) return ids
     ids.add(currentId)
-    if (parent) ids.add(parent.id)
     if (wokenBy) ids.add(wokenBy.id)
+    for (const relation of parents) ids.add(relation.id)
     for (const relation of siblings) ids.add(relation.id)
     for (const relation of children) ids.add(relation.id)
     for (const relation of woke) ids.add(relation.id)
     return ids
-  }, [children, currentId, hasFamily, parent, siblings, wokenBy, woke])
+  }, [children, currentId, hasFamily, parents, siblings, wokenBy, woke])
 
   // Globally pinned rows that the loaded page or current family does not carry.
   // Fetched by id because the list endpoint cannot filter by id; a rail holds a
@@ -392,8 +407,13 @@ export function SessionRail({
   // `relationLabel` names the edge in the tooltip and in sr-only text — the same
   // two words an attribution row uses, because it is the same edge: a lineage
   // parent and an in-room `wokenBy` differ only in where the other end lives,
-  // and the row already shows that by being a link or not. Omitted for siblings,
-  // whose slot means two different things by page (see conversation-lineage.ts).
+  // and the row already shows that by being a link or not.
+  //
+  // Omitted for siblings. That used to be because the slot meant two different
+  // things by page; it now means one (see conversation-lineage.ts), and the
+  // reason is simply that a sibling sits on NEITHER of the two edges those
+  // words name — it hangs off the same parent, beside the open row rather than
+  // on the path through it, so "Delegated by/to" would misreport it.
   const relationRow = (relation: SessionRelationDto, relationLabel?: string): RailRow => {
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return {
@@ -533,10 +553,12 @@ export function SessionRail({
   // which is which. A cross-room parent and an in-room `wokenBy` are the SAME
   // edge seen from two locations, so they share level 0 rather than nesting:
   // the lift unions parents across every member without recording WHICH member
-  // each one woke, so hanging `wokenBy` under `parent` would draw a chain the
-  // data does not contain. `woke` and cross-room `children` share level 2 for
-  // the same reason. Siblings sit at the open row's own level, below a divider.
-  const aboveCurrent = Boolean(parent || wokenBy)
+  // each one woke, so hanging `wokenBy` under a parent would draw a chain the
+  // data does not contain — and it is the same reason there can be SEVERAL
+  // parents on that one level, none of them ranked. `woke` and cross-room
+  // `children` share level 2 likewise. Siblings sit at the open row's own
+  // level, below a divider.
+  const aboveCurrent = Boolean(parents.length > 0 || wokenBy)
   const currentDepth = aboveCurrent ? 1 : 0
   const delegatedDepth = aboveCurrent ? 2 : 1
 
@@ -569,9 +591,12 @@ export function SessionRail({
             <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
               Related
             </div>
-            {parent && row(relationRow(parent, 'Delegated by'), isPinned(parent.id))}
+            {/* Level 0, all of it. A merged conversation has one parent per
+                member woken from another room; they are peers, and nothing
+                ranks one of them first, so every one of them sits here. */}
+            {parents.map((parent) => row(relationRow(parent, 'Delegated by'), isPinned(parent.id)))}
             {/* Attribution, not navigation: the participant that woke the open
-                row, then the ones it woke. Same lineage edge as `parent` — the
+                row, then the ones it woke. Same lineage edge as a parent — the
                 only difference is that these two live in THIS conversation, so
                 their link would come straight back to the page you are on.
                 That difference is already in the row: an agent mark and a name
@@ -594,6 +619,10 @@ export function SessionRail({
                 </Fragment>
               )
             })}
+            {/* Lineage siblings, which the three levels have no branch for: they
+                share the open row's parent, so they sit at ITS level, under a
+                divider that says "not on the path through this row". Only a
+                single-session page has them. */}
             {siblings.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}
             {siblings.map((sibling) => row(relationRow(sibling), isPinned(sibling.id), 1))}
             {ordinaryRows.length > 0 && <div className="mx-[9px] my-[6px] h-px flex-none bg-(--border-subtle)" />}

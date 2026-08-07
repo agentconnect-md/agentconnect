@@ -58,7 +58,7 @@ const relation = (id: string): SessionRelationDto => ({
   platform: 'slack'
 })
 
-const NO_FAMILY = { parentSession: null, siblingSessions: [], childSessions: [] }
+const NO_FAMILY = { parentSessions: [], siblingSessions: [], childSessions: [] }
 
 function railMarkup({
   sessions = [],
@@ -71,8 +71,8 @@ function railMarkup({
   sessions?: Session[]
   total?: number
   family?: {
-    parentSession: SessionRelationDto | null
-    siblingSessions: SessionRelationDto[]
+    parentSessions: SessionRelationDto[]
+    siblingSessions?: SessionRelationDto[]
     childSessions: SessionRelationDto[]
   }
   filterTouched?: boolean
@@ -94,6 +94,13 @@ function railMarkup({
     />
   )
 }
+
+/** The indent elbow a row draws at depth > 0, and the horizontal rule that sets
+ *  rows beside the open one apart from the path through it. Read out of the
+ *  markup because level is what this rail communicates, and both are invisible
+ *  to any assertion made on text alone. */
+const ELBOW = 'rounded-bl-[4px]'
+const DIVIDER = 'bg-(--border-subtle)'
 
 // The column's width and its breakpoint gate, as they appear in the markup. A
 // change here is a change to the page's geometry, so it should fail loudly rather
@@ -231,7 +238,7 @@ describe('SessionRail room attribution', () => {
     // differs. A screen reader gets no indent and no tooltip, so both kinds of
     // row have to carry the words, or half the tree loses its direction.
     const markup = railMarkup({
-      family: { ...NO_FAMILY, parentSession: relation('rel-p'), childSessions: [relation('rel-k')] }
+      family: { ...NO_FAMILY, parentSessions: [relation('rel-p')], childSessions: [relation('rel-k')] }
     })
 
     expect(markup).toContain('<span class="sr-only">Delegated by</span>')
@@ -271,5 +278,65 @@ describe('SessionRail room attribution', () => {
     // Four rows are drawn — three attribution plus the open one — and only the
     // open row, which is a real session in the list, carries a pin toggle.
     expect(markup.split('aria-pressed=').length - 1).toBe(1)
+  })
+})
+
+// Level 0 over a MERGED page, which is the one that can have several parents:
+// each member woken from another room contributes its own. With the headings
+// gone, the level a row is drawn at is the ONLY thing saying which of the three
+// it is, so a parent put anywhere else is a parent misreported.
+describe('SessionRail conversation parents', () => {
+  it('draws every waking conversation on the level above the open row', () => {
+    // The regression: only one parent slot existed, so the second waking
+    // conversation was carried in `siblingSessions` — a field that means "other
+    // children of my parent" on a single-session page — and the rail drew it
+    // BELOW the open row, at the open row's own level, under the divider.
+    const markup = railMarkup({
+      family: { parentSessions: [relation('parent-a'), relation('parent-b')], childSessions: [] }
+    })
+
+    const first = markup.indexOf('href="/sessions/parent-a"')
+    const second = markup.indexOf('href="/sessions/parent-b"')
+    const open = markup.indexOf('href="/sessions/current"')
+    expect(first).toBeGreaterThan(-1)
+    expect(second).toBeGreaterThan(first)
+    expect(open).toBeGreaterThan(second)
+    // Level 0 draws no elbow, so the only one belongs to the open row beneath
+    // them — and nothing was set aside behind a divider.
+    expect(markup.split(ELBOW).length - 1).toBe(1)
+    expect(markup).not.toContain(DIVIDER)
+  })
+
+  it('gives each waking conversation the same edge words', () => {
+    // Both are the same edge, so neither gets a different vocabulary for being
+    // second — the words a screen reader hears must not depend on order.
+    const markup = railMarkup({
+      family: { parentSessions: [relation('parent-a'), relation('parent-b')], childSessions: [] }
+    })
+
+    expect(markup.split('<span class="sr-only">Delegated by</span>').length - 1).toBe(2)
+  })
+
+  it('keeps lineage siblings beside the open row, which is what they are', () => {
+    // The other meaning, on a single-session page: siblings share the open
+    // session's PARENT, so they belong at its level, past the divider that ends
+    // the path through it. Nothing on a merged page reaches this branch.
+    const markup = railMarkup({
+      family: {
+        parentSessions: [relation('parent-a')],
+        siblingSessions: [relation('sibling-a')],
+        childSessions: []
+      }
+    })
+
+    const open = markup.indexOf('href="/sessions/current"')
+    const divider = markup.indexOf(DIVIDER)
+    const sibling = markup.indexOf('href="/sessions/sibling-a"')
+    expect(divider).toBeGreaterThan(open)
+    expect(sibling).toBeGreaterThan(divider)
+    // Both the open row and the sibling hang off the parent above them.
+    expect(markup.split(ELBOW).length - 1).toBe(2)
+    // A sibling sits on neither edge the two words name, so it carries neither.
+    expect(markup.split('<span class="sr-only">Delegated by</span>').length - 1).toBe(1)
   })
 })
