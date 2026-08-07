@@ -237,11 +237,21 @@ describe('SessionRail room attribution', () => {
 
   it('does not turn a co-participant into a navigation target', () => {
     // These rows are attribution (§9.1). `/sessions/:id` would redirect back to
-    // the page they are rendered on, so the row must not be a link.
+    // the page they are rendered on, so the row must not be a link. Nor a pin:
+    // a pin is a shortcut back to another conversation, and this row is a
+    // statement about the one already open.
     const markup = railMarkup({
-      roomLineage: { wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'), woke: [] }
+      roomLineage: {
+        wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'),
+        woke: [participant('rel-b', 'agent-b', 'node-operator'), participant('rel-c', 'agent-c', 'db-operator')]
+      }
     })
 
     expect(markup).not.toContain('href="/sessions/rel-a"')
+    expect(markup).not.toContain('href="/sessions/rel-b"')
+    expect(markup).not.toContain('href="/sessions/rel-c"')
+    // Four rows are drawn — three attribution plus the open one — and only the
+    // open row, which is a real session in the list, carries a pin toggle.
+    expect(markup.split('aria-pressed=').length - 1).toBe(1)
   })
 })
