@@ -225,6 +225,19 @@ describe('SessionRail room attribution', () => {
     expect(markup).toContain('db-operator')
   })
 
+  it('gives the navigation rows the same words', () => {
+    // A cross-room parent is the same edge as `wokenBy`, and a cross-room
+    // delegation the same edge as `woke` — only the other end's location
+    // differs. A screen reader gets no indent and no tooltip, so both kinds of
+    // row have to carry the words, or half the tree loses its direction.
+    const markup = railMarkup({
+      family: { ...NO_FAMILY, parentSession: relation('rel-p'), childSessions: [relation('rel-k')] }
+    })
+
+    expect(markup).toContain('<span class="sr-only">Delegated by</span>')
+    expect(markup).toContain('<span class="sr-only">Delegated to</span>')
+  })
+
   it('falls back to the agent id when nothing can name the agent', () => {
     // Older Control Planes omit the projection, and a restricted agent can own a
     // member session while staying out of this viewer's roster. An id beats a

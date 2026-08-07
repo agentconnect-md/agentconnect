@@ -81,6 +81,9 @@ interface RailRow {
   platform: string
   title: string
   tooltip: string
+  /** The edge this row sits on, for readers the indent does not reach. Absent on
+   *  a plain list row, which sits on no edge at all. */
+  relationLabel?: string
   /** Where the row goes. A multi-participant row is a CONVERSATION, and the merged
    *  page is its default surfaced view (merged-conversation-view.md §5.3). */
   href: string
@@ -386,11 +389,11 @@ export function SessionRail({
       session: s
     }
   }
-  // `relationLabel` names the edge in the tooltip — the same two words an
-  // attribution row uses, because it is the same edge: a lineage parent and an
-  // in-room `wokenBy` differ only in where the other end lives, and the row
-  // already shows that by being a link or not. Omitted for siblings, whose slot
-  // means two different things by page (see conversation-lineage.ts).
+  // `relationLabel` names the edge in the tooltip and in sr-only text — the same
+  // two words an attribution row uses, because it is the same edge: a lineage
+  // parent and an in-room `wokenBy` differ only in where the other end lives,
+  // and the row already shows that by being a link or not. Omitted for siblings,
+  // whose slot means two different things by page (see conversation-lineage.ts).
   const relationRow = (relation: SessionRelationDto, relationLabel?: string): RailRow => {
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return {
@@ -398,6 +401,7 @@ export function SessionRail({
       platform: relation.platform,
       title,
       tooltip: relationLabel ? `${relationLabel}\n${title}` : title,
+      ...(relationLabel ? { relationLabel } : {}),
       href: orgPath(`/sessions/${encodeURIComponent(relation.id)}${flatSearch}`),
       pinId: relation.id
     }
@@ -498,6 +502,7 @@ export function SessionRail({
           <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
             <PlatformMark platform={item.platform} fillPct={100} />
           </span>
+          {item.relationLabel && <span className="sr-only">{item.relationLabel}</span>}
           <span
             className={`min-w-0 flex-1 truncate font-sans text-[12.5px] leading-normal ${
               on ? 'font-semibold' : 'font-medium'
