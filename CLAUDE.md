@@ -159,8 +159,10 @@ DATABASE_URL=... pnpm --filter @agentconnect.md/control-plane exec prisma migrat
 pnpm --filter @agentconnect.md/control-plane db:seed:example
 ```
 
-The generated client lands in `src/generated/prisma` (committed). Session rows live in
-table `session_meta`, not `session`.
+The generated client lands in `src/generated/prisma`, which is gitignored — run
+`prisma:generate` above after a fresh clone or a schema change (`typecheck`, `build`,
+and `prepack` already run it as a pre-step). Session rows live in table `session_meta`,
+not `session`.
 
 ## CP composition (dependency injection)
 
