@@ -54,7 +54,6 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     // `collabRoutes.agents[]`. A daemon that does not see it must keep substituting the
     // caller's current channel, because an older CP rejects a channel-less payload.
     serverFeatures: [
-      'hook-report-ack-v1',
       'gitcred-actions-v1',
       'agent-directory-org-scope-v1',
       SESSION_LIVE_TAIL_FEATURE,

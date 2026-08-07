@@ -11,7 +11,6 @@ import { AgentIconView, ModelMark, Spinner } from '@/components/marks'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
-import SessionAccessNotice from '@/components/console/SessionAccessNotice'
 
 const RANGES: { key: UsageRange; label: string }[] = [
   { key: 'd1', label: '24 hours' },
@@ -244,8 +243,6 @@ export default function UsageView() {
           )
         })}
       </div>
-
-      <SessionAccessNotice degraded={data?.accessSyncDegraded} issues={data?.accessIssues} impact="usage" />
 
       {/* Mobile compact 3-metric strip (Sessions / Tokens / Spend — no fabricated
           p95 latency, it's not in the UsageDto) */}

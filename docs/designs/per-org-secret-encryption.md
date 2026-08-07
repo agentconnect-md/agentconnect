@@ -1,6 +1,12 @@
 # Per-Org Secret Encryption and Crypto-Shredding
 
-> Status: Proposed. Extends
+> Status: Implemented. `SecretCipher` carries a scope, org keys derive from the
+> deployment key, organization deletion records a shred intent, and
+> `secrets/shred-cli.ts` drains it. What remains is operational: granting the
+> Vault policies of §6 and running the §7 rewrap sweep per environment, without
+> which the shred guarantee is not yet true.
+>
+> Extends
 > [`secret-store-seams.md`](./secret-store-seams.md), which established the
 > single `SecretCipher` seam and the Vault Transit implementation. This document
 > adds a **scope** to that seam so each organization's secrets are encrypted
@@ -136,13 +142,19 @@ acv1:vault:v<key-version>:<base64>
  version      (opaque; nonce + AES-256-GCM ciphertext + tag)
 ```
 
-`open` has exactly three arms, in order:
+`open` has two arms, plus two refusals:
 
-| Stored value starts with | Behaviour                                                                         |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| `acv1:`                  | strip, decrypt the remainder under `scope`'s key                                  |
-| `vault:v`                | legacy single-key value — decrypt under the deployment key, ignoring `scope` (§7) |
-| anything else            | never sealed — return unchanged (existing contract)                               |
+| Stored value starts with | Behaviour                                           |
+| ------------------------ | --------------------------------------------------- |
+| `acv1:`                  | strip, decrypt the remainder under `scope`'s key    |
+| anything unsealed        | never sealed — return unchanged (existing contract) |
+| `vault:v` (pre-scoping)  | **throws** — see §7                                 |
+| `acvN:` for an unknown N | **throws** — a newer envelope than this build knows |
+
+The two refusals matter more than they look. The pass-through arm exists for
+plaintext rows, and it fails OPEN by design; anything that is genuinely sealed
+but unreadable here must not fall into it, because the returned string is shipped
+onward as a live credential. A loud error is the only safe answer.
 
 Key names:
 
@@ -274,8 +286,16 @@ connected daemon.
 **The CP records the intent; it never deletes a key.** Deleting a Vault key is a
 remote effect that cannot join the deletion transaction, so that transaction
 writes a tombstone instead: one `pending_key_shred` row keyed by the deleted
-organization's id, with the time it was recorded. The row has no foreign key —
-its whole purpose is to outlive the organization.
+organization's id. The row has no foreign key — its whole purpose is to outlive
+the organization.
+
+It stores the **resolved target**, not just the id: the transit mount and the
+full key name as configured at the moment of deletion. Deriving the name at
+drain time instead would read whatever configuration is current then, so
+rotating the mount or the org key prefix in between would aim the destroy at a
+name that does not exist — which the shredder reads as "already destroyed",
+clears the row, and leaves the real key alive forever. Pinning makes each
+tombstone self-describing and immune to later configuration changes.
 A separate operator-run entry point (`secrets/shred-cli.ts`, mirroring the
 existing rewrap CLI) drains the table: for each row it destroys
 `<orgKeyPrefix><orgId>` and clears the row. Both halves are idempotent, and a
@@ -296,6 +316,13 @@ check in application code, guarding an irreversible operation on another
 deployment's data. Deriving key names from ids this deployment recorded itself
 removes the failure mode by construction: the shredder cannot produce a key name
 it did not build from its own tombstone.
+
+**A separate identity means a separate configuration, too.** The job reads its
+own minimal config (`secrets/shred-config.ts`): database, Vault address, and its
+own credential. Reusing the control plane's config loader would demand the CP's
+`API_KEY_PEPPER` and its Vault credential before the job could start, so a
+least-privilege workload would have to be handed the very credential this
+separation exists to keep away from it.
 
 **A separate Vault role is not enough; it needs a separate identity.** Roles in
 a workload-identity auth method bind to the workload's service account, so a
@@ -323,55 +350,39 @@ operator policy that must be stated alongside the guarantee. It does not reach
 plaintext already delivered to a daemon, which lives on customer-owned
 infrastructure. And it is only as complete as the migration in §7.
 
-## 7. Migration
+## 7. Migration — complete
 
-Existing deployments already hold ciphertext sealed under the single key. The
-legacy arm of `open` (§4) keeps every such value readable with no backfill and
-no downtime, so the rollout is a deploy, not a migration window.
+Deployments that already held ciphertext under the single key were converged by
+the rewrap sweep (`secrets/rewrap.ts`), which resolves each row's owning
+organization and re-seals under that key. All three environments were swept and
+verified to hold zero pre-scoping values, so **the legacy arm has been retired**:
+a bare `vault:vN:` value now throws rather than decrypting under the deployment
+key.
 
-The guarantee, however, **is not real until convergence**: a value still sealed
-under the deployment key is readable after its organization's key is destroyed.
-The order is therefore:
+Retiring it was not only tidiness. That arm ignored the asserted `scope` and read
+under the deployment key, which is precisely the fence §2.1 exists to build; it
+was a hole justified only by being temporary. It is gone now that nothing needs
+it.
 
-1. Deploy. New writes seal under org keys; legacy values keep reading.
-2. Run the rewrap sweep (`secrets/rewrap.ts`) per environment. It resolves each
-   row's scope and re-seals under the correct key.
-3. Only then is per-organization shredding a claim that holds.
+Consequences worth stating plainly:
 
-**Known rolling-update window — accepted, and only safe pre-release.** The
-envelope tag is new, so a binary from before this change does not recognize it:
-its `open` sees no `vault:vN:` prefix, takes the pass-through arm, and returns
-the envelope string itself as if it were plaintext. While old and new replicas
-overlap, an old replica reading a value a new one just wrote hands out
-`acv1:vault:…` verbatim — silently wrong rather than an error. The window closes
-when the rollout finishes, and reconciliation re-delivers correct values after
-it, but anything read during it is garbage.
-
-A released deployment must therefore split this into two releases: one that only
-**recognizes** the envelope, fully rolled out, and a later one that starts
-**writing** it. That was deliberately skipped here because no deployment has
-shipped to users yet. **Do not treat the single-release form as the pattern** —
-any future change to the envelope grammar owes the two-release sequence, and the
-pass-through arm is the reason: it fails open by design, which is right for
-never-sealed plaintext and wrong for a format the reader simply does not know
-yet.
-
-The deployment key is never deleted — legacy `deployment_secret` values stay
-under it permanently, and the legacy arm remains until every environment has
-converged.
-
-**Gap found while auditing.** `feishu_app_registration` seals `deviceCode` and
-`appSecret` through the cipher but is absent from the rewrap sweep. Today that
-means plaintext residue in that table never converges and key rotation skips it;
-after this change it would mean those values can never be shredded. The table
-joins the sweep as part of this work.
+- **Restoring a database backup taken before the sweep** yields values this build
+  cannot read. They fail loudly rather than silently; recovering them means
+  running the rewrap sweep on a pre-scoping build first.
+- **Rolling updates across an envelope change** are the remaining hazard, and it
+  is now half-closed: an older replica meeting a newer envelope throws instead of
+  passing the ciphertext through as plaintext. The other half is unchanged — a
+  build that predates the envelope entirely has no such check, which is why a
+  future envelope version still owes two releases (one that recognizes the
+  format, a later one that writes it).
 
 ## 8. Testing
 
 - **Envelope unit tests** (`secrets/vault-transit.test.ts`): key selection per
-  scope, the legacy arm decrypting under the deployment key whatever the scope
-  says, the plaintext pass-through arm, and — the one that matters — a
-  cross-scope open FAILING rather than returning another org's plaintext. The
+  scope, the plaintext pass-through arm, the two refusals of §4 (a pre-scoping
+  value and a newer envelope version, each asserted to reach Vault zero times),
+  and — the one that matters — a cross-scope open FAILING rather than returning
+  another org's plaintext. The
   fake Transit binds each ciphertext to the key that produced it, so that
   refusal is the real mechanism, not a stub.
 - **Cache key**: a second scope must not be served a cached plaintext; the test
@@ -402,6 +413,5 @@ joins the sweep as part of this work.
 2. **Per-organization rotation cadence.** Rotation is per key, so a policy that
    was deployment-wide becomes per tenant. Rewrap already supports it; the
    schedule is an operations decision.
-3. **Retiring the legacy arm.** Once every environment has converged it can be
-   deleted, turning an unrecognized-but-`vault:`-prefixed value into an error
-   rather than a deployment-key decrypt.
+3. ~~**Retiring the legacy arm.**~~ **Resolved** — every environment converged,
+   so the arm was removed and a pre-scoping value now throws (§7).

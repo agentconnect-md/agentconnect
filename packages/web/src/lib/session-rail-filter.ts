@@ -81,3 +81,40 @@ export function railAgentFilterQuery(filter: RailAgentFilter): { agentId?: strin
   if (filter.agentIds.length > 0) return { agentId: [...filter.agentIds] }
   return filter.touched ? {} : null
 }
+
+/**
+ * The identity a widen decision is latched to — the seeded agents, or `''` when
+ * there is nothing to widen (an unseeded filter, or one the reader TOUCHED, whose
+ * narrow answer is a real answer to their own question).
+ *
+ * Latching to the seed rather than to a boolean is what keeps the widened rail
+ * stable: widening replaces the rail's rows, so the collapse that justified it
+ * stops being observable the moment it takes effect. Keyed by the seed, the
+ * decision survives its own success and is reconsidered only when the route seeds
+ * a different set of agents.
+ */
+export function railSeedKey(filter: RailAgentFilter): string {
+  return filter.touched || filter.agentIds.length === 0 ? '' : filter.agentIds.join(',')
+}
+
+/**
+ * Whether the rail's own "I would draw nothing" verdict should widen this seed.
+ *
+ * The verdict has to come from the rail: it hides on fewer than two rows, but only
+ * after merging the seeded page with globally hydrated pins and the open row, and
+ * only when there is no lineage to show. A one-row page with a parent or a child
+ * still renders a Related tree and the picker — deciding from the page count alone
+ * would widen that to the org-wide list and throw the seeded chips away with it.
+ *
+ * `inputsSettled` is the whole of that verdict's readiness, not just the seeded
+ * page's. Every input arrives on its OWN request — the page, the lineage, the
+ * off-page pins — and each one is indistinguishable from absent while in flight:
+ * an unsettled rail reports no rows, no family and no pins, which is exactly what
+ * a collapsed one reports. Since the decision is latched (see {@link railSeedKey}),
+ * acting on that snapshot would make a race permanent — the lineage lands a moment
+ * later, the rail becomes useful again, and the widen that was never warranted can
+ * no longer be taken back. Wait for all of it, then decide once.
+ */
+export function railSeedShouldWiden(seedKey: string, railWouldHide: boolean, inputsSettled: boolean): boolean {
+  return seedKey !== '' && railWouldHide && inputsSettled
+}

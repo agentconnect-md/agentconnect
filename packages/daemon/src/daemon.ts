@@ -2127,10 +2127,6 @@ export class Daemon {
   private hookReportRetryTimer?: TimerHandle
   private transcriptActivityTimers = new Map<string, { timer: TimerHandle; activity: SessionActivity }>()
   private readonly hookReportInflight = new Set<string>()
-  // Fresh per READY connection. Legacy CPs have no correlated ACK, so the local
-  // outbox stamps each best-effort EVT with this generation and sends it at
-  // most once until reconnect (while retaining the report for a future upgrade).
-  private hookReportConnectionId = randomUUID()
   // A timer callback may already be inside conn.start() when an agent detaches.
   // Track those runs so detach can await them and prevent a stale socket from
   // appearing after its strict close pass has ACKed.
@@ -11393,23 +11389,10 @@ export class Daemon {
       return
     }
     if (inboxId) this.hookReportInflight.add(inboxId)
-    const connectionId = this.hookReportConnectionId
     let refillDrainSlot = false
     void Promise.resolve(this.cpClient.emitHookReport(report))
-      .then((result) => {
+      .then(() => {
         if (!inboxId) return
-        if (result === 'legacy-sent') {
-          try {
-            if (!this.store.markLegacyHookReportSent(inboxId, connectionId)) {
-              throw new Error('durable inbox row is missing')
-            }
-            refillDrainSlot = true
-          } catch (err) {
-            this.log.warn(`durable inbox: legacy report stamp failed for ${inboxId}: ${formatErr(err)}`)
-            this.scheduleHookReportRetry()
-          }
-          return
-        }
         refillDrainSlot = true
         try {
           this.store.acknowledgeHookInbox(inboxId)
@@ -11439,10 +11422,8 @@ export class Daemon {
       })
       .finally(() => {
         if (inboxId) this.hookReportInflight.delete(inboxId)
-        // Fill the newly released slot promptly after an ACK/dead-letter or a
-        // successfully stamped legacy EVT. The per-connection stamp lets a
-        // legacy backlog advance without re-sending earlier rows. Transient
-        // failures use the 5s backoff instead.
+        // Fill the newly released slot promptly after an ACK or a dead-letter.
+        // Transient failures use the 5s backoff instead.
         if (refillDrainSlot) this.scheduleHookReportRetry(250)
       })
   }
@@ -17878,12 +17859,7 @@ export class Daemon {
       this.scheduleHookReportRetry()
       return
     }
-    const pending = rows.filter(
-      (row) =>
-        row.terminalReport &&
-        row.legacyReportConnection !== this.hookReportConnectionId &&
-        !this.hookReportInflight.has(row.id)
-    )
+    const pending = rows.filter((row) => row.terminalReport && !this.hookReportInflight.has(row.id))
     const available = Math.max(0, MAX_HOOK_REPORT_INFLIGHT - this.hookReportInflight.size)
     const batch = pending.slice(0, available)
     let emitted = 0
@@ -19079,7 +19055,6 @@ export class Daemon {
           this.log.warn(`cp: organization suggestion replay failed (${err instanceof Error ? err.name : 'unknown'})`)
         )
         this.cpClient?.emitMemoryConnectionFacts(this.memoryConnections?.facts() ?? [])
-        this.hookReportConnectionId = randomUUID()
         this.replayHookTerminalReports()
         this.replayChannelSnapshots()
         // Only snapshots written to the durable outbox by this build are

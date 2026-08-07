@@ -19,7 +19,7 @@ describe('control-plane ReqRep', () => {
     expect(correlator.inflight()).toBe(0)
   })
 
-  it('uses the protocol compatibility encoder for remote memory requests', async () => {
+  it('sends remote memory requests through the protocol encoder, discriminator intact', async () => {
     const correlator = new ReqRep(systemClock, 5_000)
     const request = buildEnvelope(
       'memoryconnection/upsert',
@@ -41,7 +41,7 @@ describe('control-plane ReqRep', () => {
     const rejection = expect(pending).rejects.toBe(err)
 
     const wire = JSON.parse(sent[0] ?? '{}') as { payload?: { transport?: unknown } }
-    expect(wire.payload?.transport).toBeUndefined()
+    expect(wire.payload?.transport).toBe('streamable-http')
     expect(correlator.reject(request.id, err)).toBe(true)
     await rejection
   })

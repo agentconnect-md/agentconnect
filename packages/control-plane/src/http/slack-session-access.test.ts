@@ -40,12 +40,16 @@ function bot(): BotRecord {
   } as BotRecord
 }
 
-function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
+function service(
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+  log?: { warn: (obj: object, msg: string) => void }
+) {
   return new SlackSessionAccessService({
     bots: { getUnscoped: async () => bot() } as never,
     botSecrets: { get: async () => ({ botToken: 'xoxb-test' }) } as never,
     clock: { now: () => 1_000 } as never,
-    fetchImpl
+    fetchImpl,
+    ...(log ? { log } : {})
   })
 }
 
@@ -204,6 +208,41 @@ describe('SlackSessionAccessService', () => {
     })
   })
 
+  // Degradation is the ONLY trace a hidden session leaves: every failure above
+  // collapses to `unknown`, the session is omitted, and the caller is told
+  // "not visible". Without this line an operator cannot tell a Slack blip from
+  // a real denial after the fact — which is exactly how an intermittent
+  // vanishing conversation stayed undiagnosable.
+  it('logs the degradation, with counts rather than channel keys', async () => {
+    const warn = vi.fn()
+    const resolver = service(async () => json({ ok: false, error: 'ratelimited' }), { warn })
+
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toEqual({ provider: 'slack', unknownScopes: 1, totalScopes: 1 })
+    // A scope key names a channel; the operator needs the rate, not the target.
+    expect(JSON.stringify(warn.mock.calls[0]?.[0])).not.toContain('C_')
+  })
+
+  it('stays silent when every check answered', async () => {
+    const warn = vi.fn()
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) {
+        return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+      }
+      throw new Error(`unexpected Slack request: ${url}`)
+    })
+
+    const result = await service(fetchImpl, { warn }).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(result.degraded).toBe(false)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   // A deleted private channel — and a bot removed from one, which is the same
   // answer over the wire — is an everyday event. It denies, but it must not be
   // reported as "access checks unavailable": nothing is broken and no retry
@@ -254,5 +293,52 @@ describe('SlackSessionAccessService', () => {
       allowedScopes: [],
       degraded: true
     })
+  })
+
+  it('reads a conversation audience once for every viewer that asks about it', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) return json({ ok: true, user: { team_id: 'T_INSTALL' } })
+      return json({ ok: false, error: 'unexpected' })
+    })
+    const resolver = service(fetchImpl)
+
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))
+
+    // Whether the channel is public is not a question about the viewer, so the
+    // second one rides the first one's answer — only `users.info`, which IS per
+    // person, is asked again.
+    const info = fetchImpl.mock.calls.filter(([url]) => String(url).includes('conversations.info'))
+    const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+    expect(info).toHaveLength(1)
+    expect(users).toHaveLength(2)
+  })
+
+  it('keeps an unanswerable audience a per-request verdict rather than caching it', async () => {
+    let attempt = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        attempt += 1
+        // A blip, then a real answer — the blip must not pin the channel.
+        return attempt === 1
+          ? json({ ok: false, error: 'ratelimited' })
+          : json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) return json({ ok: true, user: { team_id: 'T_INSTALL' } })
+      return json({ ok: false, error: 'unexpected' })
+    })
+    const resolver = service(fetchImpl)
+
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))).resolves.toMatchObject({
+      allowedScopes: [],
+      degraded: true
+    })
+    await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))).resolves.toMatchObject({
+      degraded: false
+    })
+    expect(attempt).toBe(2)
   })
 })

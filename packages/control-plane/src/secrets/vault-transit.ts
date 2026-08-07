@@ -11,10 +11,12 @@
  * (docs/designs/per-org-secret-encryption.md).
  *
  * Contract (pinned on the port):
- * - `open` PASSES THROUGH values it did not seal (neither the envelope tag nor
- *   a bare `vault:vN:` prefix ⇒ return as-is): existing plaintext rows keep
- *   reading after the flip, and the next write re-seals them — the rollout is
- *   online, no backfill required.
+ * - `open` PASSES THROUGH values it did not seal (no envelope tag ⇒ return
+ *   as-is): plaintext rows under `SECRET_CIPHER=none` keep reading, and the next
+ *   write seals them — the flip is online, no backfill required. It does NOT
+ *   pass through something that is sealed but unreadable here (a pre-scoping
+ *   `vault:vN:` value, or a newer envelope version); those throw, because
+ *   handing ciphertext back as plaintext is silent corruption.
  * - A value sealed under one scope does NOT open under another: Transit rejects
  *   a ciphertext presented to a different key, which is the cross-tenant fence.
  * - No argument or response body is ever logged; errors carry only the HTTP
@@ -35,14 +37,9 @@
  * one. `seal` is never cached — Transit returns fresh ciphertext per call by
  * design.
  */
-import { readFile } from 'node:fs/promises'
 import type { SecretCipher } from './cipher.js'
 import { SECRET_ENVELOPE_PREFIX, type SecretScope } from './scope.js'
-
-type FetchLike = typeof fetch
-
-export type VaultTransitAuth =
-  { method: 'token'; token: string } | { method: 'jwt'; role: string; jwtPath: string; authMount: string }
+import { describeVaultError, VaultHttp, type FetchLike, type VaultAuth } from './vault-http.js'
 
 export interface VaultTransitOpts {
   /** Vault origin, e.g. `https://vault.example.com:8200`. */
@@ -55,7 +52,7 @@ export interface VaultTransitOpts {
   mount?: string
   /** Vault Enterprise namespace (sent as `X-Vault-Namespace`). */
   namespace?: string
-  auth: VaultTransitAuth
+  auth: VaultAuth
   /** Test seams. */
   fetchImpl?: FetchLike
   now?: () => number
@@ -63,36 +60,31 @@ export interface VaultTransitOpts {
   openCacheMax?: number
 }
 
-/** Transit ciphertext is self-describing: `vault:v<key-version>:<base64>`. */
-const CIPHERTEXT_RE = /^vault:v\d+:/
-
-/** Renew the JWT login after 80% of the lease (floor 10s so a tiny lease can't thrash). */
-const RENEW_FRACTION = 0.8
+/** A bare Transit ciphertext — what this cipher produced BEFORE scoping existed. */
+const LEGACY_CIPHERTEXT_RE = /^vault:v\d+:/
+/** Any version of our own envelope, including ones this build predates. */
+const ENVELOPE_RE = /^acv\d+:/
 
 export class VaultTransitSecretCipher implements SecretCipher {
-  private readonly base: string
+  private readonly http: VaultHttp
   private readonly key: string
   private readonly orgKeyPrefix: string
   private readonly mount: string
-  private readonly namespace: string | undefined
-  private readonly auth: VaultTransitAuth
-  private readonly fetchImpl: FetchLike
-  private readonly now: () => number
   private readonly openCacheMax: number
 
   private readonly openCache = new Map<string, string>()
-  private clientToken: { value: string; renewAtMs: number } | undefined
-  private loginInFlight: Promise<string> | undefined
 
   constructor(opts: VaultTransitOpts) {
-    this.base = `${opts.addr.replace(/\/+$/, '')}/v1`
+    this.http = new VaultHttp({
+      addr: opts.addr,
+      namespace: opts.namespace,
+      auth: opts.auth,
+      fetchImpl: opts.fetchImpl,
+      now: opts.now
+    })
     this.key = opts.key
     this.orgKeyPrefix = opts.orgKeyPrefix
     this.mount = opts.mount ?? 'transit'
-    this.namespace = opts.namespace
-    this.auth = opts.auth
-    this.fetchImpl = opts.fetchImpl ?? fetch
-    this.now = opts.now ?? Date.now
     this.openCacheMax = opts.openCacheMax ?? 5000
   }
 
@@ -114,16 +106,17 @@ export class VaultTransitSecretCipher implements SecretCipher {
   }
 
   async open(stored: string, scope: SecretScope): Promise<string> {
-    // Three arms, in order (docs/designs/per-org-secret-encryption.md §4):
-    //   envelope-tagged ⇒ scoped value, opens under THIS scope's key — a value
-    //     of another scope fails here, which is the reason scope is a parameter;
-    //   bare `vault:vN:` ⇒ sealed before scoping existed, opens under the
-    //     deployment key regardless of scope (the migration arm, §7);
+    // Two arms (docs/designs/per-org-secret-encryption.md §4):
+    //   envelope-tagged ⇒ opens under THIS scope's key — a value of another
+    //     scope fails here, which is the whole reason scope is a parameter;
     //   anything else ⇒ never sealed, return unchanged (pass-through contract).
-    const scoped = stored.startsWith(SECRET_ENVELOPE_PREFIX)
-    if (!scoped && !CIPHERTEXT_RE.test(stored)) return stored
-    const key = scoped ? this.keyFor(scope) : this.key
-    const ciphertext = scoped ? stored.slice(SECRET_ENVELOPE_PREFIX.length) : stored
+    // Everything the pass-through must NOT swallow is rejected first.
+    if (!stored.startsWith(SECRET_ENVELOPE_PREFIX)) {
+      assertNotUnreadableCiphertext(stored)
+      return stored
+    }
+    const key = this.keyFor(scope)
+    const ciphertext = stored.slice(SECRET_ENVELOPE_PREFIX.length)
     // Cache by KEY + ciphertext: the stored string no longer implies a key, and
     // two scopes must never share an entry.
     const cacheKey = `${key}\u0000${ciphertext}`
@@ -150,68 +143,33 @@ export class VaultTransitSecretCipher implements SecretCipher {
     key: string,
     body: Record<string, string>
   ): Promise<{ ciphertext?: string; plaintext?: string }> {
-    const path = `${this.mount}/${op}/${key}`
-    let res = await this.post(path, body, await this.token())
-    if (res.status === 403 && this.auth.method === 'jwt') {
-      // Client token revoked/expired server-side — drop it, re-login, retry ONCE.
-      this.clientToken = undefined
-      res = await this.post(path, body, await this.token())
-    }
-    if (!res.ok) throw new Error(`vault transit ${op} failed: ${await describeError(res)}`)
+    const res = await this.http.request('POST', `${this.mount}/${op}/${key}`, body)
+    if (!res.ok) throw new Error(`vault transit ${op} failed: ${await describeVaultError(res)}`)
     const json = (await res.json()) as { data?: { ciphertext?: string; plaintext?: string } }
     return json.data ?? {}
   }
-
-  private post(path: string, body: unknown, token: string): Promise<Response> {
-    return this.fetchImpl(`${this.base}/${path}`, {
-      method: 'POST',
-      headers: {
-        'X-Vault-Token': token,
-        'content-type': 'application/json',
-        ...(this.namespace ? { 'X-Vault-Namespace': this.namespace } : {})
-      },
-      body: JSON.stringify(body)
-    })
-  }
-
-  private token(): Promise<string> | string {
-    if (this.auth.method === 'token') return this.auth.token
-    if (this.clientToken && this.now() < this.clientToken.renewAtMs) return this.clientToken.value
-    // Single-flight: concurrent seals/opens during (re-)login share one exchange.
-    this.loginInFlight ??= this.jwtLogin(this.auth).finally(() => {
-      this.loginInFlight = undefined
-    })
-    return this.loginInFlight
-  }
-
-  private async jwtLogin(auth: Extract<VaultTransitAuth, { method: 'jwt' }>): Promise<string> {
-    const jwt = (await readFile(auth.jwtPath, 'utf8')).trim()
-    const res = await this.fetchImpl(`${this.base}/auth/${auth.authMount}/login`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.namespace ? { 'X-Vault-Namespace': this.namespace } : {})
-      },
-      body: JSON.stringify({ role: auth.role, jwt })
-    })
-    if (!res.ok) throw new Error(`vault jwt login failed: ${await describeError(res)}`)
-    const json = (await res.json()) as { auth?: { client_token?: string; lease_duration?: number } }
-    const token = json.auth?.client_token
-    if (!token) throw new Error('vault jwt login: no client_token in response')
-    const leaseMs = (json.auth?.lease_duration ?? 3600) * 1000
-    this.clientToken = { value: token, renewAtMs: this.now() + Math.max(leaseMs * RENEW_FRACTION, 10_000) }
-    return token
-  }
 }
 
-/** Status + Vault's `errors[]` only — NEVER the request/response payloads. */
-async function describeError(res: Response): Promise<string> {
-  let errors = ''
-  try {
-    const json = (await res.json()) as { errors?: string[] }
-    if (Array.isArray(json.errors) && json.errors.length > 0) errors = ` (${json.errors.join('; ')})`
-  } catch {
-    // non-JSON error body — status alone is enough (and never echo the body)
+/**
+ * The pass-through arm exists for values that were never sealed (plaintext rows
+ * under `SECRET_CIPHER=none`). It must never swallow a value that IS sealed but
+ * unreadable by this build — returning ciphertext as if it were plaintext is
+ * silent corruption: the caller ships it to a daemon or a platform API as a
+ * credential. Both cases below are loud instead.
+ */
+function assertNotUnreadableCiphertext(stored: string): void {
+  if (LEGACY_CIPHERTEXT_RE.test(stored)) {
+    // Sealed before scoping (docs/designs/per-org-secret-encryption.md §7). The
+    // deployment-key fallback that used to read these is gone — it ignored the
+    // asserted scope, which was a hole in the cross-tenant fence it only earned
+    // by being temporary. Recovering such a value needs a pre-scoping build to
+    // run the rewrap sweep first.
+    throw new Error('secret cipher: unscoped legacy ciphertext — run the rewrap sweep on a pre-scoping build first')
   }
-  return `HTTP ${res.status}${errors}`
+  if (ENVELOPE_RE.test(stored)) {
+    // A NEWER envelope version than this build knows. Happens on a rolling
+    // update where a new replica writes and an old one reads; failing here is
+    // what keeps that window loud rather than silently wrong.
+    throw new Error('secret cipher: stored value uses a newer envelope version than this build supports')
+  }
 }

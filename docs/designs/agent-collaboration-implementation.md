@@ -19,6 +19,22 @@
 > channel. Runtime code and protocol schemas are authoritative for exact
 > payload shapes.
 
+> **Orchestration tool surface retired.** `startOrchestration`,
+> `getOrchestration`, and `cancelOrchestration` are no longer injected into any
+> agent's tool set: the send half duplicated `sendMessage` (a fan-out to N workers
+> is N `sendMessage({ toAgent: { agentId, needsReply: true } })` calls) and the
+> status half duplicated `viewSessionStatus`. Section 3 below still describes the
+> daemon machinery accurately — durable records, correlation checks, idempotent
+> report recording, and the one-shot deadline wake are all unchanged and still
+> re-armed from the store on startup — but an agent can no longer start or query an
+> orchestration. The descriptors remain in `RETIRED_ORCHESTRATION_TOOLS`
+> (`packages/daemon/src/mcp/tools.ts`) and `executeTool` still dispatches them, so
+> a session warm with the old descriptors and any still-open record keep resolving.
+> The **deadline wake** is the one capability with no `sendMessage` equivalent
+> today (`needsReply` has no timeout); it is retained precisely so `needsReply` can
+> gain an optional deadline on top of it, and until then no agent-reachable tool
+> offers a timeout-based wake.
+
 > This document is the concrete implementation design for
 > [`agents-collaboration-design.md`](agents-collaboration-design.md). That
 > document explains what and why; this document explains how it lands in the
@@ -51,7 +67,7 @@ daemon remains on the message hot path and CP remains off it.
 | **Peer discovery**          | `listAgents` (alias `listChannelAgents`) uses the `channel/agents` control request. Scope is the requester's **organization**, filtered by the directional call policy; `channel` is an optional narrowing filter. |
 | **Agent-to-agent delivery** | The `sendMessage` peer target invokes the internal `messageAgent` primitive locally or uses `rd/agentmsg` → `rd/agentmsg/fwd` → `rd/agentmsg/ack` across daemons. Message bodies never traverse CP.                |
 | **Call authorization**      | The caller's outbound policy and target's inbound policy must both allow the edge; directory, source daemon, relay, and target daemon verify independently.                                                        |
-| **Orchestration**           | `startOrchestration`, `getOrchestration`, and `cancelOrchestration` use durable daemon-local state, trusted correlation metadata, and deadline wakes.                                                              |
+| **Orchestration**           | Durable daemon-local state, trusted correlation metadata, and deadline wakes are live, but the `startOrchestration` / `getOrchestration` / `cancelOrchestration` tools are retired from the agent tool surface.    |
 | **Concurrency**             | Different sessions run concurrently; a per-`sessionKey` admission gate serializes one conversation and enforces queue/capacity limits.                                                                             |
 
 ### 1.3 Implemented Surface
@@ -61,9 +77,11 @@ daemon remains on the message hot path and CP remains off it.
 - `sendMessage` for peer wakes, parent-session replies, and visible platform
   posts; its peer branch uses the same-daemon or cross-daemon
   `messageAgent` delivery primitive.
+- `viewSessionStatus` for checking a child session the caller started.
 - A durable inbox and per-session admission gate.
 - Fan-out orchestration with correlated worker replies, deadlines, and
-  cancellation.
+  cancellation — **daemon-side only**; the three orchestration tools are no
+  longer part of the agent-facing surface.
 
 ### 1.4 Boundaries / Non-Goals
 
@@ -623,6 +641,11 @@ Human in thread T: @main please upgrade these three RPC nodes.
 
 ### 3.5a Orchestration API That the Main Agent Can Actually Call
 
+> **Retired surface.** The three tools below are no longer injected into any
+> agent's tool set (see the banner at the top of this document). The daemon-side
+> contract they describe — atomic record-first start, owner-scoped read, and
+> deadline-clearing cancel — is unchanged and still reachable internally.
+
 The daemon owns orchestration storage and exposes tools rather than asking a
 skill or prompt to mutate local state:
 
@@ -637,17 +660,18 @@ skill or prompt to mutate local state:
   ```
 - **Read/control tools:** `getOrchestration(orchestrationId)` lets main inspect all subtask/result state after wake. `cancelOrchestration(orchestrationId)` removes the deadline and writes the durable cancelled state. Section 3.3a `call_metadata` automatically preserves correlation in a worker response; main does not manually supply it.
 - **Completion trigger:** On every worker report or durable deadline wake, main calls `getOrchestration` and determines complete/timeout. Daemon applies the four section 3.3 correlation checks and idempotency when storing report results.
-- `startOrchestration`, `getOrchestration`, and `cancelOrchestration` live on
-  the daemon MCP tool surface; durable state lives in `local-store.ts`.
+- `startOrchestration`, `getOrchestration`, and `cancelOrchestration` are
+  declared in the daemon's MCP tool module but detached from every injected tool
+  set; durable state lives in `local-store.ts`.
 
 ### 3.6 Implemented Surface
 
-| Layer    | Behavior                                                                                                                                                                                             |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daemon   | Carries `correlationId` and trusted caller metadata through the turn, persists a daemon-local orchestration record before delivery, and applies idempotent state transitions and correlation checks. |
-| Deadline | Stores a cancellable one-shot deadline in the orchestration record and wakes `mainSessionKey` directly.                                                                                              |
-| Tools    | Exposes `startOrchestration`, `getOrchestration`, and `cancelOrchestration`; worker replies inherit trusted correlation metadata.                                                                    |
-| Tests    | Cover record-before-send, replay, partial delivery failure, forged or duplicate reports, serialized main wakes, N-of-N completion, deadline partial summaries, and worker errors.                    |
+| Layer    | Behavior                                                                                                                                                                                                          |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon   | Carries `correlationId` and trusted caller metadata through the turn, persists a daemon-local orchestration record before delivery, and applies idempotent state transitions and correlation checks.              |
+| Deadline | Stores a cancellable one-shot deadline in the orchestration record and wakes `mainSessionKey` directly.                                                                                                           |
+| Tools    | `startOrchestration`, `getOrchestration`, and `cancelOrchestration` are retired from injection (still dispatchable for warm sessions and in-flight records); worker replies inherit trusted correlation metadata. |
+| Tests    | Cover record-before-send, replay, partial delivery failure, forged or duplicate reports, serialized main wakes, N-of-N completion, deadline partial summaries, and worker errors.                                 |
 
 ---
 

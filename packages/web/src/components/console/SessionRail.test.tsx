@@ -26,7 +26,7 @@ vi.mock('next/link', () => ({
   default: ({ children, href }: { children: ReactElement; href: string }) => <a href={href}>{children}</a>
 }))
 
-import { SessionRail, SessionRailSlot } from './SessionRail'
+import { SessionRail, SessionRailSlot, railWouldHide } from './SessionRail'
 import type { Session } from '@/lib/data'
 import type { SessionRelationDto } from '@/lib/api'
 
@@ -65,7 +65,8 @@ function railMarkup({
   total = 0,
   family = NO_FAMILY,
   filterTouched = false,
-  flatView = false
+  flatView = false,
+  roomLineage
 }: {
   sessions?: Session[]
   total?: number
@@ -76,6 +77,7 @@ function railMarkup({
   }
   filterTouched?: boolean
   flatView?: boolean
+  roomLineage?: { wokenBy: SessionRelationDto | null; woke: SessionRelationDto[] }
 } = {}) {
   return renderToStaticMarkup(
     <SessionRail
@@ -87,6 +89,7 @@ function railMarkup({
       onAgentIdsChange={() => {}}
       family={family}
       flatView={flatView}
+      {...(roomLineage ? { roomLineage } : {})}
       onSelect={() => {}}
     />
   )
@@ -152,5 +155,103 @@ describe('SessionRail column', () => {
 
     expect(markup).toContain('href="/sessions/a?view=flat"')
     expect(markup).toContain('href="/sessions?view=flat&amp;agent=agent-1"')
+  })
+})
+
+// The verdict the rail reports upward so a caller can widen a SEEDED filter that
+// collapsed (see railSeedShouldWiden). Pinned here as a unit because a caller that
+// re-derived it from its own fetched page would miss the two inputs the page does
+// not carry — lineage, and pins hydrated from outside it — and would widen a rail
+// that is in fact perfectly serviceable, throwing the seeded chips away with it.
+describe('railWouldHide', () => {
+  const collapsed = { total: 1, rowCount: 1, hasFamily: false, filterTouched: false }
+
+  it('hides a rail holding only the session already on screen', () => {
+    expect(railWouldHide(collapsed)).toBe(true)
+  })
+
+  it('keeps a one-row rail that has lineage to draw', () => {
+    // The Related tree is the rail's content here, and the picker rides with it.
+    expect(railWouldHide({ ...collapsed, hasFamily: true })).toBe(false)
+  })
+
+  it('keeps a rail whose merged rows outnumber the open session', () => {
+    // `rowCount` is the merged set, so an off-page pin lands here even when the
+    // filtered page itself came back with a single conversation.
+    expect(railWouldHide({ ...collapsed, rowCount: 2 })).toBe(false)
+  })
+
+  it('keeps a rail whose filtered list is longer than its first page', () => {
+    expect(railWouldHide({ ...collapsed, total: 86 })).toBe(false)
+  })
+
+  it('keeps the filter control reachable once the reader has set one', () => {
+    expect(railWouldHide({ ...collapsed, filterTouched: true })).toBe(false)
+  })
+})
+
+// Attribution answers WHO woke whom, so the row has to name the agent. Sessions
+// in one merged thread routinely share a title — it is derived from the same
+// first message — and necessarily share the platform, so a row built from those
+// two fields identifies nobody.
+describe('SessionRail room attribution', () => {
+  const participant = (id: string, agentId: string, agentName: string): SessionRelationDto => ({
+    id,
+    agentId,
+    agentName,
+    platform: 'slack',
+    // Deliberately identical to the other participant's, and to the open row's.
+    title: 'Session current'
+  })
+
+  it('names the agents when the participants share a session title', () => {
+    const markup = railMarkup({
+      roomLineage: {
+        wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'),
+        woke: [participant('rel-b', 'agent-b', 'node-operator'), participant('rel-c', 'agent-c', 'db-operator')]
+      }
+    })
+
+    expect(markup).toContain('Delegated by')
+    expect(markup).toContain('Delegated to')
+    // The identities, which the shared title cannot carry.
+    expect(markup).toContain('Alert Analyzer')
+    expect(markup).toContain('node-operator')
+    expect(markup).toContain('db-operator')
+  })
+
+  it('falls back to the agent id when nothing can name the agent', () => {
+    // Older Control Planes omit the projection, and a restricted agent can own a
+    // member session while staying out of this viewer's roster. An id beats a
+    // blank row.
+    const anonymous: SessionRelationDto = {
+      id: 'rel-x',
+      agentId: 'agent-restricted',
+      platform: 'slack',
+      title: 'Session current'
+    }
+    const markup = railMarkup({ roomLineage: { wokenBy: anonymous, woke: [] } })
+
+    expect(markup).toContain('agent-restricted')
+  })
+
+  it('does not turn a co-participant into a navigation target', () => {
+    // These rows are attribution (§9.1). `/sessions/:id` would redirect back to
+    // the page they are rendered on, so the row must not be a link. Nor a pin:
+    // a pin is a shortcut back to another conversation, and this row is a
+    // statement about the one already open.
+    const markup = railMarkup({
+      roomLineage: {
+        wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'),
+        woke: [participant('rel-b', 'agent-b', 'node-operator'), participant('rel-c', 'agent-c', 'db-operator')]
+      }
+    })
+
+    expect(markup).not.toContain('href="/sessions/rel-a"')
+    expect(markup).not.toContain('href="/sessions/rel-b"')
+    expect(markup).not.toContain('href="/sessions/rel-c"')
+    // Four rows are drawn — three attribution plus the open one — and only the
+    // open row, which is a real session in the list, carries a pin toggle.
+    expect(markup.split('aria-pressed=').length - 1).toBe(1)
   })
 })

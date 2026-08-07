@@ -180,6 +180,31 @@ model DeletedIdentityCutoff {
   @@map("deleted_identity_cutoff")
 }
 
+// One row per deleted organization, recording that its transit key should be
+// destroyed (docs/designs/per-org-secret-encryption.md §6). Written inside the
+// same transaction that deletes the org, so the intent survives whatever
+// happens next; drained by the operator-run `secrets:shred` CLI, which is the
+// ONLY thing that ever deletes a key — the CP process cannot.
+//
+// Deliberately NO foreign key: the row's entire purpose is to outlive the
+// organization it names.
+//
+// The RESOLVED target is stored, not just the org id. Deriving the name at
+// drain time would read it from whatever configuration is current then, so
+// rotating VAULT_TRANSIT_MOUNT or the org key prefix between the delete and the
+// drain would aim the destroy at a name that does not exist — which the
+// shredder reads as "already gone", clears the row, and leaves the real key
+// alive forever. Pinning the target at delete time makes the tombstone
+// self-describing and immune to later configuration changes.
+model PendingKeyShred {
+  orgId     String   @id // the deleted org (identity + idempotency key)
+  mount     String // transit mount as configured when the org was deleted
+  keyName   String // fully resolved key name, e.g. <orgKeyPrefix><orgId>
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("pending_key_shred")
+}
+
 // Console roles (§3.2): owner = edit everything + manage members/org info (an
 // org can have several owners); collaborator = create/edit/run agents, manage
 // sessions; viewer = read-only.
@@ -966,9 +991,11 @@ model SessionMeta {
   // when its policy was enabled. Such a scope only comes back if new trusted
   // activity rebinds the session, so it is expected rather than a fault, and
   // `state` degrades only while an unresolved row WITHOUT this mark exists (a
-  // mere COUNT cannot tell the two apart: settling one legacy row would silently
-  // absolve a live post-enable failure). Stamped at enable; A2A descendants
-  // inherit it with the audience they inherit.
+  // mere COUNT cannot tell the two apart: settling one marked row would silently
+  // absolve a live post-enable failure). Stamped at enable and re-stamped on
+  // every re-enable; A2A descendants inherit it with the audience they inherit.
+  // "legacy" is relative to the org's enable, NOT to a release — this is live
+  // behavior for any org that turns external access on, not pre-release cruft.
   legacyUnresolved    Boolean             @default(false)
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.

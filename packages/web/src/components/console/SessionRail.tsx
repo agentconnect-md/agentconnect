@@ -111,6 +111,27 @@ function pinIdsOf(session: Session): string[] {
  * that padding equals the fixed 250px panel the real rail pins to the viewport
  * edge. Keep these box classes identical to the real rail's container below.
  */
+/**
+ * Whether the rail has nothing worth drawing, over the inputs it settles from.
+ *
+ * `rowCount` is the FULL row set — the agent-filtered page merged with globally
+ * hydrated pins and the open session — not the page the caller fetched: a pin from
+ * another agent is a row the page never carried. `hasFamily` keeps a one-row page
+ * worth drawing on its own, since lineage renders its own Related tree.
+ *
+ * Exported because a caller that widens a collapsed seed has to gate on the same
+ * verdict, and re-deriving it from the page count alone gets the lineage and pin
+ * cases wrong in the direction that throws a good rail away.
+ */
+export function railWouldHide(input: {
+  total: number
+  rowCount: number
+  hasFamily: boolean
+  filterTouched: boolean
+}): boolean {
+  return Math.max(input.total, input.rowCount) < 2 && !input.hasFamily && !input.filterTouched
+}
+
 export function SessionRailSlot() {
   return <div aria-hidden="true" className="-mr-[30px] hidden w-[250px] flex-none wide:block" />
 }
@@ -126,7 +147,9 @@ export function SessionRail({
   conversation = false,
   flatView = false,
   childOriginById,
-  onSelect
+  roomLineage,
+  onSelect,
+  onWouldHideChange
 }: {
   /** The filtered first page of sessions, newest first. */
   sessions: Session[]
@@ -149,8 +172,15 @@ export function SessionRail({
   flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
+  /** Attribution INSIDE the open conversation — who woke the open row, and whom
+   *  it woke. Separate from `family` because both ends are participants of this
+   *  same conversation, so neither is a navigation target (§9.1). */
+  roomLineage?: { wokenBy: SessionRelationDto | null; woke: SessionRelationDto[] }
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
+  /** Whether the rail is about to draw nothing — see the `empty` note below. The
+   *  caller owns the fetches, so a collapsed SEED is re-asked there, not here. */
+  onWouldHideChange?: (wouldHide: boolean) => void
 }) {
   const { orgPath, activeOrg } = useOrgs()
   const flatSearch = flatView ? '?view=flat' : ''
@@ -171,8 +201,13 @@ export function SessionRail({
   // Hydration: the server has no localStorage, so the first client paint must match
   // the SSR markup (every row unpinned) and the stored pins land in an effect.
   const [pins, setPins] = useState<SessionPin[]>([])
+  // Tracked separately from the pins themselves: "no pins yet" is what an unread
+  // store and a genuinely empty one both look like, and the hide verdict reported
+  // below must not mistake the first for the second.
+  const [pinsRead, setPinsRead] = useState(false)
   useEffect(() => {
     setPins(readSessionPins())
+    setPinsRead(true)
   }, [])
 
   const togglePin = useCallback(
@@ -190,16 +225,23 @@ export function SessionRail({
   const parent = family?.parentSession ?? null
   const siblings = family?.siblingSessions ?? EMPTY_RELATIONS
   const children = family?.childSessions ?? EMPTY_RELATIONS
-  const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0)
+  // Attribution inside the open conversation, kept apart from `family` on
+  // purpose: these are fellow PARTICIPANTS, not other conversations, so they
+  // never take the "Parent conversation" label or its navigate-away meaning.
+  const wokenBy = roomLineage?.wokenBy ?? null
+  const woke = roomLineage?.woke ?? EMPTY_RELATIONS
+  const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0 || wokenBy || woke.length > 0)
   const relatedIds = useMemo(() => {
     const ids = new Set<string>()
     if (!hasFamily) return ids
     ids.add(currentId)
     if (parent) ids.add(parent.id)
+    if (wokenBy) ids.add(wokenBy.id)
     for (const relation of siblings) ids.add(relation.id)
     for (const relation of children) ids.add(relation.id)
+    for (const relation of woke) ids.add(relation.id)
     return ids
-  }, [children, currentId, hasFamily, parent, siblings])
+  }, [children, currentId, hasFamily, parent, siblings, wokenBy, woke])
 
   // Globally pinned rows that the loaded page or current family does not carry.
   // Fetched by id because the list endpoint cannot filter by id; a rail holds a
@@ -286,7 +328,26 @@ export function SessionRail({
   // This test is also true while the rail's page is still in flight, since `rows` is
   // the open session alone until it lands. Same answer either way: hold the column,
   // fill it when there is something to fill it with.
-  const empty = Math.max(total, rows.length) < 2 && !hasFamily && !filterTouched
+  const empty = railWouldHide({ total, rowCount: rows.length, hasFamily, filterTouched })
+
+  // Hiding takes the agent picker with it, so a SEEDED filter that narrowed the
+  // list this far would strand the reader with an empty gutter and no way to
+  // widen it. The caller re-asks that question unfiltered — reported rather than
+  // decided here because the rail does not own its fetches, and REPORTED FROM
+  // HERE because this is the only place the whole verdict exists: `rows` is the
+  // page merged with globally hydrated pins and the open row, and `hasFamily`
+  // can keep a one-row page worth drawing on its own.
+  //
+  // Withheld until the rail's OWN inputs have settled. An unhydrated pin store and
+  // an in-flight pin fetch both read as "no pins", which is indistinguishable from
+  // a collapsed rail — and the caller latches the first verdict it is given, so
+  // reporting that snapshot would freeze a race into a permanent widen. The
+  // caller waits on lineage the same way before acting on this.
+  const pinsSettled = pinsRead && (missingPinIds.length === 0 || hydratedPins !== undefined)
+  useEffect(() => {
+    if (!pinsSettled) return
+    onWouldHideChange?.(empty)
+  }, [empty, pinsSettled, onWouldHideChange])
 
   // ≤768px has no column to hold, so the list hangs off a shell-owned app-bar
   // button (see MobileActionSlot) whose panel is rendered below. Registration has
@@ -347,6 +408,49 @@ export function SessionRail({
     const ids = pinIdsOf(s)
     return { pinned: ids.some(isPinned), id: ids.find(isPinned) ?? canonicalSessionId(s) }
   }
+  // An attribution row answers WHO, so it is built around the agent, not the
+  // session. The generic row renders a session title and a platform mark, and
+  // neither identifies anyone here: participants of one thread routinely share
+  // a title (it is derived from the same first message) and necessarily share
+  // the platform, so "Delegated by" over a title equal to the current row's
+  // says nothing, and several `woke` rows would be indistinguishable.
+  //
+  // It is also NOT navigation, which is §9.1's own title. The target is a
+  // participant of the conversation already on screen, so `/sessions/:id` would
+  // redirect straight back here (§5.3 carries no `?focus`, by decision) — a
+  // round trip that lands the reader where they started. Render the fact: no
+  // link, and no pin toggle, which is a shortcut to another conversation.
+  //
+  // Name resolution mirrors the filter chips: the org roster first, then the
+  // relation's own projection (older CPs omit it), then the raw id — a
+  // restricted agent can own a member session while staying out of this
+  // viewer's roster, and showing an id beats showing nothing.
+  const attributionRow = (relation: SessionRelationDto, depth: 0 | 1 | 2 = 0) => {
+    const agent = agents.find((candidate) => candidate.id === relation.agentId)
+    const name = agent ? agentLabel(agent) : relation.agentName?.trim() || relation.agentId
+    const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
+    return (
+      <div
+        key={`attribution-${relation.id}`}
+        title={`${name}\n${title}`}
+        className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[9px] text-(--text-secondary) ${
+          depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
+        }`}
+      >
+        {depth > 0 && (
+          <span
+            aria-hidden="true"
+            className="-mt-2 h-[15px] w-[13px] flex-none rounded-bl-[4px] border-b-[1.5px] border-l-[1.5px] border-(--border-strong)"
+          />
+        )}
+        <span className="av h-[18px] w-[18px] flex-none rounded-xs">
+          <AgentIconView icon={agent?.icon} runtime={agent?.runtime ?? ''} size={18} />
+        </span>
+        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">{name}</span>
+      </div>
+    )
+  }
+
   const row = (item: RailRow, pinnedRow: boolean, depth: 0 | 1 | 2 = 0, on = false) => {
     return (
       <div
@@ -443,7 +547,23 @@ export function SessionRail({
               </div>
             )}
             {parent && row(relationRow(parent), isPinned(parent.id))}
-            {row(sessionRow(current), rowPin(current).pinned, parent ? 1 : 0, true)}
+            {/* Attribution, not navigation: the participant that woke the open
+                row. Deliberately NOT labelled "Parent conversation" — it is a
+                member of this same conversation, so calling it another
+                conversation would be wrong and its link comes back here. */}
+            {wokenBy && (
+              <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Delegated by
+              </div>
+            )}
+            {wokenBy && attributionRow(wokenBy, parent ? 1 : 0)}
+            {row(sessionRow(current), rowPin(current).pinned, parent || wokenBy ? 1 : 0, true)}
+            {woke.length > 0 && (
+              <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Delegated to
+              </div>
+            )}
+            {woke.map((target) => attributionRow(target, parent || wokenBy ? 2 : 1))}
             {conversation && children.length > 0 && (
               <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
                 Delegations

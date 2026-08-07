@@ -36,7 +36,6 @@ import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
 import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
-import SessionAccessNotice from '@/components/console/SessionAccessNotice'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -592,11 +591,6 @@ export default function SessionsView() {
           </span>
         </div>
       )}
-      <SessionAccessNotice
-        degraded={sessionList.accessSyncDegraded}
-        issues={sessionList.accessIssues}
-        impact="sessions"
-      />
       {initialLoading && (
         <div className="desktop:hidden">
           <LoadingState fill />

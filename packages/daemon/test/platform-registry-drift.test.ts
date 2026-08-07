@@ -8,10 +8,10 @@ import { platformIds } from '../src/platforms/integration-config.js'
 import { observedMembershipPlatforms } from '../src/platforms/observed-channels.js'
 
 /**
- * integration-plugin-audit.md §10.6 F16 / F17 — the two hand-copied platform lists that
- * sat beside registries already holding the same set.
+ * The two platform lists that would otherwise be hand-copied beside registries already
+ * holding the same set.
  *
- * F16 is the load-bearing one: `capabilities.platforms` in the CP registration handshake
+ * The load-bearing one: `capabilities.platforms` in the CP registration handshake
  * is what the CP's pre-install gate (`integrationPlatformAvailability`) and the console's
  * tile gating consume, so a platform the daemon can serve but forgot to advertise is
  * silently uninstallable. Both lists are now derived; these pin that the derivations stay

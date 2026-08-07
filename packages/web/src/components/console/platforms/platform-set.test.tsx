@@ -26,9 +26,9 @@ import { botCardCopy, platformRegistry } from './registry'
  *
  * It also covers the host PROJECTIONS over that id set (`host-projections.ts`) —
  * the install picker's tiles, the agent page's tile blurbs and the Settings →
- * Bots tab strip. The strip in particular was a hand-written five-row table with
- * its own labels and nouns, uncovered here, and therefore free to drift
- * (integration-plugin-audit.md §10.6 F14).
+ * Bots tab strip. The strip in particular was once a hand-written five-row table
+ * with its own labels and nouns, uncovered by any test and therefore free to
+ * drift.
  */
 const ALIASES = ['lark']
 

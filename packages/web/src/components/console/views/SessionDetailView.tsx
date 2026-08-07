@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { selfConversationPath } from '@/lib/conversation-addressing'
+import { assembleConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -62,7 +63,7 @@ import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/conso
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
 import { NotFound } from '@/components/console/NotFound'
-import { Avatar, Icon } from '@/components/ui'
+import { Avatar, Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { formatTranscriptRowTime, transcriptRowTimeMs } from '@/lib/transcript-time'
 import { sessionResumeMembers, sessionResumeState } from '@/lib/session-resume'
@@ -99,6 +100,8 @@ import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
   railSeedAgentIds,
+  railSeedKey,
+  railSeedShouldWiden,
   seedRailAgentFilter,
   type RailAgentFilter
 } from '@/lib/session-rail-filter'
@@ -1105,13 +1108,20 @@ export default function SessionDetailView() {
   // fan-out and the participants roster.
   const conversationKey = conversationKeyParam ? decodeURIComponent(conversationKeyParam) : null
   const {
-    data: conversationRoster,
+    data: conversationResolution,
     error: conversationError,
-    isLoading: conversationLoading
+    isLoading: conversationLoading,
+    mutate: retryConversation
   } = useSWR(
     conversationKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, conversationKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId)
   )
+  // Unwrap to the roster the rest of this view reads, keeping the two states it
+  // distinguishes: `undefined` is still "in flight", `null` still "the resolver
+  // answered with nothing". Degradation rides alongside rather than collapsing
+  // into either — an empty answer the CP could not verify is not an absence.
+  const conversationRoster = conversationResolution === undefined ? undefined : conversationResolution.conversation
+  const conversationAccessDegraded = conversationResolution?.accessSyncDegraded === true
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
   const conversationSourceKey =
@@ -1120,16 +1130,22 @@ export default function SessionDetailView() {
       .sort()
       .join(',') ?? ''
   // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
-  // the members' parent/child links, keep only CROSS-conversation edges, and
-  // link targets as /sessions/:id — the §5.3 self-redirect forwards
-  // multi-participant targets to THEIR merged page. Intra-room vs cross-room
-  // is decided by conversation LOCATION (the target's own conversation key),
-  // not by membership in the collapsed current-session set — an edge to a
-  // SUPERSEDED session at this location is still intra-room (§9.1). Each
-  // lifted delegation preserves its waking member so the UI groups
-  // delegations by origin.
+  // the members' parent/child links, keep the ones worth drawing, and link
+  // targets as /sessions/:id — the §5.3 self-redirect forwards
+  // multi-participant targets to THEIR merged page. Each lifted delegation
+  // preserves its waking member so the UI groups delegations by origin.
+  //
+  // §9.2 originally dropped every intra-room edge, on the reasoning that both
+  // ends are already merged into this transcript. They are — but the transcript
+  // interleaves them by TIME, so the one thing it cannot show is which of them
+  // woke the other. That left the delegation structure visible only by
+  // accident: a roster that came back short (a member failed closed by a
+  // degraded access check) flipped `conversationMode` off, and the family prop
+  // fell through to the representative's own unfiltered detail — so the same
+  // conversation showed lineage or not depending on how many members happened
+  // to resolve. Keeping participant edges makes the answer the same either way.
   const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
-  const { data: conversationLineage } = useSWR(
+  const { data: conversationLineage, error: conversationLineageError } = useSWR(
     conversationMode && activeOrg?.id
       ? (['conversation-lineage', activeOrg.id, conversationKey, conversationSourceKey] as const)
       : null,
@@ -1137,24 +1153,19 @@ export default function SessionDetailView() {
       const details = await Promise.all(
         (conversationMembers ?? []).map((member) => fetchSessionDetail(member.sessionId, orgId).catch(() => null))
       )
-      const parents = new Map<string, SessionRelationDto>()
-      const children = new Map<string, SessionRelationDto>()
-      const childOriginById = new Map<string, string>()
-      for (const detail of details) {
-        if (!detail) continue
-        const parent = detail.parentSession
-        if (parent && !parents.has(parent.id)) parents.set(parent.id, parent)
-        for (const child of detail.childSessions) {
-          if (!children.has(child.id)) {
-            children.set(child.id, child)
-            childOriginById.set(child.id, detail.agentId)
-          }
-        }
-      }
-      // Location filter: fetch each candidate target's own conversation key
-      // and drop same-location edges. A target whose detail can't be read is
-      // dropped too (fail closed — the caller couldn't open it anyway).
-      const candidateIds = [...new Set([...parents.keys(), ...children.keys()])]
+      // Location lookup: fetch each candidate target's own conversation key so
+      // the assembly below can tell navigation (elsewhere) from attribution
+      // (a fellow participant). A target whose detail can't be read is dropped
+      // — fail closed, the caller couldn't open it anyway.
+      const candidateIds = [
+        ...new Set(
+          details.flatMap((detail) =>
+            detail
+              ? [...(detail.parentSession ? [detail.parentSession.id] : []), ...detail.childSessions.map((c) => c.id)]
+              : []
+          )
+        )
+      ]
       // Three-way sentinel: an encoded key, 'singleton' (readable target with
       // no groupable channel/thread — necessarily cross-conversation relative
       // to this merged page), or 'unreadable' (fail closed).
@@ -1178,32 +1189,12 @@ export default function SessionDetailView() {
           }
         })
       )
-      const crossRoom = (targetId: string): boolean => {
-        const target = targetKeys.get(targetId)
-        if (!target || target.kind === 'unreadable') return false
-        return target.kind === 'singleton' || target.key !== conversationKey
-      }
-      const crossParents = [...parents.values()].filter((parent) => crossRoom(parent.id))
-      const crossChildren = [...children.values()]
-        .filter((child) => crossRoom(child.id))
-        // Origin-adjacent order — the family UI renders delegation groups
-        // from this plus childOriginById.
-        .sort((a, b) => {
-          const ao = childOriginById.get(a.id) ?? ''
-          const bo = childOriginById.get(b.id) ?? ''
-          return ao < bo ? -1 : ao > bo ? 1 : a.id < b.id ? -1 : 1
-        })
-      const [firstParent, ...moreParents] = crossParents
-      return {
-        family: {
-          // The family UI models ONE parent; extra cross-room delegation
-          // origins surface beside the delegations.
-          parentSession: firstParent ?? null,
-          siblingSessions: moreParents,
-          childSessions: crossChildren
-        },
-        childOriginById
-      }
+      return assembleConversationLineage({
+        conversationKey,
+        members: conversationMembers ?? [],
+        details,
+        targetLocations: targetKeys
+      })
     },
     { revalidateOnFocus: false }
   )
@@ -1447,11 +1438,16 @@ export default function SessionDetailView() {
       thread: currentSessionDetail.thread
     })
   }, [conversationKey, currentSessionDetail])
-  const { data: selfConversation, isLoading: selfConversationLoading } = useSWR(
+  const { data: selfConversationResolution, isLoading: selfConversationLoading } = useSWR(
     selfKey && activeOrg?.id ? (['conversation-by-key', activeOrg.id, selfKey] as const) : null,
     ([, orgId, key]) => fetchConversationByKey(key, orgId),
     { revalidateOnFocus: false }
   )
+  // Same unwrap as the conversation-mode roster above: `undefined` stays
+  // in-flight, so the §5.3 redirect still waits rather than reading a probe that
+  // has not answered as a single-participant thread.
+  const selfConversation =
+    selfConversationResolution === undefined ? undefined : selfConversationResolution.conversation
   const selfConversationPathname = selfConversationPath({
     flatView,
     conversationKey: selfKey,
@@ -1666,11 +1662,50 @@ export default function SessionDetailView() {
   // grouped list or hide superseded sessions again.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
-  const { sessions: railSessionRows, total: railSessionTotal } = useSessionList(
-    MOCK_MODE || !railQuery ? null : activeOrg?.id,
-    railQuery ?? {},
+  const {
+    sessions: seededRailRows,
+    total: seededRailTotal,
+    isLoading: seededRailLoading
+  } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {}, { grouped: !flatView })
+  // A seed that narrows the rail down to the conversation already on screen would
+  // hide the rail — and the picker that could widen it — behind SessionRail's
+  // `empty`. Re-ask that question unfiltered instead of stranding the reader.
+  //
+  // The rail reports the verdict because only it can reach the whole of it: its
+  // rows are this page merged with globally hydrated pins and the open row, and
+  // lineage alone can keep a one-row page worth drawing. Latched to the SEED, not
+  // held as a boolean — widening replaces the rows, so the collapse that
+  // justified it stops being observable the moment it works.
+  //
+  // Lineage is waited on here because the rail cannot tell a conversation with no
+  // relatives from one whose relatives have not arrived: `conversationFamily` is an
+  // EMPTY family, not `undefined`, for as long as its own multi-request fetch is in
+  // flight. Latching on that would widen a rail that is about to grow a Related
+  // tree — the very regression this gate exists to prevent, reached by a race
+  // instead of a miscount. The rail withholds its verdict over its own pins.
+  const railSeedKeyNow = railSeedKey(railFilter)
+  const railFamilySettled = conversationMode
+    ? conversationLineage !== undefined || conversationLineageError !== undefined
+    : !sessionDetailLoading
+  const [widenedSeed, setWidenedSeed] = useState<string | null>(null)
+  const handleRailWouldHide = useCallback(
+    (wouldHide: boolean) => {
+      if (!railSeedShouldWiden(railSeedKeyNow, wouldHide, !seededRailLoading && railFamilySettled)) return
+      setWidenedSeed(railSeedKeyNow)
+    },
+    [railSeedKeyNow, seededRailLoading, railFamilySettled]
+  )
+  const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
+  const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
+    railSeedWidened ? activeOrg?.id : null,
+    {},
     { grouped: !flatView }
   )
+  const railSessionRows = railSeedWidened ? widenedRailRows : seededRailRows
+  const railSessionTotal = railSeedWidened ? widenedRailTotal : seededRailTotal
+  // The chips have to describe the list actually on screen — a widened rail is
+  // unfiltered, and leaving the seed's chips up would misname it.
+  const railDisplayAgentIds = railSeedWidened ? [] : railFilter.agentIds
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
@@ -1678,9 +1713,11 @@ export default function SessionDetailView() {
     if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!)
     // The demo fixtures carry no conversation grouping, so stand in for it with
     // the channel — enough for the multi-agent filter to behave like the real one.
-    const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform} ${s.channel}`))
+    const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform}\0${s.channel}`))
     const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
-    return allSessions.filter((s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform} ${s.channel}`))
+    return allSessions.filter(
+      (s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform}\0${s.channel}`)
+    )
   }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
   // The open row as the rail sees it: its conversation and, where the resolver
   // has answered, that conversation's full membership. Both are identity the rail
@@ -2151,8 +2188,35 @@ export default function SessionDetailView() {
       </SessionDetailFrame>
     )
   }
-  if (conversationKey && (conversationError || !conversationRoster || conversationRoster.sessions.length === 0)) {
-    // conversationError, a grace-expired null, or a resolved-but-empty roster.
+  // A failed read and an unverifiable one are NOT absence, and saying "not found
+  // — or not visible to you" for either states an authorization verdict the
+  // console never actually got. The request erroring is self-evidently not an
+  // answer; a DEGRADED answer is subtler — the CP fails external access checks
+  // closed, so a Slack API blip omits the very members it could not check and
+  // the roster arrives empty with `accessSyncDegraded` set. Both are transient
+  // and retryable, so say so and offer the retry.
+  if (conversationKey && (conversationError || (conversationAccessDegraded && !conversationRoster))) {
+    return (
+      <SessionDetailFrame withRail={false}>
+        <div className="card p-6">
+          <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">
+            {conversationError
+              ? 'This conversation could not be loaded. The console could not reach the control plane.'
+              : 'This conversation cannot be shown until its access checks can be verified.'}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button onClick={() => void retryConversation()}>Try again</Button>
+            <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={orgPath('/sessions')}>
+              Back to sessions
+            </Link>
+          </div>
+        </div>
+      </SessionDetailFrame>
+    )
+  }
+  if (conversationKey && (!conversationRoster || conversationRoster.sessions.length === 0)) {
+    // A grace-expired null or a resolved-but-empty roster, with the access
+    // checks themselves healthy — so absence here is a real answer.
     return (
       <SessionDetailFrame withRail={false}>
         <NotFound
@@ -3952,14 +4016,16 @@ export default function SessionDetailView() {
         // the roster resolver is not agent-filtered, so its members are complete.
         current={railCurrent ?? session}
         total={railSessionTotal}
-        agentIds={railFilter.agentIds}
+        agentIds={railDisplayAgentIds}
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
         conversation={conversationMode}
         flatView={flatView}
         childOriginById={conversationLineage?.childOriginById}
+        roomLineage={conversationLineage?.roomLineage}
         onSelect={setRouteSession}
+        onWouldHideChange={handleRailWouldHide}
       />
     </div>
   )

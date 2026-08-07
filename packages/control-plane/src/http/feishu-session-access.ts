@@ -1,4 +1,6 @@
 import type { FeishuRegion } from '@agentconnect.md/protocol'
+import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
 import { BotId } from '../domain/ids.js'
 import type { FetchLike } from '../github/api.js'
@@ -31,6 +33,14 @@ type MembershipResult =
   | { status: 'members'; unionIds: ReadonlySet<string> }
   | { status: 'deny' }
   | { status: 'unknown'; issue: SessionAccessIssue }
+type MembershipLookup = {
+  region: FeishuRegion
+  chatId: string
+  bot: BotRecord
+  tokenFor: (bot: BotRecord, signal: AbortSignal) => Promise<string>
+  signal: AbortSignal
+  quotaKey: string
+}
 
 const DEFINITIVE_DENIALS = new Set([232006, 232009, 232010, 232011])
 
@@ -53,8 +63,13 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
  * No request-bound user token is fetched or retained. */
 export class FeishuSessionAccessService implements SessionAccessPlugin {
   readonly provider = 'feishu'
-  private readonly membershipCache = new Map<string, { result: MembershipResult; expiresAt: number }>()
-  private readonly pendingMembership = new Map<string, Promise<MembershipResult>>()
+  /** (bot, credential revision, chat) → membership. Shared across viewers: who
+   *  is in a chat is a property of the CHAT, and the union_id comparison that
+   *  turns it into a verdict is done per caller in `resolveScope`. `fetch` hands
+   *  concurrent callers of one key the same promise, replacing the pending map
+   *  this used to keep alongside. Entries carry their own TTL — see the
+   *  fetchMethod, which sets it from the answer it got. */
+  private readonly membership: LRUCache<string, MembershipResult, MembershipLookup>
   private readonly quotaBlockedUntil = new Map<string, number>()
 
   constructor(
@@ -65,7 +80,27 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       fetchImpl?: FetchLike
       identity?: Pick<LogtoIdentityService, 'feishuIdentitiesFor'>
     }
-  ) {}
+  ) {
+    this.membership = new LRUCache({
+      ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
+      // A per-entry TTL is always set below; this only stops lru-cache from
+      // treating an entry that somehow arrives without one as immortal.
+      ttl: UNKNOWN_TTL_MS,
+      fetchMethod: async (_key, _stale, { context, options }) => {
+        const result = await this.listMembers(
+          context.region,
+          context.chatId,
+          context.bot,
+          context.tokenFor,
+          context.signal,
+          context.quotaKey
+        )
+        options.ttl =
+          result.status === 'members' ? MEMBER_LIST_TTL_MS : result.status === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
+        return result
+      }
+    })
+  }
 
   get available(): boolean {
     return this.deps.identity !== undefined
@@ -188,7 +223,7 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
     return { decision: 'unknown', issue: membership.issue }
   }
 
-  private membershipFor(
+  private async membershipFor(
     key: string,
     quotaKey: string,
     region: FeishuRegion,
@@ -197,26 +232,27 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
     tokenFor: (bot: BotRecord, signal: AbortSignal) => Promise<string>,
     signal: AbortSignal
   ): Promise<MembershipResult> {
-    const now = this.deps.clock.now()
-    const cached = this.membershipCache.get(key)
-    if (cached && cached.expiresAt > now) return Promise.resolve(cached.result)
-    if ((this.quotaBlockedUntil.get(quotaKey) ?? 0) > now) {
-      return Promise.resolve({
-        status: 'unknown',
-        issue: { provider: 'feishu', region, reason: 'quota' }
-      })
+    const cached = this.membership.get(key)
+    if (cached) return cached
+    // The quota gate sits BETWEEN the cache and the provider: once this app has
+    // exhausted its quota there is nothing to ask, but an answer already cached
+    // above stays perfectly usable.
+    if ((this.quotaBlockedUntil.get(quotaKey) ?? 0) > this.deps.clock.now()) {
+      return { status: 'unknown', issue: { provider: 'feishu', region, reason: 'quota' } }
     }
-    const existing = this.pendingMembership.get(key)
-    if (existing) return existing
-
-    const pending = this.listMembers(region, chatId, bot, tokenFor, signal, quotaKey)
-      .then((result) => {
-        if (!(result.status === 'unknown' && result.issue.reason === 'quota')) this.putMembershipCache(key, result)
-        return result
-      })
-      .finally(() => this.pendingMembership.delete(key))
-    this.pendingMembership.set(key, pending)
-    return pending
+    const result = await this.membership.fetch(key, {
+      context: { region, chatId, bot, tokenFor, signal, quotaKey }
+    })
+    // Only reachable if the entry is dropped mid-flight; report it the way an
+    // unanswerable check is reported everywhere else here.
+    if (!result) return { status: 'unknown', issue: { provider: 'feishu', region, reason: 'unavailable' } }
+    // Running out of quota says nothing about the chat, so it must not occupy
+    // the entry: `quotaBlockedUntil` is what suppresses the retry storm, and it
+    // is already set by the time we get here.
+    if (result.status === 'unknown' && result.issue.reason === 'quota') {
+      this.membership.delete(key)
+    }
+    return result
   }
 
   private async listMembers(
@@ -315,15 +351,5 @@ export class FeishuSessionAccessService implements SessionAccessPlugin {
       throw new Error(`Feishu request failed: ${response.status}`)
     }
     return body
-  }
-
-  private putMembershipCache(key: string, result: MembershipResult): void {
-    if (this.membershipCache.size >= MAX_CACHE_ENTRIES) {
-      const oldest = this.membershipCache.keys().next().value as string | undefined
-      if (oldest) this.membershipCache.delete(oldest)
-    }
-    const ttl =
-      result.status === 'members' ? MEMBER_LIST_TTL_MS : result.status === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    this.membershipCache.set(key, { result, expiresAt: this.deps.clock.now() + ttl })
   }
 }

@@ -1,6 +1,6 @@
 # Ingress Tenant Fence
 
-> **Status:** Proposed → implemented in this change
+> **Status:** Implemented.
 >
 > **Scope:** The relay's inbound HTTP demux ladder (core) and the per-assignment
 > tenant identity the control plane projects into it.

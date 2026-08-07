@@ -1,6 +1,8 @@
+import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
-import type { ExternalScopeRecord, GithubInstallationRepo } from '../persistence/ports.js'
+import type { ExternalScopeRecord, GithubInstallationRecord, GithubInstallationRepo } from '../persistence/ports.js'
 import type { GithubService } from '../github/service.js'
 import { UserAuthzDeniedError, type GithubUserAuthzService } from '../github/user-authz.js'
 import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
@@ -11,9 +13,23 @@ const UNKNOWN_TTL_MS = 5_000
 const MAX_CACHE_ENTRIES = 10_000
 const SCOPES_PER_BATCH = 200
 const SCOPE_CONCURRENCY = 6
+/**
+ * How long one repository's shape (private flag + full name) is reused.
+ *
+ * The shape is a property of the REPOSITORY, not of the viewer — a public repo
+ * is readable by every org member with no identity check at all — while the
+ * decision cache below is keyed per user. So each user was paying their own
+ * uncached `GET /repositories/:id`, and for the public majority that lookup IS
+ * the entire check. Reusing it costs no lease: an `allow` expires this long
+ * after the shape was OBSERVED, not after it was reused (see `putCache`).
+ */
+const REPO_SHAPE_TTL_MS = 120_000
 
 type Decision = 'allow' | 'deny' | 'unknown'
-type CachedDecision = { decision: Decision; expiresAt: number }
+/** Narrowed `repoRefById` result; null = outside the installation's grant. */
+type RepoShape = { fullName: string; private: boolean } | null
+type ObservedRepoShape = { shape: RepoShape; fetchedAt: number }
+type ShapeLookup = { github: Pick<GithubService, 'repoRefById'>; ins: GithubInstallationRecord; repoId: bigint }
 
 async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(values.length)
@@ -34,7 +50,13 @@ async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value:
  * provider-owned and only bounded verdicts are cached in process. */
 export class GithubSessionAccessService implements SessionAccessPlugin {
   readonly provider = 'github'
-  private readonly cache = new Map<string, CachedDecision>()
+  /** Per-viewer verdicts. Every entry carries its own TTL — see `putCache`. */
+  private readonly cache: LRUCache<string, Decision>
+  /** (installation, repo) → shape. Shared across viewers, unlike `cache`.
+   *  `fetch` hands concurrent callers of one key the same promise, and drops
+   *  the entry when the lookup rejects, so a failed lookup stays a
+   *  per-request verdict instead of pinning a transient GitHub failure. */
+  private readonly shapes: LRUCache<string, ObservedRepoShape, ShapeLookup>
 
   constructor(
     private readonly deps: {
@@ -43,7 +65,19 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       userAuthz?: Pick<GithubUserAuthzService, 'permissionForUser'>
       clock: Clock
     }
-  ) {}
+  ) {
+    this.cache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
+    this.shapes = new LRUCache({
+      ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
+      ttl: REPO_SHAPE_TTL_MS,
+      fetchMethod: async (_key, _stale, { context }) => ({
+        shape: await context.github
+          .repoRefById(context.ins, context.repoId)
+          .then((repo) => (repo ? { fullName: repo.fullName, private: repo.private } : null)),
+        fetchedAt: deps.clock.now()
+      })
+    })
+  }
 
   get available(): boolean {
     return this.deps.github !== undefined && this.deps.userAuthz !== undefined
@@ -84,7 +118,8 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     ) {
       return 'deny'
     }
-    if (!this.deps.github) return 'unknown'
+    const github = this.deps.github
+    if (!github) return 'unknown'
     // Fenced on the org recorded in the session's own external scope row — the
     // check this replaces (org-scoped-data-layer.md §3).
     const installation = await this.deps.installations.get(OrgId(scope.orgId), scope.credentialId).catch(() => null)
@@ -93,11 +128,21 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
 
     const key = [scope.id, scope.aclRevision.toString(), installation.installationId.toString(), userId].join(':')
     const cached = this.cache.get(key)
-    if (cached && cached.expiresAt > this.deps.clock.now()) return cached.decision
+    if (cached) return cached
 
     let decision: Decision
+    // When the verdict rests on a reused repository shape, its lease runs from
+    // when that shape was observed rather than from now.
+    let evidenceAt = this.deps.clock.now()
     try {
-      const repo = await this.deps.github.repoRefById(installation, BigInt(scope.resourceKey))
+      const observed = await this.shapes.fetch(`${installation.installationId}:${scope.resourceKey}`, {
+        context: { github, ins: installation, repoId: BigInt(scope.resourceKey) }
+      })
+      // Only reachable if the entry is dropped mid-flight. Fail closed rather
+      // than reading it as "no such repository", which is a deny we cannot back.
+      if (!observed) return 'unknown'
+      evidenceAt = observed.fetchedAt
+      const repo = observed.shape
       if (!repo) decision = 'deny'
       else if (!repo.private) decision = 'allow'
       else if (!this.deps.userAuthz) decision = 'deny'
@@ -115,16 +160,18 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     } catch (err) {
       decision = err instanceof UserAuthzDeniedError ? 'deny' : 'unknown'
     }
-    this.putCache(key, decision)
+    this.putCache(key, decision, evidenceAt)
     return decision
   }
 
-  private putCache(key: string, decision: Decision): void {
-    if (this.cache.size >= MAX_CACHE_ENTRIES) {
-      const oldest = this.cache.keys().next().value as string | undefined
-      if (oldest) this.cache.delete(oldest)
-    }
+  private putCache(key: string, decision: Decision, evidenceAt: number): void {
     const ttl = decision === 'allow' ? ALLOW_TTL_MS : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    this.cache.set(key, { decision, expiresAt: this.deps.clock.now() + ttl })
+    // An `allow` is leased from the EVIDENCE it rests on — `start` is the
+    // observation, not the reuse — so serving a cached repository shape can
+    // never stretch the window a fresh lookup would have granted. `deny` and
+    // `unknown` run from now: reused evidence can only narrow access, never
+    // widen it, so there is nothing to bound.
+    const start = decision === 'allow' ? Math.min(evidenceAt, this.deps.clock.now()) : undefined
+    this.cache.set(key, decision, { ttl, ...(start !== undefined ? { start } : {}) })
   }
 }

@@ -1,7 +1,8 @@
 import type { FastifyRequest } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { canViewSession } from '../authorization/policy.js'
-import type { ExternalScopeRecord } from '../persistence/ports.js'
+import type { ExternalScopeRecord, SessionFilterQuery } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import type { SessionAccessPlugin } from './session-access-plugin.js'
 import { makeSessionAccessResolver } from './session-access.js'
@@ -120,6 +121,193 @@ describe('makeSessionAccessResolver', () => {
     ])
 
     expect(access.degraded).toBe(false)
+    expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
+  })
+})
+
+/**
+ * One console page load asks the same authorization question from `/sessions`,
+ * `/sessions/facets` and `/usage` at once, and each answer used to cost its own
+ * provider sweep — which is what made those three the only reads on the page
+ * measured in seconds.
+ */
+describe('makeSessionAccessResolver snapshot', () => {
+  const query: SessionFilterQuery = { agentIds: [] } as unknown as SessionFilterQuery
+
+  /** `Clock` reports wall-clock epoch milliseconds, and the snapshot needs it
+   *  to: lru-cache reads a falsy entry start as "no TTL recorded", so a clock
+   *  left at 0 would make the first snapshot immortal. */
+  const EPOCH = 1_777_000_000_000
+
+  /** Lets a background refresh settle without advancing the clock. */
+  const settle = () => new Promise((done) => setImmediate(done))
+
+  function harness(scopes: readonly ExternalScopeRecord[] = [scope]) {
+    const clock = new FakeClock(EPOCH)
+    let sweeps = 0
+    const resolve = vi.fn(async (given: readonly ExternalScopeRecord[]) => ({
+      allowedScopes: given.map(({ id, aclRevision }) => ({ id, aclRevision })),
+      // Marks WHICH sweep an answer came from, so a test can tell a served
+      // snapshot from the refresh that replaced it.
+      degraded: ++sweeps > 1,
+      accessIssues: []
+    })) satisfies SessionAccessPlugin['resolve']
+    const deps = {
+      repos: {
+        session: {
+          listExternalScopes: vi.fn(async () => scopes),
+          getExternalScopes: vi.fn(async (ids: readonly string[]) => scopes.filter((row) => ids.includes(row.id))),
+          getExternalAccessPolicy: vi.fn(async () => null)
+        }
+      },
+      clock,
+      sessionAccessPlugins: [{ provider: 'feishu', available: true, resolve }]
+    } as unknown as HttpDeps
+    return { deps, clock, resolve }
+  }
+
+  it('collapses the concurrent reads of one page load into a single provider sweep', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    const [first, second, third] = await Promise.all([
+      resolver.forQuery(request(), query),
+      resolver.forQuery(request(), query),
+      resolver.forQuery(request(), query)
+    ])
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+    for (const access of [first, second, third]) {
+      expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
+    }
+  })
+
+  it('shares one snapshot across the route modules that each build a resolver', async () => {
+    const { deps, resolve } = harness()
+
+    await makeSessionAccessResolver(deps).forQuery(request(), query)
+    await makeSessionAccessResolver(deps).forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('serves a fresh snapshot without touching the providers', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(29_999)
+    await resolver.forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('serves the snapshot it has and refreshes behind the request', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(30_001)
+
+    // Past the fresh window: this read must NOT wait on the sweep, so it still
+    // reports the first sweep's answer (`degraded: false`).
+    const served = await resolver.forQuery(request(), query)
+    expect(served.degraded).toBe(false)
+
+    // …and the refresh it kicked off lands without anyone waiting for it, so
+    // the next read sees the second sweep.
+    await settle()
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect((await resolver.forQuery(request(), query)).degraded).toBe(true)
+  })
+
+  it('blocks on a real sweep once the ceiling passes', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(60_001)
+
+    // Nothing servable is left, so this read waits and gets the fresh answer
+    // rather than an arbitrarily old one.
+    expect((await resolver.forQuery(request(), query)).degraded).toBe(true)
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps serving the previous snapshot when a refresh behind the request fails', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(30_001)
+    resolve.mockRejectedValueOnce(new Error('slack unreachable'))
+
+    await expect(resolver.forQuery(request(), query)).resolves.toMatchObject({ degraded: false })
+    await settle()
+    // A provider blip does not empty the answer, and does not surface as an
+    // error on a read that never waited for it.
+    await expect(resolver.forQuery(request(), query)).resolves.toMatchObject({
+      degraded: false,
+      externalAccess: { allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }] }
+    })
+  })
+
+  // The ceiling has to hold even when a refresh straddles it. `fetch` coalesces
+  // a later caller onto the SAME in-flight promise and settles it with the
+  // options of the fetch that created it, so a stale-on-rejection policy set by
+  // the refresh would leak to a caller that was supposed to block.
+  it('makes a caller that arrives past the ceiling observe a straddling refresh’s failure', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+
+    // A refresh that starts inside the stale window and is still running later.
+    let failRefresh!: (err: Error) => void
+    resolve.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failRefresh = reject
+        })
+    )
+    clock.advance(30_001)
+    await expect(resolver.forQuery(request(), query)).resolves.toMatchObject({ degraded: false })
+
+    // Past the ceiling nothing is servable, so this caller joins the pending
+    // refresh and must see its failure rather than inherit the old snapshot.
+    clock.advance(30_000)
+    const blocked = resolver.forQuery(request(), query)
+    // It has to reach the cache and join that refresh BEFORE the refresh
+    // settles, or it simply starts a sweep of its own and the overlap this test
+    // exists for never happens.
+    await settle()
+    failRefresh(new Error('slack unreachable'))
+
+    await expect(blocked).rejects.toThrow('slack unreachable')
+  })
+
+  it('keys the snapshot on the scope set, so a re-fenced scope never hits a stale entry', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    // An ACL bump rewrites `aclRevision`; the same conversation is now a
+    // different authorization question and must not reuse the old answer.
+    deps.repos.session.listExternalScopes = vi.fn(async () => [{ ...scope, aclRevision: 3n }]) as never
+    await resolver.forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('never caches a failed sweep as a verdict', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+    resolve.mockRejectedValueOnce(new Error('slack unreachable'))
+
+    await expect(resolver.forQuery(request(), query)).rejects.toThrow('slack unreachable')
+    const access = await resolver.forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(2)
     expect(access.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
   })
 })
