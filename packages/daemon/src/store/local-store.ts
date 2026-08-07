@@ -571,9 +571,15 @@ const SCHEMA_VERSION = 1
  * at query time rather than at boot.
  *
  * Step `i` upgrades a database at `user_version === i + 1` to `i + 2`; each runs
- * exactly once, in order, inside one transaction. A fresh database is stamped
- * straight to {@link SCHEMA_VERSION} and skips the list, because the `CREATE`
- * block above always emits the current schema.
+ * exactly once, in order, inside one transaction, and all of them run BEFORE the
+ * constructor's `CREATE` block. A fresh database is stamped straight to
+ * {@link SCHEMA_VERSION} and skips the list, because the `CREATE` block always
+ * emits the current schema.
+ *
+ * A step only needs to reshape what already exists — add a column, rewrite a
+ * table, backfill. Plain `CREATE TABLE`/`CREATE INDEX` for anything new belongs
+ * in the `CREATE` block, which runs afterwards and is `IF NOT EXISTS`, so it
+ * covers fresh and upgraded stores from the one description.
  */
 const SCHEMA_MIGRATIONS: ((db: DatabaseSync) => void)[] = []
 
@@ -604,6 +610,7 @@ export class LocalStore {
     // indistinguishable from an old one a moment later.
     const freshDatabase =
       (this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get() as { n: number }).n === 0
+    this.upgradeSchema(freshDatabase)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
@@ -976,7 +983,9 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
     `)
-    this.applySchemaMigrations(freshDatabase)
+    // Stamped only once the CREATE block above has actually emitted that schema, so
+    // a store that failed halfway through creation is not left claiming to be current.
+    if (freshDatabase) this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
     // The revision counter is in-memory but the rows it numbers are durable, so it
     // must resume from the database on every open — starting a restarted daemon back
     // at 0 would hand already-issued revisions to new rows.
@@ -995,20 +1004,26 @@ export class LocalStore {
   /**
    * Bring a store written by an older daemon up to {@link SCHEMA_VERSION}.
    *
+   * Runs BEFORE the constructor's `CREATE` block, and both halves of that
+   * ordering are load-bearing:
+   *
+   * - The `CREATE` block describes the CURRENT schema, so it may index a column
+   *   some future step introduces. Running it first would put that
+   *   `CREATE INDEX` against a table the step has not widened yet.
+   * - A store from a newer daemon must be refused having been left ALONE. The
+   *   `CREATE` block is `IF NOT EXISTS`, but on a newer database "not exists" is
+   *   itself the wrong question — it would add this version's objects to a store
+   *   whose shape this build cannot reason about, and only then reject it.
+   *
    * Each step commits with the version it produced, so an interrupted upgrade
-   * resumes at the first unapplied step instead of replaying applied ones. A
-   * version from the FUTURE (the user rolled a daemon back) is left untouched:
-   * this code cannot know what the newer schema did, and silently running old
-   * steps over it would corrupt more than it fixed.
+   * resumes at the first unapplied step instead of replaying applied ones.
    */
-  private applySchemaMigrations(freshDatabase: boolean): void {
-    const read = (): number => (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
-    if (freshDatabase) {
-      this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
-      return
-    }
+  private upgradeSchema(freshDatabase: boolean): void {
+    // Nothing to upgrade, and nothing to refuse: the caller stamps the version
+    // once the `CREATE` block has emitted the current schema.
+    if (freshDatabase) return
     // Databases created before versioning read 0; they carry the v1 schema.
-    let version = read() || 1
+    let version = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version || 1
     if (version > SCHEMA_VERSION)
       throw new Error(
         `local store schema v${version} is newer than this daemon understands (v${SCHEMA_VERSION}) — upgrade the daemon`

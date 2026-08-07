@@ -38,16 +38,30 @@ describe('LocalStore schema versioning', () => {
     expect(userVersion(path)).toBe(stamped)
   })
 
-  it('refuses a store written by a newer daemon instead of running old steps over it', () => {
+  it('refuses a store written by a newer daemon WITHOUT touching it first', () => {
     // Rolling a daemon back must fail loudly: this build cannot know what the newer
-    // schema did, so "upgrading" it would corrupt more than it fixed.
+    // schema did, so "upgrading" it would corrupt more than it fixed. The refusal
+    // has to land before any DDL — the CREATE block is IF NOT EXISTS, but on a
+    // newer store "not exists" is the wrong question, and re-adding this version's
+    // objects is exactly the damage the refusal exists to prevent.
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-future-')), 'local.sqlite')
     new LocalStore(path).close()
-    const db = new DatabaseSync(path)
-    db.exec('PRAGMA user_version = 9999')
-    db.close()
+    const setup = new DatabaseSync(path)
+    // Stand in for an object this build would happily recreate.
+    setup.exec('DROP TABLE transcript')
+    setup.exec('PRAGMA user_version = 9999')
+    setup.close()
 
     expect(() => new LocalStore(path)).toThrow(/newer than this daemon understands/)
+
+    const after = new DatabaseSync(path)
+    const rebuilt = after
+      .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'transcript'")
+      .get() as { n: number }
+    const version = after.prepare('PRAGMA user_version').get() as { user_version: number }
+    after.close()
+    expect(rebuilt.n).toBe(0) // the CREATE block never ran
+    expect(version.user_version).toBe(9999) // and the version was not rewritten
   })
 })
 
