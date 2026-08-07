@@ -107,7 +107,6 @@ async function nextFrame(ws: BufferedWs, type: string): Promise<Frame> {
     await new Promise((r) => setTimeout(r, 5))
   }
 }
-const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 30))
 
 describe('createRelayBrowserServer (browser webchat edge)', () => {
   it('refuses a dial with no token (401) — never completes the handshake', async () => {
@@ -282,7 +281,8 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
     await nextFrame(ws, 'ready')
     expect(router.size()).toBe(1)
     ws.close()
-    await tick()
-    expect(router.size()).toBe(0)
+    // The server-side unregister runs async after the close handshake — poll (same 2s
+    // budget as `nextFrame`); a fixed sleep lost the race on a loaded CI runner.
+    await vi.waitFor(() => expect(router.size()).toBe(0), { timeout: 2000, interval: 5 })
   })
 })
