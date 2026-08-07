@@ -212,8 +212,13 @@ describe('SessionRail room attribution', () => {
       }
     })
 
-    expect(markup).toContain('Delegated by')
-    expect(markup).toContain('Delegated to')
+    // Direction is drawn as indent, so the words live in the tooltip and in
+    // sr-only text — never in a heading line, which restated the indent below
+    // it and usually the title with it.
+    expect(markup).toContain('title="Delegated by Alert Analyzer')
+    expect(markup).toContain('title="Delegated to node-operator')
+    expect(markup).toContain('<span class="sr-only">Delegated by</span>')
+    expect(markup).toContain('<span class="sr-only">Delegated to</span>')
     // The identities, which the shared title cannot carry.
     expect(markup).toContain('Alert Analyzer')
     expect(markup).toContain('node-operator')
