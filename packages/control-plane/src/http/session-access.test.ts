@@ -139,11 +139,17 @@ describe('makeSessionAccessResolver snapshot', () => {
    *  left at 0 would make the first snapshot immortal. */
   const EPOCH = 1_777_000_000_000
 
+  /** Lets a background refresh settle without advancing the clock. */
+  const settle = () => new Promise((done) => setImmediate(done))
+
   function harness(scopes: readonly ExternalScopeRecord[] = [scope]) {
     const clock = new FakeClock(EPOCH)
+    let sweeps = 0
     const resolve = vi.fn(async (given: readonly ExternalScopeRecord[]) => ({
       allowedScopes: given.map(({ id, aclRevision }) => ({ id, aclRevision })),
-      degraded: false,
+      // Marks WHICH sweep an answer came from, so a test can tell a served
+      // snapshot from the refresh that replaced it.
+      degraded: ++sweeps > 1,
       accessIssues: []
     })) satisfies SessionAccessPlugin['resolve']
     const deps = {
@@ -185,18 +191,65 @@ describe('makeSessionAccessResolver snapshot', () => {
     expect(resolve).toHaveBeenCalledTimes(1)
   })
 
-  it('re-asks the providers once the snapshot window closes', async () => {
+  it('serves a fresh snapshot without touching the providers', async () => {
     const { deps, clock, resolve } = harness()
     const resolver = makeSessionAccessResolver(deps)
 
     await resolver.forQuery(request(), query)
-    clock.advance(4_999)
+    clock.advance(29_999)
     await resolver.forQuery(request(), query)
-    expect(resolve).toHaveBeenCalledTimes(1)
 
-    clock.advance(2)
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('serves the snapshot it has and refreshes behind the request', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
     await resolver.forQuery(request(), query)
+    clock.advance(30_001)
+
+    // Past the fresh window: this read must NOT wait on the sweep, so it still
+    // reports the first sweep's answer (`degraded: false`).
+    const served = await resolver.forQuery(request(), query)
+    expect(served.degraded).toBe(false)
+
+    // …and the refresh it kicked off lands without anyone waiting for it, so
+    // the next read sees the second sweep.
+    await settle()
     expect(resolve).toHaveBeenCalledTimes(2)
+    expect((await resolver.forQuery(request(), query)).degraded).toBe(true)
+  })
+
+  it('blocks on a real sweep once the ceiling passes', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(60_001)
+
+    // Nothing servable is left, so this read waits and gets the fresh answer
+    // rather than an arbitrarily old one.
+    expect((await resolver.forQuery(request(), query)).degraded).toBe(true)
+    expect(resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps serving the previous snapshot when a refresh behind the request fails', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(30_001)
+    resolve.mockRejectedValueOnce(new Error('slack unreachable'))
+
+    await expect(resolver.forQuery(request(), query)).resolves.toMatchObject({ degraded: false })
+    await settle()
+    // A provider blip does not empty the answer, and does not surface as an
+    // error on a read that never waited for it.
+    await expect(resolver.forQuery(request(), query)).resolves.toMatchObject({
+      degraded: false,
+      externalAccess: { allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }] }
+    })
   })
 
   it('keys the snapshot on the scope set, so a re-fenced scope never hits a stale entry', async () => {
