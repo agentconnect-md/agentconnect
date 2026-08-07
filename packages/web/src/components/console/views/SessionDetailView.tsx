@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { selfConversationPath } from '@/lib/conversation-addressing'
-import { assembleConversationLineage } from '@/lib/conversation-lineage'
+import { assembleConversationLineage, type ConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { unverifiedConversationNotice } from '@/lib/session-access-notifications'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -155,6 +155,11 @@ const COMPOSER_PILL =
   'inline-flex h-7 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary) hover:bg-(--surface-hover)'
 const COMPOSER_PILL_STATIC =
   'inline-flex h-7 min-w-0 items-center gap-[7px] rounded-full px-[10px] max-desktop:px-0 font-mono text-[11.5px] font-medium leading-normal text-(--text-primary)'
+
+// A conversation whose cross-room lineage has not landed yet. Stable identity so
+// the family it feeds is not a new object on every render while the multi-request
+// lineage fetch is in flight.
+const EMPTY_CONVERSATION_FAMILY: ConversationLineage['family'] = { parentSessions: [], childSessions: [] }
 
 // The "fast" tag shown inside the model pill when fast mode is on.
 function FastBadge() {
@@ -999,7 +1004,7 @@ function SessionRelationLink({
 }
 
 function MobileSessionFamilyLinks({
-  parent,
+  parents,
   siblings,
   children,
   agentById,
@@ -1008,7 +1013,12 @@ function MobileSessionFamilyLinks({
   flatView = false,
   childOriginById
 }: {
-  parent: SessionRelationDto | null
+  /** Whatever woke this page. A session has at most one parent; a merged
+   *  conversation has one per member woken from another room, and they are all
+   *  parents — none of them is a sibling of anything. */
+  parents: SessionRelationDto[]
+  /** LINEAGE siblings: the other children of this session's parent. A
+   *  conversation has no such relation and passes none. */
   siblings: SessionRelationDto[]
   children: SessionRelationDto[]
   agentById: ReadonlyMap<string, Agent>
@@ -1020,24 +1030,34 @@ function MobileSessionFamilyLinks({
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
 }) {
-  if (!parent && siblings.length === 0 && children.length === 0) return null
+  if (parents.length === 0 && siblings.length === 0 && children.length === 0) return null
   return (
     <div className="card mx-4 mt-4 overflow-hidden desktop:hidden">
-      {parent && (
+      {parents.length > 0 && (
         <div
           className={`grid grid-cols-[104px_minmax(0,1fr)] gap-3 px-4 ${
             siblings.length > 0 || children.length > 0 ? 'border-b border-(--border-subtle)' : ''
           }`}
         >
           <span className="py-[10px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-            {conversation ? 'Parent conversation' : 'Parent session'}
+            {conversation
+              ? parents.length === 1
+                ? 'Parent conversation'
+                : `Parent conversations (${parents.length})`
+              : 'Parent session'}
           </span>
-          <SessionRelationLink
-            relation={parent}
-            agent={agentById.get(parent.agentId)}
-            orgPath={orgPath}
-            flatView={flatView}
-          />
+          <div className="min-w-0">
+            {parents.map((parent, index) => (
+              <SessionRelationLink
+                key={parent.id}
+                relation={parent}
+                agent={agentById.get(parent.agentId)}
+                orgPath={orgPath}
+                flatView={flatView}
+                bordered={index > 0}
+              />
+            ))}
+          </div>
         </div>
       )}
       {siblings.length > 0 && (
@@ -1256,9 +1276,7 @@ export default function SessionDetailView() {
   // Conversation mode NEVER falls back to the representative's raw family —
   // an empty aggregate means "no cross-room edges", not "show the intra-room
   // links the filter just removed".
-  const conversationFamily = conversationMode
-    ? (conversationLineage?.family ?? { parentSession: null, siblingSessions: [], childSessions: [] })
-    : undefined
+  const conversationFamily = conversationMode ? (conversationLineage?.family ?? EMPTY_CONVERSATION_FAMILY) : undefined
   const {
     agents,
     allSessions,
@@ -1527,6 +1545,27 @@ export default function SessionDetailView() {
         }
       : sessionBase
   const agentRuntime = session?.runtime || owner?.runtime || ''
+
+  // The lineage links the rail and the mobile card draw, in their three levels
+  // rather than either source's wire shape: what woke the open row, the row
+  // itself, what it woke.
+  //
+  // A conversation contributes no lineage SIBLINGS. That relation is "the other
+  // children of my parent session" — a per-session fact the CP derives, which a
+  // room has no version of — so the slot stays absent here instead of carrying
+  // this page's additional parent conversations under a name that means
+  // something else. Those are parents, and they render as parents.
+  const familyLinks = useMemo(() => {
+    if (conversationFamily) {
+      return { parentSessions: conversationFamily.parentSessions, childSessions: conversationFamily.childSessions }
+    }
+    if (!currentSessionDetail || currentSessionDetail.id !== session?.id) return undefined
+    return {
+      parentSessions: currentSessionDetail.parentSession ? [currentSessionDetail.parentSession] : [],
+      siblingSessions: currentSessionDetail.siblingSessions ?? [],
+      childSessions: currentSessionDetail.childSessions
+    }
+  }, [conversationFamily, currentSessionDetail, session?.id])
 
   // A non-flat single-session transcript can contain messages from visible A2A
   // relatives without becoming a same-coordinate merged conversation. Surface
@@ -3417,28 +3456,17 @@ export default function SessionDetailView() {
           )}
         </div>
 
-        {conversationFamily ? (
+        {familyLinks && (
           <MobileSessionFamilyLinks
-            parent={conversationFamily.parentSession}
-            siblings={conversationFamily.siblingSessions}
-            children={conversationFamily.childSessions}
+            parents={familyLinks.parentSessions}
+            siblings={familyLinks.siblingSessions ?? []}
+            children={familyLinks.childSessions}
             agentById={agentById}
             orgPath={orgPath}
-            conversation
+            conversation={conversationMode}
             flatView={flatView}
             childOriginById={conversationLineage?.childOriginById}
           />
-        ) : (
-          currentSessionDetail?.id === session.id && (
-            <MobileSessionFamilyLinks
-              parent={currentSessionDetail.parentSession}
-              siblings={currentSessionDetail.siblingSessions ?? []}
-              children={currentSessionDetail.childSessions}
-              agentById={agentById}
-              orgPath={orgPath}
-              flatView={flatView}
-            />
-          )
         )}
 
         {!isLive && approvalCard('mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4')}
@@ -4248,7 +4276,7 @@ export default function SessionDetailView() {
         agentIds={railDisplayAgentIds}
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
-        family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
+        family={familyLinks}
         flatView={flatView}
         childOriginById={conversationLineage?.childOriginById}
         roomLineage={conversationLineage?.roomLineage}

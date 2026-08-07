@@ -20,7 +20,7 @@
 // depending on how many members happened to resolve that second.
 //
 // The two must NOT share a shape. `family` is navigation in the UI — a
-// `parentSession` links AWAY, to another conversation — so putting a
+// `parentSessions` entry links AWAY, to another conversation — so putting a
 // co-participant there hands the reader a link back to the page they are on.
 // Attribution is therefore its own structure, anchored on the open row: who
 // woke it, and whom it woke. The rail draws both on the same three levels
@@ -46,8 +46,14 @@ export interface LineageMemberDetail {
 export interface ConversationLineage {
   /** Navigation OUT of this conversation (§9.2), unchanged. */
   family: {
-    parentSession: SessionRelationDto | null
-    siblingSessions: SessionRelationDto[]
+    /** Every conversation that woke a member of this one. A merged page has as
+     *  many as it has members with a cross-room parent, and they are all the
+     *  SAME relation — so they stay in ONE list rather than a privileged head
+     *  plus a tail borrowing some other slot's name. There is deliberately no
+     *  sibling slot here: "sibling" is lineage's own word for the other
+     *  children of one parent session (§9.1), which is a per-session fact a
+     *  conversation has no version of. */
+    parentSessions: SessionRelationDto[]
     childSessions: SessionRelationDto[]
   }
   /** Delegation target id → the agent whose member session woke it. */
@@ -121,7 +127,6 @@ export function assembleConversationLineage(input: {
       const bo = childOriginById.get(b.id) ?? ''
       return ao < bo ? -1 : ao > bo ? 1 : a.id < b.id ? -1 : 1
     })
-  const [firstParent, ...moreParents] = crossParents
 
   // Attribution: the open row's own edges, kept only when they point at another
   // participant that is actually on this page.
@@ -139,10 +144,9 @@ export function assembleConversationLineage(input: {
 
   return {
     family: {
-      // The family UI models ONE parent; extra cross-room delegation origins
-      // surface beside the delegations.
-      parentSession: firstParent ?? null,
-      siblingSessions: moreParents,
+      // Member order, which is the roster's order: nothing here ranks one
+      // waking conversation above another, so none of them is singled out.
+      parentSessions: crossParents,
       childSessions: crossChildren
     },
     childOriginById,

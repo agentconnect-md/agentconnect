@@ -71,8 +71,7 @@ describe('assembleConversationLineage', () => {
       [A, B]
     ]) {
       const { family } = room(order)
-      expect(family.parentSession).toBeNull()
-      expect(family.siblingSessions).toEqual([])
+      expect(family.parentSessions).toEqual([])
       expect(family.childSessions).toEqual([])
     }
   })
@@ -96,7 +95,7 @@ describe('assembleConversationLineage', () => {
       ])
     })
 
-    expect(out.family.parentSession).toEqual(relation('far-parent'))
+    expect(out.family.parentSessions).toEqual([relation('far-parent')])
     expect(out.family.childSessions).toEqual([relation('far-child')])
     expect(out.roomLineage).toEqual({ wokenBy: null, woke: [] })
     expect(out.childOriginById.get('far-child')).toBe(`agent-of-${A}`)
@@ -113,7 +112,7 @@ describe('assembleConversationLineage', () => {
       targetLocations: new Map([['session-superseded', at(ROOM)]])
     })
 
-    expect(out.family.parentSession).toBeNull()
+    expect(out.family.parentSessions).toEqual([])
     expect(out.roomLineage.wokenBy).toBeNull()
   })
 
@@ -121,7 +120,38 @@ describe('assembleConversationLineage', () => {
     const out = room([B, A], { [A]: { kind: 'unreadable' } })
 
     expect(out.roomLineage.wokenBy).toBeNull()
-    expect(out.family.parentSession).toBeNull()
+    expect(out.family.parentSessions).toEqual([])
+  })
+
+  it('keeps every cross-room parent as a parent', () => {
+    // The regression this guards: with only one parent SLOT, the second waking
+    // conversation had to go somewhere, and it went into `siblingSessions` —
+    // which on a single-session page means the other children of one parent.
+    // The rail then drew it at the open row's own level, below a divider,
+    // describing a conversation that woke this one as a peer of it.
+    const out = assembleConversationLineage({
+      conversationKey: ROOM,
+      members: [{ sessionId: A }, { sessionId: B }],
+      details: [detail(A, { parent: 'far-parent-1' }), detail(B, { parent: 'far-parent-2' })],
+      targetLocations: new Map([
+        ['far-parent-1', at(OTHER_ROOM)],
+        ['far-parent-2', at('room-3')]
+      ])
+    })
+
+    expect(out.family.parentSessions).toEqual([relation('far-parent-1'), relation('far-parent-2')])
+    expect(out.family.childSessions).toEqual([])
+  })
+
+  it('deduplicates one shared parent across members', () => {
+    const out = assembleConversationLineage({
+      conversationKey: ROOM,
+      members: [{ sessionId: A }, { sessionId: B }],
+      details: [detail(A, { parent: 'far-parent' }), detail(B, { parent: 'far-parent' })],
+      targetLocations: new Map([['far-parent', at(OTHER_ROOM)]])
+    })
+
+    expect(out.family.parentSessions).toEqual([relation('far-parent')])
   })
 
   it('ignores a member whose detail could not be fetched', () => {

@@ -488,6 +488,21 @@ already carry the links, and mapping a session to its conversation key is a
 metadata lookup.
 (C2 ships the links; grouping delegations by waking turn is C3.)
 
+The lifted shape carries **all** waking conversations in one list, and carries
+no sibling slot at all. A conversation has as many parents as it has members
+woken from elsewhere, and they are peers — the union that produced them does
+not record which member each one woke, so nothing ranks one of them first.
+Level 0 holds every one of them, alongside `wokenBy` for the same reason.
+
+An earlier shape kept a single `parentSession` and spilled the remainder into
+`siblingSessions`, which is where it collided with §9.1's last paragraph: on a
+single-session page that field means the other children of ONE parent, and the
+rail draws it at the open row's own level below a divider. So a conversation
+that WOKE this one was rendered beside the row it woke rather than above it —
+two meanings in one slot, and the wrong one drawn. The conversation-level
+structure therefore names only what it actually has, parents and delegations,
+and the per-session DTO keeps `siblingSessions` to itself.
+
 One invariant stays absolute: **lineage never changes membership**. A child
 spawned elsewhere is linked, never merged in — merging by causation would
 break the location-pure dedupe (§6) and blur the structural guarantees around
@@ -597,4 +612,7 @@ how divergence starts.
    room-mates-AND-siblings overlap is displayed once, not twice (§9.1).
    Attribution is surfaced in the rail as tree position around the open row —
    waker above it, woken below — and kept out of the family shape, whose parent
-   slot means "another conversation" and navigates away (§9.1).
+   slot means "another conversation" and navigates away (§9.1). The lifted
+   family has NO sibling slot: every waking conversation is a parent and
+   shares the level above the open row, so the per-session meaning of
+   `siblingSessions` is never borrowed to hold one (§9.2).
