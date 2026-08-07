@@ -65,8 +65,10 @@ describe('external-memory daemon-private frames', () => {
       }
     }
     expect(MemoryConnectionSpec.parse(value)).toEqual(value)
-    const { transport: _transport, ...legacy } = value
-    expect(MemoryConnectionSpec.parse(legacy)).toEqual(value)
+    // The transport discriminator is what selects the remote arm; without it there
+    // is no shape to fall back to.
+    const { transport: _transport, ...untransported } = value
+    expect(() => MemoryConnectionSpec.parse(untransported)).toThrow()
     expect(() => MemoryConnectionSpec.parse({ ...value, upstreamUrl: 'https://plugin.example' })).toThrow()
     expect(() =>
       MemoryConnectionSpec.parse({ ...value, pin: { ...value.pin, manifestDigest: 'a'.repeat(64) } })

@@ -1087,8 +1087,11 @@ export interface SessionMetaRecord {
   externalProvider: string | null
   externalScopeId: string | null
   externalResolution: ExternalResolution | null
-  /** Already unresolved when the policy was enabled — expected history rather
-   *  than a live failure, and inherited with the audience by A2A descendants. */
+  /** Already unresolved when THIS org enabled the policy — expected history
+   *  rather than a live failure, and inherited with the audience by A2A
+   *  descendants. "legacy" is relative to the enable, not to any release: every
+   *  enable re-stamps from scratch, so this stays live for as long as an org can
+   *  turn external access on. */
   legacyUnresolved: boolean
   classifiedPolicyRev: bigint | null
   /** Retention GC (#485): when the owning daemon deleted this session's local

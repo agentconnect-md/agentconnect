@@ -774,11 +774,11 @@ describe('agents/memory-provider (ManagedMemoryProvider)', () => {
     expect(await p.read(scope, 'missing.md')).toEqual({ path: 'missing.md', content: '' }) // ENOENT ⇒ ''
   })
 
-  it('injectAtSessionStart equals readIndex, truncating a huge index', async () => {
+  it('standingContextAtSessionStart equals readIndex, truncating a huge index', async () => {
     const dir = newDir()
     const p = provider(dir)
     await p.write(scope, MEMORY_INDEX, 'x'.repeat(MAX_INDEX_INJECT_BYTES + 5000))
-    const injected = await p.injectAtSessionStart(scope)
+    const injected = await p.standingContextAtSessionStart(scope)
     expect(injected).toBe(await readIndex(dir)) // byte-identical to the primitive
     expect(Buffer.byteLength(injected)).toBeLessThanOrEqual(MAX_INDEX_INJECT_BYTES)
     expect(injected).toContain('truncated')

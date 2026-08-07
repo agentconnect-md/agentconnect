@@ -991,9 +991,11 @@ model SessionMeta {
   // when its policy was enabled. Such a scope only comes back if new trusted
   // activity rebinds the session, so it is expected rather than a fault, and
   // `state` degrades only while an unresolved row WITHOUT this mark exists (a
-  // mere COUNT cannot tell the two apart: settling one legacy row would silently
-  // absolve a live post-enable failure). Stamped at enable; A2A descendants
-  // inherit it with the audience they inherit.
+  // mere COUNT cannot tell the two apart: settling one marked row would silently
+  // absolve a live post-enable failure). Stamped at enable and re-stamped on
+  // every re-enable; A2A descendants inherit it with the audience they inherit.
+  // "legacy" is relative to the org's enable, NOT to a release — this is live
+  // behavior for any org that turns external access on, not pre-release cruft.
   legacyUnresolved    Boolean             @default(false)
   // Cursor tokens pass through JavaScript Date (millisecond precision), so the
   // complete keyset tuple must use the same precision in Postgres.

@@ -27,32 +27,6 @@ export function buildEnvelope<T extends FrameType>(type: T, payload: unknown, op
   return buildEnvelopeRaw(type, payload, opts) as AnyFrame
 }
 
-function legacyRemoteMemoryConnection(value: unknown): unknown {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
-  const record = value as Record<string, unknown>
-  if (record.transport !== 'streamable-http') return value
-  const { transport: _transport, ...legacy } = record
-  return legacy
-}
-
-/** Keep M-5A remote connection frames readable by pre-M-5D daemons. Local
- * stdio definitions retain their explicit discriminator and therefore require
- * an M-5D daemon. Decoding always normalizes both shapes. */
 export function encode(frame: AnyFrame): string {
-  if (frame.type === 'memoryconnection/upsert') {
-    return JSON.stringify({ ...frame, payload: legacyRemoteMemoryConnection(frame.payload) })
-  }
-  if (frame.type === 'register/ok') {
-    const payload = frame.payload as unknown as Record<string, unknown>
-    if (Array.isArray(payload.memoryConnections)) {
-      return JSON.stringify({
-        ...frame,
-        payload: {
-          ...payload,
-          memoryConnections: payload.memoryConnections.map(legacyRemoteMemoryConnection)
-        }
-      })
-    }
-  }
   return JSON.stringify(frame)
 }

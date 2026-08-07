@@ -243,11 +243,11 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     expect(withIdentity.frame.payload.gitCommitIdentity).toEqual(gitCommitIdentity)
   })
 
-  it('legacy-encodes live remote memory upserts and normalizes them on decode', () => {
+  it('round-trips a remote memory upsert with its transport discriminator intact', () => {
     const frame = buildEnvelope('memoryconnection/upsert', remoteMemoryConnection, { ext: { epoch: 1 } })
     const encoded = encode(frame)
     const wire = JSON.parse(encoded) as { payload: Record<string, unknown> }
-    expect(wire.payload.transport).toBeUndefined()
+    expect(wire.payload.transport).toBe('streamable-http')
 
     const decoded = decodeEnvelope(encoded)
     if (!decoded.ok || !isFrame('memoryconnection/upsert')(decoded.frame)) {
@@ -256,7 +256,7 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     expect(decoded.frame.payload).toEqual(remoteMemoryConnection)
   })
 
-  it('legacy-encodes only remote memory definitions in reconnect snapshots', () => {
+  it('round-trips both memory transports in a reconnect snapshot', () => {
     const frame = buildEnvelope('register/ok', {
       routingEpoch: 1,
       assignments: [],
@@ -269,7 +269,7 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     const wire = JSON.parse(encoded) as {
       payload: { memoryConnections: Array<Record<string, unknown>> }
     }
-    expect(wire.payload.memoryConnections[0]?.transport).toBeUndefined()
+    expect(wire.payload.memoryConnections[0]?.transport).toBe('streamable-http')
     expect(wire.payload.memoryConnections[1]?.transport).toBe('stdio')
 
     const decoded = decodeEnvelope(encoded)

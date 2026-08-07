@@ -214,9 +214,6 @@ export interface MemoryProvider {
    * prefer this when their `MemoryProvider` can serve more than one agent. */
   adminSurfaceForAgent?(agentId: string): MemoryAdminSurface
 
-  /** @deprecated migration alias for pre-M-5 callers/tests. */
-  injectAtSessionStart(scope: MemoryScope): Promise<string>
-
   /** @deprecated migration alias; live injection uses toolsForAgent. */
   tools(): ToolDescriptor[]
 
@@ -302,10 +299,6 @@ export class ManagedMemoryProvider implements MemoryProvider {
     ensureMemory(this.dirFor(scope.agentId), agentName)
   }
 
-  async injectAtSessionStart(scope: MemoryScope): Promise<string> {
-    return this.standingContextAtSessionStart(scope)
-  }
-
   async standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
     return readIndex(this.dirFor(scope.agentId))
   }
@@ -376,10 +369,6 @@ export class NoMemoryProvider implements MemoryProvider {
   }
 
   ensure(): void {}
-
-  async injectAtSessionStart(): Promise<string> {
-    return this.standingContextAtSessionStart()
-  }
 
   async standingContextAtSessionStart(): Promise<string> {
     return ''
@@ -455,10 +444,6 @@ export class NativeMemoryProvider implements MemoryProvider {
 
   ensure(): void {
     // The runtime manages its own memory — nothing to seed.
-  }
-
-  async injectAtSessionStart(): Promise<string> {
-    return this.standingContextAtSessionStart()
   }
 
   async standingContextAtSessionStart(): Promise<string> {
@@ -563,10 +548,6 @@ export class ExternalMemoryProvider implements MemoryProvider {
   }
 
   ensure(): void {}
-
-  async injectAtSessionStart(): Promise<string> {
-    return this.standingContextAtSessionStart()
-  }
 
   async standingContextAtSessionStart(): Promise<string> {
     // External recall is query-dependent and runs on every activation. It must
@@ -874,9 +855,6 @@ export class DispatchingMemoryProvider implements MemoryProvider {
 
   ensure(scope: MemoryScope, agentName: string): void {
     this.forAgent(scope.agentId).ensure(scope, agentName)
-  }
-  injectAtSessionStart(scope: MemoryScope): Promise<string> {
-    return this.standingContextAtSessionStart(scope)
   }
   standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
     return this.forAgent(scope.agentId).standingContextAtSessionStart(scope)
