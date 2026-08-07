@@ -5,6 +5,17 @@ import { ADMIN_ROLE } from './auth.js'
 const MANAGED_APP_TAG = 'agentconnectSetup'
 const MANAGED_APP_TAG_VALUE = { version: 1, resource: 'browser' } as const
 
+/**
+ * Logto Cloud seeds new tenants with demo connectors that sit on real social targets such as
+ * `github` and `google`. Logto treats them as read-only fixtures: `GET` and `PATCH
+ * /api/connectors/:id` both answer 404, the listing hides their config, and creating the real
+ * connector fails with 422 `connector.multiple_target_with_same_platform` while one still holds
+ * the target. So a demo connector is never a connector we can adopt — it is an obstacle to remove
+ * before the managed one is created. `isDemo` is Logto's own flag; the id list is the fallback for
+ * deployments whose Logto predates it.
+ */
+const DEMO_CONNECTOR_IDS: readonly string[] = ['logto-social-demo', 'logto-sms']
+
 export interface LogtoManagementConfig {
   endpoint: string
   appId: string
@@ -43,6 +54,7 @@ interface LogtoConnector {
   connectorId: string
   target: string
   name: string | null
+  isDemo: boolean
   config: Record<string, unknown>
 }
 
@@ -186,6 +198,7 @@ function parseConnector(value: unknown): LogtoConnector | null {
     connectorId: row.connectorId,
     target,
     name: typeof name === 'string' ? name : null,
+    isDemo: row.isDemo === true || DEMO_CONNECTOR_IDS.includes(row.connectorId),
     config: asRecord(row.config)
   }
 }
@@ -233,7 +246,7 @@ function connectorMatches(connector: LogtoConnector, desired: ReturnType<typeof 
 }
 
 function selectConnector(connectors: readonly LogtoConnector[], target: string): LogtoConnector | undefined {
-  const matches = connectors.filter((connector) => connector.target === target)
+  const matches = connectors.filter((connector) => !connector.isDemo && connector.target === target)
   if (matches.length <= 1) return matches[0]
   throw new LogtoManagementError(
     'SOCIAL_CONNECTOR_AMBIGUOUS',
@@ -243,9 +256,16 @@ function selectConnector(connectors: readonly LogtoConnector[], target: string):
 
 function selectConnectorByName(connectors: readonly LogtoConnector[], name: string): LogtoConnector | undefined {
   const normalized = name.trim().toLocaleLowerCase('en-US')
-  const matches = connectors.filter((connector) => connector.name?.trim().toLocaleLowerCase('en-US') === normalized)
+  const matches = connectors.filter(
+    (connector) => !connector.isDemo && connector.name?.trim().toLocaleLowerCase('en-US') === normalized
+  )
   if (matches.length <= 1) return matches[0]
   throw new LogtoManagementError('SOCIAL_CONNECTOR_AMBIGUOUS', `Logto has more than one social connector named ${name}`)
+}
+
+/** Demo connectors holding a social target we need. They block creation and cannot be patched. */
+function selectDemoConnectors(connectors: readonly LogtoConnector[], target: string): LogtoConnector[] {
+  return connectors.filter((connector) => connector.isDemo && connector.target === target)
 }
 
 export class LogtoAdminClaimClient {
@@ -368,6 +388,13 @@ export class LogtoAdminClaimClient {
         diff: applicationDiff
       },
       connectors: desired.socialProviders.map((target) => {
+        // A Logto Cloud demo connector on this target is not the connector we want; report it so
+        // the operator sees why the target reads as missing and what reconciliation will remove.
+        const demos = selectDemoConnectors(connectors, target).map((demo): LogtoConfigurationDiff => ({
+          field: `${target} demo connector`,
+          current: demo.name ?? demo.connectorId,
+          expected: 'Removed'
+        }))
         if (!isManagedConnectorTarget(target)) {
           const connector = selectConnector(connectors, target)
           return {
@@ -375,12 +402,14 @@ export class LogtoAdminClaimClient {
             id: connector?.id ?? null,
             exists: connector !== undefined,
             matches: connector !== undefined,
-            diff: connector ? [] : [{ field: `${target} connector`, current: 'Missing', expected: 'Configured' }]
+            diff: connector
+              ? demos
+              : [...demos, { field: `${target} connector`, current: 'Missing', expected: 'Configured' }]
           }
         }
         const expected = desiredConnector(target, desired)
         const connector = selectConnector(connectors, target)
-        const diff: LogtoConfigurationDiff[] = []
+        const diff: LogtoConfigurationDiff[] = [...demos]
         if (!connector) {
           diff.push({ field: `${target} connector`, current: 'Missing', expected: expected.id })
         } else {
@@ -389,7 +418,7 @@ export class LogtoAdminClaimClient {
           if (target === 'slack') {
             addDiff(diff, 'Slack OIDC scope', connector.config.scope ?? null, expected.config.scope ?? null)
           }
-          if (!connectorMatches(connector, expected) && diff.length === 0) {
+          if (!connectorMatches(connector, expected) && diff.length === demos.length) {
             diff.push({ field: `${target} OAuth client settings`, current: '*** (different)', expected: '***' })
           }
         }
@@ -578,15 +607,20 @@ export class LogtoAdminClaimClient {
       if (!isManagedConnectorTarget(target)) {
         const connector = selectConnector(existing, target)
         if (!connector) {
+          // Never delete a demo connector we cannot replace — name it so the operator can.
           throw new LogtoManagementError(
             'SOCIAL_CONNECTOR_UNSUPPORTED',
-            `automatic creation is not supported for the missing Logto social connector ${target}`
+            selectDemoConnectors(existing, target).length > 0
+              ? `a Logto demo connector occupies the ${target} social target; delete it in Logto, then create the real ${target} connector`
+              : `automatic creation is not supported for the missing Logto social connector ${target}`
           )
         }
         result.push({ target, id: connector.id, created: false, changed: false })
         continue
       }
+      // Resolve the replacement first: a missing credential must fail before anything is deleted.
       const expected = desiredConnector(target, desired)
+      await this.deleteDemoConnectors(existing, target)
       const connector = selectConnector(existing, target)
       if (connector && connectorMatches(connector, expected) && !refreshSecrets) {
         result.push({ target, id: connector.id, created: false, changed: false })
@@ -628,6 +662,17 @@ export class LogtoAdminClaimClient {
       result.push({ target, id: created.id, created: true, changed: true })
     }
     return result
+  }
+
+  /**
+   * Drop the Logto Cloud demo connectors parked on a managed target. Logto rejects creating the
+   * real connector while one holds the same target and platform, and rejects patching the demo one.
+   */
+  private async deleteDemoConnectors(existing: LogtoConnector[], target: string): Promise<void> {
+    for (const demo of selectDemoConnectors(existing, target)) {
+      await this.request(`/api/connectors/${encodeURIComponent(demo.id)}`, { method: 'DELETE' })
+      existing.splice(existing.indexOf(demo), 1)
+    }
   }
 
   private async listConnectors(): Promise<LogtoConnector[]> {

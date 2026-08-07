@@ -250,4 +250,140 @@ describe('Logto setup reconciliation', () => {
       signInMode: 'SignInAndRegister'
     })
   })
+
+  it('deletes the Logto Cloud demo connectors parked on the managed social targets', async () => {
+    // A Logto Cloud tenant ships demo connectors sitting on real targets. Logto answers 404 to a
+    // PATCH and 422 to a create while one holds the target, so setup has to delete it first.
+    const connectors: Record<string, unknown>[] = [
+      { id: 'demo-github', connectorId: 'logto-social-demo', target: 'github', isDemo: true, config: {} },
+      { id: 'demo-google', connectorId: 'logto-social-demo', target: 'google', isDemo: true, config: {} }
+    ]
+    const deleted: string[] = []
+    let application: Record<string, unknown> | undefined
+    let role: Record<string, unknown> | undefined
+    let signInExperience: Record<string, unknown> = {
+      signIn: { methods: [] },
+      signUp: { identifiers: [], password: false, verify: false, secondaryIdentifiers: [] },
+      socialSignInConnectorTargets: ['github', 'google'],
+      signInMode: 'SignInAndRegister'
+    }
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oidc/token') return response({ access_token: 'management-token', expires_in: 3600 })
+      if (url.pathname === '/api/applications' && init?.method === 'POST') {
+        application = { id: 'browser-app', ...JSON.parse(String(init.body)) }
+        return response(application)
+      }
+      if (url.pathname === '/api/applications') return response(application ? [application] : [])
+      const connectorId = url.pathname.startsWith('/api/connectors/')
+        ? decodeURIComponent(url.pathname.slice('/api/connectors/'.length))
+        : undefined
+      if (connectorId && init?.method === 'DELETE') {
+        const index = connectors.findIndex((connector) => connector.id === connectorId)
+        // Logto hides demo connectors from every by-id read, so only a delete may reach one.
+        if (index < 0) return response({ code: 'connector.not_found' }, 404)
+        connectors.splice(index, 1)
+        deleted.push(connectorId)
+        return new Response(null, { status: 204 })
+      }
+      if (connectorId) return response({ code: 'connector.not_found' }, 404)
+      if (url.pathname === '/api/connectors' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>
+        const target = body.connectorId === 'google-universal' ? 'google' : 'github'
+        // Logto rejects a create while another social connector holds the same target.
+        if (connectors.some((connector) => connector.target === target)) {
+          return response({ code: 'connector.multiple_target_with_same_platform' }, 422)
+        }
+        const connector = { ...body, target }
+        connectors.push(connector)
+        return response(connector)
+      }
+      if (url.pathname === '/api/connectors') return response(connectors)
+      if (url.pathname === '/api/sign-in-exp' && init?.method === 'PATCH') {
+        signInExperience = { ...signInExperience, ...JSON.parse(String(init.body)) }
+        return response(signInExperience)
+      }
+      if (url.pathname === '/api/sign-in-exp') return response(signInExperience)
+      if (url.pathname === '/api/roles' && url.search) return response(role ? [role] : [])
+      if (url.pathname === '/api/roles') {
+        role = { id: 'admin-role', ...JSON.parse(String(init?.body)) }
+        return response(role)
+      }
+      return response({}, 404)
+    }
+    const client = new LogtoAdminClaimClient(config, fetcher)
+    const desired = {
+      applicationName: 'AgentConnect',
+      redirectUris: ['http://localhost:3000/auth/callback'],
+      postLogoutRedirectUris: ['http://localhost:3000/login'],
+      socialProviders: ['github', 'google'],
+      github: { clientId: 'github-client', clientSecret: 'github-secret' },
+      google: { clientId: 'google-client', clientSecret: 'google-secret' }
+    }
+
+    // The demo connectors are obstacles, not connectors to adopt: the inspection reports both the
+    // pending removal and the missing managed connector.
+    await expect(client.inspectSetup(desired)).resolves.toMatchObject({
+      connectors: [
+        {
+          target: 'github',
+          id: null,
+          exists: false,
+          matches: false,
+          diff: [
+            { field: 'github demo connector', current: 'logto-social-demo', expected: 'Removed' },
+            { field: 'github connector', current: 'Missing', expected: 'agentconnect-github' }
+          ]
+        },
+        { target: 'google', id: null, exists: false, matches: false }
+      ]
+    })
+
+    await expect(client.reconcileSetup(desired)).resolves.toMatchObject({
+      changed: true,
+      connectors: [
+        { target: 'github', id: 'agentconnect-github', created: true, changed: true },
+        { target: 'google', id: 'agentconnect-google', created: true, changed: true }
+      ]
+    })
+    expect(deleted).toEqual(['demo-github', 'demo-google'])
+    expect(connectors.map((connector) => connector.id)).toEqual(['agentconnect-github', 'agentconnect-google'])
+
+    // Second pass: nothing left to delete, and the managed connectors are adopted as-is.
+    await expect(client.reconcileSetup(desired)).resolves.toMatchObject({
+      changed: false,
+      connectors: [
+        { target: 'github', id: 'agentconnect-github', created: false, changed: false },
+        { target: 'google', id: 'agentconnect-google', created: false, changed: false }
+      ]
+    })
+    expect(deleted).toEqual(['demo-github', 'demo-google'])
+  })
+
+  it('reports a demo connector blocking a social target it cannot recreate', async () => {
+    const connectors = [
+      { id: 'demo-feishu', connectorId: 'logto-social-demo', target: 'feishu', isDemo: true, config: {} }
+    ]
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/oidc/token') return response({ access_token: 'management-token', expires_in: 3600 })
+      if (url.pathname === '/api/applications' && init?.method === 'POST') {
+        return response({ id: 'browser-app', ...JSON.parse(String(init.body)) })
+      }
+      if (url.pathname === '/api/applications') return response([])
+      if (url.pathname === '/api/connectors') return response(connectors)
+      return response({}, 404)
+    }
+
+    await expect(
+      new LogtoAdminClaimClient(config, fetcher).reconcileSetup({
+        applicationName: 'AgentConnect',
+        redirectUris: ['http://localhost:3000/auth/callback'],
+        postLogoutRedirectUris: ['http://localhost:3000/login'],
+        socialProviders: ['feishu']
+      })
+    ).rejects.toMatchObject({ code: 'SOCIAL_CONNECTOR_UNSUPPORTED' })
+    // Setup cannot create a Feishu connector, so it must not delete the one occupying the target.
+    expect(connectors).toHaveLength(1)
+  })
 })
