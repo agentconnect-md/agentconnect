@@ -8474,6 +8474,8 @@ export class Daemon {
     const existing = this.childSessionLinks.get(childSessionKey)
     if (existing && existing.parentSessionId !== parentSessionId) return
     const child = this.store.getSession(childSessionKey)
+    // Track an unsolicited reply too: `requested` stays false, while the parent can still see
+    // that a real reply was queued instead of mistaking it for an outstanding request.
     this.childSessionLinks.set(childSessionKey, {
       parentSessionId,
       agentId: existing?.agentId ?? child?.agentId ?? '',
