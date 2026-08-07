@@ -2552,6 +2552,11 @@ export interface CreateBotInput {
   shareable?: boolean
   /** Inbound transport. Default 'socket'. */
   transport?: SlackTransport
+  /** Bot scopes the platform REPORTED as granted for the credential being
+   *  stored (Slack: the `x-oauth-scopes` header of the install's `auth.test`).
+   *  Omit when the platform did not report one — absence is "unknown", never a
+   *  short grant. */
+  grantedScopes?: string[]
   createdByUserId?: string
 }
 
@@ -2629,6 +2634,12 @@ export interface BotRecord {
   /** When the current credential landed; null for bots created before the fence
    *  (their revocations skip the timestamp check and rely on the revision). */
   credentialInstalledAt: Date | null
+  /** Bot scopes the platform reported as granted for the CURRENT credential
+   *  (Slack: `x-oauth-scopes`, persisted at install / refresh verification).
+   *  `null` means never observed — an UNKNOWN grant, not an empty one — so a
+   *  capability read may treat the bot as eligible-but-unproven, never as
+   *  short. Advisory metadata; never an authorization fence by itself. */
+  grantedScopes: string[] | null
   /** Generic demux identity (D6): the platform's app-scoped id. Dual-written beside
    *  the legacy per-platform columns; NULL on legacy rows. */
   externalAppId: string | null
@@ -2681,6 +2692,12 @@ export interface BotRepo {
    *  preserves the last known label. Org-fenced: a cross-org id writes nothing
    *  (the row is filtered out of the update). */
   setWorkspaceMetadata(orgId: OrgId, id: BotId, workspaceId: string, workspaceName: string | null): Promise<void>
+  /** Record the granted bot scopes an install/refresh verification OBSERVED for
+   *  the bot's current credential. Callers pass only a non-empty observed set —
+   *  "the platform reported nothing" keeps the last known set rather than
+   *  overwriting knowledge with silence. Org-fenced: a cross-org id writes
+   *  nothing. */
+  setGrantedScopes(orgId: OrgId, id: BotId, scopes: readonly string[]): Promise<void>
   /** Slack bots missing public app/workspace/member identity metadata.
    *  System-tier: the identity reconciler's worklist is deliberately fleet-wide. */
   listSlackMissingIdentity(): Promise<BotRecord[]>

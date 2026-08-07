@@ -78,6 +78,10 @@ function toBotRecord(b: BotJoined): BotRecord {
     revokedAt: b.revokedAt,
     credentialRevision: b.credentialRevision,
     credentialInstalledAt: b.credentialInstalledAt,
+    // The column cannot be NULL (Prisma scalar list), so empty encodes "never
+    // observed". The RECORD restores the tri-state the readers contract on:
+    // null = unknown grant, non-empty = the observed set.
+    grantedScopes: b.grantedScopes.length > 0 ? b.grantedScopes : null,
     // Projected out of the generic bag, which is where every write puts them
     // (`CpPlatformProvider.projectBotIdentity`). The named fields stay on the
     // RECORD because that is a domain type with named platform metadata, not a
@@ -143,6 +147,9 @@ export class PgBotRepo implements BotRepo {
           ...(input.botUserId ? { botUserId: input.botUserId } : {}),
           ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
           ...(input.transport !== undefined ? { transport: input.transport } : {}),
+          // Only a non-empty observed set is worth writing: empty is the
+          // column's "never observed" encoding, which the default already says.
+          ...(input.grantedScopes && input.grantedScopes.length > 0 ? { grantedScopes: input.grantedScopes } : {}),
           // Generation 1 (the column default) lands NOW — so a lifecycle event that
           // predates this credential is fenced out even on a bot's first install.
           // Legacy rows keep a null stamp and fall back to the revision arm alone.
@@ -198,6 +205,12 @@ export class PgBotRepo implements BotRepo {
         ...(workspaceName ? { workspaceName } : {})
       }
     })
+  }
+
+  async setGrantedScopes(orgId: OrgId, id: BotId, scopes: readonly string[]): Promise<void> {
+    // Advisory capability metadata: a cross-org (or vanished) id writes nothing
+    // rather than throwing — no caller has a recovery beyond "keep going".
+    await this.db.bot.updateMany({ where: { id, orgId }, data: { grantedScopes: [...scopes] } })
   }
 
   async listSlackMissingIdentity(): Promise<BotRecord[]> {

@@ -137,6 +137,10 @@ export interface CpValidatedIdentity {
   workspaceId?: string
   workspaceName?: string
   botUserId?: string
+  /** Bot scopes the platform REPORTED as granted for the validated credential
+   *  (Slack: `auth.test`'s `x-oauth-scopes`). Omitted when the platform did not
+   *  report one — absence is "unknown", never a short grant. */
+  grantedScopes?: string[]
 }
 
 /**
@@ -192,6 +196,7 @@ export interface CpNewBotInstall {
         | 'feishuAppId'
         | 'feishuRegion'
         | 'shareable'
+        | 'grantedScopes'
       >
     >
   >

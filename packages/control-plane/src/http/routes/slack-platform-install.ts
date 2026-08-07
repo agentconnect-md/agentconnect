@@ -365,6 +365,12 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
             { restoreRevokedMemberships: !!expectedBot }
           )
           req.log.info({ botId: existing.id, revision }, 'slack platform re-install: credential generation advanced')
+          // The granted set behind the short-grant fence above describes the
+          // credential that just landed; record it for capability reads. An
+          // absent header keeps the last known set (silence is not knowledge).
+          if (checked?.status === 'ok' && checked.scopes?.length) {
+            await deps.repos.bot.setGrantedScopes(existing.orgId, BotId(existing.id), checked.scopes)
+          }
           if (agent) {
             // Generic install/re-install only: membership admission is ATOMIC
             // with the bot row. A bot-bound Settings reauthorization has no
@@ -425,6 +431,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
               workspaceId: result.teamId,
               ...(result.teamName ? { workspaceName: result.teamName } : {}),
               ...(result.botUserId ? { botUserId: result.botUserId } : {}),
+              ...(checked?.status === 'ok' && checked.scopes?.length ? { grantedScopes: checked.scopes } : {}),
               signingSecret: platform.signingSecret,
               ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
             })

@@ -1818,6 +1818,14 @@ model Bot {
   // it would kill (the case where the relay already holds the newer assignment).
   credentialRevision    Int            @default(1)
   credentialInstalledAt DateTime?      @db.Timestamptz(6)
+  // Bot scopes Slack REPORTED as granted for the current credential — the
+  // `x-oauth-scopes` header observed when an install/refresh verified the token.
+  // Empty means "never observed" (Slack omits the header at times), NEVER
+  // "granted nothing": a real bot grant always carries at least one scope.
+  // Advisory capability metadata — reads pick a credential that provably holds a
+  // scope (e.g. the session-access workspace checker needs `users:read`); it is
+  // never an authorization fence by itself.
+  grantedScopes         String[]       @default([])
   // ── generic bot demux identity (integration-plugin-architecture.md D6/§11) ──
   // The platform's app-scoped id plus its tenant scope — the row's identity.
   // `BotRepo.getByExternalIdentity` is the only lookup and the composite unique

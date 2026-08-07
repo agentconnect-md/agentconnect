@@ -388,7 +388,11 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
               ...(botCheck.appId ? { externalAppId: botCheck.appId } : {}),
               ...(botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
               ...(botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
-              ...(botCheck.botUserId ? { botUserId: botCheck.botUserId } : {})
+              ...(botCheck.botUserId ? { botUserId: botCheck.botUserId } : {}),
+              // The granted set `auth.test` reported for the pasted token, kept
+              // on the bot row so capability reads (the session-access workspace
+              // checker) don't have to re-probe Slack. Absent header ⇒ omitted.
+              ...(botCheck.scopes && botCheck.scopes.length > 0 ? { grantedScopes: botCheck.scopes } : {})
             }
           : {}
       return { ok: true, identity }
@@ -417,6 +421,7 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
           ...(identity.workspaceId ? { workspaceId: identity.workspaceId } : {}),
           ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}),
           ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
+          ...(identity.grantedScopes ? { grantedScopes: identity.grantedScopes } : {}),
           ...(shareable ? { shareable: true } : {})
         },
         // Workspace-claim admission fence (ingress-tenant-fence.md §5). This is
