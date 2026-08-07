@@ -696,6 +696,87 @@ describe('session visibility — external conversation audiences', () => {
     })
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('enabled')
   })
+
+  it('stops showing the sessions synced while sync was on once it is turned back off', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const sessionId = `s-slack-offswitch-${randomUUID()}`
+    const repo = new PgSessionRepo(prisma)
+    const record = (channel: string, id: string) =>
+      repo.recordMilestone({
+        sessionId: SessionId(id),
+        agentId: AgentId(agentId),
+        phase: 'start',
+        platform: 'slack',
+        channel,
+        at: new Date(),
+        classification: { visibility: 'org', ownerIdentity: null, source: 'default' },
+        externalCandidate: {
+          provider: 'slack',
+          resolution: 'settled',
+          scope: {
+            realmKey: 'T_INSTALL',
+            resourceKind: 'conversation',
+            resourceKey: channel,
+            credentialKind: 'bot',
+            credentialId: randomUUID()
+          }
+        }
+      })
+    const viewerWith = (readFenceRev: bigint | null, allowedScopes: { id: string; aclRevision: bigint }[]) => ({
+      role: 'owner' as const,
+      identitySet: [],
+      externalAccess: { policies: [{ provider: 'slack', readFenceRev }], allowedScopes, decisionAt: new Date() }
+    })
+    const visible = async (viewer: ReturnType<typeof viewerWith>) =>
+      (await repo.listPage({ agentIds: [AgentId(agentId)], limit: 10, includeTotal: false, viewer })).sessions.map(
+        (session) => session.id
+      )
+
+    // Sync off from the start: the candidate keeps its `org` baseline and the
+    // provider arm — not the direct arm, which requires a NULL provider — is
+    // what makes it visible to the whole org.
+    await record('C_BEFORE', sessionId)
+    expect(await repo.getUnscoped(SessionId(sessionId))).toMatchObject({
+      visibility: 'org',
+      externalProvider: 'slack'
+    })
+    expect(await visible(viewerWith(null, []))).toEqual([sessionId])
+
+    // On: the row binds to the platform audience and needs the granted scope.
+    const enabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    const bound = await repo.getUnscoped(SessionId(sessionId))
+    expect(bound).toMatchObject({ visibility: 'external' })
+    const [scope] = await repo.getExternalScopes([bound!.externalScopeId!])
+    const granted = [{ id: scope!.id, aclRevision: scope!.aclRevision }]
+    expect(await visible(viewerWith(enabled.policy.readFenceRev, granted))).toEqual([sessionId])
+
+    // Off again: the row is untouched, but nobody is maintaining that audience
+    // any more, so it stops showing even for the viewer who still holds the
+    // grant. This is the half the settings copy has to state out loud.
+    const disabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', false)
+    expect(disabled.policy.state).toBe('disabled')
+    expect(await repo.getUnscoped(SessionId(sessionId))).toMatchObject({ visibility: 'external' })
+    expect(await visible(viewerWith(disabled.policy.readFenceRev, granted))).toEqual([])
+
+    // …and a session created while off is org-visible again, so turning sync
+    // off never leaves the org with nothing to look at.
+    const afterId = `s-slack-after-${randomUUID()}`
+    await record('C_AFTER', afterId)
+    expect(await visible(viewerWith(disabled.policy.readFenceRev, granted))).toEqual([afterId])
+
+    // Re-enabling restores the synced history — "hidden", never deleted.
+    const reEnabled = await repo.setExternalAccessEnabled(OrgId(DEFAULT_ORG_ID), 'slack', true)
+    const restored = await repo.getExternalScopes([bound!.externalScopeId!])
+    expect(
+      await visible(
+        viewerWith(
+          reEnabled.policy.readFenceRev,
+          restored.map((row) => ({ id: row.id, aclRevision: row.aclRevision }))
+        )
+      )
+    ).toContain(sessionId)
+  })
 })
 
 describe('session visibility — membership across an agent filter', () => {

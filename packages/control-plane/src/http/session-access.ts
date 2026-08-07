@@ -9,7 +9,7 @@ import type {
 } from '../persistence/ports.js'
 import { identitySetOf } from '../authorization/policy.js'
 import type { HttpDeps } from './deps.js'
-import type { SessionAccessIssue, SessionAccessViewer } from './session-access-plugin.js'
+import type { SessionAccessIssue, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 import { ctxOf, orgOf } from './rbac.js'
 
 export interface ResolvedSessionAccess {
@@ -141,12 +141,24 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     const initialPolicies = await Promise.all(
       providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider))
     )
+    // A provider whose sync is off has no say in what anyone can see: the SQL
+    // scope arm stops admitting its `external` rows, and its `org`-classified
+    // rows never needed a scope. Asking it anyway was pure latency on a
+    // user-facing read — a disabled Feishu policy still cost a tenant-token
+    // round trip plus a member-list page on every session list.
+    const syncing = new Set(
+      initialPolicies.flatMap((policy, index) =>
+        policy && policy.state !== 'disabled' ? [providers[index] as string] : []
+      )
+    )
     const results = await Promise.all(
       plugins.map((plugin) =>
-        plugin.resolve(
-          scopes.filter((scope) => scope.provider === plugin.provider && scope.orgId === orgId),
-          viewer
-        )
+        syncing.has(plugin.provider)
+          ? plugin.resolve(
+              scopes.filter((scope) => scope.provider === plugin.provider && scope.orgId === orgId),
+              viewer
+            )
+          : Promise.resolve<SessionAccessResult>({ allowedScopes: [], degraded: false, accessIssues: [] })
       )
     )
     const resolvedScopes = results.flatMap((result) => result.allowedScopes)
