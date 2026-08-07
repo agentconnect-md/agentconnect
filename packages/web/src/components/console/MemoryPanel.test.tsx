@@ -233,7 +233,7 @@ describe('MemoryPanel file editor', () => {
 })
 
 describe('MemoryPanel settings draft', () => {
-  it('defaults managed memory to daily dreaming and lets users opt in to automatic acceptance', async () => {
+  it('defaults managed memory to daily auto-adopting dreaming and lets users opt out', async () => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -257,12 +257,14 @@ describe('MemoryPanel settings draft', () => {
 
     expect(checkboxFor('Enable dreaming')?.checked).toBe(true)
     expect(checkboxFor('Run on a schedule')?.checked).toBe(true)
-    expect(checkboxFor('Automatically adopt completed memory results')?.checked).toBe(false)
+    // Auto-adopt is on by default, so the accuracy caveat is shown up front.
+    expect(checkboxFor('Automatically adopt completed memory results')?.checked).toBe(true)
     expect(container.textContent).toContain('Daily')
-    expect(container.textContent).not.toContain('Dream memory results can be inaccurate')
-
-    await act(async () => checkboxFor('Automatically adopt completed memory results')?.click())
     expect(container.textContent).toContain('Dream memory results can be inaccurate')
+
+    // Opt out of automatic acceptance.
+    await act(async () => checkboxFor('Automatically adopt completed memory results')?.click())
+    expect(container.textContent).not.toContain('Dream memory results can be inaccurate')
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'
     )
@@ -272,16 +274,16 @@ describe('MemoryPanel settings draft', () => {
       memory: {
         provider: 'managed',
         autoDistill: false,
-        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: true }
+        dreaming: { enabled: true, schedule: '0 4 * * *', mineSkills: true, autoAdopt: false }
       }
     })
   })
 
-  // Skill mining is off unless the policy says otherwise, and the daemon keys
-  // three separate things off that one flag (the extract-procedures phase, the
-  // tool rows in the prompt, and the grounding set). Without a control here it
-  // could never be turned on, so a dream would silently mine nothing forever.
-  it('turns skill mining on and sends it with the memory binding', async () => {
+  // Skill mining is on by default, and the daemon keys three separate things off
+  // that one flag (the extract-procedures phase, the tool rows in the prompt, and
+  // the grounding set). The control lets a user opt out; turning it off must be
+  // sent explicitly so the daemon does not fall back to the mine-by-default policy.
+  it('turns skill mining off and sends it with the memory binding', async () => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -303,11 +305,12 @@ describe('MemoryPanel settings draft', () => {
         box.parentElement?.textContent?.includes(text)
       )
 
-    expect(checkboxFor('Also mine reusable skills')?.checked).toBe(false)
-    expect(container.textContent).not.toContain('at least two sessions')
-
-    await act(async () => checkboxFor('Also mine reusable skills')?.click())
+    expect(checkboxFor('Also mine reusable skills')?.checked).toBe(true)
     expect(container.textContent).toContain('at least two sessions')
+
+    // Opt out of skill mining.
+    await act(async () => checkboxFor('Also mine reusable skills')?.click())
+    expect(container.textContent).not.toContain('at least two sessions')
 
     const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
       (button) => button.textContent === 'Save memory settings'
@@ -318,7 +321,7 @@ describe('MemoryPanel settings draft', () => {
       memory: {
         provider: 'managed',
         autoDistill: false,
-        dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: false, mineSkills: true }
+        dreaming: { enabled: true, schedule: '0 4 * * *', mineSkills: false, autoAdopt: true }
       }
     })
   })
@@ -344,7 +347,8 @@ describe('MemoryPanel settings draft', () => {
     expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
     expect(container.textContent).toContain('Managed')
     expect(container.textContent).toContain('Dreaming daily')
-    expect(container.textContent).toContain('Auto-accept off')
+    expect(container.textContent).toContain('Auto-accept on')
+    expect(container.textContent).toContain('Skill mining on')
     expect(container.textContent).toContain('Agent scope')
     expect(container.querySelector('[data-testid="file-memory-view"]')).not.toBeNull()
 

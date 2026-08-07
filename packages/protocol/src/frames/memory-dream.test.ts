@@ -52,22 +52,24 @@ describe('memory dreaming policy (agent binding)', () => {
     expect(() => MemoryDreamingPolicy.parse({ enabled: true, unknown: 1 })).toThrow()
   })
 
-  it('defaults managed memory to a daily review-first dream while preserving explicit opt-in', () => {
+  it('defaults managed memory to a daily auto-adopting, skill-mining dream while preserving explicit opt-out', () => {
     expect(effectiveMemoryDreamingPolicy(undefined)).toEqual(DEFAULT_MEMORY_DREAMING_POLICY)
     expect(effectiveMemoryDreamingPolicy({ provider: 'managed' })).toEqual(DEFAULT_MEMORY_DREAMING_POLICY)
 
-    // An explicit policy with no schedule is manual-only, and an absent
-    // autoAdopt remains review-first.
+    // An explicit policy with no schedule is manual-only; absent autoAdopt and
+    // mineSkills normalize to the product default (true).
     expect(effectiveMemoryDreamingPolicy({ provider: 'managed', dreaming: { enabled: true } })).toEqual({
       enabled: true,
-      autoAdopt: false
+      autoAdopt: true,
+      mineSkills: true
     })
+    // An explicit false is a durable opt-out.
     expect(
       effectiveMemoryDreamingPolicy({
         provider: 'managed',
-        dreaming: { enabled: true, autoAdopt: true }
+        dreaming: { enabled: true, autoAdopt: false, mineSkills: false }
       })
-    ).toEqual({ enabled: true, autoAdopt: true })
+    ).toEqual({ enabled: true, autoAdopt: false, mineSkills: false })
     expect(effectiveMemoryDreamingPolicy({ provider: 'none' })).toBeUndefined()
   })
 })
