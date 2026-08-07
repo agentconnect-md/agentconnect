@@ -6,8 +6,10 @@
 // on-page feature keywords); results are grouped (each capped at 3, with the full
 // match count shown), keyboard-navigable (↑↓ move · ↵ open · esc close), and ⌘K
 // focuses it from anywhere. Selecting a result routes to that entity's page.
-// Everything runs client-side over the already-loaded read models — no new CP
-// endpoint, no extra fetch.
+// Matching runs client-side over the already-loaded read models and the static
+// page index — no new CP endpoint. The one extra read: opening authed search
+// pulls the three session-access states through their existing endpoints
+// (SWR-deduped with the Settings page) to gate that card's entry.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
