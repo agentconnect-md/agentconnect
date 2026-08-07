@@ -213,8 +213,13 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
 
 export default function IntegrationsView() {
   // `?bot=<id>` opens that bot's channel roster — the agent page's bot chip and
-  // the Settings-era deep links land here.
-  const targetBotId = useSearchParams().get('bot')
+  // the Settings-era deep links land here. `?platform=<id>` only selects the
+  // tab, for senders that know which provider needs attention but not which of
+  // its installs: the session-access "reauthorize your Slack app" notification
+  // is deliberately one of those (see `session-access-notifications.ts`).
+  const params = useSearchParams()
+  const targetBotId = params.get('bot')
+  const targetPlatform = params.get('platform')
   const { me } = useProfile()
   const { myRole } = useOrgs()
   const { openModal } = useModal()
@@ -237,7 +242,13 @@ export default function IntegrationsView() {
       </div>
 
       <Section label="Messaging apps">
-        <BotsCard canWrite={canWrite} me={me} targetBotId={targetBotId} onDelete={setDeletingBot} />
+        <BotsCard
+          canWrite={canWrite}
+          me={me}
+          targetBotId={targetBotId}
+          targetPlatform={targetPlatform}
+          onDelete={setDeletingBot}
+        />
       </Section>
 
       <Section label="Code hosts">
@@ -265,11 +276,13 @@ function BotsCard({
   canWrite,
   me,
   targetBotId,
+  targetPlatform,
   onDelete
 }: {
   canWrite: boolean
   me: MeDto | null
   targetBotId: string | null
+  targetPlatform: string | null
   onDelete: (b: BotDto) => void
 }) {
   const { orgPath } = useOrgs()
@@ -306,6 +319,14 @@ function BotsCard({
       counts.set(tab.key, bots.filter((bot) => botMatchesPlatformTab(bot, tab)).length)
     return counts
   }, [bots])
+
+  // Runs before the bot effect below, so `?bot=` still wins when both are given:
+  // an unknown platform is simply ignored rather than emptying the strip.
+  const targetPlatformTabKey = BOT_PLATFORM_TABS.find((tab) => tab.platform === targetPlatform)?.key
+  useEffect(() => {
+    if (!targetPlatformTabKey) return
+    setPlatformTabKey(targetPlatformTabKey)
+  }, [targetPlatformTabKey])
 
   useEffect(() => {
     if (!targetBotId || !targetBotPlatformTabKey) return
