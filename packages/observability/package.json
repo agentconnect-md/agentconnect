@@ -1,11 +1,12 @@
 {
-  "name": "@agentconnect.md/relay",
+  "name": "@agentconnect.md/observability",
   "version": "1.0.0-dev",
-  "description": "AgentConnect relay — the unified ingress plane (HTTP bot / webhook / webchat) that dials the control-plane and forwards to daemons",
+  "description": "AgentConnect shared OpenTelemetry bootstrap and span-name hygiene for the Node services",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": {
+      "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
@@ -13,47 +14,41 @@
     "./package.json": "./package.json"
   },
   "main": "dist/index.js",
-  "bin": {
-    "agentconnect-relay": "dist/index.js"
-  },
+  "module": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
-    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
     "prepack": "pnpm run build",
-    "start": "node dist/index.js",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "sideEffects": false,
   "types": "dist/index.d.ts",
   "dependencies": {
-    "@agentconnect.md/connection": "workspace:*",
-    "@agentconnect.md/message": "workspace:*",
-    "@agentconnect.md/observability": "workspace:*",
-    "@agentconnect.md/protocol": "workspace:*",
-    "@slack/web-api": "^8.0.0",
-    "fastify": "^5.10.0",
-    "undici": "^7.29.0",
-    "ws": "^8.21.1",
-    "zod": "^4.4.3"
+    "@fastify/otel": "^0.20.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/instrumentation": "^0.221.0",
+    "@opentelemetry/instrumentation-http": "^0.221.0",
+    "@opentelemetry/instrumentation-undici": "^0.31.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "@types/ws": "^8.18.1",
-    "tsx": "^4.23.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   },
   "keywords": [
     "agentconnect",
-    "ingress",
-    "relay",
-    "websocket"
+    "observability",
+    "opentelemetry",
+    "tracing"
   ],
   "engines": {
     "node": ">=24.12.0"

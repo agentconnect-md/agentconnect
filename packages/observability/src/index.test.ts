@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shouldIgnoreUndiciRequest, undiciClientSpanName } from './observability.js'
+import { shouldIgnoreUndiciRequest, undiciClientSpanName } from './index.js'
 
 describe('shouldIgnoreUndiciRequest', () => {
   it.each(['/bottelegram-secret/getMe', '/bottelegram-secret/setMyProfilePhoto'])(
