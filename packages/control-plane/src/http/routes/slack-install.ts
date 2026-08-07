@@ -439,6 +439,9 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
             ...(botCheck?.status === 'ok' && botCheck.teamId ? { workspaceId: botCheck.teamId } : {}),
             ...(botCheck?.status === 'ok' && botCheck.teamName ? { workspaceName: botCheck.teamName } : {}),
             ...(botCheck?.status === 'ok' && botCheck.botUserId ? { botUserId: botCheck.botUserId } : {}),
+            // The granted set behind the fence above, kept on the bot row so
+            // capability reads don't have to re-probe Slack.
+            ...(botCheck?.status === 'ok' && botCheck.scopes?.length ? { grantedScopes: botCheck.scopes } : {}),
             // socket: the pasted xapp; http: the signing secret captured at create. The
             // shareable choice rides the finalize body (installNewSlackBot coerces it off
             // for socket regardless).

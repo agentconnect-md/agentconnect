@@ -2,7 +2,7 @@ import { LRUCache } from 'lru-cache'
 import { cacheOptions } from '../cache.js'
 import type { FetchLike } from '../github/api.js'
 import type { Clock } from '../domain/clock.js'
-import type { BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
+import type { BotRecord, BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
 import { BotId } from '../domain/ids.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type {
@@ -21,6 +21,8 @@ const SCOPE_CONCURRENCY = 6
 const MAX_MEMBER_PAGES = 50
 const PAGE_SIZE = 200
 const TIMEOUT_MS = 5_000
+/** The one Slack scope a workspace-standing check spends (`users.info`). */
+const WORKSPACE_READ_SCOPE = 'users:read'
 /**
  * How long one conversation's audience (public / members-only / gone) is reused.
  *
@@ -65,6 +67,11 @@ type DegradedReason = string
 type LocalReason =
   | 'bot_unresolved'
   | 'bot_token_missing'
+  /** No credential in the realm is known to hold `users:read`: every
+   *  candidate's persisted grant positively lacks it, so a workspace check
+   *  degrades without spending a call whose answer is already known (see
+   *  `designatedChecker`). */
+  | 'bot_scope_missing'
   /** The shared audience entry was dropped while this caller was reading it. */
   | 'audience_evicted'
   /** Slack answered, in a shape no verdict can be read out of. */
@@ -93,6 +100,9 @@ type ObservedAudience = ReadAudience & { fetchedAt: number }
 type CheckedAccess = Verdict & { evidenceAt: number }
 type CheckedWorkspaceAccess = { access: WorkspaceAccess; reason?: DegradedReason }
 type AudienceLookup = { channel: string; token: string; signal: AbortSignal }
+/** The credential a Slack question is asked WITH — and, through its bot id and
+ *  credential revision, the cache identity of the answer it produces. */
+type AnsweringBot = { botId: string; credentialRevision: number; token: string }
 
 // `ok: false` covers two very different answers, and conflating them is what
 // made an ordinary event — a private channel deleted, or the bot removed from
@@ -172,10 +182,13 @@ function thrownReason(error: unknown): LocalReason {
  * is fixed once, by an administrator, through the app's own row on Integrations
  * (`POST /bots/:id/slack/refresh` syncs the manifest and names the missing
  * scopes), and nothing in here clears on its own. `missing_scope` is the
- * observed case — an app installed before a scope was added to
- * `SLACK_BOT_SCOPES` keeps a grant that can never pass the check — and the rest
+ * observed case — Slack's initial authorization does not reliably apply every
+ * scope an app's manifest declares, so an install can hold a short grant that
+ * never passes the check until the workspace reinstalls the app — and the rest
  * are the other ways Slack says "this credential is the problem", which land on
- * the same page and the same button.
+ * the same page and the same button. `bot_scope_missing` is the one LOCAL
+ * member: the same short-grant fact, established from persisted grants instead
+ * of a live refusal (see `designatedChecker`), and cleared by the same remedy.
  *
  * Deliberately NOT here: `ratelimited` and every transport/HTTP failure, which
  * really are transient; and `ekm_access_denied`, which is an enterprise key
@@ -183,6 +196,7 @@ function thrownReason(error: unknown): LocalReason {
  */
 const APP_AUTHORIZATION_ERRORS = new Set([
   'missing_scope',
+  'bot_scope_missing',
   'invalid_auth',
   'account_inactive',
   'token_revoked',
@@ -236,6 +250,11 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
    *  A cached `unknown` keeps the reason it was reached by, so a resolve that
    *  rides one is not the one degraded resolve that cannot say why. */
   private readonly cache: LRUCache<string, Verdict>
+  /** (realm, ANSWERING bot, its credential revision, principal) → standing.
+   *  The bot id is load-bearing: bots in one workspace hold different grants,
+   *  so a verdict is reusable only under the credential that produced it —
+   *  and a bot id is org-owned, which keeps two orgs sharing a workspace out
+   *  of each other's entries. */
   private readonly workspaceAccessCache: LRUCache<string, CheckedWorkspaceAccess>
   /** (bot, credential revision, channel) → audience. Shared across viewers,
    *  unlike `cache` and `workspaceAccessCache`, which are per principal.
@@ -404,6 +423,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     const now = this.deps.clock.now()
     const secret = await this.deps.botSecrets.get(scope.orgId, BotId(botId)).catch(() => null)
     if (!secret?.botToken) return { ...unresolved('bot_token_missing'), evidenceAt: now }
+    const recording: AnsweringBot = { botId, credentialRevision, token: secret.botToken }
     try {
       const observed = await this.audienceOf(
         [botId, credentialRevision, scope.resourceKey].join(':'),
@@ -419,13 +439,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       if (observed.audience === 'gone') return { decision: 'deny', evidenceAt }
       if (observed.audience === 'unknown') return { decision: 'unknown', reason: observed.reason, evidenceAt }
       if (observed.audience === 'public') {
-        const { access, ...cause } = await this.workspaceAccess(
-          scope.realmKey,
-          principal,
-          credentialRevision,
-          secret.botToken,
-          signal
-        )
+        const { access, ...cause } = await this.workspaceAccess(scope, principal, recording, signal)
         if (access !== 'membership') return { decision: access, ...cause, evidenceAt }
         const member = await this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
         return { ...member, evidenceAt }
@@ -436,13 +450,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
 
       // Slack Connect can return a member from another workspace. Verify the
       // identity's home team instead of treating the installing team as proof.
-      const { access, ...cause } = await this.workspaceAccess(
-        scope.realmKey,
-        principal,
-        credentialRevision,
-        secret.botToken,
-        signal
-      )
+      const { access, ...cause } = await this.workspaceAccess(scope, principal, recording, signal)
       return access === 'unknown' || access === 'deny'
         ? { decision: access, ...cause, evidenceAt }
         : { decision: 'allow', evidenceAt }
@@ -486,14 +494,55 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     return { audience: 'unknown', reason: 'audience_unclassified' }
   }
 
+  /**
+   * Workspace standing ("is this principal a full member of this realm, and
+   * full vs guest?") is a directory fact: within a realm, every credential
+   * that CAN ask gets the same answer — only the ability to ask differs by
+   * grant. So for a same-team principal the question is routed to the one
+   * designated checker for (org, realm) rather than whichever bot happened to
+   * record the conversation, and the recording bot's own grant no longer
+   * decides whether a same-team viewer's sessions resolve.
+   *
+   * A CROSS-team principal (Slack Connect) is the deliberate exception: an
+   * external user is visible only to a bot that shares a conversation with
+   * them, which the designated checker typically does not — its `users.info`
+   * would answer `user_not_found` / `user_not_visible`, both definitive
+   * denials, silently converting today's allows into denies. Cross-team
+   * visibility is relationship-relative, so it stays on the recording
+   * credential, whose shared conversation is what makes the user readable.
+   *
+   * Either way the verdict caches under the ANSWERING bot. The old key —
+   * [realm, credentialRevision, principal], no bot id — let every bot in a
+   * workspace ride one entry despite holding different grants: whichever
+   * credential resolved first decided every bot's verdict for a TTL, which is
+   * how a deterministic short grant presented as sessions flickering in and
+   * out. Isolating per bot WITHOUT the checker would break the other way
+   * (every short-granted bot deterministically failing its own checks), which
+   * is why routing and keying land together.
+   */
   private async workspaceAccess(
-    realmKey: string,
+    scope: ExternalScopeRecord,
     principal: SlackPrincipal,
-    credentialRevision: number,
-    token: string,
+    recording: AnsweringBot,
     signal: AbortSignal
   ): Promise<CheckedWorkspaceAccess> {
-    const key = [realmKey, credentialRevision, principal.key].join(':')
+    const realmKey = scope.realmKey
+    let answerer = recording
+    if (principal.teamId === realmKey) {
+      const checker = await this.designatedChecker(scope.orgId, realmKey)
+      // Deterministic degrade, not a doomed call: every realm credential's
+      // persisted grant lacks `users:read`, so asking any of them could only
+      // re-earn `missing_scope`. The reason lands on the app_authorization
+      // remedy — reauthorize an app on Integrations — which is also the only
+      // thing that clears it.
+      if (!checker) return { access: 'unknown', reason: 'bot_scope_missing' }
+      if (checker.id !== recording.botId) {
+        const secret = await this.deps.botSecrets.get(scope.orgId, checker.id).catch(() => null)
+        if (!secret?.botToken) return { access: 'unknown', reason: 'bot_token_missing' }
+        answerer = { botId: checker.id, credentialRevision: checker.credentialRevision, token: secret.botToken }
+      }
+    }
+    const key = [realmKey, answerer.botId, answerer.credentialRevision, principal.key].join(':')
     const cached = this.workspaceAccessCache.get(key)
     if (cached) return cached
 
@@ -514,7 +563,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
         is_stranger?: unknown
         is_external?: unknown
       }
-    }>(`users.info?user=${encodeURIComponent(principal.userId)}`, token, signal)
+    }>(`users.info?user=${encodeURIComponent(principal.userId)}`, answerer.token, signal)
 
     // The initial value covers `ok` with no `user`: Slack answered, in a shape
     // no verdict can be read out of.
@@ -553,6 +602,50 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     }
     this.putWorkspaceAccess(key, checked)
     return checked
+  }
+
+  /**
+   * The one credential that answers workspace-scoped questions for an (org,
+   * realm) — chosen, not stumbled into.
+   *
+   * Candidates are the org's own live Slack bots installed into the realm: the
+   * org fence means never another org's credential, even for the same
+   * workspace. Capability comes first — a bot whose persisted grant positively
+   * lacks `users:read` never qualifies, while a bot with NO persisted grant
+   * (row predating the column, or Slack omitted the header) stays eligible but
+   * unproven. Among the eligible: a proven grant outranks an unproven one, the
+   * prebuilt platform app outranks a custom one (its grant comes from our own
+   * authorize URL and installs are gated on it being complete), and creation
+   * order breaks ties so the choice is stable across resolves.
+   *
+   * A realm holding custom bots AND the platform app therefore routes every
+   * workspace check through the platform app — including for sessions recorded
+   * by custom bots. That is the point: one good credential covers the realm
+   * regardless of how short the other grants are, which is what the old
+   * realm-wide cache entry was providing by accident, unreliably.
+   *
+   * `null` means no candidate qualifies. The recording bot is itself always a
+   * candidate (the caller resolved it in this org and realm, non-revoked), so
+   * `null` only happens when every credential's grant positively lacks the
+   * scope — a deterministic short-grant fact, not an outage.
+   */
+  private async designatedChecker(orgId: ExternalScopeRecord['orgId'], realmKey: string): Promise<BotRecord | null> {
+    const proven = (bot: BotRecord) => bot.grantedScopes?.includes(WORKSPACE_READ_SCOPE) === true
+    const candidates = (await this.deps.bots.listForOrg(orgId)).filter(
+      (bot) =>
+        bot.platform === 'slack' &&
+        bot.revokedAt === null &&
+        (bot.workspaceId ?? bot.teamId) === realmKey &&
+        (bot.grantedScopes == null || proven(bot))
+    )
+    candidates.sort(
+      (a, b) =>
+        Number(proven(b)) - Number(proven(a)) ||
+        Number(b.prebuilt) - Number(a.prebuilt) ||
+        a.createdAt.getTime() - b.createdAt.getTime() ||
+        a.id.localeCompare(b.id)
+    )
+    return candidates[0] ?? null
   }
 
   private async checkMembership(channel: string, userId: string, token: string, signal: AbortSignal): Promise<Verdict> {

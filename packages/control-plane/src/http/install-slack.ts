@@ -48,6 +48,10 @@ export interface InstallSlackBotArgs {
   botUserId?: string
   /** Provisioned by AgentConnect (the platform app), not a console user. */
   prebuilt?: boolean
+  /** Bot scopes Slack reported as granted for `botToken` (the `x-oauth-scopes`
+   *  header of the funnel's verification call). Omit when Slack sent no header —
+   *  absence is "unknown", never a short grant. */
+  grantedScopes?: string[]
   /** xapp-… — required for socket transport (Socket Mode); absent for http. */
   appToken?: string
   /** Slack signing secret — required for http transport (Events API verification). */
@@ -93,6 +97,7 @@ export async function installNewSlackBot(
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
       ...(args.workspaceName ? { workspaceName: args.workspaceName } : {}),
       ...(args.botUserId ? { botUserId: args.botUserId } : {}),
+      ...(args.grantedScopes && args.grantedScopes.length > 0 ? { grantedScopes: args.grantedScopes } : {}),
       ...(args.shareable ? { shareable: true } : {})
     },
     // Workspace-claim admission fence — core enforces it at the shared create

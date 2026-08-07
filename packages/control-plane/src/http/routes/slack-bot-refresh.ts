@@ -114,6 +114,14 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         if (appIdentityMatches && checked.teamId) {
           await deps.repos.bot.setWorkspaceMetadata(bot.orgId, bot.id, checked.teamId, checked.teamName)
         }
+        // The granted set observed for the STORED credential — the same token
+        // capability reads (the session-access workspace checker) would use, so
+        // it is recorded even when the app identity mismatches below. This is
+        // how a workspace reauthorization becomes visible to those reads without
+        // a re-probe. An absent header keeps the last known set.
+        if (checked?.status === 'ok' && checked.scopes?.length) {
+          await deps.repos.bot.setGrantedScopes(bot.orgId, bot.id, checked.scopes)
+        }
         // A built-in app's manifest is deployment-managed rather than owned by
         // the signed-in user's Slack config token. Refresh still verifies its
         // installed scopes so the Console can offer the platform OAuth reinstall.

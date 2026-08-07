@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
+import { BotId, OrgId } from '../domain/ids.js'
 import type { BotRecord, ExternalScopeRecord } from '../persistence/ports.js'
 import type { SessionAccessViewer } from './session-access-plugin.js'
 import { SlackSessionAccessService } from './slack-session-access.js'
 
 const BOT_ID = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const SECOND_BOT_ID = BotId('a1a1a1a1-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
 
 function scope(): ExternalScopeRecord {
   return {
     id: '11111111-1111-4111-8111-111111111111',
-    orgId: 'org-1',
+    orgId: OrgId('org-1'),
     provider: 'slack',
     realmKey: 'T_INSTALL',
     resourceKind: 'conversation',
@@ -28,7 +30,7 @@ function scopeAt(index: number): ExternalScopeRecord {
   }
 }
 
-function bot(): BotRecord {
+function bot(overrides: Partial<BotRecord> = {}): BotRecord {
   return {
     id: BOT_ID,
     orgId: 'org-1',
@@ -36,21 +38,37 @@ function bot(): BotRecord {
     workspaceId: 'T_INSTALL',
     teamId: 'T_INSTALL',
     revokedAt: null,
-    credentialRevision: 3
+    credentialRevision: 3,
+    prebuilt: false,
+    // Unknown grant: eligible for workspace checks, but unproven.
+    grantedScopes: null,
+    createdAt: new Date(500),
+    ...overrides
   } as BotRecord
 }
 
 function service(
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
-  log?: { warn: (obj: object, msg: string) => void }
+  log?: { warn: (obj: object, msg: string) => void },
+  fleet: { bots?: BotRecord[]; tokens?: Record<string, string> } = {}
 ) {
+  const bots = fleet.bots ?? [bot()]
+  const tokens = fleet.tokens ?? { [BOT_ID]: 'xoxb-test' }
   return new SlackSessionAccessService({
-    bots: { getUnscoped: async () => bot() } as never,
-    botSecrets: { get: async () => ({ botToken: 'xoxb-test' }) } as never,
+    bots: {
+      getUnscoped: async (id: string) => bots.find((candidate) => candidate.id === id) ?? null,
+      listForOrg: async () => bots
+    } as never,
+    botSecrets: { get: async (_orgId: unknown, id: string) => ({ botToken: tokens[id] }) } as never,
     clock: { now: () => 1_000 } as never,
     fetchImpl,
     ...(log ? { log } : {})
   })
+}
+
+/** The bearer token a faked Slack call was made with — which BOT answered. */
+function tokenOf(init?: RequestInit): string {
+  return String((init?.headers as Record<string, string> | undefined)?.authorization ?? '')
 }
 
 function json(body: unknown, status = 200): Response {
@@ -559,5 +577,203 @@ describe('SlackSessionAccessService', () => {
       degraded: false
     })
     expect(attempt).toBe(2)
+  })
+
+  // `users.info` asks a WORKSPACE question, and within a realm every credential
+  // that can ask gets the same answer — so which bot asks is a policy choice.
+  // Before it was one, the workspace cache key carried no bot id: every bot in
+  // a workspace shared one entry per viewer despite holding different grants,
+  // and whichever credential resolved first decided everyone's verdict for a
+  // TTL — a deterministic short grant presented as sessions flickering in and
+  // out.
+  describe('designated workspace checker', () => {
+    const CAPABLE = ['channels:read', 'chat:write', 'users:read']
+    const SHORT = ['channels:read', 'chat:write']
+
+    it('answers a same-team check with the capable platform app, not the short recording bot', async () => {
+      const fleet = {
+        bots: [
+          bot({ grantedScopes: SHORT }),
+          bot({
+            id: SECOND_BOT_ID,
+            prebuilt: true,
+            credentialRevision: 7,
+            grantedScopes: CAPABLE,
+            createdAt: new Date(900)
+          })
+        ],
+        tokens: { [BOT_ID]: 'xoxb-recording', [SECOND_BOT_ID]: 'xoxb-checker' }
+      }
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          // The recording bot's own grant CANNOT answer this: only the routing
+          // makes the resolve below succeed.
+          return tokenOf(init) === 'Bearer xoxb-checker'
+            ? json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+            : json({ ok: false, error: 'missing_scope' })
+        }
+        throw new Error(`unexpected Slack request: ${url}`)
+      })
+      const resolver = service(fetchImpl, undefined, fleet)
+
+      await expect(resolver.resolve([scopeAt(1)], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
+        allowedScopes: [{ id: scopeAt(1).id, aclRevision: 2n }],
+        degraded: false,
+        accessIssues: []
+      })
+      // A second conversation re-reads its own audience but rides the checker's
+      // cached workspace verdict: one `users.info` per principal, not per scope.
+      await expect(resolver.resolve([scopeAt(2)], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toMatchObject({
+        degraded: false,
+        allowedScopes: [{ id: scopeAt(2).id, aclRevision: 2n }]
+      })
+      const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+      expect(users).toHaveLength(1)
+      expect(tokenOf(users[0]?.[1])).toBe('Bearer xoxb-checker')
+    })
+
+    it('prefers a capable custom bot over a short-granted prebuilt', async () => {
+      // The platform app recorded the session but its grant lacks `users:read`;
+      // preference never overrides capability, so the custom bot answers.
+      const fleet = {
+        bots: [bot({ id: SECOND_BOT_ID, prebuilt: true, grantedScopes: SHORT }), bot({ grantedScopes: CAPABLE })],
+        tokens: { [BOT_ID]: 'xoxb-custom', [SECOND_BOT_ID]: 'xoxb-prebuilt' }
+      }
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return tokenOf(init) === 'Bearer xoxb-custom'
+            ? json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+            : json({ ok: false, error: 'missing_scope' })
+        }
+        throw new Error(`unexpected Slack request: ${url}`)
+      })
+      const recorded = { ...scope(), credentialId: SECOND_BOT_ID }
+
+      await expect(
+        service(fetchImpl, undefined, fleet).resolve([recorded], viewer('slack:T_INSTALL:U_MEMBER'))
+      ).resolves.toEqual({
+        allowedScopes: [{ id: recorded.id, aclRevision: 2n }],
+        degraded: false,
+        accessIssues: []
+      })
+      const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+      expect(users.map(([, init]) => tokenOf(init))).toEqual(['Bearer xoxb-custom'])
+    })
+
+    it('keeps a Slack Connect check on the recording bot, not the checker', async () => {
+      const fleet = {
+        bots: [bot(), bot({ id: SECOND_BOT_ID, prebuilt: true, grantedScopes: CAPABLE, createdAt: new Date(900) })],
+        tokens: { [BOT_ID]: 'xoxb-recording', [SECOND_BOT_ID]: 'xoxb-checker' }
+      }
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('conversations.members')) {
+          return json({ ok: true, members: ['U_CONNECT'], response_metadata: {} })
+        }
+        // Only a bot sharing a conversation can see an external user; the
+        // checker would be told the user does not exist — a definitive deny.
+        return tokenOf(init) === 'Bearer xoxb-recording'
+          ? json({ ok: true, user: { team_id: 'T_HOME' } })
+          : json({ ok: false, error: 'user_not_found' })
+      })
+
+      await expect(
+        service(fetchImpl, undefined, fleet).resolve([scope()], viewer('slack:T_HOME:U_CONNECT'))
+      ).resolves.toEqual({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false,
+        accessIssues: []
+      })
+      const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+      expect(users.map(([, init]) => tokenOf(init))).toEqual(['Bearer xoxb-recording'])
+    })
+
+    it('degrades to the reauthorize prompt when no realm credential holds users:read', async () => {
+      const warn = vi.fn()
+      const fleet = {
+        bots: [bot({ grantedScopes: SHORT }), bot({ id: SECOND_BOT_ID, prebuilt: true, grantedScopes: SHORT })],
+        tokens: { [BOT_ID]: 'xoxb-recording', [SECOND_BOT_ID]: 'xoxb-prebuilt' }
+      }
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        throw new Error(`unexpected Slack request: ${url}`)
+      })
+
+      await expect(
+        service(fetchImpl, { warn }, fleet).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      ).resolves.toEqual({
+        allowedScopes: [],
+        degraded: true,
+        accessIssues: [{ provider: 'slack', reason: 'app_authorization' }]
+      })
+      // Every candidate's grant POSITIVELY lacks the scope: no call is spent
+      // re-earning `missing_scope`, and the degrade names the local fact.
+      expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('users.info'))).toBe(false)
+      expect(warn.mock.calls[0]?.[0]).toMatchObject({ reasons: { bot_scope_missing: 1 } })
+    })
+
+    it('no longer lets two bots share a workspace verdict across credentials', async () => {
+      // Same realm, same viewer, same credential REVISION — exactly the shape
+      // the old [realm, revision, principal] key collapsed into one entry,
+      // letting bot A's verdict answer for bot B's differently-granted token.
+      // Cross-team viewers pin each check to its recording bot, so both fire.
+      const fleet = {
+        bots: [bot({ credentialRevision: 1 }), bot({ id: SECOND_BOT_ID, credentialRevision: 1 })],
+        tokens: { [BOT_ID]: 'xoxb-a', [SECOND_BOT_ID]: 'xoxb-b' }
+      }
+      const fetchImpl = vi.fn(async (url: string, _init?: RequestInit) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('conversations.members')) {
+          return json({ ok: true, members: ['U_CONNECT'], response_metadata: {} })
+        }
+        return json({ ok: true, user: { team_id: 'T_HOME' } })
+      })
+      const scopes = [scopeAt(1), { ...scopeAt(2), credentialId: SECOND_BOT_ID }]
+
+      const result = await service(fetchImpl, undefined, fleet).resolve(scopes, viewer('slack:T_HOME:U_CONNECT'))
+
+      expect(result.degraded).toBe(false)
+      expect(result.allowedScopes).toHaveLength(2)
+      const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+      expect(new Set(users.map(([, init]) => tokenOf(init)))).toEqual(new Set(['Bearer xoxb-a', 'Bearer xoxb-b']))
+    })
+
+    it('shares the workspace verdict between sessions when the checker is the same', async () => {
+      // Isolation is per ANSWERING credential, not per recording bot: two bots'
+      // sessions in one realm still resolve through one checker and one call.
+      const fleet = {
+        bots: [bot(), bot({ id: SECOND_BOT_ID, prebuilt: true, grantedScopes: CAPABLE, createdAt: new Date(900) })],
+        tokens: { [BOT_ID]: 'xoxb-recording', [SECOND_BOT_ID]: 'xoxb-checker' }
+      }
+      const fetchImpl = vi.fn(async (url: string, _init?: RequestInit) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        throw new Error(`unexpected Slack request: ${url}`)
+      })
+      const resolver = service(fetchImpl, undefined, fleet)
+
+      await resolver.resolve([scopeAt(1)], viewer('slack:T_INSTALL:U_MEMBER'))
+      await resolver.resolve([{ ...scopeAt(2), credentialId: SECOND_BOT_ID }], viewer('slack:T_INSTALL:U_MEMBER'))
+
+      const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
+      expect(users).toHaveLength(1)
+      expect(tokenOf(users[0]?.[1])).toBe('Bearer xoxb-checker')
+    })
   })
 })
