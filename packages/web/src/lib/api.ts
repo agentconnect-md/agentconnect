@@ -425,10 +425,15 @@ export interface ConversationDto {
   memberSessionIds?: string[]
 }
 
+/** Why a provider failed closed — a CAUSE, never a target (no channel, user or
+ *  workspace id ever appears here). `authorization` is the VIEWER's own linked
+ *  identity; `app_authorization` is the installed app's grant, which only an
+ *  administrator can restore. A CP that predates a variant simply never sends
+ *  it, and an unrecognized one falls back to the generic notification. */
 export interface SessionAccessIssue {
   provider: string
   region?: string
-  reason: 'authorization' | 'quota' | 'unavailable'
+  reason: 'authorization' | 'app_authorization' | 'quota' | 'unavailable'
 }
 
 export interface SessionListPageDto {

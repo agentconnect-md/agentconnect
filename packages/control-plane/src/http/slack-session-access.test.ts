@@ -99,7 +99,8 @@ describe('SlackSessionAccessService', () => {
 
     await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_NOT_JOINED'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('conversations.members'))).toBe(false)
   })
@@ -118,11 +119,13 @@ describe('SlackSessionAccessService', () => {
 
     await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_GUEST'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
     await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_OTHER_GUEST'))).resolves.toEqual({
       allowedScopes: [],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
   })
 
@@ -141,7 +144,8 @@ describe('SlackSessionAccessService', () => {
 
       await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_LIMITED'))).resolves.toEqual({
         allowedScopes: [],
-        degraded: false
+        degraded: false,
+        accessIssues: []
       })
       expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('conversations.members'))).toBe(false)
     }
@@ -157,11 +161,13 @@ describe('SlackSessionAccessService', () => {
 
     await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
     await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_OTHER'))).resolves.toEqual({
       allowedScopes: [],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('users.info'))).toBe(false)
   })
@@ -179,7 +185,8 @@ describe('SlackSessionAccessService', () => {
 
     await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_HOME:U_CONNECT'))).resolves.toEqual({
       allowedScopes: [{ id: scope().id, aclRevision: 2n }],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
   })
 
@@ -196,7 +203,8 @@ describe('SlackSessionAccessService', () => {
 
     await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_HOME:U_CONNECT'))).resolves.toEqual({
       allowedScopes: [],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
   })
 
@@ -204,7 +212,10 @@ describe('SlackSessionAccessService', () => {
     const resolver = service(async () => json({ ok: false, error: 'ratelimited' }))
     await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
       allowedScopes: [],
-      degraded: true
+      degraded: true,
+      // Rate limiting clears on its own: the console keeps the generic
+      // "unavailable" copy rather than sending anyone to reauthorize an app.
+      accessIssues: [{ provider: 'slack', reason: 'unavailable' }]
     })
   })
 
@@ -245,13 +256,101 @@ describe('SlackSessionAccessService', () => {
     const result = await service(fetchImpl, { warn }).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
 
     // Unchanged: it still fails closed. Only the diagnosis is new.
-    expect(result).toEqual({ allowedScopes: [], degraded: true })
+    expect(result).toEqual({
+      allowedScopes: [],
+      degraded: true,
+      accessIssues: [{ provider: 'slack', reason: 'app_authorization' }]
+    })
     expect(warn.mock.calls[0]?.[0]).toEqual({
       provider: 'slack',
       unknownScopes: 1,
       totalScopes: 1,
       reasons: { missing_scope: 1 }
     })
+  })
+
+  // The gap this whole seam existed to close: the plugin knew the cause, the
+  // DTO had a field for it, and nothing connected the two — so an app short of
+  // a required scope reached the console as a bare `degraded` and got the
+  // "checks unavailable" copy, which reads as an outage and never clears.
+  it.each([
+    'missing_scope',
+    'invalid_auth',
+    'account_inactive',
+    'token_revoked',
+    'token_expired',
+    'no_permission'
+  ] as const)('reports a short app grant as one the org can act on (%s)', async (error) => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('conversations.info')
+        ? json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+        : json({ ok: false, error })
+    )
+
+    const result = await service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(result.accessIssues).toEqual([{ provider: 'slack', reason: 'app_authorization' }])
+  })
+
+  // The other half of the same decision. Relabelling these would put a
+  // "reauthorize your app" prompt in front of someone with nothing to fix.
+  it.each(['ratelimited', 'service_unavailable', 'fatal_error', 'ekm_access_denied'] as const)(
+    'leaves a transient failure on the generic copy (%s)',
+    async (error) => {
+      const resolver = service(async () => json({ ok: false, error }))
+
+      const result = await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+      expect(result.accessIssues).toEqual([{ provider: 'slack', reason: 'unavailable' }])
+    }
+  )
+
+  // A failure on THIS side of the call says nothing about the app's grant.
+  it('reports a transport failure as unavailable rather than an app problem', async () => {
+    const resolver = service(async () => json({ ok: false, error: 'missing_scope' }, 500))
+
+    const result = await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(result.accessIssues).toEqual([{ provider: 'slack', reason: 'unavailable' }])
+  })
+
+  // `accessIssues` crosses to the browser, where the log discipline's rationale
+  // — "the operator needs the rate, not the target" — is replaced by a stricter
+  // one: a reason is a CAUSE, and a member has no business learning which
+  // conversation, workspace or credential was behind one.
+  it('carries no channel, workspace, viewer or credential into the issues', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('conversations.info')
+        ? json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+        : json({ ok: false, error: 'missing_scope' })
+    )
+
+    const result = await service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    const serialized = JSON.stringify(result.accessIssues)
+    for (const identifier of ['C_CHANNEL', 'T_INSTALL', 'U_MEMBER', scope().id, BOT_ID, 'xoxb']) {
+      expect(serialized).not.toContain(identifier)
+    }
+  })
+
+  // One issue per REMEDY, not per hidden scope: the console renders one banner
+  // for each thing the reader could go and do, and 200 channels behind the same
+  // short grant are one thing to do.
+  it('collapses many hidden scopes into one issue per remedy', async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('conversations.info')) {
+        return json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+      }
+      return json({ ok: false, error: url.includes('C_CHANNEL_1') ? 'ratelimited' : 'missing_scope' })
+    })
+    const scopes = [scopeAt(1), scopeAt(2), scopeAt(3)]
+
+    const result = await service(fetchImpl).resolve(scopes, viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(result.accessIssues).toEqual([
+      { provider: 'slack', reason: 'unavailable' },
+      { provider: 'slack', reason: 'app_authorization' }
+    ])
   })
 
   it('aggregates a mixed batch by code, one reason per hidden scope', async () => {
@@ -370,7 +469,8 @@ describe('SlackSessionAccessService', () => {
       const resolver = service(async () => json({ ok: false, error }))
       await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
         allowedScopes: [],
-        degraded: false
+        degraded: false,
+        accessIssues: []
       })
     }
   )
@@ -384,7 +484,8 @@ describe('SlackSessionAccessService', () => {
     })
     await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_GONE'))).resolves.toEqual({
       allowedScopes: [],
-      degraded: false
+      degraded: false,
+      accessIssues: []
     })
   })
 
@@ -408,7 +509,8 @@ describe('SlackSessionAccessService', () => {
     })
     await expect(service(fetchImpl).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toEqual({
       allowedScopes: [],
-      degraded: true
+      degraded: true,
+      accessIssues: [{ provider: 'slack', reason: 'app_authorization' }]
     })
   })
 

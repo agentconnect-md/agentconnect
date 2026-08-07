@@ -5,7 +5,12 @@ import type { Clock } from '../domain/clock.js'
 import type { BotRepo, BotSecretStore, ExternalScopeRecord } from '../persistence/ports.js'
 import { BotId } from '../domain/ids.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
-import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
+import type {
+  SessionAccessIssue,
+  SessionAccessPlugin,
+  SessionAccessResult,
+  SessionAccessViewer
+} from './session-access-plugin.js'
 
 const ALLOW_TTL_MS = 120_000
 const DENY_TTL_MS = 30_000
@@ -159,6 +164,46 @@ function thrownReason(error: unknown): LocalReason {
   return error.name === 'AbortError' ? 'request_aborted' : 'transport_failure'
 }
 
+/**
+ * The refusals that mean the INSTALLED APP's authorization is what failed — as
+ * opposed to Slack being unreachable, slow, or rate limiting.
+ *
+ * The distinction is the whole point of `app_authorization`: everything in here
+ * is fixed once, by an administrator, through the app's own row on Integrations
+ * (`POST /bots/:id/slack/refresh` syncs the manifest and names the missing
+ * scopes), and nothing in here clears on its own. `missing_scope` is the
+ * observed case — an app installed before a scope was added to
+ * `SLACK_BOT_SCOPES` keeps a grant that can never pass the check — and the rest
+ * are the other ways Slack says "this credential is the problem", which land on
+ * the same page and the same button.
+ *
+ * Deliberately NOT here: `ratelimited` and every transport/HTTP failure, which
+ * really are transient; and `ekm_access_denied`, which is an enterprise key
+ * policy that reauthorizing the app cannot lift. Those stay `unavailable`.
+ */
+const APP_AUTHORIZATION_ERRORS = new Set([
+  'missing_scope',
+  'invalid_auth',
+  'account_inactive',
+  'token_revoked',
+  'token_expired',
+  'no_permission'
+])
+
+/**
+ * One degraded scope's cause, projected onto the console's vocabulary.
+ *
+ * The projection is deliberately lossy. `DegradedReason` is an operator-facing
+ * label — Slack's own word, or a `LocalReason` — and it stays in the log; what
+ * crosses into `accessIssues` is only which REMEDY the reason implies, so a
+ * member sees "reauthorize the app" or "try again later" and never a code they
+ * would have to look up. It carries no bot, workspace, or channel: see
+ * `SessionAccessIssue`.
+ */
+function accessIssueFor(reason: DegradedReason): SessionAccessIssue {
+  return { provider: 'slack', reason: APP_AUTHORIZATION_ERRORS.has(reason) ? 'app_authorization' : 'unavailable' }
+}
+
 function slackPrincipals(identitySet: ReadonlySet<string>): SlackPrincipal[] {
   const principals: SlackPrincipal[] = []
   for (const key of identitySet) {
@@ -238,7 +283,9 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
 
   async resolve(scopes: readonly ExternalScopeRecord[], viewer: SessionAccessViewer): Promise<SessionAccessResult> {
     const principals = slackPrincipals(viewer.identitySet)
-    if (principals.length === 0 || scopes.length === 0) return { allowedScopes: [], degraded: false }
+    if (principals.length === 0 || scopes.length === 0) {
+      return { allowedScopes: [], degraded: false, accessIssues: [] }
+    }
     let degraded = false
     const decisions: Array<{ scope: ExternalScopeRecord; verdict: Verdict }> = []
     // 200 is a provider-work batch, never a visibility ceiling. Walk every
@@ -261,6 +308,14 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     // refusal, or a `LocalReason` — and never by conversation: one bucket may
     // cover many channels, but no bucket can name one. Its counts sum to
     // `unknownScopes`, since a scope reports the first cause that hid it.
+    //
+    // The SAME walk feeds `accessIssues`, which is the requester-facing half of
+    // the diagnosis and the reason a degraded Slack check used to reach the
+    // console as a bare boolean. Two audiences, two vocabularies, one pass: the
+    // operator gets the codes and their counts, the member gets the remedy those
+    // codes imply and nothing else — at most one issue per remedy, because a
+    // reason is a cause and there is no per-scope axis to spread them over.
+    const accessIssues = new Map<SessionAccessIssue['reason'], SessionAccessIssue>()
     if (degraded) {
       const reasons = new Map<DegradedReason, number>()
       let unknownScopes = 0
@@ -271,6 +326,8 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
         // cause — and is what a future path that forgot to would look like.
         const reason = verdict.reason ?? 'unreported'
         reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+        const issue = accessIssueFor(reason)
+        accessIssues.set(issue.reason, issue)
       }
       this.deps.log?.warn(
         { provider: 'slack', unknownScopes, totalScopes: decisions.length, reasons: Object.fromEntries(reasons) },
@@ -281,7 +338,8 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       allowedScopes: decisions
         .filter(({ verdict }) => verdict.decision === 'allow')
         .map(({ scope }) => ({ id: scope.id, aclRevision: scope.aclRevision })),
-      degraded
+      degraded,
+      accessIssues: [...accessIssues.values()]
     }
   }
 

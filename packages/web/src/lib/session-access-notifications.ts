@@ -41,6 +41,39 @@ function genericNotification(surface: SessionAccessSurface): SessionAccessNotifi
   }
 }
 
+/**
+ * The installed app's grant fell short — an administrator's two-minute fix, not
+ * an outage.
+ *
+ * It routes to the app's own row on Integrations rather than restating what is
+ * wrong, because the row's refresh action is the AUTHORITATIVE per-app
+ * diagnosis: it asks Slack which scopes the installation actually granted and
+ * names the missing ones. This notification only knows that some app behind the
+ * sessions on this page came up short, so telling the reader more than "one of
+ * your Slack apps needs reauthorizing, here is where you fix it" would be
+ * guessing — see the plugin's `accessIssueFor`.
+ */
+function appAuthorizationNotification(
+  surface: SessionAccessSurface,
+  orgPath: (path: string) => string
+): SessionAccessNotificationInput {
+  return {
+    category: 'session_access',
+    severity: 'warning',
+    sourceKey: `${surface}:slack:app_authorization`,
+    title: 'Reauthorize your Slack app',
+    message:
+      surface === 'sessions'
+        ? 'Refresh the app in Integrations to grant the permissions AgentConnect needs and restore access to affected sessions.'
+        : 'Refresh the app in Integrations to grant the permissions AgentConnect needs and restore usage from affected sessions.',
+    action: {
+      label: 'Open Integrations',
+      href: orgPath('/integrations?platform=slack'),
+      external: false
+    }
+  }
+}
+
 function classifiedNotification(
   surface: SessionAccessSurface,
   region: FeishuRegion,
@@ -102,7 +135,13 @@ export function sessionAccessNotifications(
     ) {
       const notification = classifiedNotification(surface, issue.region, issue.reason, orgPath)
       notifications.set(notification.sourceKey, notification)
+    } else if (issue.provider === 'slack' && issue.reason === 'app_authorization') {
+      const notification = appAuthorizationNotification(surface, orgPath)
+      notifications.set(notification.sourceKey, notification)
     } else {
+      // Including a Slack `unavailable`: rate limiting and outages really do
+      // clear on their own, and relabelling them would put a "reauthorize your
+      // app" prompt in front of someone with nothing to reauthorize.
       needsGeneric = true
     }
   }

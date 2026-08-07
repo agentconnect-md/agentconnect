@@ -48,6 +48,76 @@ describe('sessionAccessNotifications', () => {
     ])
   })
 
+  // The whole point of the `app_authorization` variant: this state is a
+  // two-minute administrator fix, and the generic copy below ("checks
+  // unavailable") reads as a Slack outage and suggests nothing to do — so
+  // people wait for something that never clears.
+  it('turns a short Slack app grant into a reauthorize prompt', () => {
+    expect(
+      sessionAccessNotifications('sessions', true, [{ provider: 'slack', reason: 'app_authorization' }], orgPath)
+    ).toEqual([
+      {
+        category: 'session_access',
+        severity: 'warning',
+        sourceKey: 'sessions:slack:app_authorization',
+        title: 'Reauthorize your Slack app',
+        message:
+          'Refresh the app in Integrations to grant the permissions AgentConnect needs and restore access to affected sessions.',
+        action: {
+          label: 'Open Integrations',
+          // Where the existing per-app refresh action lives, and the only place
+          // that can say WHICH scopes an installation is missing.
+          href: '/acme/integrations?platform=slack',
+          external: false
+        }
+      }
+    ])
+  })
+
+  it('phrases the Slack reauthorize prompt for the usage surface', () => {
+    expect(
+      sessionAccessNotifications('usage', true, [{ provider: 'slack', reason: 'app_authorization' }], orgPath)
+    ).toEqual([
+      expect.objectContaining({
+        sourceKey: 'usage:slack:app_authorization',
+        message:
+          'Refresh the app in Integrations to grant the permissions AgentConnect needs and restore usage from affected sessions.'
+      })
+    ])
+  })
+
+  // Rate limiting, an outage or a timeout really do clear on their own. Sending
+  // that reader to reauthorize an app would waste their time on a healthy one.
+  it('keeps the generic copy for a transient Slack failure', () => {
+    expect(
+      sessionAccessNotifications('sessions', true, [{ provider: 'slack', reason: 'unavailable' }], orgPath)
+    ).toEqual([
+      {
+        category: 'session_access',
+        severity: 'warning',
+        sourceKey: 'sessions:generic:unavailable',
+        title: 'Session access checks unavailable',
+        message: 'Affected sessions are hidden until access can be verified.'
+      }
+    ])
+  })
+
+  // Both halves of a mixed sweep are worth showing: one is actionable now, the
+  // other explains the sessions that stay hidden after the app is fixed.
+  it('shows the reauthorize prompt alongside the generic copy for a mixed sweep', () => {
+    expect(
+      sessionAccessNotifications(
+        'sessions',
+        true,
+        [
+          { provider: 'slack', reason: 'app_authorization' },
+          { provider: 'slack', reason: 'unavailable' }
+        ],
+        orgPath
+      ).map((notification) => notification.sourceKey)
+    ).toEqual(['sessions:generic:unavailable', 'sessions:slack:app_authorization'])
+  })
+
   it('collapses unsupported and unusable diagnostics into one generic source per surface', () => {
     expect(
       sessionAccessNotifications(
