@@ -38,53 +38,7 @@ import { NotificationProvider } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
-
-interface NavItem {
-  href: string
-  label: string
-  icon: string
-}
-
-// The rail's destinations, in groups separated by a rule: what the organization
-// runs (agents and the surfaces they answer on) first, then the fleet the work
-// runs on. Daemons sits alone at the bottom because it is infrastructure — you
-// visit it when something is wrong, not to get work done.
-const NAV_GROUPS: NavItem[][] = [
-  [
-    { href: '/home', label: 'Home', icon: 'house' },
-    { href: '/agents', label: 'Agents', icon: 'bot' },
-    { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-    { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
-    { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-    { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
-    { href: '/integrations', label: 'Integrations', icon: 'plug' },
-    { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
-  ],
-  [{ href: '/daemons', label: 'Daemons', icon: 'server' }]
-]
-
-// Bottom tab bar (mobile only) — exactly the design's 5-slot bar: the 4 primary
-// destinations as equal columns plus a "More" slot that opens a bottom sheet.
-// (Schedules uses `alarm-clock` per the design, not `calendar-clock`.)
-const MOBILE_NAV: NavItem[] = [
-  { href: '/home', label: 'Home', icon: 'house' },
-  { href: '/agents', label: 'Agents', icon: 'bot' },
-  { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
-  { href: '/crons', label: 'Schedules', icon: 'alarm-clock' }
-]
-
-// The "More" sheet's destinations — Analytics / Tools & Skills / Settings (the desktop rail
-// items beyond the 4 primary tabs). Profile is NOT here: it lives in the mobile app
-// bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
-// prepended separately, in the sheet itself.
-const MORE_ROWS: NavItem[] = [
-  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
-  { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
-  { href: '/integrations', label: 'Integrations', icon: 'plug' },
-  { href: '/daemons', label: 'Daemons', icon: 'server' },
-  { href: '/settings', label: 'Settings', icon: 'settings' }
-]
+import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
 // every other route is a "push" screen (back-button app bar, no bottom nav) on mobile.
@@ -129,24 +83,6 @@ const ADD_KIND: Record<string, 'agent' | 'cron' | 'daemon'> = {
   '/crons': 'cron',
   '/daemons': 'daemon'
 }
-
-// Section label for the mobile app bar, matched by path prefix. (Desktop has no
-// title strip — the rail's active row says where you are.)
-const SECTIONS: { prefix: string; label: string }[] = [
-  { prefix: '/home', label: 'Home' },
-  { prefix: '/agents', label: 'Agents' },
-  { prefix: '/sessions', label: 'Sessions' },
-  // Merged conversation pages live in the Sessions section (§5.3).
-  { prefix: '/conversations', label: 'Sessions' },
-  { prefix: '/crons', label: 'Schedules' },
-  { prefix: '/daemons', label: 'Daemons' },
-  { prefix: '/tools', label: 'Tools & Skills' },
-  { prefix: '/knowledge', label: 'Knowledge' },
-  { prefix: '/integrations', label: 'Integrations' },
-  { prefix: '/usage', label: 'Analytics' },
-  { prefix: '/settings', label: 'Settings' },
-  { prefix: '/profile', label: 'Profile' }
-]
 
 const isActive = (pathname: string, href: string) =>
   pathname === href ||

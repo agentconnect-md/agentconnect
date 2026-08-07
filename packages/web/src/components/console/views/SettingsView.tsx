@@ -267,7 +267,7 @@ export function SessionAccessCard({ orgId, isOwner }: { orgId?: string; isOwner:
   if (!pending && rows.length === 0) return null
 
   return (
-    <div className="card mt-[18px]">
+    <div className="card mt-[18px]" id="session-access">
       <div className="cardhead justify-between">
         <span className="cardtitle">Session access</span>
         <span className="flex items-center gap-[6px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -341,7 +341,7 @@ function AgentVisibilityCard({
   const selected = AGENT_VISIBILITY_OPTIONS.find((option) => option.key === policy)
 
   return (
-    <div className="card mt-[18px]">
+    <div className="card mt-[18px]" id="agent-visibility">
       <div className="cardhead justify-between">
         <span className="cardtitle">Default agent visibility</span>
         <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
@@ -498,7 +498,7 @@ function InviteLinksCard({ orgId }: { orgId: string }) {
   }
 
   return (
-    <div className="card mt-[18px]">
+    <div className="card mt-[18px]" id="invite-links">
       <div className="cardhead justify-between">
         <span className="cardtitle">Invite links</span>
         {canGenerate && (
@@ -648,7 +648,8 @@ export default function SettingsView() {
 
   return (
     <div className="wrap max-w-[900px] max-desktop:p-4">
-      <div className="card">
+      {/* Card ids are GlobalSearch anchor targets — keep in sync with nav.ts SETTING_CARDS. */}
+      <div className="card" id="organization">
         <div className="cardhead justify-between">
           <span className="cardtitle">Organization</span>
           {isOwner && (
@@ -713,7 +714,7 @@ export default function SettingsView() {
           card renders nothing at all for collaborators and viewers (§8.1). */}
       <OrganizationEnvironmentCard orgId={activeOrg?.id} isOwner={isOwner} agents={agents} />
 
-      <div className="card mt-[18px]">
+      <div className="card mt-[18px]" id="members">
         <div className="cardhead justify-between">
           <span className="cardtitle">Members &amp; roles</span>
           {isOwner && (
