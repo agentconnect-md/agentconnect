@@ -44,9 +44,9 @@ const row = (platform: string, columns: Partial<CreateBotInput> = {}): CreateBot
 })
 
 describe('slack — tenant-scoped', () => {
-  it('mirrors (slackAppId, teamId) into the generic pair', () => {
+  it('projects (slackAppId, teamId) as the generic pair', () => {
     // A platform-app OAuth install: both halves captured, so the pair is the
-    // same key the legacy unique fences on. Lockstep, not a second opinion.
+    // full demux identity and the composite unique fences on it.
     expect(project(row('slack', { slackAppId: 'A123', teamId: 'T999' }))).toEqual({
       externalAppId: 'A123',
       externalTenantId: 'T999'
@@ -55,8 +55,8 @@ describe('slack — tenant-scoped', () => {
 
   it('keeps each half independent — a manual install captures no workspace', () => {
     // Pasting tokens into the create form runs no OAuth exchange, so there is no
-    // teamId to write. That is the pre-capture NULL the legacy fence has always
-    // tolerated, and the reason Slack declares no 409 pre-check.
+    // teamId to write. Postgres keeps those NULL rows distinct, which is why
+    // Slack declares no 409 pre-check — there is nothing to pre-check.
     expect(project(row('slack', { slackAppId: 'A123' }))).toEqual({ externalAppId: 'A123' })
     expect(project(row('slack', { teamId: 'T999' }))).toEqual({ externalTenantId: 'T999' })
     expect(project(row('slack'))).toEqual({})

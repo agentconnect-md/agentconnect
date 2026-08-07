@@ -1075,8 +1075,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       })
     ).json() as { id: string; botId: string }
     await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${first.id}` })
-    // Region lives durably on the freed bot.
-    expect((await prisma.bot.findUnique({ where: { id: first.botId } }))?.feishuRegion).toBe('lark')
+    // Region lives durably on the freed bot — in the per-platform bag, which is
+    // what survives the uninstall so a reinstall dials the same gateway.
+    expect((await prisma.bot.findUnique({ where: { id: first.botId } }))?.platformConfig).toMatchObject({
+      feishuRegion: 'lark'
+    })
 
     const otherAgent = randomUUID()
     await seedAgent(prisma, otherAgent, { daemonId: DAEMON })

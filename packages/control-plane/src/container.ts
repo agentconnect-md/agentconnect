@@ -308,8 +308,8 @@ export function buildContainer(
     lease: new PgSecretLeaseRepo(prisma),
     integration: new PgIntegrationRepo(prisma),
     integrationChannel: new PgIntegrationChannelRepo(prisma),
-    // §11 D6 dual-write: which columns carry this bot's demux identity is the
-    // provider's declaration, read at write time through the façade above.
+    // §11 D6: which values carry this bot's demux identity is the provider's
+    // declaration, read at write time through the façade above.
     bot: new PgBotRepo(prisma, botIdentityProjector(platforms)),
     botSecret: new PgBotSecretStore(prisma, secretCipher),
     // Owns its transaction: install/revoke each write two tables behind the

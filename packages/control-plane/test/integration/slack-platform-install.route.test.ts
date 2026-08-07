@@ -187,7 +187,13 @@ describe('GET /integrations/slack/platform/callback', () => {
     })
 
     const bot = await prisma.bot.findUnique({
-      where: { slackAppId_teamId: { slackAppId: PLATFORM.appId, teamId: 'T0WORKSPACE' } },
+      where: {
+        platform_externalAppId_externalTenantId: {
+          platform: 'slack',
+          externalAppId: PLATFORM.appId,
+          externalTenantId: 'T0WORKSPACE'
+        }
+      },
       include: { secret: true, integrations: true }
     })
     expect(bot).toMatchObject({
@@ -269,7 +275,14 @@ describe('GET /integrations/slack/platform/callback', () => {
         shareable: false,
         prebuilt: true,
         slackAppId: PLATFORM.appId,
-        teamId: 'T0WORKSPACE'
+        teamId: 'T0WORKSPACE',
+        // What a real platform-app install writes: the callback sets workspaceId
+        // from team.id, and PgBotRepo.create projects the demux identity. A row
+        // carrying only the per-platform pair is a shape production cannot
+        // produce, and fencing against it would prove nothing.
+        workspaceId: 'T0WORKSPACE',
+        externalAppId: PLATFORM.appId,
+        externalTenantId: 'T0WORKSPACE'
       }
     })
     const agentId = randomUUID()
@@ -299,7 +312,13 @@ describe('GET /integrations/slack/platform/callback', () => {
       url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${first.id}`
     })
     const bot = await prisma.bot.findUniqueOrThrow({
-      where: { slackAppId_teamId: { slackAppId: PLATFORM.appId, teamId: 'T0WORKSPACE' } }
+      where: {
+        platform_externalAppId_externalTenantId: {
+          platform: 'slack',
+          externalAppId: PLATFORM.appId,
+          externalTenantId: 'T0WORKSPACE'
+        }
+      }
     })
     await app.deps.httpBot.revokeBot(bot.id, 'app_uninstalled')
     const revoked = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
@@ -471,7 +490,13 @@ describe('GET /integrations/slack/platform/callback', () => {
       url: `/api/v1/integrations/slack/platform/callback?code=c1&state=${first.id}`
     })
     const bot = await prisma.bot.findUniqueOrThrow({
-      where: { slackAppId_teamId: { slackAppId: PLATFORM.appId, teamId: 'T0WORKSPACE' } }
+      where: {
+        platform_externalAppId_externalTenantId: {
+          platform: 'slack',
+          externalAppId: PLATFORM.appId,
+          externalTenantId: 'T0WORKSPACE'
+        }
+      }
     })
     expect(bot.credentialRevision).toBe(1)
     // The workspace uninstalls — the event is generated NOW but not delivered yet.
@@ -777,7 +802,14 @@ describe('GET /integrations/slack/platform-install/:id (completion signal)', () 
         transport: 'http',
         shareable: false,
         slackAppId: PLATFORM.appId,
-        teamId: 'T0WORKSPACE'
+        teamId: 'T0WORKSPACE',
+        // What a real platform-app install writes: the callback sets workspaceId
+        // from team.id, and PgBotRepo.create projects the demux identity. A row
+        // carrying only the per-platform pair is a shape production cannot
+        // produce, and fencing against it would prove nothing.
+        workspaceId: 'T0WORKSPACE',
+        externalAppId: PLATFORM.appId,
+        externalTenantId: 'T0WORKSPACE'
       }
     })
     const agentId = randomUUID()

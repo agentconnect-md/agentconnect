@@ -443,16 +443,15 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
     },
 
     /**
-     * D6 identity (§11): Slack is TENANT-SCOPED, so the generic pair mirrors
-     * `(slackAppId, teamId)` verbatim — the same two values the legacy unique
-     * fences on, which is what makes the dual-write a lockstep copy rather than
-     * a second opinion.
+     * D6 identity (§11): Slack is TENANT-SCOPED, so the pair is
+     * `(slackAppId, teamId)` — the same two values the per-platform unique used
+     * to fence on, which is what made retiring that fence a no-op.
      *
      * Each half is conditional and neither implies the other: a manual
      * single-workspace install pastes tokens without an OAuth exchange, so it
-     * captures no `teamId` (and sometimes no app id either) and keeps NULLs —
-     * the pre-capture semantics the legacy fence has always had, and the reason
-     * Slack declares no `externalIdentity` 409 pre-check.
+     * captures no `teamId` (and sometimes no app id either) and keeps NULLs.
+     * Postgres holds those rows distinct, which is why Slack declares no
+     * `externalIdentity` 409 pre-check — there is nothing to pre-check.
      */
     projectBotIdentity: (input) => ({
       ...(input.slackAppId ? { externalAppId: input.slackAppId } : {}),

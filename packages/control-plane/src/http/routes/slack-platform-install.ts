@@ -286,7 +286,7 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
         }
         if (!expectedBot && !agent) return fail('error')
 
-        const existing = await deps.repos.bot.getBySlackAppTeam(platform.appId, result.teamId)
+        const existing = await deps.repos.bot.getByExternalIdentity('slack', platform.appId, result.teamId)
         if (expectedBot && existing?.id !== expectedBot.id) {
           req.log.warn(
             { installId: row.id, botId: expectedBot.id },
@@ -393,8 +393,8 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
             })
           } catch (err) {
             // The install tail's generic workspace-claim fence
-            // (ingress-tenant-fence.md §5). This funnel's own getBySlackAppTeam
-            // pre-check covers platform-app rows; the tail additionally catches a
+            // (ingress-tenant-fence.md §5). This funnel's own identity pre-check
+            // covers platform-app rows; the tail additionally catches a
             // workspace some org connected through a DIFFERENT funnel with this
             // same app id. Callback UX, not JSON: same closing page as the
             // pre-check's refusal.
