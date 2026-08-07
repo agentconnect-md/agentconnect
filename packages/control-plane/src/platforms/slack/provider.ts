@@ -444,8 +444,8 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
 
     /**
      * D6 identity (§11): Slack is TENANT-SCOPED, so the pair is
-     * `(slackAppId, teamId)` — the same two values the per-platform unique used
-     * to fence on, which is what made retiring that fence a no-op.
+     * `(slackAppId, teamId)` — an install of a distributed app is identified by
+     * the app AND the workspace, never the app alone.
      *
      * Each half is conditional and neither implies the other: a manual
      * single-workspace install pastes tokens without an OAuth exchange, so it

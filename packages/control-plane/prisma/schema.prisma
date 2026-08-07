@@ -1789,11 +1789,12 @@ model Bot {
   // (slackAppId, teamId) identifies a workspace's Bot. NULL for legacy /
   // single-workspace bots. Public metadata, NOT secret material.
   teamId                String?
-  // NOTE: `slackAppId`/`teamId` are no longer an identity fence — the generic
-  // pair below is. They remain because each still has a job: `slackAppId` is the
-  // console's deep-link to api.slack.com/apps/{id}, and `teamId` is what rides
-  // `rc/bot-assign` to the relay, whose delivery-time demux reads it to pick the
-  // strict (distributed install) or learnable (single-workspace) arm.
+  // Slack's own copies of the identity pair below, kept because each is read for
+  // its own reason: `slackAppId` is the console's deep-link to
+  // api.slack.com/apps/{id}, and `teamId` rides `rc/bot-assign` to the relay,
+  // whose delivery-time demux reads it to pick the strict (distributed install)
+  // or learnable (single-workspace) arm. Neither is an identity fence — that is
+  // the composite unique below.
   // External workspace identity used only to label/group bot rows in the Console.
   // Slack fills this from auth.test/OAuth for every bot kind. It is deliberately
   // separate from teamId, whose non-null value marks a distributed platform-app
@@ -1818,11 +1819,10 @@ model Bot {
   credentialRevision    Int            @default(1)
   credentialInstalledAt DateTime?      @db.Timestamptz(6)
   // ── generic bot demux identity (integration-plugin-architecture.md D6/§11) ──
-  // The platform's app-scoped id plus its tenant scope, and the sole identity
-  // fence: `BotRepo.getByExternalIdentity` is the only lookup, and the composite
-  // unique below is the only constraint. For Slack these mirror
-  // (slackAppId, teamId) verbatim, which is what made retiring the per-platform
-  // fence a no-op rather than a semantic change. NULL means no app identity was
+  // The platform's app-scoped id plus its tenant scope — the row's identity.
+  // `BotRepo.getByExternalIdentity` is the only lookup and the composite unique
+  // below is the only constraint, so every platform is fenced by one rule. Slack
+  // fills these from `(slackAppId, teamId)`. NULL means no app identity was
   // captured (a pasted-token Slack install), and Postgres keeps those distinct; a
   // tenantless platform writes the '-' sentinel instead.
   externalAppId         String?
