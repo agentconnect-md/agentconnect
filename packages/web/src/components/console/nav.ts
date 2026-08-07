@@ -75,6 +75,9 @@ export interface ConsolePage extends NavItem {
   /** Match terms the label doesn't cover: route aliases and the features/settings
    *  that live on the page but have no route of their own. */
   keywords?: string[]
+  /** SettingsView renders the target card only for org owners — GlobalSearch hides
+   *  the entry from everyone else so results never dead-end on a missing anchor. */
+  ownerOnly?: boolean
 }
 
 // Aliases and on-page features per route. Keep the integrations list in sync with
@@ -111,7 +114,8 @@ const SETTING_CARDS: ConsolePage[] = [
     label: 'Variables & secrets',
     icon: 'key-round',
     kind: 'setting',
-    keywords: ['settings', 'environment', 'env']
+    keywords: ['settings', 'environment', 'env'],
+    ownerOnly: true
   },
   {
     href: '/settings#members',
@@ -125,7 +129,8 @@ const SETTING_CARDS: ConsolePage[] = [
     label: 'Invite links',
     icon: 'link',
     kind: 'setting',
-    keywords: ['settings', 'invite']
+    keywords: ['settings', 'invite'],
+    ownerOnly: true
   },
   { href: '/profile', label: 'Profile', icon: 'circle-user-round', kind: 'setting', keywords: ['account'] }
 ]

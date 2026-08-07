@@ -8,8 +8,9 @@ const push = vi.fn()
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push })
 }))
+const myRole = vi.fn(() => 'owner' as string | null)
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ orgPath: (path: string) => `/org-test${path}` })
+  useOrgs: () => ({ orgPath: (path: string) => `/org-test${path}`, myRole: myRole() })
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ agents: [], daemons: [], crons: [], allSessions: [] })
@@ -34,6 +35,7 @@ let root: Root
 beforeEach(() => {
   push.mockClear()
   authConfigured.mockReturnValue(true)
+  myRole.mockReturnValue('owner')
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -105,7 +107,9 @@ describe('GlobalSearch pages & settings', () => {
     expect(push).toHaveBeenCalledWith('/org-test/knowledge')
   })
 
-  it('surfaces every settings card for the bare "settings" query', () => {
+  // The bare query matches every card via the shared 'settings' keyword; the list
+  // renders the first CAP of them (the group count shows the full total).
+  it('matches settings cards for the bare "settings" query', () => {
     render()
     type('settings')
     expect(host.textContent).toContain('Settings')
@@ -125,6 +129,18 @@ describe('GlobalSearch pages & settings', () => {
     type('usage')
     act(() => resultButton('/usage').click())
     expect(push).toHaveBeenCalledWith('/org-test/usage')
+  })
+
+  it('hides owner-only cards from non-owners (their anchor never renders)', () => {
+    myRole.mockReturnValue('collaborator')
+    render()
+    type('invite links')
+    expect(host.textContent).toContain('No results')
+    type('variables')
+    expect(host.textContent).toContain('No results')
+    // Cards every member can see stay searchable.
+    type('members')
+    expect(host.textContent).toContain('/settings#members')
   })
 
   it('hides Settings and Profile in no-auth mode', () => {

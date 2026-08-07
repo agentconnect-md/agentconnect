@@ -72,7 +72,7 @@ export function GlobalSearch({
   onClose
 }: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
   const router = useRouter()
-  const { orgPath } = useOrgs()
+  const { orgPath, myRole } = useOrgs()
   const { agents, daemons, crons, allSessions } = useConsoleData()
 
   const [open, setOpen] = useState(false)
@@ -184,7 +184,11 @@ export function GlobalSearch({
       href: orgPath(p.href)
     })
     const pageMatches = SEARCH_PAGES.filter((p) => p.kind === 'page' && pageHit(p))
-    const settingMatches = authed ? SEARCH_PAGES.filter((p) => p.kind === 'setting' && pageHit(p)) : []
+    // Owner-only entries point at cards SettingsView doesn't render for other
+    // roles — hide them so a result never navigates to a missing anchor.
+    const settingMatches = authed
+      ? SEARCH_PAGES.filter((p) => p.kind === 'setting' && (!p.ownerOnly || myRole === 'owner') && pageHit(p))
+      : []
 
     // Keep all groups (even empty ones) so the chip row can show every type's
     // count; the visible list filters empties + the active type below.
@@ -206,7 +210,7 @@ export function GlobalSearch({
         items: settingMatches.slice(0, CAP).map(toItem)
       }
     ]
-  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed])
+  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed, myRole])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
   // Chips: "All" + every kind with at least one match.
