@@ -17,6 +17,69 @@ export interface SessionAccessNotificationInput {
   action?: SessionAccessNotificationAction
 }
 
+/** Where an installed app's permissions are actually repaired: the app's own row
+ *  on Integrations, whose refresh action asks Slack which scopes the
+ *  installation granted and names the missing ones. */
+const SLACK_APP_SETTINGS_PATH = '/integrations?platform=slack'
+
+/**
+ * A degradation an administrator can clear, as opposed to one that clears
+ * itself.
+ *
+ * Exported because two surfaces answer this question — the notification below
+ * and the conversation page that refuses to render — and they must not drift on
+ * it. Getting it wrong in either direction is a real cost: calling a permanent
+ * state transient tells someone to wait for something that will never happen,
+ * and calling a transient one permanent sends them to reauthorize a healthy app.
+ */
+export function isAppAuthorizationIssue(issue: SessionAccessIssue): boolean {
+  return issue.provider === 'slack' && issue.reason === 'app_authorization'
+}
+
+/**
+ * What a conversation page that could not be verified should say, and what it
+ * should offer instead of guessing.
+ *
+ * The page fails closed on purpose — refusing to report "not found" for
+ * something the console never got a verdict on is right and stays. What was
+ * wrong is the assumption underneath it, that every such state is transient. A
+ * short app grant never clears, so the retry it offered could not succeed;
+ * worse, a successful resolution is cached (the plugin's allow lease plus the
+ * access snapshot), so the page keeps working for a couple of minutes at a time
+ * and the permanent failure is experienced as flakiness. Hence `retry` is a
+ * property of the CAUSE here, not a constant.
+ */
+export interface UnverifiedConversationNotice {
+  message: string
+  /** Whether trying the same read again could plausibly answer differently. */
+  retry: boolean
+  action?: SessionAccessNotificationAction
+}
+
+export function unverifiedConversationNotice(
+  failed: boolean,
+  issues: readonly SessionAccessIssue[],
+  orgPath: (path: string) => string
+): UnverifiedConversationNotice {
+  // A failed request is not an access verdict at all — the console never
+  // reached the control plane, and that genuinely is worth retrying.
+  if (failed) {
+    return {
+      message: 'This conversation could not be loaded. The console could not reach the control plane.',
+      retry: true
+    }
+  }
+  if (issues.some(isAppAuthorizationIssue)) {
+    return {
+      message:
+        'This conversation is hidden because a Slack app is missing permissions AgentConnect needs. It will not clear on its own — refresh the app in Integrations to restore access.',
+      retry: false,
+      action: { label: 'Open Integrations', href: orgPath(SLACK_APP_SETTINGS_PATH), external: false }
+    }
+  }
+  return { message: 'This conversation cannot be shown until its access checks can be verified.', retry: true }
+}
+
 const FEISHU_ADMIN_URL = {
   feishu: 'https://www.feishu.cn/admin',
   lark: 'https://www.larksuite.com/admin'
@@ -68,7 +131,7 @@ function appAuthorizationNotification(
         : 'Refresh the app in Integrations to grant the permissions AgentConnect needs and restore usage from affected sessions.',
     action: {
       label: 'Open Integrations',
-      href: orgPath('/integrations?platform=slack'),
+      href: orgPath(SLACK_APP_SETTINGS_PATH),
       external: false
     }
   }
@@ -135,7 +198,7 @@ export function sessionAccessNotifications(
     ) {
       const notification = classifiedNotification(surface, issue.region, issue.reason, orgPath)
       notifications.set(notification.sourceKey, notification)
-    } else if (issue.provider === 'slack' && issue.reason === 'app_authorization') {
+    } else if (isAppAuthorizationIssue(issue)) {
       const notification = appAuthorizationNotification(surface, orgPath)
       notifications.set(notification.sourceKey, notification)
     } else {

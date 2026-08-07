@@ -7,6 +7,7 @@ import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { selfConversationPath } from '@/lib/conversation-addressing'
 import { assembleConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
+import { unverifiedConversationNotice } from '@/lib/session-access-notifications'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
@@ -1173,6 +1174,9 @@ export default function SessionDetailView() {
   // into either — an empty answer the CP could not verify is not an absence.
   const conversationRoster = conversationResolution === undefined ? undefined : conversationResolution.conversation
   const conversationAccessDegraded = conversationResolution?.accessSyncDegraded === true
+  // Why it could not be verified, which decides whether the blocked state below
+  // is worth retrying or worth acting on.
+  const conversationAccessIssues = conversationResolution?.accessIssues ?? []
   const conversationMembers = conversationKey ? (conversationRoster?.sessions ?? null) : null
   const id = conversationKey ? (conversationMembers?.[0]?.sessionId ?? '') : (routeId ?? '')
   const conversationSourceKey =
@@ -2249,19 +2253,27 @@ export default function SessionDetailView() {
   // console never actually got. The request erroring is self-evidently not an
   // answer; a DEGRADED answer is subtler — the CP fails external access checks
   // closed, so a Slack API blip omits the very members it could not check and
-  // the roster arrives empty with `accessSyncDegraded` set. Both are transient
-  // and retryable, so say so and offer the retry.
+  // the roster arrives empty with `accessSyncDegraded` set.
+  //
+  // What is NOT true of both is that they are transient. This page used to say
+  // so unconditionally and offer a retry, which for a short app grant is a
+  // button that cannot ever succeed — and because a resolved verdict is cached
+  // for a couple of minutes, the permanent failure even reads as flakiness. The
+  // cause now picks the words and the way out; `accessIssues` rode along on this
+  // response the whole time (see `unverifiedConversationNotice`).
   if (conversationKey && (conversationError || (conversationAccessDegraded && !conversationRoster))) {
+    const notice = unverifiedConversationNotice(Boolean(conversationError), conversationAccessIssues, orgPath)
     return (
       <SessionDetailFrame withRail={false}>
         <div className="card p-6">
-          <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">
-            {conversationError
-              ? 'This conversation could not be loaded. The console could not reach the control plane.'
-              : 'This conversation cannot be shown until its access checks can be verified.'}
-          </div>
+          <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">{notice.message}</div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button onClick={() => void retryConversation()}>Try again</Button>
+            {notice.retry && <Button onClick={() => void retryConversation()}>Try again</Button>}
+            {notice.action && (
+              <Link className="dsbtn dsbtn-primary no-underline" href={notice.action.href}>
+                {notice.action.label}
+              </Link>
+            )}
             <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={orgPath('/sessions')}>
               Back to sessions
             </Link>
