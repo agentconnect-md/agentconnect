@@ -61,6 +61,10 @@ vi.mock('@/components/console/GettingStartedChecklist', () => ({
   useGsActions: () => ({ runAction: vi.fn(), firstAgent: mocks.agents[0] }),
   useGithubProfileLinked: () => undefined,
   useGithubAppEnabled: () => undefined,
+  // Same convention as the two probes above: undefined is the "unknowable, keep the
+  // step" value, so the reveal renders the full checklist (computeGettingStarted only
+  // drops the session-access row on a definitive false).
+  useSessionAccessCardAvailable: () => undefined,
   useSlackPlatformAppAvailable: () => true,
   GsRows: () => <div>rows</div>
 }))
