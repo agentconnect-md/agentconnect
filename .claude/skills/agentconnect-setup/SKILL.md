@@ -45,7 +45,7 @@ Use `scripts/check-local.sh <mode> [checkout]` for a read-only prerequisite and 
 
 - Never ask the user to paste secrets, private keys, configuration tokens, or OAuth client secrets into chat. Direct them to the password field in Setup or the provider console.
 - Never print, source, commit, or echo `compose.env`. Check only whether required variable names exist. Keep it gitignored.
-- Obtain confirmation before starting/stopping containers when the user asked only for guidance. Starting the requested stack is in scope when the user asked Codex to perform the setup.
+- Obtain confirmation before starting/stopping containers when the user asked only for guidance. Starting the requested stack is in scope when the user asked you to perform the setup.
 - Never run `docker compose down --volumes` unless the user explicitly requests a full reset and confirms permanent database deletion.
 - Keep no-auth mode bound to loopback. Do not help expose it to a LAN or public network; switch to authenticated setup first.
 - Preserve the exact Compose file set and `--env-file` choice across `up`, `pull`, `logs`, `restart`, and `down` commands.
