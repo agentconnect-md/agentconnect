@@ -9,6 +9,8 @@
  * (agent → repo owner → LIVE installation → scoped token).
  */
 import { gitRepoLabel, type GitCommitIdentity, type GitCredCapability } from '@agentconnect.md/protocol'
+import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
 import type { OrgId } from '../domain/ids.js'
 import type {
@@ -99,6 +101,8 @@ const OUTDATED_INSTALLATIONS_CACHE_MS = 30_000
 const REPO_PAGE_CACHE_MS = 5 * 60_000
 const MAX_REPO_PAGE_CACHE_ENTRIES = 1_000
 
+type RepoPageLookup = { ins: GithubInstallationRecord; page: number; perPage: number }
+
 /** Capability-level clamp per RepoAccess tier (agent-multi-repo-authorization.md
  *  decision 3). Only capabilities the daemon asked for are actually minted. */
 const REPO_ACCESS_LEVELS: Record<RepoAccess, CapabilityLevels> = {
@@ -154,13 +158,27 @@ export class GithubService {
   private readonly mintBucket: TokenBucket
   private outdatedInstallationsCache:
     { expiresAt: number; settingsUrlsByInstallationId: ReadonlyMap<string, string> } | undefined
-  private readonly repoPageCache = new Map<string, { value: GhRepoPage; expiresAt: number }>()
-  private readonly repoPageInFlight = new Map<string, Promise<GhRepoPage>>()
+  /** One picker page. `fetch` hands concurrent callers of one key the same
+   *  promise; the generation fence lives in `listRepos`, since it is about which
+   *  roster a page belongs to rather than how long the page stays fresh. */
+  private readonly repoPages: LRUCache<string, GhRepoPage, RepoPageLookup>
   private readonly repoRosterGeneration = new Map<string, number>()
 
   constructor(private readonly deps: GithubServiceDeps) {
     this.slug = deps.cfg.slug
     this.tokens = new InstallationTokenService(deps.cfg, deps.clock, deps.fetchImpl, deps.baseUrl)
+    this.repoPages = new LRUCache({
+      ...cacheOptions(deps.clock, MAX_REPO_PAGE_CACHE_ENTRIES),
+      ttl: REPO_PAGE_CACHE_MS,
+      fetchMethod: async (_key, _stale, { context }) => {
+        const token = await this.tokens.metadataToken(context.ins.installationId)
+        const res = await githubRequest<{ total_count: number; repositories: GhRepo[] }>(
+          `/installation/repositories?per_page=${context.perPage}&page=${context.page}`,
+          { auth: token, fetchImpl: deps.fetchImpl, baseUrl: deps.baseUrl, bigIdsAsStrings: true }
+        )
+        return { repos: res.repositories, totalCount: res.total_count }
+      }
+    })
     this.stateKey = deriveInstallStateKey(deps.pepper)
     // 10 burst / 0.2 per sec (~12/min sustained) per key — far above any honest
     // daemon (mints are cached 45+ min per repo), far below GitHub's budget.
@@ -183,8 +201,8 @@ export class GithubService {
   invalidateRepositoryRoster(installationId: bigint): void {
     const prefix = `${installationId}:`
     this.repoRosterGeneration.set(prefix, (this.repoRosterGeneration.get(prefix) ?? 0) + 1)
-    for (const key of this.repoPageCache.keys()) {
-      if (key.startsWith(prefix)) this.repoPageCache.delete(key)
+    for (const key of [...this.repoPages.keys()]) {
+      if (key.startsWith(prefix)) this.repoPages.delete(key)
     }
   }
 
@@ -288,35 +306,14 @@ export class GithubService {
     const prefix = `${ins.installationId}:`
     const generation = this.repoRosterGeneration.get(prefix) ?? 0
     const key = `${prefix}${generation}:${page}:${perPage}`
-    const cached = this.repoPageCache.get(key)
-    if (cached && cached.expiresAt > this.deps.clock.now()) return cached.value
-    if (cached) this.repoPageCache.delete(key)
-
-    let pending = this.repoPageInFlight.get(key)
-    if (!pending) {
-      pending = this.tokens
-        .metadataToken(ins.installationId)
-        .then((token) =>
-          githubRequest<{ total_count: number; repositories: GhRepo[] }>(
-            `/installation/repositories?per_page=${perPage}&page=${page}`,
-            { auth: token, fetchImpl: this.deps.fetchImpl, baseUrl: this.deps.baseUrl, bigIdsAsStrings: true }
-          )
-        )
-        .then((res) => {
-          const value = { repos: res.repositories, totalCount: res.total_count }
-          if ((this.repoRosterGeneration.get(prefix) ?? 0) === generation) {
-            if (this.repoPageCache.size >= MAX_REPO_PAGE_CACHE_ENTRIES) {
-              const oldest = this.repoPageCache.keys().next().value
-              if (oldest) this.repoPageCache.delete(oldest)
-            }
-            this.repoPageCache.set(key, { value, expiresAt: this.deps.clock.now() + REPO_PAGE_CACHE_MS })
-          }
-          return value
-        })
-        .finally(() => this.repoPageInFlight.delete(key))
-      this.repoPageInFlight.set(key, pending)
-    }
-    return pending
+    const value = await this.repoPages.fetch(key, { context: { ins, page, perPage } })
+    // A roster invalidation that lands while this page was in flight bumped the
+    // generation, so the answer describes a roster nobody will ask for again.
+    // The key already makes it unreachable; dropping it keeps it from occupying
+    // the cache until eviction.
+    if ((this.repoRosterGeneration.get(prefix) ?? 0) !== generation) this.repoPages.delete(key)
+    if (!value) throw new Error('github repository page lookup produced no result')
+    return value
   }
 
   /** Resolve a rename-proof repository id to its current canonical name. The

@@ -25,6 +25,8 @@
  *  - authorization is asserted at pick/create time; the daemon keeps running
  *    on installation tokens (creator drift is the tracked re-attest follow-up).
  */
+import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
 import type { GithubInstallationRecord } from '../persistence/ports.js'
 
@@ -75,17 +77,44 @@ interface UserAuthzDeps {
 const ACCESS_TTL_MS = 5 * 60_000
 /** Parallel verified REST permission probes per list-filter call. */
 const FILTER_CONCURRENCY = 8
+/**
+ * Both caches below are keyed per (installation, repo, login), so their natural
+ * size is repositories × console users — bounded in principle, unbounded in the
+ * only sense that matters to a long-lived process. They previously had no cap at
+ * all and grew for the lifetime of the pod.
+ */
+const MAX_CACHE_ENTRIES = 10_000
+
+/** `metaOf`'s answer. Wrapped because `null` (out of the installation's grant)
+ *  is a real answer worth caching, and a cache cannot store a nullish value. */
+type RepoMeta = { meta: { private: boolean } | null }
+
+type PermissionLookup = { ins: GithubInstallationRecord; owner: string; repo: string; login: string }
+type MetaLookup = { ins: GithubInstallationRecord; owner: string; repo: string }
 
 export class GithubUserAuthzService {
   /** (installation, repo, login) → effective permission; the one cacheable unit
-   *  shared by the preflight, the create gate AND the list filter. */
-  private readonly perms = new Map<string, { value: RepoPermission; fetchedAt: number; expiresAt: number }>()
-  private readonly permsInFlight = new Map<string, Promise<RepoPermission>>()
+   *  shared by the preflight, the create gate AND the list filter. `fetch` hands
+   *  concurrent callers of one key the same promise. */
+  private readonly perms: LRUCache<string, RepoPermission, PermissionLookup>
   /** (installation, repo) → meta (or null = out of grant), same TTL. */
-  private readonly metas = new Map<string, { value: { private: boolean } | null; expiresAt: number }>()
-  private readonly metasInFlight = new Map<string, Promise<{ private: boolean } | null>>()
+  private readonly metas: LRUCache<string, RepoMeta, MetaLookup>
 
-  constructor(private readonly deps: UserAuthzDeps) {}
+  constructor(private readonly deps: UserAuthzDeps) {
+    this.perms = new LRUCache({
+      ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
+      ttl: ACCESS_TTL_MS,
+      fetchMethod: (_key, _stale, { context }) =>
+        this.deps.github.userRepoPermission(context.ins, context.owner, context.repo, context.login)
+    })
+    this.metas = new LRUCache({
+      ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
+      ttl: ACCESS_TTL_MS,
+      fetchMethod: async (_key, _stale, { context }) => ({
+        meta: await this.deps.github.getRepoMeta(context.ins, context.owner, context.repo)
+      })
+    })
+  }
 
   /** The caller's GitHub login, or a GITHUB_IDENTITY_REQUIRED denial — the
    *  shared first leg of every check. */
@@ -112,7 +141,7 @@ export class GithubUserAuthzService {
   }
 
   /** Cached + deduped effective permission of `login` on one repo. */
-  private permissionOf(
+  private async permissionOf(
     login: string,
     ins: GithubInstallationRecord,
     owner: string,
@@ -120,24 +149,18 @@ export class GithubUserAuthzService {
     maxCacheAgeMs?: number
   ): Promise<RepoPermission> {
     const key = this.permissionKey(login, ins, owner, repo)
-    const cached = this.perms.get(key)
-    const now = this.deps.clock.now()
-    if (cached && cached.expiresAt > now && (maxCacheAgeMs === undefined || now - cached.fetchedAt < maxCacheAgeMs)) {
-      return Promise.resolve(cached.value)
-    }
-    let pending = this.permsInFlight.get(key)
-    if (!pending) {
-      pending = this.deps.github
-        .userRepoPermission(ins, owner, repo, login)
-        .then((value) => {
-          const fetchedAt = this.deps.clock.now()
-          this.perms.set(key, { value, fetchedAt, expiresAt: fetchedAt + ACCESS_TTL_MS })
-          return value
-        })
-        .finally(() => this.permsInFlight.delete(key))
-      this.permsInFlight.set(key, pending)
-    }
-    return pending
+    // `maxCacheAgeMs` caps reuse BELOW the cache's own lease: a caller sitting on
+    // a live authorization gate can demand evidence younger than the picker's
+    // five minutes (0 = always re-ask). A missing entry reports a full-TTL age,
+    // which forces the fetch it was going to do anyway.
+    const age = ACCESS_TTL_MS - this.perms.getRemainingTTL(key)
+    const permission = await this.perms.fetch(key, {
+      ...(maxCacheAgeMs !== undefined && age >= maxCacheAgeMs ? { forceRefresh: true } : {}),
+      context: { ins, owner, repo, login }
+    })
+    // Only reachable if the entry is dropped mid-flight. This service fails
+    // CLOSED, and `none` is how it spells that.
+    return permission ?? 'none'
   }
 
   /** Resolve only the user's effective permission. Callers that already
@@ -155,22 +178,17 @@ export class GithubUserAuthzService {
   }
 
   /** Cached + deduped repo meta (privacy flag; null = out of grant). */
-  private metaOf(ins: GithubInstallationRecord, owner: string, repo: string): Promise<{ private: boolean } | null> {
-    const key = `${ins.installationId}:${owner}/${repo}`
-    const cached = this.metas.get(key)
-    if (cached && cached.expiresAt > this.deps.clock.now()) return Promise.resolve(cached.value)
-    let pending = this.metasInFlight.get(key)
-    if (!pending) {
-      pending = this.deps.github
-        .getRepoMeta(ins, owner, repo)
-        .then((value) => {
-          this.metas.set(key, { value, expiresAt: this.deps.clock.now() + ACCESS_TTL_MS })
-          return value
-        })
-        .finally(() => this.metasInFlight.delete(key))
-      this.metasInFlight.set(key, pending)
-    }
-    return pending
+  private async metaOf(
+    ins: GithubInstallationRecord,
+    owner: string,
+    repo: string
+  ): Promise<{ private: boolean } | null> {
+    const observed = await this.metas.fetch(`${ins.installationId}:${owner}/${repo}`, {
+      context: { ins, owner, repo }
+    })
+    // Only reachable if the entry is dropped mid-flight. Out-of-grant is the
+    // fail-closed reading: callers treat it as private with no access.
+    return observed?.meta ?? null
   }
 
   /**

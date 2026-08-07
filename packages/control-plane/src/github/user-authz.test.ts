@@ -45,6 +45,7 @@ describe('resolveLogtoMgmtConfig', () => {
   })
 })
 
+const EPOCH = 1_777_000_000_000
 const MGMT = { endpoint: 'https://t.logto.app', appId: 'app', appSecret: 'sec', resource: 'https://t.logto.app/api' }
 const MUTATIONS: SocialIdentityMutationGate = {
   runExclusive: async (_oidcSubject, mutation) => mutation()
@@ -209,7 +210,10 @@ function authz(opts: {
   /** Per-repo override keyed by "owner/repo" (falls back to `permission`). */
   permissions?: Record<string, RepoPermission>
 }) {
-  const clock = new FakeClock(0)
+  // Seeded with a real epoch, not 0: the permission/meta caches record an
+  // entry's start time and read a falsy one as "no TTL", which would make every
+  // entry immortal and quietly pass the expiry assertions below (see `cache.ts`).
+  const clock = new FakeClock(EPOCH)
   const calls = { permission: 0 }
   const svc = new GithubUserAuthzService({
     identity: { githubLoginFor: async () => opts.login ?? null },
@@ -294,6 +298,18 @@ describe('GithubUserAuthzService', () => {
     clock.advance(5 * 60_000 + 1)
     await svc.assertAccess('u1', INS, 'o', 'r', 'write')
     expect(calls.permission).toBe(2)
+  })
+
+  it('coalesces concurrent callers into one permission probe', async () => {
+    const { svc, calls } = authz({ login: 'me', permission: 'read' })
+
+    await Promise.all([
+      svc.permissionForUser('u1', INS, 'o', 'r'),
+      svc.permissionForUser('u1', INS, 'o', 'r'),
+      svc.permissionForUser('u1', INS, 'o', 'r')
+    ])
+
+    expect(calls.permission).toBe(1)
   })
 
   it('can bypass the picker cache for a shorter-lived authorization lease', async () => {

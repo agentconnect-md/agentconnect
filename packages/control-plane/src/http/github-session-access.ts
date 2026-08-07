@@ -1,4 +1,5 @@
 import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type { Clock } from '../domain/clock.js'
 import { OrgId } from '../domain/ids.js'
 import type { ExternalScopeRecord, GithubInstallationRecord, GithubInstallationRepo } from '../persistence/ports.js'
@@ -23,24 +24,6 @@ const SCOPE_CONCURRENCY = 6
  * after the shape was OBSERVED, not after it was reused (see `putCache`).
  */
 const REPO_SHAPE_TTL_MS = 120_000
-
-/**
- * Shared `LRUCache` wiring.
- *
- * `perf` is THE time seam — without it the cache would read the wall clock
- * while everything around it reads the injected one. `ttlResolution: 0` turns
- * off lru-cache's 1 ms `now()` debounce, which is driven by a real timer a
- * `FakeClock` cannot advance; expiry is evaluated lazily on read, so no
- * background timer exists either way.
- *
- * The clock MUST report real epoch milliseconds, as `Clock` documents. lru-cache
- * stores an entry's start time and treats a falsy one as "no TTL recorded", so an
- * entry written at time 0 would never expire. Production passes `Date.now()`;
- * a test clock has to be seeded with an epoch rather than left at 0.
- */
-function cacheOptions(clock: Clock) {
-  return { max: MAX_CACHE_ENTRIES, ttlResolution: 0, perf: clock } as const
-}
 
 type Decision = 'allow' | 'deny' | 'unknown'
 /** Narrowed `repoRefById` result; null = outside the installation's grant. */
@@ -83,9 +66,9 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       clock: Clock
     }
   ) {
-    this.cache = new LRUCache(cacheOptions(deps.clock))
+    this.cache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.shapes = new LRUCache({
-      ...cacheOptions(deps.clock),
+      ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
       ttl: REPO_SHAPE_TTL_MS,
       fetchMethod: async (_key, _stale, { context }) => ({
         shape: await context.github

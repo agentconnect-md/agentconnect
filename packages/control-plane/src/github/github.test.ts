@@ -402,6 +402,10 @@ describe('GithubService repository picker reads', () => {
     svc.invalidateRepositoryRoster(installation.installationId)
     await svc.listRepos(installation, 1, 100)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+
+    // Concurrent pickers share one request rather than racing the same page.
+    await Promise.all([svc.listRepos(installation, 2, 100), svc.listRepos(installation, 2, 100)])
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
   it('resolves a durable repository id to its current name through the installation grant', async () => {
