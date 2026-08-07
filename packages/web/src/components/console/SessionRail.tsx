@@ -147,6 +147,7 @@ export function SessionRail({
   conversation = false,
   flatView = false,
   childOriginById,
+  roomLineage,
   onSelect,
   onWouldHideChange
 }: {
@@ -171,6 +172,10 @@ export function SessionRail({
   flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
   childOriginById?: ReadonlyMap<string, string>
+  /** Attribution INSIDE the open conversation — who woke the open row, and whom
+   *  it woke. Separate from `family` because both ends are participants of this
+   *  same conversation, so neither is a navigation target (§9.1). */
+  roomLineage?: { wokenBy: SessionRelationDto | null; woke: SessionRelationDto[] }
   /** Seed the persistent detail view before the route id changes. */
   onSelect: (session: Session) => void
   /** Whether the rail is about to draw nothing — see the `empty` note below. The
@@ -220,16 +225,23 @@ export function SessionRail({
   const parent = family?.parentSession ?? null
   const siblings = family?.siblingSessions ?? EMPTY_RELATIONS
   const children = family?.childSessions ?? EMPTY_RELATIONS
-  const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0)
+  // Attribution inside the open conversation, kept apart from `family` on
+  // purpose: these are fellow PARTICIPANTS, not other conversations, so they
+  // never take the "Parent conversation" label or its navigate-away meaning.
+  const wokenBy = roomLineage?.wokenBy ?? null
+  const woke = roomLineage?.woke ?? EMPTY_RELATIONS
+  const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0 || wokenBy || woke.length > 0)
   const relatedIds = useMemo(() => {
     const ids = new Set<string>()
     if (!hasFamily) return ids
     ids.add(currentId)
     if (parent) ids.add(parent.id)
+    if (wokenBy) ids.add(wokenBy.id)
     for (const relation of siblings) ids.add(relation.id)
     for (const relation of children) ids.add(relation.id)
+    for (const relation of woke) ids.add(relation.id)
     return ids
-  }, [children, currentId, hasFamily, parent, siblings])
+  }, [children, currentId, hasFamily, parent, siblings, wokenBy, woke])
 
   // Globally pinned rows that the loaded page or current family does not carry.
   // Fetched by id because the list endpoint cannot filter by id; a rail holds a
@@ -492,7 +504,23 @@ export function SessionRail({
               </div>
             )}
             {parent && row(relationRow(parent), isPinned(parent.id))}
-            {row(sessionRow(current), rowPin(current).pinned, parent ? 1 : 0, true)}
+            {/* Attribution, not navigation: the participant that woke the open
+                row. Deliberately NOT labelled "Parent conversation" — it is a
+                member of this same conversation, so calling it another
+                conversation would be wrong and its link comes back here. */}
+            {wokenBy && (
+              <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Delegated by
+              </div>
+            )}
+            {wokenBy && row(relationRow(wokenBy), isPinned(wokenBy.id), parent ? 1 : 0)}
+            {row(sessionRow(current), rowPin(current).pinned, parent || wokenBy ? 1 : 0, true)}
+            {woke.length > 0 && (
+              <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
+                Delegated to
+              </div>
+            )}
+            {woke.map((target) => row(relationRow(target), isPinned(target.id), parent || wokenBy ? 2 : 1))}
             {conversation && children.length > 0 && (
               <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
                 Delegations

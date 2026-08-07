@@ -1,23 +1,31 @@
-// Which lineage edges a MERGED conversation page draws
+// Which lineage a MERGED conversation page draws
 // (merged-conversation-view.md §9.1–§9.2).
 //
-// A merged page collapses every member session of one channel+thread into a
-// single transcript, so most of what a single session's family tree offers is
-// already on screen. §9.2 concluded from that it should drop every intra-room
-// edge and keep only the ones leaving the room.
+// Two different questions, deliberately kept in two different shapes:
 //
-// It drops too much. The transcript interleaves its members by TIME, which makes
-// exactly one relation unrepresentable in it: which member woke which. "Alert
-// Analyzer delegated to node-operator" is a fact about causation, and reading it
-// off a time-ordered merge is guesswork.
+// 1. NAVIGATION, out of this conversation. Parent / siblings / children of the
+//    whole room, unioned across its members and filtered to targets that live
+//    somewhere else. This is §9.2 unchanged.
+// 2. ATTRIBUTION, inside it: which member woke which. The merged transcript
+//    interleaves its members by TIME, so causation is the one relation it
+//    cannot express — reading "Alert Analyzer delegated to node-operator" off
+//    the ordering is guesswork.
 //
-// That information was not actually gone before — it was CONDITIONAL. When a
-// member failed closed out of the roster (a degraded external access check), the
-// page fell below the multi-participant threshold, stopped being a merged page,
-// and rendered the representative's own unfiltered family instead. So the same
-// conversation showed its delegation or hid it depending on how many members
-// happened to resolve that second. This module is what makes the answer the same
-// either way.
+// §9.2 originally dropped (2) entirely, on the reasoning that both ends are
+// already on screen. They are, but not their direction. Worse, the information
+// was not really gone, it was CONDITIONAL: a member failing closed out of the
+// roster dropped the page below the multi-participant threshold, so it stopped
+// being a merged page and rendered the representative's own unfiltered family
+// instead. The same conversation therefore showed its delegation or hid it
+// depending on how many members happened to resolve that second.
+//
+// The two must NOT share a shape. `family` is directional in the UI — a
+// `parentSession` renders as "Parent conversation" and links away — so putting
+// a co-participant there labels a member of THIS room as another conversation
+// and links back to the page you are on. Attribution is therefore its own
+// structure, anchored on the open row: who woke it, and whom it woke.
+
+import type { SessionRelationDto } from '@/lib/api'
 
 /** Where a lineage target lives, relative to the page asking.
  *  `singleton` is a readable target with no groupable channel/thread — it cannot
@@ -25,40 +33,118 @@
  *  target whose detail the caller could not fetch. */
 export type LineageTargetLocation = { kind: 'key'; key: string } | { kind: 'singleton' } | { kind: 'unreadable' }
 
-/**
- * Whether a merged page should draw the edge pointing at `targetId`.
- *
- * Cross-room edges are kept as they always were: they leave this conversation,
- * so nothing on this page already stands for them.
- *
- * Intra-room edges are kept only when the target is a fellow PARTICIPANT — that
- * is the delegation structure, and it is the part the merged transcript cannot
- * express. Two intra-room targets are still dropped:
- *
- * - a SUPERSEDED session at this location, which is not a member. This is the
- *   case §9.1 was really protecting against: an older ACP session of the same
- *   thread is not a second participant, just an earlier incarnation of one.
- * - the REPRESENTATIVE, which the family UI already draws as the highlighted
- *   `current` row. Keeping it would render the open session twice — and in the
- *   common one-delegation case, that duplicate would be the only thing the tree
- *   had to say.
- *
- * An unreadable target fails closed, unchanged: the caller could not open it
- * either, so naming it would only advertise something they cannot reach.
- */
-export function keepLineageTarget(
-  targetId: string,
-  target: LineageTargetLocation | undefined,
-  room: {
-    /** The §5.1 key of the page doing the asking. */
-    conversationKey: string | null
-    /** Session ids of every member the resolver returned. */
-    memberIds: ReadonlySet<string>
-    /** The member this page is centred on (the resolver's newest visible one). */
-    representativeId?: string | undefined
+/** The member detail this module reads. Structural, so it accepts a
+ *  `SessionDetailDto` without dragging the rest of that surface in. */
+export interface LineageMemberDetail {
+  id: string
+  agentId: string
+  parentSession: SessionRelationDto | null
+  childSessions: SessionRelationDto[]
+}
+
+export interface ConversationLineage {
+  /** Navigation OUT of this conversation (§9.2), unchanged. */
+  family: {
+    parentSession: SessionRelationDto | null
+    siblingSessions: SessionRelationDto[]
+    childSessions: SessionRelationDto[]
   }
-): boolean {
+  /** Delegation target id → the agent whose member session woke it. */
+  childOriginById: Map<string, string>
+  /** Attribution INSIDE this conversation, anchored on the open row. Both sides
+   *  are fellow participants, so neither is a navigation target — the UI labels
+   *  them as delegation, never as another conversation. */
+  roomLineage: {
+    /** The participant that woke the open row, if one did. */
+    wokenBy: SessionRelationDto | null
+    /** The participants the open row woke. */
+    woke: SessionRelationDto[]
+  }
+}
+
+/** Whether a target lies OUTSIDE the asking conversation, so an edge to it is
+ *  navigation. Unreadable fails closed: the caller could not open it either, so
+ *  naming it only advertises something unreachable. */
+export function isCrossRoom(target: LineageTargetLocation | undefined, conversationKey: string | null): boolean {
   if (!target || target.kind === 'unreadable') return false
-  if (target.kind === 'singleton' || target.key !== room.conversationKey) return true
-  return room.memberIds.has(targetId) && targetId !== room.representativeId
+  return target.kind === 'singleton' || target.key !== conversationKey
+}
+
+/**
+ * Build both halves from the members' details.
+ *
+ * Attribution is read from the REPRESENTATIVE's own edges rather than unioned
+ * across the room, and that is what makes it directional: "who woke the row you
+ * are looking at" and "whom it woke" stay meaningful however the representative
+ * rotates — and it rotates whenever either agent speaks, since it is the newest
+ * visible member. A union cannot say that: the same A → B edge is A's child and
+ * B's parent at once, so a symmetric filter lands one of them in `family` and
+ * mislabels a co-participant as a parent conversation.
+ *
+ * Only fellow MEMBERS count as attribution. A superseded session at this
+ * location is not a member — it is an earlier incarnation of one — and stays
+ * dropped, which is the case §9.1 was really guarding.
+ */
+export function assembleConversationLineage(input: {
+  conversationKey: string | null
+  members: readonly { sessionId: string }[]
+  details: readonly (LineageMemberDetail | null)[]
+  targetLocations: ReadonlyMap<string, LineageTargetLocation>
+}): ConversationLineage {
+  const { conversationKey, members, details, targetLocations } = input
+  const memberIds = new Set(members.map((member) => member.sessionId))
+  const representativeId = members[0]?.sessionId
+
+  const parents = new Map<string, SessionRelationDto>()
+  const children = new Map<string, SessionRelationDto>()
+  const childOriginById = new Map<string, string>()
+  for (const detail of details) {
+    if (!detail) continue
+    if (detail.parentSession && !parents.has(detail.parentSession.id)) {
+      parents.set(detail.parentSession.id, detail.parentSession)
+    }
+    for (const child of detail.childSessions) {
+      if (children.has(child.id)) continue
+      children.set(child.id, child)
+      childOriginById.set(child.id, detail.agentId)
+    }
+  }
+
+  const crossParents = [...parents.values()].filter((p) => isCrossRoom(targetLocations.get(p.id), conversationKey))
+  const crossChildren = [...children.values()]
+    .filter((c) => isCrossRoom(targetLocations.get(c.id), conversationKey))
+    // Origin-adjacent order — the family UI renders delegation groups from this
+    // plus childOriginById.
+    .sort((a, b) => {
+      const ao = childOriginById.get(a.id) ?? ''
+      const bo = childOriginById.get(b.id) ?? ''
+      return ao < bo ? -1 : ao > bo ? 1 : a.id < b.id ? -1 : 1
+    })
+  const [firstParent, ...moreParents] = crossParents
+
+  // Attribution: the open row's own edges, kept only when they point at another
+  // participant that is actually on this page.
+  const isParticipant = (id: string): boolean =>
+    id !== representativeId &&
+    memberIds.has(id) &&
+    !isCrossRoom(targetLocations.get(id), conversationKey) &&
+    targetLocations.get(id)?.kind === 'key'
+  const representative = details.find((detail) => detail?.id === representativeId) ?? null
+  const wokenBy =
+    representative?.parentSession && isParticipant(representative.parentSession.id)
+      ? representative.parentSession
+      : null
+  const woke = (representative?.childSessions ?? []).filter((child) => isParticipant(child.id))
+
+  return {
+    family: {
+      // The family UI models ONE parent; extra cross-room delegation origins
+      // surface beside the delegations.
+      parentSession: firstParent ?? null,
+      siblingSessions: moreParents,
+      childSessions: crossChildren
+    },
+    childOriginById,
+    roomLineage: { wokenBy, woke }
+  }
 }

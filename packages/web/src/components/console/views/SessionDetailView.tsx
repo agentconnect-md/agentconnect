@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { selfConversationPath } from '@/lib/conversation-addressing'
-import { keepLineageTarget } from '@/lib/conversation-lineage'
+import { assembleConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -1153,24 +1153,19 @@ export default function SessionDetailView() {
       const details = await Promise.all(
         (conversationMembers ?? []).map((member) => fetchSessionDetail(member.sessionId, orgId).catch(() => null))
       )
-      const parents = new Map<string, SessionRelationDto>()
-      const children = new Map<string, SessionRelationDto>()
-      const childOriginById = new Map<string, string>()
-      for (const detail of details) {
-        if (!detail) continue
-        const parent = detail.parentSession
-        if (parent && !parents.has(parent.id)) parents.set(parent.id, parent)
-        for (const child of detail.childSessions) {
-          if (!children.has(child.id)) {
-            children.set(child.id, child)
-            childOriginById.set(child.id, detail.agentId)
-          }
-        }
-      }
-      // Location filter: fetch each candidate target's own conversation key
-      // and drop same-location edges. A target whose detail can't be read is
-      // dropped too (fail closed — the caller couldn't open it anyway).
-      const candidateIds = [...new Set([...parents.keys(), ...children.keys()])]
+      // Location lookup: fetch each candidate target's own conversation key so
+      // the assembly below can tell navigation (elsewhere) from attribution
+      // (a fellow participant). A target whose detail can't be read is dropped
+      // — fail closed, the caller couldn't open it anyway.
+      const candidateIds = [
+        ...new Set(
+          details.flatMap((detail) =>
+            detail
+              ? [...(detail.parentSession ? [detail.parentSession.id] : []), ...detail.childSessions.map((c) => c.id)]
+              : []
+          )
+        )
+      ]
       // Three-way sentinel: an encoded key, 'singleton' (readable target with
       // no groupable channel/thread — necessarily cross-conversation relative
       // to this merged page), or 'unreadable' (fail closed).
@@ -1194,35 +1189,12 @@ export default function SessionDetailView() {
           }
         })
       )
-      // Which member this page is centred on, and who else is in the room —
-      // both decide what an intra-room edge is worth drawing (keepLineageTarget).
-      const room = {
+      return assembleConversationLineage({
         conversationKey,
-        memberIds: new Set((conversationMembers ?? []).map((member) => member.sessionId)),
-        representativeId: conversationMembers?.[0]?.sessionId
-      }
-      const keepTarget = (targetId: string): boolean => keepLineageTarget(targetId, targetKeys.get(targetId), room)
-      const crossParents = [...parents.values()].filter((parent) => keepTarget(parent.id))
-      const crossChildren = [...children.values()]
-        .filter((child) => keepTarget(child.id))
-        // Origin-adjacent order — the family UI renders delegation groups
-        // from this plus childOriginById.
-        .sort((a, b) => {
-          const ao = childOriginById.get(a.id) ?? ''
-          const bo = childOriginById.get(b.id) ?? ''
-          return ao < bo ? -1 : ao > bo ? 1 : a.id < b.id ? -1 : 1
-        })
-      const [firstParent, ...moreParents] = crossParents
-      return {
-        family: {
-          // The family UI models ONE parent; extra cross-room delegation
-          // origins surface beside the delegations.
-          parentSession: firstParent ?? null,
-          siblingSessions: moreParents,
-          childSessions: crossChildren
-        },
-        childOriginById
-      }
+        members: conversationMembers ?? [],
+        details,
+        targetLocations: targetKeys
+      })
     },
     { revalidateOnFocus: false }
   )
@@ -4051,6 +4023,7 @@ export default function SessionDetailView() {
         conversation={conversationMode}
         flatView={flatView}
         childOriginById={conversationLineage?.childOriginById}
+        roomLineage={conversationLineage?.roomLineage}
         onSelect={setRouteSession}
         onWouldHideChange={handleRailWouldHide}
       />
