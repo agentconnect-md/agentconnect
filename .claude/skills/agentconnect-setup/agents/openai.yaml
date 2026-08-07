@@ -1,0 +1,4 @@
+interface:
+  display_name: 'AgentConnect Setup'
+  short_description: 'Set up an AgentConnect stack step by step'
+  default_prompt: 'Use $agentconnect-setup to guide me through setting up AgentConnect step by step.'
