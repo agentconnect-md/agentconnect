@@ -70,6 +70,10 @@ export function useGsActions() {
           // Land on Settings with the invite-members dialog auto-opened (`invite` is
           // consumed one-shot by SettingsView).
           return router.push(orgPath('/settings?invite=1'))
+        case 'session-access':
+          // The Session access card owns id="session-access" — the hash lands and
+          // scrolls there natively (same href the console nav / GlobalSearch use).
+          return router.push(orgPath('/settings#session-access'))
       }
     },
     [openModal, router, orgPath, firstAgent, builtinAgent, agents]
@@ -147,25 +151,30 @@ export function GsRows({
       >
         <span
           className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-full ${
-            it.done ? 'bg-(--brand) text-white' : 'border-[1.5px] border-(--border-strong)'
+            it.done && !it.optional ? 'bg-(--brand) text-white' : 'border-[1.5px] border-(--border-strong)'
           }`}
         >
-          {it.done && <Icon name="check" size={12} />}
+          {it.done && !it.optional && <Icon name="check" size={12} />}
         </span>
         <div className="min-w-0 flex-1">
-          <span
-            className={`font-sans text-[13.5px] leading-normal ${
-              it.done ? 'font-normal text-(--text-tertiary) line-through' : 'font-medium text-(--text-primary)'
-            }`}
-          >
-            {it.label}
+          <span className="inline-flex items-center gap-2">
+            <span
+              className={`font-sans text-[13.5px] leading-normal ${
+                it.done && !it.optional
+                  ? 'font-normal text-(--text-tertiary) line-through'
+                  : 'font-medium text-(--text-primary)'
+              }`}
+            >
+              {it.label}
+            </span>
+            {it.tag && <span className="font-mono text-[11.5px] leading-none text-(--text-disabled)">{it.tag}</span>}
           </span>
           {open && (
             <>
               <div className="mt-[5px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {it.expl}
               </div>
-              {!it.done && (
+              {(!it.done || it.optional) && (
                 <div className="mt-[11px]" onClick={(e) => e.stopPropagation()}>
                   <Button size="sm" onClick={() => runAction(it.action)}>
                     {it.ctaLabel}

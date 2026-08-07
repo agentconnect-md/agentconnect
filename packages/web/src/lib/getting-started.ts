@@ -27,6 +27,7 @@ export type GsAction =
   | { kind: 'github-profile' }
   | { kind: 'chat' }
   | { kind: 'members' }
+  | { kind: 'session-access' }
 
 export interface GsItem {
   key: string
@@ -36,6 +37,13 @@ export interface GsItem {
   done: boolean
   ctaLabel: string
   action: GsAction
+  /** Short chip after the label (e.g. "optional") — see `optional` below. */
+  tag?: string
+  /** Unlike every other item, has no live signal for "done" (it's a look-don't-touch
+   *  review, not a setup task) — `done` is hardcoded true so it never drags the ring
+   *  or blocks "Finish onboarding". `optional` keeps its CTA visible despite `done`,
+   *  since GsRows normally hides the button once an item is done. */
+  optional?: boolean
 }
 
 export interface GettingStarted {
@@ -164,8 +172,19 @@ export function computeGettingStarted(input: {
     }
   ]
 
-  // Members only exist in auth mode; a no-auth deployment has no one to invite.
+  // Session access lives on /settings, which no-auth deployments don't have
+  // (they bounce to /home) — gate it with the other auth-only step below.
   if (authOn) {
+    items.push({
+      key: 'session-access',
+      label: 'Review session access policy',
+      expl: "Decide who can see session content synced from Slack, GitHub, and Feishu — on by default, following each platform's own access.",
+      done: true,
+      optional: true,
+      tag: 'optional',
+      ctaLabel: 'Review session access',
+      action: { kind: 'session-access' }
+    })
     items.push({
       key: 'invite',
       label: 'Invite teammates',
