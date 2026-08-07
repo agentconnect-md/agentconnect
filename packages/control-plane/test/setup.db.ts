@@ -23,9 +23,22 @@ if (!connectionString) {
 }
 process.env.DATABASE_URL = connectionString
 
-/** The pool-local client every repo/integration test in this worker uses. */
+/**
+ * The pool-local client every repo/integration test in this worker uses.
+ *
+ * Prisma's interactive-transaction defaults (`timeout` 5s, `maxWait` 2s) are the
+ * second timing wall under this suite, and the one no test can reach: repository
+ * methods open their own `$transaction` internally, so a test that calls
+ * `setPlacement`/`establish` on this root client inherits that 5s budget with no
+ * way to widen it. Under `integrationWorkers` workers sharing one Dockerized
+ * Postgres, a stall long enough to cross it says nothing about the code under
+ * test. Tests that deliberately hold a row or advisory lock open pass their own
+ * explicit `{ timeout: 20_000 }`, which still wins over this default; matching
+ * that number keeps one budget to reason about.
+ */
 export const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString })
+  adapter: new PrismaPg({ connectionString }),
+  transactionOptions: { timeout: 20_000, maxWait: 10_000 }
 })
 
 /**
