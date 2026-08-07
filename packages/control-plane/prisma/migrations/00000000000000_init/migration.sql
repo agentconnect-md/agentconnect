@@ -334,15 +334,12 @@ CREATE TABLE "public"."bot" (
     "updatedAt" TIMESTAMPTZ(6) NOT NULL,
     "slackAppId" TEXT,
     "shareable" BOOLEAN NOT NULL DEFAULT false,
-    "discordAppId" TEXT,
     "transport" "public"."SlackTransport" NOT NULL DEFAULT 'socket',
-    "feishuRegion" TEXT,
     "teamId" TEXT,
     "botUserId" TEXT,
     "revokedAt" TIMESTAMPTZ(6),
     "credentialRevision" INTEGER NOT NULL DEFAULT 1,
     "credentialInstalledAt" TIMESTAMPTZ(6),
-    "feishuAppId" TEXT,
     "workspaceId" TEXT,
     "workspaceName" TEXT,
     "externalAppId" TEXT,
@@ -1162,7 +1159,6 @@ CREATE TABLE "public"."session_external_access_policy" (
     "state" "public"."ExternalAccessPolicyState" NOT NULL DEFAULT 'disabled',
     "currentRev" BIGINT NOT NULL DEFAULT 0,
     "readFenceRev" BIGINT,
-    "migrationCursor" TEXT,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMPTZ(6) NOT NULL,
 
@@ -1547,9 +1543,6 @@ CREATE INDEX "bot_orgId_idx" ON "public"."bot"("orgId" ASC);
 
 -- CreateIndex
 CREATE UNIQUE INDEX "bot_platform_externalAppId_externalTenantId_key" ON "public"."bot"("platform" ASC, "externalAppId" ASC, "externalTenantId" ASC);
-
--- CreateIndex
-CREATE UNIQUE INDEX "bot_slackAppId_teamId_key" ON "public"."bot"("slackAppId" ASC, "teamId" ASC);
 
 -- CreateIndex
 CREATE INDEX "cron_def_agentId_idx" ON "public"."cron_def"("agentId" ASC);
