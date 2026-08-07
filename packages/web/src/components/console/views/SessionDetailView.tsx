@@ -4249,7 +4249,6 @@ export default function SessionDetailView() {
         filterTouched={railFilter.touched}
         onAgentIdsChange={setRailAgentIds}
         family={conversationFamily ?? (currentSessionDetail?.id === session.id ? currentSessionDetail : undefined)}
-        conversation={conversationMode}
         flatView={flatView}
         childOriginById={conversationLineage?.childOriginById}
         roomLineage={conversationLineage?.roomLineage}

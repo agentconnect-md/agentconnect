@@ -81,6 +81,9 @@ interface RailRow {
   platform: string
   title: string
   tooltip: string
+  /** The edge this row sits on, for readers the indent does not reach. Absent on
+   *  a plain list row, which sits on no edge at all. */
+  relationLabel?: string
   /** Where the row goes. A multi-participant row is a CONVERSATION, and the merged
    *  page is its default surfaced view (merged-conversation-view.md §5.3). */
   href: string
@@ -144,7 +147,6 @@ export function SessionRail({
   filterTouched,
   onAgentIdsChange,
   family,
-  conversation = false,
   flatView = false,
   childOriginById,
   roomLineage,
@@ -165,9 +167,6 @@ export function SessionRail({
   onAgentIdsChange: (agentIds: string[]) => void
   /** Direct lineage from the detail endpoint. Undefined while it is unavailable. */
   family?: Pick<SessionDetailDto, 'parentSession' | 'siblingSessions' | 'childSessions'>
-  /** Conversation-level lineage (merged-conversation-view.md §9.2): relabels the
-   *  related tree and groups delegations by their waking member. */
-  conversation?: boolean
   /** Keep raw session rows and links instead of collapsing into conversations. */
   flatView?: boolean
   /** Delegation target id → waking member agentId (conversation mode). */
@@ -227,7 +226,8 @@ export function SessionRail({
   const children = family?.childSessions ?? EMPTY_RELATIONS
   // Attribution inside the open conversation, kept apart from `family` on
   // purpose: these are fellow PARTICIPANTS, not other conversations, so they
-  // never take the "Parent conversation" label or its navigate-away meaning.
+  // share the tree level of the matching `family` slot but never its
+  // navigate-away meaning.
   const wokenBy = roomLineage?.wokenBy ?? null
   const woke = roomLineage?.woke ?? EMPTY_RELATIONS
   const hasFamily = Boolean(parent || siblings.length > 0 || children.length > 0 || wokenBy || woke.length > 0)
@@ -389,13 +389,19 @@ export function SessionRail({
       session: s
     }
   }
-  const relationRow = (relation: SessionRelationDto): RailRow => {
+  // `relationLabel` names the edge in the tooltip and in sr-only text — the same
+  // two words an attribution row uses, because it is the same edge: a lineage
+  // parent and an in-room `wokenBy` differ only in where the other end lives,
+  // and the row already shows that by being a link or not. Omitted for siblings,
+  // whose slot means two different things by page (see conversation-lineage.ts).
+  const relationRow = (relation: SessionRelationDto, relationLabel?: string): RailRow => {
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return {
       id: relation.id,
       platform: relation.platform,
       title,
-      tooltip: title,
+      tooltip: relationLabel ? `${relationLabel}\n${title}` : title,
+      ...(relationLabel ? { relationLabel } : {}),
       href: orgPath(`/sessions/${encodeURIComponent(relation.id)}${flatSearch}`),
       pinId: relation.id
     }
@@ -412,8 +418,16 @@ export function SessionRail({
   // session. The generic row renders a session title and a platform mark, and
   // neither identifies anyone here: participants of one thread routinely share
   // a title (it is derived from the same first message) and necessarily share
-  // the platform, so "Delegated by" over a title equal to the current row's
-  // says nothing, and several `woke` rows would be indistinguishable.
+  // the platform, so a row built from those two fields would name nobody, and
+  // several `woke` rows would be indistinguishable.
+  //
+  // The DIRECTION rides on the row's place in the tree — waker above the open
+  // row, woken below it — and not on a heading, which spent a line restating
+  // that indent and usually the title too: a conversation is named after its
+  // first message, typically the human @mentioning the very agent that then
+  // delegates. `relationLabel` moves into the hover tooltip, and stays as
+  // `sr-only` text besides, since indentation is a visual relation that a
+  // screen reader hears nothing of and a tooltip never reaches.
   //
   // It is also NOT navigation, which is §9.1's own title. The target is a
   // participant of the conversation already on screen, so `/sessions/:id` would
@@ -425,14 +439,14 @@ export function SessionRail({
   // relation's own projection (older CPs omit it), then the raw id — a
   // restricted agent can own a member session while staying out of this
   // viewer's roster, and showing an id beats showing nothing.
-  const attributionRow = (relation: SessionRelationDto, depth: 0 | 1 | 2 = 0) => {
+  const attributionRow = (relation: SessionRelationDto, depth: 0 | 1 | 2, relationLabel: string) => {
     const agent = agents.find((candidate) => candidate.id === relation.agentId)
     const name = agent ? agentLabel(agent) : relation.agentName?.trim() || relation.agentId
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return (
       <div
         key={`attribution-${relation.id}`}
-        title={`${name}\n${title}`}
+        title={`${relationLabel} ${name}\n${title}`}
         className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[9px] text-(--text-secondary) ${
           depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
         }`}
@@ -446,6 +460,7 @@ export function SessionRail({
         <span className="av h-[18px] w-[18px] flex-none rounded-xs">
           <AgentIconView icon={agent?.icon} runtime={agent?.runtime ?? ''} size={18} />
         </span>
+        <span className="sr-only">{relationLabel}</span>
         <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">{name}</span>
       </div>
     )
@@ -487,6 +502,7 @@ export function SessionRail({
           <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
             <PlatformMark platform={item.platform} fillPct={100} />
           </span>
+          {item.relationLabel && <span className="sr-only">{item.relationLabel}</span>}
           <span
             className={`min-w-0 flex-1 truncate font-sans text-[12.5px] leading-normal ${
               on ? 'font-semibold' : 'font-medium'
@@ -511,6 +527,18 @@ export function SessionRail({
       </div>
     )
   }
+
+  // The Related tree is exactly three levels — whatever woke the open row, the
+  // open row, whatever it woke — and the indent is now the only thing saying
+  // which is which. A cross-room parent and an in-room `wokenBy` are the SAME
+  // edge seen from two locations, so they share level 0 rather than nesting:
+  // the lift unions parents across every member without recording WHICH member
+  // each one woke, so hanging `wokenBy` under `parent` would draw a chain the
+  // data does not contain. `woke` and cross-room `children` share level 2 for
+  // the same reason. Siblings sit at the open row's own level, below a divider.
+  const aboveCurrent = Boolean(parent || wokenBy)
+  const currentDepth = aboveCurrent ? 1 : 0
+  const delegatedDepth = aboveCurrent ? 2 : 1
 
   const allSessionsQuery = new URLSearchParams()
   if (flatView) allSessionsQuery.set('view', 'flat')
@@ -541,34 +569,16 @@ export function SessionRail({
             <div className="flex-none px-[9px] pb-[3px] font-mono text-[10px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
               Related
             </div>
-            {conversation && parent && (
-              <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                Parent conversation
-              </div>
-            )}
-            {parent && row(relationRow(parent), isPinned(parent.id))}
+            {parent && row(relationRow(parent, 'Delegated by'), isPinned(parent.id))}
             {/* Attribution, not navigation: the participant that woke the open
-                row. Deliberately NOT labelled "Parent conversation" — it is a
-                member of this same conversation, so calling it another
-                conversation would be wrong and its link comes back here. */}
-            {wokenBy && (
-              <div className="flex-none px-[9px] pt-[2px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                Delegated by
-              </div>
-            )}
-            {wokenBy && attributionRow(wokenBy, parent ? 1 : 0)}
-            {row(sessionRow(current), rowPin(current).pinned, parent || wokenBy ? 1 : 0, true)}
-            {woke.length > 0 && (
-              <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                Delegated to
-              </div>
-            )}
-            {woke.map((target) => attributionRow(target, parent || wokenBy ? 2 : 1))}
-            {conversation && children.length > 0 && (
-              <div className="flex-none px-[9px] pt-[4px] pb-[2px] font-mono text-[9.5px] font-semibold tracking-[0.08em] text-(--text-tertiary) uppercase">
-                Delegations
-              </div>
-            )}
+                row, then the ones it woke. Same lineage edge as `parent` — the
+                only difference is that these two live in THIS conversation, so
+                their link would come straight back to the page you are on.
+                That difference is already in the row: an agent mark and a name
+                that do not click, against a platform mark and a title that do. */}
+            {wokenBy && attributionRow(wokenBy, 0, 'Delegated by')}
+            {row(sessionRow(current), rowPin(current).pinned, currentDepth, true)}
+            {woke.map((target) => attributionRow(target, delegatedDepth, 'Delegated to'))}
             {children.map((child, index) => {
               const origin = childOriginById?.get(child.id)
               const previousOrigin = index > 0 ? childOriginById?.get(children[index - 1]!.id) : undefined
@@ -580,7 +590,7 @@ export function SessionRail({
                       via {originAgent ? agentLabel(originAgent) : origin}
                     </div>
                   )}
-                  {row(relationRow(child), isPinned(child.id), parent ? 2 : 1)}
+                  {row(relationRow(child, 'Delegated to'), isPinned(child.id), delegatedDepth)}
                 </Fragment>
               )
             })}

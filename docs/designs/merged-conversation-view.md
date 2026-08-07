@@ -423,16 +423,32 @@ lineage-siblings) would be listed twice.
 
 Attribution still has to be **surfaced**, and the merged transcript cannot do
 it: it interleaves its members by time, so "who woke whom" is unreadable from
-the ordering. The rail carries it, anchored on the OPEN row and labelled as
-delegation — **"Delegated by"** for the participant that woke it, **"Delegated
-to"** for the ones it woke — never as "Parent conversation", which would name a
-member of this room as another conversation and link back to the page you are
-already on. Anchoring on the open row is what keeps it directional: the
-representative is the newest visible member and rotates whenever either agent
-speaks, and one A → B edge is A's child and B's parent at once, so a
-side-agnostic filter would mislabel one of the two. Rows are deduplicated
-against the ordinary list exactly as family rows are, which preserves the
-displayed-once invariant above.
+the ordering. The rail carries it, anchored on the OPEN row — never as a
+navigation row, which would name a member of this room as another conversation
+and link back to the page you are already on. Anchoring on the open row is what
+keeps it directional: the representative is the newest visible member and
+rotates whenever either agent speaks, and one A → B edge is A's child and B's
+parent at once, so a side-agnostic filter would mislabel one of the two. Rows
+are deduplicated against the ordinary list exactly as family rows are, which
+preserves the displayed-once invariant above.
+
+The rail's Related tree is **exactly three levels — whatever woke the open row,
+the open row, whatever it woke — and direction is drawn as position on them**,
+with no group headings. An in-room `wokenBy` and a cross-room parent are one
+edge seen from two locations, so they share level 0 rather than nesting; `woke`
+and cross-room delegations share level 2 for the same reason. Nesting them
+would assert a chain the lift does not have: §9.2 unions parents across every
+member **without recording which member each one woke**. The headings this
+replaced ("Parent conversation" / "Delegated by" / "Delegated to" /
+"Delegations") each spent a line restating the indent directly beneath them,
+and usually the title too, since a conversation is named after its first
+message — typically the human @mentioning the very agent that then delegates.
+Kind is already in the row: an agent mark and a name that do not click, against
+a platform mark and a title that do. The words move into each row's hover
+tooltip — **the same two words for the navigation row and the attribution row**,
+since they are one edge — and stay as `sr-only` text besides, because
+indentation is a visual relation that a screen reader hears nothing of and a
+tooltip never reaches.
 
 Each row is built around the AGENT, not the session: agent mark and agent name
 (org roster, then the relation's own projection, then the raw id). A session
@@ -465,10 +481,11 @@ page (parent/sibling/child links) — a page this design stops surfacing for
 multi-participant conversations. The merged page therefore inherits it at
 conversation level: the union of member sessions' lineage links whose target
 lies in a DIFFERENT conversation (§9.1 filters the intra-room ones), each
-mapped to the conversation its target session belongs to, rendered as
-**"Parent conversation"** and **"Delegations"** (child conversations, grouped
-by the waking member). No new CP surface — the member detail DTOs already carry the
-links, and mapping a session to its conversation key is a metadata lookup.
+mapped to the conversation its target session belongs to, rendered on §9.1's
+three levels — parents above the open row, child conversations below it,
+grouped by the waking member. No new CP surface — the member detail DTOs
+already carry the links, and mapping a session to its conversation key is a
+metadata lookup.
 (C2 ships the links; grouping delegations by waking turn is C3.)
 
 One invariant stays absolute: **lineage never changes membership**. A child
@@ -578,6 +595,6 @@ how divergence starts.
    (same parent session). An edge whose endpoints share the conversation key
    renders as attribution and is excluded from lifted navigation — the
    room-mates-AND-siblings overlap is displayed once, not twice (§9.1).
-   Attribution is surfaced in the rail as "Delegated by" / "Delegated to",
-   anchored on the open row and kept out of the family shape, whose parent
+   Attribution is surfaced in the rail as tree position around the open row —
+   waker above it, woken below — and kept out of the family shape, whose parent
    slot means "another conversation" and navigates away (§9.1).

@@ -19,11 +19,12 @@
 // instead. The same conversation therefore showed its delegation or hid it
 // depending on how many members happened to resolve that second.
 //
-// The two must NOT share a shape. `family` is directional in the UI — a
-// `parentSession` renders as "Parent conversation" and links away — so putting
-// a co-participant there labels a member of THIS room as another conversation
-// and links back to the page you are on. Attribution is therefore its own
-// structure, anchored on the open row: who woke it, and whom it woke.
+// The two must NOT share a shape. `family` is navigation in the UI — a
+// `parentSession` links AWAY, to another conversation — so putting a
+// co-participant there hands the reader a link back to the page they are on.
+// Attribution is therefore its own structure, anchored on the open row: who
+// woke it, and whom it woke. The rail draws both on the same three levels
+// (waker · open row · woken), since they are one edge seen from two locations.
 
 import type { SessionRelationDto } from '@/lib/api'
 
