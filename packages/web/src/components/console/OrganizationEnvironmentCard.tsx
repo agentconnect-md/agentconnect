@@ -113,7 +113,7 @@ export function OrganizationEnvironmentCard({
   }
 
   return (
-    <div className="card mt-[18px]">
+    <div className="card mt-[18px]" id="environment">
       <div className="cardhead justify-between">
         <span className="inline-flex min-w-0 items-baseline gap-[7px]">
           <span className="cardtitle">Variables &amp; secrets</span>

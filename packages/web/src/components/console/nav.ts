@@ -77,41 +77,64 @@ export interface ConsolePage extends NavItem {
   keywords?: string[]
 }
 
-// Aliases and on-page features per route. Keep the settings/integrations lists in
-// sync with the cards actually rendered by SettingsView / IntegrationsView /
-// ProfileView — they are what makes a query like "members" or "bots" land on the
-// page that owns that setting.
+// Aliases and on-page features per route. Keep the integrations list in sync with
+// the cards actually rendered by IntegrationsView — they are what makes a query
+// like "bots" land on the page that owns that feature.
 const PAGE_KEYWORDS: Record<string, string[]> = {
   '/crons': ['cron'],
   '/tools': ['mcp', 'connectors', 'skills'],
   '/integrations': ['bots', 'github', 'slack', 'telegram', 'discord', 'lark', 'feishu'],
-  '/usage': ['usage', 'costs', 'tokens'],
-  '/settings': [
-    'organization',
-    'members',
-    'roles',
-    'invite links',
-    'variables',
-    'secrets',
-    'environment',
-    'session access',
-    'agent visibility'
-  ],
-  '/profile': ['account']
+  '/usage': ['usage', 'costs', 'tokens']
 }
 
+// Card-level settings entries: one per card on /settings (anchored to the card's
+// DOM id — keep hrefs in sync with the `id`s SettingsView renders) plus Profile.
+// Every entry carries the 'settings' keyword so the bare query still finds them.
+const SETTING_CARDS: ConsolePage[] = [
+  { href: '/settings#organization', label: 'Organization', icon: 'settings', kind: 'setting', keywords: ['settings'] },
+  {
+    href: '/settings#agent-visibility',
+    label: 'Default agent visibility',
+    icon: 'eye',
+    kind: 'setting',
+    keywords: ['settings', 'agents']
+  },
+  {
+    href: '/settings#session-access',
+    label: 'Session access',
+    icon: 'messages-square',
+    kind: 'setting',
+    keywords: ['settings', 'slack', 'github', 'feishu']
+  },
+  {
+    href: '/settings#environment',
+    label: 'Variables & secrets',
+    icon: 'key-round',
+    kind: 'setting',
+    keywords: ['settings', 'environment', 'env']
+  },
+  {
+    href: '/settings#members',
+    label: 'Members & roles',
+    icon: 'users',
+    kind: 'setting',
+    keywords: ['settings', 'invite']
+  },
+  {
+    href: '/settings#invite-links',
+    label: 'Invite links',
+    icon: 'link',
+    kind: 'setting',
+    keywords: ['settings', 'invite']
+  },
+  { href: '/profile', label: 'Profile', icon: 'circle-user-round', kind: 'setting', keywords: ['account'] }
+]
+
 // Everything GlobalSearch offers as a navigation target: the rail destinations as
-// "Pages", plus Settings and Profile (rail-account / More-sheet targets) as
-// "Settings". The settings entries only exist in authed mode — no-auth deployments
-// bounce those routes to /home (see Shell), so search must hide them there too.
+// "Pages", plus the per-card settings entries and Profile as "Settings". The
+// settings entries only exist in authed mode — no-auth deployments bounce those
+// routes to /home (see Shell), so search must hide them there too.
 export const SEARCH_PAGES: ConsolePage[] = [
   ...NAV_GROUPS.flat().map((n) => ({ ...n, kind: 'page' as const, keywords: PAGE_KEYWORDS[n.href] })),
-  { href: '/settings', label: 'Settings', icon: 'settings', kind: 'setting', keywords: PAGE_KEYWORDS['/settings'] },
-  {
-    href: '/profile',
-    label: 'Profile',
-    icon: 'circle-user-round',
-    kind: 'setting',
-    keywords: PAGE_KEYWORDS['/profile']
-  }
+  ...SETTING_CARDS
 ]

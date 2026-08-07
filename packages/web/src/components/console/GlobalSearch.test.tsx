@@ -77,9 +77,17 @@ describe('SEARCH_PAGES index', () => {
     for (const n of NAV_GROUPS.flat()) expect(pageHrefs).toContain(n.href)
   })
 
-  it('contains Settings and Profile as settings', () => {
+  it('contains the per-card settings entries and Profile as settings', () => {
     const settings = SEARCH_PAGES.filter((p) => p.kind === 'setting').map((p) => p.href)
-    expect(settings).toEqual(['/settings', '/profile'])
+    expect(settings).toEqual([
+      '/settings#organization',
+      '/settings#agent-visibility',
+      '/settings#session-access',
+      '/settings#environment',
+      '/settings#members',
+      '/settings#invite-links',
+      '/profile'
+    ])
   })
 
   it('has no duplicate hrefs', () => {
@@ -97,19 +105,19 @@ describe('GlobalSearch pages & settings', () => {
     expect(push).toHaveBeenCalledWith('/org-test/knowledge')
   })
 
-  it('finds Settings by label under the Settings group', () => {
+  it('surfaces every settings card for the bare "settings" query', () => {
     render()
     type('settings')
     expect(host.textContent).toContain('Settings')
-    act(() => resultButton('/settings').click())
-    expect(push).toHaveBeenCalledWith('/org-test/settings')
+    act(() => resultButton('/settings#organization').click())
+    expect(push).toHaveBeenCalledWith('/org-test/settings#organization')
   })
 
-  it('surfaces the Settings page for an on-page setting keyword', () => {
+  it('finds a settings card by its own title and navigates to its anchor', () => {
     render()
     type('members')
-    act(() => resultButton('/settings').click())
-    expect(push).toHaveBeenCalledWith('/org-test/settings')
+    act(() => resultButton('/settings#members').click())
+    expect(push).toHaveBeenCalledWith('/org-test/settings#members')
   })
 
   it('matches page route aliases (usage → Analytics)', () => {
