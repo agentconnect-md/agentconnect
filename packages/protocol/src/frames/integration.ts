@@ -123,7 +123,7 @@ export const IntegrationFeishuConfig = z.object({
 export type IntegrationFeishuConfig = z.infer<typeof IntegrationFeishuConfig>
 
 /**
- * §6.4 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
+ * §6.3 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
  * reads — routing, gating, ingress mode — platform-independent. This is the ONLY
  * carrier of these knobs on the wire: the opaque per-platform `config` payload
  * never duplicates them (the daemon reads routing exclusively from here).

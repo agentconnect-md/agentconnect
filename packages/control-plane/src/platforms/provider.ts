@@ -21,8 +21,8 @@
  * D2, NOT members here.
  *
  * THE INSTANCE MODEL. A provider is per-platform and constructed once at
- * `buildContainer` time from its env slice + its own API clients. The audit's
- * biggest CP blind spot (integration-plugin-audit.md Appendix C §5.1) was
+ * `buildContainer` time from its env slice + its own API clients. The CP's
+ * worst platform-branch shape was
  * "optional-dependency presence as the branch": twelve per-platform named dep
  * slots on core deps (`verifySlackBot`, `verifyTelegramBot`,
  * `syncDiscordBotProfile`, `configureFeishuHttpApp`, …) wired positionally in

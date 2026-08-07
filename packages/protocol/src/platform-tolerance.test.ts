@@ -11,17 +11,19 @@ import {
 } from './index.js'
 
 /**
- * S1a tolerant readers (integration-plugin-architecture.md §6.2 / §13).
+ * Tolerant readers (integration-plugin-architecture.md §6.2).
  *
  * Every platform field on the wire reads as an open string: an id no peer has
  * shipped yet ('teams-x' below) must DECODE on every wire, because a closed
  * enum makes the whole payload — and for `register`, the handshake — fail.
- * These fixtures pin the per-frame policy:
+ * This is what lets a platform ship without a lockstep fleet upgrade: a daemon
+ * older than the CP keeps working, and the id it does not recognize stays inert
+ * rather than fatal. These fixtures pin the per-frame policy:
  *   - register: accept; unknown capability ids are simply never matched
  *   - event/session: store the value verbatim
  *   - rd/msg: decode succeeds; refusal (if any) is a semantic per-item verdict
- * Writers still emit only KNOWN_PLATFORMS values until the fleet gate passes;
- * nothing here licenses emitting a new id (that is S1b).
+ * Writers still emit only KNOWN_PLATFORMS values; nothing here licenses
+ * emitting an id the registry does not know.
  */
 
 const ID = '11111111-1111-4111-8111-111111111111'

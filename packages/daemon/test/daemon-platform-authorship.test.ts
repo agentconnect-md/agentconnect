@@ -6,8 +6,8 @@ import { manifestFor } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 
 /**
- * integration-plugin-audit.md §10.6 F19 — the seven Slack-only core branches the S2
- * survivor table missed, now closed. These are the behavioral pins.
+ * Behavioral pins for the bot-authorship cluster — the seven core branches that were
+ * once Slack-only.
  *
  * The dangerous direction is admission: the bot-authorship cluster decides whether a
  * message a BOT posted may be trusted as an agent's own words and routed. Generalizing

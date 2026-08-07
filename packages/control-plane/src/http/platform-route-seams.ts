@@ -8,8 +8,8 @@
  * `verifyFeishuBot`, `configureFeishuHttpApp`, `syncFeishuAppIcon`,
  * `feishuAppRegistration`, `verifySlackAppToken`, plus `slackPlatformApp`).
  *
- * WHY THEY MOVED. The audit's biggest CP blind spot (integration-plugin-audit.md
- * Appendix C §5.1) is "optional-dependency presence as the branch": core code
+ * WHY THEY MOVED. The CP's worst platform-branch shape was
+ * "optional-dependency presence as the branch": core code
  * probing `if (deps.syncTelegramBotIcon)` to decide what a platform can do. Those
  * probes are gone — the registry answers now (`provider.sideEffects
  * ?.syncBotProfileIcon`, `provider.providerToolingCredentials`,

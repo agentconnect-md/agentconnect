@@ -4,13 +4,13 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /**
- * integration-plugin-audit.md §10.6 F1 — the NUL trap.
+ * The NUL trap.
  *
  * `daemon.ts` used two RAW NUL characters as separators in a composite key. One NUL
  * anywhere in a file makes ripgrep classify the WHOLE file as binary: it prints
  * `binary file matches` and no lines, for every pattern. That silently turned every
- * `rg`-based sweep over `daemon.ts` into a pass — including the S2 exit criterion's own
- * "zero platform conditionals in daemon.ts" check, whose entire subject is this file.
+ * `rg`-based sweep over `daemon.ts` into a pass — including a "zero platform
+ * conditionals in daemon.ts" audit whose entire subject is this file.
  *
  * The trap is invisible by construction (the byte does not render), so it is pinned
  * mechanically rather than left to reviewer attention.

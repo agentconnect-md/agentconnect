@@ -1,6 +1,6 @@
 # Organization Knowledge and Dream Suggestions
 
-> **Status:** Approved for implementation, 2026-07-31
+> **Status:** Implemented.
 >
 > **Scope:** protocol, control plane, daemon, and web console
 >

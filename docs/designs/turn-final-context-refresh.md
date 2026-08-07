@@ -1,6 +1,6 @@
 # Turn-Final Context Refresh and Answer Regeneration
 
-> Status: Proposed
+> Status: Implemented.
 > Scope: daemon-owned interactive IM turns (Slack, Discord, Lark / Feishu, and Telegram)
 > Primary implementation area: `packages/daemon`
 > Rollout: core staging, local observation, Slack final snapshots, and observed-only
