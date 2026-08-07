@@ -341,14 +341,16 @@ function mergeConversationRows(
   rows: Map<string, SessionMessageDto[]>,
   sourceSessionByMessage: WeakMap<SessionMessageDto, string>,
   sourceTurnByMessage: WeakMap<SessionMessageDto, string>,
-  sourcePlatformByMessage: WeakMap<SessionMessageDto, string>
+  sourcePlatformByMessage: WeakMap<SessionMessageDto, string>,
+  sourceAgentByMessage: WeakMap<SessionMessageDto, string>
 ): SessionMessageDto[] {
   return mergeConversation(
     sources
       .filter((source) => rows.has(source.sessionId))
       .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
-  ).map(({ row, sourceSessionId, sourcePlatform, sourceTurnKey }) => {
+  ).map(({ row, sourceSessionId, sourceAgentId, sourcePlatform, sourceTurnKey }) => {
     sourceSessionByMessage.set(row, sourceSessionId)
+    sourceAgentByMessage.set(row, sourceAgentId)
     sourcePlatformByMessage.set(row, sourcePlatform)
     if (sourceTurnKey) sourceTurnByMessage.set(row, sourceTurnKey)
     return row
@@ -855,7 +857,9 @@ type Turn =
       /** The platform this message was authored on — see `FmtStep.platform`. */
       platform?: string
     }
-  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[] }
+  // `wake` marks a block opened by a background-task wake that no reply has
+  // merged into yet — the run that follows binds to it, then clears the flag.
+  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[]; wake?: boolean }
 
 type SessionParticipant = {
   id: string
@@ -1310,6 +1314,9 @@ export default function SessionDetailView() {
   // under. Out-of-band like the two above so the row objects keep their
   // identity, and per row because sources interleave by event time.
   const conversationSourcePlatformByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
+  // Owning member agent of a merged-conversation row — a background-task wake
+  // from a peer member must render as THAT agent's work, not the representative's.
+  const conversationSourceAgentByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   // Which conversation key the CURRENT fan-out state belongs to — the focus
@@ -1945,7 +1952,8 @@ export default function SessionDetailView() {
             rowsBySession,
             conversationSourceSessionByMessageRef.current,
             conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current
+            conversationSourcePlatformByMessageRef.current,
+            conversationSourceAgentByMessageRef.current
           )
         )
         setMsgLoading(false)
@@ -2062,7 +2070,8 @@ export default function SessionDetailView() {
             state.rows,
             conversationSourceSessionByMessageRef.current,
             conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current
+            conversationSourcePlatformByMessageRef.current,
+            conversationSourceAgentByMessageRef.current
           )
         )
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
@@ -2142,7 +2151,8 @@ export default function SessionDetailView() {
           state.rows,
           conversationSourceSessionByMessageRef.current,
           conversationSourceTurnByMessageRef.current,
-          conversationSourcePlatformByMessageRef.current
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
       )
       setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
@@ -2570,6 +2580,7 @@ export default function SessionDetailView() {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
     let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+    last = bindWakeBlock(last, { agentId: agent.id, agentName: name }, turnKey)
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
@@ -2578,21 +2589,31 @@ export default function SessionDetailView() {
       if (turnKey) botTurnByKey.set(turnKey, last)
     }
     last.steps.push(step)
+    if (last.wake) last.wake = false
     if (!last.time && step.time) last.time = step.time
   }
-  // A background-task wake lands in the OWNER agent's lane as a collapsed work
-  // row. The block is keyed to the owner's identity, so the agent's response
-  // rows that follow merge into the same turn (the wake reads as the first
-  // "thought" of the turn it triggered).
-  const pushOwnerWakeTurn = (step: FmtStep, turnKey?: string): void => {
-    const name = session.agentName ?? ''
-    let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
-    if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: session.agentId, agentName: name })) {
+  // A background-task wake lands in its owner agent's lane as a collapsed work
+  // row. The wake is the INPUT that starts a fresh model run, so it opens a new
+  // `wake`-flagged block instead of extending the previous finished reply; only
+  // consecutive still-unanswered wakes for the same owner share one. The run
+  // that follows binds to the block and clears the flag (see bindWakeBlock).
+  // `ownerAgentId` is the merged-conversation source member — a wake from a
+  // peer member is THAT agent's work, not the representative's; plain sessions
+  // fall back to the session owner.
+  const pushOwnerWakeTurn = (step: FmtStep, turnKey?: string, ownerAgentId?: string): void => {
+    const agentId = ownerAgentId ?? session.agentId
+    const agent = agentId ? agentById.get(agentId) : undefined
+    const name = agent ? agentLabel(agent) : agentId === session.agentId ? (session.agentName ?? '') : (agentId ?? '')
+    const prev = turns[turns.length - 1]
+    let last = turnKey ? botTurnByKey.get(turnKey) : undefined
+    if (!last && prev?.kind === 'bot' && prev.wake && sameBotSpeaker(prev, { agentId, agentName: name })) last = prev
+    if (!last || last.kind !== 'bot') {
       last = {
         kind: 'bot',
+        wake: true,
         agentName: name,
-        ...(session.agentId ? { agentId: session.agentId } : {}),
-        model: session.model ?? '',
+        ...(agentId ? { agentId } : {}),
+        model: agentId === session.agentId ? (session.model ?? '') : '',
         time: '',
         steps: []
       }
@@ -2601,6 +2622,23 @@ export default function SessionDetailView() {
     }
     last.steps.push(step)
     if (!last.time && step.time) last.time = step.time
+  }
+  // The run that follows a wake block answers it. When a keyed lookup found no
+  // block of its own (the wake row itself never carries a source turn key),
+  // bind the run to the trailing unanswered wake block and register the run's
+  // key on it so the rest of the run lands there too.
+  const bindWakeBlock = (
+    found: Turn | undefined,
+    speaker: { agentId?: string; agentName: string },
+    turnKey?: string
+  ): Turn | undefined => {
+    if (found) return found
+    const prev = turns[turns.length - 1]
+    if (prev?.kind === 'bot' && prev.wake && sameBotSpeaker(prev, speaker)) {
+      if (turnKey) botTurnByKey.set(turnKey, prev)
+      return prev
+    }
+    return undefined
   }
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
@@ -2612,8 +2650,9 @@ export default function SessionDetailView() {
       // it came from; a single-session page has one platform for all of them.
       const rowPlatform = conversationSourcePlatformByMessageRef.current.get(m) ?? session.platform
       if (m.sender === session.agentId) {
-        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
+        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
+        last = bindWakeBlock(last, { agentId: m.sender, agentName: ownerName }, sourceTurnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
             kind: 'bot',
@@ -2628,11 +2667,17 @@ export default function SessionDetailView() {
         }
         const step = msgStep(m, toolSessionId, rowPlatform)
         last.steps.push(step)
+        if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       } else {
-        // Daemon background-task wakes belong to the owner agent, not to a person.
+        // Daemon background-task wakes belong to the owning agent, not to a person —
+        // in a merged conversation that is the SOURCE member's agent.
         if (isBgTaskWake(m.sender)) {
-          pushOwnerWakeTurn(thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform), sourceTurnKey)
+          pushOwnerWakeTurn(
+            thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
+            sourceTurnKey,
+            conversationSourceAgentByMessageRef.current.get(m)
+          )
           continue
         }
         // Count participants by stable sender id — two people can share a display name.
@@ -2731,6 +2776,7 @@ export default function SessionDetailView() {
         }
         const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+        last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2748,6 +2794,7 @@ export default function SessionDetailView() {
         }
         const step = fmtStep(stp, session.platform)
         last.steps.push(step)
+        if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       }
     })
@@ -2800,6 +2847,7 @@ export default function SessionDetailView() {
         }
         const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+        last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2817,6 +2865,7 @@ export default function SessionDetailView() {
         }
         const step = fmtStep(stp, session.platform)
         last.steps.push(step)
+        if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       }
     }
