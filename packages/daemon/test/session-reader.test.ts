@@ -327,42 +327,6 @@ describe('SessionReader', () => {
     s.close()
   })
 
-  it('recovers the GitHub actor for trusted transcript rows written before structured attribution', () => {
-    const s = store()
-    const transportScope = 'github:123'
-    s.upsertSession({
-      key: sessionKey('hook', 'acme/infra', '384', AGENT, transportScope),
-      agentId: AGENT,
-      platform: 'hook',
-      channel: 'acme/infra',
-      thread: '384',
-      transportScope,
-      acpSessionId: 'acp-github',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: 1,
-      triggeredBy: `hook:${HOOK}`
-    })
-    s.appendTranscript({
-      channel: transcriptChannelKey('acme/infra', transportScope),
-      thread: '384',
-      ts: '1',
-      sender: `hook:${HOOK}`,
-      recipient: AGENT,
-      kind: 'text',
-      text: [
-        'GitHub pull_request:opened — acme/infra#384 "fix participant attribution"',
-        'From: alice (CONTRIBUTOR)',
-        'https://github.invalid/acme/infra/pull/384'
-      ].join('\n')
-    })
-
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-github', limit: 50 }).messages).toEqual([
-      expect.objectContaining({ sender: 'alice' })
-    ])
-    s.close()
-  })
-
   it('history restores a daemon-local webchat image without the synthetic attachment suffix', () => {
     const s = store()
     seedHistorySession(s, { platform: 'webchat', channel: 'conv-1', thread: 'webchat:conv-1' })

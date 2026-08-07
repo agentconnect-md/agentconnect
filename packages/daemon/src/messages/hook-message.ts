@@ -34,18 +34,6 @@ function githubEventActor(msg: RdMsgHook): string | undefined {
   return login && login !== 'unknown' ? login : undefined
 }
 
-/** Recover the actor from the daemon-authored header on rows written before
- *  GitHub hook messages carried their structured author separately. Callers
- *  must first prove the session itself has trusted GitHub provenance. */
-export function legacyGithubEventActor(text: string): string | undefined {
-  const [subject, line] = text.split('\n', 3)
-  if (!subject?.startsWith('GitHub ') || !line?.startsWith('From: ')) return undefined
-  const value = line.slice('From: '.length)
-  const boundaries = [value.indexOf(' ('), value.indexOf(' · labels:')].filter((at) => at >= 0)
-  const login = value.slice(0, boundaries.length ? Math.min(...boundaries) : undefined).trim()
-  return login && login !== 'unknown' ? login : undefined
-}
-
 /** channel/thread from the affinity key — see the sessionKey grammar on {@link RdMsgHook}. */
 function splitSessionKey(msg: RdMsgHook): { channel: string; thread?: string } {
   // The generic turn engine falls back from an absent thread to msgId, which
