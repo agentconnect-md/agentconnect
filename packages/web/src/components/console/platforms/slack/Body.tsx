@@ -10,6 +10,7 @@ import { useConsoleData } from '@/lib/data-context'
 import {
   slackAppIdFromAppToken,
   slackAppOAuthUrl,
+  slackAppReinstallUrl,
   slackAppSettingsUrl,
   slackCreateAppUrl,
   slackManifestJson
@@ -19,23 +20,13 @@ import { useDeploymentConfig } from '../deployment-config'
 import { usePublishedFooter, usePublishedIdentityChrome } from '../publish'
 import { DeliveryLine } from '../wizard-chrome'
 import { slackApi } from './api'
+import { SLACK_INSTALL_EXPIRED, slackMissingScopesFromError, slackPlatformInstallFailure } from './install-failure'
 import { SlackConfigTokenPreview, SlackManifestPreview } from './previews'
 
 /** This platform's delivery vocabulary — {@link WebTransportAffordance.labels}. */
 export const SLACK_TRANSPORT_LABEL: Record<WebWizardTransport, string> = {
   socket: 'Socket Mode',
   http: 'HTTP (Events API)'
-}
-
-// Why a platform "Add to Slack" round trip ended without connecting. Keyed by the
-// CP's short reason code (the same note its close page shows).
-const PLATFORM_INSTALL_FAILURES: Record<string, string> = {
-  denied: 'The install was cancelled in Slack.',
-  expired: 'This install link expired — start again.',
-  workspace_taken: 'That Slack workspace is already connected to another organization.',
-  workspace_mismatch: 'Slack authorized a different workspace. Start again and choose the expected workspace.',
-  agent_taken: 'That Slack workspace is already connected to another agent here. Remove that integration first.',
-  error: 'Slack could not complete the install. Please try again.'
 }
 
 /**
@@ -74,6 +65,11 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
   const [cfgRefresh, setCfgRefresh] = useState('')
   // config → authorizing (OAuth in the other tab) → appToken (bot ready, paste xapp).
   const [autoPhase, setAutoPhase] = useState<'config' | 'authorizing' | 'appToken'>('config')
+  // The bot scopes Slack withheld, when the CP refused the finalize because the
+  // workspace authorization came up short. Its own state rather than the footer's
+  // error line: this failure is only useful if it NAMES the permissions and the
+  // remedy (reinstall in Slack, then Connect again), which a one-line error can't.
+  const [missingScopes, setMissingScopes] = useState<string[] | null>(null)
   const [install, setInstall] = useState<{
     installId: string
     appId: string
@@ -326,6 +322,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
     if (busyRef.current) return
     setInstall(null)
     setAutoPhase('config')
+    setMissingScopes(null)
     host.setError(null)
   }
 
@@ -339,6 +336,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
     if (transport === 'socket' && !appOk) return
     busyRef.current = true
     setSaving(true)
+    setMissingScopes(null)
     host.setError(null)
     try {
       await finalizeSlackInstall(install.installId, {
@@ -348,7 +346,13 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
       })
       host.close()
     } catch (e) {
-      host.setError(e instanceof Error ? e.message : String(e))
+      // A SHORT PERMISSION GRANT is not a generic error: Slack authorized the app
+      // with fewer bot scopes than it declares, nothing is wrong with what the
+      // operator typed, and the fix is a reinstall in Slack. Route it to the
+      // panel below, which names the scopes — the footer's one-line error can't.
+      const missing = slackMissingScopesFromError(e)
+      if (missing) setMissingScopes(missing)
+      else host.setError(e instanceof Error ? e.message : String(e))
       setSaving(false)
       busyRef.current = false
     }
@@ -389,11 +393,11 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
         const s = await slackApi.getPlatformInstall(platformInstallId)
         if (!alive || s.status === 'pending') return
         if (s.status === 'completed') return close() // lists refetch on close
-        stop(PLATFORM_INSTALL_FAILURES[s.failureReason ?? ''] ?? 'The Slack install did not complete.')
+        stop(slackPlatformInstallFailure(s.failureReason, s.missingScopes))
       } catch (e) {
         // 404 = the row was TTL-reaped (an abandoned tab), which is terminal —
         // anything else is transient, so keep polling.
-        if (alive && e instanceof ApiError && e.status === 404) stop(PLATFORM_INSTALL_FAILURES.expired!)
+        if (alive && e instanceof ApiError && e.status === 404) stop(SLACK_INSTALL_EXPIRED)
       }
     }
     const h = setInterval(() => void tick(), 2500)
@@ -676,6 +680,57 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
                             <div className="mt-[8px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
                               Unlocks once you approve the install in Slack.
                             </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* The install was approved, but Slack authorized the app with
+                  fewer bot permissions than it declares — the failure this whole
+                  check exists to catch, because left alone it stays invisible
+                  until session access starts failing closed weeks later. Naming
+                  the scopes is the point: "reinstall the app" is only actionable
+                  when it says what is absent. Connect stays live, so reinstalling
+                  in Slack and clicking it again is the whole loop. */}
+                  {missingScopes && (
+                    <div className="mt-[14px] rounded-lg bg-(--status-error-soft) px-[11px] py-[10px]">
+                      <div className="flex items-start gap-2">
+                        <Icon
+                          name="triangle-alert"
+                          size={14}
+                          color="var(--status-error)"
+                          className="mt-[1px] flex-none"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                            Slack didn’t grant every permission this app needs
+                          </div>
+                          <div className="mt-[3px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-secondary)">
+                            Reinstall the app in your Slack workspace to grant them, then click Connect again.
+                          </div>
+                          {missingScopes.length > 0 && (
+                            <div className="mt-[7px] flex flex-wrap gap-[5px]">
+                              {missingScopes.map((scope) => (
+                                <span
+                                  key={scope}
+                                  className="mono rounded-[5px] bg-(--surface-card) px-[6px] py-[2px] text-[11px] text-(--text-secondary)"
+                                >
+                                  {scope}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {install && (
+                            <a
+                              href={slackAppReinstallUrl(install.appId)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="lnk mt-[9px] inline-flex items-center gap-[5px]"
+                            >
+                              Reinstall in Slack
+                              <Icon name="external-link" size={12} />
+                            </a>
                           )}
                         </div>
                       </div>

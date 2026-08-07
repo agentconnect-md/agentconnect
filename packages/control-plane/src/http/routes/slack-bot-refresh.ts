@@ -27,7 +27,7 @@ import { BotId } from '../../domain/ids.js'
 import { denyViewerWrite, orgOf } from '../rbac.js'
 import { SlackBotRefreshDto, ErrorDto, IdParam, type SlackBotRefreshDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
-import { mergeManagedSlackManifest, slackOAuthRedirectUri, SLACK_BOT_SCOPES } from '../slack-manifest.js'
+import { checkSlackBotScopes, mergeManagedSlackManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
 import { relayHttpBase } from './slack-install.js'
 
 /** Slack errors from the manifest export/update that mean "this app is not
@@ -162,10 +162,16 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           authorization = 'invalid'
         } else if (checked?.status === 'ok' && checked.appId && checked.appId !== bot.slackAppId) {
           authorization = 'app_mismatch'
-        } else if (checked?.status === 'ok' && checked.scopes) {
-          const granted = new Set(checked.scopes)
-          missingScopes = SLACK_BOT_SCOPES.filter((scope) => !granted.has(scope))
-          authorization = missingScopes.length > 0 ? 'reinstall_required' : 'current'
+        } else if (checked?.status === 'ok') {
+          // The same shared diff both install funnels fence on. A grant Slack
+          // declined to report stays `unknown` — silence is not a shortfall.
+          const grant = checkSlackBotScopes(checked.scopes)
+          if (grant.status === 'short') {
+            missingScopes = grant.missing
+            authorization = 'reinstall_required'
+          } else if (grant.status === 'complete') {
+            authorization = 'current'
+          }
         }
 
         return {

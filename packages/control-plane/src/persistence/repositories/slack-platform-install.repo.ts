@@ -18,6 +18,7 @@ function toRecord(r: SlackPlatformInstall): SlackPlatformInstallRecord {
     agentId: r.agentId ? AgentId(r.agentId) : null,
     status: r.status,
     failureReason: r.failureReason,
+    missingScopes: r.missingScopes,
     botId: r.botId,
     createdByUserId: r.createdByUserId,
     createdAt: r.createdAt,
@@ -54,7 +55,9 @@ export class PgSlackPlatformInstallStore implements SlackPlatformInstallStore {
 
   async settle(
     id: string,
-    outcome: { status: 'completed'; botId?: string } | { status: 'failed'; failureReason: string }
+    outcome:
+      | { status: 'completed'; botId?: string }
+      | { status: 'failed'; failureReason: string; missingScopes?: readonly string[] }
   ): Promise<void> {
     // `status: 'pending'` in the WHERE: a double callback (Slack retry / a
     // double-clicked tab) keeps the FIRST outcome rather than overwriting a
@@ -67,7 +70,10 @@ export class PgSlackPlatformInstallStore implements SlackPlatformInstallStore {
         settledAt: new Date(),
         ...(outcome.status === 'completed'
           ? { ...(outcome.botId ? { botId: outcome.botId } : {}) }
-          : { failureReason: outcome.failureReason })
+          : {
+              failureReason: outcome.failureReason,
+              ...(outcome.missingScopes ? { missingScopes: [...outcome.missingScopes] } : {})
+            })
       }
     })
   }

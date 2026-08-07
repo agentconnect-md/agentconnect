@@ -118,3 +118,11 @@ export function slackAppOAuthUrl(appId: string): string {
 export function slackAppSettingsUrl(appId?: string | null): string {
   return appId ? `https://api.slack.com/apps/${encodeURIComponent(appId)}` : 'https://api.slack.com/apps'
 }
+
+/** Deep link to Slack's own "install to a workspace" flow for an app — the remedy
+ *  when an authorization granted fewer bot scopes than the app declares, since
+ *  reinstalling is what makes Slack apply the full set. Mirrors the `reinstallUrl`
+ *  the CP's Slack refresh DTO hands the settings fragment. */
+export function slackAppReinstallUrl(appId: string): string {
+  return `https://api.slack.com/apps/${encodeURIComponent(appId)}/install-on-team?`
+}

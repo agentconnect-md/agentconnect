@@ -27,6 +27,7 @@ import type {
   SlackRotateResult
 } from '../../src/http/slack-config-api.js'
 import { PLATFORM_APP_DESCRIPTION } from '../../src/http/platform-app-description.js'
+import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -367,6 +368,89 @@ describe('slack auto-install funnel', () => {
     expect(spy.upserts).toHaveLength(1)
     expect(spy.upserts[0]!.u).toMatchObject({ config: { botToken: 'xoxb-from-oauth' } })
     expect(JSON.stringify(dto)).not.toContain('xoxb-')
+  })
+
+  // Slack's initial authorization does not reliably apply every bot permission
+  // the manifest declares, and a short grant is SILENT — it only surfaces much
+  // later, as a scoped call answering `missing_scope` and the session-access
+  // check failing closed. Finalize is the last point where the operator is still
+  // in the flow and one reinstall away, so it refuses there.
+  it('finalize refuses a workspace authorization that granted fewer bot scopes, minting nothing', async () => {
+    const { app, spy } = withFunnel()
+    const withheld = ['channels:history', 'users:read']
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'acme-bot',
+      appId: 'A1TEST',
+      teamId: 'T_INSTALL',
+      teamName: 'Acme',
+      botUserId: 'U1',
+      scopes: SLACK_BOT_SCOPES.filter((scope) => !withheld.includes(scope))
+    })
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+
+    expect(res.statusCode).toBe(409)
+    const body = res.json() as { code: string; message: string; missingScopes: string[] }
+    // The list is the point: "reinstall the app" is only actionable when the
+    // refusal says WHICH permissions are absent, so the console can render them.
+    expect(body.code).toBe('SLACK_MISSING_SCOPES')
+    expect(body.missingScopes).toEqual(withheld)
+    expect(body.message).toContain('channels:history')
+    // No bot, no integration, no daemon push — and the pending row survives, so
+    // reinstalling in Slack and retrying Connect is the whole recovery loop.
+    expect(await prisma.bot.count({ where: { orgId: DEFAULT_ORG_ID, slackAppId: 'A1TEST' } })).toBe(0)
+    expect(await prisma.integration.count({ where: { orgId: DEFAULT_ORG_ID } })).toBe(0)
+    expect(spy.upserts).toHaveLength(0)
+    expect(await prisma.slackInstall.findUnique({ where: { id: installId } })).not.toBeNull()
+  })
+
+  it('finalize installs normally when the workspace granted every required scope', async () => {
+    const { app } = withFunnel()
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'acme-bot',
+      appId: 'A1TEST',
+      teamId: 'T_INSTALL',
+      teamName: 'Acme',
+      botUserId: 'U1',
+      // Extra scopes a workspace happens to hold are not a reason to refuse.
+      scopes: [...SLACK_BOT_SCOPES, 'bookmarks:read']
+    })
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+    expect(res.statusCode).toBe(201)
+  })
+
+  // Slack does not always send the `x-oauth-scopes` header. An unreported grant
+  // is "we could not tell", NOT "the grant is short" — reading it the other way
+  // would start failing installs for a reason unrelated to permissions.
+  it('finalize does not refuse when Slack did not report the granted scopes', async () => {
+    const { app } = withFunnel()
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'acme-bot',
+      appId: 'A1TEST',
+      teamId: 'T_INSTALL',
+      teamName: 'Acme',
+      botUserId: 'U1',
+      scopes: null
+    })
+    const installId = await startAndAuthorize(app)
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations/slack/app/${installId}/finalize`,
+      payload: { appToken: 'xapp-1-A1TEST-9-abcdef' }
+    })
+    expect(res.statusCode).toBe(201)
   })
 
   it('finalize refuses a workspace already connected to ANOTHER organization (ingress-tenant-fence.md §5)', async () => {

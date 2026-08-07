@@ -3075,6 +3075,9 @@ export interface SlackPlatformInstallRecord {
   status: SlackPlatformInstallStatus
   /** Short code (same note the callback's close page shows) when `failed`. */
   failureReason: string | null
+  /** Required bot scopes the workspace authorization did not grant, when
+   *  `failureReason` is 'missing_scopes'. Empty on every other outcome. */
+  missingScopes: string[]
   /** Expected Bot fence for Settings reauthorization, or the resulting Bot once
    *  a generic install completes. */
   botId: string | null
@@ -3102,7 +3105,11 @@ export interface SlackPlatformInstallStore {
    */
   settle(
     id: string,
-    outcome: { status: 'completed'; botId?: string } | { status: 'failed'; failureReason: string }
+    outcome:
+      | { status: 'completed'; botId?: string }
+      // `missingScopes` accompanies the 'missing_scopes' reason so the console's
+      // poll can name the permissions rather than just the failure.
+      | { status: 'failed'; failureReason: string; missingScopes?: readonly string[] }
   ): Promise<void>
   delete(id: string): Promise<void>
   /** TTL sweep: delete rows created before `staleBefore` (settled or not — a
