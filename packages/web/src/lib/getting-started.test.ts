@@ -19,13 +19,16 @@ const empty = { agents: [], daemons: [], integrations: [], sessions: [], members
 describe('computeGettingStarted', () => {
   it('starts all-incomplete for a fresh org and reports progress', () => {
     const gs = computeGettingStarted(empty)
-    expect(gs.done).toBe(0)
-    expect(gs.total).toBe(6) // 5 core + invite (auth mode)
-    expect(gs.fraction).toBe(0)
+    // session-access always counts as done (it's a review step, not a setup task —
+    // see its `optional` comment in getting-started.ts), so it contributes to both
+    // done and total and never moves the fraction.
+    expect(gs.done).toBe(1)
+    expect(gs.total).toBe(7) // 5 core + session-access + invite (auth mode)
+    expect(gs.fraction).toBe(1 / 7)
     expect(gs.allDone).toBe(false)
   })
 
-  it('orders the steps per the design: daemon, agent, slack, github, conversation, invite', () => {
+  it('orders the steps per the design: daemon, agent, slack, github, conversation, session-access, invite', () => {
     // The "Runtime signed in" step is deferred until the explicit probe-status
     // signal ships (neither authRequired nor advertised models encode readiness).
     expect(computeGettingStarted(empty).items.map((i) => i.key)).toEqual([
@@ -34,13 +37,31 @@ describe('computeGettingStarted', () => {
       'slack',
       'github',
       'conversation',
+      'session-access',
       'invite'
     ])
   })
 
-  it('drops the invite item in no-auth mode', () => {
+  it('drops the invite AND session-access items in no-auth mode (no /settings there)', () => {
     expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(5)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'invite')).toBe(false)
+    expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'session-access')).toBe(false)
+  })
+
+  it('always marks session-access done (optional, look-not-fix) but keeps its CTA action', () => {
+    const step = computeGettingStarted(empty).items.find((i) => i.key === 'session-access')!
+    expect(step.done).toBe(true)
+    expect(step.optional).toBe(true)
+    expect(step.action).toEqual({ kind: 'session-access' })
+  })
+
+  it('hides session-access when its card would render nothing — the CTA must not point at a missing anchor', () => {
+    const has = (sessionAccessAvailable?: boolean) =>
+      computeGettingStarted({ ...empty, sessionAccessAvailable }).items.some((i) => i.key === 'session-access')
+    expect(has(false)).toBe(false)
+    // undefined (probe in flight / failed) keeps the step — same convention as githubEnabled
+    expect(has(undefined)).toBe(true)
+    expect(has(true)).toBe(true)
   })
 
   it('marks daemon done for any registered daemon, connected or not', () => {

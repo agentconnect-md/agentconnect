@@ -27,6 +27,7 @@ export type GsAction =
   | { kind: 'github-profile' }
   | { kind: 'chat' }
   | { kind: 'members' }
+  | { kind: 'session-access' }
 
 export interface GsItem {
   key: string
@@ -36,6 +37,13 @@ export interface GsItem {
   done: boolean
   ctaLabel: string
   action: GsAction
+  /** Short chip after the label (e.g. "optional") — see `optional` below. */
+  tag?: string
+  /** Unlike every other item, has no live signal for "done" (it's a look-don't-touch
+   *  review, not a setup task) — `done` is hardcoded true so it never drags the ring
+   *  or blocks "Finish onboarding". `optional` keeps its CTA visible despite `done`,
+   *  since GsRows normally hides the button once an item is done. */
+  optional?: boolean
 }
 
 export interface GettingStarted {
@@ -74,9 +82,24 @@ export function computeGettingStarted(input: {
    *  the installations probe 404s otherwise). False ⇒ the GitHub steps are hidden:
    *  there is nothing to install. Undefined (probe in flight / failed) keeps them. */
   githubEnabled?: boolean
+  /** Whether SettingsView's SessionAccessCard would render anything (mirrors its own
+   *  `hasNothingToOffer`, one per provider). False ⇒ the session-access step is hidden —
+   *  its CTA would land on a page with no card to scroll to. Undefined (probe in
+   *  flight) keeps the step. */
+  sessionAccessAvailable?: boolean
 }): GettingStarted {
-  const { agents, daemons, integrations, sessions, members, authOn, orgHasSessions, githubLinked, githubEnabled } =
-    input
+  const {
+    agents,
+    daemons,
+    integrations,
+    sessions,
+    members,
+    authOn,
+    orgHasSessions,
+    githubLinked,
+    githubEnabled,
+    sessionAccessAvailable
+  } = input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
@@ -164,7 +187,22 @@ export function computeGettingStarted(input: {
     }
   ]
 
-  // Members only exist in auth mode; a no-auth deployment has no one to invite.
+  // Session access lives on /settings, which no-auth deployments don't have (they
+  // bounce to /home) — gate it with the other auth-only step below. It also vanishes
+  // when SessionAccessCard itself would render nothing (`sessionAccessAvailable === false`)
+  // — same reasoning as the GitHub steps: a CTA must not point at a missing anchor.
+  if (authOn && sessionAccessAvailable !== false) {
+    items.push({
+      key: 'session-access',
+      label: 'Review session access policy',
+      expl: "Decide who can see session content synced from Slack, GitHub, and Feishu — on by default, following each platform's own access.",
+      done: true,
+      optional: true,
+      tag: 'optional',
+      ctaLabel: 'Review session access',
+      action: { kind: 'session-access' }
+    })
+  }
   if (authOn) {
     items.push({
       key: 'invite',

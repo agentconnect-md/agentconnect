@@ -19,7 +19,12 @@ import { useModal } from './ModalProvider'
 import type { GsAction, GsItem } from '@/lib/getting-started'
 import { agentIsPlaced, agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { isAuthConfigured } from '@/lib/auth'
-import { fetchGithubInstallations, fetchMySocialAccount } from '@/lib/api'
+import {
+  fetchGithubInstallations,
+  fetchMySocialAccount,
+  fetchSessionExternalAccess,
+  type SessionAccessProvider
+} from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { useSlackPlatformInstall } from '@/components/console/platforms/slack/use-platform-install'
@@ -70,6 +75,10 @@ export function useGsActions() {
           // Land on Settings with the invite-members dialog auto-opened (`invite` is
           // consumed one-shot by SettingsView).
           return router.push(orgPath('/settings?invite=1'))
+        case 'session-access':
+          // The Session access card owns id="session-access" — the hash lands and
+          // scrolls there natively (same href the console nav / GlobalSearch use).
+          return router.push(orgPath('/settings#session-access'))
       }
     },
     [openModal, router, orgPath, firstAgent, builtinAgent, agents]
@@ -105,6 +114,26 @@ export function useGithubAppEnabled(): boolean | undefined {
     { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
   )
   return data
+}
+
+// Backs hiding the "Review session access policy" step: mirrors GlobalSearch's
+// `sessionAccessRenders` guard (GlobalSearch.tsx) so the checklist's CTA never
+// points at a card that renders null — SessionAccessCard hides itself once every
+// provider is BOTH unavailable and disabled (`hasNothingToOffer`, SettingsView.tsx).
+// Undefined while any read is still pending/unanswered — keep the step rather than
+// guess; only a definitive "nothing to offer" from all three hides it.
+export function useSessionAccessCardAvailable(): boolean | undefined {
+  const { activeOrg } = useOrgs()
+  const key = (provider: SessionAccessProvider) => consoleKeys.sessionAccess(activeOrg?.id, provider)
+  const fetcher = ([, orgId, , provider]: NonNullable<ReturnType<typeof key>>) =>
+    fetchSessionExternalAccess(provider, orgId)
+  const opts = { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
+  const slack = useSWR(key('slack'), fetcher, opts)
+  const github = useSWR(key('github'), fetcher, opts)
+  const feishu = useSWR(key('feishu'), fetcher, opts)
+  const results = [slack, github, feishu]
+  if (results.some(({ data, error }) => data === undefined && !error)) return undefined
+  return results.some(({ data }) => data === undefined || data.available || data.enabled)
 }
 
 // Whether the platform-published one-click "Add to Slack" app is installable on
@@ -153,19 +182,24 @@ export function GsRows({
           {it.done && <Icon name="check" size={12} />}
         </span>
         <div className="min-w-0 flex-1">
-          <span
-            className={`font-sans text-[13.5px] leading-normal ${
-              it.done ? 'font-normal text-(--text-tertiary) line-through' : 'font-medium text-(--text-primary)'
-            }`}
-          >
-            {it.label}
+          <span className="inline-flex items-center gap-2">
+            <span
+              className={`font-sans text-[13.5px] leading-normal ${
+                it.done && !it.optional
+                  ? 'font-normal text-(--text-tertiary) line-through'
+                  : 'font-medium text-(--text-primary)'
+              }`}
+            >
+              {it.label}
+            </span>
+            {it.tag && <span className="font-mono text-[11.5px] leading-none text-(--text-disabled)">{it.tag}</span>}
           </span>
           {open && (
             <>
               <div className="mt-[5px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
                 {it.expl}
               </div>
-              {!it.done && (
+              {(!it.done || it.optional) && (
                 <div className="mt-[11px]" onClick={(e) => e.stopPropagation()}>
                   <Button size="sm" onClick={() => runAction(it.action)}>
                     {it.ctaLabel}
