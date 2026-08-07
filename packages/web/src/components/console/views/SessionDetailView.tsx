@@ -2822,6 +2822,15 @@ export default function SessionDetailView() {
     }
   }
 
+  // The last rendered turn of each tagged agent. A busy reply lane marks ONLY
+  // that turn as streaming — every earlier turn from the same agent shares its
+  // `agentId`, so matching on the lane alone would flip the agent's whole
+  // history to "streaming" while it generates a new turn.
+  const lastBotTurnIndexByAgent = new Map<string, number>()
+  turns.forEach((t, i) => {
+    if (t.kind === 'bot' && t.agentId) lastBotTurnIndexByAgent.set(t.agentId, i)
+  })
+
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
   // steps are the playground equivalent of persisted THINK messages.
@@ -3534,10 +3543,12 @@ export default function SessionDetailView() {
                       // active-turn predicate lives (and is tested) in session-work.ts.
                       const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
                       const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                      // The lane only says WHICH AGENT is busy — restrict the match to that
+                      // agent's LAST turn so its finished history stays non-streaming.
                       const streaming =
                         turnInFlight &&
                         (turn.agentId && busyLanes.length > 0
-                          ? busyLanes.includes(turn.agentId)
+                          ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
                           : ti === turns.length - 1)
                       const openWork = workPanelOpen(workOverride.get(ti))
                       // Is the WORK itself still running? `streaming` alone is turn-level —
