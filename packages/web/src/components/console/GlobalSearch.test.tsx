@@ -10,7 +10,16 @@ vi.mock('next/navigation', () => ({
 }))
 const myRole = vi.fn(() => 'owner' as string | null)
 vi.mock('@/lib/org-context', () => ({
-  useOrgs: () => ({ orgPath: (path: string) => `/org-test${path}`, myRole: myRole() })
+  useOrgs: () => ({ orgPath: (path: string) => `/org-test${path}`, myRole: myRole(), activeOrg: { id: 'org-1' } })
+}))
+// GlobalSearch reads the three session-access states through SWR to decide
+// whether the Session access card would render at all.
+const sessionAccess = vi.fn(() => ({ available: true, enabled: false }))
+vi.mock('swr', () => ({
+  default: (key: unknown) => ({ data: key ? sessionAccess() : undefined })
+}))
+vi.mock('@/lib/api', () => ({
+  fetchSessionExternalAccess: vi.fn()
 }))
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({ agents: [], daemons: [], crons: [], allSessions: [] })
@@ -36,6 +45,7 @@ beforeEach(() => {
   push.mockClear()
   authConfigured.mockReturnValue(true)
   myRole.mockReturnValue('owner')
+  sessionAccess.mockReturnValue({ available: true, enabled: false })
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -141,6 +151,18 @@ describe('GlobalSearch pages & settings', () => {
     // Cards every member can see stay searchable.
     type('members')
     expect(host.textContent).toContain('/settings#members')
+  })
+
+  it('hides the Session access entry when the card cannot render', () => {
+    render()
+    type('session access')
+    expect(host.textContent).toContain('/settings#session-access')
+    // Every provider unavailable AND disabled — SessionAccessCard returns null,
+    // so the search entry must disappear with it.
+    sessionAccess.mockReturnValue({ available: false, enabled: false })
+    type('session acces')
+    type('session access')
+    expect(host.textContent).toContain('No results')
   })
 
   it('hides Settings and Profile in no-auth mode', () => {

@@ -11,11 +11,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { agentLabel, effectiveAgentStatus, presentedDaemonStatus, status } from '@/lib/data'
 import { cronHuman } from '@/lib/cron'
 import { isAuthConfigured } from '@/lib/auth'
+import { fetchSessionExternalAccess, type SessionAccessProvider } from '@/lib/api'
+import { consoleKeys } from '@/lib/swr-keys'
 import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
@@ -72,7 +75,7 @@ export function GlobalSearch({
   onClose
 }: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
   const router = useRouter()
-  const { orgPath, myRole } = useOrgs()
+  const { orgPath, myRole, activeOrg } = useOrgs()
   const { agents, daemons, crons, allSessions } = useConsoleData()
 
   const [open, setOpen] = useState(false)
@@ -99,6 +102,23 @@ export function GlobalSearch({
   useEffect(() => {
     setAuthed(isAuthConfigured())
   }, [])
+
+  // The Session access card hides itself when every provider is unavailable AND
+  // disabled (SettingsView's SessionAccessCard) — mirror that state so its search
+  // entry never points at a missing anchor. Read only while the panel is open;
+  // SWR dedupes these with the Settings page's own reads.
+  const accessKey = (provider: SessionAccessProvider) =>
+    open && authed ? consoleKeys.sessionAccess(activeOrg?.id, provider) : null
+  const accessFetcher = ([, scopedOrgId, , provider]: NonNullable<ReturnType<typeof accessKey>>) =>
+    fetchSessionExternalAccess(provider, scopedOrgId)
+  const slackAccess = useSWR(accessKey('slack'), accessFetcher)
+  const githubAccess = useSWR(accessKey('github'), accessFetcher)
+  const feishuAccess = useSWR(accessKey('feishu'), accessFetcher)
+  // Mirrors `hasNothingToOffer`: hidden only once all three are KNOWN dead —
+  // pending/failed reads keep the entry, as the card also renders then.
+  const sessionAccessRenders = [slackAccess, githubAccess, feishuAccess].some(
+    ({ data }) => data === undefined || data.available || data.enabled
+  )
 
   const groups = useMemo<SearchGroup[]>(() => {
     // `hit('')` matches everything, so an empty query yields every entity. That's
@@ -185,9 +205,16 @@ export function GlobalSearch({
     })
     const pageMatches = SEARCH_PAGES.filter((p) => p.kind === 'page' && pageHit(p))
     // Owner-only entries point at cards SettingsView doesn't render for other
-    // roles — hide them so a result never navigates to a missing anchor.
+    // roles — hide them so a result never navigates to a missing anchor. Same
+    // for Session access when the whole card is absent on this deployment.
     const settingMatches = authed
-      ? SEARCH_PAGES.filter((p) => p.kind === 'setting' && (!p.ownerOnly || myRole === 'owner') && pageHit(p))
+      ? SEARCH_PAGES.filter(
+          (p) =>
+            p.kind === 'setting' &&
+            (!p.ownerOnly || myRole === 'owner') &&
+            (p.href !== '/settings#session-access' || sessionAccessRenders) &&
+            pageHit(p)
+        )
       : []
 
     // Keep all groups (even empty ones) so the chip row can show every type's
@@ -210,7 +237,7 @@ export function GlobalSearch({
         items: settingMatches.slice(0, CAP).map(toItem)
       }
     ]
-  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed, myRole])
+  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed, myRole, sessionAccessRenders])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
   // Chips: "All" + every kind with at least one match.
