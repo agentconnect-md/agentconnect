@@ -1,15 +1,6 @@
 # Integration Plugin Architecture
 
-> **Status:** Implemented through S3 (§13). S0–S3 are merged; S4 (per-platform npm
-> packages) stays optional and unscheduled. The S2 and S3 exit criteria were each
-> reconciled against the code — S3's verdict is _met_ for the modal chassis and
-> _met with exceptions_ for registry-as-sole-platform-set-authority, with the
-> surviving set enumerations recorded as findings in
-> [integration-plugin-audit.md](integration-plugin-audit.md) §10.
->
 > Related documents:
-> [integration-plugin-audit.md](integration-plugin-audit.md) (the S0 branch audit
-> plus the S2 and S3 exit reconciliations),
 > [daemon-centric-architecture.md](daemon-centric-architecture.md),
 > [daemon-detailed-design.md](daemon-detailed-design.md),
 > [feishu-integration.md](feishu-integration.md),
@@ -49,7 +40,7 @@ so the refactor amortizes immediately.
 **Scope decision (honest goal):** this design delivers **first-party
 modularity now** and **explicitly defers third-party extensibility**. A
 third party cannot add a platform to a deployment without forking today (see
-§15 for why, and for the short list of cheap decisions that keep that door
+§13 for why, and for the short list of cheap decisions that keep that door
 open). Stating third-party support as a present goal would warp the contract
 design toward generality nobody can consume yet.
 
@@ -74,48 +65,37 @@ design toward generality nobody can consume yet.
   the daemon poster). They _do_ participate in the narrower Layer-2 output
   surface (§7.6) so the dispatch path stops carrying a hardcoded GitHub
   special case.
-- **No product-behavior changes**, with the small carve-outs listed in §14
-  (each is a latent defect being fixed, not a redesign).
+- **No product-behavior changes.** The contracts are a structural seam; where
+  a platform's behavior differs, that difference is a manifest field or a
+  strategy function, never a core branch.
 
-## 3. Current State
+## 3. Shape of the Result
 
-A platform's code is spread across six locations today (non-test line
-counts, approximate):
+A platform is four contract implementations plus one registry line per host:
 
-| Layer                   | Slack                                                                              | Feishu                                 | Discord            | Telegram |
-| ----------------------- | ---------------------------------------------------------------------------------- | -------------------------------------- | ------------------ | -------- |
-| `daemon/src/<p>/`       | 2,681                                                                              | 1,686                                  | 1,418              | 1,031    |
-| `message/src/<p>-*.ts`  | 298                                                                                | 198                                    | 103                | 209      |
-| relay ingress           | 843                                                                                | 254                                    | —                  | —        |
-| CP install/registration | 1,066 (`slack-install` + `slack-platform-install`)                                 | 263                                    | —                  | —        |
-| web console             | config card, mrkdwn, marks, wizard sections                                        | region switcher, wizard                | wizard             | wizard   |
-| Prisma                  | `SlackInstall`, `SlackPlatformInstall`, `SlackUserConfig`, `Bot.slackAppId/teamId` | `FeishuAppRegistration`, `Bot.feishu*` | `Bot.discordAppId` | —        |
+| Host          | Directory                                | Contract                                                               |
+| ------------- | ---------------------------------------- | ---------------------------------------------------------------------- |
+| daemon        | `src/platforms/<id>/`                    | three-facet adapter (connect / ingress / read port) + turn output (§7) |
+| relay         | `src/platforms/<id>/`                    | `RelayPlatformIngressPlugin` (§8)                                      |
+| control plane | `src/platforms/<id>/`                    | `CpPlatformProvider` (§9)                                              |
+| web           | `src/components/console/platforms/<id>/` | `WebPlatformModule` (§10)                                              |
 
-Structural symptoms, per host:
+The shared, pre-dispatch capability table is
+`packages/protocol/src/platform-manifest.ts` (§5); everything else a platform
+needs to say lives behind its host's contract.
 
-- **daemon** — `daemon.ts` (~18k lines) holds four connection arrays, four
-  `connByIntegration` maps, per-platform reconcile loops, and roughly 100
-  platform-comparison lines (69 `platform === '<p>'` / `case` lines plus
-  ~30 negated or reversed comparisons). Each new platform adds one more of
-  everything.
-- **relay** — `relay-ingress-manager.ts` hardcodes `if (a.platform ===
-'feishu')` forks and three Feishu-specific routing maps beside the Slack
-  path.
-- **control-plane** — three structurally different install funnels
-  (`slack-install.ts`, `slack-platform-install.ts`,
-  `feishu-registration.ts`) with no shared skeleton; `integrations.ts`
-  validates each platform's credentials inline; `placement.ts`/`httpBot.ts`
-  assemble the platform-discriminated `IntegrationSpec` wire union on the
-  reconcile path.
-- **web** — `AddIntegrationModal.tsx` (~3,800 lines) contains all four
-  platforms' install wizards; the transcript renderer applies Slack mrkdwn
-  semantics to every platform; bots settings, channel lists, API bindings,
-  and conversation-merge all branch per platform.
-- **protocol** — the `Platform` enum appears in `frames/route.ts` and is
-  inlined four more times in `frames/relay-daemon.ts`; `rd/msg` carries
-  platform-typed variants (`source: 'slack_action'`); `IntegrationSpec` is a
-  closed per-platform discriminated union that also embeds core routing
-  knobs.
+Two rules keep the seam from eroding:
+
+1. **A platform name is never core knowledge.** Core reads a capability, a
+   manifest field, or a registry entry — never `platform === '<id>'`. If you
+   find yourself editing a `switch` in core, the seam is missing a member and
+   that is the bug to fix.
+2. **A manifest field is earned by a pre-dispatch read**, or it is a
+   capability flag with better branding and belongs in a host contract (§5.2).
+
+GitHub and GitLab are deliberately outside this set — they have no chat
+ingress and implement only the narrower Layer-2 turn-output surface (§2,
+§7.6). Webchat is core-owned for the same class of reason.
 
 ## 4. Decision Summary
 
@@ -130,8 +110,8 @@ Structural symptoms, per host:
   fragments would render unstyled without per-package `@source` globs and
   `transpilePackages` bookkeeping); and the "one version across hosts"
   benefit is phantom because the four hosts deploy independently and each
-  pins its own copy. Package extraction remains possible later (§13, optional
-  stage) once an external consumer actually exists.
+  pins its own copy. Package extraction remains possible later, once an
+  external consumer actually exists.
 - **D2 — Four-way branch taxonomy with a stated dividing rule.** Every
   platform branch is classified as (a) _transport_ — moves into the platform
   module; (b) _manifest capability_ — a declarative value core reads; (c)
@@ -150,8 +130,10 @@ Structural symptoms, per host:
   `PlatformId` string. Because zod rejects unknown enum _values_ wholesale
   (unknown frame _types_ are graceful; unknown values inside a known frame
   are not, `protocol/src/wire.ts`), and `register` carries
-  `capabilities.platforms`, emitting a new id before every peer reads
-  tolerantly is a **fatal handshake loop**. Hence S1a/S1b staging (§13).
+  `capabilities.platforms`, emitting a new id to a peer that does not read
+  tolerantly is a **fatal handshake loop**. Hence the tolerant-reader rule
+  (§6.2): readers open first, and emitting a new id is what waits on the
+  fleet.
 - **D4 — `IntegrationSpec` restructures into a core envelope plus opaque
   platform config.** Core routing knobs (`bindRules`, `allowedUserIds`,
   `mutedChannels`, `gated`, mode) move _out_ of the per-platform config
@@ -175,7 +157,7 @@ teamId` is a load-bearing composite-unique demux key (admission and
   constraint. Display-only ids (`discordAppId`, `feishuAppId`,
   `feishuRegion`) move to a per-platform JSON bag.
 - **D7 — First-party now, third-party deferred** with four named
-  keep-the-door-open items (§15).
+  keep-the-door-open items (§13).
 
 ## 5. The Platform Manifest
 
@@ -228,27 +210,25 @@ ceilings, thread-open mechanics. The current code exhibits at least ten such
 axes beyond the list above; encoding them as flags would reproduce the
 switch farm in data form.
 
-### 5.1 Amendment (S3): `identityScope` is per-ASSIGNMENT, not per-platform
+### 5.1 `identityScope` is per-ASSIGNMENT, not per-platform
 
-The relay's demux work (S3 §8) found this axis mis-modelled. A per-platform
-constant cannot express Slack, where **both shapes are live at the same
-time**: an install of a distributed platform app is tenant-scoped (many
-installs share one app id _and_ one signing secret, so only the composite
-`(appId, tenantId)` identifies the bot), while a legacy sibling bot may carry
-an app id alone — or no app id at all, if its CP row predates the column.
-Declaring `identityScope: 'tenant'` for the platform would either strand the
-legacy bots or, worse, invite a signature scan that resolves a callback to a
-_sibling install of the same app_ — one workspace's messages delivered to
-another tenant's bot. The axis therefore belongs to the assignment, derived
-from the identity the CP actually stamped on it:
+A per-platform constant cannot express Slack, where **both shapes are live at
+the same time**: an install of a distributed platform app is tenant-scoped
+(many installs share one app id _and_ one signing secret, so only the
+composite `(appId, tenantId)` identifies the bot), while a bot created against
+a single-workspace app carries an app id alone, or no app id at all. Declaring
+`identityScope: 'tenant'` for the platform would either strand those bots or,
+worse, invite a signature scan that resolves a callback to a _sibling install
+of the same app_ — one workspace's messages delivered to another tenant's bot.
+The axis therefore belongs to the assignment, derived from the identity the CP
+actually stamped on it:
 
 - **tenant id present** ⇒ composite index only. Assign-derived, **never
   learned** from traffic, eagerly evicted on unassign — and a re-assign that
   _gains_ a tenant id must evict the bot's stale app-only entry, or the
   weaker index would keep answering cross-tenant.
 - **app id only** ⇒ app index, which **may** be learned from the first
-  verified delivery (bounded, lazily evicted), precisely because a legacy row
-  may not carry the id.
+  verified delivery (bounded, lazily evicted).
 - **neither** ⇒ no index entry; the bot is reachable only through the bounded
   verify-scan, which skips same-secret siblings whose assigned tenant differs.
 
@@ -257,25 +237,22 @@ identity vocabulary _has_ a tenant axis at all (Slack `team_id`, Feishu
 tenantless) — the CP still needs it to know which columns to persist (§11).
 The relay reads scope from the assignment, never from the manifest.
 
-### 5.2 What actually shipped, and the discipline that kept it small
+### 5.2 What the manifest actually carries
 
-The field list above is the **candidate** list derived from the S0 audit, not
-a contract. The manifest that exists
-(`packages/protocol/src/platform-manifest.ts`, promoted out of the daemon in
-S3 when the relay became its second consumer) carries three fields:
-`membershipEnumeration`, `botSenderRouting`, and `dmChannelPattern` — the
-last of which is **not** in the published list above, and was earned by a
-pre-dispatch read the audit surfaced (gated-conversation discovery must
-recognize a DM before any target resolves, and a Slack `app_mention` can omit
-`channel_type`). Each field landed in the same PR as the branches it retired.
+The field list above is the **candidate** list, not a contract. The manifest
+that exists (`packages/protocol/src/platform-manifest.ts`) carries three
+fields: `membershipEnumeration`, `botSenderRouting`, and `dmChannelPattern`.
+The last is **not** in the published list above; it was earned by a
+pre-dispatch read (gated-conversation discovery must recognize a DM before any
+target resolves, and a Slack `app_mention` can omit `channel_type`). A field
+lands in the same change as the branches it retires.
 
-The rule also rejected a field in review: status-bar shape reads like a
-capability, but every read of it happens from a turn that already exists, so
-it is post-dispatch and belongs to an adapter strategy. **A manifest field is
-earned by a pre-dispatch read, in review, or it is a capability flag with
-better branding** — the exact pattern this migration exists to delete. The
-remaining candidates stay candidates until a branch is actually retired by
-one.
+Status-bar shape is the counter-example: it reads like a capability, but every
+read of it happens from a turn that already exists, so it is post-dispatch and
+belongs to an adapter strategy. **A manifest field is earned by a pre-dispatch
+read, or it is a capability flag with better branding** — the exact pattern
+this architecture exists to delete. The remaining candidates stay candidates
+until a branch is actually retired by one.
 
 ## 6. Protocol Changes
 
@@ -296,38 +273,30 @@ classify ids a newer peer introduces. The safe default for an unknown
 chat-shaped id in `coordsDecision` is **refuse** (fail-closed), replacing
 the current hard-coded four-platform list.
 
-### 6.2 Rolling migration: tolerant readers first
+### 6.2 Tolerant readers
 
 Constraint (verified): zod strips unknown object keys but **rejects unknown
 enum values**; a known frame type with a failing payload is refused
-(`wire.ts`), and `register.capabilities.platforms` is `z.array(Platform)` —
-so a new platform id reaching an old CP kills the handshake and the daemon
-enters a reconnect loop. The precedent for staged encoding already exists
-(`codec.ts` down-levels `register/ok` for pre-M-5D daemons).
+(`wire.ts`), and `register.capabilities.platforms` rides the handshake — so a
+closed enum means a new platform id reaching a peer that predates it kills
+the handshake and the daemon enters a reconnect loop.
 
-Sequence:
+Every peer's _readers_ therefore accept `z.string()` for platform fields, and
+the per-frame unknown-id policy is fixed:
 
-1. **S1a (tolerant readers):** every peer's _readers_ accept `z.string()`
-   for platform fields while _writers_ still emit only legacy values.
-   Per-frame unknown-id policy is documented: `register` — accept, ignore
-   unknown capabilities; `event/session` — store verbatim; `rd/msg` — reject
-   the item, never the socket. Deploy CP first, then wait one full daemon
-   upgrade cycle (fleet gate).
-2. **S1b:** schema restructuring lands and new ids may be emitted.
+- `register` — accept; unknown capability ids are simply never matched.
+- `event`/`session` — store the value verbatim.
+- `rd`/`msg` — decode succeeds; refusal, if any, is a semantic per-item
+  verdict, never a socket-level failure.
 
-The schema change alone deploys safely; what is actually gated on the fleet
-is **emitting the first non-legacy id**.
+This is what lets a platform ship without a lockstep fleet upgrade: a daemon
+older than the CP keeps working, and the id it does not recognize stays inert
+rather than fatal. The rule is pinned by
+`packages/protocol/src/platform-tolerance.test.ts`. Writers still emit only
+ids the registry knows; **emitting** a new id is what waits on the fleet, not
+the schema.
 
-### 6.3 `narrowPlatform` dies
-
-The daemon currently folds any unrecognized platform string into `'slack'`
-when minting session keys (`daemon.ts`, ~12 call sites) — the code comment
-records a real Feishu incident where this minted sessions nothing could
-continue. Under an open `PlatformId` this becomes a standing correctness
-bug for every new platform's A2A/orchestration/wake path. S1a deletes it
-and threads the raw platform string through session keying.
-
-### 6.4 `IntegrationSpec`: core envelope + opaque config
+### 6.3 `IntegrationSpec`: core envelope + opaque config
 
 ```ts
 interface IntegrationSpec {
@@ -363,7 +332,7 @@ single-release cutover instead — a new CP skips specs an old daemon cannot
 read, and an old CP fails the handshake against a new daemon. See that PR's
 compatibility notes for the enumerated at-rest cases.
 
-### 6.5 `NormalizedMessage`: generic thread coordinates + adapter extension
+### 6.4 `NormalizedMessage`: generic thread coordinates + adapter extension
 
 `threading: 'per-message' | 'topic' | 'none'` is a label, not a data model —
 the current schema accretes named per-platform fields (a topic id vs a
@@ -392,7 +361,7 @@ thread: threadChannelId }`, and its output adapter selects `thread ?? channel` a
 concrete API destination. The retired `parentChannel` normalized field and the former
 `{ channel: threadChannelId, thread: threadChannelId }` shape are migrated daemon-locally.
 
-### 6.6 `platform_action`: a semi-opaque envelope
+### 6.5 `platform_action`: a semi-opaque envelope
 
 `source: 'slack_action'` (and the Feishu analog) is replaced by one frame
 whose **envelope is core-typed and whose payload is opaque to relay core**:
@@ -407,14 +376,14 @@ whose **envelope is core-typed and whose payload is opaque to relay core**:
   declares an explicit dedup scope. Fencing is unaffected (dedup is
   msgId-based; the daemon replays the prior ack on retransmit).
 
-### 6.7 `rc/bot-assign`: opaque secrets + opaque ingress config
+### 6.6 `rc/bot-assign`: opaque secrets + opaque ingress config
 
 Demux metadata is per-platform (Slack: `apiAppId` + `teamId` with the
 shared-secret composite-key invariant; Feishu: `appId` only), so the
 assignment frame gains `{ platformId, secrets: opaque, ingress: opaque }`
 with shape validation delegated to the platform module on both ends.
 
-### 6.8 Cron/hook targeting opens
+### 6.7 Cron/hook targeting opens
 
 `CronDef.targetPlatform` / `HookDef.targetPlatform` (and the web
 `AddCronModal` coercion, which today lossily folds Discord/Feishu anchors)
@@ -534,117 +503,92 @@ registry.
 
 ## 8. Relay Slot
 
-`{ verify, toDelivery }` is insufficient (verified against both real
-ingests); the slot is two-sided, mirroring the daemon's:
+The slot is two-sided, mirroring the daemon's, and it splits along two axes:
+the **plugin** is per-platform and stateless, while the **per-bot ingress** it
+builds owns that bot's credentials (`packages/relay/src/platforms/contract.ts`).
 
 ```ts
-interface RelayPlatformIngress {
-  start(): Promise<void>
-  stop(): Promise<void>
+interface RelayPlatformIngressPlugin<TIngest, TVerified> {
+  // Every lifecycle edge goes through the plugin — assign → build,
+  // rotate → rebuild, unassign/revoke → stop — and core keeps one pool per
+  // platform.
+  buildIngest(assignment, host): TIngest
   // Demux is stateful and per-platform: Slack signature-scans the assigned
   // bot registry with a learned (api_app_id, team_id) index; Feishu demuxes
-  // on body app_id with optional AES decrypt. Challenge/url_verification
-  // ordering relative to verification differs per platform — it is a
-  // per-plugin hook, not a fixed pipeline step.
+  // on body app_id with optional AES decrypt.
   extractDemuxHints(rawBody): Hints
-  verify(secrets, rawBody, headers, now): Verified | Challenge | Reject
+  // Returns the plugin's TYPED product, not a boolean verdict: Feishu's
+  // verify decrypts, and the decrypted payload has to reach handle() —
+  // deriving it a second time there is both wasteful and a place for the two
+  // derivations to disagree. `undefined` means reject.
+  verify(ingest, rawBody, body, headers, now): TVerified | undefined
   // Two platforms require SYNCHRONOUS bodies on the HTTP 200 (Slack
-  // block_suggestion options; Feishu card-action toast). handle() is async
-  // because the sync body may depend on a daemon round trip: the Feishu
-  // plugin awaits RelayHostServices.forwardAction(...) and surfaces the
-  // daemon-produced toast in the same HTTP response. Deadline ownership:
-  // the PLUGIN owns the platform-specific deadline (it races the daemon
-  // round trip against the platform's response window — Feishu ~2.5s,
-  // Slack's 3s trigger — using the host clock, degrading to an ack-only
-  // body on timeout); the HOST enforces one outer hard cap on the route so
-  // a misbehaving plugin cannot pin the HTTP worker.
-  handle(event): Promise<{ syncResponse?: unknown; deliveries: PreAddressedDelivery[] }>
-  // Slack performs relay-side egress (modals under the 3s deadline, notices,
-  // channel snapshots, auth.test revocation backstop); Feishu deliberately
-  // keeps egress on the daemon. Optional by design.
-  egress?: { notice; openModal; channelSnapshot }
+  // block_suggestion options; Feishu card-action toast), so handle() is async:
+  // the Feishu plugin awaits host.forwardAction(...) and surfaces the
+  // daemon-produced toast in the same HTTP response. Deadline ownership: the
+  // PLUGIN races the daemon round trip against the platform's response window
+  // (Feishu ~2.5s, Slack's 3s trigger) using the host clock, degrading to an
+  // ack-only body on timeout; the HOST enforces one outer hard cap so a
+  // misbehaving plugin cannot pin the HTTP worker. Events are ACK'd inside
+  // that window and handled asynchronously — the plugin pushes through the
+  // host rather than returning work the route would have to wait for.
+  handle(ingest, verified, host): Promise<{ syncResponse?: unknown }>
+}
+
+interface RelayBotIngress {
+  stop(): Promise<void>
+  // Slack performs relay-side egress; Feishu deliberately keeps egress on the
+  // daemon. Facet presence IS the `relayOwnsEgress` capability read.
+  egress?: { notice; lookupUserName }
 }
 
 interface RelayHostServices {
-  forward(delivery)
-  forwardAction(action): Promise<AckResponse>
-  reportRevoked(reason, atMs?)
+  // NORMALIZED messages, not pre-addressed deliveries: arbitration and the
+  // routing ladder stay in core (§12), so a plugin never resolves a target.
+  forward(botId, WireNormalizedMessage)
+  // The one call that carries a route — and it must not re-resolve one.
+  forwardAction(msg, route): Promise<AckResponse>
+  // Fenced with the revision the OBSERVING ingest was built from, never the
+  // mutable current one: assignments start fire-and-forget, so an older
+  // ingest's auth.test can land after a newer assignment installed.
+  reportRevoked(reason, credentialRevision, atMs?)
   reportChannels
   reportConversation
-  directory: { agents; channelOwner; resolveTarget } // arbitration reads
-  getDaemonOnline
+  // Three trust models, not one lookup. targetForAgent requires a live routing
+  // rule (status-modal actions); integrationTarget is directory-only, because a
+  // rendered card's target may outlive the rule that created it and the
+  // daemon's active-card map is the terminal fence; soleTarget is the
+  // single-install fallback for cards rendered before action values embedded a
+  // target. Collapsing them would either break stale-but-legitimate
+  // interactions or route them by guess.
+  directory: { targetForAgent; integrationTarget; soleTarget }
+  // Load-bearing for one-shot triggers: a Slack shortcut's trigger id is
+  // consumed by returning true, so an offline daemon must fall back to the
+  // local unavailable modal while the trigger is still valid.
+  canDeliver(route): boolean
   clock
   selfRelayId
   log
 }
 ```
 
+Challenge handling is not a third arm of `verify`. Slack's `url_verification`
+is answered by the route BEFORE any candidate is selected (it is
+unauthenticated by design — the documented pre-candidate exception), while
+Feishu's challenge is _encrypted_ and therefore necessarily flows
+verify → handle like any other event.
+
 Relay core keeps: bot arbitration, the 3-leg thread-affinity dance, pending
-report queues, fencing, retry backoff, and event-identity dedup _storage_
-(the plugin mints the dedup id since it derives from parsed action
-semantics; core owns the table). Four platform reads currently inside
-"core" become capability reads per D2: Slack-only bot-mention admission
+report queues, fencing, retry backoff, and event-identity dedup _storage_.
+Dedup identity is per-assignment composite, per §5.1 — the plugin mints
+`(appId, tenantId, eventId)` because it derives from parsed action semantics,
+and core owns the TTL table. Four platform reads that would otherwise sit in
+core are capability reads per D2: Slack-only bot-mention admission
 (`botSenderRouting`), thread-root detection (adapter `isThreadRoot` or the
 threading capability), the Feishu egress-ownership fork (`relayOwnsEgress`
 derived from the `egress` facet), and the echo-suppression guard. The
 existing `hooks/signature.ts` primitives are shared relay-core
 infrastructure serving both this seam and the webhook seam.
-
-### 8.1 Amendment (S3): the contract as it shipped
-
-The sketch above survived contact with both real ingests in shape but not in
-detail. What landed (`packages/relay/src/platforms/contract.ts`, three review
-rounds):
-
-- **The plugin is per-PLATFORM and stateless; the per-BOT object is what it
-  builds.** The sketch conflated them. `RelayPlatformIngressPlugin<TIngest,
-TVerified>` owns `buildIngest(assignment, host)`, `extractDemuxHints`,
-  `verify` and `handle`; the returned `RelayBotIngress` owns that bot's
-  credentials, its `stop()`, and the optional `egress` facet. Every lifecycle
-  edge (assign → build, rotate → rebuild, unassign/revoke → stop) goes through
-  the plugin, and core keeps one pool per platform.
-- **`verify` returns the plugin's typed product, not a verdict.**
-  `verify(ingest, rawBody, body, headers, now): TVerified | undefined`.
-  A boolean verdict was the first blocking review finding: Feishu's verify
-  _decrypts_, and the decrypted payload has to reach `handle` — deriving it a
-  second time there is both wasteful and a place for the two derivations to
-  disagree. `undefined` means reject.
-- **Challenge is not a third arm.** Slack's `url_verification` is answered by
-  the route BEFORE any candidate is selected (it is unauthenticated by
-  design — the documented pre-candidate exception), while Feishu's challenge
-  is _encrypted_ and therefore necessarily flows verify → handle like any
-  other event.
-- **`handle` returns only a sync body.** `handle(ingest, verified, host):
-Promise<HandledDelivery>` where `HandledDelivery` is `{ syncResponse? }`.
-  The sketch's `deliveries: PreAddressedDelivery[]` return does not exist:
-  events are ACK'd inside the platform's window and handled asynchronously, so
-  the plugin pushes through the host rather than returning work the route
-  would have to wait for.
-- **The host forwards NORMALIZED messages, not pre-addressed deliveries.**
-  `host.forward(botId, WireNormalizedMessage)` — arbitration and the routing
-  ladder stay in core (§12), so a plugin never resolves a target. Only
-  `forwardAction(msg, route)` carries a route, and it must not re-resolve one.
-- **`directory` has three trust models, not one lookup.** `targetForAgent`
-  (requires a live routing rule — the status-modal action path),
-  `integrationTarget` (directory-only, because a rendered card's target may
-  outlive the rule that created it and the daemon's active-card map is the
-  terminal fence), and `soleTarget` (single-install fallback for cards
-  rendered before action values embedded a target). Collapsing them would
-  either break stale-but-legitimate interactions or route them by guess.
-- **`getDaemonOnline` became `canDeliver(route)`**, and it is load-bearing for
-  one-shot triggers: a Slack shortcut's trigger id is consumed by returning
-  `true`, so an offline daemon must fall back to the local unavailable modal
-  while the trigger is still valid.
-- **`reportRevoked` carries a credential revision.** Assignments start
-  fire-and-forget, so an older ingest's `auth.test` can land after a newer
-  assignment installed; the report is fenced with the revision the OBSERVING
-  ingest was built from, never the mutable current one.
-- **`egress` is `{ notice, lookupUserName }`** — what relay-side egress
-  actually needs; modal and channel-snapshot work is driven through the
-  ingest's own callbacks. Facet presence remains the `relayOwnsEgress`
-  capability read, as designed.
-- **Dedup identity is per-assignment composite**, per §5.1: the plugin mints
-  `(appId, tenantId, eventId)`, core owns the TTL table.
 
 ## 9. Control-Plane Slot
 
@@ -673,7 +617,7 @@ interface CpPlatformProvider {
   providerToolingCredentials?: ProviderToolingDecl
   // Wire projection: the ONLY code that turns persisted integration/bot
   // rows plus decrypted secret material into the opaque payloads of D4 and
-  // §6.7. These are today's integrationToSpec / httpIntegrationToSpec /
+  // §6.6. These are today's integrationToSpec / httpIntegrationToSpec /
   // HttpBotService.buildAssign branches, relocated behind the provider.
   // Both projectors are ASYNC, and the provider owns loading from any
   // additional secret stores it maintains: `secrets` carries the bot-level
@@ -682,8 +626,8 @@ interface CpPlatformProvider {
   // loads those itself inside the projector, and core always awaits,
   // never growing a per-platform preload branch. Secret material is never
   // persisted inside platformConfig JSON.
-  projectIntegrationConfig(integration, bot, secrets): Promise<unknown> // -> IntegrationSpec.config (§6.4)
-  projectBotAssign(bot, secrets): Promise<{ secrets: unknown; ingress: unknown }> // -> rc/bot-assign (§6.7)
+  projectIntegrationConfig(integration, bot, secrets): Promise<unknown> // -> IntegrationSpec.config (§6.3)
+  projectBotAssign(bot, secrets): Promise<{ secrets: unknown; ingress: unknown }> // -> rc/bot-assign (§6.6)
 }
 ```
 
@@ -752,8 +696,8 @@ Two decisions specific to this host:
   renderer applies Slack mrkdwn semantics to all platforms. The platform key
   already rides merged-conversation rows (`MergeSource.platform`); a
   renderer registry keyed by platformId ships with the Slack renderer as the
-  default for all chat platforms, then per-platform overrides land
-  separately (§14).
+  default for all chat platforms; a per-platform override is a separate,
+  explicit behavior change, never a side effect of the registry landing.
 - **Modules stay in the web tree** (`src/components/console/platforms/<id>/`
   or equivalent) per D1 — no cross-package React, no Tailwind `@source`
   bookkeeping, `use client` stays an app convention.
@@ -799,7 +743,7 @@ Two decisions specific to this host:
 - **Install-state tables stay per-platform for now** (`SlackInstall`,
   `SlackPlatformInstall`, `FeishuAppRegistration`), contributed via the CP
   provider's `pendingInstall` facet. A single generic install-state table is
-  a third-party-era consolidation (§15), not a prerequisite.
+  a third-party-era consolidation (§13), not a prerequisite.
 - **`SlackUserConfig`** remains, classified under
   `providerToolingCredentials` (§9) — the pattern any platform with
   programmatic app-minting will reproduce.
@@ -814,49 +758,7 @@ drain/lease machinery, and the common CP create skeleton. The registries
 themselves are core files; adding a platform edits exactly one line per
 host.
 
-## 13. Staging
-
-Each stage lands independently and is independently valuable.
-
-| Stage   | Content                                                                                                                                                                                                                                                                                                                        | Exit criteria                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **S0**  | Branch audit: classify every platform branch under the D2 four-way taxonomy. Grep scope: `===`, `!==`, and reversed comparisons (the `===`-only pattern finds 69 lines in `daemon.ts`; the full pattern ~100), across daemon, relay, CP (routes + orchestrator + ws handlers), web, `coordsDecision`, and cron/hook targeting. | A classification table with per-class counts; the manifest field list and strategy-function list are derived from it, not guessed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| **S1a** | Tolerant readers everywhere (platform fields read as `string`); delete `narrowPlatform`; `coordsDecision` becomes registry-driven with fail-closed unknown-chat default; document per-frame unknown-id policy.                                                                                                                 | CP deployed, then one full daemon upgrade cycle (fleet gate). No new ids emitted yet.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **S1b** | Protocol restructure: `OriginKind`×`PlatformId`, `IntegrationSpec` envelope+opaque config (with legacy-emission shim), `NormalizedMessage` thread coordinates + `adapterExt`, `platform_action` envelope, `rc/bot-assign` opaque secrets/ingress, cron/hook targeting. Prisma migrations (enum→text, Bot identity columns).    | Wire round-trips green on both old-shape and new-shape fixtures; behavior-preserving on the four existing platforms.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| **S2**  | Daemon: three-facet adapter contract + renderer seam + key-driven registry; platform code moves to `src/platforms/<id>/`; strategy functions extracted.                                                                                                                                                                        | **`daemon.ts` compiles with zero platform-conditional edits remaining for the four chat platforms** (the audited branches are gone or reclassified); **evals implement the published interface** and the Arena suite passes unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| **S3**  | In parallel: relay two-sided ingress contract + registry; CP behavioral providers (routes/reaper/env/DI registration, composed create DTO); web platform modules + `WizardHost`. Closed by the protocol flatten (`IntegrationSpec` → the §6.4 envelope + open `platform` + opaque `config`, and its daemon at-rest twin).      | **Merged; reconciled in [integration-plugin-audit.md](integration-plugin-audit.md) §10.** `AddIntegrationModal` is chassis + fragments — **met** (two region carve-outs, each with the reason written in code). Registry-as-sole-platform-set-authority — **met with exceptions on all four hosts**: every host's dispatch path reads its registry, while nine set enumerations survive on adjacent paths (relay teardown/shutdown/route mounting; CP persisted-set fence, cron/hook vocabulary, waitlist, D6 identity switch; web bot-tab table and `BotPlatform` union; daemon capability list and observed-platform loop). Nineteen findings recorded, none fixed. |
-| **S4**  | _(optional, deferred)_ Extract per-platform npm packages.                                                                                                                                                                                                                                                                      | Gated on an actual external consumer; not scheduled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-
-## 14. Known Defects Fixed En Route
-
-1. **`narrowPlatform` fold-to-slack** — mints `slack:`-prefixed session keys
-   for unknown platforms (already bit Feishu once; recorded in the code
-   comment). Fixed in S1a.
-2. **Cron anchor coercion** — the web modal coerces Discord/Feishu anchors
-   into the closed two-platform union today. Fixed in S1b (§6.8).
-3. **Transcript renderer** — Slack mrkdwn token rewriting applies to
-   Telegram/Discord/Feishu transcripts. The registry default keeps today's
-   behavior; per-platform overrides are an explicit, separately-shipped
-   behavior change (§10).
-4. **Revocation fenced with the wrong generation** — the relay reported a
-   platform revocation against the router's _current_ credential revision, so
-   a stale ingest's `auth.test` finishing after a re-assign could revoke the
-   replacement credential. Fixed in S3 by capturing the observing
-   assignment's revision at ingest construction (§8.1).
-5. **An offline daemon ate a Slack one-shot trigger** — the message-shortcut
-   path returned "handled" without checking deliverability, consuming the
-   trigger id and leaving the operator with neither a modal nor a retry.
-   Fixed in S3 by the synchronous `canDeliver` check (§8.1).
-6. **Slack event/interaction discrimination by absence** — classifying "no
-   `event` field ⇒ interaction" misroutes any envelope shape that omits it.
-   Fixed in S3 by discriminating positively on `type === 'event_callback'`;
-   caught by the route-conversion tests.
-7. **The relay ignored the ingress bag it was sent** — `toBotAssignment` read
-   only the legacy named fields, so a CP that had already moved to the §6.7
-   opaque ingress bag would have had its new-shape emission silently dropped.
-   Fixed reader-first in S1b, one release before the emission flip.
-
-## 15. Third-Party Extensibility: Deferred, Not Foreclosed
+## 13. Third-Party Extensibility: Deferred, Not Foreclosed
 
 Under this design a third party would still need: registry edits in four
 hosts (= fork), core-authored Prisma migrations, and public ingress/OAuth
@@ -875,7 +777,7 @@ minimum future work if third-party support is later funded:
 4. Treating the web registry as the accepted rebuild boundary (a deployment
    recompiles the console to change its platform set).
 
-## 16. Risks
+## 14. Risks
 
 - **Rolling updates (highest).** The S1a fleet gate is a hard precondition
   for emitting any new platform id; skipping it reproduces the
@@ -889,9 +791,8 @@ minimum future work if third-party support is later funded:
   converger + applier + turn state (§7.3).
 - **Behavior regressions.** The four platforms' behavior is pinned by the
   existing test surface (the daemon suite alone has 50+ Slack-touching test
-  files); S1/S2 are behavior-preserving by construction and reviewed against
-  that suite. The three known behavior changes are enumerated (§14) and ship
-  separately.
+  files). Extraction is behavior-preserving by construction and reviewed
+  against that suite; any behavior change ships separately and explicitly.
 - **Capability explosion.** Guarded by the D2 dividing rule; manifest
   additions require a pre-dispatch core read as justification, in review.
 - **Audit blind spots.** S0's grep must include negated/reversed

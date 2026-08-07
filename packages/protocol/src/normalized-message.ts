@@ -148,7 +148,7 @@ export const NormalizedPlatformMessageSchema = z.object({
   replyTo: z.string().optional(),
   /** Provider-supplied quoted reply content, already bounded and humanized. */
   quoted: QuotedMessageSchema.optional(),
-  // ── §6.5 generic thread coordinates (integration-plugin-architecture.md) ──
+  // ── §6.4 generic thread coordinates (integration-plugin-architecture.md) ──
   // The platform-agnostic model core session-keying consumes. Dual-shape window:
   // normalizers emit these ALONGSIDE the named per-platform fields below and
   // readers prefer them; the named fields stop being emitted once the fleet

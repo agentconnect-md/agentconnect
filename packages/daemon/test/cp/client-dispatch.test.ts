@@ -194,22 +194,6 @@ describe('CpClient dispatch', () => {
     expect(settled).toBe(true)
   })
 
-  it('uses one legacy hook/report EVT without waiting when CP has no ACK capability', async () => {
-    const { t, client } = await readyClient({}, [])
-    await expect(
-      client.emitHookReport({
-        hookId: '11111111-1111-4111-8111-111111111111',
-        agentId: CRON_AGENT_ID,
-        deliveryKey: 'delivery-1',
-        status: 'success'
-      })
-    ).resolves.toBe('legacy-sent')
-
-    expect(t.sent).toHaveLength(1)
-    expect(t.lastSent()).toMatchObject({ type: 'hook/report' })
-    expect(t.lastSent().corr).toBeUndefined()
-  })
-
   it('emits a heartbeat every heartbeatSec with the load snapshot', async () => {
     const { t, clock } = await readyClient()
     clock.advance(15000)

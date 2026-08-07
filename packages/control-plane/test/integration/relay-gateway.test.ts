@@ -279,9 +279,8 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
       config: { projectId: 'p1' },
       secretKeys: ['apiKey']
     })
-    // Remote specs retain the M-5A wire shape while old daemons may still be
-    // present; the M-5D decoder normalizes this to streamable-http.
-    expect((daemonFrame.payload as { transport?: unknown }).transport).toBeUndefined()
+    // Remote specs go out as the discriminated union they declare.
+    expect((daemonFrame.payload as { transport?: unknown }).transport).toBe('streamable-http')
     expect(JSON.stringify(daemonFrame.payload)).not.toContain('upstream-memory-secret')
     ws.close()
     daemonWs.close()

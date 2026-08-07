@@ -1691,9 +1691,11 @@ describe('Daemon rd/msg hook fires', () => {
       const root = scaffold()
       const daemon = new Daemon({ root, hostFactory: () => host as never })
       await daemon.start()
-      // A legacy CP has no correlated ACK: the report stays in the durable outbox,
-      // but the fake does not leave an unresolved request alive during teardown.
-      const emitHookReport = vi.fn(async () => 'legacy-sent' as const)
+      // An unreachable CP keeps the report in the durable outbox (retryable
+      // failure), without leaving an unresolved request alive during teardown.
+      const emitHookReport = vi.fn(async () => {
+        throw new Error('cp unreachable')
+      })
       ;(daemon as never as { cpClient: unknown }).cpClient = { stop: vi.fn(async () => {}), emitHookReport }
 
       const first = fire({ sessionKey: HOOK_ID })
@@ -1794,9 +1796,11 @@ describe('Daemon rd/msg hook fires', () => {
     const cp = {
       hookReports: [] as HookReport[],
       stop: vi.fn(async () => {}),
+      // Record the send, then fail retryably so the durable receipt is retained
+      // for this assertion instead of being ACK-cleared.
       emitHookReport: vi.fn(async (report: HookReport) => {
         cp.hookReports.push(report)
-        return 'legacy-sent' as const
+        throw new Error('cp unreachable')
       })
     }
     ;(daemon as never as { cpClient: unknown }).cpClient = cp

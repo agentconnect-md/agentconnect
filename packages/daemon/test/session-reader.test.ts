@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { createSessionReader } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
@@ -324,42 +323,6 @@ describe('SessionReader', () => {
     expect(messages.map((m) => [m.sender, m.senderName, m.senderAvatarUrl])).toEqual([
       ['U1', 'Dana Reyes', 'https://avatars.example.test/dana.png'],
       [AGENT, undefined, undefined] // agent-id senders have no cached provider profile → omitted
-    ])
-    s.close()
-  })
-
-  it('recovers the GitHub actor for trusted transcript rows written before structured attribution', () => {
-    const s = store()
-    const transportScope = 'github:123'
-    s.upsertSession({
-      key: sessionKey('hook', 'acme/infra', '384', AGENT, transportScope),
-      agentId: AGENT,
-      platform: 'hook',
-      channel: 'acme/infra',
-      thread: '384',
-      transportScope,
-      acpSessionId: 'acp-github',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: 1,
-      triggeredBy: `hook:${HOOK}`
-    })
-    s.appendTranscript({
-      channel: transcriptChannelKey('acme/infra', transportScope),
-      thread: '384',
-      ts: '1',
-      sender: `hook:${HOOK}`,
-      recipient: AGENT,
-      kind: 'text',
-      text: [
-        'GitHub pull_request:opened — acme/infra#384 "fix participant attribution"',
-        'From: alice (CONTRIBUTOR)',
-        'https://github.invalid/acme/infra/pull/384'
-      ].join('\n')
-    })
-
-    expect(createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-github', limit: 50 }).messages).toEqual([
-      expect.objectContaining({ sender: 'alice' })
     ])
     s.close()
   })
@@ -853,35 +816,5 @@ describe('SessionReader', () => {
 
     expect(tailFor('telegram')).toEqual(['observed first', 'older, backfilled after'])
     expect(tailFor('slack')).toEqual(['older, backfilled after', 'observed first'])
-  })
-
-  it('repairs chronological reads from a pre-upgrade transcript table', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-reader-order-mig-')), 'local.sqlite')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE transcript (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
-        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-        tool_call_id TEXT, body TEXT, recipient TEXT
-      );
-      INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient) VALUES
-        ('C1', 'T1', '1784098701.000000', 'U1', 'text', 'first', '${AGENT}'),
-        ('C1', 'T1', '1784098703.000000', 'U1', 'text', 'third-trigger', '${AGENT}'),
-        ('C1', 'T1', '1784098702.000000', 'ops-bot', 'text', 'second-backfilled', '${AGENT}');
-    `)
-    legacy.close()
-
-    // Opening the upgraded store must make already-persisted sessions read correctly;
-    // the fix cannot depend on rewriting only future appends.
-    const s = new LocalStore(path)
-    seedHistorySession(s)
-
-    expect(
-      createSessionReader(s)
-        .history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
-        .messages.map((m) => m.text)
-    ).toEqual(['first', 'second-backfilled', 'third-trigger'])
-    s.close()
   })
 })

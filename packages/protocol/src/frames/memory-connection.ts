@@ -217,17 +217,8 @@ const TransportedMemoryConnectionSpec = z.discriminatedUnion('transport', [
 
 /** One daemon-private connection definition. Both relay grants and local secret
  * leases are secret-bearing; callers must never log this frame or validation
- * payload. Local commands are resolved solely from the operator allowlist.
- *
- * M-5A remote frames predate the transport discriminator. Decode them as
- * Streamable HTTP so daemons can be upgraded before the Control Plane during a
- * rolling deployment; the encoder likewise keeps remote frames legacy-shaped
- * until the old daemon population is gone. */
-export const MemoryConnectionSpec = z.preprocess((input) => {
-  if (typeof input !== 'object' || input === null || Array.isArray(input) || 'transport' in input) return input
-  if ('relayUrl' in input && 'grantKey' in input) return { ...input, transport: 'streamable-http' }
-  return input
-}, TransportedMemoryConnectionSpec)
+ * payload. Local commands are resolved solely from the operator allowlist. */
+export const MemoryConnectionSpec = TransportedMemoryConnectionSpec
 export type MemoryConnectionSpec = z.infer<typeof MemoryConnectionSpec>
 
 /** C→D live CRUD; reconnect baseline is `register/ok.memoryConnections`. */

@@ -1,6 +1,6 @@
 # Runtime Model Catalog: Native Bulk Discovery, Per-Model ACP Fallback, and Local Caching
 
-> **Status:** Proposed · 2026-07-18
+> **Status:** Implemented.
 >
 > **Scope:** How the console (Add/Edit Agent and every surface that needs to
 > "select a model → see what that model supports") obtains a complete
