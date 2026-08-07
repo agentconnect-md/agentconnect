@@ -48,6 +48,7 @@ COPY scripts/ scripts/
 COPY packages/message/package.json packages/message/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/connection/package.json packages/connection/
+COPY packages/observability/package.json packages/observability/
 COPY packages/control-plane/package.json packages/control-plane/
 COPY packages/setup/package.json packages/setup/
 COPY packages/daemon/package.json packages/daemon/
@@ -69,10 +70,11 @@ COPY . .
 
 RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
 
-# protocol → control-plane (topological).
+# protocol + observability → control-plane (topological).
 # Prisma was generated above; skip the control-plane package's prebuild hook.
 RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/protocol" \
+  --filter "@agentconnect.md/observability" \
   --filter "@agentconnect.md/control-plane" \
   -r build
 
@@ -110,18 +112,19 @@ CMD ["node", "dist/index.js"]
 
 # ───────────────────────────── relay: build ─────────────────────────────────
 # The unified ingress plane (packages/relay). No Prisma — the relay holds no
-# database. Pulls only message + protocol + connection + relay (skips
-# CP/daemon/web).
+# database. Pulls only message + protocol + connection + observability + relay
+# (skips CP/daemon/web).
 FROM manifests AS relay-builder
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
   pnpm install --frozen-lockfile --filter "@agentconnect.md/relay..."
 
 COPY . .
 
-# protocol → message / connection → relay (topological).
+# protocol → message / connection / observability → relay (topological).
 RUN pnpm --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/message" \
   --filter "@agentconnect.md/connection" \
+  --filter "@agentconnect.md/observability" \
   --filter "@agentconnect.md/relay" \
   -r build
 
