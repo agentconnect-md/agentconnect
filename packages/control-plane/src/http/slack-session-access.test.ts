@@ -220,9 +220,126 @@ describe('SlackSessionAccessService', () => {
     await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
 
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[0]).toEqual({ provider: 'slack', unknownScopes: 1, totalScopes: 1 })
+    expect(warn.mock.calls[0]?.[0]).toEqual({
+      provider: 'slack',
+      unknownScopes: 1,
+      totalScopes: 1,
+      reasons: { ratelimited: 1 }
+    })
     // A scope key names a channel; the operator needs the rate, not the target.
     expect(JSON.stringify(warn.mock.calls[0]?.[0])).not.toContain('C_')
+  })
+
+  // Slack refuses over HTTP 200 with `ok: false`, so its code is the ONLY thing
+  // that separates a missing OAuth scope from rate limiting from an outage —
+  // and a rate with no cause cannot be acted on. Without this, diagnosing a
+  // steady stream of degraded resolves means reaching for production traces.
+  it('names the Slack error a degraded check failed on', async () => {
+    const warn = vi.fn()
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('conversations.info')
+        ? json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+        : json({ ok: false, error: 'missing_scope' })
+    )
+
+    const result = await service(fetchImpl, { warn }).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    // Unchanged: it still fails closed. Only the diagnosis is new.
+    expect(result).toEqual({ allowedScopes: [], degraded: true })
+    expect(warn.mock.calls[0]?.[0]).toEqual({
+      provider: 'slack',
+      unknownScopes: 1,
+      totalScopes: 1,
+      reasons: { missing_scope: 1 }
+    })
+  })
+
+  it('aggregates a mixed batch by code, one reason per hidden scope', async () => {
+    const warn = vi.fn()
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('C_CHANNEL_3')) {
+        return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+      }
+      if (url.includes('users.info')) return json({ ok: true, user: { team_id: 'T_INSTALL' } })
+      return json({ ok: false, error: url.includes('C_CHANNEL_1') ? 'missing_scope' : 'ratelimited' })
+    })
+    const scopes = [scopeAt(1), scopeAt(2), scopeAt(3)]
+
+    await service(fetchImpl, { warn }).resolve(scopes, viewer('slack:T_INSTALL:U_MEMBER'))
+
+    const payload = warn.mock.calls[0]?.[0] as { unknownScopes: number; reasons: Record<string, number> }
+    expect(payload).toEqual({
+      provider: 'slack',
+      unknownScopes: 2,
+      totalScopes: 3,
+      reasons: { missing_scope: 1, ratelimited: 1 }
+    })
+    // The counts partition the hidden scopes, so one code's share of an hour of
+    // these lines is readable as a share of the sessions actually hidden.
+    const counted = Object.values(payload.reasons).reduce((sum, count) => sum + count, 0)
+    expect(counted).toBe(payload.unknownScopes)
+  })
+
+  it('reports a failure on this side of the call rather than a Slack code', async () => {
+    const warn = vi.fn()
+    // A body is present, but the status means it was never read.
+    const resolver = service(async () => json({ ok: false, error: 'ratelimited' }, 500), { warn })
+
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ reasons: { http_500: 1 } })
+  })
+
+  // The reason is a CAUSE, never a TARGET. Slack's error vocabulary is
+  // lowercase words and every Slack id is uppercase-prefixed, so anything
+  // id-shaped arriving in `error` is reported as its shape and dropped —
+  // a warn that names channels is the one thing this log must never become.
+  it('drops an error payload outside Slack error vocabulary', async () => {
+    const warn = vi.fn()
+    const resolver = service(async () => json({ ok: false, error: 'C_PRIVATE_CHANNEL' }), { warn })
+
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ reasons: { unrecognized_error: 1 } })
+    expect(JSON.stringify(warn.mock.calls[0]?.[0])).not.toContain('C_PRIVATE_CHANNEL')
+  })
+
+  it('carries no identifier of what was hidden, and no credential', async () => {
+    const warn = vi.fn()
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('conversations.info')
+        ? json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+        : json({ ok: false, error: 'missing_scope' })
+    )
+
+    await service(fetchImpl, { warn }).resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    const logged = JSON.stringify(warn.mock.calls[0]?.[0])
+    // Channel, workspace, viewer, scope row — and the bot token, which
+    // `shouldIgnoreUndiciRequest` keeps out of telemetry for the same reason.
+    for (const identifier of ['C_CHANNEL', 'T_INSTALL', 'U_MEMBER', scope().id, 'xoxb']) {
+      expect(logged).not.toContain(identifier)
+    }
+  })
+
+  // A resolve riding a cached `unknown` is the one that would otherwise report
+  // a rate with no cause — the cache holds the reason, not just the verdict.
+  it('still reports the cause when the verdict came from cache', async () => {
+    const warn = vi.fn()
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('conversations.info')
+        ? json({ ok: true, channel: { is_private: true, is_im: false, is_mpim: false } })
+        : json({ ok: false, error: 'missing_scope' })
+    )
+    const resolver = service(fetchImpl, { warn })
+
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+    const afterFirst = fetchImpl.mock.calls.length
+    await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+
+    expect(fetchImpl.mock.calls.length).toBe(afterFirst)
+    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn.mock.calls[1]?.[0]).toEqual(warn.mock.calls[0]?.[0])
   })
 
   it('stays silent when every check answered', async () => {
