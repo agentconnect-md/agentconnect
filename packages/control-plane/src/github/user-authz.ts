@@ -165,15 +165,23 @@ export class GithubUserAuthzService {
 
   /** Resolve only the user's effective permission. Callers that already
    * verified repository metadata can cap or bypass this service's picker cache
-   * instead of extending a shorter authorization lease. */
+   * instead of extending a shorter authorization lease.
+   *
+   * The two legs answer different questions and may carry different caps:
+   * `maxCacheAgeMs` bounds the GitHub permission evidence ("does that account
+   * still have access" — the revocable fact), while `loginMaxAgeMs` bounds the
+   * Logto login resolution ("which GitHub account is linked" — identity
+   * metadata that changes only through link/unlink, which invalidate the cache
+   * anyway). It defaults to `maxCacheAgeMs`, so a single cap keeps its old
+   * both-legs meaning. */
   async permissionForUser(
     userId: string,
     ins: GithubInstallationRecord,
     owner: string,
     repo: string,
-    options: { maxCacheAgeMs?: number } = {}
+    options: { maxCacheAgeMs?: number; loginMaxAgeMs?: number } = {}
   ): Promise<RepoPermission> {
-    const login = await this.loginOf(userId, options.maxCacheAgeMs)
+    const login = await this.loginOf(userId, options.loginMaxAgeMs ?? options.maxCacheAgeMs)
     return this.permissionOf(login, ins, owner, repo, options.maxCacheAgeMs)
   }
 

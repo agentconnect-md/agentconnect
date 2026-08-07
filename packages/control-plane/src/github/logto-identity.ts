@@ -14,8 +14,11 @@
  *
  * Caching: the M2M token until 60s before expiry; display/GitHub projections
  * keep a 10 min positive / 60 s negative user cache, while provider authorization
- * caps reuse of a positive assertion at 2 min. Lookups are single-flight and
- * fail CLOSED at their authorization callers.
+ * caps reuse of a positive assertion at 2 min. A hit past half of the lease it
+ * ran under also renews the entry in the background (refresh-ahead), so an
+ * entry read at least once per half-lease never ages into a blocking refetch —
+ * the leases themselves stay hard for first-ever and idle-return reads.
+ * Lookups are single-flight and fail CLOSED at their authorization callers.
  */
 import type { Clock } from '../domain/clock.js'
 import type { SocialIdentityMutationGate } from '../persistence/ports.js'
@@ -75,9 +78,14 @@ const NEGATIVE_TTL_MS = 60_000
 // Provider identity participates in live Session authorization. Even if no
 // in-product unlink invalidation fires (for example an administrator changes
 // the Logto account directly), a positive assertion is never reused beyond
-// this hard lease.
-const PROVIDER_IDENTITY_TTL_MS = 120_000
-const TIMEOUT_MS = 10_000
+// this hard lease. Exported so callers holding provider identity evidence of
+// their own (the GitHub session-access login leg) can join the same lease
+// instead of inventing a second number.
+export const PROVIDER_IDENTITY_TTL_MS = 120_000
+// Bounds the BLOCKING lookups (first-ever read, idle return past a lease) —
+// refresh-ahead keeps actively-read entries off that path, so a hung upstream
+// can pin a request for at most this long, and only a cold one.
+const TIMEOUT_MS = 5_000
 // How long a target's link mode is trusted. Short enough that a Logto upgrade
 // which fixes a connector is picked up the same day, long enough that the probe
 // is not per click.
@@ -93,6 +101,19 @@ interface CachedUser {
   user: LogtoUser | null
   fetchedAt: number
   expiresAt: number
+}
+
+/**
+ * Should a hit that satisfied its caller also renew the entry in the
+ * background? Yes once the entry is past HALF the lease the read ran under —
+ * the tighter of the entry's own window (positive or negative TTL) and the
+ * caller's `maxAgeMs` cap. E.g. a provider-identity read (120 s cap) starts
+ * refreshing at 60 s, so a subject read at least once a minute never ages out.
+ * Strictly greater than: at exactly half the lease the hit is still quiet.
+ */
+function refreshAheadDue(cached: { fetchedAt: number; expiresAt: number }, now: number, maxAgeMs?: number): boolean {
+  const leaseMs = Math.min(cached.expiresAt - cached.fetchedAt, maxAgeMs ?? Number.POSITIVE_INFINITY)
+  return now - cached.fetchedAt > leaseMs / 2
 }
 
 /** One linked sign-in method, narrowed to what the Profile card renders. The
@@ -232,7 +253,8 @@ export class LogtoIdentityService {
     private readonly cfg: LogtoMgmtConfig,
     private readonly clock: Clock,
     private readonly mutations: SocialIdentityMutationGate,
-    private readonly fetchImpl: FetchLike = fetch as FetchLike
+    private readonly fetchImpl: FetchLike = fetch as FetchLike,
+    private readonly log?: { debug(obj: object, msg: string): void }
   ) {}
 
   /**
@@ -244,8 +266,15 @@ export class LogtoIdentityService {
     const cached = this.logins.get(sub)
     const now = this.clock.now()
     if (cached && cached.expiresAt > now && (maxAgeMs === undefined || now - cached.fetchedAt < maxAgeMs)) {
+      if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingLogin(sub))
       return cached.login
     }
+    return this.pendingLogin(sub)
+  }
+
+  /** The deduped in-flight login lookup — one upstream read serves every
+   *  concurrent caller, blocking miss and refresh-ahead alike. */
+  private pendingLogin(sub: string): Promise<string | null> {
     let pending = this.loginInFlight.get(sub)
     if (!pending) {
       const tracked: Promise<string | null> = this.lookupLogin(sub).finally(() => {
@@ -321,8 +350,15 @@ export class LogtoIdentityService {
     const cached = this.users.get(sub)
     const now = this.clock.now()
     if (cached && cached.expiresAt > now && (maxAgeMs === undefined || now - cached.fetchedAt < maxAgeMs)) {
+      if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingUser(sub))
       return cached.user
     }
+    return this.pendingUser(sub)
+  }
+
+  /** The deduped in-flight user lookup — one upstream read serves every
+   *  concurrent caller, blocking miss and refresh-ahead alike. */
+  private pendingUser(sub: string): Promise<LogtoUser | null> {
     let pending = this.userInFlight.get(sub)
     if (!pending) {
       const tracked: Promise<LogtoUser | null> = this.lookupUser(sub).finally(() => {
@@ -334,6 +370,19 @@ export class LogtoIdentityService {
       this.userInFlight.set(sub, pending)
     }
     return pending
+  }
+
+  /**
+   * Fire-and-forget renewal behind a served cache hit. Routed through the same
+   * in-flight dedupe as a blocking miss (concurrent triggers coalesce onto one
+   * fetch) and through the same epoch-checked lookups (a refresh in flight
+   * across an invalidation is returned to nobody and never cached). A failure
+   * is only debug-logged: the entry it would have replaced is still within its
+   * lease, and once that runs out the blocking path surfaces the same error to
+   * a caller that can act on it.
+   */
+  private refreshInBackground(sub: string, lookup: () => Promise<unknown>): void {
+    void lookup().catch((err: unknown) => this.log?.debug({ err, sub }, 'logto refresh-ahead lookup failed'))
   }
 
   /**
