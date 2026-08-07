@@ -70,36 +70,28 @@ describe('work panel visibility', () => {
     expect(workPanelOpen(shown.get(4))).toBe(false)
   })
 
-  it('defaults OPEN while the turn is streaming, and collapses on its own when it ends', () => {
-    expect(workPanelOpen(undefined, true)).toBe(true) // live: work visible as it runs
-    expect(workPanelOpen(undefined, false)).toBe(false) // turn done: back to collapsed
+  it('stays collapsed by default while the turn is streaming', () => {
+    // Streaming no longer auto-opens the panel — the collapsed toggle line
+    // carries the live progress instead.
+    expect(workPanelOpen(undefined)).toBe(false)
   })
 
-  it('follows the raw platform state through the active → idle transition', () => {
-    // Active turn: RAW daemon state is 'prompting' (toStatusKey buckets this as
-    // 'paused' — matching on the bucketed key would keep the panel closed here).
-    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'prompting'))).toBe(true)
-    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'cancelling'))).toBe(true)
-    // Turn done: raw state flips to idle/completed (bucketed as 'online' — matching
-    // on the bucket would OPEN the panel only after completion, exactly backwards).
-    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'idle'))).toBe(false)
-    expect(workPanelOpen(undefined, sessionTurnInFlight(false, 'completed'))).toBe(false)
+  it('detects an active turn from the raw platform state', () => {
+    // RAW daemon state is 'prompting'/'cancelling' while a turn runs (toStatusKey
+    // buckets these as 'paused' — matching on the bucketed key would be backwards).
+    expect(sessionTurnInFlight(false, 'prompting')).toBe(true)
+    expect(sessionTurnInFlight(false, 'cancelling')).toBe(true)
+    expect(sessionTurnInFlight(false, 'idle')).toBe(false)
+    expect(sessionTurnInFlight(false, 'completed')).toBe(false)
     // Live playground/webchat turns ride the provider's busy flag instead.
     expect(sessionTurnInFlight(true, 'idle')).toBe(true)
-    // Rows with no state (mock/placeholder label) never auto-open.
+    // Rows with no state (mock/placeholder label) never count as active.
     expect(sessionTurnInFlight(false, undefined)).toBe(false)
     expect(sessionTurnInFlight(false, '—')).toBe(false)
   })
 
-  it('a user toggle beats the streaming default in both directions', () => {
-    // Streaming panel shows open; the first click must CLOSE it (record the
-    // opposite of the effective state, not of the collapsed base default).
-    const closed = toggleWorkPanel(new Map(), 0, workPanelOpen(undefined, true))
-    expect(workPanelOpen(closed.get(0), true)).toBe(false)
-    // …and the override keeps holding after the turn completes.
-    expect(workPanelOpen(closed.get(0), false)).toBe(false)
-    // An explicit open during streaming survives the turn's end, too.
-    const reopened = toggleWorkPanel(closed, 0, false)
-    expect(workPanelOpen(reopened.get(0), false)).toBe(true)
+  it('an explicit open during streaming survives the turn completing', () => {
+    const opened = toggleWorkPanel(new Map(), 0, workPanelOpen(undefined))
+    expect(workPanelOpen(opened.get(0))).toBe(true)
   })
 })

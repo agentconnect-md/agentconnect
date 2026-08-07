@@ -341,14 +341,16 @@ function mergeConversationRows(
   rows: Map<string, SessionMessageDto[]>,
   sourceSessionByMessage: WeakMap<SessionMessageDto, string>,
   sourceTurnByMessage: WeakMap<SessionMessageDto, string>,
-  sourcePlatformByMessage: WeakMap<SessionMessageDto, string>
+  sourcePlatformByMessage: WeakMap<SessionMessageDto, string>,
+  sourceAgentByMessage: WeakMap<SessionMessageDto, string>
 ): SessionMessageDto[] {
   return mergeConversation(
     sources
       .filter((source) => rows.has(source.sessionId))
       .map((source) => ({ ...source, rows: rows.get(source.sessionId)! }) satisfies MergeSource)
-  ).map(({ row, sourceSessionId, sourcePlatform, sourceTurnKey }) => {
+  ).map(({ row, sourceSessionId, sourceAgentId, sourcePlatform, sourceTurnKey }) => {
     sourceSessionByMessage.set(row, sourceSessionId)
+    sourceAgentByMessage.set(row, sourceAgentId)
     sourcePlatformByMessage.set(row, sourcePlatform)
     if (sourceTurnKey) sourceTurnByMessage.set(row, sourceTurnKey)
     return row
@@ -396,6 +398,53 @@ function plainStep(text: string, time?: string, image?: SessionImage, platform?:
     ...(image ? { image } : {}),
     ...(platform ? { platform } : {})
   }
+}
+
+// A daemon background-task wake (`background-task:<taskId>` author, see the
+// daemon's deferred-wake dispatch) is agent machinery, not a message from any
+// person — it must never render as a right-side human bubble.
+function isBgTaskWake(sender: string | undefined | null): boolean {
+  return !!sender?.startsWith('background-task:')
+}
+
+// A THINK-lane work row built from bare text — how a background-task wake
+// renders inside the owner agent's turn (same styling as msgStep's reasoning).
+function thinkStep(text: string, time?: string, platform?: string): FmtStep {
+  return {
+    lane: 'THINK',
+    laneColor: 'var(--brand)',
+    dot: 'var(--brand)',
+    weight: 500,
+    textColor: 'var(--text-tertiary)',
+    codeColor: 'var(--text-secondary)',
+    text,
+    code: '',
+    files: [],
+    ...(time ? { time } : {}),
+    ...(platform ? { platform } : {})
+  }
+}
+
+// Hover-revealed copy-to-clipboard for a FINISHED chat bubble (the call sites
+// skip it while the turn streams). Visibility rides the turn container's
+// `group/turn` hover, so the affordance stays out of the transcript until
+// pointed at; keyboard focus reveals it too.
+function CopyTurnButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text)?.catch?.(() => {})
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1600)
+      }}
+      title={copied ? 'Copied' : 'Copy message'}
+      className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 max-desktop:opacity-100"
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={12} />
+    </button>
+  )
 }
 
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
@@ -808,7 +857,9 @@ type Turn =
       /** The platform this message was authored on — see `FmtStep.platform`. */
       platform?: string
     }
-  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[] }
+  // `wake` marks a block opened by a background-task wake that no reply has
+  // merged into yet — the run that follows binds to it, then clears the flag.
+  | { kind: 'bot'; agentName: string; agentId?: string; model: string; time: string; steps: FmtStep[]; wake?: boolean }
 
 type SessionParticipant = {
   id: string
@@ -1263,6 +1314,9 @@ export default function SessionDetailView() {
   // under. Out-of-band like the two above so the row objects keep their
   // identity, and per row because sources interleave by event time.
   const conversationSourcePlatformByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
+  // Owning member agent of a merged-conversation row — a background-task wake
+  // from a peer member must render as THAT agent's work, not the representative's.
+  const conversationSourceAgentByMessageRef = useRef(new WeakMap<SessionMessageDto, string>())
   const [conversationHasEarlier, setConversationHasEarlier] = useState(false)
   const [conversationPagingEarlier, setConversationPagingEarlier] = useState(false)
   // Which conversation key the CURRENT fan-out state belongs to — the focus
@@ -1305,9 +1359,8 @@ export default function SessionDetailView() {
   const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
-  // by turn index). A finished panel starts collapsed; the streaming turn's defaults
-  // open — see workPanelOpen(). The toggle records the opposite of the EFFECTIVE
-  // on-screen state, so closing an auto-opened streaming panel works.
+  // by turn index). Every panel starts collapsed — streaming included — see
+  // workPanelOpen(). The toggle records the opposite of the EFFECTIVE on-screen state.
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
   const toggleWork = (ti: number, currentOpen: boolean) =>
     setWorkOverride((prev) => toggleWorkPanel(prev, ti, currentOpen))
@@ -1899,7 +1952,8 @@ export default function SessionDetailView() {
             rowsBySession,
             conversationSourceSessionByMessageRef.current,
             conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current
+            conversationSourcePlatformByMessageRef.current,
+            conversationSourceAgentByMessageRef.current
           )
         )
         setMsgLoading(false)
@@ -2016,7 +2070,8 @@ export default function SessionDetailView() {
             state.rows,
             conversationSourceSessionByMessageRef.current,
             conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current
+            conversationSourcePlatformByMessageRef.current,
+            conversationSourceAgentByMessageRef.current
           )
         )
         if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
@@ -2096,7 +2151,8 @@ export default function SessionDetailView() {
           state.rows,
           conversationSourceSessionByMessageRef.current,
           conversationSourceTurnByMessageRef.current,
-          conversationSourcePlatformByMessageRef.current
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
       )
       setConversationHasEarlier([...state.older.values()].some((cursor) => cursor !== null))
@@ -2524,6 +2580,7 @@ export default function SessionDetailView() {
     const name = agentLabel(agent)
     rememberAgentParticipant(agent.id, name, agent)
     let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+    last = bindWakeBlock(last, { agentId: agent.id, agentName: name }, turnKey)
     if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: agent.id, agentName: name })) {
       // `model` is the icon-runtime fallback for turns whose agent is missing from
       // `agentById`; a peer turn's agent came FROM that map, so it stays empty.
@@ -2532,7 +2589,56 @@ export default function SessionDetailView() {
       if (turnKey) botTurnByKey.set(turnKey, last)
     }
     last.steps.push(step)
+    if (last.wake) last.wake = false
     if (!last.time && step.time) last.time = step.time
+  }
+  // A background-task wake lands in its owner agent's lane as a collapsed work
+  // row. The wake is the INPUT that starts a fresh model run, so it opens a new
+  // `wake`-flagged block instead of extending the previous finished reply; only
+  // consecutive still-unanswered wakes for the same owner share one. The run
+  // that follows binds to the block and clears the flag (see bindWakeBlock).
+  // `ownerAgentId` is the merged-conversation source member — a wake from a
+  // peer member is THAT agent's work, not the representative's; plain sessions
+  // fall back to the session owner.
+  const pushOwnerWakeTurn = (step: FmtStep, turnKey?: string, ownerAgentId?: string): void => {
+    const agentId = ownerAgentId ?? session.agentId
+    const agent = agentId ? agentById.get(agentId) : undefined
+    const name = agent ? agentLabel(agent) : agentId === session.agentId ? (session.agentName ?? '') : (agentId ?? '')
+    const prev = turns[turns.length - 1]
+    let last = turnKey ? botTurnByKey.get(turnKey) : undefined
+    if (!last && prev?.kind === 'bot' && prev.wake && sameBotSpeaker(prev, { agentId, agentName: name })) last = prev
+    if (!last || last.kind !== 'bot') {
+      last = {
+        kind: 'bot',
+        wake: true,
+        agentName: name,
+        ...(agentId ? { agentId } : {}),
+        model: agentId === session.agentId ? (session.model ?? '') : '',
+        time: '',
+        steps: []
+      }
+      turns.push(last)
+      if (turnKey) botTurnByKey.set(turnKey, last)
+    }
+    last.steps.push(step)
+    if (!last.time && step.time) last.time = step.time
+  }
+  // The run that follows a wake block answers it. When a keyed lookup found no
+  // block of its own (the wake row itself never carries a source turn key),
+  // bind the run to the trailing unanswered wake block and register the run's
+  // key on it so the rest of the run lands there too.
+  const bindWakeBlock = (
+    found: Turn | undefined,
+    speaker: { agentId?: string; agentName: string },
+    turnKey?: string
+  ): Turn | undefined => {
+    if (found) return found
+    const prev = turns[turns.length - 1]
+    if (prev?.kind === 'bot' && prev.wake && sameBotSpeaker(prev, speaker)) {
+      if (turnKey) botTurnByKey.set(turnKey, prev)
+      return prev
+    }
+    return undefined
   }
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
@@ -2544,8 +2650,9 @@ export default function SessionDetailView() {
       // it came from; a single-session page has one platform for all of them.
       const rowPlatform = conversationSourcePlatformByMessageRef.current.get(m) ?? session.platform
       if (m.sender === session.agentId) {
-        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
         const ownerName = session.agentName ?? ''
+        let last = sourceTurnKey ? botTurnByKey.get(sourceTurnKey) : turns[turns.length - 1]
+        last = bindWakeBlock(last, { agentId: m.sender, agentName: ownerName }, sourceTurnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: m.sender, agentName: ownerName })) {
           last = {
             kind: 'bot',
@@ -2560,8 +2667,19 @@ export default function SessionDetailView() {
         }
         const step = msgStep(m, toolSessionId, rowPlatform)
         last.steps.push(step)
+        if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       } else {
+        // Daemon background-task wakes belong to the owning agent, not to a person —
+        // in a merged conversation that is the SOURCE member's agent.
+        if (isBgTaskWake(m.sender)) {
+          pushOwnerWakeTurn(
+            thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform),
+            sourceTurnKey,
+            conversationSourceAgentByMessageRef.current.get(m)
+          )
+          continue
+        }
         // Count participants by stable sender id — two people can share a display name.
         const cron = asCron(m.sender)
         const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
@@ -2606,6 +2724,14 @@ export default function SessionDetailView() {
     session.steps.forEach((stp) => {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
+        if (isBgTaskWake(stp.who)) {
+          pushOwnerWakeTurn(
+            thinkStep(stp.text, stp.time, session.platform),
+            liveBotTurnKey(stp.turnId, session.agentId)
+          )
+          firstMsg = false
+          return
+        }
         const cron = asCron(who)
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
@@ -2650,6 +2776,7 @@ export default function SessionDetailView() {
         }
         const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+        last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2667,6 +2794,7 @@ export default function SessionDetailView() {
         }
         const step = fmtStep(stp, session.platform)
         last.steps.push(step)
+        if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       }
     })
@@ -2678,6 +2806,13 @@ export default function SessionDetailView() {
     for (const stp of liveSteps) {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
+        if (isBgTaskWake(stp.who)) {
+          pushOwnerWakeTurn(
+            thinkStep(stp.text, stp.time, session.platform),
+            liveBotTurnKey(stp.turnId, session.agentId)
+          )
+          continue
+        }
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
@@ -2712,6 +2847,7 @@ export default function SessionDetailView() {
         }
         const turnKey = liveBotTurnKey(stp.turnId, stp.agentId)
         let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+        last = bindWakeBlock(last, { agentId: stp.agentId, agentName: stepAgentName }, turnKey)
         if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: stp.agentId, agentName: stepAgentName })) {
           last = {
             kind: 'bot',
@@ -2729,10 +2865,20 @@ export default function SessionDetailView() {
         }
         const step = fmtStep(stp, session.platform)
         last.steps.push(step)
+        if (last.wake) last.wake = false
         if (!last.time && step.time) last.time = step.time
       }
     }
   }
+
+  // The last rendered turn of each tagged agent. A busy reply lane marks ONLY
+  // that turn as streaming — every earlier turn from the same agent shares its
+  // `agentId`, so matching on the lane alone would flip the agent's whole
+  // history to "streaming" while it generates a new turn.
+  const lastBotTurnIndexByAgent = new Map<string, number>()
+  turns.forEach((t, i) => {
+    if (t.kind === 'bot' && t.agentId) lastBotTurnIndexByAgent.set(t.agentId, i)
+  })
 
   // Transcript visibility is presentation-only: keep the complete turn list for
   // usage/duration accounting, and derive a filtered tree for rendering. Live PLAN
@@ -3379,8 +3525,8 @@ export default function SessionDetailView() {
                   {turn.kind === 'user' ? (
                     // 2b: user turns are right-aligned brand-soft bubbles. A sender label
                     // sits above the bubble only when it isn't you (platform user / cron).
-                    <div key={`${session.id}:${ti}`} className="flex items-start justify-end gap-[9px]">
-                      <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                    <div key={`${session.id}:${ti}`} className="group/turn flex items-start justify-end gap-[9px]">
+                      <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
                         {showsSenderLabel(turn) && (
                           <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
                             {turn.isCron && turn.cronId ? (
@@ -3402,6 +3548,15 @@ export default function SessionDetailView() {
                           )}
                           {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
                         </div>
+                        {/* Sent bubbles are complete by definition — the copy affordance
+                        (hover-revealed, right-aligned under the bubble) always mounts.
+                        Absolutely positioned into the inter-turn gap so revealing it
+                        never changes the row's height. */}
+                        {turn.text && (
+                          <span className="absolute right-0 top-full">
+                            <CopyTurnButton text={turn.text} />
+                          </span>
+                        )}
                       </div>
                       <ParticipantAvatar
                         agent={turn.agent}
@@ -3428,19 +3583,66 @@ export default function SessionDetailView() {
                       // EDIT rows, since one EDIT row can touch several files).
                       const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                       const summary = workSummary(thinkCount, toolCount, editCount)
-                      // The trailing turn of a running session is the one streaming: its
-                      // work panel defaults open so skill/command/tool calls are visible
-                      // AS THEY RUN, and collapses on its own once the turn completes.
-                      // statusLabel carries the RAW session state — the active-turn
-                      // predicate lives (and is tested) in session-work.ts.
-                      const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
-                      const openWork = workPanelOpen(workOverride.get(ti), streaming)
+                      // Is this turn still streaming? A multi-agent live webchat runs
+                      // several reply lanes at once, so a TAGGED turn asks its own lane
+                      // (an earlier still-active participant must not show the copy
+                      // affordance or lose its live line just because a later turn renders
+                      // below it). Lane-less/single-agent streams keep the trailing-turn
+                      // fallback. statusLabel carries the RAW session state — the
+                      // active-turn predicate lives (and is tested) in session-work.ts.
+                      const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                      const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                      // The lane only says WHICH AGENT is busy — restrict the match to that
+                      // agent's LAST turn so its finished history stays non-streaming.
+                      const streaming =
+                        turnInFlight &&
+                        (turn.agentId && busyLanes.length > 0
+                          ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
+                          : ti === turns.length - 1)
+                      const openWork = workPanelOpen(workOverride.get(ti))
+                      // Is the WORK itself still running? `streaming` alone is turn-level —
+                      // it stays true while the spoken answer streams AFTER the last tool
+                      // finished, which must not keep the live line alive. ACP tool calls
+                      // can also run in PARALLEL, each update replacing its original row
+                      // in place (keyed by toolCallId) — so "the newest row is finished"
+                      // does not mean the work is: any non-terminal tool row keeps the
+                      // work running, and the LATEST such row is what the toggle line
+                      // reports. With no active tool, a trailing unfinished work step
+                      // still counts (THINK rows carry no status and run until
+                      // superseded); a trailing text step means the agent moved on to its
+                      // answer.
+                      const stepDone = (st?: FmtStep) =>
+                        ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
+                      const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
+                      const lastStep = turn.steps[turn.steps.length - 1]
+                      const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
+                      const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
+                      const workRunning = streaming && liveStep !== undefined
+                      // While work runs, the toggle line also carries what is running RIGHT
+                      // NOW — the live step's first line (tool rows keep the command in
+                      // `code`) — so a collapsed panel still shows live progress.
+                      const liveLine =
+                        workRunning && liveStep
+                          ? (liveStep.text || liveStep.code)?.split('\n', 1)[0]?.trim()
+                          : undefined
+                      // Step identity for the fade-in key: two consecutive steps can show
+                      // the SAME first line, and a keyed-by-text span would keep its DOM
+                      // node and never replay the animation.
+                      const liveKey =
+                        liveStep && liveLine
+                          ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
+                          : undefined
                       // Keyed by agent id where there is one so the colour survives a
                       // rename; a mock/playground row without an id falls back to the
                       // display name, which is stable for as long as the row is.
                       const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                      // What the bubble-level copy button copies: the spoken answer.
+                      const answerText = textSteps
+                        .map((st) => st.text)
+                        .filter(Boolean)
+                        .join('\n\n')
                       return (
-                        <div key={`${session.id}:${ti}`} className="flex items-start gap-[10px]">
+                        <div key={`${session.id}:${ti}`} className="group/turn flex items-start gap-[10px]">
                           <span className="av h-[26px] w-[26px] flex-none rounded-md">
                             <AgentIconView
                               icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
@@ -3479,35 +3681,43 @@ export default function SessionDetailView() {
                             ))}
                             {workSteps.length > 0 && (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleWork(ti, openWork)}
-                                  className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                  title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                                >
-                                  <Icon
-                                    name={openWork ? 'chevron-down' : 'chevron-right'}
-                                    size={13}
-                                    color="var(--text-tertiary)"
-                                  />
-                                  {summary || 'Details'}
-                                </button>
+                                {/* One row: the work toggle, with the bubble's copy button at
+                                the line's end — mounted only once the turn has finished. */}
+                                <div className="mt-2 flex min-w-0 items-center gap-[6px]">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleWork(ti, openWork)}
+                                    className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                                    title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                                  >
+                                    <Icon
+                                      name={openWork ? 'chevron-down' : 'chevron-right'}
+                                      size={13}
+                                      color="var(--text-tertiary)"
+                                    />
+                                    <span className="flex-none">{summary || 'Details'}</span>
+                                    {liveLine && (
+                                      // Keyed by step identity + content: a new step (or a new
+                                      // first line within one) remounts the span, replaying the
+                                      // ac-rise fade-in (honors reduced-motion in globals.css).
+                                      <span key={liveKey} className="ac-rise min-w-0 truncate">
+                                        · {liveLine}
+                                      </span>
+                                    )}
+                                  </button>
+                                  {!streaming && answerText && <CopyTurnButton text={answerText} />}
+                                </div>
                                 {openWork && (
                                   <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                    {/* While the turn is still streaming, the panel is a
-                                    progress ticker: only the LATEST work step shows (the
-                                    list would grow unboundedly mid-run). The full list
-                                    appears once the turn completes. */}
-                                    {(streaming ? workSteps.slice(-1) : workSteps).map((st, si) => (
+                                    {/* All work steps show, streaming or not — a live turn's
+                                    panel grows as steps arrive so the whole run is visible. */}
+                                    {workSteps.map((st, si) => (
                                       <div
-                                        // Keyed by tool identity where there is one, so the
-                                        // key survives the streaming→completed transition
-                                        // (the ticker's slice(-1) renders index 0, the full
-                                        // list the original index — an index-bearing key
-                                        // would remount ToolBodyDetail at turn end and slam
-                                        // an expanded panel shut). Steps without a tool id
-                                        // (THINK rows) fall back to the index; within one
-                                        // agent's turn a toolCallId appears once.
+                                        // Keyed by tool identity where there is one, so an
+                                        // expanded ToolBodyDetail survives re-renders as new
+                                        // steps stream in. Steps without a tool id (THINK
+                                        // rows) fall back to the index; within one agent's
+                                        // turn a toolCallId appears once.
                                         key={st.msg?.toolCallId ?? `i:${si}`}
                                         className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
                                           si > 0 ? 'border-t border-(--border-subtle)' : ''
@@ -3543,6 +3753,13 @@ export default function SessionDetailView() {
                                   </div>
                                 )}
                               </>
+                            )}
+                            {/* A turn with no work has no toggle row — the finished
+                            bubble's copy button gets its own line instead. */}
+                            {workSteps.length === 0 && !streaming && answerText && (
+                              <div className="mt-2 flex">
+                                <CopyTurnButton text={answerText} />
+                              </div>
                             )}
                           </div>
                         </div>

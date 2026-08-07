@@ -38,21 +38,16 @@ export function sessionTurnInFlight(busy: boolean, rawState: string | undefined)
   return busy || rawState === 'prompting' || rawState === 'cancelling'
 }
 
-/** Is a turn's work panel open? A finished turn starts collapsed — so the transcript
- *  never expands a panel the reader didn't ask for — but the turn STILL STREAMING
- *  defaults open: its work (skill/command/tool calls) is exactly what the user is
- *  waiting on, and a collapsed one-line counter reads as "nothing is happening".
- *  It collapses on its own when the turn completes (`streaming` flips false).
- *  `override` is the visibility the user last chose for it and wins either way. */
-export function workPanelOpen(override: boolean | undefined, streaming = false): boolean {
-  return override ?? streaming
+/** Is a turn's work panel open? Every turn starts collapsed — streaming included —
+ *  so the transcript never expands a panel the reader didn't ask for; a live turn's
+ *  collapsed toggle line still shows progress (the summary plus the step running
+ *  right now). `override` is the visibility the user last chose for it. */
+export function workPanelOpen(override: boolean | undefined): boolean {
+  return override ?? false
 }
 
-/** Record the user's toggle of turn `ti`, as the state opposite to what they see now.
- *  `currentOpen` is the EFFECTIVE state on screen — a streaming turn shows open by
- *  default, so the first click must record "closed", not the inverse of the base.
- *  Required (no default): a fallback computed here couldn't know the streaming
- *  state and would silently invert the wrong value. */
+/** Record the user's toggle of turn `ti`, as the state opposite to what they see
+ *  now. `currentOpen` is the EFFECTIVE state on screen. */
 export function toggleWorkPanel(
   prev: ReadonlyMap<number, boolean>,
   ti: number,
