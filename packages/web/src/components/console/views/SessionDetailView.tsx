@@ -398,6 +398,31 @@ function plainStep(text: string, time?: string, image?: SessionImage, platform?:
   }
 }
 
+// A daemon background-task wake (`background-task:<taskId>` author, see the
+// daemon's deferred-wake dispatch) is agent machinery, not a message from any
+// person — it must never render as a right-side human bubble.
+function isBgTaskWake(sender: string | undefined | null): boolean {
+  return !!sender?.startsWith('background-task:')
+}
+
+// A THINK-lane work row built from bare text — how a background-task wake
+// renders inside the owner agent's turn (same styling as msgStep's reasoning).
+function thinkStep(text: string, time?: string, platform?: string): FmtStep {
+  return {
+    lane: 'THINK',
+    laneColor: 'var(--brand)',
+    dot: 'var(--brand)',
+    weight: 500,
+    textColor: 'var(--text-tertiary)',
+    codeColor: 'var(--text-secondary)',
+    text,
+    code: '',
+    files: [],
+    ...(time ? { time } : {}),
+    ...(platform ? { platform } : {})
+  }
+}
+
 // Hover-revealed copy-to-clipboard for a FINISHED chat bubble (the call sites
 // skip it while the turn streams). Visibility rides the turn container's
 // `group/turn` hover, so the affordance stays out of the transcript until
@@ -413,7 +438,7 @@ function CopyTurnButton({ text }: { text: string }) {
         setTimeout(() => setCopied(false), 1600)
       }}
       title={copied ? 'Copied' : 'Copy message'}
-      className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100"
+      className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100 max-desktop:opacity-100"
     >
       <Icon name={copied ? 'check' : 'copy'} size={12} />
     </button>
@@ -2555,6 +2580,28 @@ export default function SessionDetailView() {
     last.steps.push(step)
     if (!last.time && step.time) last.time = step.time
   }
+  // A background-task wake lands in the OWNER agent's lane as a collapsed work
+  // row. The block is keyed to the owner's identity, so the agent's response
+  // rows that follow merge into the same turn (the wake reads as the first
+  // "thought" of the turn it triggered).
+  const pushOwnerWakeTurn = (step: FmtStep, turnKey?: string): void => {
+    const name = session.agentName ?? ''
+    let last = turnKey ? botTurnByKey.get(turnKey) : turns[turns.length - 1]
+    if (!last || last.kind !== 'bot' || !sameBotSpeaker(last, { agentId: session.agentId, agentName: name })) {
+      last = {
+        kind: 'bot',
+        agentName: name,
+        ...(session.agentId ? { agentId: session.agentId } : {}),
+        model: session.model ?? '',
+        time: '',
+        steps: []
+      }
+      turns.push(last)
+      if (turnKey) botTurnByKey.set(turnKey, last)
+    }
+    last.steps.push(step)
+    if (!last.time && step.time) last.time = step.time
+  }
   if (wantTranscript) {
     // Real transcript: agent output carries `sender === agentId`; everything else
     // is a human/cron author. Group consecutive agent messages into one turn.
@@ -2583,6 +2630,11 @@ export default function SessionDetailView() {
         last.steps.push(step)
         if (!last.time && step.time) last.time = step.time
       } else {
+        // Daemon background-task wakes belong to the owner agent, not to a person.
+        if (isBgTaskWake(m.sender)) {
+          pushOwnerWakeTurn(thinkStep(m.text, formatTranscriptRowTime(m), rowPlatform), sourceTurnKey)
+          continue
+        }
         // Count participants by stable sender id — two people can share a display name.
         const cron = asCron(m.sender)
         const senderAgent = participantAgent(m.sender, m.text, m.trustedAgentBot)
@@ -2627,6 +2679,14 @@ export default function SessionDetailView() {
     session.steps.forEach((stp) => {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
+        if (isBgTaskWake(stp.who)) {
+          pushOwnerWakeTurn(
+            thinkStep(stp.text, stp.time, session.platform),
+            liveBotTurnKey(stp.turnId, session.agentId)
+          )
+          firstMsg = false
+          return
+        }
         const cron = asCron(who)
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
@@ -2699,6 +2759,13 @@ export default function SessionDetailView() {
     for (const stp of liveSteps) {
       if (stp.kind === 'msg') {
         const who = stp.who ?? session.user
+        if (isBgTaskWake(stp.who)) {
+          pushOwnerWakeTurn(
+            thinkStep(stp.text, stp.time, session.platform),
+            liveBotTurnKey(stp.turnId, session.agentId)
+          )
+          continue
+        }
         const senderAgent = participantAgent(who, stp.text)
         const senderAgentName = senderAgent ? agentLabel(senderAgent) : undefined
         const self = isSelf(who)
@@ -3458,28 +3525,53 @@ export default function SessionDetailView() {
                       // EDIT rows, since one EDIT row can touch several files).
                       const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                       const summary = workSummary(thinkCount, toolCount, editCount)
-                      // The trailing turn of a running session is the one streaming.
-                      // statusLabel carries the RAW session state — the active-turn
-                      // predicate lives (and is tested) in session-work.ts.
-                      const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
+                      // Is this turn still streaming? A multi-agent live webchat runs
+                      // several reply lanes at once, so a TAGGED turn asks its own lane
+                      // (an earlier still-active participant must not show the copy
+                      // affordance or lose its live line just because a later turn renders
+                      // below it). Lane-less/single-agent streams keep the trailing-turn
+                      // fallback. statusLabel carries the RAW session state — the
+                      // active-turn predicate lives (and is tested) in session-work.ts.
+                      const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                      const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                      const streaming =
+                        turnInFlight &&
+                        (turn.agentId && busyLanes.length > 0
+                          ? busyLanes.includes(turn.agentId)
+                          : ti === turns.length - 1)
                       const openWork = workPanelOpen(workOverride.get(ti))
                       // Is the WORK itself still running? `streaming` alone is turn-level —
                       // it stays true while the spoken answer streams AFTER the last tool
-                      // finished, which must not keep the ticker alive. Work counts as
-                      // running only while the turn's LATEST step is a work step that
-                      // hasn't finished: a trailing text step means the agent moved on to
-                      // its answer, and a trailing tool step that reports completed/failed
-                      // is done. THINK rows carry no status and count as running until
-                      // superseded.
+                      // finished, which must not keep the live line alive. ACP tool calls
+                      // can also run in PARALLEL, each update replacing its original row
+                      // in place (keyed by toolCallId) — so "the newest row is finished"
+                      // does not mean the work is: any non-terminal tool row keeps the
+                      // work running, and the LATEST such row is what the toggle line
+                      // reports. With no active tool, a trailing unfinished work step
+                      // still counts (THINK rows carry no status and run until
+                      // superseded); a trailing text step means the agent moved on to its
+                      // answer.
+                      const stepDone = (st?: FmtStep) =>
+                        ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
+                      const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
                       const lastStep = turn.steps[turn.steps.length - 1]
-                      const lastDone = ['completed', 'failed'].includes((lastStep?.msg?.toolStatus ?? '').toLowerCase())
-                      const workRunning = streaming && !!lastStep && WORK_LANES.has(lastStep.lane) && !lastDone
+                      const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
+                      const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
+                      const workRunning = streaming && liveStep !== undefined
                       // While work runs, the toggle line also carries what is running RIGHT
-                      // NOW — the latest step's first line (tool rows keep the command in
+                      // NOW — the live step's first line (tool rows keep the command in
                       // `code`) — so a collapsed panel still shows live progress.
-                      const liveLine = workRunning
-                        ? (lastStep.text || lastStep.code)?.split('\n', 1)[0]?.trim()
-                        : undefined
+                      const liveLine =
+                        workRunning && liveStep
+                          ? (liveStep.text || liveStep.code)?.split('\n', 1)[0]?.trim()
+                          : undefined
+                      // Step identity for the fade-in key: two consecutive steps can show
+                      // the SAME first line, and a keyed-by-text span would keep its DOM
+                      // node and never replay the animation.
+                      const liveKey =
+                        liveStep && liveLine
+                          ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
+                          : undefined
                       // Keyed by agent id where there is one so the colour survives a
                       // rename; a mock/playground row without an id falls back to the
                       // display name, which is stable for as long as the row is.
@@ -3545,9 +3637,10 @@ export default function SessionDetailView() {
                                     />
                                     <span className="flex-none">{summary || 'Details'}</span>
                                     {liveLine && (
-                                      // Keyed by content: a new step remounts the span, replaying
-                                      // the ac-rise fade-in (honors reduced-motion in globals.css).
-                                      <span key={liveLine} className="ac-rise min-w-0 truncate">
+                                      // Keyed by step identity + content: a new step (or a new
+                                      // first line within one) remounts the span, replaying the
+                                      // ac-rise fade-in (honors reduced-motion in globals.css).
+                                      <span key={liveKey} className="ac-rise min-w-0 truncate">
                                         · {liveLine}
                                       </span>
                                     )}
