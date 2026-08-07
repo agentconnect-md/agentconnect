@@ -154,7 +154,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       botUserId: 'UHTTPBOT',
       teamId: 'T1',
       teamName: 'Acme',
-      scopes: []
+      scopes: [...SLACK_BOT_SCOPES]
     })
 
     const res = await app.app.inject({
@@ -577,7 +577,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       botUserId: 'UCLAIMED',
       teamId: 'TCLAIMED',
       teamName: 'Acme',
-      scopes: []
+      scopes: [...SLACK_BOT_SCOPES]
     })
     // Another org already runs this app in this workspace: same signing secret,
     // same tenant — the relay's delivery fence cannot tell the two rows apart.
@@ -623,7 +623,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       botUserId: 'UMINE',
       teamId: 'TSHARED',
       teamName: 'Acme',
-      scopes: []
+      scopes: [...SLACK_BOT_SCOPES]
     })
     // Same workspace, DIFFERENT app ⇒ different signing secret ⇒ nothing is
     // ambiguous at delivery time, so admission must not over-refuse.
@@ -871,7 +871,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       appId: null,
       teamId: null,
       teamName: null,
-      scopes: []
+      scopes: [...SLACK_BOT_SCOPES]
     })
     app.platformStubs.verifySlackAppToken = async () => 'invalid'
 
@@ -894,7 +894,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       appId: 'AOTHER',
       teamId: null,
       teamName: null,
-      scopes: []
+      scopes: [...SLACK_BOT_SCOPES]
     })
     app.platformStubs.verifySlackAppToken = async () => 'ok'
 
@@ -913,6 +913,44 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(await prisma.bot.count()).toBe(0)
   })
 
+  // The manual Bot-token wizard is the third install path the #768 scope fences
+  // cover (after the config-token finalize and the platform OAuth callback): a
+  // workspace authorization that positively granted fewer bot scopes than the
+  // manifest declares used to install silently and only fail weeks later, as
+  // scoped calls answering `missing_scope`.
+  it('POST rejects a bot token whose workspace grant is short on scopes (400) and stores nothing', async () => {
+    const agentId = await placedAgent()
+    const { app, spy } = withSpy()
+    const withheld = ['channels:history', 'users:read']
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'acme-bot',
+      appId: 'A1TEST',
+      teamId: 'T_INSTALL',
+      teamName: 'Acme',
+      botUserId: 'U1',
+      scopes: SLACK_BOT_SCOPES.filter((scope) => !withheld.includes(scope))
+    })
+    app.platformStubs.verifySlackAppToken = async () => 'ok'
+
+    const res = await app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'slack', agentId, slack: SLACK }
+    })
+    expect(res.statusCode).toBe(400)
+    const body = res.json() as { code?: string; message: string }
+    // The list is the point: "reinstall the app" is only actionable when the
+    // refusal says WHICH permissions are absent.
+    expect(body.code).toBe('SLACK_MISSING_SCOPES')
+    expect(body.message).toContain('channels:history')
+    expect(body.message).toContain('users:read')
+    expect(await prisma.integration.count()).toBe(0)
+    expect(await prisma.bot.count()).toBe(0)
+    expect(await prisma.botSecret.count()).toBe(0)
+    expect(spy.upserts).toHaveLength(0)
+  })
+
   it('POST derives the bot name from auth.test when none is given', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy()
@@ -922,7 +960,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       appId: null,
       teamId: null,
       teamName: null,
-      scopes: []
+      scopes: [...SLACK_BOT_SCOPES]
     })
 
     const res = await app.app.inject({
