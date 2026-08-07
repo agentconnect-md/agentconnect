@@ -16,6 +16,8 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { MentionMenu } from '@/components/console/MentionMenu'
+import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
 import { Card, CardLink, EmptyRow, RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import {
   dashboardRowBudget,
@@ -161,6 +163,32 @@ export default function HomeView() {
   }
 
   const [input, setInput] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // @mention picker (webchat-multi-agents.md §9.1): typing "@Name" and picking
+  // it also stages that agent as a participant — the same effect as "+ add
+  // agents" — and typedMentionIds() resolves the inserted text back into a
+  // structural mention on send, so no extra state travels with the message.
+  const mentionCandidates = useMemo(
+    () =>
+      agents.map((a) => ({
+        id: a.id,
+        name: agentLabel(a),
+        icon: a.icon,
+        runtime: a.runtime,
+        inRoster: a.id === agent?.id || memberIds.includes(a.id)
+      })),
+    [agents, agent?.id, memberIds]
+  )
+  const mention = useMentionAutocomplete({
+    ref: textareaRef,
+    value: input,
+    setValue: setInput,
+    candidates: mentionCandidates,
+    onPick: (candidate) => {
+      if (candidate.inRoster) return
+      setMemberIds((cur) => (cur.includes(candidate.id) ? cur : [...cur, candidate.id]))
+    }
+  })
   // One prepared image staged for the first turn (mirrors the session composer:
   // prepareWebchatImage bounds it to the wire's 160 KiB WebP budget).
   const [image, setImage] = useState<SessionImage | undefined>(undefined)
@@ -285,6 +313,7 @@ export default function HomeView() {
     // a setPgImage(id) state write could not land before this same-tick send.
     pgSend(id, agent.id, text, undefined, undefined, image)
     setInput('')
+    mention.close()
     setImage(undefined)
     setImageError(null)
     router.push(orgPath(`/sessions/${id}`))
@@ -435,27 +464,41 @@ export default function HomeView() {
             </button>
           </div>
         )}
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onPaste={(event) => {
-            const file = clipboardImageFile(event.clipboardData)
-            if (!file) return
-            event.preventDefault()
-            void onImageFile(file)
-          }}
-          onKeyDown={(e) => {
-            // Enter sends, except during IME composition (candidate-confirming Enter)
-            // or with Shift (newline).
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              send()
-            }
-          }}
-          rows={5}
-          placeholder="Ask agentconnect to connect a workspace, deploy an agent, or check on a run"
-          className="block max-h-[280px] min-h-[140px] w-full resize-none border-0 bg-transparent px-[15px] pt-[14px] pb-1 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-        />
+        <div className="relative">
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value)
+              mention.sync(e.target.value, e.target.selectionStart ?? e.target.value.length)
+            }}
+            onPaste={(event) => {
+              const file = clipboardImageFile(event.clipboardData)
+              if (!file) return
+              event.preventDefault()
+              void onImageFile(file)
+            }}
+            onKeyDown={(e) => {
+              if (mention.handleKeyDown(e)) return
+              // Enter sends, except during IME composition (candidate-confirming Enter)
+              // or with Shift (newline).
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                send()
+              }
+            }}
+            rows={5}
+            placeholder="Ask agentconnect to connect a workspace, deploy an agent, or check on a run"
+            className="block max-h-[280px] min-h-[140px] w-full resize-none border-0 bg-transparent px-[15px] pt-[14px] pb-1 font-sans text-[14px] leading-normal text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+          />
+          <MentionMenu
+            options={mention.matches}
+            activeIndex={mention.activeIndex}
+            coords={mention.coords}
+            onHover={mention.setActiveIndex}
+            onPick={mention.pick}
+          />
+        </div>
         {/* items-start + a wrapping selector group so the controls reflow onto a second
             row at phone widths instead of overflowing (mobile .content clips overflow-x);
             the send button stays pinned top-right. */}

@@ -92,6 +92,23 @@ export function typedMentionIds(
   return roster.filter((p) => mentioned.has(p.agentId)).map((p) => p.agentId)
 }
 
+/** The @mention being typed at `caret`, if any (composer autocomplete —
+ *  webchat-multi-agents.md §9.1/§9.2). Mirrors typedMentionIds' left-edge rule:
+ *  an `@` glued to a preceding word addresses no one, so it never opens the
+ *  picker either. A space since the `@` ends the query — the picker narrows on
+ *  the first word only; a multi-word display name still lands in full because
+ *  picking inserts the whole name, not just what was typed.
+ */
+export function mentionQueryAt(text: string, caret: number): { start: number; query: string } | null {
+  const upto = text.slice(0, caret)
+  const at = upto.lastIndexOf('@')
+  if (at === -1) return null
+  const query = upto.slice(at + 1)
+  if (/\s/.test(query)) return null
+  if (at > 0 && NAME_CHAR_RE.test(upto[at - 1]!)) return null
+  return { start: at, query }
+}
+
 /** Where a `/sessions/:id` deep link goes when its session turns out to belong
  *  to a multi-participant conversation (merged-conversation-view.md §5.3).
  *

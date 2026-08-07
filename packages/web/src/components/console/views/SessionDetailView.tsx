@@ -83,6 +83,8 @@ import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
+import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
 import {
   WORK_LANES,
   sessionTurnInFlight,
@@ -205,36 +207,65 @@ function ComposerTextarea({
   sessionId,
   placeholder,
   onSend,
-  onImageFile
+  onImageFile,
+  mentionCandidates,
+  onPickMention
 }: {
   sessionId: string
   placeholder: string
   onSend: () => void
   onImageFile: (file: File) => void
+  mentionCandidates: MentionOption[]
+  onPickMention: (option: MentionOption) => void
 }) {
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // @mention picker (webchat-multi-agents.md §9.1/§9.2) — same contract as the
+  // Home composer's: picking a candidate inserts "@Name " and typedMentionIds()
+  // resolves that text back into a structural mention on send.
+  const mention = useMentionAutocomplete({
+    ref: textareaRef,
+    value: draft,
+    setValue: (v) => setPgInput(sessionId, v),
+    candidates: mentionCandidates,
+    onPick: onPickMention
+  })
   return (
-    <textarea
-      className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-      placeholder={placeholder}
-      value={draft}
-      onChange={(e) => setPgInput(sessionId, e.target.value)}
-      onPaste={(event) => {
-        const image = clipboardImageFile(event.clipboardData)
-        if (!image) return
-        event.preventDefault()
-        onImageFile(image)
-      }}
-      onKeyDown={(e) => {
-        // Enter sends — but NOT while an IME is composing (that Enter
-        // just confirms the candidate), and Shift+Enter is a newline.
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-          e.preventDefault()
-          onSend()
-        }
-      }}
-    />
+    <div className="relative">
+      <textarea
+        ref={textareaRef}
+        className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+        placeholder={placeholder}
+        value={draft}
+        onChange={(e) => {
+          setPgInput(sessionId, e.target.value)
+          mention.sync(e.target.value, e.target.selectionStart ?? e.target.value.length)
+        }}
+        onPaste={(event) => {
+          const image = clipboardImageFile(event.clipboardData)
+          if (!image) return
+          event.preventDefault()
+          onImageFile(image)
+        }}
+        onKeyDown={(e) => {
+          if (mention.handleKeyDown(e)) return
+          // Enter sends — but NOT while an IME is composing (that Enter
+          // just confirms the candidate), and Shift+Enter is a newline.
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault()
+            onSend()
+          }
+        }}
+      />
+      <MentionMenu
+        options={mention.matches}
+        activeIndex={mention.activeIndex}
+        coords={mention.coords}
+        onHover={mention.setActiveIndex}
+        onPick={mention.pick}
+      />
+    </div>
   )
 }
 
@@ -2524,6 +2555,28 @@ export default function SessionDetailView() {
           )
         }))
     : []
+  // Same candidate pool as addAgentOptions (isPg can invite; an adopted session
+  // can only narrow among the roster it already has), reshaped for the
+  // @mention picker — see ComposerTextarea's `mention` above.
+  const mentionCandidates: MentionOption[] = isPg
+    ? agents.map((a) => ({
+        id: a.id,
+        name: liveRoster.find((p) => p.agentId === a.id)?.name ?? agentLabel(a),
+        icon: a.icon,
+        runtime: a.runtime,
+        inRoster: liveRoster.some((p) => p.agentId === a.id)
+      }))
+    : multiLive
+      ? liveRoster.flatMap((p) => {
+          const a = agents.find((x) => x.id === p.agentId)
+          return a ? [{ id: a.id, name: p.name, icon: a.icon, runtime: a.runtime, inRoster: true }] : []
+        })
+      : []
+  const onPickMention = (option: MentionOption) => {
+    if (option.inRoster) return
+    const picked = agents.find((a) => a.id === option.id)
+    if (picked) void pgAddAgent(session.id, picked)
+  }
   const onCopyLink = () => {
     try {
       const canonicalId = session.realSessionId ?? session.id
@@ -3947,6 +4000,8 @@ export default function SessionDetailView() {
                     }
                     onSend={() => onPgSend()}
                     onImageFile={(file) => void onImageFile(file)}
+                    mentionCandidates={mentionCandidates}
+                    onPickMention={onPickMention}
                   />
                   <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                     <div className="relative flex-none">
