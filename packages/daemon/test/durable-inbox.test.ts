@@ -103,13 +103,10 @@ describe('LocalStore inbox', () => {
     expect(receipt.hookContext).toBeNull()
     expect(s.hasInbox('hook-1:delivery-1')).toBe(true)
     expect(s.appendInbox(row('hook-1:delivery-1', k, '999'))).toBe(false)
-    expect(s.markLegacyHookReportSent('hook-1:delivery-1', 'connection-1')).toBe(true)
-    expect(s.listInboxBySessionKeyFifo()[0]).toMatchObject({ legacyReportConnection: 'connection-1' })
     expect(s.acknowledgeHookInbox('hook-1:delivery-1')).toBe(true)
     expect(s.listInboxBySessionKeyFifo()[0]).toMatchObject({
       id: 'hook-1:delivery-1',
       terminalReport: null,
-      legacyReportConnection: null,
       completedAt: 123
     })
     expect(s.hasInbox('hook-1:delivery-1')).toBe(true)

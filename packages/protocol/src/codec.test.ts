@@ -230,9 +230,9 @@ describe('decodeEnvelope — additional codec/frame units', () => {
     if (!withRoster.ok || !isFrame('register/ok')(withRoster.frame)) throw new Error('expected register/ok')
     expect(withRoster.frame.payload.relays).toEqual([{ relayId, url: 'wss://relay-0.example' }])
 
-    const withFeature = decodeEnvelope(envelope('register/ok', { ...base, serverFeatures: ['hook-report-ack-v1'] }))
+    const withFeature = decodeEnvelope(envelope('register/ok', { ...base, serverFeatures: ['gitcred-actions-v1'] }))
     if (!withFeature.ok || !isFrame('register/ok')(withFeature.frame)) throw new Error('expected register/ok')
-    expect(withFeature.frame.payload.serverFeatures).toEqual(['hook-report-ack-v1'])
+    expect(withFeature.frame.payload.serverFeatures).toEqual(['gitcred-actions-v1'])
 
     const gitCommitIdentity = {
       name: 'agentconnect-example[bot]',

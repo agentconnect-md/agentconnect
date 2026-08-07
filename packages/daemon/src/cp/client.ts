@@ -210,7 +210,6 @@ export class CpClient {
   private readonly correlator: ReqRep<AnyFrame>
   private stopped = false
   private fatal = false // 4401 — never auto-retry
-  private hookReportAckV1 = false
   private serverFeatures = new Set<string>()
   private attempt = 0
   private reconnectTimer?: TimerHandle
@@ -396,7 +395,6 @@ export class CpClient {
       if (regOk.type !== 'register/ok') throw new Error(`expected register/ok, got ${regOk.type}`)
       const snap = regOk.payload as Parameters<ConfigApply['applyReconcileSnapshot']>[0]
       this.serverFeatures = new Set((regOk.payload as { serverFeatures?: string[] }).serverFeatures ?? [])
-      this.hookReportAckV1 = this.serverFeatures.has('hook-report-ack-v1')
       this.routingEpoch = snap.routingEpoch
       await this.deps.configApply.applyReconcileSnapshot(snap)
       if (this.stopped || this.transport !== expectedTransport || this.registerControlBarrier !== barrier) {
@@ -621,20 +619,12 @@ export class CpClient {
    * and projection convergence, so a long CP outage delays GC instead of losing
    * a terminal result.
    */
-  async emitHookReport(report: HookReport): Promise<'acknowledged' | 'legacy-sent'> {
+  async emitHookReport(report: HookReport): Promise<void> {
     this.requireReady('hook/report')
-    if (!this.hookReportAckV1) {
-      // Rolling compatibility with a pre-R2a CP: send its legacy EVT once per
-      // connection, retain the local outbox body, and retry only after a future
-      // reconnect may negotiate correlated ACK support.
-      this.transport!.send(encode(buildEnvelope('hook/report', report)))
-      return 'legacy-sent'
-    }
     const rep = await this.request('hook/report', report)
     if (rep.type !== 'ack' || rep.payload.ok !== true) {
       throw new WireError('INTERNAL', `expected hook/report ack, got ${rep.type}`, false)
     }
-    return 'acknowledged'
   }
 
   /** Durable start barrier for an accepted GitHub hook turn. Formal review is

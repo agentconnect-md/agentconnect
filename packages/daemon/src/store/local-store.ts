@@ -317,9 +317,6 @@ export interface InboxRow {
   /** A redacted, metadata-only HookReport retained as the durable dedup receipt
    * after the model turn finishes. Completed hook rows are never replayed. */
   terminalReport?: string | null
-  /** Connection generation on which a legacy (pre-ACK-capability) CP was sent
-   * this report. A new connection uses a fresh generation and may resend. */
-  legacyReportConnection?: string | null
   completedAt?: number | null
   isQueueCmd?: number | null
   /** 1 once this delivery no longer needs replay accounting (charged when applicable).
@@ -785,7 +782,6 @@ export class LocalStore {
         hookContext TEXT,
         posterPublishState TEXT,
         terminalReport TEXT,
-        legacyReportConnection TEXT,
         completedAt INTEGER,
         isQueueCmd INTEGER,
         loopGuardCounted INTEGER NOT NULL DEFAULT 0,
@@ -3011,10 +3007,10 @@ export class LocalStore {
       .prepare(
         `INSERT OR IGNORE INTO inbox
           (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, posterPublishState,
-            terminalReport, legacyReportConnection, completedAt, isQueueCmd, loopGuardCounted, enqueuedAt)
+            terminalReport, completedAt, isQueueCmd, loopGuardCounted, enqueuedAt)
          VALUES
            (@id, @sessionKey, @agentId, @msg, @integrationId, @callMeta, @hookContext, @posterPublishState,
-            @terminalReport, @legacyReportConnection, @completedAt, @isQueueCmd, @loopGuardCounted, @enqueuedAt)`
+            @terminalReport, @completedAt, @isQueueCmd, @loopGuardCounted, @enqueuedAt)`
       )
       .run({
         id: row.id,
@@ -3026,7 +3022,6 @@ export class LocalStore {
         hookContext: row.hookContext ?? null,
         posterPublishState: row.posterPublishState ?? null,
         terminalReport: row.terminalReport ?? null,
-        legacyReportConnection: row.legacyReportConnection ?? null,
         completedAt: row.completedAt ?? null,
         isQueueCmd: row.isQueueCmd ?? null,
         loopGuardCounted: row.loopGuardCounted ?? 0,
@@ -3076,7 +3071,7 @@ export class LocalStore {
         `UPDATE inbox
          SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
              posterPublishState = 'settled', terminalReport = @terminalReport,
-             legacyReportConnection = NULL, completedAt = @completedAt, isQueueCmd = NULL
+             completedAt = @completedAt, isQueueCmd = NULL
          WHERE id = @id AND hookContext IS NOT NULL AND completedAt IS NULL`
       )
       .run({ id, terminalReport, completedAt })
@@ -3087,20 +3082,6 @@ export class LocalStore {
     return row?.completedAt !== null && row?.completedAt !== undefined ? 'already-terminal' : 'missing'
   }
 
-  /** Remember a best-effort legacy EVT on this exact CP connection so an
-   * outbox pump can move past it without repeatedly re-sending. The report body
-   * remains retained until a future ACK-capable connection durably converges it. */
-  markLegacyHookReportSent(id: string, connectionId: string): boolean {
-    const result = this.db
-      .prepare(
-        `UPDATE inbox
-         SET legacyReportConnection = @connectionId
-         WHERE id = @id AND terminalReport IS NOT NULL`
-      )
-      .run({ id, connectionId })
-    return result.changes === 1
-  }
-
   /** A CP-correlated ACK releases only the report payload. Keep a bounded
    * metadata-only stable-id receipt so relay redelivery still cannot rerun the
    * model; unacknowledged reports are never capacity-evicted. */
@@ -3108,7 +3089,7 @@ export class LocalStore {
     const result = this.db
       .prepare(
         `UPDATE inbox
-         SET terminalReport = NULL, legacyReportConnection = NULL
+         SET terminalReport = NULL
          WHERE id = @id AND completedAt IS NOT NULL AND terminalReport IS NOT NULL`
       )
       .run({ id })
