@@ -532,7 +532,7 @@ export default function UsageView() {
         )}
 
         {!data && err && (
-          <div className="px-4 py-7 text-[13px] text-(--text-tertiary) desktop:px-[18px] desktop:text-(--danger-text,var(--text-tertiary))">
+          <div className="px-4 py-7 text-[13px] text-(--status-error) desktop:px-[18px]">
             Couldn’t load usage: {err}
           </div>
         )}
