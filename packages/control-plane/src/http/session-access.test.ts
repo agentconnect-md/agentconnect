@@ -29,6 +29,11 @@ function request(): FastifyRequest {
   } as unknown as FastifyRequest
 }
 
+/** The durable row a provider always has once ingest has seen a candidate. */
+function enabledPolicy(provider: string) {
+  return { orgId: 'org-1', provider, state: 'enabled', currentRev: 1n, readFenceRev: null, migrationCursor: null }
+}
+
 describe('makeSessionAccessResolver', () => {
   it('matches a custom-Bot p2p owner by union_id without an external access check', async () => {
     const getExternalScopes = vi.fn(async () => [scope])
@@ -94,7 +99,10 @@ describe('makeSessionAccessResolver', () => {
       repos: {
         session: {
           getExternalScopes,
-          getExternalAccessPolicy: vi.fn(async () => null)
+          // Ingest upserts the policy row before it ever records a candidate,
+          // so a provider with scopes to resolve always has one. Resolving is
+          // gated on it being on.
+          getExternalAccessPolicy: vi.fn(async () => enabledPolicy('feishu'))
         }
       },
       clock: { now: () => 1_000 },
@@ -144,6 +152,11 @@ describe('makeSessionAccessResolver snapshot', () => {
   function harness(scopes: readonly ExternalScopeRecord[] = [scope]) {
     const clock = new FakeClock(EPOCH)
     let sweeps = 0
+    let policy = enabledPolicy('feishu')
+    /** Mirrors the write path: every toggle bumps the revision. */
+    const setSync = (state: 'enabled' | 'disabled') => {
+      policy = { ...policy, state, currentRev: policy.currentRev + 1n }
+    }
     const resolve = vi.fn(async (given: readonly ExternalScopeRecord[]) => ({
       allowedScopes: given.map(({ id, aclRevision }) => ({ id, aclRevision })),
       // Marks WHICH sweep an answer came from, so a test can tell a served
@@ -156,14 +169,73 @@ describe('makeSessionAccessResolver snapshot', () => {
         session: {
           listExternalScopes: vi.fn(async () => scopes),
           getExternalScopes: vi.fn(async (ids: readonly string[]) => scopes.filter((row) => ids.includes(row.id))),
-          getExternalAccessPolicy: vi.fn(async () => null)
+          getExternalAccessPolicy: vi.fn(async () => policy)
         }
       },
       clock,
       sessionAccessPlugins: [{ provider: 'feishu', available: true, resolve }]
     } as unknown as HttpDeps
-    return { deps, clock, resolve }
+    return { deps, clock, resolve, setSync }
   }
+
+  it('never asks a provider whose sync is switched off', async () => {
+    const { deps, resolve, setSync } = harness()
+    setSync('disabled')
+    const resolver = makeSessionAccessResolver(deps)
+
+    const access = await resolver.forQuery(request(), query)
+
+    // Off means the SQL scope arm stops admitting this provider's `external`
+    // rows, so resolving them would be latency spent on an answer nothing
+    // reads — a disabled Feishu policy was still costing a tenant-token round
+    // trip plus a member-list page on every session list.
+    expect(resolve).not.toHaveBeenCalled()
+    expect(access.externalAccess.allowedScopes).toEqual([])
+    expect(access.degraded).toBe(false)
+    // The policy itself stays in the snapshot: `org`-classified rows created
+    // while sync was off carry the provider, and the provider arm — which does
+    // not care about state — is the only thing that makes them visible.
+    expect(access.externalAccess.policies.map((policy) => policy.provider)).toEqual(['feishu'])
+  })
+
+  it('re-decides the moment the switch moves, in both directions', async () => {
+    const { deps, setSync } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+    const grants = async () => (await resolver.forQuery(request(), query)).externalAccess.allowedScopes.length
+
+    expect(await grants()).toBe(1)
+
+    // No clock movement: the entry is still well inside its fresh window, so
+    // anything reusing it would keep authorizing on the old setting. The list
+    // path reads the live policy in SQL, so a snapshot that lagged here would
+    // have detail allowing a session the list had already hidden.
+    setSync('disabled')
+    expect(await grants()).toBe(0)
+
+    // And the inverse — a cached empty answer must not delay restoration.
+    setSync('enabled')
+    expect(await grants()).toBe(1)
+  })
+
+  it('drops grants when the switch goes off midway through the sweep', async () => {
+    const { deps, resolve } = harness()
+    let reads = 0
+    // The sweep reads the policy twice: once to key and seed the decision, once
+    // as the durable fence after the provider round trips. Land the disable in
+    // between.
+    deps.repos.session.getExternalAccessPolicy = vi.fn(async () =>
+      ++reads <= 1 ? enabledPolicy('feishu') : { ...enabledPolicy('feishu'), state: 'disabled' }
+    ) as never
+    const resolver = makeSessionAccessResolver(deps)
+
+    const access = await resolver.forQuery(request(), query)
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(access.externalAccess.allowedScopes).toEqual([])
+    // Obeying the switch is not a provider failing to answer, so this must not
+    // raise the "scopes stopped resolving" banner.
+    expect(access.degraded).toBe(false)
+  })
 
   it('collapses the concurrent reads of one page load into a single provider sweep', async () => {
     const { deps, resolve } = harness()

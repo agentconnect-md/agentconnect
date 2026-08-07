@@ -3,13 +3,14 @@ import { LRUCache } from 'lru-cache'
 import { cacheOptions } from '../cache.js'
 import type {
   ExternalScopeRecord,
+  SessionExternalAccessPolicyRecord,
   SessionExternalAccessSnapshot,
   SessionFilterQuery,
   SessionMetaRecord
 } from '../persistence/ports.js'
 import { identitySetOf } from '../authorization/policy.js'
 import type { HttpDeps } from './deps.js'
-import type { SessionAccessIssue, SessionAccessViewer } from './session-access-plugin.js'
+import type { SessionAccessIssue, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
 import { ctxOf, orgOf } from './rbac.js'
 
 export interface ResolvedSessionAccess {
@@ -88,13 +89,26 @@ const MAX_SNAPSHOT_ENTRIES = 2_000
  */
 const REFRESH_BEHIND = { forceRefresh: true, allowStale: true, noDeleteOnFetchRejection: true } as const
 
+/** The provider policies a decision was made under, in `providers` order. */
+type PolicySnapshot = readonly (SessionExternalAccessPolicyRecord | null)[]
+
 /** What one sweep needs, carried to `fetchMethod` as its context. */
-type Sweep = { scopes: readonly ExternalScopeRecord[]; viewer: SessionAccessViewer }
+type Sweep = {
+  scopes: readonly ExternalScopeRecord[]
+  viewer: SessionAccessViewer
+  policies: PolicySnapshot
+}
 
 /** Exactly the inputs `forScopes` reads — org, the viewer it decides for, the
- *  identities it decides with, and the scope set it decides about. An ACL bump
- *  changes `aclRevision`, so a re-fenced scope can never hit a stale entry. */
-function snapshotKey(viewer: SessionAccessViewer, scopes: readonly ExternalScopeRecord[]): string {
+ *  identities it decides with, the scope set it decides about, and whether each
+ *  provider is syncing. An ACL bump changes `aclRevision`, so a re-fenced scope
+ *  can never hit a stale entry. */
+function snapshotKey(
+  viewer: SessionAccessViewer,
+  scopes: readonly ExternalScopeRecord[],
+  policies: PolicySnapshot,
+  providers: readonly string[]
+): string {
   return [
     viewer.orgId,
     viewer.userId,
@@ -102,8 +116,26 @@ function snapshotKey(viewer: SessionAccessViewer, scopes: readonly ExternalScope
     scopes
       .map((scope) => `${scope.id}:${scope.aclRevision}`)
       .sort()
+      .join(','),
+    // Whether a provider is syncing is an input to the answer, so it has to be
+    // an input to the key. Without it, flipping the switch left every entry
+    // decided under the old setting servable for the rest of its lifetime —
+    // and because the list path reads the live policy in SQL while detail
+    // reads this snapshot, the two would disagree for that whole window. Every
+    // toggle bumps `currentRev`, so both directions re-decide immediately.
+    policies
+      .map((policy, index) => `${providers[index]}:${policy?.state ?? 'none'}:${policy?.currentRev ?? ''}`)
       .join(',')
   ].join('\u0000')
+}
+
+/** Providers whose sync is on. A missing row means no policy at all, and either
+ *  way there is nothing worth resolving: the SQL scope arm requires a live,
+ *  non-disabled row before it admits anything. */
+function syncingProviders(policies: PolicySnapshot, providers: readonly string[]): Set<string> {
+  return new Set(
+    policies.flatMap((policy, index) => (policy && policy.state !== 'disabled' ? [providers[index] as string] : []))
+  )
 }
 
 /** Request-bound resolver shared by list/detail/SSE. It never persists a user
@@ -133,20 +165,29 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     return viewer
   }
 
+  const readPolicies = (orgId: SessionAccessViewer['orgId']): Promise<PolicySnapshot> =>
+    Promise.all(providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider)))
+
   const forScopes = async (
     scopes: readonly ExternalScopeRecord[],
-    viewer: SessionAccessViewer
+    viewer: SessionAccessViewer,
+    initialPolicies: PolicySnapshot
   ): Promise<ResolvedSessionAccess> => {
     const { orgId, identitySet } = viewer
-    const initialPolicies = await Promise.all(
-      providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider))
-    )
+    // A provider whose sync is off has no say in what anyone can see: the SQL
+    // scope arm stops admitting its `external` rows, and its `org`-classified
+    // rows never needed a scope. Asking it anyway was pure latency on a
+    // user-facing read — a disabled Feishu policy still cost a tenant-token
+    // round trip plus a member-list page on every session list.
+    const syncing = syncingProviders(initialPolicies, providers)
     const results = await Promise.all(
       plugins.map((plugin) =>
-        plugin.resolve(
-          scopes.filter((scope) => scope.provider === plugin.provider && scope.orgId === orgId),
-          viewer
-        )
+        syncing.has(plugin.provider)
+          ? plugin.resolve(
+              scopes.filter((scope) => scope.provider === plugin.provider && scope.orgId === orgId),
+              viewer
+            )
+          : Promise.resolve<SessionAccessResult>({ allowedScopes: [], degraded: false, accessIssues: [] })
       )
     )
     const resolvedScopes = results.flatMap((result) => result.allowedScopes)
@@ -157,12 +198,23 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
       Promise.all(providers.map((provider) => deps.repos.session.getExternalAccessPolicy(orgId, provider))),
       deps.repos.session.getExternalScopes(resolvedScopes.map((scope) => scope.id))
     ])
-    const currentScopeRevisions = new Map(
+    const currentScopes = new Map(
       currentAllowedScopes
         .filter((scope) => scope.orgId === orgId && pluginFor.has(scope.provider) && scope.revokedAt === null)
-        .map((scope) => [scope.id, scope.aclRevision])
+        .map((scope) => [scope.id, scope])
     )
-    const allowedScopes = resolvedScopes.filter((scope) => currentScopeRevisions.get(scope.id) === scope.aclRevision)
+    const revisionHeld = resolvedScopes.filter(
+      (scope) => currentScopes.get(scope.id)?.aclRevision === scope.aclRevision
+    )
+    // The fence re-read covers the scope; it has to cover the switch too. A
+    // disable landing between the two policy reads would otherwise keep grants
+    // the SQL scope arm has already stopped honouring, so a detail read would
+    // allow a session the list had just hidden.
+    const stillSyncing = syncingProviders(currentPolicies, providers)
+    const allowedScopes = revisionHeld.filter((scope) => {
+      const provider = currentScopes.get(scope.id)?.provider
+      return provider !== undefined && stillSyncing.has(provider)
+    })
     return {
       identitySet,
       externalScopes: scopes,
@@ -178,7 +230,10 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
       // migration degradation (for example an unrelated historical pending
       // row) stays on the owner-only settings surface and must not make every
       // member-facing list/detail claim that a provider itself is unavailable.
-      degraded: results.some((result) => result.degraded) || allowedScopes.length !== resolvedScopes.length,
+      // Measured against the REVISION check only. A grant dropped because the
+      // switch went off mid-sweep is the setting being obeyed, not a provider
+      // failing to answer, and must not raise "scopes stopped resolving".
+      degraded: results.some((result) => result.degraded) || revisionHeld.length !== resolvedScopes.length,
       accessIssues: results.flatMap((result) => result.accessIssues ?? [])
     }
   }
@@ -192,7 +247,7 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     // outlive its own freshness for there to be anything to serve while the
     // refresh runs. `SNAPSHOT_FRESH_MS` is applied by the reader below.
     ttl: SNAPSHOT_MAX_STALE_MS,
-    fetchMethod: (_key, _stale, { context }) => forScopes(context.scopes, context.viewer)
+    fetchMethod: (_key, _stale, { context }) => forScopes(context.scopes, context.viewer, context.policies)
   })
 
   /** `forScopes` behind the snapshot window. Callers treat the record as
@@ -202,9 +257,10 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
    *  honest thing to report once one can be served stale. */
   const cachedForScopes = async (
     scopes: readonly ExternalScopeRecord[],
-    viewer: SessionAccessViewer
+    viewer: SessionAccessViewer,
+    policies: PolicySnapshot
   ): Promise<ResolvedSessionAccess> => {
-    const key = snapshotKey(viewer, scopes)
+    const key = snapshotKey(viewer, scopes, policies, providers)
     // The entry's lifetime IS the ceiling, so what remains of it gives the age.
     // A missing or expired key reports 0 and takes the blocking path, which is
     // also what a cold start and anything past the ceiling should do.
@@ -214,20 +270,23 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     // directly rather than reporting no external access, which would hide rows.
     const access =
       (await snapshots.fetch(key, {
-        context: { scopes, viewer },
+        context: { scopes, viewer, policies },
         ...(refreshBehind ? REFRESH_BEHIND : {})
-      })) ?? (await forScopes(scopes, viewer))
+      })) ?? (await forScopes(scopes, viewer, policies))
     return { ...access, identitySet: new Set(access.identitySet) }
   }
 
   return {
     async forQuery(req: FastifyRequest, query: SessionFilterQuery): Promise<ResolvedSessionAccess> {
       const viewer = await viewerFor(req)
-      const scopes = await deps.repos.session.listExternalScopes({
-        ...query,
-        viewer: { role: ctxOf(req).role, identitySet: [...viewer.identitySet] }
-      })
-      return cachedForScopes(scopes, viewer)
+      const [scopes, policies] = await Promise.all([
+        deps.repos.session.listExternalScopes({
+          ...query,
+          viewer: { role: ctxOf(req).role, identitySet: [...viewer.identitySet] }
+        }),
+        readPolicies(viewer.orgId)
+      ])
+      return cachedForScopes(scopes, viewer, policies)
     },
     async forSessions(
       req: FastifyRequest,
@@ -237,7 +296,10 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
       const ids = [
         ...new Set(sessions.map((session) => session.externalScopeId).filter((id): id is string => id !== null))
       ]
-      const scopes = await deps.repos.session.getExternalScopes(ids)
+      const [scopes, policies] = await Promise.all([
+        deps.repos.session.getExternalScopes(ids),
+        readPolicies(viewer.orgId)
+      ])
       const accessIds = new Set(
         sessions
           .filter((session) => session.visibility === 'external')
@@ -246,7 +308,8 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
       )
       const access = await cachedForScopes(
         scopes.filter((scope) => accessIds.has(scope.id)),
-        viewer
+        viewer,
+        policies
       )
       // Private rows use scope metadata for provider branding only. Their
       // authorization remains exact owner identity and never reaches a plugin.

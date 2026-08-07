@@ -53,11 +53,24 @@ import { OrganizationEnvironmentCard } from '@/components/console/OrganizationEn
 // A provider this deployment cannot offer at all is not an exception to explain,
 // it is a row to leave out — see `hasNothingToOffer`.
 //
+// Two halves, and both are easy to state wrongly.
+//
 // "New sessions" is load-bearing in the Off half: turning the policy off stops
-// NEW sessions binding to platform access, it does not unbind the ones already
-// synced (each `details` string below says so too).
+// NEW sessions binding to platform access. The ones already bound keep their
+// `external` classification and simply stop being shown — they are not
+// deleted, and turning the policy back on brings them back (each `details`
+// string below says so too). That direction surprises people, because turning
+// a restriction OFF shows them LESS, so it has to be spelled out rather than
+// implied.
+//
+// And the Off half is Everyone, not the agent's audience: the session list
+// reads every org agent regardless of Agent Team visibility
+// (`routes/sessions.ts` — "Agent Team visibility does not narrow Session
+// reads"), so promising "anyone who can view the agent" understated it.
+// `Everyone` is the audience word for the internal `org` value — see
+// docs/product-conventions.md.
 const SESSION_ACCESS_HINT =
-  "On — session visibility follows the platform's own access. Off — new sessions are visible to anyone who can view the agent."
+  "On — session visibility follows the platform's own access. Off — new sessions are visible to Everyone, and sessions synced while it was on stop showing."
 
 const SESSION_ACCESS_COPY: Record<
   SessionAccessProvider,
@@ -77,7 +90,7 @@ const SESSION_ACCESS_COPY: Record<
       'Public channels follow Slack workspace access; private channels, group DMs, guests and Slack Connect users need current membership.',
       'DMs stay private, and agent memory learned earlier is not erased.',
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a Slack conversation.',
-      'Turning this off leaves already-synced sessions following Slack.'
+      'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
     ].join('\n'),
     unavailable:
       'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Slack identity to check.',
@@ -88,10 +101,10 @@ const SESSION_ACCESS_COPY: Record<
     name: 'GitHub',
     label: 'Follow GitHub access',
     details: [
-      'Public-repository sessions stay visible to members who can view the agent; private-repository sessions need a linked GitHub profile with current access.',
+      'Public-repository sessions stay visible to Everyone; private-repository sessions need a linked GitHub profile with current access.',
       'Agent memory learned earlier is not erased.',
       'Sessions that predate this setting stay hidden until new trusted activity rebinds them to a repository.',
-      'Turning this off leaves already-synced sessions following GitHub.'
+      'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
     ].join('\n'),
     unavailable:
       'Unavailable until console sign-in and GitHub access checks are configured for this deployment — without them a viewer has no linked GitHub profile to check.',
@@ -105,7 +118,7 @@ const SESSION_ACCESS_COPY: Record<
       'Group sessions created through the matching AgentConnect app follow current chat membership.',
       'DMs stay private, and agent memory learned earlier is not erased.',
       'User-built apps with a different App ID keep the ordinary organization visibility model.',
-      'Turning this off leaves already-synced sessions following Feishu / Lark.'
+      'Turning this off hides the sessions synced while it was on — they are not deleted, and turning it back on restores them.'
     ].join('\n'),
     unavailable:
       'Unavailable until console sign-in is configured for this deployment — without it a viewer has no linked Feishu / Lark profile to check.',
