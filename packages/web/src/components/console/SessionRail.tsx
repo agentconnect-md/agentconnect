@@ -408,18 +408,31 @@ export function SessionRail({
     const ids = pinIdsOf(s)
     return { pinned: ids.some(isPinned), id: ids.find(isPinned) ?? canonicalSessionId(s) }
   }
-  // An attribution row is NOT navigation (§9.1's own title). Its target is a
-  // fellow participant of the conversation already on screen, so
-  // `/sessions/:id` would redirect straight back here (§5.3, which deliberately
-  // carries no `?focus`) — a full round trip that lands the reader exactly where
-  // they started. Render the fact, not a link to it. No pin toggle either: the
-  // row is a statement about this conversation, not a shortcut to another one.
+  // An attribution row answers WHO, so it is built around the agent, not the
+  // session. The generic row renders a session title and a platform mark, and
+  // neither identifies anyone here: participants of one thread routinely share
+  // a title (it is derived from the same first message) and necessarily share
+  // the platform, so "Delegated by" over a title equal to the current row's
+  // says nothing, and several `woke` rows would be indistinguishable.
+  //
+  // It is also NOT navigation, which is §9.1's own title. The target is a
+  // participant of the conversation already on screen, so `/sessions/:id` would
+  // redirect straight back here (§5.3 carries no `?focus`, by decision) — a
+  // round trip that lands the reader where they started. Render the fact: no
+  // link, and no pin toggle, which is a shortcut to another conversation.
+  //
+  // Name resolution mirrors the filter chips: the org roster first, then the
+  // relation's own projection (older CPs omit it), then the raw id — a
+  // restricted agent can own a member session while staying out of this
+  // viewer's roster, and showing an id beats showing nothing.
   const attributionRow = (relation: SessionRelationDto, depth: 0 | 1 | 2 = 0) => {
+    const agent = agents.find((candidate) => candidate.id === relation.agentId)
+    const name = agent ? agentLabel(agent) : relation.agentName?.trim() || relation.agentId
     const title = relation.title?.trim() || `Session ${relation.id.slice(0, 8)}`
     return (
       <div
         key={`attribution-${relation.id}`}
-        title={title}
+        title={`${name}\n${title}`}
         className={`flex w-full min-w-0 items-center gap-2 rounded-sm py-[6px] pr-[9px] text-(--text-secondary) ${
           depth === 2 ? 'pl-[26px]' : 'pl-[9px]'
         }`}
@@ -430,10 +443,10 @@ export function SessionRail({
             className="-mt-2 h-[15px] w-[13px] flex-none rounded-bl-[4px] border-b-[1.5px] border-l-[1.5px] border-(--border-strong)"
           />
         )}
-        <span className="imark h-[18px] w-[18px] flex-none rounded-xs">
-          <PlatformMark platform={relation.platform} fillPct={100} />
+        <span className="av h-[18px] w-[18px] flex-none rounded-xs">
+          <AgentIconView icon={agent?.icon} runtime={agent?.runtime ?? ''} size={18} />
         </span>
-        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">{title}</span>
+        <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-medium leading-normal">{name}</span>
       </div>
     )
   }

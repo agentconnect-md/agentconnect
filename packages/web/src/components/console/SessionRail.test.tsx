@@ -65,7 +65,8 @@ function railMarkup({
   total = 0,
   family = NO_FAMILY,
   filterTouched = false,
-  flatView = false
+  flatView = false,
+  roomLineage
 }: {
   sessions?: Session[]
   total?: number
@@ -76,6 +77,7 @@ function railMarkup({
   }
   filterTouched?: boolean
   flatView?: boolean
+  roomLineage?: { wokenBy: SessionRelationDto | null; woke: SessionRelationDto[] }
 } = {}) {
   return renderToStaticMarkup(
     <SessionRail
@@ -87,6 +89,7 @@ function railMarkup({
       onAgentIdsChange={() => {}}
       family={family}
       flatView={flatView}
+      {...(roomLineage ? { roomLineage } : {})}
       onSelect={() => {}}
     />
   )
@@ -184,5 +187,61 @@ describe('railWouldHide', () => {
 
   it('keeps the filter control reachable once the reader has set one', () => {
     expect(railWouldHide({ ...collapsed, filterTouched: true })).toBe(false)
+  })
+})
+
+// Attribution answers WHO woke whom, so the row has to name the agent. Sessions
+// in one merged thread routinely share a title — it is derived from the same
+// first message — and necessarily share the platform, so a row built from those
+// two fields identifies nobody.
+describe('SessionRail room attribution', () => {
+  const participant = (id: string, agentId: string, agentName: string): SessionRelationDto => ({
+    id,
+    agentId,
+    agentName,
+    platform: 'slack',
+    // Deliberately identical to the other participant's, and to the open row's.
+    title: 'Session current'
+  })
+
+  it('names the agents when the participants share a session title', () => {
+    const markup = railMarkup({
+      roomLineage: {
+        wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'),
+        woke: [participant('rel-b', 'agent-b', 'node-operator'), participant('rel-c', 'agent-c', 'db-operator')]
+      }
+    })
+
+    expect(markup).toContain('Delegated by')
+    expect(markup).toContain('Delegated to')
+    // The identities, which the shared title cannot carry.
+    expect(markup).toContain('Alert Analyzer')
+    expect(markup).toContain('node-operator')
+    expect(markup).toContain('db-operator')
+  })
+
+  it('falls back to the agent id when nothing can name the agent', () => {
+    // Older Control Planes omit the projection, and a restricted agent can own a
+    // member session while staying out of this viewer's roster. An id beats a
+    // blank row.
+    const anonymous: SessionRelationDto = {
+      id: 'rel-x',
+      agentId: 'agent-restricted',
+      platform: 'slack',
+      title: 'Session current'
+    }
+    const markup = railMarkup({ roomLineage: { wokenBy: anonymous, woke: [] } })
+
+    expect(markup).toContain('agent-restricted')
+  })
+
+  it('does not turn a co-participant into a navigation target', () => {
+    // These rows are attribution (§9.1). `/sessions/:id` would redirect back to
+    // the page they are rendered on, so the row must not be a link.
+    const markup = railMarkup({
+      roomLineage: { wokenBy: participant('rel-a', 'agent-a', 'Alert Analyzer'), woke: [] }
+    })
+
+    expect(markup).not.toContain('href="/sessions/rel-a"')
   })
 })

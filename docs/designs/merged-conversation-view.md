@@ -434,12 +434,19 @@ side-agnostic filter would mislabel one of the two. Rows are deduplicated
 against the ordinary list exactly as family rows are, which preserves the
 displayed-once invariant above.
 
+Each row is built around the AGENT, not the session: agent mark and agent name
+(org roster, then the relation's own projection, then the raw id). A session
+title cannot carry attribution here — participants of one thread routinely
+share one, since it is derived from the same first message, and they
+necessarily share the platform — so a row showing title and platform would
+name nobody.
+
 These rows do NOT navigate, which is this section's title taken literally.
 Their target is a participant of the conversation already on screen, so
 `/sessions/:id` would redirect straight back to this page — §5.3 carries no
 `?focus`, by decision — costing a round trip to land the reader where they
-already were. They render the fact instead: platform mark, title, no link and
-no pin.
+already were. They render the fact instead: no link, and no pin, which is a
+shortcut to another conversation.
 
 Co-membership itself is NOT siblinghood: "sibling sessions" keeps its precise
 lineage meaning (other children of the same parent session). Sessions in one
