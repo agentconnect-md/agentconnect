@@ -36,7 +36,7 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>) {
+function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, now: () => number = () => 1_000) {
   return new FeishuSessionAccessService({
     bots: { getUnscoped: async () => bot() } as never,
     botSecrets: {
@@ -46,7 +46,7 @@ function service(fetchImpl: (url: string, init?: RequestInit) => Promise<Respons
         signingSecret: null
       })
     } as never,
-    clock: { now: () => 1_000 } as never,
+    clock: { now } as never,
     fetchImpl
   })
 }
@@ -183,6 +183,35 @@ describe('FeishuSessionAccessService', () => {
       accessIssues: [{ provider: 'feishu', region: 'lark', reason: 'quota' }]
     })
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  // Running out of quota is a fact about the APP, not about who is in the chat,
+  // so it must never occupy the chat's membership entry — `quotaBlockedUntil` is
+  // what suppresses the retry storm.
+  it('does not leave a quota verdict standing in for a chat’s membership', async () => {
+    let now = 1_777_000_000_000
+    let memberCalls = 0
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith('/tenant_access_token/internal')) {
+        return json({ code: 0, tenant_access_token: 'tenant-token' })
+      }
+      memberCalls += 1
+      return memberCalls === 1
+        ? json({ code: 99991403, msg: "This month's API call quota has been exceeded" }, 429)
+        : json({ code: 0, data: { items: [{ member_id: 'on_member' }] } })
+    })
+    const resolver = service(fetchImpl, () => now)
+
+    await expect(resolver.resolve([scope()], viewer())).resolves.toMatchObject({ degraded: true })
+
+    // Past the organization-wide backoff, the chat has to be asked again.
+    now += 60 * 60_000 + 1
+    await expect(resolver.resolve([scope()], viewer())).resolves.toEqual({
+      allowedScopes: [{ id: scope().id, aclRevision: scope().aclRevision }],
+      degraded: false,
+      accessIssues: []
+    })
+    expect(memberCalls).toBe(2)
   })
 
   it('rejects a scope whose realm does not match its custom Bot app', async () => {
