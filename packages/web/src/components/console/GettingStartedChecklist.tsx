@@ -401,7 +401,7 @@ export function AddToSlackRow({
           </div>
         )}
         {slack.err && (
-          <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--danger)">
+          <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--status-error)">
             {slack.err}{' '}
             <button
               type="button"

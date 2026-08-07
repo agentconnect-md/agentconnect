@@ -492,7 +492,7 @@ export function SlackWizardBody({ agent, host }: { agent: Agent; host: WizardHos
               </button>
             )}
             {platformErr && (
-              <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--danger)">
+              <div className="mt-2 font-sans text-[11.5px] font-normal leading-[1.4] text-(--status-error)">
                 {platformErr}
               </div>
             )}

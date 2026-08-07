@@ -483,7 +483,7 @@ function BotsCard({
                     sentence is the module's (§10 `settingsFragments.copy`) — only
                     Slack can name the lifecycle event that put the bot here. */}
                   {b.revokedAt && (
-                    <span className="badge bg-(--status-error-soft) text-(--danger)" title={rowCopy.revokedHint}>
+                    <span className="badge bg-(--status-error-soft) text-(--status-error)" title={rowCopy.revokedHint}>
                       revoked
                     </span>
                   )}
