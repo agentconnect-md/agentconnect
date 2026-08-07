@@ -27,7 +27,7 @@ import { AgentId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
-import { buildInstallManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
+import { buildInstallManifest, checkSlackBotScopes, slackOAuthRedirectUri } from '../slack-manifest.js'
 import { agentIconBackgroundColor } from '../../agents/agent-icon.js'
 import { installNewSlackBot, slackAppIdFromAppToken } from '../install-slack.js'
 import { CONFIG_ACCESS_TTL_MS, configUsable } from '../slack-user-config.js'
@@ -42,6 +42,7 @@ import {
   SlackConfigDto,
   IntegrationDto,
   ErrorDto,
+  SlackInstallErrorDto,
   IdParam
 } from '../dto/index.js'
 
@@ -281,11 +282,17 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           tags: [Tag.Integrations],
           summary: 'Finalize Slack auto-install',
           description:
-            'Combine the OAuth-obtained bot token (held server-side) with the operator-pasted app-level token to create the bot + integration and push it live, then delete the pending session.',
+            'Combine the OAuth-obtained bot token (held server-side) with the operator-pasted app-level token to create the bot + integration and push it live, then delete the pending session. Refuses with `SLACK_MISSING_SCOPES` (and the `missingScopes` list) when the workspace authorization granted fewer bot scopes than the app requires, so a short install never becomes a bot.',
           operationId: 'finalizeSlackAppInstall',
           params: IdParam,
           body: SlackAppFinalizeBody,
-          response: { 201: IntegrationDto, 400: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+          response: {
+            201: IntegrationDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: SlackInstallErrorDto
+          }
         }
       },
       async (req, reply) => {
@@ -369,8 +376,33 @@ export function slackInstallRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         }
 
         // auth.test supplies display-only workspace metadata for the Settings
-        // grouping. It also remains the fallback source for an omitted app name.
+        // grouping. It also remains the fallback source for an omitted app name,
+        // and — via `x-oauth-scopes` — the granted bot scopes checked below.
         const botCheck = slack.verifyBot ? await slack.verifyBot(row.botToken) : null
+
+        // Slack's authorization does not reliably apply every bot permission the
+        // manifest declares, and a short grant installs SILENTLY: the shortfall
+        // only surfaces much later, when a scoped call starts answering
+        // `missing_scope` and the session-access check fails closed. Refuse it
+        // here — while the operator is still in the flow and one reinstall away
+        // — and name the scopes so the console can say which. Before
+        // `installNewSlackBot` on purpose: a short grant must not leave a bot or
+        // integration behind. An inconclusive check never blocks (see
+        // `checkSlackBotScopes`); repairing an ALREADY-installed bot stays the
+        // Settings refresh's job.
+        if (botCheck?.status === 'ok') {
+          const grant = checkSlackBotScopes(botCheck.scopes)
+          if (grant.status === 'short') {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              code: 'SLACK_MISSING_SCOPES',
+              message: `Slack didn’t grant every permission this app needs. Reinstall it in your Slack workspace, then finish here. Missing: ${grant.missing.join(', ')}`,
+              missingScopes: grant.missing
+            })
+          }
+        }
+
         const name = row.name || (botCheck?.status === 'ok' ? botCheck.name : null) || agent.name
         const release = deps.agentMutations.tryBeginMutation(agent.id)
         if (!release) {
@@ -588,7 +620,14 @@ export function slackConfigRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
 }
 
 export type SlackCallbackNote =
-  'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken' | 'workspace_mismatch' | 'agent_taken'
+  | 'connected'
+  | 'denied'
+  | 'expired'
+  | 'error'
+  | 'workspace_taken'
+  | 'workspace_mismatch'
+  | 'agent_taken'
+  | 'missing_scopes'
 
 /**
  * The callback tab is a THROWAWAY — the real flow continues in the ORIGINAL
@@ -618,7 +657,11 @@ export function closePageHtml(note: SlackCallbackNote, consoleUrl?: string): str
               ? 'Slack authorized a different workspace. Close this tab and try again, choosing the workspace shown in AgentConnect.'
               : note === 'agent_taken'
                 ? 'This Slack workspace is already connected to another agent in your organization. Remove that integration first, then try again.'
-                : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
+                : note === 'missing_scopes'
+                  ? // The scopes themselves are listed in AgentConnect (this tab is
+                    // a throwaway and the console is where the retry happens).
+                    'Slack didn’t grant every permission AgentConnect needs. Close this tab — AgentConnect lists which ones are missing.'
+                  : 'Something went wrong finishing the install. Close this tab and try again in AgentConnect.'
   // Auto-close only on success (a failure needs reading). window.close() is allowed
   // for script-opened tabs (this one was window.open'd); the text is the fallback.
   const autoClose = ok ? '<script>setTimeout(function(){try{window.close()}catch(e){}},1500)</script>' : ''

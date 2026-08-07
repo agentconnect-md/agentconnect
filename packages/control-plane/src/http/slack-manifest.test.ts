@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildInstallManifest,
+  checkSlackBotScopes,
   mergeManagedSlackManifest,
   slackOAuthRedirectUri,
   SLACK_BOT_SCOPES,
@@ -117,6 +118,38 @@ describe('buildInstallManifest', () => {
       'group_left',
       'tokens_revoked'
     ])
+  })
+})
+
+// The one place the "did this install actually get every scope" comparison
+// lives — both install funnels fence on it and the Settings refresh reports it.
+// Grants are built FROM `SLACK_BOT_SCOPES` rather than spelled out, so adding a
+// required scope never has to be mirrored here.
+describe('checkSlackBotScopes', () => {
+  it('accepts a grant that carries every required scope', () => {
+    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES])).toEqual({ status: 'complete' })
+  })
+
+  it('ignores extra scopes the workspace happens to have granted', () => {
+    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES, 'bookmarks:read'])).toEqual({ status: 'complete' })
+  })
+
+  it('names exactly the required scopes a short grant is missing', () => {
+    const withheld = [SLACK_BOT_SCOPES[0], SLACK_BOT_SCOPES[SLACK_BOT_SCOPES.length - 1]!]
+    const granted = SLACK_BOT_SCOPES.filter((scope) => !withheld.includes(scope))
+    expect(checkSlackBotScopes(granted)).toEqual({ status: 'short', missing: withheld })
+  })
+
+  it('reports an empty grant as short rather than complete', () => {
+    expect(checkSlackBotScopes([])).toEqual({ status: 'short', missing: [...SLACK_BOT_SCOPES] })
+  })
+
+  // Slack does not always send `x-oauth-scopes`. "We could not tell" must never
+  // be read as "the grant is short" — that would fail installs for a reason
+  // that has nothing to do with permissions.
+  it('treats an unreported grant as unknown, not short', () => {
+    expect(checkSlackBotScopes(null)).toEqual({ status: 'unknown' })
+    expect(checkSlackBotScopes(undefined)).toEqual({ status: 'unknown' })
   })
 })
 

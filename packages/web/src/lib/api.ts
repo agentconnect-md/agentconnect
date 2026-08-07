@@ -31,7 +31,11 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly code?: string
+    readonly code?: string,
+    /** The CP's parsed error body, for the few denials that carry structured
+     *  detail a message can't render well (Slack's `missingScopes` list). Read
+     *  it behind a `code` check and narrow it — nothing here is guaranteed. */
+    readonly details?: Record<string, unknown>
   ) {
     super(message)
     this.name = 'ApiError'
@@ -785,6 +789,9 @@ export interface SlackPlatformInstallStatusDto {
   id: string
   status: 'pending' | 'completed' | 'failed'
   failureReason: string | null
+  /** The required bot scopes Slack withheld, when `failureReason` is
+   *  'missing_scopes'. Empty on every other outcome. */
+  missingScopes: string[]
   botId: string | null
 }
 /** `PUT /slack/config` body — the caller's own Slack App Configuration token. The
@@ -1401,7 +1408,7 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 async function apiErrorFromResponse(method: string, path: string, res: Response): Promise<ApiError> {
-  const body = (await res.json().catch(() => ({}))) as { code?: unknown; message?: unknown }
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>
   const message =
     typeof body.message === 'string' && body.message.length > 0
       ? body.message
@@ -1411,7 +1418,7 @@ async function apiErrorFromResponse(method: string, path: string, res: Response)
   // the console can work, and no retry helps, so sign out instead of surfacing the
   // failure on every panel. The error is still thrown for the in-flight caller.
   if (res.status === 401 && code === 'ACCOUNT_GONE') void signOutDeletedAccount()
-  return new ApiError(message, res.status, code)
+  return new ApiError(message, res.status, code, body)
 }
 
 async function apiPatch<T>(path: string, body: unknown): Promise<T> {

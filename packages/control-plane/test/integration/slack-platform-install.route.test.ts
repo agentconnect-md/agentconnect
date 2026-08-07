@@ -262,6 +262,111 @@ describe('GET /integrations/slack/platform/callback', () => {
     expect(cb.body).toContain('Connected to Slack')
   })
 
+  // The quick-install funnel's short-grant fence, on the distributed app. Slack
+  // does not reliably apply every scope the authorize URL asked for, and the
+  // shortfall is invisible until a scoped call starts answering `missing_scope`.
+  it('refuses a workspace that granted fewer bot scopes, writing no bot (missing_scopes)', async () => {
+    const { app } = withPlatform()
+    const withheld = ['channels:history', 'users:read']
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'agentconnect',
+      appId: PLATFORM.appId,
+      teamId: 'T0WORKSPACE',
+      teamName: 'Acme',
+      botUserId: 'U0BOT',
+      scopes: SLACK_BOT_SCOPES.filter((scope) => !withheld.includes(scope))
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const started = await startInstall(app, agentId)
+
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c&state=${started.id}`
+    })
+    expect(cb.statusCode).toBe(200)
+    expect(cb.body).toContain('didn’t grant every permission')
+    // Nothing was written: this is the last fence before the first mutation.
+    expect(await prisma.bot.count({ where: { slackAppId: PLATFORM.appId } })).toBe(0)
+    expect(await prisma.integration.count({ where: { agentId } })).toBe(0)
+    // The console's only channel here is the poll (the OAuth tab is a
+    // throwaway), so the row carries the scopes, not just the reason code.
+    const polled = (await status(app, started.id)).json() as {
+      status: string
+      failureReason: string
+      missingScopes: string[]
+    }
+    expect(polled).toMatchObject({ status: 'failed', failureReason: 'missing_scopes', missingScopes: withheld })
+  })
+
+  it('does not refuse when Slack did not report the granted scopes', async () => {
+    const { app } = withPlatform()
+    // The default stub is absent ⇒ the seam answers `unreachable`; make the
+    // inconclusive case explicit — Slack answered, but sent no scope header.
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'agentconnect',
+      appId: PLATFORM.appId,
+      teamId: 'T0WORKSPACE',
+      teamName: 'Acme',
+      botUserId: 'U0BOT',
+      scopes: null
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const started = await startInstall(app, agentId)
+
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c&state=${started.id}`
+    })
+    expect(cb.body).toContain('Connected to Slack')
+    expect(await prisma.bot.count({ where: { slackAppId: PLATFORM.appId } })).toBe(1)
+  })
+
+  // A short grant must not out-rank the more specific refusals: it is checked
+  // last, so "you authorized someone else's workspace" still wins.
+  it('reports a cross-org workspace claim rather than the scope shortfall', async () => {
+    const { app } = withPlatform()
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'agentconnect',
+      appId: PLATFORM.appId,
+      teamId: 'T0WORKSPACE',
+      teamName: 'Acme',
+      botUserId: 'U0BOT',
+      scopes: []
+    })
+    const otherOrg = await prisma.org.create({ data: { slug: `other-${randomUUID().slice(0, 8)}` } })
+    await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: otherOrg.id,
+        platform: 'slack',
+        name: 'AgentConnect (Theirs)',
+        transport: 'http',
+        shareable: false,
+        prebuilt: true,
+        slackAppId: PLATFORM.appId,
+        teamId: 'T0WORKSPACE',
+        workspaceId: 'T0WORKSPACE',
+        externalAppId: PLATFORM.appId,
+        externalTenantId: 'T0WORKSPACE'
+      }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const started = await startInstall(app, agentId)
+
+    const cb = await app.app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/slack/platform/callback?code=c&state=${started.id}`
+    })
+    expect(cb.body).toContain('already connected to a different AgentConnect organization')
+    expect((await status(app, started.id)).json()).toMatchObject({ failureReason: 'workspace_taken' })
+  })
+
   it('refuses a workspace already bound to a DIFFERENT org (workspace_taken)', async () => {
     const { app } = withPlatform()
     const otherOrg = await prisma.org.create({ data: { slug: `other-${randomUUID().slice(0, 8)}` } })

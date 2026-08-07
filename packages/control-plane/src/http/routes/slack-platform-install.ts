@@ -36,7 +36,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
-import { SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
+import { checkSlackBotScopes, SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
 import { BotWorkspaceClaimed } from '../../persistence/errors.js'
 import { closePageHtml, relayHttpBase } from './slack-install.js'
@@ -151,7 +151,7 @@ export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeam
           tags: [Tag.Integrations],
           summary: 'Poll platform Slack app install',
           description:
-            'Completion signal for the "Add to Slack" round trip: `pending` while the authorize tab is open, then `completed` (the Bot + install are live) or `failed` with a short reason code. Returns no tokens.',
+            'Completion signal for the "Add to Slack" round trip: `pending` while the authorize tab is open, then `completed` (the Bot + install are live) or `failed` with a short reason code. A `missing_scopes` failure also lists the required bot scopes the workspace authorization withheld. Returns no tokens.',
           operationId: 'getSlackPlatformInstall',
           params: z.object({ id: z.string() }),
           response: { 200: SlackPlatformInstallStatusDto, 404: ErrorDto }
@@ -164,7 +164,13 @@ export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeam
         if (!row || row.orgId !== req.orgCtx!.orgId) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'install not found' })
         }
-        return { id: row.id, status: row.status, failureReason: row.failureReason, botId: row.botId }
+        return {
+          id: row.id,
+          status: row.status,
+          failureReason: row.failureReason,
+          missingScopes: row.missingScopes,
+          botId: row.botId
+        }
       }
     )
   }
@@ -219,9 +225,20 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
         // integration — a re-authorization need not create one). Safe to call
         // with no pending row (a bare denial, an already-settled replay) — it
         // just renders the page.
-        const fail = async (note: Parameters<typeof closePageHtml>[0]): Promise<FastifyReply> => {
+        // `missingScopes` rides along on the short-grant refusal below: the poll
+        // is the console's only channel here (this tab is a throwaway), so the
+        // reason code alone would leave it unable to say WHICH permissions
+        // Slack withheld.
+        const fail = async (
+          note: Parameters<typeof closePageHtml>[0],
+          missingScopes?: readonly string[]
+        ): Promise<FastifyReply> => {
           if (row?.status === 'pending') {
-            await deps.repos.slackPlatformInstall.settle(row.id, { status: 'failed', failureReason: note })
+            await deps.repos.slackPlatformInstall.settle(row.id, {
+              status: 'failed',
+              failureReason: note,
+              ...(missingScopes ? { missingScopes } : {})
+            })
           }
           return back(note)
         }
@@ -299,6 +316,26 @@ export function slackPlatformCallbackRoutes(deps: HttpDeps, slack: SlackRouteSea
           // Don't leak WHICH org holds it.
           req.log.warn({ installId: row.id, botId: existing.id }, 'slack platform install: workspace already bound')
           return fail('workspace_taken')
+        }
+
+        // The quick-install funnel's short-grant fence, applied to the workspace
+        // token this authorization just produced. Slack does not reliably apply
+        // every scope the authorize URL asked for, and a short grant is silent —
+        // it surfaces much later as a scoped call answering `missing_scope` and
+        // the session-access check failing closed. LAST of the fences and before
+        // the first write, so a more specific refusal (wrong workspace, another
+        // org's) still wins and a short grant costs no bot row, no credential
+        // rotation, and no membership change. An inconclusive check never blocks
+        // (see `checkSlackBotScopes`); an already-installed workspace is the
+        // Settings refresh's job, not this callback's.
+        const checked = await slack.verifyBot?.(result.botToken)
+        const grant = checked?.status === 'ok' ? checkSlackBotScopes(checked.scopes) : { status: 'unknown' as const }
+        if (grant.status === 'short') {
+          req.log.warn(
+            { installId: row.id, missingScopes: grant.missing },
+            'slack platform install: workspace granted fewer bot scopes than required'
+          )
+          return fail('missing_scopes', grant.missing)
         }
 
         let botId: string

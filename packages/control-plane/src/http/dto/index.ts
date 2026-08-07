@@ -1538,9 +1538,13 @@ export const SlackPlatformInstallStatusDto = z.object({
   id: z.string(),
   status: z.enum(['pending', 'completed', 'failed']),
   /** Short code identifying the failure ('denied' | 'expired' |
-   *  'workspace_taken' | 'workspace_mismatch' | 'agent_taken' | 'error') —
-   *  the console renders a message from it. Null unless `failed`. */
+   *  'workspace_taken' | 'workspace_mismatch' | 'agent_taken' |
+   *  'missing_scopes' | 'error') — the console renders a message from it. Null
+   *  unless `failed`. */
   failureReason: z.string().nullable(),
+  /** The required bot scopes Slack did not grant, when `failureReason` is
+   *  'missing_scopes'. Empty on every other outcome. */
+  missingScopes: z.array(z.string()),
   /** The expected workspace bot during a Settings reauthorization, or the
    *  installed bot after a generic install; null otherwise. */
   botId: z.string().nullable()
@@ -3016,6 +3020,16 @@ export const ErrorDto = z.object({
   /** Machine-readable denial reason where the console branches on it (e.g.
    *  github user-authz: GITHUB_IDENTITY_REQUIRED vs USER_NO_ACCESS). */
   code: z.string().optional()
+})
+
+/** The Slack install funnels' error shape. A refusal carrying
+ *  `code: 'SLACK_MISSING_SCOPES'` also names the required bot scopes the
+ *  workspace authorization did not grant — the console renders THAT list, since
+ *  "reinstall the app" is only actionable when it says what is absent. Every
+ *  other refusal from those routes omits the field and reads as a plain
+ *  {@link ErrorDto}. */
+export const SlackInstallErrorDto = ErrorDto.extend({
+  missingScopes: z.array(z.string()).optional()
 })
 
 // Inferred response types — route handlers return these so the zod type provider

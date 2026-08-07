@@ -17,17 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from '@/lib/api'
 import type { WebInstallPoll } from '../contract'
 import { slackApi } from './api'
-
-// Why a platform install round trip ended without connecting, keyed by the install
-// row's `failureReason`. Mirrors AddIntegrationModal's PLATFORM_INSTALL_FAILURES.
-const FAILURES: Record<string, string> = {
-  denied: 'The install was cancelled in Slack.',
-  expired: 'This install link expired — start again.',
-  workspace_taken: 'That Slack workspace is already connected to another organization.',
-  workspace_mismatch: 'Slack authorized a different workspace. Start again and choose the expected workspace.',
-  agent_taken: 'That Slack workspace is already connected to another agent here. Remove that integration first.',
-  error: 'Slack could not complete the install. Please try again.'
-}
+import { SLACK_INSTALL_EXPIRED, slackPlatformInstallFailure } from './install-failure'
 
 /** `onCompleted` fires once the install reaches `completed` (refresh lists / close the surface). */
 export function useSlackPlatformInstall(agentId: string, onCompleted: () => void): WebInstallPoll {
@@ -89,9 +79,9 @@ export function useSlackPlatformInstall(agentId: string, onCompleted: () => void
           onCompleted()
           return
         }
-        stop(FAILURES[s.failureReason ?? ''] ?? 'The Slack install did not complete.')
+        stop(slackPlatformInstallFailure(s.failureReason, s.missingScopes))
       } catch (e) {
-        if (alive && e instanceof ApiError && e.status === 404) stop(FAILURES.expired!)
+        if (alive && e instanceof ApiError && e.status === 404) stop(SLACK_INSTALL_EXPIRED)
       }
     }
     const poll = setInterval(() => void check(), 2500)

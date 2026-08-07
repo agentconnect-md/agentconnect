@@ -2087,6 +2087,11 @@ model SlackPlatformInstall {
   // callback's close page shows, so the console can report WHY it failed.
   status          SlackPlatformInstallStatus @default(pending)
   failureReason   String?
+  // The required bot scopes the workspace authorization did not grant, when
+  // `failureReason` is 'missing_scopes'. Empty otherwise. Reported verbatim to
+  // the console: "reinstall the app" is only actionable when it names what is
+  // absent, and the console cannot derive the list from the code alone.
+  missingScopes   String[]                   @default([])
   // For a Settings reauthorization this is populated while pending and fences
   // the OAuth callback to that exact Bot/workspace. Generic installs fill it on
   // completion for the console deep-link.

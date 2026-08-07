@@ -30,6 +30,35 @@ export {
   slackInteractionsRequestUrl
 }
 
+/**
+ * Whether an installation actually granted every bot scope AgentConnect requires.
+ *
+ * `unknown` is NOT a short grant. Slack reports the granted scopes only in the
+ * `x-oauth-scopes` response header of `auth.test`, and it does not always send
+ * one — an absent header means "we could not tell". Callers MUST NOT refuse an
+ * install on it: that would break installs for a reason that has nothing to do
+ * with permissions. Only a positively-known short grant is actionable.
+ */
+export type SlackBotScopeGrant = { status: 'unknown' } | { status: 'complete' } | { status: 'short'; missing: string[] }
+
+/**
+ * The required bot scopes an installation is missing — the ONE place that diff
+ * lives. Both install funnels fence on it (a short grant never becomes a bot),
+ * and the Settings refresh reports it as `reinstall_required`; keeping the
+ * comparison here is what stops those three from drifting, in particular on the
+ * `null`-means-unknown rule above.
+ *
+ * Slack's initial authorization does not reliably apply every bot permission an
+ * app's manifest declares — the app installs cleanly and the shortfall surfaces
+ * much later, as a scoped call failing with `missing_scope`.
+ */
+export function checkSlackBotScopes(granted: readonly string[] | null | undefined): SlackBotScopeGrant {
+  if (!granted) return { status: 'unknown' }
+  const held = new Set(granted)
+  const missing = SLACK_BOT_SCOPES.filter((scope) => !held.has(scope))
+  return missing.length > 0 ? { status: 'short', missing } : { status: 'complete' }
+}
+
 type ManifestRecord = Record<string, unknown>
 
 function asRecord(value: unknown): ManifestRecord {

@@ -15,6 +15,7 @@ import { ApiError, type BotDto, type SlackBotRefreshDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
 import { slackApi } from './api'
+import { SLACK_MISSING_SCOPES_REASON, slackMissingScopesMessage } from './install-failure'
 import { slackAppSettingsUrl } from './manifest'
 import { SlackMark } from './mark'
 import { slackRefreshNoticeState } from './refresh-notice'
@@ -124,7 +125,12 @@ function SlackBotCardProvider({ children }: { children: ReactNode }) {
               ? 'The reinstall was cancelled in Slack.'
               : status.failureReason === 'workspace_mismatch'
                 ? 'Slack authorized a different workspace. Try again and choose this bot’s workspace.'
-                : 'Slack could not complete the reinstall. Please try again.'
+                : // A reinstall is the remedy for a short permission grant, so a
+                  // reinstall that is ITSELF short has to name what is still
+                  // absent — the generic line below would hide exactly that.
+                  status.failureReason === SLACK_MISSING_SCOPES_REASON
+                  ? slackMissingScopesMessage(status.missingScopes)
+                  : 'Slack could not complete the reinstall. Please try again.'
           )
           return
         }
