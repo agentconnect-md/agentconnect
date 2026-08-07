@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { Daemon } from '../src/daemon.js'
@@ -65,28 +64,6 @@ describe('LocalStore inbox', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].enqueuedAt).toBe('100')
     expect(rows[0].loopGuardCounted).toBe(1)
-    s.close()
-  })
-
-  it('migrates pre-marker inbox rows as uncounted', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-inbox-marker-')), 'local.sqlite')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE inbox (
-        id TEXT PRIMARY KEY, sessionKey TEXT NOT NULL, agentId TEXT NOT NULL,
-        msg TEXT NOT NULL, integrationId TEXT, callMeta TEXT, isQueueCmd INTEGER,
-        enqueuedAt TEXT NOT NULL
-      )
-    `)
-    legacy
-      .prepare(
-        'INSERT INTO inbox (id, sessionKey, agentId, msg, integrationId, callMeta, isQueueCmd, enqueuedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run('legacy', 'slack:C1:T1:bot-a', 'bot-a', '{"msgId":"legacy"}', null, null, null, '100')
-    legacy.close()
-
-    const s = new LocalStore(path)
-    expect(s.listInboxBySessionKeyFifo()[0].loopGuardCounted).toBe(0)
     s.close()
   })
 

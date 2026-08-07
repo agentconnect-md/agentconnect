@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { createSessionReader } from '../src/cp/session-reader.js'
 import { sessionThreadUrlFor } from '../src/platforms/session-links.js'
@@ -853,35 +852,5 @@ describe('SessionReader', () => {
 
     expect(tailFor('telegram')).toEqual(['observed first', 'older, backfilled after'])
     expect(tailFor('slack')).toEqual(['older, backfilled after', 'observed first'])
-  })
-
-  it('repairs chronological reads from a pre-upgrade transcript table', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-reader-order-mig-')), 'local.sqlite')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE transcript (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
-        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-        tool_call_id TEXT, body TEXT, recipient TEXT
-      );
-      INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient) VALUES
-        ('C1', 'T1', '1784098701.000000', 'U1', 'text', 'first', '${AGENT}'),
-        ('C1', 'T1', '1784098703.000000', 'U1', 'text', 'third-trigger', '${AGENT}'),
-        ('C1', 'T1', '1784098702.000000', 'ops-bot', 'text', 'second-backfilled', '${AGENT}');
-    `)
-    legacy.close()
-
-    // Opening the upgraded store must make already-persisted sessions read correctly;
-    // the fix cannot depend on rewriting only future appends.
-    const s = new LocalStore(path)
-    seedHistorySession(s)
-
-    expect(
-      createSessionReader(s)
-        .history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
-        .messages.map((m) => m.text)
-    ).toEqual(['first', 'second-backfilled', 'third-trigger'])
-    s.close()
   })
 })

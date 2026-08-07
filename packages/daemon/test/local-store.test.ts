@@ -9,6 +9,48 @@ function store(): LocalStore {
   return new LocalStore(join(mkdtempSync(join(tmpdir(), 'ac-db-')), 'local.sqlite'))
 }
 
+describe('LocalStore schema versioning', () => {
+  const userVersion = (path: string): number => {
+    const db = new DatabaseSync(path)
+    const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    db.close()
+    return v
+  }
+
+  it('stamps a freshly created store with the current schema version', () => {
+    // A new database gets the whole schema from the CREATE block, so it must skip
+    // the upgrade list outright rather than replay it.
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-fresh-')), 'local.sqlite')
+    new LocalStore(path).close()
+    expect(userVersion(path)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('reopens an existing store without rewriting its version', () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-reopen-')), 'local.sqlite')
+    const first = new LocalStore(path)
+    first.appendTranscript({ channel: 'C1', thread: 'T', ts: '1', sender: 'U1', kind: 'text', text: 'hello' })
+    first.close()
+    const stamped = userVersion(path)
+
+    const second = new LocalStore(path)
+    expect(second.threadTranscript('C1', 'T').map((r) => r.text)).toEqual(['hello'])
+    second.close()
+    expect(userVersion(path)).toBe(stamped)
+  })
+
+  it('refuses a store written by a newer daemon instead of running old steps over it', () => {
+    // Rolling a daemon back must fail loudly: this build cannot know what the newer
+    // schema did, so "upgrading" it would corrupt more than it fixed.
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-future-')), 'local.sqlite')
+    new LocalStore(path).close()
+    const db = new DatabaseSync(path)
+    db.exec('PRAGMA user_version = 9999')
+    db.close()
+
+    expect(() => new LocalStore(path)).toThrow(/newer than this daemon understands/)
+  })
+})
+
 describe('LocalStore', () => {
   it('keeps every agent reply in a thread, and lets a finalization refresh its own text', () => {
     // The production failure this pins: a response finalization used to reach the
@@ -63,51 +105,6 @@ describe('LocalStore', () => {
     expect(got?.agentId).toBe('bot-a')
     expect(got?.state).toBe('idle')
     s.close()
-  })
-
-  it('migrates legacy Discord thread-as-channel sessions onto parent/thread coordinates', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-discord-coords-')), 'local.sqlite')
-    const first = new LocalStore(path)
-    const legacyKey = sessionKey('discord', 'T1', 'T1', 'bot-a')
-    const nextKey = sessionKey('discord', 'C1', 'T1', 'bot-a')
-    first.setChannelScope('T1', { parentId: 'C1' }, 1)
-    first.upsertSession({
-      key: legacyKey,
-      agentId: 'bot-a',
-      platform: 'discord',
-      channel: 'T1',
-      thread: 'T1',
-      acpSessionId: 'acp-discord',
-      state: 'idle',
-      lastDeliveredTs: null,
-      updatedAt: 1
-    })
-    first.setSessionMuted(legacyKey, true)
-    first.appendTranscript({ channel: 'T1', thread: 'T1', ts: '1', sender: 'U1', kind: 'text', text: 'hello' })
-    first.appendInbox({
-      id: 'discord-delivery',
-      sessionKey: legacyKey,
-      agentId: 'bot-a',
-      msg: JSON.stringify({ platform: 'discord', channel: 'T1', thread: 'T1', parentChannel: 'C1' }),
-      enqueuedAt: '1'
-    })
-    first.close()
-
-    const restored = new LocalStore(path)
-    expect(restored.getSession(legacyKey)).toBeUndefined()
-    expect(restored.getSession(nextKey)).toMatchObject({
-      key: nextKey,
-      channel: 'C1',
-      thread: 'T1',
-      acpSessionId: 'acp-discord'
-    })
-    expect(restored.isSessionMuted(nextKey)).toBe(true)
-    expect(restored.threadTranscript('C1', 'T1').map((row) => row.text)).toEqual(['hello'])
-    expect(restored.threadTranscript('T1', 'T1')).toEqual([])
-    const inbox = restored.listInboxBySessionKeyFifo()[0]!
-    expect(inbox.sessionKey).toBe(nextKey)
-    expect(JSON.parse(inbox.msg)).toEqual({ platform: 'discord', channel: 'C1', thread: 'T1' })
-    restored.close()
   })
 
   it('persists only explicitly pending session snapshots and fences stale ACKs', () => {
@@ -210,84 +207,6 @@ describe('LocalStore', () => {
       ['text', 'answer']
     ])
     s.close()
-  })
-
-  it('migrates a legacy (pre-kind) transcript table, tagging old rows as text', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-mig-')), 'local.sqlite')
-    // Hand-build the old schema: PRIMARY KEY (channel, thread, ts), no kind/seq.
-    const legacy = new DatabaseSync(path)
-    legacy.exec(
-      'CREATE TABLE transcript (channel TEXT, thread TEXT, ts TEXT, sender TEXT, text TEXT, PRIMARY KEY (channel, thread, ts))'
-    )
-    legacy.prepare('INSERT INTO transcript VALUES (?,?,?,?,?)').run('C1', 'T', '100.1', 'U1', 'old one')
-    legacy.prepare('INSERT INTO transcript VALUES (?,?,?,?,?)').run('C1', 'T', '100.2', 'bot', 'old two')
-    legacy.close()
-
-    // Opening the store migrates in place; legacy rows survive as kind='text'…
-    const s = new LocalStore(path)
-    expect(s.threadTranscript('C1', 'T').map((r) => [r.kind, r.text])).toEqual([
-      ['text', 'old one'],
-      ['text', 'old two']
-    ])
-    // A later authoritative Slack snapshot can safely upgrade a pre-column row in
-    // place; absent provenance remains fail-closed until it is re-observed.
-    s.appendTranscript({
-      channel: 'C1',
-      thread: 'T',
-      ts: '100.1',
-      sender: 'U1',
-      trustedAgentBot: true,
-      kind: 'text',
-      text: 'old one'
-    })
-    expect(s.threadTranscript('C1', 'T').find((row) => row.ts === '100.1')?.trustedAgentBot).toBeTruthy()
-    // …and the new kind column is usable afterward.
-    s.appendTranscript({ channel: 'C1', thread: 'T', ts: '100.3', sender: 'bot', kind: 'tool', text: 'Edit y' })
-    expect(s.transcriptSince('C1', 'T', null).map((e) => e.text)).toEqual(['old one', 'old two'])
-    expect(s.threadTranscript('C1', 'T')).toHaveLength(3)
-    s.close()
-  })
-
-  it('adds the superseded dream state and reconciles proposals stranded by an adoption', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-dream-status-mig-')), 'local.sqlite')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE dreams (
-        dreamId TEXT PRIMARY KEY,
-        agentId TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN
-          ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded')),
-        triggerKind TEXT NOT NULL,
-        sessionIds TEXT NOT NULL,
-        snapshotDigest TEXT NOT NULL,
-        snapshotWrites TEXT,
-        instructions TEXT,
-        skills TEXT,
-        usage TEXT,
-        error TEXT,
-        createdAt TEXT NOT NULL,
-        endedAt TEXT
-      )
-    `)
-    const insert = legacy.prepare(`
-      INSERT INTO dreams (
-        dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-        snapshotWrites, instructions, skills, usage, error, createdAt, endedAt
-      ) VALUES (?, 'a1', ?, 'manual', '[]', 'sha256:x', NULL, NULL, NULL, NULL, NULL, ?, ?)
-    `)
-    insert.run('older-ready', 'completed', '2026-07-24T00:00:00.000Z', '2026-07-24T00:05:00.000Z')
-    insert.run('chosen', 'adopted', '2026-07-24T00:01:00.000Z', '2026-07-24T00:06:00.000Z')
-    insert.run('new-ready', 'completed', '2026-07-24T00:07:00.000Z', '2026-07-24T00:08:00.000Z')
-    legacy.close()
-
-    const migrated = new LocalStore(path)
-    expect(migrated.getDream('a1', 'older-ready')).toMatchObject({
-      status: 'superseded',
-      endedAt: '2026-07-24T00:06:00.000Z'
-    })
-    expect(migrated.getDream('a1', 'new-ready')?.status).toBe('completed')
-    expect(migrated.supersededDreams().map((dream) => dream.dreamId)).toEqual(['older-ready'])
-    migrated.close()
   })
 
   it('round-trips per-cron last-run stamps (latest-wins)', () => {
@@ -507,27 +426,6 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     s.close()
   })
 
-  it('adds the title column to a pre-existing sessions table (in-place migration)', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-mig-title-')), 'local.sqlite')
-    // Hand-build the pre-title schema (post-usage/muted/triggeredBy vintage).
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`CREATE TABLE sessions (
-      key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-      acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
-      usage TEXT, muted INTEGER, triggeredBy TEXT
-    )`)
-    legacy
-      .prepare('INSERT INTO sessions (key, agentId, acpSessionId, state, updatedAt) VALUES (?,?,?,?,?)')
-      .run('k1', 'bot-a', 'acp-1', 'idle', 100)
-    legacy.close()
-
-    const s = new LocalStore(path)
-    expect(s.getSession('k1')?.title).toBeNull() // legacy rows read back untitled
-    s.setSessionTitle('k1', 'Migrated title')
-    expect(s.listSessions()[0]?.title).toBe('Migrated title')
-    s.close()
-  })
-
   it('modelOverride: undefined until set, then persists across state upserts; unknown key no-op', () => {
     const s = store()
     seed(s, 'k1', 'bot-a', 'acp-1', 100)
@@ -572,30 +470,6 @@ describe('LocalStore session/transcript read-back (session/list, session/history
     expect(s.getPermissionModeOverride('k1')).toBeUndefined()
     expect(s.getFastModeOverride('k1')).toBeUndefined()
     expect(s.getOutputModeOverride('k1')).toBe('high')
-    s.close()
-  })
-
-  it('adds the modelOverride column to a pre-existing sessions table (in-place migration)', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-mig-mo-')), 'local.sqlite')
-    // Hand-build the pre-modelOverride schema (post-title vintage).
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`CREATE TABLE sessions (
-      key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-      acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
-      usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT
-    )`)
-    legacy
-      .prepare('INSERT INTO sessions (key, agentId, acpSessionId, state, updatedAt) VALUES (?,?,?,?,?)')
-      .run('k1', 'bot-a', 'acp-1', 'idle', 100)
-    legacy.close()
-
-    const s = new LocalStore(path)
-    expect(s.getModelOverride('k1')).toBeUndefined() // legacy rows have no override
-    s.setModelOverride('k1', 'sonnet-5')
-    expect(s.getModelOverride('k1')).toBe('sonnet-5')
-    expect(s.getPermissionModeOverride('k1')).toBeUndefined()
-    s.setPermissionModeOverride('k1', 'acceptEdits')
-    expect(s.getPermissionModeOverride('k1')).toBe('acceptEdits')
     s.close()
   })
 
@@ -729,23 +603,10 @@ describe('LocalStore session/transcript read-back (session/list, session/history
   })
 
   it('keeps a session-local tool id isolated between agents sharing a thread', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-tool-owner-mig-')), 'local.sqlite')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE transcript (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
-        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-        tool_call_id TEXT, body TEXT, recipient TEXT, eventTimeUs INTEGER,
-        attachmentsJson TEXT
-      );
-      CREATE UNIQUE INDEX transcript_tool_call
-        ON transcript (channel, thread, tool_call_id) WHERE tool_call_id IS NOT NULL;
-    `)
-    legacy.close()
-
-    // Opening the upgraded store replaces the old thread-wide identity.
-    const s = new LocalStore(path)
+    // ACP tool ids are session-local, so two agents in one thread may legitimately
+    // reuse one — the transcript_agent_tool_call index is unique per SENDER, not
+    // thread-wide, or one agent's tool body would overwrite the other's.
+    const s = store()
     const toolCallId = 'session-local-tc'
     const aBody = JSON.stringify({ toolCallId, rawOutput: 'agent-a output' })
     const bInitial = JSON.stringify({ toolCallId, rawOutput: 'agent-b partial' })
@@ -951,33 +812,6 @@ describe('LocalStore session lifecycle (§7.3/#111/#118)', () => {
     expect(reopened.isSessionMuted(key)).toBe(false)
     expect(reopened.getSession(key)?.muted).toBe(0)
     reopened.close()
-  })
-
-  it('backfills legacy sessions.muted rows into tombstones without resurrecting a cleared mute', () => {
-    const path = join(mkdtempSync(join(tmpdir(), 'ac-mute-migrate-')), 'local.sqlite')
-    const legacy = new DatabaseSync(path)
-    legacy.exec(`
-      CREATE TABLE sessions (
-        key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-        acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
-        usage TEXT, muted INTEGER, triggeredBy TEXT
-      )
-    `)
-    legacy
-      .prepare(
-        'INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, lastDeliveredTs, updatedAt, muted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run('legacy-muted', 'bot-a', 'slack', 'C1', 'T1', null, 'idle', null, 1, 1)
-    legacy.close()
-
-    let s = new LocalStore(path)
-    expect(s.isSessionMuted('legacy-muted')).toBe(true)
-    s.setSessionMuted('legacy-muted', false)
-    s.close()
-
-    s = new LocalStore(path)
-    expect(s.isSessionMuted('legacy-muted')).toBe(false)
-    s.close()
   })
 
   it('closeIdleSessions closes only idle rows past the TTL, leaving prompting alone', () => {

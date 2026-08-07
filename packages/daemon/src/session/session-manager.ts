@@ -444,15 +444,8 @@ export class SessionManager {
     // whole conversation is recorded, and thread stays stable → one session.
     let ts = msg.platform === 'webchat' ? (msg.transcriptTs ?? monotonicTs()) : coordTs
     const transportScope = msg.transportScope
-    const legacyKey = sessionKey(msg.platform, msg.channel, thread, agentId)
     const key = sessionKey(msg.platform, msg.channel, thread, agentId, transportScope)
     let rec = this.deps.store.getSession(key)
-    if (!rec && transportScope) {
-      // A pre-scope session may already contain traffic admitted through another
-      // physical bot. The store moves it onto the attributable key and discards
-      // unsafe runtime context when its old bot scope is unknown.
-      rec = this.deps.store.adoptLegacySessionScope(legacyKey, key, transportScope, Date.now())
-    }
     const transcriptChannel = transcriptChannelKey(msg.channel, transportScope)
 
     // record the triggering message in the transcript (with an attachment mention

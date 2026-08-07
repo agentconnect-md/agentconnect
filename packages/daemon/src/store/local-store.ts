@@ -556,6 +556,30 @@ function restrictPath(path: string, mode: number): void {
   }
 }
 
+/**
+ * Schema version a freshly created database is stamped with. Bump it in the same
+ * change that edits a `CREATE TABLE` below, and append the matching step to
+ * {@link SCHEMA_MIGRATIONS}.
+ */
+const SCHEMA_VERSION = 1
+
+/**
+ * Ordered in-place upgrades for a store created by an EARLIER daemon.
+ *
+ * This store lives on the user's machine and holds their transcripts, sessions and
+ * durable inbox — it is upgraded in place, never recreated, and a daemon is a
+ * long-lived install that can be several versions behind. `CREATE TABLE IF NOT
+ * EXISTS` never alters an existing table, so a schema change that ships without a
+ * step here leaves the new column missing on every pre-existing database and fails
+ * at query time rather than at boot.
+ *
+ * Step `i` upgrades a database at `user_version === i + 1` to `i + 2`; each runs
+ * exactly once, in order, inside one transaction. A fresh database is stamped
+ * straight to {@link SCHEMA_VERSION} and skips the list, because the `CREATE`
+ * block above always emits the current schema.
+ */
+const SCHEMA_MIGRATIONS: ((db: DatabaseSync) => void)[] = []
+
 export class LocalStore {
   private db: DatabaseSync
   private transcriptRevision = 0
@@ -579,7 +603,10 @@ export class LocalStore {
     // WAL mode publishes two siblings alongside the database; they carry the same
     // rows, so restricting only the main file would leave the content readable.
     for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) restrictPath(p, 0o600)
-    this.migrateTranscript()
+    // Decided BEFORE the CREATE block, which is what makes an empty file
+    // indistinguishable from an old one a moment later.
+    const freshDatabase =
+      (this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get() as { n: number }).n === 0
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
@@ -591,7 +618,10 @@ export class LocalStore {
         originSessionId TEXT, lastTurnOutcome TEXT, needsParentReply INTEGER,
         externalProvider TEXT, externalRealmKey TEXT, externalResourceKind TEXT,
         externalResourceKey TEXT, externalIntegrationId TEXT, externalOriginJson TEXT,
-        sourceBindingKind TEXT
+        sourceBindingKind TEXT,
+        -- session-visibility.md §4.1: persisted so EVERY event/session re-emit
+        -- carries them, not just the one dispatch that knew the message.
+        conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -716,9 +746,17 @@ export class LocalStore {
         channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT NOT NULL, agentId TEXT NOT NULL,
         PRIMARY KEY (channel, thread, ts, agentId)
       );
-      -- transcript_agent_tool_call (partial unique on tool_call_id) is created in
-      -- migrateTranscriptToolBody, after the column is guaranteed to exist — a legacy
-      -- rebuild in migrateTranscript recreates the table without the new columns.
+      -- ACP tool ids are session-local, so same-thread agents may legitimately reuse
+      -- them; the uniqueness that matters is per agent.
+      CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
+        ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
+      -- Chronological history key: rows carry both an insertion-order seq and an
+      -- event time, and the console reads in event-time order.
+      CREATE INDEX IF NOT EXISTS transcript_thread_event_time
+        ON transcript (channel, thread, eventTimeUs DESC, seq DESC);
+      -- Stable-row updates need a cursor independent of insertion-order seq.
+      CREATE INDEX IF NOT EXISTS transcript_thread_revision
+        ON transcript (channel, thread, revision);
       CREATE TABLE IF NOT EXISTS cp_routing (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         routingEpoch INTEGER, assignments TEXT, globalRules TEXT
@@ -942,26 +980,13 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS dreams_agent_created ON dreams (agentId, createdAt DESC);
     `)
-    this.migrateDreamSnapshotWrites()
-    this.migrateDreamSupersededStatus()
-    this.migrateDreamObservability()
-    this.migrateDreamOrganizationSuggestions()
-    this.migrateSessionUsage()
-    this.migrateSessionMutes()
-    this.migrateSessionGates()
-    this.migrateInboxLoopGuardCounted()
-    this.migrateActivationDispatchId()
-    this.migrateTranscriptToolBody()
-    this.migrateTranscriptAttachments()
-    this.migrateTranscriptQuote()
-    this.migrateTranscriptRecipient()
-    this.migrateTranscriptTrustedAgentBot()
-    this.migrateTranscriptEventTime()
-    this.migrateTranscriptRevision()
-    this.migrateInboxHookContext()
-    this.migrateRuntimeCatalogDefaultMode()
-    this.migrateChannelScopeSpace()
-    this.migrateDiscordSessionCoordinates()
+    this.applySchemaMigrations(freshDatabase)
+    // The revision counter is in-memory but the rows it numbers are durable, so it
+    // must resume from the database on every open — starting a restarted daemon back
+    // at 0 would hand already-issued revisions to new rows.
+    this.transcriptRevision = (
+      this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as { revision: number }
+    ).revision
     // A daemon restart loses the in-memory ACP resolver. Retain the audit row but
     // never present it as actionable after recovery.
     this.db
@@ -971,523 +996,45 @@ export class LocalStore {
       .run(Date.now())
   }
 
-  /** Add `channel_scopes.spaceId` (the Discord guild a conversation sits in) to a
-   *  pre-existing DB. Legacy rows have NULL — the next name lookup for that channel
-   *  fills it in, so a reported row is space-less only until the resolver's TTL. */
-  private migrateChannelScopeSpace(): void {
-    const cols = this.db.prepare('PRAGMA table_info(channel_scopes)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'spaceId')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN spaceId TEXT')
-    // `isIm` shares this migration: both columns arrived with the same discovery fix.
-    if (!cols.some((c) => c.name === 'isIm')) this.db.exec('ALTER TABLE channel_scopes ADD COLUMN isIm INTEGER')
-  }
-
   /**
-   * Discord originally persisted a thread channel as both `{ channel, thread }` and
-   * kept its enclosing channel in `channel_scopes.parentId`. The normalized contract
-   * now matches Slack: `{ channel: parentId, thread: threadId }`.
+   * Bring a store written by an older daemon up to {@link SCHEMA_VERSION}.
    *
-   * A target session that already exists means a partial rollout has written both
-   * shapes and automatic merging could discard runtime state. Those rare rows remain
-   * readable as legacy sessions instead of being guessed together. Durable inbox rows
-   * move atomically with the session and have their normalized JSON canonicalized, so
-   * startup replay cannot recreate the retired coordinate shape.
+   * Each step commits with the version it produced, so an interrupted upgrade
+   * resumes at the first unapplied step instead of replaying applied ones. A
+   * version from the FUTURE (the user rolled a daemon back) is left untouched:
+   * this code cannot know what the newer schema did, and silently running old
+   * steps over it would corrupt more than it fixed.
    */
-  private migrateDiscordSessionCoordinates(): void {
-    this.db.exec('BEGIN')
-    try {
-      this.db.exec(`
-        CREATE TEMP TABLE IF NOT EXISTS discord_coordinate_migration (
-          oldKey TEXT PRIMARY KEY,
-          newKey TEXT NOT NULL,
-          oldTranscriptChannel TEXT NOT NULL,
-          newTranscriptChannel TEXT NOT NULL,
-          thread TEXT NOT NULL,
-          parentChannel TEXT NOT NULL
-        );
-        DELETE FROM discord_coordinate_migration;
-        INSERT INTO discord_coordinate_migration (
-          oldKey, newKey, oldTranscriptChannel, newTranscriptChannel, thread, parentChannel
-        )
-        SELECT
-          s.key,
-          'discord:' || cs.parentId || ':' || s.thread || ':' || s.agentId ||
-            CASE WHEN s.transportScope IS NOT NULL AND s.transportScope <> ''
-              THEN ':' || s.transportScope ELSE '' END,
-          s.thread || CASE WHEN s.transportScope IS NOT NULL AND s.transportScope <> ''
-            THEN char(31) || s.transportScope ELSE '' END,
-          cs.parentId || CASE WHEN s.transportScope IS NOT NULL AND s.transportScope <> ''
-            THEN char(31) || s.transportScope ELSE '' END,
-          s.thread,
-          cs.parentId
-        FROM sessions s
-        JOIN channel_scopes cs ON cs.id = s.thread
-        WHERE s.platform = 'discord'
-          AND s.channel = s.thread
-          AND cs.parentId IS NOT NULL
-          AND cs.parentId <> s.thread
-          AND NOT EXISTS (
-            SELECT 1 FROM sessions current
-            WHERE current.platform = 'discord'
-              AND current.channel = cs.parentId
-              AND current.thread = s.thread
-              AND COALESCE(current.transportScope, '') = COALESCE(s.transportScope, '')
-          );
-
-        INSERT OR IGNORE INTO session_mutes (key)
-          SELECT m.newKey FROM discord_coordinate_migration m
-          JOIN session_mutes muted ON muted.key = m.oldKey;
-        DELETE FROM session_mutes
-          WHERE key IN (SELECT oldKey FROM discord_coordinate_migration);
-
-        UPDATE inbox
-        SET sessionKey = (
-              SELECT m.newKey FROM discord_coordinate_migration m WHERE m.oldKey = inbox.sessionKey
-            ),
-            msg = json_remove(
-              json_set(
-                msg,
-                '$.channel',
-                (SELECT m.parentChannel FROM discord_coordinate_migration m WHERE m.oldKey = inbox.sessionKey)
-              ),
-              '$.parentChannel'
-            )
-        WHERE sessionKey IN (SELECT oldKey FROM discord_coordinate_migration);
-
-        UPDATE transcript
-        SET channel = (
-          SELECT m.newTranscriptChannel FROM discord_coordinate_migration m
-          WHERE m.oldTranscriptChannel = transcript.channel AND m.thread = transcript.thread
-          LIMIT 1
-        )
-        WHERE EXISTS (
-          SELECT 1 FROM discord_coordinate_migration m
-          WHERE m.oldTranscriptChannel = transcript.channel AND m.thread = transcript.thread
-        );
-        UPDATE transcript_recipient
-        SET channel = (
-          SELECT m.newTranscriptChannel FROM discord_coordinate_migration m
-          WHERE m.oldTranscriptChannel = transcript_recipient.channel
-            AND m.thread = transcript_recipient.thread
-          LIMIT 1
-        )
-        WHERE EXISTS (
-          SELECT 1 FROM discord_coordinate_migration m
-          WHERE m.oldTranscriptChannel = transcript_recipient.channel
-            AND m.thread = transcript_recipient.thread
-        );
-
-        UPDATE sessions
-        SET key = (SELECT m.newKey FROM discord_coordinate_migration m WHERE m.oldKey = sessions.key),
-            channel = (SELECT m.parentChannel FROM discord_coordinate_migration m WHERE m.oldKey = sessions.key)
-        WHERE key IN (SELECT oldKey FROM discord_coordinate_migration);
-
-        DROP TABLE discord_coordinate_migration;
-      `)
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
+  private applySchemaMigrations(freshDatabase: boolean): void {
+    const read = (): number => (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+    if (freshDatabase) {
+      this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+      return
     }
-  }
-
-  /** Add the `transcript.recipient` column (the agent a row was delivered to) to a
-   *  pre-existing DB. Legacy rows have NULL recipient, so they surface in a session view
-   *  only via `sender` — acceptable (pre-migration history predates per-agent scoping). */
-  private migrateTranscriptRecipient(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'recipient')) this.db.exec('ALTER TABLE transcript ADD COLUMN recipient TEXT')
-  }
-
-  /** Preserve only daemon-verified Slack bot provenance. Existing rows remain NULL so
-   *  readers fail closed instead of inferring trust from a provider-shaped sender id. */
-  private migrateTranscriptTrustedAgentBot(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'trustedAgentBot'))
-      this.db.exec('ALTER TABLE transcript ADD COLUMN trustedAgentBot INTEGER')
-  }
-
-  /**
-   * Add and backfill the chronological history key introduced after `seq`. This is an
-   * in-place local-store migration: old sessions retain their original rows/ts and start
-   * rendering chronologically as soon as the upgraded daemon opens the DB.
-   */
-  private migrateTranscriptEventTime(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'eventTimeUs'))
-      this.db.exec('ALTER TABLE transcript ADD COLUMN eventTimeUs INTEGER')
-
-    const nextBatch = this.db.prepare(
-      'SELECT seq, ts FROM transcript WHERE seq > ? AND eventTimeUs IS NULL ORDER BY seq ASC LIMIT 1000'
-    )
-    const update = this.db.prepare('UPDATE transcript SET eventTimeUs = ? WHERE seq = ?')
-    this.db.exec('BEGIN')
-    try {
-      let afterSeq = 0
-      while (true) {
-        // Bound migration memory for long-lived daemons while retaining one atomic
-        // transaction. The PK cursor avoids rescanning already-visited rows.
-        const rows = nextBatch.all(afterSeq) as unknown as { seq: number; ts: string | null }[]
-        if (rows.length === 0) break
-        for (const row of rows) update.run(transcriptEventTimeUs(row.ts), row.seq)
-        afterSeq = rows[rows.length - 1]!.seq
+    // Databases created before versioning read 0; they carry the v1 schema.
+    let version = read() || 1
+    if (version > SCHEMA_VERSION)
+      throw new Error(
+        `local store schema v${version} is newer than this daemon understands (v${SCHEMA_VERSION}) — upgrade the daemon`
+      )
+    while (version < SCHEMA_VERSION) {
+      const step = SCHEMA_MIGRATIONS[version - 1]
+      if (!step) throw new Error(`local store is missing a migration step for schema v${version}`)
+      this.db.exec('BEGIN')
+      try {
+        step(this.db)
+        this.db.exec(`PRAGMA user_version = ${version + 1}`)
+        this.db.exec('COMMIT')
+      } catch (err) {
+        this.db.exec('ROLLBACK')
+        throw err
       }
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
+      version += 1
     }
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS transcript_thread_event_time ON transcript (channel, thread, eventTimeUs DESC, seq DESC)'
-    )
-  }
-
-  /** Stable-row updates need a cursor independent of insertion-order `seq`. */
-  private migrateTranscriptRevision(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'revision'))
-      this.db.exec('ALTER TABLE transcript ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
-    this.db.exec(`
-      UPDATE transcript SET revision = seq WHERE revision = 0;
-      CREATE INDEX IF NOT EXISTS transcript_thread_revision
-        ON transcript (channel, thread, revision);
-    `)
-    const row = this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS revision FROM transcript').get() as {
-      revision: number
-    }
-    this.transcriptRevision = row.revision
-  }
-
-  /** R1 hook turns must retain their trusted dispatch fence and the poster's
-   * single-attempt state across restart. Upgrade existing local stores in place. */
-  private migrateInboxHookContext(): void {
-    const cols = this.db.prepare('PRAGMA table_info(inbox)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'hookContext')) this.db.exec('ALTER TABLE inbox ADD COLUMN hookContext TEXT')
-    if (!cols.some((c) => c.name === 'posterPublishState'))
-      this.db.exec('ALTER TABLE inbox ADD COLUMN posterPublishState TEXT')
-    if (!cols.some((c) => c.name === 'terminalReport')) this.db.exec('ALTER TABLE inbox ADD COLUMN terminalReport TEXT')
-    if (!cols.some((c) => c.name === 'legacyReportConnection'))
-      this.db.exec('ALTER TABLE inbox ADD COLUMN legacyReportConnection TEXT')
-    if (!cols.some((c) => c.name === 'completedAt')) this.db.exec('ALTER TABLE inbox ADD COLUMN completedAt INTEGER')
-  }
-
-  /** Backfill the durable mute tombstones from the legacy sessions.muted column.
-   *  Both writes in setSessionMuted stay transactional, so this idempotent sync cannot
-   *  resurrect a mute that was explicitly cleared. */
-  /** Dreams created before the distillation rebase existed carry no write-ledger
-   *  marks. NULL is the fail-closed value: such a dream simply can't be rebased
-   *  and falls back to the plain fence. */
-  private migrateDreamSnapshotWrites(): void {
-    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'snapshotWrites'))
-      this.db.exec('ALTER TABLE dreams ADD COLUMN snapshotWrites TEXT')
-  }
-
-  /** Add metadata-only correlation and execution fields without rewriting
-   *  existing dream rows. Usage remains JSON for rolling schema compatibility. */
-  private migrateDreamObservability(): void {
-    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
-    const names = new Set(cols.map((column) => column.name))
-    if (!names.has('executionSessionId')) this.db.exec('ALTER TABLE dreams ADD COLUMN executionSessionId TEXT')
-    if (!names.has('runtime')) this.db.exec('ALTER TABLE dreams ADD COLUMN runtime TEXT')
-    if (!names.has('model')) this.db.exec('ALTER TABLE dreams ADD COLUMN model TEXT')
-    if (!names.has('stopReason')) this.db.exec('ALTER TABLE dreams ADD COLUMN stopReason TEXT')
-  }
-
-  private migrateDreamOrganizationSuggestions(): void {
-    const cols = this.db.prepare('PRAGMA table_info(dreams)').all() as { name: string }[]
-    if (!cols.some((column) => column.name === 'organizationSuggestions')) {
-      this.db.exec('ALTER TABLE dreams ADD COLUMN organizationSuggestions TEXT')
-    }
-  }
-
-  /** Extend the dream lifecycle without stranding proposals created before the
-   *  state existed. SQLite cannot alter a CHECK constraint in place, so rebuild
-   *  this metadata-only table and reconcile every completed proposal that
-   *  predates a successful adoption for the same agent. */
-  private migrateDreamSupersededStatus(): void {
-    const table = this.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dreams'").get() as
-      { sql: string } | undefined
-    if (!table || table.sql.includes("'superseded'")) return
-
-    this.db.exec('BEGIN')
-    try {
-      this.db.exec(`
-        ALTER TABLE dreams RENAME TO dreams_before_superseded;
-        CREATE TABLE dreams (
-          dreamId TEXT PRIMARY KEY,
-          agentId TEXT NOT NULL,
-          status TEXT NOT NULL CHECK (status IN
-            ('pending', 'running', 'completed', 'failed', 'canceled', 'adopted', 'discarded', 'superseded')),
-          triggerKind TEXT NOT NULL,
-          sessionIds TEXT NOT NULL,
-          snapshotDigest TEXT NOT NULL,
-          snapshotWrites TEXT,
-          instructions TEXT,
-          skills TEXT,
-          usage TEXT,
-          error TEXT,
-          createdAt TEXT NOT NULL,
-          endedAt TEXT
-        );
-        INSERT INTO dreams (
-          dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-          snapshotWrites, instructions, skills, usage, error, createdAt, endedAt
-        ) SELECT
-          dreamId, agentId, status, triggerKind, sessionIds, snapshotDigest,
-          snapshotWrites, instructions, skills, usage, error, createdAt, endedAt
-        FROM dreams_before_superseded;
-        DROP TABLE dreams_before_superseded;
-        CREATE INDEX dreams_agent_created ON dreams (agentId, createdAt DESC);
-
-        UPDATE dreams AS candidate
-        SET status = 'superseded', endedAt = (
-          SELECT MIN(adopted.endedAt)
-          FROM dreams AS adopted
-          WHERE adopted.agentId = candidate.agentId
-            AND adopted.status = 'adopted'
-            AND adopted.endedAt IS NOT NULL
-            AND adopted.endedAt > candidate.createdAt
-        )
-        WHERE candidate.status = 'completed'
-          AND EXISTS (
-            SELECT 1
-            FROM dreams AS adopted
-            WHERE adopted.agentId = candidate.agentId
-              AND adopted.status = 'adopted'
-              AND adopted.endedAt IS NOT NULL
-              AND adopted.endedAt > candidate.createdAt
-          );
-      `)
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
-  }
-
-  private migrateSessionMutes(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS session_mutes (key TEXT PRIMARY KEY);
-      INSERT OR IGNORE INTO session_mutes (key) SELECT key FROM sessions WHERE muted = 1;
-      UPDATE sessions SET muted = 1 WHERE key IN (SELECT key FROM session_mutes);
-    `)
-  }
-
-  /** Rows written before loop protection had no per-delivery accounting marker. They
-   *  start at 0 so the first owner that can replay them charges them exactly once. */
-  /** Add `activation_rendezvous.dispatchId` to a pre-existing DB. Legacy rows migrate
-   *  NULL, which the sweep treats as "not reconcilable" and releases — the same answer it
-   *  would give for a dispatch that never persisted. */
-  private migrateActivationDispatchId(): void {
-    const cols = this.db.prepare('PRAGMA table_info(activation_rendezvous)').all() as { name: string }[]
-    if (cols.length > 0 && !cols.some((c) => c.name === 'dispatchId')) {
-      this.db.exec('ALTER TABLE activation_rendezvous ADD COLUMN dispatchId TEXT')
-    }
-  }
-
-  private migrateInboxLoopGuardCounted(): void {
-    const cols = this.db.prepare('PRAGMA table_info(inbox)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'loopGuardCounted'))
-      this.db.exec('ALTER TABLE inbox ADD COLUMN loopGuardCounted INTEGER NOT NULL DEFAULT 0')
-    else this.db.exec('UPDATE inbox SET loopGuardCounted = 0 WHERE loopGuardCounted IS NULL')
-  }
-
-  /** Add the `transcript.tool_call_id` + `transcript.body` columns and agent-scoped
-   *  partial unique index to a pre-existing DB. ACP tool ids are session-local, so
-   *  same-thread agents may legitimately reuse them. */
-  private migrateTranscriptToolBody(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'tool_call_id'))
-      this.db.exec('ALTER TABLE transcript ADD COLUMN tool_call_id TEXT')
-    if (!cols.some((c) => c.name === 'body')) this.db.exec('ALTER TABLE transcript ADD COLUMN body TEXT')
-    this.db.exec(`
-      DROP INDEX IF EXISTS transcript_tool_call;
-      CREATE UNIQUE INDEX IF NOT EXISTS transcript_agent_tool_call
-        ON transcript (channel, thread, sender, tool_call_id) WHERE tool_call_id IS NOT NULL;
-    `)
-  }
-
-  /** Add daemon-local inline webchat image storage to existing transcript tables. */
-  private migrateTranscriptAttachments(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'attachmentsJson'))
-      this.db.exec('ALTER TABLE transcript ADD COLUMN attachmentsJson TEXT')
-    // Canonical webchat post identity (merged-conversation-view.md §6).
-    if (!cols.some((c) => c.name === 'postId')) this.db.exec('ALTER TABLE transcript ADD COLUMN postId TEXT')
-  }
-
-  /** Add daemon-private quoted-reply context to existing transcript tables. The JSON
-   *  is deliberately not mapped onto the console's SessionMessage shape. */
-  private migrateTranscriptQuote(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'quoteJson')) this.db.exec('ALTER TABLE transcript ADD COLUMN quoteJson TEXT')
-  }
-
-  /** Add the defaultPermissionMode column to runtime_catalog_meta for DBs that
-   *  created the table before it existed (CREATE TABLE IF NOT EXISTS never alters).
-   *  No-op once present. */
-  private migrateRuntimeCatalogDefaultMode(): void {
-    const cols = this.db.prepare('PRAGMA table_info(runtime_catalog_meta)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'defaultPermissionMode')) {
-      this.db.exec('ALTER TABLE runtime_catalog_meta ADD COLUMN defaultPermissionMode TEXT')
-    }
-  }
-
-  /** Add session columns introduced after the initial schema: usage JSON, mute/title/link,
-   *  sticky runtime controls, and Slack chrome pointers. CREATE TABLE IF NOT EXISTS
-   *  above adds them for fresh DBs but never alters an existing table, so upgrade in
-   *  place. No-op once the columns are present. */
-  private migrateSessionUsage(): void {
-    const cols = this.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]
-    if (!cols.some((c) => c.name === 'usage')) this.db.exec('ALTER TABLE sessions ADD COLUMN usage TEXT')
-    if (!cols.some((c) => c.name === 'muted')) this.db.exec('ALTER TABLE sessions ADD COLUMN muted INTEGER')
-    if (!cols.some((c) => c.name === 'triggeredBy')) this.db.exec('ALTER TABLE sessions ADD COLUMN triggeredBy TEXT')
-    if (!cols.some((c) => c.name === 'title')) this.db.exec('ALTER TABLE sessions ADD COLUMN title TEXT')
-    if (!cols.some((c) => c.name === 'threadUrl')) this.db.exec('ALTER TABLE sessions ADD COLUMN threadUrl TEXT')
-    if (!cols.some((c) => c.name === 'modelOverride'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN modelOverride TEXT')
-    if (!cols.some((c) => c.name === 'observedModel'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN observedModel TEXT')
-    if (!cols.some((c) => c.name === 'observedModelSet'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN observedModelSet INTEGER NOT NULL DEFAULT 0')
-    if (!cols.some((c) => c.name === 'effortOverride'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN effortOverride TEXT')
-    if (!cols.some((c) => c.name === 'permissionModeOverride'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN permissionModeOverride TEXT')
-    if (!cols.some((c) => c.name === 'fastModeOverride'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN fastModeOverride INTEGER')
-    if (!cols.some((c) => c.name === 'outputModeOverride'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN outputModeOverride TEXT')
-    if (!cols.some((c) => c.name === 'statusBarTs')) this.db.exec('ALTER TABLE sessions ADD COLUMN statusBarTs TEXT')
-    if (!cols.some((c) => c.name === 'memoryProvider'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN memoryProvider TEXT')
-    if (!cols.some((c) => c.name === 'workspaceIsolation'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN workspaceIsolation TEXT')
-    if (!cols.some((c) => c.name === 'originSessionId'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN originSessionId TEXT')
-    if (!cols.some((c) => c.name === 'lastTurnOutcome'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN lastTurnOutcome TEXT')
-    if (!cols.some((c) => c.name === 'needsParentReply'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN needsParentReply INTEGER')
-    if (!cols.some((c) => c.name === 'transportScope'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN transportScope TEXT')
-    // session-visibility.md §4.1: persisted so EVERY event/session re-emit
-    // carries them, not just the one dispatch that knew the message.
-    if (!cols.some((c) => c.name === 'conversationKind'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN conversationKind TEXT')
-    if (!cols.some((c) => c.name === 'tenantScope')) this.db.exec('ALTER TABLE sessions ADD COLUMN tenantScope TEXT')
-    if (!cols.some((c) => c.name === 'launchCorrelationId'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN launchCorrelationId TEXT')
-    if (!cols.some((c) => c.name === 'externalProvider'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN externalProvider TEXT')
-    if (!cols.some((c) => c.name === 'externalRealmKey'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN externalRealmKey TEXT')
-    if (!cols.some((c) => c.name === 'externalResourceKind'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN externalResourceKind TEXT')
-    if (!cols.some((c) => c.name === 'externalResourceKey'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN externalResourceKey TEXT')
-    if (!cols.some((c) => c.name === 'externalIntegrationId'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN externalIntegrationId TEXT')
-    if (!cols.some((c) => c.name === 'externalOriginJson'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN externalOriginJson TEXT')
-    if (!cols.some((c) => c.name === 'sourceBindingKind'))
-      this.db.exec('ALTER TABLE sessions ADD COLUMN sourceBindingKind TEXT')
-  }
-
-  /** Pre-visibility databases have no gate table; the CREATE above only runs on
-   *  a fresh DB. Missing gate state fails closed (capture excluded) until the
-   *  CP's register-time snapshot lands. */
-  private migrateSessionGates(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS session_gates (
-        acpSessionId TEXT PRIMARY KEY,
-        localExcluded INTEGER NOT NULL DEFAULT 1,
-        cpPrivate INTEGER,
-        cpRev INTEGER NOT NULL DEFAULT 0,
-        updatedAt INTEGER
-      );
-      CREATE TABLE IF NOT EXISTS tenant_scopes (
-        integrationId TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        createdAt INTEGER
-      );
-    `)
-  }
-
-  /**
-   * Pre-`kind` transcript tables keyed on (channel, thread, ts) hold only conversational
-   * text. Rebuild them onto the `seq`/`kind` schema, tagging legacy rows `text`. No-op on
-   * a fresh DB (CREATE handles it) or an already-migrated one.
-   */
-  private migrateTranscript(): void {
-    const cols = this.db.prepare('PRAGMA table_info(transcript)').all() as { name: string }[]
-    if (cols.length === 0 || cols.some((c) => c.name === 'kind')) return
-    this.db.exec(`
-      ALTER TABLE transcript RENAME TO transcript_legacy;
-      CREATE TABLE transcript (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel TEXT NOT NULL, thread TEXT NOT NULL, ts TEXT,
-        sender TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL
-      );
-      INSERT INTO transcript (channel, thread, ts, sender, kind, text)
-        SELECT channel, thread, ts, sender, 'text', text FROM transcript_legacy ORDER BY ts ASC;
-      DROP TABLE transcript_legacy;
-    `)
   }
 
   getSession(key: string): SessionRecord | undefined {
     return this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key) as SessionRecord | undefined
-  }
-
-  /** Move one pre-scope session onto its first attributable physical-bot key.
-   * Legacy runtime context is discarded because it may already contain traffic
-   * admitted through another bot; rows written by the partially scoped rollout
-   * retain their ACP id when the persisted scope matches. */
-  adoptLegacySessionScope(
-    legacyKey: string,
-    scopedKey: string,
-    transportScope: string,
-    updatedAt: number
-  ): SessionRecord | undefined {
-    if (legacyKey === scopedKey) return this.getSession(scopedKey)
-    const current = this.getSession(scopedKey)
-    if (current) return current
-    const legacy = this.getSession(legacyKey)
-    if (!legacy || (legacy.transportScope != null && legacy.transportScope !== transportScope)) return undefined
-    const resetRuntime = legacy.transportScope == null
-    this.db.exec('BEGIN')
-    try {
-      this.db
-        .prepare(
-          'INSERT OR IGNORE INTO session_mutes (key) SELECT ? WHERE EXISTS (SELECT 1 FROM session_mutes WHERE key = ?)'
-        )
-        .run(scopedKey, legacyKey)
-      this.db.prepare('DELETE FROM session_mutes WHERE key = ?').run(legacyKey)
-      this.db
-        .prepare(
-          `UPDATE sessions
-           SET key = ?, transportScope = ?,
-               acpSessionId = CASE WHEN ? = 1 THEN NULL ELSE acpSessionId END,
-               state = CASE WHEN ? = 1 AND state != 'closed' THEN 'idle' ELSE state END,
-               lastDeliveredTs = CASE WHEN ? = 1 THEN NULL ELSE lastDeliveredTs END,
-               updatedAt = ?
-           WHERE key = ?`
-        )
-        .run(
-          scopedKey,
-          transportScope,
-          resetRuntime ? 1 : 0,
-          resetRuntime ? 1 : 0,
-          resetRuntime ? 1 : 0,
-          updatedAt,
-          legacyKey
-        )
-      this.db.exec('COMMIT')
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
-    }
-    return this.getSession(scopedKey)
   }
 
   createPermissionRequest(record: PermissionRequestRecord): void {
