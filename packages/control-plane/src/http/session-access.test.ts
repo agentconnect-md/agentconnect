@@ -252,6 +252,40 @@ describe('makeSessionAccessResolver snapshot', () => {
     })
   })
 
+  // The ceiling has to hold even when a refresh straddles it. `fetch` coalesces
+  // a later caller onto the SAME in-flight promise and settles it with the
+  // options of the fetch that created it, so a stale-on-rejection policy set by
+  // the refresh would leak to a caller that was supposed to block.
+  it('makes a caller that arrives past the ceiling observe a straddling refresh’s failure', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+
+    // A refresh that starts inside the stale window and is still running later.
+    let failRefresh!: (err: Error) => void
+    resolve.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          failRefresh = reject
+        })
+    )
+    clock.advance(30_001)
+    await expect(resolver.forQuery(request(), query)).resolves.toMatchObject({ degraded: false })
+
+    // Past the ceiling nothing is servable, so this caller joins the pending
+    // refresh and must see its failure rather than inherit the old snapshot.
+    clock.advance(30_000)
+    const blocked = resolver.forQuery(request(), query)
+    // It has to reach the cache and join that refresh BEFORE the refresh
+    // settles, or it simply starts a sweep of its own and the overlap this test
+    // exists for never happens.
+    await settle()
+    failRefresh(new Error('slack unreachable'))
+
+    await expect(blocked).rejects.toThrow('slack unreachable')
+  })
+
   it('keys the snapshot on the scope set, so a re-fenced scope never hits a stale entry', async () => {
     const { deps, resolve } = harness()
     const resolver = makeSessionAccessResolver(deps)

@@ -1,5 +1,6 @@
 import type { FastifyRequest } from 'fastify'
 import { LRUCache } from 'lru-cache'
+import { cacheOptions } from '../cache.js'
 import type {
   ExternalScopeRecord,
   SessionExternalAccessSnapshot,
@@ -67,17 +68,25 @@ const MAX_SNAPSHOT_ENTRIES = 2_000
 /**
  * Hand back the entry we have and refresh behind the request.
  *
- * The `allowStale…` pair is scoped to THIS path deliberately. A refresh that
- * fails keeps serving the snapshot it was refreshing, up to the ceiling; a COLD
- * sweep that fails must still reject, because resolving it to "no external
- * access" would silently hide every external row instead of reporting an error.
+ * `noDeleteOnFetchRejection` keeps the snapshot a failed refresh was refreshing,
+ * so a provider blip inside the window does not empty the answer.
+ *
+ * `allowStaleOnFetchRejection` is deliberately NOT set, and its absence is
+ * load-bearing. A refresh started inside the stale window can still be running
+ * once the entry passes the ceiling; `fetch` coalesces the caller that arrives
+ * then onto the SAME promise — its in-flight branch runs before any staleness
+ * check — and lru-cache settles that promise with the options of the fetch that
+ * CREATED it. Allowing stale on rejection here would therefore hand the old
+ * snapshot to a caller that was supposed to block, so the ceiling would stop
+ * being hard in exactly the case it exists for. Without it, that caller observes
+ * the failure, while the reader that never waited still gets its stale value and
+ * the entry still survives.
+ *
+ * A COLD sweep that fails is unaffected either way: it rejects, because
+ * resolving it to "no external access" would silently hide every external row
+ * instead of reporting an error.
  */
-const REFRESH_BEHIND = {
-  forceRefresh: true,
-  allowStale: true,
-  allowStaleOnFetchRejection: true,
-  noDeleteOnFetchRejection: true
-} as const
+const REFRESH_BEHIND = { forceRefresh: true, allowStale: true, noDeleteOnFetchRejection: true } as const
 
 /** What one sweep needs, carried to `fetchMethod` as its context. */
 type Sweep = { scopes: readonly ExternalScopeRecord[]; viewer: SessionAccessViewer }
@@ -176,20 +185,13 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
 
   /** `fetch` hands concurrent callers of one key the SAME promise, which is the
    *  single-flight this exists for, and drops the entry when the sweep rejects —
-   *  a failed sweep is never inherited as a verdict. `perf` is the time seam;
-   *  `ttlResolution: 0` turns off lru-cache's 1 ms `now()` debounce, which is
-   *  driven by a real timer a `FakeClock` cannot advance. The clock must report
-   *  real epoch milliseconds, as `Clock` documents: lru-cache treats a falsy
-   *  entry start as "no TTL recorded", so a snapshot written at time 0 would
-   *  never expire. */
+   *  a failed sweep is never inherited as a verdict. */
   const snapshots = new LRUCache<string, ResolvedSessionAccess, Sweep>({
-    max: MAX_SNAPSHOT_ENTRIES,
+    ...cacheOptions(deps.clock, MAX_SNAPSHOT_ENTRIES),
     // The entry's lifetime is the CEILING, not the fresh window: an entry has to
     // outlive its own freshness for there to be anything to serve while the
     // refresh runs. `SNAPSHOT_FRESH_MS` is applied by the reader below.
     ttl: SNAPSHOT_MAX_STALE_MS,
-    ttlResolution: 0,
-    perf: deps.clock,
     fetchMethod: (_key, _stale, { context }) => forScopes(context.scopes, context.viewer)
   })
 
