@@ -12,7 +12,7 @@ Source baseline: AgentConnect OSS documentation and Compose files verified 2026-
 Run the read-only check first:
 
 ```bash
-skills/agentconnect-setup/scripts/check-local.sh MODE /path/to/agentconnect
+.claude/skills/agentconnect-setup/scripts/check-local.sh MODE /path/to/agentconnect
 ```
 
 ## Mode 1: local without authentication
