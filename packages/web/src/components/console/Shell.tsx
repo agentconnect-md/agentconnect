@@ -774,7 +774,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
                   </button>
                 )}
-                <div className="flex-none">
+                <div className="railnotification flex-none">
                   <NotificationBell variant="rail" />
                 </div>
                 {/* Same 22px box as the brand row's search button, and the same 2px

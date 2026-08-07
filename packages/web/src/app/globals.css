@@ -610,6 +610,11 @@
     padding: 10px;
     border-top: 1px solid var(--border-inverse);
   }
+  /* The header pair uses a 1px gap after its negative-margin correction. Pull
+     the bell 3px toward Help so the footer pair shares those exact centres. */
+  .railnotification {
+    margin-right: -3px;
+  }
   .pfbtn {
     display: flex;
     align-items: center;
@@ -649,6 +654,9 @@
      do it for them. */
   .rail.collapsed .railfoot .railiconbtn {
     margin-inline: auto;
+  }
+  .rail.collapsed .railnotification {
+    margin-right: 0;
   }
   /* The help popover needs room the 64px rail hasn't got, and its contents are all
      reachable from the docs anyway — collapsed, it steps aside for the account block. */
