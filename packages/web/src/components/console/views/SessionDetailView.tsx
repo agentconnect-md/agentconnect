@@ -398,6 +398,28 @@ function plainStep(text: string, time?: string, image?: SessionImage, platform?:
   }
 }
 
+// Hover-revealed copy-to-clipboard for a FINISHED chat bubble (the call sites
+// skip it while the turn streams). Visibility rides the turn container's
+// `group/turn` hover, so the affordance stays out of the transcript until
+// pointed at; keyboard focus reveals it too.
+function CopyTurnButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard?.writeText(text)?.catch?.(() => {})
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1600)
+      }}
+      title={copied ? 'Copied' : 'Copy message'}
+      className="inline-flex h-[20px] w-[20px] flex-none items-center justify-center rounded-sm border-0 bg-transparent p-0 text-(--text-tertiary) opacity-0 transition-opacity hover:text-(--text-secondary) focus-visible:opacity-100 group-hover/turn:opacity-100"
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={12} />
+    </button>
+  )
+}
+
 // A step's non-text extras (code block, file chips, captured tool body) — rendered
 // identically in a turn's plain answer and in its collapsed "work" rows.
 function StepExtras({ step, sessionId }: { step: FmtStep; sessionId?: string }) {
@@ -1305,9 +1327,8 @@ export default function SessionDetailView() {
   const [transcriptSessionId, setTranscriptSessionId] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The visibility the user last chose for a bot turn's collapsed "work" panel (keyed
-  // by turn index). A finished panel starts collapsed; the streaming turn's defaults
-  // open — see workPanelOpen(). The toggle records the opposite of the EFFECTIVE
-  // on-screen state, so closing an auto-opened streaming panel works.
+  // by turn index). Every panel starts collapsed — streaming included — see
+  // workPanelOpen(). The toggle records the opposite of the EFFECTIVE on-screen state.
   const [workOverride, setWorkOverride] = useState<ReadonlyMap<number, boolean>>(() => new Map())
   const toggleWork = (ti: number, currentOpen: boolean) =>
     setWorkOverride((prev) => toggleWorkPanel(prev, ti, currentOpen))
@@ -3379,8 +3400,8 @@ export default function SessionDetailView() {
                   {turn.kind === 'user' ? (
                     // 2b: user turns are right-aligned brand-soft bubbles. A sender label
                     // sits above the bubble only when it isn't you (platform user / cron).
-                    <div key={`${session.id}:${ti}`} className="flex items-start justify-end gap-[9px]">
-                      <div className="flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                    <div key={`${session.id}:${ti}`} className="group/turn flex items-start justify-end gap-[9px]">
+                      <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
                         {showsSenderLabel(turn) && (
                           <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
                             {turn.isCron && turn.cronId ? (
@@ -3402,6 +3423,15 @@ export default function SessionDetailView() {
                           )}
                           {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
                         </div>
+                        {/* Sent bubbles are complete by definition — the copy affordance
+                        (hover-revealed, right-aligned under the bubble) always mounts.
+                        Absolutely positioned into the inter-turn gap so revealing it
+                        never changes the row's height. */}
+                        {turn.text && (
+                          <span className="absolute right-0 top-full">
+                            <CopyTurnButton text={turn.text} />
+                          </span>
+                        )}
                       </div>
                       <ParticipantAvatar
                         agent={turn.agent}
@@ -3428,19 +3458,39 @@ export default function SessionDetailView() {
                       // EDIT rows, since one EDIT row can touch several files).
                       const { thinkCount, toolCount, editCount } = workCounts(workSteps)
                       const summary = workSummary(thinkCount, toolCount, editCount)
-                      // The trailing turn of a running session is the one streaming: its
-                      // work panel defaults open so skill/command/tool calls are visible
-                      // AS THEY RUN, and collapses on its own once the turn completes.
+                      // The trailing turn of a running session is the one streaming.
                       // statusLabel carries the RAW session state — the active-turn
                       // predicate lives (and is tested) in session-work.ts.
                       const streaming = ti === turns.length - 1 && sessionTurnInFlight(pgBusy, session.statusLabel)
-                      const openWork = workPanelOpen(workOverride.get(ti), streaming)
+                      const openWork = workPanelOpen(workOverride.get(ti))
+                      // Is the WORK itself still running? `streaming` alone is turn-level —
+                      // it stays true while the spoken answer streams AFTER the last tool
+                      // finished, which must not keep the ticker alive. Work counts as
+                      // running only while the turn's LATEST step is a work step that
+                      // hasn't finished: a trailing text step means the agent moved on to
+                      // its answer, and a trailing tool step that reports completed/failed
+                      // is done. THINK rows carry no status and count as running until
+                      // superseded.
+                      const lastStep = turn.steps[turn.steps.length - 1]
+                      const lastDone = ['completed', 'failed'].includes((lastStep?.msg?.toolStatus ?? '').toLowerCase())
+                      const workRunning = streaming && !!lastStep && WORK_LANES.has(lastStep.lane) && !lastDone
+                      // While work runs, the toggle line also carries what is running RIGHT
+                      // NOW — the latest step's first line (tool rows keep the command in
+                      // `code`) — so a collapsed panel still shows live progress.
+                      const liveLine = workRunning
+                        ? (lastStep.text || lastStep.code)?.split('\n', 1)[0]?.trim()
+                        : undefined
                       // Keyed by agent id where there is one so the colour survives a
                       // rename; a mock/playground row without an id falls back to the
                       // display name, which is stable for as long as the row is.
                       const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                      // What the bubble-level copy button copies: the spoken answer.
+                      const answerText = textSteps
+                        .map((st) => st.text)
+                        .filter(Boolean)
+                        .join('\n\n')
                       return (
-                        <div key={`${session.id}:${ti}`} className="flex items-start gap-[10px]">
+                        <div key={`${session.id}:${ti}`} className="group/turn flex items-start gap-[10px]">
                           <span className="av h-[26px] w-[26px] flex-none rounded-md">
                             <AgentIconView
                               icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
@@ -3479,35 +3529,42 @@ export default function SessionDetailView() {
                             ))}
                             {workSteps.length > 0 && (
                               <>
-                                <button
-                                  type="button"
-                                  onClick={() => toggleWork(ti, openWork)}
-                                  className="mt-2 inline-flex items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                  title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                                >
-                                  <Icon
-                                    name={openWork ? 'chevron-down' : 'chevron-right'}
-                                    size={13}
-                                    color="var(--text-tertiary)"
-                                  />
-                                  {summary || 'Details'}
-                                </button>
+                                {/* One row: the work toggle, with the bubble's copy button at
+                                the line's end — mounted only once the turn has finished. */}
+                                <div className="mt-2 flex min-w-0 items-center gap-[6px]">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleWork(ti, openWork)}
+                                    className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                                    title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                                  >
+                                    <Icon
+                                      name={openWork ? 'chevron-down' : 'chevron-right'}
+                                      size={13}
+                                      color="var(--text-tertiary)"
+                                    />
+                                    <span className="flex-none">{summary || 'Details'}</span>
+                                    {liveLine && (
+                                      // Keyed by content: a new step remounts the span, replaying
+                                      // the ac-rise fade-in (honors reduced-motion in globals.css).
+                                      <span key={liveLine} className="ac-rise min-w-0 truncate">
+                                        · {liveLine}
+                                      </span>
+                                    )}
+                                  </button>
+                                  {!streaming && answerText && <CopyTurnButton text={answerText} />}
+                                </div>
                                 {openWork && (
                                   <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                    {/* While the turn is still streaming, the panel is a
-                                    progress ticker: only the LATEST work step shows (the
-                                    list would grow unboundedly mid-run). The full list
-                                    appears once the turn completes. */}
-                                    {(streaming ? workSteps.slice(-1) : workSteps).map((st, si) => (
+                                    {/* All work steps show, streaming or not — a live turn's
+                                    panel grows as steps arrive so the whole run is visible. */}
+                                    {workSteps.map((st, si) => (
                                       <div
-                                        // Keyed by tool identity where there is one, so the
-                                        // key survives the streaming→completed transition
-                                        // (the ticker's slice(-1) renders index 0, the full
-                                        // list the original index — an index-bearing key
-                                        // would remount ToolBodyDetail at turn end and slam
-                                        // an expanded panel shut). Steps without a tool id
-                                        // (THINK rows) fall back to the index; within one
-                                        // agent's turn a toolCallId appears once.
+                                        // Keyed by tool identity where there is one, so an
+                                        // expanded ToolBodyDetail survives re-renders as new
+                                        // steps stream in. Steps without a tool id (THINK
+                                        // rows) fall back to the index; within one agent's
+                                        // turn a toolCallId appears once.
                                         key={st.msg?.toolCallId ?? `i:${si}`}
                                         className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
                                           si > 0 ? 'border-t border-(--border-subtle)' : ''
@@ -3543,6 +3600,13 @@ export default function SessionDetailView() {
                                   </div>
                                 )}
                               </>
+                            )}
+                            {/* A turn with no work has no toggle row — the finished
+                            bubble's copy button gets its own line instead. */}
+                            {workSteps.length === 0 && !streaming && answerText && (
+                              <div className="mt-2 flex">
+                                <CopyTurnButton text={answerText} />
+                              </div>
                             )}
                           </div>
                         </div>
