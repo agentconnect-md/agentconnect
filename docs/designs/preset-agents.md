@@ -270,8 +270,9 @@ installed via standard OAuth v2. Verified gaps against current code:
 - **Callback branch.** Exchange with the platform credentials and **persist `team.id`
   and `bot_user_id`** — today `SlackOAuthResult` deliberately drops `team.id`
   (`http/slack-config-api.ts`).
-- **Schema.** `Bot.teamId` (nullable for legacy rows) + unique `(slackAppId, teamId)`;
-  multiple `Bot` rows may now share one `slackAppId` across orgs.
+- **Schema.** `Bot.teamId` (nullable when no workspace was captured), projected
+  into the `(platform, externalAppId, externalTenantId)` unique; multiple `Bot`
+  rows may now share one `slackAppId` across orgs.
 - **Relay demux.** Today demux is a learned `api_app_id → botId` map with a
   signing-secret brute scan as fallback (`relay/src/relay-ingress-manager.ts`). Every
   install of a distributed app shares both the app id **and** the signing secret, so a

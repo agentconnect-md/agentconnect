@@ -51,8 +51,16 @@ const botInclude = {
   integrations: { select: { agentId: true, status: true }, orderBy: { createdAt: 'asc' } }
 } as const
 
+/** The bag is `Json`, so a hand-edited row can hold anything. Read it the way any
+ *  untrusted map is read: a non-string is absent, never coerced. */
+function asText(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
 function toBotRecord(b: BotJoined): BotRecord {
   const active = b.integrations.filter((i) => i.status === 'active')
+  const platformConfig = (b.platformConfig as Record<string, unknown> | null) ?? null
+  const cfg = platformConfig ?? {}
   return {
     id: BotId(b.id),
     orgId: OrgId(b.orgId),
@@ -63,16 +71,20 @@ function toBotRecord(b: BotJoined): BotRecord {
     teamId: b.teamId,
     externalAppId: b.externalAppId,
     externalTenantId: b.externalTenantId,
-    platformConfig: (b.platformConfig as Record<string, unknown> | null) ?? null,
+    platformConfig: platformConfig,
     workspaceId: b.workspaceId,
     workspaceName: b.workspaceName,
     botUserId: b.botUserId,
     revokedAt: b.revokedAt,
     credentialRevision: b.credentialRevision,
     credentialInstalledAt: b.credentialInstalledAt,
-    discordAppId: b.discordAppId,
-    feishuAppId: b.feishuAppId,
-    feishuRegion: (b.feishuRegion as FeishuRegion | null) ?? null,
+    // Projected out of the generic bag, which is where every write puts them
+    // (`CpPlatformProvider.projectBotIdentity`). The named fields stay on the
+    // RECORD because that is a domain type with named platform metadata, not a
+    // column list — the bag is a storage decision, so it stops at this seam.
+    discordAppId: asText(cfg.discordAppId),
+    feishuAppId: asText(cfg.feishuAppId),
+    feishuRegion: (asText(cfg.feishuRegion) as FeishuRegion | null) ?? null,
     shareable: b.shareable,
     transport: b.transport as BotRecord['transport'],
     createdBy: b.createdBy
@@ -109,11 +121,11 @@ export class PgBotRepo implements BotRepo {
   ) {}
 
   async create(input: CreateBotInput): Promise<BotRecord> {
-    // The D6 generic dual-write (§11). Reads stay on the legacy columns during
-    // the dual-write window; this keeps the generic pair (and the metadata bag)
-    // in lockstep for every NEW row, whichever platform and whichever install
-    // path wrote it. Resolved BEFORE the write so an unwired projector surfaces
-    // as itself rather than as something the P2002 mapping below has to survive.
+    // The D6 generic identity (§11) — the row's only demux identity, and what
+    // the composite unique fences on. Written for every NEW row, whichever
+    // platform and whichever install path produced it. Resolved BEFORE the write
+    // so an unwired projector surfaces as itself rather than as something the
+    // P2002 mapping below has to survive.
     const identity = this.projectIdentity(input)
     try {
       const b = await this.db.bot.create({
@@ -129,9 +141,6 @@ export class PgBotRepo implements BotRepo {
           ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
           ...(input.workspaceName ? { workspaceName: input.workspaceName } : {}),
           ...(input.botUserId ? { botUserId: input.botUserId } : {}),
-          ...(input.discordAppId ? { discordAppId: input.discordAppId } : {}),
-          ...(input.feishuAppId ? { feishuAppId: input.feishuAppId } : {}),
-          ...(input.feishuRegion ? { feishuRegion: input.feishuRegion } : {}),
           ...(input.shareable !== undefined ? { shareable: input.shareable } : {}),
           ...(input.transport !== undefined ? { transport: input.transport } : {}),
           // Generation 1 (the column default) lands NOW — so a lifecycle event that
@@ -144,10 +153,8 @@ export class PgBotRepo implements BotRepo {
       })
       return toBotRecord(b)
     } catch (err) {
-      // The D6 composite unique fired: a bot with this external app identity
-      // already exists on this platform. Typed so routes can 409 instead of 500.
-      // The legacy (slackAppId, teamId) unique keeps its existing callers'
-      // handling; only the new index maps here.
+      // The composite unique fired: a bot with this external app identity already
+      // exists on this platform. Typed so routes can 409 instead of 500.
       if (
         (err as { code?: string }).code === 'P2002' &&
         String((err as { meta?: { target?: unknown } }).meta?.target ?? '').includes('externalAppId')
@@ -211,9 +218,10 @@ export class PgBotRepo implements BotRepo {
   }
 
   async setSlackAppIdIfMissing(id: BotId, slackAppId: string): Promise<boolean> {
-    // Dual-write (D6): the generic column tracks the legacy one. The tenant half
-    // stays NULL here — the reconciler backfills legacy socket bots, whose
-    // pre-capture NULLs-distinct semantics must be preserved.
+    // Both in one statement, so the demux identity and the console's deep-link id
+    // can never disagree. The tenant half stays NULL: this backfills a socket bot
+    // that never captured a workspace, and NULL is what keeps such rows distinct
+    // under the composite unique.
     const result = await this.db.bot.updateMany({
       where: { id, slackAppId: null },
       data: { slackAppId, externalAppId: slackAppId }
@@ -276,9 +284,13 @@ export class PgBotRepo implements BotRepo {
     // Cross-org on purpose (the admission question IS cross-org), boolean on
     // purpose (no foreign row crosses the seam) — ingress-tenant-fence.md §5.
     //
-    // The app id matches EITHER column: `externalAppId` is the D6 generic one
-    // every new row dual-writes, `slackAppId` is the legacy one pre-D6 rows
-    // still carry alone. Matching both is what lets a legacy row hold a claim.
+    // The app id matches EITHER column. Every write that sets a Slack app id sets
+    // the generic one in the same statement (`create` via the projector,
+    // `setSlackAppIdIfMissing` explicitly), so `slackAppId` alone should be
+    // unreachable — but nothing in the SCHEMA enforces that, and the cost of
+    // being wrong here is one organization capturing another's workspace. A
+    // second predicate is a cheap price for not resting a cross-org fence on an
+    // invariant the database does not hold.
     const held = await this.db.bot.count({
       where: {
         platform: toDbPlatform(platform),
@@ -290,24 +302,14 @@ export class PgBotRepo implements BotRepo {
     return held > 0
   }
 
-  async getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null> {
-    // Cross-org on purpose: (slackAppId, teamId) is globally unique — a workspace
-    // install of a distributed app binds to exactly one org, and the platform
-    // callback must find it wherever it lives to refuse a second org's claim.
-    const b = await this.db.bot.findUnique({
-      where: { slackAppId_teamId: { slackAppId, teamId } },
-      include: botInclude
-    })
-    return b ? toBotRecord(b) : null
-  }
-
   async getByExternalIdentity(
     platform: string,
     externalAppId: string,
     externalTenantId: string
   ): Promise<BotRecord | null> {
-    // Cross-org on purpose, mirroring getBySlackAppTeam: an external app identity
-    // binds to exactly one org, and a second org's claim must find it to refuse.
+    // Cross-org on purpose: an external app identity binds to exactly one org — a
+    // workspace install of a distributed app is global — and a second org's claim
+    // must find it wherever it lives in order to refuse.
     const b = await this.db.bot.findUnique({
       where: { platform_externalAppId_externalTenantId: { platform, externalAppId, externalTenantId } },
       include: botInclude

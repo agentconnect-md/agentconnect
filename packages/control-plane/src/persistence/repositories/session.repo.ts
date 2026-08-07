@@ -115,8 +115,7 @@ function toExternalPolicyRecord(policy: SessionExternalAccessPolicy): SessionExt
     provider: policy.provider,
     state: policy.state as ExternalAccessPolicyState,
     currentRev: policy.currentRev,
-    readFenceRev: policy.readFenceRev,
-    migrationCursor: policy.migrationCursor
+    readFenceRev: policy.readFenceRev
   }
 }
 

@@ -205,8 +205,11 @@ describe('Feishu/Lark one-click app registration', () => {
     // the durable cursor switches domains, then a later browser poll resumes it.
     expect(requests.map((request) => request.get('action'))).toEqual(['begin', 'poll', 'poll'])
     expect(requests[0]?.get('request_user_info')).toBe('open_id')
-    const bot = await prisma.bot.findFirst({ where: { feishuAppId: 'cli_oneclick' } })
-    expect(bot).toMatchObject({ name: 'AgentConnect Lark', feishuRegion: 'lark' })
+    // Feishu projects its app id onto the generic identity, so the row is found
+    // by the indexed column rather than a JSON path; the gateway rides the bag.
+    const bot = await prisma.bot.findFirst({ where: { externalAppId: 'cli_oneclick' } })
+    expect(bot).toMatchObject({ name: 'AgentConnect Lark' })
+    expect(bot?.platformConfig).toMatchObject({ feishuAppId: 'cli_oneclick', feishuRegion: 'lark' })
     expect(await prisma.botSecret.findUnique({ where: { botId: bot!.id } })).toMatchObject({
       botToken: 'one-click-secret',
       appToken: 'cli_oneclick'
@@ -580,7 +583,7 @@ describe('Feishu/Lark one-click app registration', () => {
       { timeout: 5_000 }
     )
 
-    const bot = await prisma.bot.findFirstOrThrow({ where: { feishuAppId: 'cli_http_oneclick' } })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { externalAppId: 'cli_http_oneclick' } })
     const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId: bot.id } })
     expect(bot).toMatchObject({ transport: 'http', botUserId: 'ou_http_bot' })
     expect(secret.verificationToken).toHaveLength(32)

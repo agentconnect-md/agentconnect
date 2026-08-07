@@ -49,8 +49,7 @@ describe('makeSessionAccessResolver', () => {
       provider: 'feishu',
       state: 'disabled',
       currentRev: 0n,
-      readFenceRev: null,
-      migrationCursor: null
+      readFenceRev: null
     } as const
     const deps = {
       repos: {

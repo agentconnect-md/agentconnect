@@ -83,8 +83,8 @@ never serve the wrong tenant; it can only miss and fall back to the scan.
 ### 3.1 Why not simply write `teamId` for every bot
 
 `teamId` being non-null is load-bearing beyond demux: it marks a distributed
-platform-app install, participates in the `(slackAppId, teamId)` composite
-unique, and drives admission/reauthorization decisions in the platform-app
+platform-app install, is projected into the `externalTenantId` half of the
+composite unique, and drives admission/reauthorization decisions in the platform-app
 funnel and the `DemuxIndex.indexAssign` composite-only rule. Populating it for
 quick-install bots would silently change bot identity, uniqueness, and
 admission semantics to buy a fence. The fence is a distinct concern and gets a
@@ -138,7 +138,7 @@ passes for both, and attribution falls back to pool order. No delivery-time
 check can break that tie; only refusing the second claim can.
 
 That refusal already exists for the distributed platform app: its OAuth
-callback resolves the `(slackAppId, teamId)` claim globally and answers a
+callback resolves the `(externalAppId, externalTenantId)` claim globally and answers a
 cross-organization hit with `workspace_taken`, deliberately not naming the
 holding organization. This change generalizes the same rule to every create
 path.

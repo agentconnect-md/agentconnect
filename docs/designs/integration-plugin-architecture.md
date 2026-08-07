@@ -154,8 +154,9 @@ teamId` is a load-bearing composite-unique demux key (admission and
   unique index). It generalizes to `externalAppId` / `externalTenantId`
   columns (unique together with platform, preserving today's NULL-distinct
   semantics) — **not** to JSON, which cannot carry a declarative unique
-  constraint. Display-only ids (`discordAppId`, `feishuAppId`,
-  `feishuRegion`) move to a per-platform JSON bag.
+  constraint. Public per-platform metadata (`discordAppId`, `feishuAppId`,
+  `feishuRegion`) lives in a per-platform JSON bag instead, so the fifth
+  platform costs a registry line rather than a migration.
 - **D7 — First-party now, third-party deferred** with four named
   keep-the-door-open items (§13).
 

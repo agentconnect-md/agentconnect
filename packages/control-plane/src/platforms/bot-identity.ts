@@ -2,7 +2,7 @@
  * The D6 identity projection, read through the platform registry
  * (integration-plugin-architecture.md §9/§11; audit F13).
  *
- * `PgBotRepo.create` performs the generic identity dual-write for EVERY caller —
+ * `PgBotRepo.create` writes the generic identity for EVERY caller —
  * the shared create tail (`http/install-bot.ts`), the Feishu one-click funnel
  * (`http/install-feishu.ts`), and anything added later. It used to decide WHAT
  * to write with a four-arm `switch (input.platform)`: per-platform knowledge in

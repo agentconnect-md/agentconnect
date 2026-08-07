@@ -467,20 +467,21 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    * sentinel, and what public metadata rides the generic `platformConfig` bag.
    *
    * An AT-WRITE read, and the reason it is a member rather than a repository
-   * `switch`: `PgBotRepo.create` performs the D6 dual-write for EVERY caller —
+   * `switch`: `PgBotRepo.create` writes the D6 identity for EVERY caller —
    * the shared create tail, the Feishu one-click funnel, and anything added
    * later — so the decision has to be reachable from persistence, but it is not
    * persistence's to make. Core keeps the write (and so keeps §11's guarantee
-   * that a new row never leaves the pair NULL, which is reserved for legacy
-   * rows); the platform keeps the mapping.
+   * that a new row never leaves the pair NULL unless the platform genuinely
+   * captured no app identity); the platform keeps the mapping.
    *
    * DISTINCT from {@link CpNewBotInstall.externalIdentity}, which is the create
    * ROUTE's 409 pre-check and applies only to a platform that wants a clean
    * conflict message on the credential-paste path. This member describes what is
    * PERSISTED, on every path, and a platform may project an identity here
    * without claiming a route-level fence (Slack does exactly that: its rows
-   * carry the pair whenever an app id and workspace were captured, while the
-   * legacy `(slackAppId, teamId)` unique remains its fence).
+   * carry the pair whenever an app id and workspace were captured, and the
+   * composite unique fences them, but a pasted-token install with neither is
+   * admitted unfenced because there is nothing to fence on).
    *
    * Pure: no I/O. Absent ⇒ this platform persists no external identity
    * (Telegram — a bot token and nothing else). PUBLIC metadata only.

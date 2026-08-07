@@ -345,8 +345,9 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     expect(secret).toMatchObject({ botToken: DISCORD_TOKEN, appToken: null })
     // The application (client) id is decoded from the token and persisted (public metadata).
     const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
-    expect(bot).toMatchObject({ platform: 'discord', discordAppId: '123456789012345678', slackAppId: null })
-    // D6: Discord has no demux identity — only the display bag is written.
+    expect(bot).toMatchObject({ platform: 'discord', slackAppId: null })
+    // D6: Discord has no demux identity — the decoded application id is public
+    // metadata, so it rides the per-platform bag and fences nothing.
     expect(bot).toMatchObject({
       externalAppId: null,
       externalTenantId: null,
@@ -475,9 +476,10 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     const secret = await prisma.botSecret.findUnique({ where: { botId: dto.botId as string } })
     expect(secret).toMatchObject({ botToken: FEISHU.appSecret, appToken: FEISHU.appId })
     const bot = await prisma.bot.findUnique({ where: { id: dto.botId as string } })
-    expect(bot).toMatchObject({ platform: 'feishu', feishuAppId: FEISHU.appId, feishuRegion: 'lark' })
-    // D6 dual-write: the generic demux identity carries the app id with the
-    // tenantless '-' sentinel, and the display bag holds the fold-ahead fields.
+    expect(bot).toMatchObject({ platform: 'feishu' })
+    // The generic demux identity carries the app id with the tenantless '-'
+    // sentinel; the app id and gateway also ride the per-platform bag, which is
+    // what the console reads and what survives an uninstall.
     expect(bot).toMatchObject({
       externalAppId: FEISHU.appId,
       externalTenantId: '-',
@@ -1075,8 +1077,11 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       })
     ).json() as { id: string; botId: string }
     await app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${first.id}` })
-    // Region lives durably on the freed bot.
-    expect((await prisma.bot.findUnique({ where: { id: first.botId } }))?.feishuRegion).toBe('lark')
+    // Region lives durably on the freed bot — in the per-platform bag, which is
+    // what survives the uninstall so a reinstall dials the same gateway.
+    expect((await prisma.bot.findUnique({ where: { id: first.botId } }))?.platformConfig).toMatchObject({
+      feishuRegion: 'lark'
+    })
 
     const otherAgent = randomUUID()
     await seedAgent(prisma, otherAgent, { daemonId: DAEMON })

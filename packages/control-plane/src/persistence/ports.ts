@@ -1037,7 +1037,6 @@ export interface SessionExternalAccessPolicyRecord {
   state: ExternalAccessPolicyState
   currentRev: bigint
   readFenceRev: bigint | null
-  migrationCursor: string | null
 }
 
 /** One request-local external authorization snapshot. Scope allows are tied to
@@ -2707,9 +2706,6 @@ export interface BotRepo {
    *  shared-bot orchestrator's convergence worklist (relay register / failover).
    *  System-tier: fleet-wide by design. */
   listHttpActive(): Promise<BotRecord[]>
-  /** The Bot backing one workspace install of a distributed app — CROSS-ORG lookup
-   *  by the composite demux key (a workspace binds to exactly one org). */
-  getBySlackAppTeam(slackAppId: string, teamId: string): Promise<BotRecord | null>
   /** Workspace-claim admission predicate (ingress-tenant-fence.md §5): does a
    *  DIFFERENT organization already hold a bot for this app+workspace? The
    *  question is deliberately cross-org — one app installed into one workspace

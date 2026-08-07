@@ -212,7 +212,7 @@ describe('feishu buildNewBotInstall', () => {
     })
     // The pre-check query and the `BotExternalIdentityTaken` backstop both run
     // off this declaration, so the id and the sentinel must be exactly what the
-    // repo's dual-write puts on the row.
+    // repo's identity write puts on the row.
     expect(install.externalIdentity?.externalAppId).toBe('cli_y')
     expect(install.externalIdentity?.externalTenantId).toBe('-')
   })
