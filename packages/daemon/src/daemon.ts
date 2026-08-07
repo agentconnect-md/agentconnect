@@ -8604,9 +8604,26 @@ export class Daemon {
             : [],
         isDm: false
       }
-      void this.dispatch(originOwner, normalized, integrationId, undefined, callMeta).catch((err) =>
+      let admission: { accepted: boolean; reason?: string } | undefined
+      const turn = this.dispatch(originOwner, normalized, integrationId, undefined, callMeta, {
+        onAdmission: (result) => {
+          admission = result
+        }
+      })
+      void turn.catch((err) =>
         this.log.error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
       )
+      // dispatch() settles admission synchronously for this live delivery. Do not promise that
+      // the reply is queued when pause/drain, loop protection, or backpressure rejected it.
+      if (!admission) throw new Error('replyToSession admission barrier did not settle synchronously')
+      if (!admission.accepted) {
+        this.markChildParentReply(callerKey, req.sessionId, 'failed')
+        return {
+          delivered: false,
+          targetSession: local.key,
+          reason: admission.reason === 'queue_full' ? 'queue_full' : 'busy'
+        }
+      }
       this.markChildParentReply(callerKey, req.sessionId, 'queued-for-parent')
       this.log.info(`replyToSession: ${req.callerAgentId} → ${originOwner} (${local.key}) delivery=${deliveryId}`)
       return { delivered: true, targetSession: local.key }

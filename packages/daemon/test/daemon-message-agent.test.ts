@@ -113,8 +113,9 @@ async function bootWithDispatchSpy(root: string) {
   })
   const calls: { agentId: string; msg: any; integrationId?: string; callMeta?: any }[] = []
   ;(daemon as any).dispatch = vi.fn(
-    async (agentId: string, msg: any, integrationId?: string, _wc?: any, callMeta?: any) => {
+    async (agentId: string, msg: any, integrationId?: string, _wc?: any, callMeta?: any, opts?: any) => {
       calls.push({ agentId, msg, integrationId, callMeta })
+      opts?.onAdmission?.({ accepted: true })
       return 'acp-1'
     }
   )
@@ -1607,6 +1608,65 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       nextAction: 'finish-turn-and-wait'
     })
     expect(status.message).toMatch(/next turn.*do not retry/i)
+    await daemon.stop()
+  })
+
+  it('reports a failed reply instead of queued-for-parent when local dispatch rejects admission', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon } = await bootWithDispatchSpy(root)
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('slack', 'C1', '100.1', 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      acpSessionId: 'acp-parent-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      originSessionId: 'acp-parent-1',
+      needsParentReply: 1
+    })
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-1',
+      originCoords: { platform: 'slack', channel: 'C1', thread: '100.1' }
+    })
+    ;(daemon as any).dispatch = vi.fn(
+      (_agentId: string, _msg: any, _integrationId?: string, _wc?: any, _callMeta?: any, opts?: any) => {
+        opts?.onAdmission?.({ accepted: false, reason: 'queue_full' })
+        return Promise.reject(new Error('queue full'))
+      }
+    )
+
+    const res = await (daemon as any).replyToSession(replyReq())
+    expect(res).toEqual({ delivered: false, targetSession: 'slack:C1:100.1:bot-a', reason: 'queue_full' })
+    const status = await (daemon as any).viewSessionStatus({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: '100.1',
+      sessionId: callerKey
+    })
+    expect(status).toMatchObject({
+      reply: { requested: true, state: 'failed' },
+      nextAction: 'report-failure'
+    })
+    expect(status.message).toMatch(/delivery failed.*do not retry/i)
     await daemon.stop()
   })
 
