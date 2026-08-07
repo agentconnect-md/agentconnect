@@ -204,6 +204,15 @@ export const ChildSessionStatus = z.object({
   state: z.enum(['starting', 'idle', 'prompting', 'cancelling', 'resuming', 'closed']).optional(),
   /** Epoch ms of the child's last state change. */
   updatedAt: z.number().int().optional(),
+  /** Optional during rolling upgrades; current daemons always return it for found children. */
+  reply: z
+    .object({
+      requested: z.boolean(),
+      state: z.enum(['not-requested', 'awaiting', 'queued-for-parent', 'not-sent', 'failed', 'unknown'])
+    })
+    .optional(),
+  nextAction: z.enum(['none', 'wait', 'finish-turn-and-wait', 'report-failure', 'report-missing-reply']).optional(),
+  message: z.string().optional(),
   /** Transport-level failure only: the owning daemon is not currently reachable. */
   reason: z.enum(['offline']).optional()
 })

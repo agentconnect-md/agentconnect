@@ -857,7 +857,10 @@ export class SessionManager {
         `cannot finish — reply to it with ` +
         `\`sendMessage\` \`{"sessionId":"${effectiveOriginSessionId}","message":"..."}\`, saying whether you ` +
         `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
-        `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful.`
+        `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
+        `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
+        `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
+        `without repeating the message.`
       : ''
 
     // Standing response-choice rule for EVERY agent session and delivery scenario. Direct

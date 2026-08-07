@@ -1287,6 +1287,19 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     expect(res.childSessionId).toBe(res.wake!.targetSession)
   })
 
+  it('tells a needsReply caller to finish the current turn and wait instead of retrying', async () => {
+    const { deps: d } = wakeDeps()
+    const res = (await executeTool(
+      ctx,
+      'sendMessage',
+      { toAgent: { agentId: 'peer-1', needsReply: true }, message: 'go' },
+      d
+    )) as Record<string, any>
+    expect(res.reply).toEqual({ requested: true, state: 'awaiting' })
+    expect(res.nextAction).toBe('finish-turn-and-wait')
+    expect(res.message).toMatch(/End this turn.*do not retry/i)
+  })
+
   it('omits childSessionId when the wake was refused — nothing was opened', async () => {
     const { deps: d } = wakeDeps({
       messageAgent: async () => ({ delivered: false, targetSession: 'slack:C:root:peer-1', reason: 'not_allowed' })
@@ -1367,7 +1380,10 @@ describe('executeTool: viewSessionStatus', () => {
     agentId: 'peer-1',
     status: 'in-progress' as const,
     state: 'prompting' as const,
-    updatedAt: 5
+    updatedAt: 5,
+    reply: { requested: true, state: 'awaiting' as const },
+    nextAction: 'finish-turn-and-wait' as const,
+    message: 'Message delivered; end this turn and wait.'
   }
 
   it('passes the trusted caller coords and returns the daemon status verbatim', async () => {

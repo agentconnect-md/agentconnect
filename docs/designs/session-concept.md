@@ -420,7 +420,10 @@ implements the same-thread form, and unified `sendMessage` reuses it.
    is B's logical `sessionKey`, and deletes it at turn end at `daemon.ts:6605`.
    It also writes `originSessionId` as `Parent session` in B's `# Agent`
    system-prompt block at `session-manager.ts:312`. B can then call
-   `sendMessage({sessionId: <Parent session>})`.
+   `sendMessage({sessionId: <Parent session>})`. Only when the wake carries
+   `needsReply` does the daemon also inject a report-back directive into the
+   child session: reply exactly once at completion, then end the turn without
+   repeating the result in ordinary child-session output.
 3. **Authorize and inject on reply.** When B calls a SessionTarget, the daemon:
    - Gets `inbound` from `activeTurnCallMeta.get(callerKey)` at
      `daemon.ts:3491`.
@@ -476,6 +479,15 @@ work therefore needs a handle on the child and a way to ask how it is going.
   addressable: an ACP session id is not accepted, because ACP ids are minted per
   runtime and are not unique across agents. `done` means the child's turn ended,
   not that it reported anything back.
+
+  The answer also carries reply guidance separately from execution status:
+  `reply: { requested, state }`, `nextAction`, and a short `message`. Reply state
+  distinguishes `awaiting` from `queued-for-parent` (the agent replied and the
+  serialized parent session will receive it in its next turn), as well as
+  `not-sent`, `failed`, and `unknown`. In particular, a queued reply instructs
+  the parent to end its current turn and not retry. This state-specific guidance
+  lives in the tool result rather than the always-loaded tool description, so it
+  consumes context only when the parent checks that child.
 
   A turn that is queued, running, or admitted-but-not-yet-started all report
   `in-progress`. That matters for a RE-delegation: until the child picks the new
