@@ -106,12 +106,23 @@ cd agentconnect
 docker compose up -d --pull always
 ```
 
+To build the images from the checkout instead of pulling the published ones,
+run `docker compose up -d --build`. Every service in `compose.yaml` carries a
+build definition, and the built images take the tags the stack already
+references.
+
 Open `http://localhost:3000`. The default stack listens only on `127.0.0.1`,
 uses local no-auth mode, and is intended for local evaluation.
 
 The Compose stack does not run agent daemons. Add a daemon from the Web console,
 then run its generated command on each machine that should host agents,
 workspaces, and runtime credentials.
+
+Past the local stack — sign-in, public URLs, and provider apps — a guided path
+helps. Open Claude Code in the checkout and ask it to set up AgentConnect:
+[`.claude/skills/agentconnect-setup`](.claude/skills/agentconnect-setup/SKILL.md)
+runs those steps as an interactive tutorial and verifies each checkpoint before
+moving on. The rest of this section covers the same ground by hand.
 
 To evaluate local sign-in without configuring DNS or TLS, use the optional
 official Logto overlay and its browser-based Setup Server:
