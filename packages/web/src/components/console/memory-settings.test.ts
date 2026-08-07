@@ -91,13 +91,14 @@ describe('memory settings UX model', () => {
     ).toMatchObject({ provider: 'external', connectionId: CONNECTION_A })
   })
 
-  it('models daily dreaming with review-first adoption and a durable opt-in', () => {
+  it('models daily dreaming that auto-adopts and mines skills by default, with durable opt-outs', () => {
     const defaults = memorySettingsDraft({ provider: 'managed', autoDistill: false })
     expect(defaults.dreaming).toEqual({
       enabled: true,
       instructions: '',
       schedule: '0 4 * * *',
-      autoAdopt: false
+      autoAdopt: true,
+      mineSkills: true
     })
     expect(memoryConfigForDraft(defaults)).toEqual({ provider: 'managed', autoDistill: false })
     expect(dreamingConfigForDraft(defaults.dreaming)).toBeUndefined()
@@ -110,21 +111,21 @@ describe('memory settings UX model', () => {
     expect(memoryConfigForDraft(manualReview)).toEqual({
       provider: 'managed',
       autoDistill: false,
-      dreaming: { enabled: true, autoAdopt: false }
+      dreaming: { enabled: true, mineSkills: true, autoAdopt: false }
     })
 
     const disabled = { ...defaults, dreaming: { ...defaults.dreaming, enabled: false } }
     expect(memoryConfigForDraft(disabled)).toEqual({
       provider: 'managed',
       autoDistill: false,
-      dreaming: { enabled: false, schedule: '0 4 * * *', autoAdopt: false }
+      dreaming: { enabled: false, schedule: '0 4 * * *', mineSkills: true, autoAdopt: true }
     })
 
-    const automatic = { ...defaults, dreaming: { ...defaults.dreaming, autoAdopt: true } }
-    expect(memoryConfigForDraft(automatic)).toEqual({
+    const noSkills = { ...defaults, dreaming: { ...defaults.dreaming, mineSkills: false } }
+    expect(memoryConfigForDraft(noSkills)).toEqual({
       provider: 'managed',
       autoDistill: false,
-      dreaming: { enabled: true, schedule: '0 4 * * *', autoAdopt: true }
+      dreaming: { enabled: true, schedule: '0 4 * * *', mineSkills: false, autoAdopt: true }
     })
   })
 

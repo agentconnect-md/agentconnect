@@ -63,11 +63,13 @@ export const MemoryDreamingPolicy = z
     timezone: z.string().min(1).max(64).optional(),
     /** Operator steering text applied through the whole dream pipeline. */
     instructions: z.string().max(4096).optional(),
-    /** Also mine reusable procedures into candidate skills (never auto-installed). */
+    /** Also mine reusable procedures into candidate skills (never auto-installed —
+     *  a mined skill is always a proposal that needs explicit approval). Absent
+     *  defaults to true; false is the opt-out. */
     mineSkills: z.boolean().optional(),
     /** Adopt the staged store automatically on completion without content
      *  review. Live-memory fence conflicts remain reviewable. Absent defaults
-     *  to false for effective managed-memory policies; true is an explicit opt-in. */
+     *  to true for effective managed-memory policies; false is the opt-out. */
     autoAdopt: z.boolean().optional()
   })
   .strict()
@@ -82,7 +84,12 @@ export type MemoryDreamingPolicy = z.infer<typeof MemoryDreamingPolicy>
 export const DEFAULT_MEMORY_DREAMING_POLICY = {
   enabled: true,
   schedule: '0 4 * * *',
-  autoAdopt: false
+  // By default a completed dream is adopted without review and reusable procedures
+  // are mined into candidate skills. Adoption is text-only and reversible; mined
+  // skills are still proposals that need explicit approval before install (they are
+  // executable), so mining-on only surfaces candidates.
+  autoAdopt: true,
+  mineSkills: true
 } as const satisfies MemoryDreamingPolicy
 
 const BuiltInMemoryBinding = z
@@ -121,9 +128,9 @@ export type AgentMemoryBinding = z.infer<typeof AgentMemoryBinding>
 /** Resolve the managed-memory dreaming policy used by the daemon.
  *
  * No memory binding means the managed provider, and no explicit dreaming policy
- * means the daily, review-first product default. Once a policy exists its absent
- * schedule remains meaningful (manual-only), while absent `autoAdopt` normalizes
- * false; an explicit true is the opt-in.
+ * means the daily product default. Once a policy exists its absent schedule
+ * remains meaningful (manual-only), while absent `autoAdopt` and `mineSkills`
+ * normalize to the product default (true); an explicit false is the opt-out.
  */
 export function effectiveMemoryDreamingPolicy(
   binding: AgentMemoryBinding | undefined
@@ -131,7 +138,7 @@ export function effectiveMemoryDreamingPolicy(
   if (binding && binding.provider !== 'managed') return undefined
   const policy = binding?.dreaming
   if (!policy) return { ...DEFAULT_MEMORY_DREAMING_POLICY }
-  return policy.autoAdopt === undefined ? { ...policy, autoAdopt: false } : policy
+  return { ...policy, autoAdopt: policy.autoAdopt ?? true, mineSkills: policy.mineSkills ?? true }
 }
 
 /** Reviewed mapping from a logical secret field to the header the relay injects. */

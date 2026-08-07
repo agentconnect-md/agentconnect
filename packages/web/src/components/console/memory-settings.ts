@@ -23,13 +23,15 @@ export interface DreamingDraft {
   mineSkills?: boolean
 }
 
-/** Managed memory dreams daily at 04:00 in the daemon host's timezone and
- * leaves every result for review unless the user explicitly opts in to adoption. */
+/** Managed memory dreams daily at 04:00 in the daemon host's timezone. By default
+ * completed dreams are adopted without review and reusable procedures are mined
+ * into candidate skills (mined skills still need explicit approval to install). */
 export const DEFAULT_DREAMING_DRAFT: DreamingDraft = {
   enabled: true,
   instructions: '',
   schedule: '0 4 * * *',
-  autoAdopt: false
+  autoAdopt: true,
+  mineSkills: true
 }
 
 export type MemoryProviderChoice = 'managed' | 'native' | 'external' | 'none'
@@ -95,11 +97,11 @@ export function memorySettingsDraft(input: {
       ? {
           enabled: input.dreaming.enabled,
           instructions: input.dreaming.instructions ?? '',
-          autoAdopt: input.dreaming.autoAdopt ?? false,
+          autoAdopt: input.dreaming.autoAdopt ?? true,
           ...(input.dreaming.sessionWindow !== undefined ? { sessionWindow: input.dreaming.sessionWindow } : {}),
           ...(input.dreaming.schedule ? { schedule: input.dreaming.schedule } : {}),
           ...(input.dreaming.timezone ? { timezone: input.dreaming.timezone } : {}),
-          ...(input.dreaming.mineSkills !== undefined ? { mineSkills: input.dreaming.mineSkills } : {})
+          mineSkills: input.dreaming.mineSkills ?? true
         }
       : { ...DEFAULT_DREAMING_DRAFT },
     external: {
@@ -196,7 +198,7 @@ export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConf
     schedule !== DEFAULT_DREAMING_DRAFT.schedule ||
     !!draft.timezone ||
     draft.sessionWindow !== undefined ||
-    draft.mineSkills !== undefined ||
+    (draft.mineSkills ?? DEFAULT_DREAMING_DRAFT.mineSkills) !== DEFAULT_DREAMING_DRAFT.mineSkills ||
     draft.autoAdopt !== DEFAULT_DREAMING_DRAFT.autoAdopt
   if (!hasAny) return undefined
   return {
@@ -205,7 +207,7 @@ export function dreamingConfigForDraft(draft: DreamingDraft): MemoryDreamingConf
     ...(schedule ? { schedule } : {}),
     ...(draft.timezone ? { timezone: draft.timezone } : {}),
     ...(instructions ? { instructions } : {}),
-    ...(draft.mineSkills !== undefined ? { mineSkills: draft.mineSkills } : {}),
+    mineSkills: draft.mineSkills ?? DEFAULT_DREAMING_DRAFT.mineSkills,
     autoAdopt: draft.autoAdopt
   }
 }

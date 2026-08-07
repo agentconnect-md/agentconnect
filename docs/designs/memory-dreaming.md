@@ -146,11 +146,12 @@ export const MemoryDreamingPolicy = z
     timezone: z.string().min(1).max(64).optional(),
     /** Operator steering text applied through the whole pipeline (≤ 4096 chars). */
     instructions: z.string().max(4096).optional(),
-    /** Also mine reusable procedures into candidate skills (§7). Default false. */
+    /** Also mine reusable procedures into candidate skills (§7). Default true;
+     *  false is the opt-out. Mined skills are always proposals — never auto-installed. */
     mineSkills: z.boolean().optional(),
     /** Adopt the memory store automatically on completion without content
-     *  review. Default false; true is an explicit opt-in. Live-memory fence
-     *  conflicts remain reviewable. Never applies to skills (§7). */
+     *  review. Default true; false is the opt-out. Live-memory fence conflicts
+     *  remain reviewable. Never applies to skills (§7). */
     autoAdopt: z.boolean().optional()
   })
   .strict()
@@ -166,10 +167,12 @@ export const BuiltInMemoryBinding = z
 ```
 
 With managed memory, an absent `dreaming` policy resolves to `{ enabled: true,
-schedule: '0 4 * * *', autoAdopt: false }`. The cron uses daemon-local time when
-no timezone is set. An explicit policy preserves an absent schedule as
-manual-only, while absent `autoAdopt` also normalizes to `false`; `autoAdopt:
-true` is the durable opt-in to automatic acceptance.
+schedule: '0 4 * * *', autoAdopt: true, mineSkills: true }`. The cron uses
+daemon-local time when no timezone is set. An explicit policy preserves an absent
+schedule as manual-only, while absent `autoAdopt` and `mineSkills` normalize to
+the product default (`true`); an explicit `false` is the durable opt-out.
+Auto-adopt is text-only and reversible; mined skills are still proposals that need
+explicit approval before install, so `mineSkills` only surfaces candidates.
 
 `memory-settings.ts` (console) grows a **Background memory** section rendered
 only when the Managed provider is selected, presenting the two mechanisms as
