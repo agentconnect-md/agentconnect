@@ -266,8 +266,6 @@ export class SessionManager {
       onMemoryRecallEvent?: (agentId: string, event: MemoryRecallLifecycleEvent) => void
       /** Evaluation treatment control. Defaults on for all production callers. */
       memoryEnabled?: boolean
-      /** Evaluation treatment control. Defaults on for all production callers. */
-      collaborationEnabled?: boolean
       /** Daemon-observed reply-source sidecar for context rows. Standalone/test
        * callers omit it and preserve the historical transcript-only behavior. */
       quoteForContextEvent?: (event: TranscriptEntry, replayed: readonly TranscriptEntry[]) => string | undefined
@@ -812,39 +810,37 @@ export class SessionManager {
     // visible in-thread form: speaking in the current conversation is an ordinary reply.
     // `toAgent` without a `channel` is the postless, channel-invisible wake.
     const collabAppend =
-      this.deps.collaborationEnabled === false
-        ? ''
-        : `# Collaborating with other agents\n` +
-          `- To reach a specific agent privately, call \`sendMessage\` with ` +
-          `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
-          `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
-          `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
-          `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
-          `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
-          `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
-          `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
-          `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
-          `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
-          `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
-          `\`toAgent\` call without \`channel\` may not target yourself. ` +
-          `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
-          `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-          `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
-          `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
-          `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
-          `@-mention at the channel root. In that channel form, pass ` +
-          `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
-          `message; arrays are never DMs. If you were woken by another ` +
-          `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
-          `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
-          `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
-          `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
-          `agents unless a human explicitly tells you to.\n` +
-          `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
-          `results like "delivered: true". Take the action, add at most one short status line if needed, then end your turn.\n` +
-          `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
-          `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
-          `yourself back or broadcast to everyone.`
+      `# Collaborating with other agents\n` +
+      `- To reach a specific agent privately, call \`sendMessage\` with ` +
+      `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
+      `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
+      `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
+      `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
+      `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
+      `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
+      `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
+      `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
+      `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
+      `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
+      `\`toAgent\` call without \`channel\` may not target yourself. ` +
+      `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
+      `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
+      `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
+      `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
+      `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
+      `@-mention at the channel root. In that channel form, pass ` +
+      `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
+      `message; arrays are never DMs. If you were woken by another ` +
+      `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
+      `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
+      `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
+      `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
+      `agents unless a human explicitly tells you to.\n` +
+      `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
+      `results like "delivered: true". Take the action, add at most one short status line if needed, then end your turn.\n` +
+      `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
+      `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
+      `yourself back or broadcast to everyone.`
 
     // The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
     // user turn — the obligation outlives the waking turn, so it belongs beside the collaboration

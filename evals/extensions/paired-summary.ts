@@ -96,17 +96,11 @@ export async function afterAll(context: AfterAllExtensionHookContext): Promise<v
         })
       )
       const score = (name: string) => (treatments[name] as TreatmentSummary | undefined)?.meanScore
+      // Collaboration is not a treatment axis: every daemon cell runs the
+      // production collaboration surface, so only the core and memory deltas exist.
       const deltas = {
         core: delta(score('daemon-core'), score('raw-acp')),
-        memory: delta(score('memory-only'), score('daemon-core')),
-        collaboration: delta(score('collaboration-only'), score('daemon-core')),
-        interaction:
-          score('both') === undefined ||
-          score('memory-only') === undefined ||
-          score('collaboration-only') === undefined ||
-          score('daemon-core') === undefined
-            ? undefined
-            : roundMetric(score('both')! - score('memory-only')! - score('collaboration-only')! + score('daemon-core')!)
+        memory: delta(score('memory-only'), score('daemon-core'))
       }
       return [
         caseId,

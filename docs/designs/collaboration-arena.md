@@ -29,8 +29,9 @@ Existing suite
 AgentConnect Add-on Evals
   └── Small paired cases:
       memory off/on
-      collaboration off/on
       one delegation and reply
+      (always the production
+       collaboration surface)
 
 New suite
 AgentConnect Collaboration Arena

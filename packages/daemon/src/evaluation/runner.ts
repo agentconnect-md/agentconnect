@@ -725,8 +725,7 @@ export class RawAcpEvaluationRunner {
     const startedAt = new Date(startedAtMs).toISOString()
     const treatment: EvaluationTreatment = {
       name: this.options.name?.trim() || 'raw-acp',
-      memory: 'off',
-      collaboration: 'off'
+      memory: 'off'
     }
     const artifactDir = join(
       resolve(this.options.artifactRoot),

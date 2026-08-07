@@ -386,8 +386,7 @@ export class CollaborationGameRunner {
       caseId: options.game,
       treatment: {
         name: options.subjectKind === 'scripted' ? 'scripted-hosts' : 'real-agents',
-        memory: options.capabilityProfile?.memory ?? 'off',
-        collaboration: options.capabilityProfile?.collaboration ?? 'configured'
+        memory: options.capabilityProfile?.memory ?? 'off'
       },
       subject: { runtime: options.subjectKind },
       agentConnect: { commit: process.env.GITHUB_SHA ?? 'unknown', dirty: true },

@@ -4,8 +4,7 @@ import type { EvaluationCaseResult, EvaluationTreatment } from '../../packages/d
 
 const treatment: EvaluationTreatment = {
   name: 'memory-only',
-  memory: 'configured',
-  collaboration: 'off'
+  memory: 'configured'
 }
 
 function result(overrides: Partial<EvaluationCaseResult> = {}): EvaluationCaseResult {
@@ -113,7 +112,7 @@ describe('Promptfoo AgentConnect provider', () => {
 
     expect(failed).toMatchObject({
       error: 'agent_failed: runtime failed safely',
-      metadata: { status: 'agent_failed', treatment: { name: 'raw-acp', memory: 'off', collaboration: 'off' } }
+      metadata: { status: 'agent_failed', treatment: { name: 'raw-acp', memory: 'off' } }
     })
     expect(invalid).toMatchObject({ metadata: { status: 'invalid_case' } })
     expect(invalid.error).toBeTruthy()

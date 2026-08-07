@@ -96,7 +96,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot,
-      treatment: { name: 'memory-off', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'memory-off', memory: 'off' },
       agentConnect: { commit: 'abc123', dirty: false },
       daemonFactory: ({ root, evaluation }) => {
         preparedRoot = root
@@ -139,7 +139,7 @@ describe('EvaluationRunner', () => {
     const manifest = EvaluationRunManifestSchema.parse(JSON.parse(readFileSync(result.manifestPath, 'utf8')))
     expect(manifest).toMatchObject({
       caseId: 'cross-session-memory',
-      treatment: { name: 'memory-off', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'memory-off', memory: 'off' },
       status: 'passed',
       agentConnect: { commit: 'abc123', dirty: false },
       subject: {
@@ -243,7 +243,7 @@ describe('EvaluationRunner', () => {
     expect(result.output).toContain('echo:hello')
     const manifest = EvaluationRunManifestSchema.parse(JSON.parse(readFileSync(result.manifestPath, 'utf8')))
     expect(manifest).toMatchObject({
-      treatment: { name: 'raw-acp', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'raw-acp', memory: 'off' },
       subject: { settings: { execution: 'raw-acp', approvalsReviewer: 'auto_review' } }
     })
     const events = readFileSync(result.eventsPath, 'utf8')
@@ -272,7 +272,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'daemon-core', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'daemon-core', memory: 'off' },
       secrets: [secret],
       daemonFactory: ({ root }) => {
         preparedRoot = root
@@ -306,7 +306,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'daemon-core', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'daemon-core', memory: 'off' },
       daemonFactory
     })
 
@@ -327,7 +327,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot,
-      treatment: { name: '..', memory: 'off', collaboration: 'off' },
+      treatment: { name: '..', memory: 'off' },
       daemonFactory: vi.fn()
     })
 
@@ -348,7 +348,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'daemon-core', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'daemon-core', memory: 'off' },
       daemonFactory: () =>
         ({
           start: async () => {},
@@ -379,7 +379,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'daemon-core', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'daemon-core', memory: 'off' },
       daemonFactory: () =>
         ({
           start: () => new Promise<never>(() => {}),
@@ -412,7 +412,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot,
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'memory-only', memory: 'configured', collaboration: 'off' },
+      treatment: { name: 'memory-only', memory: 'configured' },
       daemonFactory
     })
 
@@ -438,7 +438,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot,
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'memory-only', memory: 'configured', collaboration: 'off' },
+      treatment: { name: 'memory-only', memory: 'configured' },
       daemonFactory
     })
 
@@ -462,7 +462,7 @@ describe('EvaluationRunner', () => {
       const runner = new EvaluationRunner({
         subjectRoot: subjectTemplate(),
         artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-        treatment: { name: 'memory-only', memory: 'configured', collaboration: 'off' },
+        treatment: { name: 'memory-only', memory: 'configured' },
         daemonFactory: ({ evaluation }) => {
           const emitter = new EvaluationEventEmitter({ observer: evaluation.observer, runId: evaluation.runId })
           return {
@@ -507,7 +507,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'daemon-core', memory: 'off', collaboration: 'off' },
+      treatment: { name: 'daemon-core', memory: 'off' },
       daemonFactory: ({ evaluation }) =>
         ({
           start: async () => {
@@ -540,7 +540,7 @@ describe('EvaluationRunner', () => {
     const runner = new EvaluationRunner({
       subjectRoot: subjectTemplate(),
       artifactRoot: mkdtempSync(join(tmpdir(), 'ac-evaluation-artifacts-')),
-      treatment: { name: 'collaboration-only', memory: 'off', collaboration: 'configured' },
+      treatment: { name: 'collaboration-only', memory: 'off' },
       daemonFactory: ({ evaluation }) => {
         const emitter = new EvaluationEventEmitter({ observer: evaluation.observer, runId: evaluation.runId })
         return {

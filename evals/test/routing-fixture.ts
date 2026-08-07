@@ -111,7 +111,7 @@ export class RoutingFixture {
       root: subject.root,
       environment,
       runId: `routing-${seed}`,
-      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      capabilityProfile: { memory: 'off' },
       hostFactory: ((agent: { id: string }, onUpdate: (sessionId: string, update: unknown) => void) => {
         let sessions = 0
         const bindings = new Map<string, DaemonMcpBinding>()

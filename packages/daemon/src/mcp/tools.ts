@@ -93,7 +93,7 @@ export const SESSION_TOOLS: ToolDescriptor[] = [
  * ordinary reply cannot do: a postless agent call, a direct message, a channel-root post,
  * or a parent-session reply. A visible send is always at the channel ROOT.
  */
-function buildSendMessageTool(platforms: string[], collaboration = true): ToolDescriptor {
+function buildSendMessageTool(platforms: string[]): ToolDescriptor {
   const platform = {
     type: 'string',
     ...(platforms.length > 0 ? { enum: platforms } : {}),
@@ -283,48 +283,37 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
 
   return {
     name: 'sendMessage',
-    description: collaboration
-      ? 'Send one message using exactly one target mode: an AgentConnect agent (`toAgent`), human users (`toUser`), a channel ' +
-        'with no recipient, or the parent-session reply.\n' +
-        'TO SPEAK IN THE CONVERSATION YOU ARE ALREADY IN — including to address a peer agent or a human there — do ' +
-        'NOT use this tool. Write your ordinary turn reply and @-mention them in it (use `listAgents` to get an ' +
-        'agent’s exact `mention` token). That reply already goes to the right thread as you. This tool is only for ' +
-        'what it cannot do: reaching a DIFFERENT conversation, a direct message, a postless agent call, or a reply ' +
-        'into the parent session.\n' +
-        '- toAgent — wake exactly one AgentConnect agent (id from listAgents or your own # Agent ID; never a ' +
-        'platform member id):\n' +
-        '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless PEER wake: nothing is posted anywhere; ' +
-        'this form cannot target yourself.\n' +
-        '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
-        'visible message at that channel’s ROOT, @-mentions the target, and anchors it to that post. This form MAY ' +
-        'target yourself: use your own # Agent ID to open and activate one new conversation there.\n' +
-        '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` WHENEVER you expect an answer ' +
-        'back — your message asks a question or requests a result, or someone asked you to relay the peer’s answer. ' +
-        'The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Follow the ' +
-        'returned `nextAction`; use `viewSessionStatus` only for optional diagnostics.\n' +
-        '- toUser — reach HUMAN users (Slack only for now), never an AgentConnect agent or your own bot identity:\n' +
-        '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
-        '  • channel root: `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}` — ' +
-        'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
-        '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
-        'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
-        '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
-        'asked this way, never by posting it at their channel root.\n' +
-        'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +
-        '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone. A self ' +
-        'wake is valid only in the explicit `toAgent` channel-root form above.'
-      : 'Post one visible message at exactly one channel’s root, or to a set of human recipients. To speak in the ' +
-        'conversation you are already in — including to address a human there — do NOT use this tool: write your ' +
-        'ordinary turn reply and @-mention them in it. Use this only for a DIFFERENT conversation or a direct ' +
-        'message. `{"channel":"<channel id>","message":"..."}` for a bare channel-root post, ' +
-        '`{"toUser":"<Slack user id>","message":"..."}` for a DM, or `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel ' +
-        'id>","message":"..."}` for a channel-root post that @-mentions every listed user; a single id also works. ' +
-        'A channel-root post opens a NEW conversation of your own on that post. Peer-agent ' +
-        'and parent-session delivery are disabled for this run. Write `message` as CommonMark/GFM. The daemon ' +
-        'supplies your identity; you cannot impersonate anyone.',
-    inputSchema: unionOf(
-      collaboration ? [agentTarget, userTarget, channelTarget, sessionTarget] : [userTarget, channelTarget]
-    )
+    description:
+      'Send one message using exactly one target mode: an AgentConnect agent (`toAgent`), human users (`toUser`), a channel ' +
+      'with no recipient, or the parent-session reply.\n' +
+      'TO SPEAK IN THE CONVERSATION YOU ARE ALREADY IN — including to address a peer agent or a human there — do ' +
+      'NOT use this tool. Write your ordinary turn reply and @-mention them in it (use `listAgents` to get an ' +
+      'agent’s exact `mention` token). That reply already goes to the right thread as you. This tool is only for ' +
+      'what it cannot do: reaching a DIFFERENT conversation, a direct message, a postless agent call, or a reply ' +
+      'into the parent session.\n' +
+      '- toAgent — wake exactly one AgentConnect agent (id from listAgents or your own # Agent ID; never a ' +
+      'platform member id):\n' +
+      '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless PEER wake: nothing is posted anywhere; ' +
+      'this form cannot target yourself.\n' +
+      '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
+      'visible message at that channel’s ROOT, @-mentions the target, and anchors it to that post. This form MAY ' +
+      'target yourself: use your own # Agent ID to open and activate one new conversation there.\n' +
+      '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` WHENEVER you expect an answer ' +
+      'back — your message asks a question or requests a result, or someone asked you to relay the peer’s answer. ' +
+      'The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Follow the ' +
+      'returned `nextAction`; use `viewSessionStatus` only for optional diagnostics.\n' +
+      '- toUser — reach HUMAN users (Slack only for now), never an AgentConnect agent or your own bot identity:\n' +
+      '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
+      '  • channel root: `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}` — ' +
+      'posts once at the channel root and @-mentions every listed user; a single id string also works.\n' +
+      '- Channel (bare post, no recipient): `{"channel":"<channel id>","message":"..."}` — posts at the channel ' +
+      'root without waking anyone or @-mentioning anyone; add `platform` or `integrationId` only when needed.\n' +
+      '- Parent session reply: `{"sessionId":"<Parent session>","message":"..."}` — relay an answer back to whoever ' +
+      'asked this way, never by posting it at their channel root.\n' +
+      'Every visible send lands at the channel ROOT and opens a NEW conversation of your own there. Write ' +
+      '`message` as CommonMark/GFM. The daemon supplies your identity; you cannot impersonate anyone. A self ' +
+      'wake is valid only in the explicit `toAgent` channel-root form above.',
+    inputSchema: unionOf([agentTarget, userTarget, channelTarget, sessionTarget])
   }
 }
 
@@ -854,7 +843,7 @@ export const ALL_TOOL_NAMES = [
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { sessionTitle?: boolean; collaboration?: boolean; organizationKnowledge?: boolean } = {}
+  options: { sessionTitle?: boolean; organizationKnowledge?: boolean } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -868,17 +857,13 @@ export function toolsForIntegrations(
   if (options.sessionTitle) add(SESSION_TOOLS)
   add(MEMORY_TOOLS)
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
-  const collaboration = options.collaboration !== false
-  if (collaboration) add(COLLABORATION_TOOLS)
+  add(COLLABORATION_TOOLS)
   // The unified `sendMessage` tool is ALWAYS present (session-concept §3): even a
   // memory-only agent with no platform integration can wake a peer (`toAgent`) or reply to
   // its origin (`sessionId`). The `platform` enum is narrowed to the agent's own platforms
   // so it can post to any of them (empty ⇒ no channel posting, only wake/reply).
   const platforms = [...new Set(integrations.map((i) => i.platform))]
-  // In a collaboration-off evaluation treatment, preserve the ordinary visible
-  // channel-send branch but remove peer/session targets. A platform-free agent then
-  // has no meaningful send target and receives no sendMessage descriptor at all.
-  if (collaboration || platforms.length > 0) add([buildSendMessageTool(platforms, collaboration)])
+  add([buildSendMessageTool(platforms)])
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
     add(buildReadTools(platforms))

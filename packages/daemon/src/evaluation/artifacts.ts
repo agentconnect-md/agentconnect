@@ -24,8 +24,7 @@ export const EvaluationRunManifestSchema = z.object({
   caseId: z.string().min(1),
   treatment: z.object({
     name: z.string().min(1),
-    memory: z.enum(['off', 'configured']),
-    collaboration: z.enum(['off', 'configured'])
+    memory: z.enum(['off', 'configured'])
   }),
   subject: z.object({
     runtime: z.string().min(1),

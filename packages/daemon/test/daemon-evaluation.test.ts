@@ -93,7 +93,7 @@ describe('Daemon evaluation surface', () => {
       evaluation: {
         observer: collector,
         runId: 'eval-run-1',
-        capabilityProfile: { memory: 'configured', collaboration: 'off' }
+        capabilityProfile: { memory: 'configured' }
       }
     })
     await daemon.start()
@@ -472,7 +472,7 @@ describe('Daemon evaluation surface', () => {
         new Daemon({
           root: scaffold(),
           hostFactory: factory,
-          evaluation: { capabilityProfile: { memory: 'off', collaboration: 'off' } }
+          evaluation: { capabilityProfile: { memory: 'off' } }
         })
     ).toThrow('evaluation capability profile requires an evaluation observer')
   })
@@ -577,7 +577,7 @@ describe('Daemon evaluation surface', () => {
       evaluation: {
         observer: collector,
         runId: 'eval-run-memory-off',
-        capabilityProfile: { memory: 'off', collaboration: 'off' }
+        capabilityProfile: { memory: 'off' }
       }
     })
     await daemon.start()
@@ -594,38 +594,6 @@ describe('Daemon evaluation surface', () => {
     expect(collector.events().map((event) => event.type)).toEqual(
       expect.arrayContaining(['turn.accepted', 'turn.started', 'turn.completed'])
     )
-    await daemon.stop()
-    collector.assertValid()
-  }, 15_000)
-
-  it('rejects peer delivery at the execution boundary when collaboration is off', async () => {
-    const collector = new EvaluationEventCollector()
-    const { factory } = scriptedHost()
-    const daemon = new Daemon({
-      root: scaffold(),
-      hostFactory: factory,
-      evaluation: {
-        observer: collector,
-        runId: 'eval-run-collaboration-off',
-        capabilityProfile: { memory: 'off', collaboration: 'off' }
-      }
-    })
-    await daemon.start()
-
-    const result = await (daemon as any).messageAgent({
-      callerAgentId: AGENT_ID,
-      platform: 'webchat',
-      callerChannel: 'caller-channel',
-      toAgentId: 'peer-agent',
-      text: 'must not be delivered',
-      channel: 'target-channel'
-    })
-
-    expect(result).toMatchObject({ delivered: false, reason: 'capability_disabled' })
-    expect(collector.events().find((event) => event.type === 'collaboration.delivery.rejected')).toMatchObject({
-      agentId: AGENT_ID,
-      data: { toAgentId: 'peer-agent', reason: 'capability_disabled' }
-    })
     await daemon.stop()
     collector.assertValid()
   }, 15_000)

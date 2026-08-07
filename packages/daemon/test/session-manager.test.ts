@@ -1905,24 +1905,6 @@ describe('SessionManager — first-class agent thread events', () => {
 })
 
 describe('SessionManager — collaboration preamble', () => {
-  it('omits collaboration standing context when the treatment is off', async () => {
-    const store = newStore()
-    const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
-    const sm = new SessionManager({
-      store,
-      hostFor: async () => host,
-      agentById: () => agent,
-      memory,
-      collaborationEnabled: false
-    })
-    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
-    const metaArg = host.newSession.mock.calls[0][3] as string
-    expect(metaArg).not.toContain('# Collaborating with other agents')
-    expect(metaArg).toContain('# Choosing whether to respond')
-    expect(blocks.at(-1)).toEqual({ type: 'text', text: '[U1] hi' })
-    store.close()
-  })
-
   it('injects the collaboration guidance into a fresh non-Claude session (inline block 0)', async () => {
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1') } as any

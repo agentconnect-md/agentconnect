@@ -1,6 +1,6 @@
 # AgentConnect add-on evaluations
 
-This suite measures AgentConnect's incremental memory and collaboration behavior while holding the underlying ACP harness fixed. It is not a model or harness leaderboard.
+This suite measures AgentConnect's incremental memory behavior — and functionally checks its collaboration delivery — while holding the underlying ACP harness fixed. It is not a model or harness leaderboard. Every full-daemon cell runs the exact production tool surface and messaging mechanism: collaboration has no evaluation-only off switch, so it is not a treatment axis.
 
 ## What runs
 
@@ -9,24 +9,22 @@ There are two layers:
 - `pnpm eval:contracts` runs deterministic, credential-free Vitest contracts for the event schema, observer non-interference, permission decisions, daemon composition, redaction, ATIF, and disposable runners.
 - `pnpm eval:addons` runs the configured real ACP subject through Promptfoo. It requires an explicit disposable subject template and model/runtime credentials.
 
-Promptfoo evaluates five treatment cells:
+Promptfoo evaluates three treatment cells. Both full-daemon cells carry the production collaboration surface:
 
-| Label                | Execution path | Memory     | Collaboration |
-| -------------------- | -------------- | ---------- | ------------- |
-| `raw-acp`            | Raw `AcpHost`  | off        | off           |
-| `daemon-core`        | Full daemon    | off        | off           |
-| `memory-only`        | Full daemon    | configured | off           |
-| `collaboration-only` | Full daemon    | off        | configured    |
-| `both`               | Full daemon    | configured | configured    |
+| Label         | Execution path | Memory     |
+| ------------- | -------------- | ---------- |
+| `raw-acp`     | Raw `AcpHost`  | off        |
+| `daemon-core` | Full daemon    | off        |
+| `memory-only` | Full daemon    | configured |
 
 The generated paired summary reports, per case and without combining different harnesses:
 
 ```text
-core          = daemon-core - raw-acp
-memory        = memory-only - daemon-core
-collaboration = collaboration-only - daemon-core
-interaction   = both - memory-only - collaboration-only + daemon-core
+core   = daemon-core - raw-acp
+memory = memory-only - daemon-core
 ```
+
+The collaboration case is a functional check of specialist delivery and reply on the production surface (it runs in `daemon-core`); it has no paired off-cell because the product ships no collaboration-off composition.
 
 Controls may legitimately score zero, so the outcome assertion records `0` or `1` without turning an expected-low control into a process failure. Provider, infrastructure, and artifact errors still fail the Promptfoo run and retain their terminal status.
 
