@@ -24,6 +24,7 @@ import {
   useGithubAppEnabled,
   useGithubProfileLinked,
   useGsActions,
+  useSessionAccessCardAvailable,
   useSlackPlatformAppAvailable
 } from './GettingStartedChecklist'
 import { Button, Icon } from '@/components/ui'
@@ -91,6 +92,7 @@ export default function GettingStarted() {
 
   const githubLinked = useGithubProfileLinked()
   const githubEnabled = useGithubAppEnabled()
+  const sessionAccessAvailable = useSessionAccessCardAvailable()
   // Local mode (no platform-published Slack app): the slack row falls back to the
   // default GsRow, whose CTA opens the Slack integration wizard.
   const slackOneClick = useSlackPlatformAppAvailable()
@@ -105,9 +107,21 @@ export default function GettingStarted() {
         authOn,
         orgHasSessions,
         githubLinked,
-        githubEnabled
+        githubEnabled,
+        sessionAccessAvailable
       }),
-    [agents, daemons, integrations, allSessions, members, authOn, orgHasSessions, githubLinked, githubEnabled]
+    [
+      agents,
+      daemons,
+      integrations,
+      allSessions,
+      members,
+      authOn,
+      orgHasSessions,
+      githubLinked,
+      githubEnabled,
+      sessionAccessAvailable
+    ]
   )
 
   // Show on every console page while the checklist is incomplete — including a
@@ -140,13 +154,15 @@ export default function GettingStarted() {
   // Modals (add daemon, set up agent, connect Slack) stack above the drawer (their scrim
   // is z-900, the drawer z-80), so the checklist stays open behind them — the user returns
   // to it when the modal closes. Only close the drawer for actions that navigate the page
-  // away (GitHub workspace, Home chat, invite teammates → router.push).
+  // away (GitHub workspace, Home chat, invite teammates, session access → router.push) —
+  // the drawer is fixed in the app shell and would otherwise cover the destination.
   const runFromDrawer = (action: GsAction) => {
     const navigates =
       action.kind === 'github' ||
       action.kind === 'github-profile' ||
       action.kind === 'chat' ||
-      action.kind === 'members'
+      action.kind === 'members' ||
+      action.kind === 'session-access'
     if (navigates) setDrawerOpen(false)
     runAction(action)
   }

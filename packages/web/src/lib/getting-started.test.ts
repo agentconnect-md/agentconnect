@@ -55,6 +55,15 @@ describe('computeGettingStarted', () => {
     expect(step.action).toEqual({ kind: 'session-access' })
   })
 
+  it('hides session-access when its card would render nothing — the CTA must not point at a missing anchor', () => {
+    const has = (sessionAccessAvailable?: boolean) =>
+      computeGettingStarted({ ...empty, sessionAccessAvailable }).items.some((i) => i.key === 'session-access')
+    expect(has(false)).toBe(false)
+    // undefined (probe in flight / failed) keeps the step — same convention as githubEnabled
+    expect(has(undefined)).toBe(true)
+    expect(has(true)).toBe(true)
+  })
+
   it('marks daemon done for any registered daemon, connected or not', () => {
     const done = (rows: DaemonRow[]) =>
       computeGettingStarted({ ...empty, daemons: rows }).items.find((i) => i.key === 'daemon')!.done

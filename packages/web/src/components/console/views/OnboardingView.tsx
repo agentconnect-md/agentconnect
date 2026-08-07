@@ -17,6 +17,7 @@ import {
   useGithubAppEnabled,
   useGithubProfileLinked,
   useGsActions,
+  useSessionAccessCardAvailable,
   useSlackPlatformAppAvailable
 } from '@/components/console/GettingStartedChecklist'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
@@ -70,6 +71,7 @@ export default function OnboardingView() {
   const { runAction } = useGsActions()
   const githubLinked = useGithubProfileLinked()
   const githubEnabled = useGithubAppEnabled()
+  const sessionAccessAvailable = useSessionAccessCardAvailable()
   // Local mode (no platform-published Slack app): the slack row falls back to the
   // default GsRow, whose CTA opens the Slack integration wizard.
   const slackOneClick = useSlackPlatformAppAvailable()
@@ -248,7 +250,8 @@ export default function OnboardingView() {
             authOn,
             orgHasSessions,
             githubLinked,
-            githubEnabled
+            githubEnabled,
+            sessionAccessAvailable
           })}
           slackOneClick={slackOneClick}
           runAction={runAction}

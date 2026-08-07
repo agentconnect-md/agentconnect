@@ -19,7 +19,12 @@ import { useModal } from './ModalProvider'
 import type { GsAction, GsItem } from '@/lib/getting-started'
 import { agentIsPlaced, agentLabel, modelLabel, runtimeLabel } from '@/lib/data'
 import { isAuthConfigured } from '@/lib/auth'
-import { fetchGithubInstallations, fetchMySocialAccount } from '@/lib/api'
+import {
+  fetchGithubInstallations,
+  fetchMySocialAccount,
+  fetchSessionExternalAccess,
+  type SessionAccessProvider
+} from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { socialLoginProviders } from '@/lib/social-login-providers'
 import { useSlackPlatformInstall } from '@/components/console/platforms/slack/use-platform-install'
@@ -111,6 +116,26 @@ export function useGithubAppEnabled(): boolean | undefined {
   return data
 }
 
+// Backs hiding the "Review session access policy" step: mirrors GlobalSearch's
+// `sessionAccessRenders` guard (GlobalSearch.tsx) so the checklist's CTA never
+// points at a card that renders null — SessionAccessCard hides itself once every
+// provider is BOTH unavailable and disabled (`hasNothingToOffer`, SettingsView.tsx).
+// Undefined while any read is still pending/unanswered — keep the step rather than
+// guess; only a definitive "nothing to offer" from all three hides it.
+export function useSessionAccessCardAvailable(): boolean | undefined {
+  const { activeOrg } = useOrgs()
+  const key = (provider: SessionAccessProvider) => consoleKeys.sessionAccess(activeOrg?.id, provider)
+  const fetcher = ([, orgId, , provider]: NonNullable<ReturnType<typeof key>>) =>
+    fetchSessionExternalAccess(provider, orgId)
+  const opts = { revalidateOnFocus: false, revalidateOnReconnect: false, shouldRetryOnError: false }
+  const slack = useSWR(key('slack'), fetcher, opts)
+  const github = useSWR(key('github'), fetcher, opts)
+  const feishu = useSWR(key('feishu'), fetcher, opts)
+  const results = [slack, github, feishu]
+  if (results.some(({ data, error }) => data === undefined && !error)) return undefined
+  return results.some(({ data }) => data === undefined || data.available || data.enabled)
+}
+
 // Whether the platform-published one-click "Add to Slack" app is installable on
 // this deployment. Local/self-hosted mode has no published app — the checklist
 // then renders the plain "Connect Slack" row, whose CTA opens the Slack
@@ -151,10 +176,10 @@ export function GsRows({
       >
         <span
           className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-full ${
-            it.done && !it.optional ? 'bg-(--brand) text-white' : 'border-[1.5px] border-(--border-strong)'
+            it.done ? 'bg-(--brand) text-white' : 'border-[1.5px] border-(--border-strong)'
           }`}
         >
-          {it.done && !it.optional && <Icon name="check" size={12} />}
+          {it.done && <Icon name="check" size={12} />}
         </span>
         <div className="min-w-0 flex-1">
           <span className="inline-flex items-center gap-2">
