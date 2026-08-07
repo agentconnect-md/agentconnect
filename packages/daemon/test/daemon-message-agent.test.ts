@@ -1554,6 +1554,19 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       updatedAt: Date.now()
     })
     const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      originSessionId: 'acp-parent-1',
+      needsParentReply: 1
+    })
     armTurn(daemon, callerKey, {
       callFrom: 'bot-a',
       hopCount: 1,
@@ -1582,6 +1595,18 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
     // keeps its reply connection, so a delegated result can reach the humans waiting in the
     // parent's own thread. Muting it made every report-back silent there.
     expect(msg.headless).toBeUndefined()
+    const status = await (daemon as any).viewSessionStatus({
+      callerAgentId: 'bot-a',
+      platform: 'slack',
+      callerChannel: 'C1',
+      callerThread: '100.1',
+      sessionId: callerKey
+    })
+    expect(status).toMatchObject({
+      reply: { requested: true, state: 'queued-for-parent' },
+      nextAction: 'finish-turn-and-wait'
+    })
+    expect(status.message).toMatch(/next turn.*do not retry/i)
     await daemon.stop()
   })
 
@@ -2298,7 +2323,7 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
     const { daemon, call } = await bootWithDispatchSpy(root)
     seedSession(daemon, PARENT_KEY, { acpSessionId: 'acp-parent-1', state: 'prompting' })
 
-    const res = await call(baseReq())
+    const res = await call(baseReq({ needsReply: true }))
     expect(res.delivered).toBe(true)
     // Polled the instant the wake returns: dispatch is fire-and-forget, so the child's session row
     // does not exist yet — the admission-time link must still authorize the parent.
@@ -2306,7 +2331,11 @@ describe('viewSessionStatus: child-only authorization + status collapse', () => 
       sessionId: res.targetSession,
       agentId: 'bot-b',
       status: 'in-progress',
-      state: 'starting'
+      state: 'starting',
+      reply: { requested: true, state: 'awaiting' },
+      nextAction: 'finish-turn-and-wait',
+      message:
+        'Message delivered; the agent is still working. End this turn and wait for its reply; do not retry or poll tightly.'
     })
     await daemon.stop()
   })
@@ -2505,7 +2534,10 @@ describe('viewSessionStatus: cross-daemon children', () => {
       agentId: 'bot-b',
       status: 'done',
       state: 'idle',
-      updatedAt: 9
+      updatedAt: 9,
+      reply: { requested: false, state: 'not-requested' },
+      nextAction: 'none',
+      message: 'The child turn finished cleanly. No reply was requested.'
     })
     // The CP needs the child AGENT to resolve placement — it must not parse the composite key.
     expect(asks[0]).toEqual({
@@ -2715,7 +2747,15 @@ describe('handleRelayAgentMsg: admission handle + pre-row probe window', () => {
         parentSessionId: 'acp-remote-parent',
         childSessionId: ack.childSessionId
       })
-    ).toEqual({ found: true, agentId: 'bot-b', status: 'in-progress', state: 'starting' })
+    ).toEqual({
+      found: true,
+      agentId: 'bot-b',
+      status: 'in-progress',
+      state: 'starting',
+      reply: { requested: false, state: 'not-requested' },
+      nextAction: 'wait',
+      message: 'Message delivered; the agent is still working. No reply was requested.'
+    })
     // …and only to the parent that actually woke it.
     expect(
       (daemon as any).childSessionStatusProbe({

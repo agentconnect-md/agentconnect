@@ -7221,7 +7221,14 @@ export class Daemon {
   // read for those is routed through the CP (§5.4) instead of the local store.
   private readonly childSessionLinks = new Map<
     string,
-    { parentSessionId: string; agentId: string; rowUpdatedAtAtAdmission: number | null; remote?: boolean }
+    {
+      parentSessionId: string
+      agentId: string
+      rowUpdatedAtAtAdmission: number | null
+      replyRequested: boolean
+      replyState: 'awaiting' | 'queued-for-parent' | 'failed'
+      remote?: boolean
+    }
   >()
 
   // §3.4/§6.8 orchestration deadline timers, keyed by orchestrationId. Held HERE
@@ -7909,7 +7916,9 @@ export class Daemon {
       this.childSessionLinks.set(childSessionId, {
         parentSessionId: msg.originSessionId,
         agentId: msg.toAgentId,
-        rowUpdatedAtAtAdmission: this.store.getSession(childSessionId)?.updatedAt ?? null
+        rowUpdatedAtAtAdmission: this.store.getSession(childSessionId)?.updatedAt ?? null,
+        replyRequested: msg.needsReply === true,
+        replyState: 'awaiting'
       })
     }
     // No `headless` stamp for a `session-reply` reaching this path either (§7): the report it
@@ -8318,6 +8327,8 @@ export class Daemon {
           parentSessionId: originSessionId,
           agentId: req.toAgentId,
           rowUpdatedAtAtAdmission: null,
+          replyRequested: req.needsReply === true,
+          replyState: 'awaiting',
           remote: true
         })
       }
@@ -8397,7 +8408,9 @@ export class Daemon {
         agentId: req.toAgentId,
         // Snapshot the child row as it stands BEFORE the wake runs (null when it has never run),
         // so a re-wake of a finished child can't be reported with its previous turn's outcome.
-        rowUpdatedAtAtAdmission: this.store.getSession(targetSession)?.updatedAt ?? null
+        rowUpdatedAtAtAdmission: this.store.getSession(targetSession)?.updatedAt ?? null,
+        replyRequested: req.needsReply === true,
+        replyState: 'awaiting'
       })
     }
     // send-message-routing-rework.md §3.2/§8.6 — the "internal wake first" arrival order
@@ -8453,6 +8466,26 @@ export class Daemon {
    * `originSessionId`. A root/human turn (no active call metadata) or any other sessionId is
    * refused — an agent can never inject into an arbitrary session.
    */
+  private markChildParentReply(
+    childSessionKey: string,
+    parentSessionId: string,
+    state: 'queued-for-parent' | 'failed'
+  ): void {
+    const existing = this.childSessionLinks.get(childSessionKey)
+    if (existing && existing.parentSessionId !== parentSessionId) return
+    const child = this.store.getSession(childSessionKey)
+    this.childSessionLinks.set(childSessionKey, {
+      parentSessionId,
+      agentId: existing?.agentId ?? child?.agentId ?? '',
+      // This is a reply observation, not a fresh wake. `null` keeps the re-wake fence inactive
+      // once the durable child row exists.
+      rowUpdatedAtAtAdmission: existing?.rowUpdatedAtAtAdmission ?? null,
+      replyRequested: existing?.replyRequested ?? child?.needsParentReply === 1,
+      replyState: state,
+      ...(existing?.remote ? { remote: true } : {})
+    })
+  }
+
   private async replyToSession(req: ReplyToSessionReq): Promise<ReplyToSessionResult> {
     const platform = req.platform
     const callerKey = sessionKey(
@@ -8572,6 +8605,7 @@ export class Daemon {
       void this.dispatch(originOwner, normalized, integrationId, undefined, callMeta).catch((err) =>
         this.log.error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
       )
+      this.markChildParentReply(callerKey, req.sessionId, 'queued-for-parent')
       this.log.info(`replyToSession: ${req.callerAgentId} → ${originOwner} (${local.key}) delivery=${deliveryId}`)
       return { delivered: true, targetSession: local.key }
     }
@@ -8617,6 +8651,7 @@ export class Daemon {
         deliveryKind: 'session-reply'
       }
     )
+    this.markChildParentReply(callerKey, req.sessionId, res.delivered ? 'queued-for-parent' : 'failed')
     return {
       delivered: res.delivered,
       targetSession: res.targetSession,
@@ -8666,14 +8701,84 @@ export class Daemon {
       const link = this.childSessionLinks.get(req.sessionId)
       if (!link || link.parentSessionId !== callerSessionId) return null
       if (link.remote) return await this.remoteChildStatus(req.sessionId, callerSessionId, link.agentId)
-      return { sessionId: req.sessionId, agentId: link.agentId, status: 'in-progress', state: 'starting' }
+      return {
+        sessionId: req.sessionId,
+        agentId: link.agentId,
+        status: 'in-progress',
+        state: 'starting',
+        ...this.childStatusGuidance('in-progress', link.replyRequested, link.replyState)
+      }
     }
     if (!this.isAuthorizedChildParent(child, callerSessionId)) return null
     // A session cannot be its own child; guard the degenerate case where a caller passes its own
     // id and a stale link would otherwise vouch for it.
     if (child.key === callerKey) return null
-    const collapsed = this.collapseChildStatus(child)
+    const collapsed = this.collapseChildStatus(child, callerSessionId)
     return { sessionId: req.sessionId, ...collapsed }
+  }
+
+  private childStatusGuidance(
+    status: SessionStatusResult['status'],
+    replyRequested: boolean,
+    trackedReplyState?: 'awaiting' | 'queued-for-parent' | 'failed'
+  ): Pick<SessionStatusResult, 'reply' | 'nextAction' | 'message'> {
+    if (trackedReplyState === 'queued-for-parent') {
+      return {
+        reply: { requested: replyRequested, state: 'queued-for-parent' },
+        nextAction: 'finish-turn-and-wait',
+        message:
+          'The agent replied. Its reply is queued for this session and will arrive in your next turn. End this turn; do not retry or ask the agent to repeat it.'
+      }
+    }
+    if (trackedReplyState === 'failed') {
+      return {
+        reply: { requested: replyRequested, state: 'failed' },
+        nextAction: 'report-failure',
+        message: 'The agent tried to reply, but delivery failed. Do not retry automatically; report the failure.'
+      }
+    }
+    if (!replyRequested) {
+      return {
+        reply: { requested: false, state: 'not-requested' },
+        nextAction: status === 'in-progress' ? 'wait' : status === 'failed' ? 'report-failure' : 'none',
+        message:
+          status === 'in-progress'
+            ? 'Message delivered; the agent is still working. No reply was requested.'
+            : status === 'failed'
+              ? 'The child turn failed. No reply was requested.'
+              : 'The child turn finished cleanly. No reply was requested.'
+      }
+    }
+    if (status === 'in-progress') {
+      return {
+        reply: { requested: true, state: 'awaiting' },
+        nextAction: 'finish-turn-and-wait',
+        message:
+          'Message delivered; the agent is still working. End this turn and wait for its reply; do not retry or poll tightly.'
+      }
+    }
+    if (status === 'failed') {
+      return {
+        reply: { requested: true, state: 'not-sent' },
+        nextAction: 'report-failure',
+        message:
+          'The child turn failed before sending the requested reply. Do not retry automatically; report the failure.'
+      }
+    }
+    if (trackedReplyState === 'awaiting') {
+      return {
+        reply: { requested: true, state: 'not-sent' },
+        nextAction: 'report-missing-reply',
+        message:
+          'The child turn finished without sending the requested parent-session reply. Do not retry automatically; report this outcome or wait for user direction.'
+      }
+    }
+    return {
+      reply: { requested: true, state: 'unknown' },
+      nextAction: 'finish-turn-and-wait',
+      message:
+        'The child turn finished, but reply-delivery state is unavailable. End this turn and wait; do not retry or ask the agent to repeat it.'
+    }
   }
 
   /**
@@ -8686,13 +8791,20 @@ export class Daemon {
    * `rowUpdatedAtAtAdmission` note on childSessionLinks). Reporting the previous turn's outcome in
    * any of those windows would tell the parent its NEW delegation had already finished.
    */
-  private collapseChildStatus(child: SessionRecord): {
+  private collapseChildStatus(
+    child: SessionRecord,
+    parentSessionId: string
+  ): {
     agentId: string
     status: SessionStatusResult['status']
     state: SessionStatusResult['state']
     updatedAt: number
+    reply: SessionStatusResult['reply']
+    nextAction: SessionStatusResult['nextAction']
+    message: string
   } {
-    const link = this.childSessionLinks.get(child.key)
+    const candidateLink = this.childSessionLinks.get(child.key)
+    const link = candidateLink?.parentSessionId === parentSessionId ? candidateLink : undefined
     const queuedOrRunning = this.activeGateEntries.has(child.key) || (this.serialQueue.get(child.key)?.length ?? 0) > 0
     const admittedNotStarted = link !== undefined && child.updatedAt === link.rowUpdatedAtAtAdmission
     const inFlight = child.state === 'prompting' || child.state === 'cancelling' || child.state === 'resuming'
@@ -8706,7 +8818,14 @@ export class Daemon {
             : // Idle/closed with no recorded outcome: the row exists but its first turn has not
               // finished (or predates outcome tracking) — treat as still working, never as done.
               'in-progress'
-    return { agentId: child.agentId, status, state: child.state, updatedAt: child.updatedAt }
+    const replyRequested = link?.replyRequested ?? child.needsParentReply === 1
+    return {
+      agentId: child.agentId,
+      status,
+      state: child.state,
+      updatedAt: child.updatedAt,
+      ...this.childStatusGuidance(status, replyRequested, link?.replyState)
+    }
   }
 
   /**
@@ -8737,12 +8856,17 @@ export class Daemon {
       throw new Error(`the daemon running ${childSessionId} is not currently reachable — try again shortly`)
     }
     if (!res.found) return null
+    const link = this.childSessionLinks.get(childSessionId)
+    const fallback = this.childStatusGuidance(res.status ?? 'in-progress', link?.replyRequested ?? false, undefined)
     return {
       sessionId: childSessionId,
       agentId: res.agentId ?? childAgentId,
       status: res.status ?? 'in-progress',
       state: res.state ?? 'starting',
-      ...(res.updatedAt !== undefined ? { updatedAt: res.updatedAt } : {})
+      ...(res.updatedAt !== undefined ? { updatedAt: res.updatedAt } : {}),
+      reply: res.reply ?? fallback.reply,
+      nextAction: res.nextAction ?? fallback.nextAction,
+      message: res.message ?? fallback.message
     }
   }
 
@@ -8763,10 +8887,16 @@ export class Daemon {
       // at ACK time is the only record — and the only authority — until then.
       const link = this.childSessionLinks.get(probe.childSessionId)
       if (!link || link.parentSessionId !== probe.parentSessionId) return { found: false }
-      return { found: true, agentId: link.agentId, status: 'in-progress', state: 'starting' }
+      return {
+        found: true,
+        agentId: link.agentId,
+        status: 'in-progress',
+        state: 'starting',
+        ...this.childStatusGuidance('in-progress', link.replyRequested, link.replyState)
+      }
     }
     if (!this.isAuthorizedChildParent(child, probe.parentSessionId)) return { found: false }
-    return { found: true, ...this.collapseChildStatus(child) }
+    return { found: true, ...this.collapseChildStatus(child, probe.parentSessionId) }
   }
 
   /**

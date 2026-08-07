@@ -248,6 +248,15 @@ export interface SessionStatusResult {
   /** The underlying lifecycle state, for a caller that wants the detail: one of the §7.3
    *  states, or 'starting' when the wake was admitted but the session has not opened yet. */
   state: 'starting' | 'idle' | 'prompting' | 'cancelling' | 'resuming' | 'closed'
+  /** Delivery state of the optional child -> parent report requested by `needsReply`. */
+  reply: {
+    requested: boolean
+    state: 'not-requested' | 'awaiting' | 'queued-for-parent' | 'not-sent' | 'failed' | 'unknown'
+  }
+  /** Machine-readable instruction chosen from the live execution + reply state. */
+  nextAction: 'none' | 'wait' | 'finish-turn-and-wait' | 'report-failure' | 'report-missing-reply'
+  /** Short, state-specific model guidance. Kept in the result instead of the always-loaded schema. */
+  message: string
   /** Epoch ms of the last state change; absent while the session is still 'starting'. */
   updatedAt?: number
 }
@@ -1235,6 +1244,14 @@ export async function executeTool(
       ...(wake !== undefined ? { wake } : {}),
       ...(post !== undefined ? { post } : {}),
       ...(childSessionId !== undefined ? { childSessionId } : {}),
+      ...(childSessionId !== undefined && needsReply
+        ? {
+            reply: { requested: true, state: 'awaiting' as const },
+            nextAction: 'finish-turn-and-wait' as const,
+            message:
+              'Message delivered. The agent will reply by waking this session in a later turn. End this turn and wait; do not retry or ask it to repeat the work.'
+          }
+        : {}),
       ...(notice !== undefined ? { notice } : {})
     }
   }

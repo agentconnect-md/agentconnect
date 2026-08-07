@@ -735,6 +735,8 @@ describe('SessionManager', () => {
       const metaArg = host.newSession.mock.calls[0][3] as string
       expect(metaArg).toContain('# Reporting back to your parent session')
       expect(metaArg).toContain('{"sessionId":"origin-sess-9","message":"..."}')
+      expect(metaArg).toContain('after the tool reports successful delivery, end your turn immediately')
+      expect(metaArg).toContain('without repeating the message')
       // Persisted, so later turns and resumes keep it.
       expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply).toBe(1)
       store.close()
@@ -745,7 +747,9 @@ describe('SessionManager', () => {
       const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
       const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
       await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }), undefined, undefined, undefined, undefined, true)
-      expect(host.newSession.mock.calls[0][3] as string).not.toContain('# Reporting back')
+      const metaArg = host.newSession.mock.calls[0][3] as string
+      expect(metaArg).not.toContain('# Reporting back')
+      expect(metaArg).not.toContain('end your turn immediately')
       expect(store.getSession(sessionKey('slack', 'C1', '100.1', 'bot-a'))?.needsParentReply ?? null).toBeNull()
       store.close()
     })

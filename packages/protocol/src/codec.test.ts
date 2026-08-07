@@ -1157,18 +1157,30 @@ describe('channel agent directory frames (agent collaboration)', () => {
         agentId: AGENT_ID,
         status: 'in-progress',
         state: 'prompting',
-        updatedAt: 17
+        updatedAt: 17,
+        reply: { requested: true, state: 'queued-for-parent' },
+        nextAction: 'finish-turn-and-wait',
+        message: 'The agent replied. End this turn and wait.'
       })
     )
     expect(ok.ok).toBe(true)
     if (!ok.ok || !isFrame('session/child-status/ok')(ok.frame)) throw new Error('expected session/child-status/ok')
     expect(ok.frame.payload.status).toBe('in-progress')
+    expect(ok.frame.payload.reply?.state).toBe('queued-for-parent')
 
     // A negative verdict carries nothing but `found` (plus a transport reason when applicable).
     expect(decodeEnvelope(envelope('session/child-status/ok', { found: false })).ok).toBe(true)
     expect(decodeEnvelope(envelope('session/child-status/ok', { found: false, reason: 'offline' })).ok).toBe(true)
     // The status vocabulary is closed — a typo must not reach an agent as a valid state.
     expect(decodeEnvelope(envelope('session/child-status/ok', { found: true, status: 'finished' })).ok).toBe(false)
+    expect(
+      decodeEnvelope(
+        envelope('session/child-status/ok', {
+          found: true,
+          reply: { requested: true, state: 'invented' }
+        })
+      ).ok
+    ).toBe(false)
   })
 
   it('channel/agents REQ + channel/agents/ok REP round-trip the roster', () => {

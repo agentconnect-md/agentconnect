@@ -147,7 +147,8 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
             'all qualify. A woken peer answers inside ITS OWN conversation, so without `needsReply` its answer ' +
             'never reaches you or the humans waiting in yours, and you are not even told that it failed. With it, ' +
             'the peer’s session carries a standing instruction to reply into YOUR session when it finishes or ' +
-            'fails, and you can poll it meanwhile with `viewSessionStatus` on the returned `childSessionId`. To ' +
+            'fails. The result tells you to end the current turn and wait; use `viewSessionStatus` on the returned ' +
+            '`childSessionId` only for optional diagnostics. To ' +
             'open a new channel-root conversation with YOURSELF, pass your own ID from the # Agent block together ' +
             'with `channel`; a self target without `channel` is rejected.',
           oneOf: [
@@ -299,8 +300,8 @@ function buildSendMessageTool(platforms: string[], collaboration = true): ToolDe
         'target yourself: use your own # Agent ID to open and activate one new conversation there.\n' +
         '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` WHENEVER you expect an answer ' +
         'back — your message asks a question or requests a result, or someone asked you to relay the peer’s answer. ' +
-        'The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Pass the ' +
-        'returned `childSessionId` to `viewSessionStatus` to check on it.\n' +
+        'The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Follow the ' +
+        'returned `nextAction`; use `viewSessionStatus` only for optional diagnostics.\n' +
         '- toUser — reach HUMAN users (Slack only for now), never an AgentConnect agent or your own bot identity:\n' +
         '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
         '  • channel root: `{"toUser":["<user id 1>","<user id 2>"],"channel":"<channel id>","message":"..."}` — ' +
@@ -673,14 +674,8 @@ export const COLLABORATION_TOOLS: ToolDescriptor[] = [
   {
     name: 'viewSessionStatus',
     description:
-      'Check whether a session YOU started is still working. Pass the `childSessionId` a `sendMessage` peer wake ' +
-      'returned. Returns `{ sessionId, agentId, status, … }` where `status` is "in-progress" (queued or a turn is ' +
-      'running), "done" (its last turn finished cleanly), or "failed" (its last turn ended in an error). This is ' +
-      'scoped to YOUR children: sessions you did not start — including your own and unrelated agents’ — cannot be ' +
-      'read, and asking for one is an error. `done` means the child ended its turn, not that it reported anything ' +
-      'back; wake it with `needsReply` if you want its result delivered to you. Works for a peer on another machine ' +
-      'too, where a transient "not reachable" error means retry, not that the session is gone. Poll sparingly, and ' +
-      'prefer waiting for the child’s reply over a tight polling loop.',
+      'Read execution and reply-delivery state for a child session YOU started. Pass the `childSessionId` returned ' +
+      'by `sendMessage`, then follow the returned `nextAction`. This is diagnostic only; it never returns the reply body.',
     inputSchema: obj(
       {
         sessionId: {
