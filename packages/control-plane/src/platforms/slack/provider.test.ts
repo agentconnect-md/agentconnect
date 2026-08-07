@@ -26,6 +26,7 @@ import {
   SlackCreateCredentials
 } from './provider.js'
 import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/placement.js'
+import { SLACK_BOT_SCOPES } from '../../http/slack-manifest.js'
 import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
 import { RelayRegistry, type RelayChannel } from '../../ws/relay-registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
@@ -342,6 +343,59 @@ describe('slack validateConfig (route parity: integrations.ts slack arm)', () =>
     const result = await provider.validateConfig({ botToken: 'xoxb-test', signingSecret: 'shh' }, 'http')
     expect(verifyAppToken).not.toHaveBeenCalled()
     expect(result.ok).toBe(true)
+  })
+
+  // The manual Bot-token wizard is the third install path the #768 scope fences
+  // cover: a workspace authorization that positively granted fewer bot scopes
+  // than the manifest declares must fail HERE, not weeks later as scoped calls
+  // answering `missing_scope`.
+  it('refuses a short workspace grant on BOTH transports, naming the missing scopes', async () => {
+    const provider = createSlackCpProvider({
+      verifyBot: verifierOk({ scopes: ['chat:write'] }),
+      verifyAppToken: vi.fn(async () => 'ok' as const)
+    })
+    const missing = SLACK_BOT_SCOPES.filter((scope) => scope !== 'chat:write')
+    const refusal = {
+      ok: false,
+      status: 400,
+      code: 'SLACK_MISSING_SCOPES',
+      message: `Slack didn’t grant every permission this app needs. Reinstall it in your Slack workspace, then connect again. Missing: ${missing.join(', ')}`
+    }
+    expect(await provider.validateConfig(CREDS, 'socket')).toEqual(refusal)
+    expect(await provider.validateConfig({ botToken: 'xoxb-test', signingSecret: 'shh' }, 'http')).toEqual(refusal)
+  })
+
+  it('proceeds on a complete grant (extra scopes a workspace holds are not a reason to refuse)', async () => {
+    const provider = createSlackCpProvider({
+      verifyBot: verifierOk({ scopes: [...SLACK_BOT_SCOPES, 'bookmarks:read'] }),
+      verifyAppToken: vi.fn(async () => 'ok' as const)
+    })
+    expect((await provider.validateConfig(CREDS, 'socket')).ok).toBe(true)
+  })
+
+  // Slack does not always send the `x-oauth-scopes` header. An unreported grant
+  // is "we could not tell", NOT "the grant is short" — refusing on it would fail
+  // installs for a reason unrelated to permissions (#768's tri-state rule).
+  it('never refuses when Slack did not report the granted scopes (unknown ≠ short)', async () => {
+    const provider = createSlackCpProvider({
+      verifyBot: verifierOk({ scopes: null }),
+      verifyAppToken: vi.fn(async () => 'ok' as const)
+    })
+    expect((await provider.validateConfig(CREDS, 'socket')).ok).toBe(true)
+  })
+
+  // The scope fence is checked LAST: a more specific credential refusal must
+  // not be masked by a shortfall the wrong app's token happens to show.
+  it('a mismatched token pair out-ranks the scope shortfall', async () => {
+    const provider = createSlackCpProvider({
+      verifyBot: verifierOk({ appId: 'A0OTHERAPP', scopes: ['chat:write'] }),
+      verifyAppToken: vi.fn(async () => 'ok' as const)
+    })
+    expect(await provider.validateConfig(CREDS, 'socket')).toEqual({
+      ok: false,
+      status: 400,
+      message: 'The Slack bot token and app-level token belong to different apps.'
+    })
   })
 })
 

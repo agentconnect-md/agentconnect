@@ -37,6 +37,7 @@ import { MemorySecretsProvider } from '../../src/secrets/providers/memory.js'
 import { systemClock } from '../../src/domain/clock.js'
 import { PgSlackUserConfigStore } from '../../src/persistence/index.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
+import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type {
   SlackConfigApi,
   SlackAppCreateResult,
@@ -133,7 +134,9 @@ async function storeConfig(
 }
 
 /** A Slack bot whose app id matches what `verifySlackBot` will claim, so the
- *  refresh route reaches its credential resolution. */
+ *  refresh route reaches its credential resolution. The fake reports a FULL
+ *  scope grant: the create path now refuses a positively-short one (#768's
+ *  third fence), and this helper's job is a bot that exists. */
 async function installedSlackBot(app: HttpApp, appId: string): Promise<string> {
   const agentId = await placedAgent()
   app.platformStubs.verifySlackBot = async () => ({
@@ -142,9 +145,9 @@ async function installedSlackBot(app: HttpApp, appId: string): Promise<string> {
     appId,
     teamId: 'T1',
     teamName: 'Acme',
-    scopes: []
+    scopes: [...SLACK_BOT_SCOPES]
   })
-  const created = (await app.app.inject({
+  const created = await app.app.inject({
     method: 'POST',
     url: `${ORG}/integrations`,
     payload: {
@@ -153,8 +156,9 @@ async function installedSlackBot(app: HttpApp, appId: string): Promise<string> {
       agentId,
       slack: { botToken: 'xoxb-tooling', appToken: `xapp-1-${appId}-123-abcdef` }
     }
-  })) as { json(): { botId: string } }
-  return created.json().botId
+  })
+  expect(created.statusCode).toBe(201)
+  return (created.json() as { botId: string }).botId
 }
 
 describe('providerToolingCredentials — the funnel start (POST /integrations/slack/app)', () => {
@@ -390,7 +394,17 @@ describe('the §9 DI collapse keeps its read-through seam', () => {
     const { app } = withFunnel()
     const botId = await installedSlackBot(app, 'A0TOOL0005')
 
-    // `installedSlackBot` left a verifier claiming this exact app id + no scopes.
+    // Swap the install-time FULL-grant verifier for a short-grant one claiming
+    // the same app id: the refresh must observe THIS stub, not one captured at
+    // composition or install time.
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'tooling-bot',
+      appId: 'A0TOOL0005',
+      teamId: 'T1',
+      teamName: 'Acme',
+      scopes: []
+    })
     expect((await app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/slack/refresh` })).json()).toMatchObject({
       authorization: 'reinstall_required'
     })

@@ -50,6 +50,7 @@ import type { IntegrationSlackConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, SlackUserConfigStore } from '../../persistence/ports.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../http/slack-identity.js'
 import type { SlackConfigApi } from '../../http/slack-config-api.js'
+import { checkSlackBotScopes } from '../../http/slack-manifest.js'
 import { configUsable, resolveUserConfigAccessToken, type SlackUserConfigDeps } from '../../http/slack-user-config.js'
 import type {
   CpConfigValidation,
@@ -339,11 +340,16 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
      * `auth.test` + (socket) the app-level token check + the same-app
      * cross-check — the live checks the create route runs before anything is
      * stored (`integrations.ts` slack arm), with the route's statuses and
-     * user-facing copy verbatim (none carries a machine code today).
-     * Reachability is best-effort by contract: an unreachable Slack refuses
-     * NOTHING here (the route proceeds with no derived identity) — only a
-     * definitive rejection blocks. The http-transport relay-availability check
-     * is a 409 and stays core (contract §9: core knows the relay pool).
+     * user-facing copy verbatim — plus, LAST, the same bot-scope fence the two
+     * install funnels apply (#768): a workspace authorization that positively
+     * granted fewer scopes than the manifest declares is refused on BOTH
+     * transports, carrying `code: 'SLACK_MISSING_SCOPES'` (the one refusal
+     * here with a machine code). Reachability is best-effort by contract: an
+     * unreachable Slack refuses NOTHING here (the route proceeds with no
+     * derived identity) — only a definitive rejection blocks, and an
+     * unreported grant (`scopes: null`) is inconclusive, never short (see
+     * `checkSlackBotScopes`). The http-transport relay-availability check is a
+     * 409 and stays core (contract §9: core knows the relay pool).
      */
     async validateConfig(credentials, transport): Promise<CpConfigValidation> {
       const botCheck = verifyBot ? await verifyBot(credentials.botToken) : null
@@ -372,6 +378,28 @@ export function createSlackCpProvider(deps: SlackCpProviderDeps): CpPlatformProv
             ok: false,
             status: 400,
             message: 'The Slack bot token and app-level token belong to different apps.'
+          }
+        }
+      }
+      // The manual Bot-token wizard is the third install path the #768 scope
+      // fences cover: Slack's authorization does not reliably apply every bot
+      // permission the manifest declares, and a short grant installs SILENTLY —
+      // the shortfall surfaces much later, as scoped calls answering
+      // `missing_scope` and the session-access check failing closed. Refuse it
+      // here — while the operator is one Reinstall away — naming the scopes,
+      // for both transports. LAST of the checks, so a more specific credential
+      // refusal (bad token, mismatched apps) still wins; an inconclusive check
+      // never blocks (`checkSlackBotScopes`: an unreported grant is unknown,
+      // not short). The reused-bot arm (`botId`) mints no new grant and stays
+      // the Settings refresh's job.
+      if (botCheck?.status === 'ok') {
+        const grant = checkSlackBotScopes(botCheck.scopes)
+        if (grant.status === 'short') {
+          return {
+            ok: false,
+            status: 400,
+            code: 'SLACK_MISSING_SCOPES',
+            message: `Slack didn’t grant every permission this app needs. Reinstall it in your Slack workspace, then connect again. Missing: ${grant.missing.join(', ')}`
           }
         }
       }
