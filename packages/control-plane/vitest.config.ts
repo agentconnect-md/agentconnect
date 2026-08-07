@@ -41,7 +41,18 @@ export default defineConfig({
           setupFiles: ['./test/setup.db.ts'],
           maxWorkers: integrationWorkers,
           fileParallelism: true,
-          hookTimeout: 120_000
+          hookTimeout: 120_000,
+          // Vitest's 5s default is a unit-test budget, and it is the FIRST wall a
+          // test here hits: its clock starts before any repo call opens its own
+          // transaction, so a stalled statement always surfaces as an opaque
+          // "Test timed out in 5000ms" rather than the Postgres/Prisma error that
+          // explains it. These tests share one Dockerized Postgres across
+          // `integrationWorkers` workers, so a multi-second stall (a CI runner
+          // whose vCPUs are oversubscribed, a Docker Desktop I/O hiccup) is
+          // ordinary weather, not a hang. 30s stays above the 20s transaction
+          // budget `setup.db.ts` sets, so a genuine lock cycle fails with the real
+          // Prisma error instead of being cut short by this one.
+          testTimeout: 30_000
         }
       }
     ]
