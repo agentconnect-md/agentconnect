@@ -391,7 +391,7 @@ When tools operate on resources, service-layer `visibilityWhere`/`canView` filte
 ### 9.3 Audit
 
 Use the existing append-only `audit_event` stream with kind `mcp_tool_call`
-(defined in migration `20260712000000_v1_baseline`). Its `details` contain
+(defined in migration `00000000000000_init`). Its `details` contain
 `{ tool, args, status, apiKeyId }`; `actorUserId` and `orgId` use the standard
 columns. MCP tool calls are management-plane operations like `cron_change` and
 `hook_change`, so no separate operation-log table is required.
