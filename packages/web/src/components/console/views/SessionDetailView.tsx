@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { liveBotTurnKey, sameBotSpeaker } from '@/lib/bot-turn-grouping'
 import { mergeConversation, type MergeSource } from '@/lib/conversation-merge'
 import { selfConversationPath } from '@/lib/conversation-addressing'
+import { keepLineageTarget } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
@@ -1129,14 +1130,20 @@ export default function SessionDetailView() {
       .sort()
       .join(',') ?? ''
   // Conversation-level lineage lift (merged-conversation-view.md §9.2): union
-  // the members' parent/child links, keep only CROSS-conversation edges, and
-  // link targets as /sessions/:id — the §5.3 self-redirect forwards
-  // multi-participant targets to THEIR merged page. Intra-room vs cross-room
-  // is decided by conversation LOCATION (the target's own conversation key),
-  // not by membership in the collapsed current-session set — an edge to a
-  // SUPERSEDED session at this location is still intra-room (§9.1). Each
-  // lifted delegation preserves its waking member so the UI groups
-  // delegations by origin.
+  // the members' parent/child links, keep the ones worth drawing, and link
+  // targets as /sessions/:id — the §5.3 self-redirect forwards
+  // multi-participant targets to THEIR merged page. Each lifted delegation
+  // preserves its waking member so the UI groups delegations by origin.
+  //
+  // §9.2 originally dropped every intra-room edge, on the reasoning that both
+  // ends are already merged into this transcript. They are — but the transcript
+  // interleaves them by TIME, so the one thing it cannot show is which of them
+  // woke the other. That left the delegation structure visible only by
+  // accident: a roster that came back short (a member failed closed by a
+  // degraded access check) flipped `conversationMode` off, and the family prop
+  // fell through to the representative's own unfiltered detail — so the same
+  // conversation showed lineage or not depending on how many members happened
+  // to resolve. Keeping participant edges makes the answer the same either way.
   const conversationMode = !!conversationKey && (conversationMembers?.length ?? 0) > 1
   const { data: conversationLineage, error: conversationLineageError } = useSWR(
     conversationMode && activeOrg?.id
@@ -1187,14 +1194,17 @@ export default function SessionDetailView() {
           }
         })
       )
-      const crossRoom = (targetId: string): boolean => {
-        const target = targetKeys.get(targetId)
-        if (!target || target.kind === 'unreadable') return false
-        return target.kind === 'singleton' || target.key !== conversationKey
+      // Which member this page is centred on, and who else is in the room —
+      // both decide what an intra-room edge is worth drawing (keepLineageTarget).
+      const room = {
+        conversationKey,
+        memberIds: new Set((conversationMembers ?? []).map((member) => member.sessionId)),
+        representativeId: conversationMembers?.[0]?.sessionId
       }
-      const crossParents = [...parents.values()].filter((parent) => crossRoom(parent.id))
+      const keepTarget = (targetId: string): boolean => keepLineageTarget(targetId, targetKeys.get(targetId), room)
+      const crossParents = [...parents.values()].filter((parent) => keepTarget(parent.id))
       const crossChildren = [...children.values()]
-        .filter((child) => crossRoom(child.id))
+        .filter((child) => keepTarget(child.id))
         // Origin-adjacent order — the family UI renders delegation groups
         // from this plus childOriginById.
         .sort((a, b) => {
