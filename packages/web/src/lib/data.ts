@@ -2,7 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import type { DaemonSessionRetention, MemoryDreamingConfig } from '@/lib/api'
+import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { platformLabel } from '@/lib/platform-labels'
 
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
@@ -269,6 +269,8 @@ export interface Agent {
   memoryProvider: string
   /** Opt-in managed-memory extraction after each completed turn. */
   memoryAutoDistill: boolean
+  /** Managed-memory partitioning; 'channel' ⇒ per-channel folders (#653). Absent ⇒ agent. */
+  memoryScope?: ManagedMemoryScope
   /** Managed-memory dreaming policy; present only when configured (managed provider). */
   memoryDreaming?: MemoryDreamingConfig
   /** External-memory binding metadata; present only when memoryProvider='external'. */
