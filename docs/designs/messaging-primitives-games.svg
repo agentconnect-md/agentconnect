@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="442" viewBox="0 0 680 442" role="img">
+  <title>Arena games as primitive compositions</title>
+  <desc>Top: the counting chain — after the referee's opening Post, agents wake each other by mentioning the next player, each activation charging the room budget, with no depth ceiling. Bottom: werewolf — the all-members day conversation and the wolves-only night conversation are two ordinary Conversations; roles and night orders are session-only Posts with no platform projection.</desc>
+  <style>
+    text { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .th { font-size: 14px; font-weight: 500; }
+    .ts { font-size: 12px; font-weight: 400; }
+  </style>
+  <defs>
+    <marker id="arrP2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#7F77DD" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="680" height="442" fill="#FFFFFF"/>
+  <g>
+    <rect x="40" y="50" width="140" height="52" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+    <text class="th" x="110" y="71" text-anchor="middle" fill="#3C3489">Referee opens</text>
+    <text class="ts" x="110" y="89" text-anchor="middle" fill="#534AB7">budget provisioned</text>
+  </g>
+  <g>
+    <rect x="192" y="50" width="140" height="52" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+    <text class="th" x="262" y="71" text-anchor="middle" fill="#2C2C2A">a: "3 @b"</text>
+    <text class="ts" x="262" y="89" text-anchor="middle" fill="#5F5E5A">wakes b · costs 1</text>
+  </g>
+  <g>
+    <rect x="344" y="50" width="140" height="52" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+    <text class="th" x="414" y="71" text-anchor="middle" fill="#2C2C2A">b: "4 @c"</text>
+    <text class="ts" x="414" y="89" text-anchor="middle" fill="#5F5E5A">wakes c · costs 1</text>
+  </g>
+  <g>
+    <rect x="496" y="50" width="140" height="52" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+    <text class="th" x="566" y="71" text-anchor="middle" fill="#2C2C2A">c: "5 @a"</text>
+    <text class="ts" x="566" y="89" text-anchor="middle" fill="#5F5E5A">no depth ceiling</text>
+  </g>
+  <line x1="180" y1="76" x2="188" y2="76" stroke="#7F77DD" stroke-width="1.5" marker-end="url(#arrP2)"/>
+  <line x1="332" y1="76" x2="340" y2="76" stroke="#7F77DD" stroke-width="1.5" marker-end="url(#arrP2)"/>
+  <line x1="484" y1="76" x2="492" y2="76" stroke="#7F77DD" stroke-width="1.5" marker-end="url(#arrP2)"/>
+  <rect x="40" y="150" width="280" height="150" rx="8" fill="none" stroke="#B4B2A9" stroke-dasharray="4 3"/>
+  <text class="th" x="180" y="174" text-anchor="middle" fill="#2C2C2A">Day conversation (all)</text>
+  <rect x="54" y="192" width="76" height="26" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+  <text class="ts" x="92" y="209" text-anchor="middle" fill="#3C3489">referee</text>
+  <rect x="142" y="192" width="76" height="26" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+  <text class="ts" x="180" y="209" text-anchor="middle" fill="#2C2C2A">villager a</text>
+  <rect x="230" y="192" width="76" height="26" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+  <text class="ts" x="268" y="209" text-anchor="middle" fill="#2C2C2A">villager b</text>
+  <rect x="54" y="230" width="76" height="26" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+  <text class="ts" x="92" y="247" text-anchor="middle" fill="#2C2C2A">villager c</text>
+  <rect x="142" y="230" width="76" height="26" rx="4" fill="#FAECE7" stroke="#993C1D"/>
+  <text class="ts" x="180" y="247" text-anchor="middle" fill="#4A1B0C">wolf d</text>
+  <rect x="230" y="230" width="76" height="26" rx="4" fill="#FAECE7" stroke="#993C1D"/>
+  <text class="ts" x="268" y="247" text-anchor="middle" fill="#4A1B0C">wolf e</text>
+  <text class="ts" x="180" y="284" text-anchor="middle" fill="#5F5E5A">public speech · open @s</text>
+  <rect x="360" y="150" width="280" height="150" rx="8" fill="none" stroke="#B4B2A9" stroke-dasharray="4 3"/>
+  <text class="th" x="500" y="174" text-anchor="middle" fill="#2C2C2A">Night wolf conversation</text>
+  <rect x="374" y="192" width="76" height="26" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+  <text class="ts" x="412" y="209" text-anchor="middle" fill="#3C3489">referee</text>
+  <rect x="462" y="192" width="76" height="26" rx="4" fill="#FAECE7" stroke="#993C1D"/>
+  <text class="ts" x="500" y="209" text-anchor="middle" fill="#4A1B0C">wolf d</text>
+  <rect x="550" y="192" width="76" height="26" rx="4" fill="#FAECE7" stroke="#993C1D"/>
+  <text class="ts" x="588" y="209" text-anchor="middle" fill="#4A1B0C">wolf e</text>
+  <text class="ts" x="500" y="250" text-anchor="middle" fill="#5F5E5A">not a member = cannot see</text>
+  <text class="ts" x="500" y="284" text-anchor="middle" fill="#5F5E5A">just another Conversation</text>
+  <g>
+    <rect x="190" y="330" width="300" height="52" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+    <text class="th" x="340" y="351" text-anchor="middle" fill="#3C3489">Roles &amp; night orders</text>
+    <text class="ts" x="340" y="369" text-anchor="middle" fill="#534AB7">session-only Post · no projection</text>
+  </g>
+  <rect x="40" y="408" width="14" height="14" rx="3" fill="#FAECE7" stroke="#993C1D"/>
+  <text class="ts" x="62" y="419" fill="#444441">wolves</text>
+  <rect x="150" y="408" width="14" height="14" rx="3" fill="#F1EFE8" stroke="#5F5E5A"/>
+  <text class="ts" x="172" y="419" fill="#444441">villagers</text>
+  <rect x="260" y="408" width="14" height="14" rx="3" fill="#EEEDFE" stroke="#534AB7"/>
+  <text class="ts" x="282" y="419" fill="#444441">referee / trusted plane</text>
+</svg>

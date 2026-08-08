@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="410" viewBox="0 0 680 410" role="img">
+  <title>Messaging primitives mechanism</title>
+  <desc>A finalized agent reply becomes a Post envelope; activation travels the trusted plane into the activation ladder, waking the target agent exactly once and charging the conversation budget. The visible platform message is a projection whose echo is transcript-only and never activates anyone. Human messages enter the same activation ladder via the platform.</desc>
+  <style>
+    text { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }
+    .th { font-size: 14px; font-weight: 500; }
+    .ts { font-size: 12px; font-weight: 400; }
+  </style>
+  <defs>
+    <marker id="arrG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrP" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#7F77DD" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrT" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#5DCAA5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="#BA7517" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="680" height="410" fill="#FFFFFF"/>
+  <g>
+    <rect x="40" y="50" width="180" height="52" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+    <text class="th" x="130" y="71" text-anchor="middle" fill="#2C2C2A">Finalized reply</text>
+    <text class="ts" x="130" y="89" text-anchor="middle" fill="#5F5E5A">@ in text or tool args</text>
+  </g>
+  <g>
+    <rect x="250" y="50" width="180" height="52" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+    <text class="th" x="340" y="71" text-anchor="middle" fill="#3C3489">Post envelope</text>
+    <text class="ts" x="340" y="89" text-anchor="middle" fill="#534AB7">who · where · visibility</text>
+  </g>
+  <g>
+    <rect x="460" y="50" width="180" height="52" rx="4" fill="#E1F5EE" stroke="#0F6E56"/>
+    <text class="th" x="550" y="71" text-anchor="middle" fill="#085041">Platform message</text>
+    <text class="ts" x="550" y="89" text-anchor="middle" fill="#0F6E56">absent when session-only</text>
+  </g>
+  <line x1="220" y1="76" x2="246" y2="76" stroke="#888780" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="430" y1="76" x2="456" y2="76" stroke="#888780" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="340" y1="102" x2="340" y2="166" stroke="#7F77DD" stroke-width="1.5" marker-end="url(#arrP)"/>
+  <text class="ts" x="350" y="138" fill="#534AB7">trusted plane</text>
+  <line x1="550" y1="102" x2="550" y2="166" stroke="#5DCAA5" stroke-width="1.5" marker-end="url(#arrT)"/>
+  <text class="ts" x="560" y="138" fill="#0F6E56">echo</text>
+  <g>
+    <rect x="40" y="170" width="180" height="52" rx="4" fill="#F1EFE8" stroke="#5F5E5A"/>
+    <text class="th" x="130" y="191" text-anchor="middle" fill="#2C2C2A">Human message</text>
+    <text class="ts" x="130" y="209" text-anchor="middle" fill="#5F5E5A">enters via platform</text>
+  </g>
+  <g>
+    <rect x="250" y="170" width="180" height="52" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+    <text class="th" x="340" y="191" text-anchor="middle" fill="#3C3489">Activation ladder</text>
+    <text class="ts" x="340" y="209" text-anchor="middle" fill="#534AB7">one routing function</text>
+  </g>
+  <g>
+    <rect x="460" y="170" width="180" height="52" rx="4" fill="#E1F5EE" stroke="#0F6E56"/>
+    <text class="th" x="550" y="191" text-anchor="middle" fill="#085041">Echo → transcript</text>
+    <text class="ts" x="550" y="209" text-anchor="middle" fill="#0F6E56">never activates anyone</text>
+  </g>
+  <line x1="220" y1="196" x2="246" y2="196" stroke="#888780" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="340" y1="222" x2="340" y2="286" stroke="#7F77DD" stroke-width="1.5" marker-end="url(#arrP)"/>
+  <line x1="285" y1="222" x2="155" y2="286" stroke="#BA7517" stroke-width="1.5" marker-end="url(#arrA)"/>
+  <g>
+    <rect x="40" y="290" width="210" height="52" rx="4" fill="#FAEEDA" stroke="#854F0B"/>
+    <text class="th" x="145" y="311" text-anchor="middle" fill="#633806">Conversation budget</text>
+    <text class="ts" x="145" y="329" text-anchor="middle" fill="#854F0B">wakes drain, humans refill</text>
+  </g>
+  <g>
+    <rect x="270" y="290" width="210" height="52" rx="4" fill="#EEEDFE" stroke="#534AB7"/>
+    <text class="th" x="375" y="311" text-anchor="middle" fill="#3C3489">Target agent wakes</text>
+    <text class="ts" x="375" y="329" text-anchor="middle" fill="#534AB7">exactly once, idempotent</text>
+  </g>
+  <rect x="40" y="372" width="14" height="14" rx="3" fill="#EEEDFE" stroke="#534AB7"/>
+  <text class="ts" x="62" y="383" fill="#444441">trusted plane (internal)</text>
+  <rect x="250" y="372" width="14" height="14" rx="3" fill="#E1F5EE" stroke="#0F6E56"/>
+  <text class="ts" x="272" y="383" fill="#444441">platform projection (display)</text>
+  <rect x="470" y="372" width="14" height="14" rx="3" fill="#FAEEDA" stroke="#854F0B"/>
+  <text class="ts" x="492" y="383" fill="#444441">budget (loop protection)</text>
+</svg>
