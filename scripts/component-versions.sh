@@ -50,7 +50,7 @@ esac
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
 CP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability $COMMON"
 SETUP_PATHS="$CP_PATHS"
-WEB_PATHS="packages/web $COMMON"
+WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/message packages/protocol packages/connection packages/observability $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
 # The backend's application source is the immutable external context declared in
