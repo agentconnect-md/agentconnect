@@ -9,6 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createManagedMemoryProvider } from '../src/agents/memory-provider.js'
+import { createMemoryReader } from '../src/cp/memory-reader.js'
 import {
   memoryChannelKey,
   channelMemoryRoot,
@@ -109,6 +110,30 @@ describe('channel-scoped memory overlay', () => {
     const injected = await mem.standingContextAtSessionStart(a)
     expect(injected.indexOf('# base index')).toBeGreaterThanOrEqual(0)
     expect(injected.indexOf('# channel index')).toBeGreaterThan(injected.indexOf('# base index'))
+  })
+
+  it('the CP memory reader lists channel folders and routes reads to the selected channel', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-chan-reader-'))
+    const mem = createManagedMemoryProvider(() => dir)
+    const reader = createMemoryReader(() => dir, { adminSurfaceForAgent: () => mem.adminSurface() })
+    const a = chan('C1')
+    mem.ensure(a, 'bot')
+    await mem.write(a, 'notes.md', '- channel A note', undefined, 'tool')
+
+    // channels() surfaces the folder with its source identity.
+    expect((await reader.channels({ agentId: 'bot-a' })).channels).toContainEqual({
+      channelKey: a.channelKey,
+      channel: 'C1'
+    })
+    // list/read scoped to the channelKey see the channel layer; the base does not.
+    expect(
+      (await reader.list({ agentId: 'bot-a', channelKey: a.channelKey })).entries.some((e) => e.name === 'notes.md')
+    ).toBe(true)
+    expect((await reader.list({ agentId: 'bot-a' })).entries.some((e) => e.name === 'notes.md')).toBe(false)
+    expect(
+      (await reader.read({ agentId: 'bot-a', channelKey: a.channelKey, path: 'notes.md', offset: 0, limit: 65536 }))
+        .content
+    ).toBe('- channel A note')
   })
 
   it('records channel source metadata so the console can name folders', async () => {

@@ -2432,16 +2432,33 @@ export interface MemoryFilesDto {
 }
 
 // List the files in the agent's memory dir (MEMORY.md index + topic files).
-export async function listAgentMemory(agentId: string): Promise<MemoryFilesDto> {
-  return apiGet<MemoryFilesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/files`)
+/** A channel that has its own memory folder (channel-scoped agents, #653). */
+export interface MemoryChannelDto {
+  channelKey: string
+  channel: string | null
+  transportScope: string | null
+}
+export interface MemoryChannelsDto {
+  channels: MemoryChannelDto[]
+}
+
+/** List the channels that have their own memory folder (empty for agent scope). */
+export async function fetchAgentMemoryChannels(agentId: string): Promise<MemoryChannelsDto> {
+  return apiGet<MemoryChannelsDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/channels`)
+}
+
+export async function listAgentMemory(agentId: string, channelKey?: string): Promise<MemoryFilesDto> {
+  const q = channelKey ? `?channelKey=${encodeURIComponent(channelKey)}` : ''
+  return apiGet<MemoryFilesDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/files${q}`)
 }
 
 // Read one memory file (`path` defaults to the MEMORY.md index).
 export async function fetchAgentMemory(
   agentId: string,
-  opts: { path?: string; offset?: number; limit?: number } = {}
+  opts: { path?: string; offset?: number; limit?: number; channelKey?: string } = {}
 ): Promise<AgentMemoryDto> {
   const q = new URLSearchParams()
+  if (opts.channelKey) q.set('channelKey', opts.channelKey)
   if (opts.path) q.set('path', opts.path)
   if (opts.offset) q.set('offset', String(opts.offset))
   if (opts.limit) q.set('limit', String(opts.limit))
@@ -2456,7 +2473,8 @@ export async function fetchAgentMemory(
 // (a partial read would let Save clobber the tail). Returns { exists, content }.
 export async function fetchAgentMemoryFull(
   agentId: string,
-  path?: string
+  path?: string,
+  channelKey?: string
 ): Promise<{ exists: boolean; content: string; mtime: string | null }> {
   let offset = 0
   let content = ''
@@ -2464,7 +2482,11 @@ export async function fetchAgentMemoryFull(
   let mtime: string | null = null
   // Bounded loop: nextOffset strictly advances while truncated, so this terminates.
   for (let guard = 0; guard < 4096; guard++) {
-    const slice = await fetchAgentMemory(agentId, path ? { path, offset } : { offset })
+    const slice = await fetchAgentMemory(agentId, {
+      offset,
+      ...(path ? { path } : {}),
+      ...(channelKey ? { channelKey } : {})
+    })
     exists = slice.exists
     mtime = slice.mtime
     if (!slice.exists) break
@@ -2482,11 +2504,15 @@ export async function updateAgentMemory(
   agentId: string,
   content: string,
   path?: string,
-  ifMatchMtime?: string | null
+  ifMatchMtime?: string | null,
+  channelKey?: string
 ): Promise<{ path: string; size: number; mtime: string }> {
-  const q = path ? `?path=${encodeURIComponent(path)}` : ''
+  const q = new URLSearchParams()
+  if (channelKey) q.set('channelKey', channelKey)
+  if (path) q.set('path', path)
+  const qs = q.toString()
   return apiPut<{ path: string; size: number; mtime: string }>(
-    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/file${q}`,
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/memory/file${qs ? `?${qs}` : ''}`,
     ifMatchMtime ? { content, ifMatchMtime } : { content }
   )
 }
@@ -2513,9 +2539,10 @@ export interface MemoryFileHistoryPageDto {
 export async function listMemoryFileHistory(
   agentId: string,
   path: string,
-  opts: { cursor?: string; limit?: number } = {}
+  opts: { cursor?: string; limit?: number; channelKey?: string } = {}
 ): Promise<MemoryFileHistoryPageDto> {
   const query = new URLSearchParams({ path })
+  if (opts.channelKey) query.set('channelKey', opts.channelKey)
   if (opts.cursor) query.set('cursor', opts.cursor)
   if (opts.limit) query.set('limit', String(opts.limit))
   return apiGet<MemoryFileHistoryPageDto>(

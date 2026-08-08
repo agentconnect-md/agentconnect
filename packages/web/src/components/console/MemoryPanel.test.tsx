@@ -18,7 +18,8 @@ vi.mock('@/lib/api', () => ({
   },
   fetchAgentMemoryFull: vi.fn(),
   listAgentMemory: vi.fn(),
-  updateAgentMemory: vi.fn()
+  updateAgentMemory: vi.fn(),
+  fetchAgentMemoryChannels: vi.fn(async () => ({ channels: [] }))
 }))
 
 vi.mock('@/components/console/ExternalMemoryBindingFields', () => ({
@@ -58,7 +59,7 @@ vi.mock('@/components/console/ManagedMemoryHistory', () => ({
   ManagedMemoryHistory: () => <div data-testid="memory-file-history" />
 }))
 
-import { fetchAgentMemoryFull, listAgentMemory, updateAgentMemory } from '@/lib/api'
+import { fetchAgentMemoryFull, listAgentMemory, updateAgentMemory, fetchAgentMemoryChannels } from '@/lib/api'
 import { MemoryPanel } from './MemoryPanel'
 
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111'
@@ -83,6 +84,7 @@ beforeEach(() => {
   vi.mocked(updateAgentMemory)
     .mockReset()
     .mockResolvedValue({ path: 'MEMORY.md', size: 9, mtime: '2026-07-27T09:01:00.000Z' })
+  vi.mocked(fetchAgentMemoryChannels).mockReset().mockResolvedValue({ channels: [] })
 })
 
 afterEach(async () => {
@@ -189,7 +191,8 @@ describe('MemoryPanel file editor', () => {
       '22222222-2222-4222-8222-222222222222',
       '# Deploys',
       'deploys.md',
-      undefined
+      undefined,
+      undefined // channelKey — agent scope
     )
   })
 
@@ -403,6 +406,48 @@ describe('MemoryPanel settings draft', () => {
     expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
       memory: { provider: 'managed', autoDistill: false, scope: 'channel' }
     })
+  })
+
+  it('channel scope: the viewer lists channels and reads the selected channel (#653)', async () => {
+    vi.mocked(fetchAgentMemoryChannels).mockResolvedValue({
+      channels: [
+        { channelKey: 'slack-C1-abc', channel: 'C1', transportScope: null },
+        { channelKey: 'slack-C2-def', channel: 'C2', transportScope: null }
+      ]
+    })
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <MemoryPanel
+          agentId="22222222-2222-4222-8222-222222222222"
+          canEdit
+          memoryProvider="managed"
+          memoryScope="channel"
+          autoDistill={false}
+        />
+      )
+    })
+    // Let the channel-fetch effect resolve and re-render.
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    const selector = container.querySelector<HTMLSelectElement>('[aria-label="Channel memory folder"]')
+    expect(selector).not.toBeNull()
+    expect([...selector!.options].map((o) => o.textContent)).toEqual(['Agent (shared)', 'C1', 'C2'])
+
+    vi.mocked(listAgentMemory).mockClear()
+    vi.mocked(fetchAgentMemoryFull).mockClear()
+    await act(async () => {
+      selector!.value = 'slack-C2-def'
+      selector!.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    // Reads for the newly selected channel carry its channelKey.
+    expect(listAgentMemory).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', 'slack-C2-def')
+    expect(fetchAgentMemoryFull).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', undefined, 'slack-C2-def')
   })
 
   it('hides the persisted memory session while a different backend is selected but unsaved', async () => {

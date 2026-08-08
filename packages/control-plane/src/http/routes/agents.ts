@@ -102,6 +102,8 @@ import {
   WorkspaceGitPullDto,
   AgentMemoryDto,
   MemoryFilesDto,
+  MemoryFilesQueryDto,
+  MemoryChannelsDto,
   MemoryFileQueryDto,
   PutMemoryFileQueryDto,
   PutAgentMemoryBody,
@@ -2691,6 +2693,7 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           const rep = await deps.control.memoryRead(agent.daemonId, {
             agentId: agent.id,
+            ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
             path: req.query.path ?? 'MEMORY.md',
             offset: req.query.offset ?? 0,
             limit: req.query.limit ?? 65536
@@ -2717,6 +2720,7 @@ export function agentRoutes(deps: HttpDeps) {
             "List the files in the agent's memory dir (MEMORY.md index + topic files) live from the owning daemon. 503 when unplaced or the daemon is offline.",
           operationId: 'listAgentMemoryFiles',
           params: IdParam,
+          querystring: MemoryFilesQueryDto,
           response: { 200: MemoryFilesDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
         }
       },
@@ -2737,8 +2741,55 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
-          const rep = await deps.control.memoryList(agent.daemonId, { agentId: agent.id })
+          const rep = await deps.control.memoryList(agent.daemonId, {
+            agentId: agent.id,
+            ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {})
+          })
           return toMemoryFilesDto(rep)
+        } catch (err) {
+          const unavailable = daemonEdgeFailure(err)
+          if (unavailable !== null) {
+            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+          }
+          throw err
+        }
+      }
+    )
+
+    // List the channels that have their own memory folder (channel-scoped agents).
+    r.get(
+      '/agents/:id/memory/channels',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List agent channel memory folders',
+          description:
+            'List the channels that have their own memory folder for a channel-scoped agent, live from the owning daemon (empty for agent-scoped agents). 503 when unplaced or the daemon is offline.',
+          operationId: 'listAgentMemoryChannels',
+          params: IdParam,
+          response: { 200: MemoryChannelsDto, 400: ErrorDto, 404: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (agent.memory?.provider !== undefined && agent.memory.provider !== 'managed') {
+          return { channels: [] }
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        try {
+          const rep = await deps.control.memoryChannels(agent.daemonId, { agentId: agent.id })
+          return {
+            channels: rep.channels.map((c) => ({
+              channelKey: c.channelKey,
+              channel: c.channel ?? null,
+              transportScope: c.transportScope ?? null
+            }))
+          }
         } catch (err) {
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
@@ -2783,6 +2834,7 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           const rep = await deps.control.memoryRead(agent.daemonId, {
             agentId: agent.id,
+            ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
             path: req.query.path ?? 'MEMORY.md',
             offset: req.query.offset ?? 0,
             limit: req.query.limit ?? 65536
@@ -2846,6 +2898,7 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           const ok = await deps.control.memoryWrite(agent.daemonId, {
             agentId: agent.id,
+            ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
             path: req.query.path ?? 'MEMORY.md',
             content: req.body.content,
             ...(req.body.ifMatchMtime ? { ifMatchMtime: req.body.ifMatchMtime } : {})
@@ -2910,6 +2963,7 @@ export function agentRoutes(deps: HttpDeps) {
           return toMemoryHistoryPageDto(
             await deps.control.memoryHistory(agent.daemonId, {
               agentId: agent.id,
+              ...(req.query.channelKey ? { channelKey: req.query.channelKey } : {}),
               path: req.query.path,
               ...(req.query.cursor ? { cursor: req.query.cursor } : {}),
               limit: req.query.limit ?? 5
