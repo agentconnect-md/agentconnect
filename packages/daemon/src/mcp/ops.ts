@@ -1,5 +1,5 @@
 import type { ToolDescriptor } from './tools.js'
-import type { MemoryProvider } from '../agents/memory-provider.js'
+import type { MemoryProvider, MemoryScope } from '../agents/memory-provider.js'
 import {
   rootPostNeedsThreadMaterialization,
   rootPostThreadName,
@@ -551,6 +551,10 @@ export interface OpsDeps {
    *  mid-session policy change takes effect immediately. Absent ⇒ allowed (e.g. in
    *  unit fixtures). */
   memoryAccessAllowed?: (ctx: SessionContext, mode: 'read' | 'write') => boolean
+  /** Build the memory scope for a tool call — carries the per-channel folder key
+   *  for a channel-scoped agent so tools read/write that channel's memory (#653).
+   *  Absent ⇒ agent-level store (unit fixtures). */
+  memoryScope?: (ctx: SessionContext) => MemoryScope
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
    *  Returns undefined when `name` is not an evaluation tool. Visibility and
    *  role-aware authorization live behind this seam (the daemon guarantees
@@ -702,7 +706,7 @@ export async function executeTool(
   if (name === 'readMemory' || name === 'writeMemory') {
     const mode = name === 'writeMemory' ? 'write' : 'read'
     if (deps.memoryAccessAllowed?.(ctx, mode) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
-    const scope = { agentId: ctx.agentId }
+    const scope = deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }
     try {
       if (name === 'readMemory') {
         const path = optionalString(args, 'path') ?? 'MEMORY.md'
@@ -759,7 +763,7 @@ export async function executeTool(
     if (deps.memoryAccessAllowed?.(ctx, mode) === false) throw new Error(MEMORY_ACCESS_BLOCKED)
     const surface = deps.memory.adminSurfaceForAgent?.(ctx.agentId) ?? deps.memory.adminSurface()
     if (!surface || surface.shape !== 'records') throw new Error('record memory is not available for this agent')
-    const scope = { agentId: ctx.agentId }
+    const scope = deps.memoryScope?.(ctx) ?? { agentId: ctx.agentId }
     const requireCapability = (operation: 'recall' | 'create' | 'get' | 'update' | 'delete'): void => {
       if (!surface.capabilities.has(operation)) throw new Error(`record memory does not support ${operation}`)
     }

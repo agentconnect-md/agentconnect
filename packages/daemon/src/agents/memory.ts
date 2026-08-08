@@ -17,7 +17,7 @@
  * Writes additionally publish through a random exclusive temp file. Flat by design
  * (one level): a topic is a file directly under `memory/`, no nested dirs.
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants, promises as fsp, lstatSync, mkdirSync, realpathSync, writeFileSync, type Stats } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
@@ -107,6 +107,87 @@ export class MemoryConflictError extends Error {
 /** The memory directory for an agent, given its root dir (where agent.json lives). */
 export function memoryDir(agentDir: string): string {
   return join(agentDir, MEMORY_DIRNAME)
+}
+
+/** Sibling of `memory/` that holds one self-contained memory subtree per channel
+ *  when the agent's memory scope is `channel` (#653). */
+export const CHANNEL_MEMORY_DIRNAME = 'channels'
+
+/** A deterministic, filesystem-safe folder name for one channel's memory. Keeps a
+ *  readable prefix and appends a short digest so distinct (transportScope, channel)
+ *  pairs never collide after sanitization. */
+export function memoryChannelKey(channel: string, transportScope?: string): string {
+  const raw = transportScope ? `${transportScope}::${channel}` : channel
+  const digest = createHash('sha256').update(raw).digest('hex').slice(0, 12)
+  const prefix = raw
+    .replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/^[.-]+/, '')
+    .slice(0, 80)
+  return prefix ? `${prefix}-${digest}` : digest
+}
+
+/** The self-contained memory root for one channel (its own `memory/` + `.history`),
+ *  used exactly like an agent root. `channelKey` MUST be a pre-sanitized single
+ *  path segment (from {@link memoryChannelKey}); anything else is rejected so a
+ *  crafted key cannot escape the agent tree. */
+export function channelMemoryRoot(agentDir: string, channelKey: string): string {
+  if (channelKey === '.' || channelKey === '..' || !/^[A-Za-z0-9._-]{1,120}$/.test(channelKey)) {
+    throw new MemoryPathError('invalid channel memory key')
+  }
+  return join(agentDir, CHANNEL_MEMORY_DIRNAME, channelKey)
+}
+
+/** Source identity of a channel memory folder, so the console can render a name
+ *  instead of the opaque key. Written when the folder is first created. */
+export interface ChannelMemoryMeta {
+  channel: string
+  transportScope?: string
+}
+
+/** Record the source channel identity for a channel memory folder (idempotent
+ *  best-effort; a write failure never blocks memory itself). Lives at the channel
+ *  root, outside `memory/`, so it never appears as a memory topic. */
+export async function writeChannelMemoryMeta(
+  agentDir: string,
+  channelKey: string,
+  meta: ChannelMemoryMeta
+): Promise<void> {
+  const root = channelMemoryRoot(agentDir, channelKey)
+  await fsp.mkdir(root, { recursive: true })
+  const body = JSON.stringify({
+    channel: meta.channel,
+    ...(meta.transportScope ? { transportScope: meta.transportScope } : {})
+  })
+  await fsp.writeFile(join(root, 'channel.json'), body, 'utf8').catch(() => {})
+}
+
+/** Read a channel memory folder's source identity, or null if absent/unreadable. */
+export async function readChannelMemoryMeta(agentDir: string, channelKey: string): Promise<ChannelMemoryMeta | null> {
+  try {
+    const raw = await fsp.readFile(join(channelMemoryRoot(agentDir, channelKey), 'channel.json'), 'utf8')
+    const parsed = JSON.parse(raw) as ChannelMemoryMeta
+    if (parsed && typeof parsed.channel === 'string') return parsed
+  } catch {
+    /* missing or malformed — treat as unknown */
+  }
+  return null
+}
+
+/** List the channelKeys that have a memory subtree under an agent root (the folder
+ *  names under `channels/`). ENOENT ⇒ none. */
+export async function listChannelMemoryKeys(agentDir: string): Promise<string[]> {
+  const root = join(agentDir, CHANNEL_MEMORY_DIRNAME)
+  let dirents
+  try {
+    dirents = await fsp.readdir(root, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
+  return dirents
+    .filter((d) => d.isDirectory() && /^[A-Za-z0-9._-]{1,120}$/.test(d.name))
+    .map((d) => d.name)
+    .sort()
 }
 
 /**

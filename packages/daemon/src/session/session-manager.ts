@@ -3,7 +3,7 @@ import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } fr
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { additionalWorkspaceDirectories, prepareWorkspace } from '../workspace/workspace-manager.js'
-import { memoryKindOf, type MemoryProvider } from '../agents/memory-provider.js'
+import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../agents/memory-provider.js'
 import { MAX_INDEX_INJECT_BYTES } from '../agents/memory.js'
 import { agentChildEnv } from '../agents/agent-env.js'
 import { planConfigFiles } from '../agents/config-file-env.js'
@@ -257,6 +257,10 @@ export class SessionManager {
       /** The agent memory provider — seeds the memory dir and supplies the index
        *  injected at the start of a fresh session. */
       memory: MemoryProvider
+      /** Build the memory scope for this turn's agent + conversation — carries the
+       *  per-channel folder key for channel-scoped agents (#653). Absent ⇒ the
+       *  agent-level store (tests / chat CLI). */
+      memoryScopeFor?: (agentId: string, msg: NormalizedMessage, integrationId?: string) => MemoryScope
       /** Fail-open recall diagnostics. Must never include query/record/plugin body text. */
       onMemoryRecallError?: (agentId: string, error: unknown) => void
       /** Exact final reference bytes after provider-neutral validation/rendering. */
@@ -429,9 +433,13 @@ export class SessionManager {
     const usesSessionTitleTool = this.deps.usesSessionTitleTool?.(agent) ?? false
     const memoryEnabled = this.deps.memoryEnabled !== false
     const currentMemoryProvider = memoryEnabled ? memoryKindOf(agent) : 'none'
+    // The memory scope for this turn — the per-channel folder for a channel-scoped
+    // agent, else the agent-level store (#653). Reused for seeding, injection, and
+    // recall so all three hit the same store.
+    const memScope = this.deps.memoryScopeFor?.(agentId, msg, integrationId) ?? { agentId }
     // Seed the agent's memory file at its ROOT dir (outside the workspace) if absent,
     // so the prompt injection below and the `updateMemory` tool always have a file.
-    if (memoryEnabled) this.deps.memory.ensure({ agentId }, agent.name)
+    if (memoryEnabled) this.deps.memory.ensure(memScope, agent.name)
     const { thread, ts: coordTs } = transcriptCoords(msg)
     // webchat's msgId is stable per-conversation, so transcriptCoords yields the SAME ts
     // for every turn — the transcript's (channel,thread,ts) unique index would then dedup
@@ -687,7 +695,7 @@ export class SessionManager {
     // memory is enabled, regardless of session isolation. Only WRITES (the memory
     // write tools + post-turn distillation) stay gated for private sessions.
     const memoryIndex = memoryEnabled
-      ? (await abortable(() => this.deps.memory.standingContextAtSessionStart({ agentId }), signal)).trim()
+      ? (await abortable(() => this.deps.memory.standingContextAtSessionStart(memScope), signal)).trim()
       : ''
     const memoryAppend = memoryIndex
       ? `# Persistent memory\n` +
@@ -1223,7 +1231,7 @@ export class SessionManager {
     // deliberately reuses one msgId for the whole conversation, so use its
     // per-turn trace id instead.
     const turnId = stableTurnId(agentId, msg)
-    const recallScope = { agentId, sessionId: rec.acpSessionId! }
+    const recallScope = { ...memScope, sessionId: rec.acpSessionId! }
     const recallPolicy = memoryEnabled ? this.deps.memory.recallPolicy(recallScope) : undefined
     if (captureInput && recallPolicy?.mode === 'auto') {
       const recallAbort = new AbortController()

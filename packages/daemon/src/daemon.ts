@@ -302,6 +302,7 @@ import {
   SLACK_SESSION_AUDIENCE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveMemoryDreamingPolicy,
+  effectiveManagedMemoryScope,
   RdSlackAction,
   WireFeishuCardActionEvent,
   gitRepoLabel,
@@ -324,8 +325,10 @@ import {
   memoryKindOf,
   MemoryProviderUnavailableError,
   type DispatchingMemoryProvider,
+  type MemoryScope,
   type PreparedExternalMemoryCapture
 } from './agents/memory-provider.js'
+import { memoryChannelKey } from './agents/memory.js'
 import { createWorkspaceGit } from './cp/workspace-git.js'
 import { DAEMON_VERSION } from './version.js'
 import { CpCronRegistry } from './cp/cp-cron.js'
@@ -2998,6 +3001,7 @@ export class Daemon {
       // time so a policy change takes effect for an already-running ACP session.
       memoryAccessAllowed: (ctx, mode) =>
         mode === 'read' || !this.store.isCaptureExcluded(this.acpSessionIdForToolCall(ctx)),
+      memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       recordOutbound: (ctx, channel, thread, text, ts, integrationId) =>
         this.store.appendTranscript({
           channel: transcriptChannelKey(channel, this.transportScopeForIntegrationIds([integrationId])),
@@ -3018,6 +3022,12 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      memoryScopeFor: (agentId, msg, integrationId) =>
+        this.memoryScope(
+          agentId,
+          msg.channel,
+          this.transportScopeForIntegrationIds(integrationId ? [integrationId] : [])
+        ),
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
@@ -5122,6 +5132,27 @@ export class Daemon {
     await Promise.all([...selected].map((lifecycle) => lifecycle.stop(0)))
   }
 
+  /** Build the memory scope for an agent + conversation. For a `channel`-scoped
+   *  agent this carries the per-channel folder key (DM/webchat are special channels
+   *  keyed by their conversation); otherwise it is the agent-level store (#653). */
+  private memoryScope(agentId: string, channel: string | undefined, transportScope?: string | null): MemoryScope {
+    const agent = this.agents.get(agentId)
+    if (effectiveManagedMemoryScope(agent?.memory) !== 'channel' || !channel) return { agentId }
+    return {
+      agentId,
+      channelKey: memoryChannelKey(channel, transportScope ?? undefined),
+      channel,
+      ...(transportScope ? { transportScope } : {})
+    }
+  }
+
+  /** Memory scope for a running session, resolving its channel from the store by
+   *  ACP session id (the capture path only carries the session id). */
+  private memoryScopeForSession(agentId: string, acpSessionId: string): MemoryScope {
+    const rec = this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    return this.memoryScope(agentId, rec?.channel, rec?.transportScope)
+  }
+
   private queueMemoryPostTurn(
     agentId: string,
     sessionId: string,
@@ -5154,7 +5185,7 @@ export class Daemon {
       }
       try {
         await this.memory.recordTurnForBinding(
-          { agentId, sessionId },
+          { ...this.memoryScopeForSession(agentId, sessionId), sessionId },
           { turnId, sessionId, input, output },
           binding,
           captureTarget
