@@ -64,6 +64,9 @@ export interface CountingGameRunOptions {
   /** What drives the waves: §10.1 referee announcements (default) or §3.3
    *  peer-message relays with a silent referee. */
   variant?: CountingVariant
+  /** Room routing convention: historical `auto` (default) or the production
+   *  shared-channel `mention` gate with an @mention-bearing human kickoff. */
+  bindMatch?: 'auto' | 'mention'
   /** Who plays (§8.1): scripted hosts (default; the reproducible engine gate)
    *  or a real-runtime subject template — the identical game either way. */
   subject?: GameSubjectSpec
@@ -635,6 +638,9 @@ export interface QuotaCountingRunOptions {
   timeoutMs?: number
   subject?: GameSubjectSpec
   keepSubject?: boolean
+  /** Room routing convention: historical `auto` (default) or the production
+   *  shared-channel `mention` gate with an @mention-bearing human kickoff. */
+  bindMatch?: 'auto' | 'mention'
 }
 
 export async function runQuotaCounting(options: QuotaCountingRunOptions): Promise<CollaborationGameResult> {
@@ -645,7 +651,12 @@ export async function runQuotaCounting(options: QuotaCountingRunOptions): Promis
   const subjectSpec: GameSubjectSpec = options.subject ?? { kind: 'scripted' }
   const topology = compileTopology(countingManifest({ seed, agents }))
   const world = new ArenaWorld(topology)
-  const game = new QuotaCountingGame({ world, roomAlias: 'counting-room', quotaPerAgent })
+  const game = new QuotaCountingGame({
+    world,
+    roomAlias: 'counting-room',
+    quotaPerAgent,
+    ...(options.bindMatch !== undefined ? { bindMatch: options.bindMatch } : {})
+  })
   const subject = await prepareSubjectForRun(topology, subjectSpec)
   try {
     const runner = new CollaborationGameRunner({
@@ -683,7 +694,8 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
     world,
     roomAlias: 'counting-room',
     variant,
-    ...(options.target !== undefined ? { target: options.target } : {})
+    ...(options.target !== undefined ? { target: options.target } : {}),
+    ...(options.bindMatch !== undefined ? { bindMatch: options.bindMatch } : {})
   })
   const subject = await prepareSubjectForRun(topology, subjectSpec)
   try {

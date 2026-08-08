@@ -76,6 +76,11 @@ export interface CountingGameOptions {
   variant?: CountingVariant
   /** Human persona the referee speaks through on the real ingress path. */
   refereeUserId?: string
+  /** Room routing convention (default `auto`, the historical game-room shape).
+   *  `mention` is the PRODUCTION shared-channel convention: activation needs an
+   *  explicit mention or thread affinity — the kickoff then @mentions every
+   *  member, exactly as a human does in a live multi-agent Slack channel. */
+  bindMatch?: 'auto' | 'mention'
 }
 
 interface AcceptedCandidate {
@@ -111,6 +116,7 @@ export class CountingGame implements CollaborationGameWorld {
   private readonly echo?: PlatformEcho
 
   private readonly variant: CountingVariant
+  private readonly bindMatch: 'auto' | 'mention'
 
   constructor(options: CountingGameOptions) {
     this.world = options.world
@@ -120,11 +126,22 @@ export class CountingGame implements CollaborationGameWorld {
     this.target = options.target ?? 12
     this.variant = options.variant ?? 'referee-announced'
     this.refereeUserId = options.refereeUserId ?? 'W-ARENA-REFEREE'
-    this.environment = options.world.buildEnvironment()
+    this.bindMatch = options.bindMatch ?? 'auto'
+    this.environment = options.world.buildEnvironment({ bindMatch: this.bindMatch })
     this.echo = this.variant === 'peer-driven' ? new PlatformEcho(options.world, room) : undefined
   }
 
-  private roomBroadcast(text: string): GameWave {
+  /** Platform-native mention tokens for every member bot (the kickoff shape a
+   *  human uses in a production shared channel: one message @mentioning the
+   *  participating agents). */
+  private memberMentions(): { tokens: string; botUserIds: string[] } {
+    const botUserIds = this.room.memberIntegrationIds
+      .map((integrationId) => this.world.botUserIdFor(integrationId))
+      .filter((id): id is string => id !== undefined)
+    return { tokens: botUserIds.map((id) => `<@${id}>`).join(' '), botUserIds }
+  }
+
+  private roomBroadcast(text: string, options: { mentions?: string[] } = {}): GameWave {
     // ONE platform message id shared by every member integration's copy — the
     // same channel:ts each dedicated Slack app receives; per-connection dedup
     // (scoped by transport) must admit each copy exactly once.
@@ -143,7 +160,8 @@ export class CountingGame implements CollaborationGameWorld {
         thread: this.room.thread,
         messageId,
         text,
-        sender: { id: this.refereeUserId, isBot: false }
+        sender: { id: this.refereeUserId, isBot: false },
+        ...(options.mentions !== undefined && options.mentions.length > 0 ? { mentions: options.mentions } : {})
       }
     }))
     this.world.appendEvent({
@@ -183,13 +201,19 @@ export class CountingGame implements CollaborationGameWorld {
     if (!this.started) {
       this.started = true
       if (this.variant === 'peer-driven') {
+        // Production kickoff shape: in a mention-gated shared channel the human
+        // @mentions the participants in the one start message; in the legacy
+        // auto-bound game room the bare text suffices.
+        const mention = this.bindMatch === 'mention' ? this.memberMentions() : undefined
+        const prefix = mention !== undefined && mention.tokens.length > 0 ? `${mention.tokens} ` : ''
         return this.roomBroadcast(
-          `Let's play the counting game. Together, count from 1 to ${this.target} in this thread by continuing ` +
+          `${prefix}Let's play the counting game. Together, count from 1 to ${this.target} in this thread by continuing ` +
             `each other's messages. When you see a number posted in this thread, reply with ONLY the next number — ` +
             `nothing else. Do not repeat a number that was already posted. If you posted the most recent number, ` +
             `prefer letting another participant continue, but keep the count moving. Stop once ${this.target} has ` +
             `been posted. No number has been posted yet, so the first reply should be 1. The referee stays silent ` +
-            `from now on and only checks the sequence at the end.`
+            `from now on and only checks the sequence at the end.`,
+          mention !== undefined ? { mentions: mention.botUserIds } : {}
         )
       }
       return this.roomBroadcast(

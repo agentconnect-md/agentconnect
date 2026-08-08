@@ -39,6 +39,11 @@ export interface QuotaCountingGameOptions {
   /** Posts each participant must contribute (default 5). */
   quotaPerAgent?: number
   refereeUserId?: string
+  /** Room routing convention (default `auto`, the historical game-room shape).
+   *  `mention` is the PRODUCTION shared-channel convention: activation needs an
+   *  explicit mention or thread affinity — the kickoff then @mentions every
+   *  member, exactly as a human does in a live multi-agent Slack channel. */
+  bindMatch?: 'auto' | 'mention'
 }
 
 interface Contribution {
@@ -77,6 +82,7 @@ export class QuotaCountingGame implements CollaborationGameWorld {
   private readonly liveHandles: DeliveryHandle[] = []
   /** Propagation: the production platform echo (§2.3/§5/§6). */
   private readonly echo: PlatformEcho
+  private readonly bindMatch: 'auto' | 'mention'
 
   constructor(options: QuotaCountingGameOptions) {
     this.world = options.world
@@ -87,7 +93,8 @@ export class QuotaCountingGame implements CollaborationGameWorld {
     if (this.quota < 1) throw new Error('quotaPerAgent must be at least 1')
     this.target = this.quota * room.memberAgentIds.length
     this.refereeUserId = options.refereeUserId ?? 'W-ARENA-REFEREE'
-    this.environment = options.world.buildEnvironment()
+    this.bindMatch = options.bindMatch ?? 'auto'
+    this.environment = options.world.buildEnvironment({ bindMatch: this.bindMatch })
     this.echo = new PlatformEcho(options.world, room)
     for (const memberId of room.memberAgentIds) this.contributionsByAgent.set(memberId, 0)
   }
@@ -96,7 +103,16 @@ export class QuotaCountingGame implements CollaborationGameWorld {
     return this.room.memberAgentIds.map((agentId) => this.world.aliasOfAgent(agentId))
   }
 
-  private roomBroadcast(text: string): GameWave {
+  /** Platform-native mention tokens for every member bot (the kickoff shape a
+   *  human uses in a production shared channel). */
+  private memberMentions(): { tokens: string; botUserIds: string[] } {
+    const botUserIds = this.room.memberIntegrationIds
+      .map((integrationId) => this.world.botUserIdFor(integrationId))
+      .filter((id): id is string => id !== undefined)
+    return { tokens: botUserIds.map((id) => `<@${id}>`).join(' '), botUserIds }
+  }
+
+  private roomBroadcast(text: string, options: { mentions?: string[] } = {}): GameWave {
     const messageId = this.world.mintMessageId(this.room.platform)
     this.world.registerRoomMessage(this.room.channel, messageId)
     this.world.recordThreadMessage(this.room.channel, this.room.thread, {
@@ -112,7 +128,8 @@ export class QuotaCountingGame implements CollaborationGameWorld {
         thread: this.room.thread,
         messageId,
         text,
-        sender: { id: this.refereeUserId, isBot: false }
+        sender: { id: this.refereeUserId, isBot: false },
+        ...(options.mentions !== undefined && options.mentions.length > 0 ? { mentions: options.mentions } : {})
       }
     }))
     this.world.appendEvent({
@@ -145,14 +162,17 @@ export class QuotaCountingGame implements CollaborationGameWorld {
   nextDeliveries(): GameWave {
     if (!this.started) {
       this.started = true
+      const mention = this.bindMatch === 'mention' ? this.memberMentions() : undefined
+      const prefix = mention !== undefined && mention.tokens.length > 0 ? `${mention.tokens} ` : ''
       return this.roomBroadcast(
-        `Let's play quota counting. Participants: ${this.memberAliases().join(', ')}. ` +
+        `${prefix}Let's play quota counting. Participants: ${this.memberAliases().join(', ')}. ` +
           `Count upward from 1 in this thread by continuing each other's messages — reply with ONLY the next ` +
           `number, nothing else. Each participant must post exactly ${this.quota} numbers in total. You cannot ` +
           `post twice in a row — someone else must post before you may post again. The count ends at ` +
           `${this.target}, when everyone has posted ${this.quota}. Plan your turns so nobody is left holding ` +
           `posts no one can interleave. No number has been posted yet, so the first reply should be 1. The ` +
-          `referee stays silent from now on and only reviews the sequence at the end.`
+          `referee stays silent from now on and only reviews the sequence at the end.`,
+        mention !== undefined ? { mentions: mention.botUserIds } : {}
       )
     }
     return this.pendingWaves.shift() ?? { platformEvents: [], refereeEvents: [] }
