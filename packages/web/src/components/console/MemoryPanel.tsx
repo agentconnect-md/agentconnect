@@ -243,6 +243,7 @@ export function MemoryPanel({
     const next = settingsFromProps({
       memoryProvider,
       autoDistill,
+      memoryScope,
       memoryDreaming,
       memoryConnectionId,
       memoryRecall,
@@ -256,6 +257,7 @@ export function MemoryPanel({
     agentId,
     memoryProvider,
     autoDistill,
+    memoryScope,
     memoryDreaming?.enabled,
     memoryDreaming?.sessionWindow,
     memoryDreaming?.schedule,
@@ -452,11 +454,13 @@ export function MemoryPanel({
   }, [loadList, loadFile, persistedProvider])
 
   // Under channel scope, load the list of channels that have their own memory folder
-  // so the viewer can offer a channel selector. Reset when not channel-scoped.
+  // so the viewer can offer a channel selector. Always reset the selection first —
+  // the component instance is reused across agent navigations, so a stale channelKey
+  // from another agent must never leak into this one's reads.
   useEffect(() => {
+    setSelectedChannel(undefined)
     if (persistedProvider !== 'managed' || persistedSettings.scope !== 'channel') {
       setChannels([])
-      setSelectedChannel(undefined)
       return
     }
     let live = true
