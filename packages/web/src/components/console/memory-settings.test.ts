@@ -145,6 +145,14 @@ describe('memory settings UX model', () => {
     expect(memorySettingsChanged(channel, { ...channel, dreaming: { ...channel.dreaming, autoAdopt: false } })).toBe(
       false
     )
+
+    // A stale (hidden) invalid dreaming schedule must not block a channel-scope save.
+    const staleInvalidDream = {
+      ...channel,
+      dreaming: { ...channel.dreaming, enabled: true, schedule: 'not a cron' }
+    }
+    expect(memorySettingsBlocker({ ...staleInvalidDream, scope: 'agent' })).not.toBeNull()
+    expect(memorySettingsBlocker(staleInvalidDream)).toBeNull()
   })
 
   it('preserves the full dreaming policy across a save, even fields the console does not edit', () => {

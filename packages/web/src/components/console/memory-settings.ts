@@ -173,7 +173,11 @@ export function memorySettingsBlocker(draft: MemorySettingsDraft): string | null
   if (draft.provider === 'external' && !draft.external.connectionId) {
     return 'Choose an external-memory connection before saving.'
   }
-  if (draft.provider === 'managed') return dreamingScheduleBlocker(draft.dreaming)
+  if (draft.provider === 'managed') {
+    // Channel scope has no dreaming, so a stale (hidden) dreaming draft must not
+    // block the save — mirror memoryConfigForDraft, which drops it entirely.
+    return draft.scope === 'channel' ? null : dreamingScheduleBlocker(draft.dreaming)
+  }
   return null
 }
 
