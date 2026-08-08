@@ -115,6 +115,13 @@ A few detail/list views keep an `if (isMobile) return (…)` fork where the two
 form factors differ in **features or interaction**, not just layout — when you
 touch one branch, keep the other in sync.
 
+## Comment style
+
+Prefer one-line comments. Do not write multiline comment blocks — if a comment
+does not fit on one line, tighten it until it does. When code you are touching
+carries a verbose comment, including a pre-existing one, condense it to a single
+line instead of leaving it as is.
+
 ## Commands
 
 Requires **Node >= 24.12.0** (`.nvmrc` = 24.12.0) and **pnpm 11**.
