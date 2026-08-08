@@ -81,6 +81,22 @@ describe('channel-scoped memory overlay', () => {
     expect(listed.filter((n) => n === 'topic.md')).toHaveLength(1)
   })
 
+  it('an empty channel file still shadows a non-empty base file (existence, not emptiness)', async () => {
+    const { mem } = provider()
+    const base = { agentId: 'bot-a' }
+    const a = chan('C1')
+    mem.ensure(base, 'bot')
+    await mem.write(base, 'topic.md', '- base version', undefined, 'tool')
+    mem.ensure(a, 'bot')
+    // Intentionally clear the topic in this channel by writing empty content.
+    await mem.write(a, 'topic.md', '', undefined, 'tool')
+
+    // The channel's empty file must win over the base's stale content.
+    expect((await mem.read(a, 'topic.md')).content).toBe('')
+    // The base is untouched.
+    expect((await mem.read(base, 'topic.md')).content).toBe('- base version')
+  })
+
   it('injects the base index then the channel index', async () => {
     const { mem } = provider()
     const base = { agentId: 'bot-a' }

@@ -42,7 +42,7 @@ import { MEMORY_TOOLS, externalMemoryTools } from '../mcp/tools.js'
 import {
   ensureMemory,
   readIndex,
-  readMemoryFile,
+  readMemoryFileIfPresent,
   writeMemoryFile,
   listMemory,
   listMemoryHistory,
@@ -398,10 +398,12 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   async read(scope: MemoryScope, path: string): Promise<MemoryReadResult> {
-    // Channel layer shadows the base: return the first root that has the file.
+    // Channel layer shadows the base: return the first root that HAS the file.
+    // Existence (not emptiness) decides — an intentionally-empty channel file must
+    // still shadow a non-empty base file rather than fall through.
     for (const root of this.readRoots(scope)) {
-      const content = await readMemoryFile(root, path)
-      if (content !== '') return { path, content }
+      const content = await readMemoryFileIfPresent(root, path)
+      if (content !== null) return { path, content }
     }
     return { path, content: '' }
   }

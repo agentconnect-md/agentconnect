@@ -475,6 +475,17 @@ export async function readMemoryFile(agentDir: string, relPath: string): Promise
   return readContainedMemoryFile(agentDir, memoryDir(agentDir), abs)
 }
 
+/** Like {@link readMemoryFile} but distinguishes absent (`null`) from present-but-
+ *  empty (`''`). The channel/base overlay needs this so an intentionally-empty
+ *  channel file still shadows a non-empty base file instead of falling through. */
+export async function readMemoryFileIfPresent(agentDir: string, relPath: string): Promise<string | null> {
+  const abs = resolveInMemoryDir(agentDir, relPath)
+  const target = await containedReadTarget(agentDir, memoryDir(agentDir), abs)
+  if (target === null) return null
+  const current = await readCurrentMemoryFile(target)
+  return current.existed ? current.before : null
+}
+
 /** Truncate a snapshot to the history value cap, on a UTF-8 boundary, flagging it. */
 export function clampMemoryHistoryValue(text: string): { value: string; truncated: boolean } {
   if (Buffer.byteLength(text) <= MAX_HISTORY_VALUE_BYTES) return { value: text, truncated: false }
