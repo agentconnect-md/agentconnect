@@ -46,6 +46,7 @@ import type {
   ChildSessionStatus,
   ChildSessionStatusReq,
   ChildSessionStatusProbe,
+  MemoryChannelsReq,
   MemoryListReq,
   MemoryReadReq,
   MemoryWriteReq,
@@ -1270,6 +1271,13 @@ export class CpClient {
           .pull((frame.payload as WorkspaceGitPullReq).agentId)
           .then((result) => this.reply(frame, 'workspace/gitpull/result', result))
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitpull', err))
+        return
+      }
+      case 'memory/channels': {
+        this.deps.memoryReader
+          .channels(frame.payload as MemoryChannelsReq)
+          .then((page) => this.reply(frame, 'memory/channels/page', page))
+          .catch((err) => this.memoryError(frame.id, 'memory/channels', err))
         return
       }
       case 'memory/list': {

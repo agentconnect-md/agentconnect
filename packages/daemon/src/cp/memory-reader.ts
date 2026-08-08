@@ -13,6 +13,8 @@
  */
 import { randomUUID } from 'node:crypto'
 import type {
+  MemoryChannelsReq,
+  MemoryChannelsPage,
   MemoryListReq,
   MemoryListPage,
   MemoryReadReq,
@@ -45,6 +47,8 @@ import {
   listMemoryHistory,
   readMemoryFile,
   writeMemoryFile,
+  listChannelMemoryKeys,
+  readChannelMemoryMeta,
   MemoryPathError,
   MemoryTooLargeError,
   MemoryConflictError
@@ -63,6 +67,7 @@ export class MemoryViolationError extends Error {
 export { MemoryPathError, MemoryTooLargeError, MemoryConflictError }
 
 export interface MemoryReader {
+  channels(req: MemoryChannelsReq): Promise<MemoryChannelsPage>
   list(req: MemoryListReq): Promise<MemoryListPage>
   read(req: MemoryReadReq): Promise<MemoryReadContent>
   write(req: MemoryWriteReq): Promise<MemoryWriteOk>
@@ -134,12 +139,30 @@ export function createMemoryReader(
     return surface
   }
 
-  const scopeFor = (agentId: string): MemoryScope => ({ agentId })
+  const scopeFor = (agentId: string, channelKey?: string): MemoryScope => ({
+    agentId,
+    ...(channelKey ? { channelKey } : {})
+  })
 
   return {
+    async channels(req) {
+      const dir = dirFor(req.agentId)
+      const keys = await listChannelMemoryKeys(dir)
+      const channels = []
+      for (const channelKey of keys) {
+        const meta = await readChannelMemoryMeta(dir, channelKey)
+        channels.push({
+          channelKey,
+          ...(meta?.channel ? { channel: meta.channel } : {}),
+          ...(meta?.transportScope ? { transportScope: meta.transportScope } : {})
+        })
+      }
+      return { agentId: req.agentId, channels }
+    },
+
     async list(req) {
       const surface = requireFileSurface(req.agentId)
-      const files = await surface.list(scopeFor(req.agentId))
+      const files = await surface.list(scopeFor(req.agentId, req.channelKey))
       // Providers return [] for a missing/empty store; the console shows that as
       // `exists:false`, preserving the legacy file-frame contract.
       return { agentId: req.agentId, exists: files.length > 0, entries: files }
@@ -147,7 +170,7 @@ export function createMemoryReader(
 
     async read(req) {
       const surface = requireFileSurface(req.agentId)
-      const scope = scopeFor(req.agentId)
+      const scope = scopeFor(req.agentId, req.channelKey)
       const notFound = { agentId: req.agentId, path: req.path, exists: false }
 
       const files = await surface.list(scope)
@@ -189,7 +212,7 @@ export function createMemoryReader(
     async write(req) {
       const surface = requireFileSurface(req.agentId)
       const { size, mtime } = await surface.write(
-        scopeFor(req.agentId),
+        scopeFor(req.agentId, req.channelKey),
         req.path,
         req.content,
         req.ifMatchMtime,
@@ -203,7 +226,7 @@ export function createMemoryReader(
       if (!surface.history) {
         throw new MemoryViolationError('this memory provider does not expose file history')
       }
-      const page = await surface.history(scopeFor(req.agentId), {
+      const page = await surface.history(scopeFor(req.agentId, req.channelKey), {
         path: req.path,
         ...(req.cursor ? { cursor: req.cursor } : {}),
         limit: req.limit

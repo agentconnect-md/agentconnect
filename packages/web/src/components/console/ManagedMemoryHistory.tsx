@@ -102,7 +102,15 @@ function HistoryEvent({ event }: { event: MemoryFileHistoryEventDto }) {
 }
 
 /** Read-only panel over managed memory's hidden `.history` sidecar; its summary action mounts this lazily. */
-export function ManagedMemoryHistory({ agentId, path }: { agentId: string; path: string }) {
+export function ManagedMemoryHistory({
+  agentId,
+  path,
+  channelKey
+}: {
+  agentId: string
+  path: string
+  channelKey?: string
+}) {
   const request = useRef(0)
   const [events, setEvents] = useState<MemoryFileHistoryEventDto[] | null>(null)
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -115,7 +123,11 @@ export function ManagedMemoryHistory({ agentId, path }: { agentId: string; path:
       setLoading(true)
       setError(null)
       try {
-        const page = await listMemoryFileHistory(agentId, path, { ...(cursor ? { cursor } : {}), limit: PAGE_SIZE })
+        const page = await listMemoryFileHistory(agentId, path, {
+          ...(cursor ? { cursor } : {}),
+          ...(channelKey ? { channelKey } : {}),
+          limit: PAGE_SIZE
+        })
         if (id !== request.current) return
         setEvents((current) => (append ? [...(current ?? []), ...page.events] : page.events))
         setNextCursor(page.nextCursor)
@@ -132,7 +144,7 @@ export function ManagedMemoryHistory({ agentId, path }: { agentId: string; path:
         if (id === request.current) setLoading(false)
       }
     },
-    [agentId, path]
+    [agentId, path, channelKey]
   )
 
   useEffect(() => {

@@ -42,11 +42,42 @@ export const MemoryEntry = z.object({
 })
 export type MemoryEntry = z.infer<typeof MemoryEntry>
 
-/** C→D REQ: list the files in the agent's memory dir. */
+/** A channel's memory-folder key (from `memoryChannelKey`) — selects the channel
+ *  layer for a channel-scoped agent's console reads/writes (#653). Absent ⇒ the
+ *  agent-level store. Bounded + charset-limited so it can't escape the tree. */
+export const MemoryChannelKey = z
+  .string()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9._-]+$/)
+
+/** C→D REQ: list the files in the agent's memory dir (or one channel's overlay). */
 export const MemoryListReq = z.object({
-  agentId: z.string().min(1) // local agent id (NOT a wire UUID)
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  channelKey: MemoryChannelKey.optional()
 })
 export type MemoryListReq = z.infer<typeof MemoryListReq>
+
+/** C→D REQ: list the channels that have a memory folder for this agent. */
+export const MemoryChannelsReq = z.object({
+  agentId: z.string().min(1)
+})
+export type MemoryChannelsReq = z.infer<typeof MemoryChannelsReq>
+
+/** One channel with its own memory folder, for the console channel selector. */
+export const MemoryChannelEntry = z.object({
+  channelKey: MemoryChannelKey,
+  channel: z.string().optional(), // source channel id (from channel.json), if recorded
+  transportScope: z.string().optional()
+})
+export type MemoryChannelEntry = z.infer<typeof MemoryChannelEntry>
+
+/** D→C REP: the agent's channel memory folders (empty when none / not channel-scoped). */
+export const MemoryChannelsPage = z.object({
+  agentId: z.string(),
+  channels: z.array(MemoryChannelEntry).max(1000)
+})
+export type MemoryChannelsPage = z.infer<typeof MemoryChannelsPage>
 
 /** D→C REP (corr = the req id): the memory dir's files (or `exists:false`). */
 export const MemoryListPage = z.object({
@@ -59,6 +90,7 @@ export type MemoryListPage = z.infer<typeof MemoryListPage>
 /** C→D REQ: read one byte slice of a memory file (path relative to the memory dir). */
 export const MemoryReadReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  channelKey: MemoryChannelKey.optional(),
   path: z.string().default(MEMORY_INDEX), // memory-dir-relative POSIX path; default the index
   offset: z.number().int().nonnegative().default(0), // byte offset
   limit: z.number().int().positive().max(65536).default(65536) // byte count per slice (64 KiB, see docblock)
@@ -82,6 +114,7 @@ export type MemoryReadContent = z.infer<typeof MemoryReadContent>
 /** C→D REQ: replace the whole named memory file with `content` (console edit). */
 export const MemoryWriteReq = z.object({
   agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  channelKey: MemoryChannelKey.optional(),
   path: z.string().default(MEMORY_INDEX), // memory-dir-relative POSIX path; default the index
   content: z.string(), // full new file content (utf8); '' clears the file
   // Optimistic concurrency: the mtime the writer last read. When present the write
@@ -121,6 +154,7 @@ export type MemoryFileHistoryEvent = z.infer<typeof MemoryFileHistoryEvent>
 export const MemoryHistoryReq = z
   .object({
     agentId: z.string().min(1).max(255),
+    channelKey: MemoryChannelKey.optional(),
     path: z.string().min(1).max(255),
     // Opaque to callers. This is a stable event ID, so appends and retention
     // cannot shift older pages.

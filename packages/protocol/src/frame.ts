@@ -70,6 +70,8 @@ import {
   WorkspaceGitPullResult
 } from './frames/workspace.js'
 import {
+  MemoryChannelsReq,
+  MemoryChannelsPage,
   MemoryListReq,
   MemoryListPage,
   MemoryReadReq,
@@ -290,6 +292,8 @@ export const FRAME_SCHEMAS = {
   'workspace/gitstatus/result': WorkspaceGitStatus,
   'workspace/gitpull': WorkspaceGitPullReq,
   'workspace/gitpull/result': WorkspaceGitPullResult,
+  'memory/channels': MemoryChannelsReq,
+  'memory/channels/page': MemoryChannelsPage,
   'memory/list': MemoryListReq,
   'memory/list/page': MemoryListPage,
   'memory/read': MemoryReadReq,
@@ -496,6 +500,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/gitstatus/result', FRAME_SCHEMAS['workspace/gitstatus/result']),
   frame('workspace/gitpull', FRAME_SCHEMAS['workspace/gitpull']),
   frame('workspace/gitpull/result', FRAME_SCHEMAS['workspace/gitpull/result']),
+  frame('memory/channels', FRAME_SCHEMAS['memory/channels']),
+  frame('memory/channels/page', FRAME_SCHEMAS['memory/channels/page']),
   frame('memory/list', FRAME_SCHEMAS['memory/list']),
   frame('memory/list/page', FRAME_SCHEMAS['memory/list/page']),
   frame('memory/read', FRAME_SCHEMAS['memory/read']),

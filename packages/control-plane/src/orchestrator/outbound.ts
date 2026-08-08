@@ -52,6 +52,8 @@ import type {
   WorkspaceGitStatus,
   WorkspaceGitPullReq,
   WorkspaceGitPullResult,
+  MemoryChannelsReq,
+  MemoryChannelsPage,
   MemoryListReq,
   MemoryListPage,
   MemoryReadReq,
@@ -529,6 +531,15 @@ export class ControlSender {
   async memoryList(daemonId: string, req: MemoryListReq): Promise<MemoryListPage> {
     const c = this.must(daemonId)
     return c.conn.request<MemoryListPage>('memory/list', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * List the channels that have a memory folder for a channel-scoped agent, for the
+   * console channel selector (REQ → `memory/channels/page`). Read-only proxy.
+   */
+  async memoryChannels(daemonId: string, req: MemoryChannelsReq): Promise<MemoryChannelsPage> {
+    const c = this.must(daemonId)
+    return c.conn.request<MemoryChannelsPage>('memory/channels', req, { epoch: c.sessionEpoch })
   }
 
   /**

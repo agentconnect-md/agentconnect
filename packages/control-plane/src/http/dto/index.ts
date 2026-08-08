@@ -2712,8 +2712,26 @@ export const MemoryFilesDto = z.object({
   exists: z.boolean(), // false ⇒ the memory dir does not exist yet
   files: z.array(MemoryFileEntryDto)
 })
+/** A channel memory folder's key; selects the channel layer for a channel-scoped
+ *  agent (#653). Absent ⇒ the agent-level store. */
+const MemoryChannelKeyQuery = z
+  .string()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9._-]+$/)
+  .optional()
+/** Query for listing memory files, optionally scoped to one channel folder. */
+export const MemoryFilesQueryDto = z.object({ channelKey: MemoryChannelKeyQuery })
+/** One channel with its own memory folder (console channel selector). */
+export const MemoryChannelDto = z.object({
+  channelKey: z.string(),
+  channel: z.string().nullable(),
+  transportScope: z.string().nullable()
+})
+export const MemoryChannelsDto = z.object({ channels: z.array(MemoryChannelDto) })
 /** Query for reading one memory file: `path` (defaults to the MEMORY.md index) + slice. */
 export const MemoryFileQueryDto = z.object({
+  channelKey: MemoryChannelKeyQuery,
   path: z.string().min(1).optional(), // memory-dir-relative file name; defaults to MEMORY.md
   offset: z.coerce.number().int().nonnegative().optional(), // byte offset
   limit: z.coerce.number().int().positive().max(65536).optional() // byte count per slice
@@ -2731,7 +2749,7 @@ export const AgentMemoryDto = z.object({
   truncated: z.boolean().nullable() // true ⇒ nextOffset < size (more bytes remain)
 })
 /** Write query: which memory file to replace (defaults to the MEMORY.md index). */
-export const PutMemoryFileQueryDto = z.object({ path: z.string().min(1).optional() })
+export const PutMemoryFileQueryDto = z.object({ channelKey: MemoryChannelKeyQuery, path: z.string().min(1).optional() })
 /** `PUT /agents/:id/memory[/file]` — replace the whole named memory file.
  *  `ifMatchMtime` (optional) is optimistic concurrency: the mtime the client last
  *  read; the write 409s if the file changed under it. */
@@ -2745,6 +2763,7 @@ export const AgentMemoryWriteDto = z.object({
 
 /** `GET /agents/:id/memory/history` — newest-first provenance for one managed file. */
 export const MemoryHistoryQueryDto = z.object({
+  channelKey: MemoryChannelKeyQuery,
   path: z.string().min(1).max(255),
   cursor: z.string().uuid().optional(),
   limit: z.coerce.number().int().positive().max(5).optional()

@@ -18,7 +18,8 @@ vi.mock('@/lib/api', () => ({
   },
   fetchAgentMemoryFull: vi.fn(),
   listAgentMemory: vi.fn(),
-  updateAgentMemory: vi.fn()
+  updateAgentMemory: vi.fn(),
+  fetchAgentMemoryChannels: vi.fn(async () => ({ channels: [] }))
 }))
 
 vi.mock('@/components/console/ExternalMemoryBindingFields', () => ({
@@ -189,7 +190,8 @@ describe('MemoryPanel file editor', () => {
       '22222222-2222-4222-8222-222222222222',
       '# Deploys',
       'deploys.md',
-      undefined
+      undefined,
+      undefined // channelKey — agent scope
     )
   })
 

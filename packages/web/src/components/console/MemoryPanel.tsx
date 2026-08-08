@@ -17,9 +17,11 @@ import {
   fetchAgentMemoryFull,
   updateAgentMemory,
   listAgentMemory,
+  fetchAgentMemoryChannels,
   ApiError,
   type MemoryFileEntry,
   type ManagedMemoryScope,
+  type MemoryChannelDto,
   type MemoryDreamingConfig
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -195,6 +197,11 @@ export function MemoryPanel({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
+  // Channel memory viewer (#653): the channels with their own folder, and which one
+  // is being viewed. `undefined` = the shared agent-level base. Only meaningful when
+  // the persisted scope is `channel`.
+  const [channels, setChannels] = useState<MemoryChannelDto[]>([])
+  const [selectedChannel, setSelectedChannel] = useState<string | undefined>(undefined)
   const loadRequest = useRef(0)
   const listRequest = useRef(0)
 
@@ -370,7 +377,7 @@ export function MemoryPanel({
     setListLoading(true)
     setListError(null)
     try {
-      const { files } = await listAgentMemory(agentId)
+      const { files } = await listAgentMemory(agentId, selectedChannel)
       if (request !== listRequest.current) return
       setFiles(files)
     } catch (e) {
@@ -385,7 +392,7 @@ export function MemoryPanel({
     } finally {
       if (request === listRequest.current) setListLoading(false)
     }
-  }, [agentId])
+  }, [agentId, selectedChannel])
 
   // Load one file's content WHOLE (paging every slice) so the editor holds the full
   // file — a partial read would let Save clobber the tail. The index is fetched via
@@ -401,7 +408,7 @@ export function MemoryPanel({
       setLoadedMtime(null)
       setFileExists(null)
       try {
-        const mem = await fetchAgentMemoryFull(agentId, name === INDEX ? undefined : name)
+        const mem = await fetchAgentMemoryFull(agentId, name === INDEX ? undefined : name, selectedChannel)
         if (request !== loadRequest.current) return
         setContent(mem.content)
         setLoadedMtime(mem.mtime)
@@ -419,7 +426,7 @@ export function MemoryPanel({
         if (request === loadRequest.current) setLoading(false)
       }
     },
-    [agentId]
+    [agentId, selectedChannel]
   )
 
   useEffect(() => {
@@ -443,6 +450,27 @@ export function MemoryPanel({
       listRequest.current += 1
     }
   }, [loadList, loadFile, persistedProvider])
+
+  // Under channel scope, load the list of channels that have their own memory folder
+  // so the viewer can offer a channel selector. Reset when not channel-scoped.
+  useEffect(() => {
+    if (persistedProvider !== 'managed' || persistedSettings.scope !== 'channel') {
+      setChannels([])
+      setSelectedChannel(undefined)
+      return
+    }
+    let live = true
+    void fetchAgentMemoryChannels(agentId)
+      .then((r) => {
+        if (live) setChannels(r.channels)
+      })
+      .catch(() => {
+        if (live) setChannels([])
+      })
+    return () => {
+      live = false
+    }
+  }, [agentId, persistedProvider, persistedSettings.scope])
 
   const select = (name: string) => {
     if (name === selected) {
@@ -508,7 +536,8 @@ export function MemoryPanel({
         agentId,
         savingEditor.content,
         target === INDEX ? undefined : target,
-        creating ? undefined : savingEditor.mtime
+        creating ? undefined : savingEditor.mtime,
+        selectedChannel
       )
       setSelected(target)
       setContent(savingEditor.content)
@@ -602,7 +631,12 @@ export function MemoryPanel({
       />
 
       {historyOpen && persistedProvider === 'managed' && fileExists === true ? (
-        <ManagedMemoryHistory key={`${agentId}:${selected}`} agentId={agentId} path={selected} />
+        <ManagedMemoryHistory
+          key={`${agentId}:${selected}:${selectedChannel ?? ''}`}
+          agentId={agentId}
+          path={selected}
+          channelKey={selectedChannel}
+        />
       ) : loading ? (
         <div className="flex items-center justify-center py-10">
           <Spinner />
@@ -909,6 +943,27 @@ export function MemoryPanel({
         </div>
       ) : (
         <>
+          {persistedProvider === 'managed' && persistedSettings.scope === 'channel' ? (
+            <div className="flex flex-wrap items-center gap-2 px-4 pt-3 font-sans text-[12px] leading-normal text-(--text-secondary)">
+              <span className="font-semibold">Channel</span>
+              <select
+                value={selectedChannel ?? ''}
+                onChange={(event) => setSelectedChannel(event.target.value || undefined)}
+                aria-label="Channel memory folder"
+                className="rounded-sm border border-(--border-subtle) bg-(--surface-card) px-2 py-1 font-sans text-[12px] text-(--text-primary)"
+              >
+                <option value="">Agent (shared)</option>
+                {channels.map((entry) => (
+                  <option key={entry.channelKey} value={entry.channelKey}>
+                    {entry.channel ?? entry.channelKey}
+                  </option>
+                ))}
+              </select>
+              {channels.length === 0 ? (
+                <span className="text-(--text-tertiary)">No channel has memory yet — showing the shared base.</span>
+              ) : null}
+            </div>
+          ) : null}
           <FileBrowserShell
             title={
               <FileBrowserBreadcrumb
