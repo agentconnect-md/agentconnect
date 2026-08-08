@@ -30,8 +30,8 @@ esac
 # component-versions.sh. The image embeds this package, so whenever those bits
 # rebuild, npm receives the same version that the image reports.
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
-SETUP_PATHS="packages/control-plane packages/setup packages/protocol $COMMON"
-SETUP_IMPORTERS="packages/setup packages/control-plane packages/protocol"
+SETUP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability $COMMON"
+SETUP_IMPORTERS="packages/setup packages/control-plane packages/protocol packages/observability"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # shellcheck disable=SC2086
@@ -49,6 +49,7 @@ fi
 if [ "$MODE" = prepare ]; then
   cd "$REPO_ROOT"
   pnpm --filter @agentconnect.md/protocol build
+  pnpm --filter @agentconnect.md/observability build
   pnpm --filter @agentconnect.md/control-plane build
   cd "$REPO_ROOT/packages/setup"
   pnpm exec json -I -f package.json -e "this.version='$VALUE'"
