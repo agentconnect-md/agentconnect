@@ -42,12 +42,16 @@ import { MEMORY_TOOLS, externalMemoryTools } from '../mcp/tools.js'
 import {
   ensureMemory,
   readIndex,
-  readMemoryFile,
+  readMemoryFileIfPresent,
   writeMemoryFile,
   listMemory,
   listMemoryHistory,
+  channelMemoryRoot,
+  writeChannelMemoryMeta,
+  MEMORY_INDEX,
   MemoryConflictError,
   MemoryTooLargeError,
+  type MemoryFile,
   type MemoryWriteSource,
   type ManagedMemoryHistoryPage
 } from './memory.js'
@@ -76,10 +80,19 @@ export type MemoryRecord = CanonicalMemoryRecord
 /** The provider kind an agent is configured with (protocol `memory.provider`). */
 export type MemoryProviderKind = 'none' | 'native' | 'managed' | 'external'
 
-/** The context key every memory op carries. `managed` uses `agentId` only today;
- *  `userId`/`sessionId` are reserved for per-scope partitioning in later providers. */
+/** The context key every memory op carries. `managed` routes by `agentId`, and by
+ *  `channelKey` when the agent's memory scope is `channel` (#653): reads overlay the
+ *  agent-level base + the channel folder, writes/capture go to the channel folder.
+ *  `userId`/`sessionId` are reserved for later providers. */
 export interface MemoryScope {
   agentId: string
+  /** A filesystem-safe per-channel folder name (channel + transport scope), set by
+   *  the daemon only for channel-scoped agents. Absent ⇒ agent-level store. */
+  channelKey?: string
+  /** Raw source identity for the channel folder, recorded once so the console can
+   *  render a name instead of the opaque key. Only meaningful with `channelKey`. */
+  channel?: string
+  transportScope?: string
   userId?: string
   sessionId?: string
 }
@@ -288,6 +301,22 @@ export class ManagedMemoryProvider implements MemoryProvider {
     return dir
   }
 
+  /** The write/active memory root: the channel folder when channel-scoped, else the
+   *  agent base. All WRITES (tools + distillation) target this so a channel's
+   *  content never lands in another channel or the shared base (#653). */
+  private activeRoot(scope: MemoryScope): string {
+    const base = this.dirFor(scope.agentId)
+    return scope.channelKey ? channelMemoryRoot(base, scope.channelKey) : base
+  }
+
+  /** The read overlay roots, most-specific first — `[channel, base]` when channel-
+   *  scoped so the channel layer shadows the shared base per file; `[base]`
+   *  otherwise. */
+  private readRoots(scope: MemoryScope): string[] {
+    const base = this.dirFor(scope.agentId)
+    return scope.channelKey ? [channelMemoryRoot(base, scope.channelKey), base] : [base]
+  }
+
   // Managed keeps a single store: turn OFF any verified runtime-owned memory so
   // the agent doesn't end up with two competing stores. Unknown harnesses retain
   // managed support; adding a real native-memory feature requires a registry entry.
@@ -296,11 +325,27 @@ export class ManagedMemoryProvider implements MemoryProvider {
   }
 
   ensure(scope: MemoryScope, agentName: string): void {
-    ensureMemory(this.dirFor(scope.agentId), agentName)
+    ensureMemory(this.activeRoot(scope), agentName)
+    // Record the source identity of a channel folder once, so the console can name
+    // it. Best-effort and off the critical path — a failure never blocks memory.
+    if (scope.channelKey && scope.channel) {
+      void writeChannelMemoryMeta(this.dirFor(scope.agentId), scope.channelKey, {
+        channel: scope.channel,
+        ...(scope.transportScope ? { transportScope: scope.transportScope } : {})
+      }).catch(() => {})
+    }
   }
 
   async standingContextAtSessionStart(scope: MemoryScope): Promise<string> {
-    return readIndex(this.dirFor(scope.agentId))
+    // Overlay: inject the shared base index first, then the channel index, so the
+    // agent sees "shared knowledge + this channel" as one memory (#653).
+    const ordered = [...this.readRoots(scope)].reverse() // [base] or [base, channel]
+    const parts: string[] = []
+    for (const root of ordered) {
+      const index = (await readIndex(root)).trim()
+      if (index) parts.push(index)
+    }
+    return parts.join('\n\n')
   }
 
   async recallForTurn(): Promise<MemoryRecord[]> {
@@ -313,7 +358,9 @@ export class ManagedMemoryProvider implements MemoryProvider {
 
   async recordTurn(scope: MemoryScope, turn: TurnRecord): Promise<void> {
     if (!this.autoDistillFor(scope.agentId) || !this.extract) return
-    const dir = this.dirFor(scope.agentId)
+    // Per-turn distillation is a WRITE: it goes to the active (channel) folder so a
+    // channel's turns never distill into the shared base or another channel (#653).
+    const dir = this.activeRoot(scope)
     const prompt = await buildDistillationPrompt(dir, turn)
     const output = await this.extract(scope.agentId, prompt)
     await appendDistilledMemories(dir, parseDistilledMemories(output))
@@ -333,16 +380,32 @@ export class ManagedMemoryProvider implements MemoryProvider {
       list: (scope) => this.list(scope),
       read: (scope, path) => this.read(scope, path),
       write: (scope, path, content, ifMatch, source) => this.write(scope, path, content, ifMatch, source),
-      history: (scope, req) => listMemoryHistory(this.dirFor(scope.agentId), req.path, req.cursor, req.limit)
+      history: (scope, req) => listMemoryHistory(this.activeRoot(scope), req.path, req.cursor, req.limit)
     }
   }
 
   async list(scope: MemoryScope): Promise<MemoryEntry[]> {
-    return listMemory(this.dirFor(scope.agentId))
+    const roots = this.readRoots(scope)
+    if (roots.length === 1) return listMemory(roots[0]!)
+    // Union base + channel, channel shadowing the base by name, MEMORY.md first.
+    const byName = new Map<string, MemoryFile>()
+    for (const root of [...roots].reverse()) {
+      for (const file of await listMemory(root)) byName.set(file.name, file)
+    }
+    return [...byName.values()].sort((a, b) =>
+      a.name === MEMORY_INDEX ? -1 : b.name === MEMORY_INDEX ? 1 : a.name.localeCompare(b.name)
+    )
   }
 
   async read(scope: MemoryScope, path: string): Promise<MemoryReadResult> {
-    return { path, content: await readMemoryFile(this.dirFor(scope.agentId), path) }
+    // Channel layer shadows the base: return the first root that HAS the file.
+    // Existence (not emptiness) decides — an intentionally-empty channel file must
+    // still shadow a non-empty base file rather than fall through.
+    for (const root of this.readRoots(scope)) {
+      const content = await readMemoryFileIfPresent(root, path)
+      if (content !== null) return { path, content }
+    }
+    return { path, content: '' }
   }
 
   async write(
@@ -352,7 +415,7 @@ export class ManagedMemoryProvider implements MemoryProvider {
     ifMatch?: string,
     source?: MemoryWriteSource
   ): Promise<MemoryWriteResult> {
-    const { size, mtime } = await writeMemoryFile(this.dirFor(scope.agentId), path, content, ifMatch, source)
+    const { size, mtime } = await writeMemoryFile(this.activeRoot(scope), path, content, ifMatch, source)
     return { ok: true, path, size, mtime }
   }
 }

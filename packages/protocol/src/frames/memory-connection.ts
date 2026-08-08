@@ -92,11 +92,19 @@ export const DEFAULT_MEMORY_DREAMING_POLICY = {
   mineSkills: true
 } as const satisfies MemoryDreamingPolicy
 
+/** Managed-memory partitioning. `agent` (default) keeps one store per agent;
+ *  `channel` gives each channel (DM/webchat included, as special channels) its own
+ *  memory folder so different channels never cross. The agent-level store stays as
+ *  a shared read-only base under `channel` (see docs/designs/memory-dreaming.md). */
+export const ManagedMemoryScope = z.enum(['agent', 'channel'])
+export type ManagedMemoryScope = z.infer<typeof ManagedMemoryScope>
+
 const BuiltInMemoryBinding = z
   .object({
     provider: z.enum(['none', 'native', 'managed']),
     autoDistill: z.boolean().optional(),
-    dreaming: MemoryDreamingPolicy.optional()
+    dreaming: MemoryDreamingPolicy.optional(),
+    scope: ManagedMemoryScope.optional()
   })
   .strict()
   .superRefine((binding, ctx) => {
@@ -105,6 +113,13 @@ const BuiltInMemoryBinding = z
         code: 'custom',
         path: ['dreaming'],
         message: 'dreaming is only supported with the managed memory provider'
+      })
+    }
+    if (binding.scope && binding.provider !== 'managed') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['scope'],
+        message: 'memory scope is only supported with the managed memory provider'
       })
     }
   })
@@ -136,9 +151,21 @@ export function effectiveMemoryDreamingPolicy(
   binding: AgentMemoryBinding | undefined
 ): MemoryDreamingPolicy | undefined {
   if (binding && binding.provider !== 'managed') return undefined
+  // Dreaming (offline consolidation) is not supported under channel scope — a
+  // dream mines and rewrites a single store, which does not map onto per-channel
+  // folders. Channel-scoped agents have no dreaming policy (the console hides the
+  // controls); per-channel dreaming may arrive later.
+  if (effectiveManagedMemoryScope(binding) === 'channel') return undefined
   const policy = binding?.dreaming
   if (!policy) return { ...DEFAULT_MEMORY_DREAMING_POLICY }
   return { ...policy, autoAdopt: policy.autoAdopt ?? true, mineSkills: policy.mineSkills ?? true }
+}
+
+/** The effective managed-memory partitioning scope. Non-managed and unset ⇒
+ *  `agent` (the historical single-store behavior). */
+export function effectiveManagedMemoryScope(binding: AgentMemoryBinding | undefined): ManagedMemoryScope {
+  if (!binding || binding.provider !== 'managed') return 'agent'
+  return binding.scope ?? 'agent'
 }
 
 /** Reviewed mapping from a logical secret field to the header the relay injects. */

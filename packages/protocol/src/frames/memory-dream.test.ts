@@ -4,6 +4,7 @@ import {
   AgentMemoryBinding,
   DEFAULT_MEMORY_DREAMING_POLICY,
   effectiveMemoryDreamingPolicy,
+  effectiveManagedMemoryScope,
   MemoryDreamingPolicy
 } from './memory-connection.js'
 import { DreamInfo, DreamStartReq, DreamFileReadReq, DreamAdoptReq } from './memory.js'
@@ -71,6 +72,20 @@ describe('memory dreaming policy (agent binding)', () => {
       })
     ).toEqual({ enabled: true, autoAdopt: false, mineSkills: false })
     expect(effectiveMemoryDreamingPolicy({ provider: 'none' })).toBeUndefined()
+  })
+
+  it('resolves the managed memory scope and disables dreaming under channel scope (#653)', () => {
+    expect(effectiveManagedMemoryScope(undefined)).toBe('agent')
+    expect(effectiveManagedMemoryScope({ provider: 'managed' })).toBe('agent')
+    expect(effectiveManagedMemoryScope({ provider: 'managed', scope: 'channel' })).toBe('channel')
+    // A channel-scoped agent has no dreaming policy (offline consolidation does not
+    // map onto per-channel folders); the console hides the controls.
+    expect(effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel' })).toBeUndefined()
+    expect(
+      effectiveMemoryDreamingPolicy({ provider: 'managed', scope: 'channel', dreaming: { enabled: true } })
+    ).toBeUndefined()
+    // The binding still validates: scope requires the managed provider.
+    expect(AgentMemoryBinding.safeParse({ provider: 'native', scope: 'channel' }).success).toBe(false)
   })
 })
 
