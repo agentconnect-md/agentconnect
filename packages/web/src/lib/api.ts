@@ -244,8 +244,12 @@ export interface MemoryDreamingConfig {
   autoAdopt?: boolean // adopt automatically without content review; absent defaults off
 }
 
+/** Managed-memory partitioning: `agent` (default) is one store per agent;
+ *  `channel` gives each channel its own memory folder (#653). */
+export type ManagedMemoryScope = 'agent' | 'channel'
+
 export type AgentMemoryConfig =
-  | { provider: 'managed'; autoDistill?: boolean; dreaming?: MemoryDreamingConfig }
+  | { provider: 'managed'; autoDistill?: boolean; dreaming?: MemoryDreamingConfig; scope?: ManagedMemoryScope }
   | { provider: 'native' | 'none'; autoDistill?: boolean }
   | {
       provider: 'external'
@@ -1694,6 +1698,7 @@ export function agentFromDto(d: AgentDto): Agent {
     // Memory backend (unset ⇒ managed default).
     memoryProvider: d.memory?.provider ?? 'managed',
     memoryAutoDistill: d.memory?.provider === 'managed' ? (d.memory.autoDistill ?? false) : false,
+    ...(d.memory?.provider === 'managed' && d.memory.scope === 'channel' ? { memoryScope: 'channel' as const } : {}),
     ...(d.memory?.provider === 'managed' && d.memory.dreaming ? { memoryDreaming: d.memory.dreaming } : {}),
     ...(d.memory?.provider === 'external'
       ? {

@@ -129,6 +129,24 @@ describe('memory settings UX model', () => {
     })
   })
 
+  it('models channel scope: no dreaming in the config, and a change vs the agent default (#653)', () => {
+    const agent = memorySettingsDraft({ provider: 'managed', autoDistill: false })
+    expect(agent.scope).toBe('agent')
+
+    // Parsing a channel-scoped binding.
+    const channel = memorySettingsDraft({ provider: 'managed', autoDistill: false, scope: 'channel' })
+    expect(channel.scope).toBe('channel')
+    // Serializing channel scope never carries a dreaming policy.
+    expect(memoryConfigForDraft(channel)).toEqual({ provider: 'managed', autoDistill: false, scope: 'channel' })
+
+    // Switching agent → channel is a change (even though dreaming fields are equal).
+    expect(memorySettingsChanged(agent, { ...agent, scope: 'channel' })).toBe(true)
+    // Under channel scope, dreaming-field edits don't count as a change.
+    expect(memorySettingsChanged(channel, { ...channel, dreaming: { ...channel.dreaming, autoAdopt: false } })).toBe(
+      false
+    )
+  })
+
   it('preserves the full dreaming policy across a save, even fields the console does not edit', () => {
     // A complete API-configured policy round-trips: the wholesale `memory` PATCH
     // must not drop sessionWindow / timezone / mineSkills / autoAdopt just because

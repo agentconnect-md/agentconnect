@@ -19,6 +19,7 @@ import {
   listAgentMemory,
   ApiError,
   type MemoryFileEntry,
+  type ManagedMemoryScope,
   type MemoryDreamingConfig
 } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -72,31 +73,50 @@ const MarkdownView = dynamic(() => import('@/components/console/MarkdownView'), 
 
 const INDEX = 'MEMORY.md'
 const TOPIC_RE = /^[A-Za-z0-9._-]+\.md$/ // flat file name, .md
-const AGENT_SCOPE_HELP =
-  'Agent scope is the only option currently. Memory is shared across all users who interact with this agent.'
+const SCOPE_HELP =
+  'Agent scope shares one memory across everyone who talks to this agent. Channel scope gives each channel (DMs and webchat included) its own memory folder, so different channels never mix. Dreaming is turned off under channel scope.'
 
-function MemoryScopeField() {
+function MemoryScopeField({
+  scope,
+  canEdit,
+  onChange
+}: {
+  scope: ManagedMemoryScope
+  canEdit: boolean
+  onChange: (next: ManagedMemoryScope) => void
+}) {
   const tooltipId = useId()
+  const options: Array<{ value: ManagedMemoryScope; label: string }> = [
+    { value: 'agent', label: 'Agent' },
+    { value: 'channel', label: 'Channel' }
+  ]
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <span className="font-sans text-[13px] font-semibold leading-normal">Scope</span>
       <span className="group relative inline-flex items-center gap-1">
         <span className="pillbar">
-          <button
-            type="button"
-            disabled
-            data-memory-scope="agent"
-            aria-describedby={tooltipId}
-            className="pill on cursor-not-allowed px-2 py-1 text-[12px]"
-          >
-            Agent
-          </button>
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              disabled={!canEdit}
+              data-memory-scope={option.value}
+              aria-pressed={scope === option.value}
+              aria-describedby={tooltipId}
+              className={`pill ${scope === option.value ? 'on' : ''} px-2 py-1 text-[12px] ${canEdit ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+              onClick={() => {
+                if (canEdit) onChange(option.value)
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
         </span>
         <button
           type="button"
           className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full text-(--text-tertiary) transition-colors hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand)"
-          aria-label="About agent memory scope"
+          aria-label="About memory scope"
           aria-describedby={tooltipId}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
@@ -113,7 +133,7 @@ function MemoryScopeField() {
           role="tooltip"
           className="pointer-events-none invisible absolute top-full left-0 z-30 mt-2 w-[280px] max-w-[calc(100vw-72px)] -translate-y-1 rounded-md border border-(--border-default) bg-(--surface-card) p-3 font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-secondary) opacity-0 shadow-(--shadow-lg) transition-[opacity,transform,visibility] duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
         >
-          {AGENT_SCOPE_HELP}
+          {SCOPE_HELP}
         </span>
       </span>
     </div>
@@ -123,6 +143,7 @@ function MemoryScopeField() {
 function settingsFromProps(input: {
   memoryProvider: string
   autoDistill: boolean
+  memoryScope?: ManagedMemoryScope
   memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
@@ -131,6 +152,7 @@ function settingsFromProps(input: {
   return memorySettingsDraft({
     provider: input.memoryProvider,
     autoDistill: input.autoDistill,
+    scope: input.memoryScope,
     dreaming: input.memoryDreaming,
     connectionId: input.memoryConnectionId,
     recall: input.memoryRecall,
@@ -143,6 +165,7 @@ export function MemoryPanel({
   canEdit,
   memoryProvider,
   autoDistill,
+  memoryScope,
   memoryDreaming,
   memoryConnectionId,
   memoryRecall,
@@ -153,6 +176,7 @@ export function MemoryPanel({
   canEdit: boolean
   memoryProvider: string
   autoDistill: boolean
+  memoryScope?: ManagedMemoryScope
   memoryDreaming?: MemoryDreamingConfig
   memoryConnectionId?: string
   memoryRecall?: ExternalMemoryBindingDraft['recall']
@@ -183,6 +207,7 @@ export function MemoryPanel({
   const initialSettings = settingsFromProps({
     memoryProvider,
     autoDistill,
+    memoryScope,
     memoryDreaming,
     memoryConnectionId,
     memoryRecall,
@@ -301,10 +326,17 @@ export function MemoryPanel({
   }
 
   // One-line summary of the PERSISTED settings for the collapsed bar. Scope is
-  // always named — memory is agent-scoped and shared across users.
+  // always named. Channel scope has no dreaming, so those chips are dropped.
   const settingsSummary = (() => {
     switch (persistedProvider) {
       case 'managed': {
+        if (persistedSettings.scope === 'channel') {
+          return [
+            'Managed directory',
+            `Auto-distill ${persistedSettings.autoDistill ? 'on' : 'off'}`,
+            'Channel scope'
+          ].join(' · ')
+        }
         const dreaming = persistedSettings.dreaming
         const cadence = dreaming.schedule === '0 4 * * *' ? 'daily' : dreaming.schedule ? 'scheduled' : 'manual'
         return [
@@ -665,7 +697,16 @@ export function MemoryPanel({
               </span>
             </div>
 
-            <MemoryScopeField />
+            {provider === 'managed' ? (
+              <MemoryScopeField
+                scope={settings.scope}
+                canEdit={canEdit && !savingProvider}
+                onChange={(next) => {
+                  setSettings((current) => ({ ...current, scope: next }))
+                  setProviderError(null)
+                }}
+              />
+            ) : null}
 
             {provider === 'managed' ? (
               <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
@@ -682,7 +723,14 @@ export function MemoryPanel({
               </label>
             ) : null}
 
-            {provider === 'managed' ? (
+            {provider === 'managed' && settings.scope === 'channel' ? (
+              <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                Each channel (DMs and webchat included) keeps its own memory folder, so different channels never mix.
+                Dreaming is unavailable under channel scope.
+              </span>
+            ) : null}
+
+            {provider === 'managed' && settings.scope !== 'channel' ? (
               <div className="flex flex-col gap-2">
                 <label className="flex items-center gap-2 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)">
                   <input

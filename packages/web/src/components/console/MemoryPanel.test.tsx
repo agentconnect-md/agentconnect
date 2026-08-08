@@ -363,7 +363,7 @@ describe('MemoryPanel settings draft', () => {
     expect(container.querySelector('[data-memory-provider="managed"]')).toBeNull()
   })
 
-  it('shows the fixed agent scope and explains that memory is shared across users', async () => {
+  it('offers an editable Agent/Channel scope; choosing Channel hides dreaming and saves the scope', async () => {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -380,16 +380,29 @@ describe('MemoryPanel settings draft', () => {
     })
 
     await openSettings(container)
-    const scope = container.querySelector<HTMLButtonElement>('[data-memory-scope="agent"]')
-    expect(scope?.textContent).toBe('Agent')
-    expect(scope?.disabled).toBe(true)
+    const agentPill = container.querySelector<HTMLButtonElement>('[data-memory-scope="agent"]')
+    const channelPill = container.querySelector<HTMLButtonElement>('[data-memory-scope="channel"]')
+    // Both options are offered and editable; Agent is selected by default.
+    expect(agentPill?.textContent).toBe('Agent')
+    expect(channelPill?.textContent).toBe('Channel')
+    expect(agentPill?.disabled).toBe(false)
+    expect(agentPill?.getAttribute('aria-pressed')).toBe('true')
 
-    const help = container.querySelector<HTMLButtonElement>('[aria-label="About agent memory scope"]')
-    const tooltipId = help?.getAttribute('aria-describedby')
-    expect(tooltipId).toBeTruthy()
-    const tooltip = tooltipId ? container.querySelector<HTMLElement>(`#${tooltipId}`) : null
-    expect(tooltip?.getAttribute('role')).toBe('tooltip')
-    expect(tooltip?.textContent).toContain('Memory is shared across all users who interact with this agent.')
+    // Dreaming controls are visible under agent scope.
+    expect(container.textContent).toContain('Enable dreaming')
+
+    await act(async () => channelPill?.click())
+    // Channel scope hides the dreaming controls and explains the tradeoff.
+    expect(container.textContent).not.toContain('Enable dreaming')
+    expect(container.textContent).toContain('Dreaming is unavailable under channel scope')
+
+    const save = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Save memory settings'
+    )
+    await act(async () => save?.click())
+    expect(mocks.updateAgent).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', {
+      memory: { provider: 'managed', autoDistill: false, scope: 'channel' }
+    })
   })
 
   it('hides the persisted memory session while a different backend is selected but unsaved', async () => {
