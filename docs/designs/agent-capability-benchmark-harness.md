@@ -149,9 +149,10 @@ The control and treatment use the same full-daemon path. An internal test compos
 ```ts
 type EvaluationCapabilityProfile = {
   memory: 'off' | 'configured'
-  collaboration: 'off' | 'configured'
 }
 ```
+
+Collaboration is deliberately not part of the profile. Evaluation must run the exact production tool surface and messaging mechanism, so there is no collaboration-off composition: every full-daemon cell exposes the full `sendMessage` target union and the collaboration tools, and delivery follows production policy.
 
 This is constructor/test composition, not a new externally routable platform or production configuration. It must not put message bodies on the control-plane path.
 
@@ -159,7 +160,7 @@ This is constructor/test composition, not a new externally routable platform or 
 
 `runChat`/`AcpHost.newSession(cwd)` bypasses the daemon `SessionManager`, managed-memory injection, daemon MCP bridge, collaboration, routing, and policy. It is useful only for `Δcore`: comparing a raw subject harness with the same harness routed through AgentConnect with add-ons off.
 
-It must never be used as the control for managed memory or collaboration. Those controls are the full daemon with that feature disabled.
+It must never be used as the control for managed memory. That control is the full daemon with memory off. Collaboration has no off control at all — its behavior is checked functionally on the production surface.
 
 ### 4.2 Provider lifecycle
 
@@ -256,7 +257,7 @@ These remain normal tests and gate relevant pull requests:
 - built-in system tools are auto-allowed while dangerous runtime tools follow interactive policy;
 - permission decision events distinguish auto-allow from prompt/cancel;
 - hook bodies remain explicitly untrusted;
-- add-ons-off composition omits the corresponding prompt/tool/memory behavior.
+- memory-off composition omits the corresponding memory prompt/tool behavior; the collaboration surface is identical in every composition.
 
 ### 5.2 Initial paired behavior suite
 
@@ -266,10 +267,10 @@ Keep v1 small and outcome-focused:
 - `memory-cross-session-recall`: full daemon memory off versus on; outcome is a correct answer grounded only in prior-session state, plus recall-state evidence.
 - `memory-proactive-capture`: memory off versus on; after a learn-worthy turn, verify durable state and retrieval in a fresh session.
 - `memory-isolation`: memory on; verify a fact from another agent/principal is neither injected nor disclosed.
-- `collab-delivery-reply`: collaboration off versus on; a task requiring a specialist peer succeeds only through admitted delivery/reply correlation.
+- `collab-delivery-reply`: production-surface functional check; a task requiring a specialist peer succeeds only through admitted delivery/reply correlation (no off cell — the product ships no collaboration-off composition).
 - `collab-context-isolation`: reproduce the greeting/cascade failure; treatment must complete without peer rebroadcast or thread-context bleed.
 - `collab-orchestration-partial-failure`: verify collected successes, timed-out worker state, and final main-agent recovery.
-- `prompt-quiet-mechanics`: AgentConnect collaboration prompt off versus on; the treatment uses the tool without narrating internal delivery mechanics.
+- `prompt-quiet-mechanics`: prompt-variant comparison on the production surface; the treatment uses the tool without narrating internal delivery mechanics.
 - `memory-collab-handoff`: a peer uses relevant managed memory during a delegated task without leaking unrelated memory.
 
 The subject's absolute result remains visible for diagnosis. The product signal is the paired delta plus invariant/safety gates.
@@ -365,8 +366,8 @@ CI publishes redacted JSON/JUnit summaries and retains raw artifacts only in res
 
 - Promptfoo custom TypeScript provider;
 - isolated full-daemon fixture lifecycle and capability-profile composition seam;
-- full-daemon memory-off/on and collaboration-off/on controls;
-- initial paired memory, collaboration, prompt, and interaction cases;
+- full-daemon memory-off/on controls (collaboration always at the production surface);
+- initial paired memory, prompt, and interaction cases plus a functional collaboration case;
 - JSON/JUnit output and an on-demand workflow.
 
 ### P2 — runtime matrix and nightly reliability

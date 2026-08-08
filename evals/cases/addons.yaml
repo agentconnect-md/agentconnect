@@ -58,12 +58,13 @@
       value: file://assertions/outcome.ts
       metric: outcome
 
+# Collaboration is part of the production surface in every daemon cell (no off
+# switch), so this case is a functional check of delivery/reply, not a paired ablation.
 - description: Collaboration · specialist delivery and reply
   metadata:
     feature: collaboration
   providers:
     - daemon-core
-    - collaboration-only
   vars:
     expected: SPECIALIST-OK-7319
     match: exact
@@ -96,8 +97,6 @@
   providers:
     - daemon-core
     - memory-only
-    - collaboration-only
-    - both
   vars:
     expected: INTERACTION-OK-7319
     match: exact

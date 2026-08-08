@@ -489,7 +489,7 @@ export async function runWerewolf(options: WerewolfGameRunOptions): Promise<Coll
       mode: 'deterministic',
       subjectKind: subjectSpec.kind,
       ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedWerewolfHostFactory() as never } : {}),
-      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      capabilityProfile: { memory: 'off' },
       limits: {
         maxSteps: options.maxSteps ?? 60,
         timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 240_000 : 30 * 60_000)
@@ -610,7 +610,7 @@ export async function runCrossRoomCounting(options: CrossRoomGameRunOptions): Pr
       mode: 'deterministic',
       subjectKind: subjectSpec.kind,
       ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedCrossRoomHostFactory() as never } : {}),
-      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      capabilityProfile: { memory: 'off' },
       limits: {
         maxSteps: options.maxSteps ?? (options.target ?? 12) * 3 + 10,
         timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 180_000 : 20 * 60_000)
@@ -657,7 +657,7 @@ export async function runQuotaCounting(options: QuotaCountingRunOptions): Promis
       mode: 'deterministic',
       subjectKind: subjectSpec.kind,
       ...(subjectSpec.kind === 'scripted' ? { hostFactory: scriptedQuotaHostFactory() as never } : {}),
-      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      capabilityProfile: { memory: 'off' },
       limits: {
         maxSteps: options.maxSteps ?? target * 3 + 10,
         timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 180_000 : 20 * 60_000)
@@ -704,7 +704,7 @@ export async function runSameRoomCounting(options: CountingGameRunOptions): Prom
               : scriptedCountingHostFactory()) as never
           }
         : {}),
-      capabilityProfile: { memory: 'off', collaboration: 'configured' },
+      capabilityProfile: { memory: 'off' },
       limits: {
         maxSteps: options.maxSteps ?? (options.target ?? 12) * 3 + 4,
         timeoutMs: options.timeoutMs ?? (subjectSpec.kind === 'scripted' ? 120_000 : 15 * 60_000)

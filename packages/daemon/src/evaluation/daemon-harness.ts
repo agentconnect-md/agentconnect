@@ -42,7 +42,7 @@ export class DaemonEvaluationHarness {
       observer: compositeEvaluationObserver(this.collector),
       runId: options.runId,
       environment: options.environment,
-      capabilityProfile: options.capabilityProfile ?? { memory: 'off', collaboration: 'configured' },
+      capabilityProfile: options.capabilityProfile ?? { memory: 'off' },
       ...(options.onObserverError ? { onObserverError: options.onObserverError } : {})
     }
     this.daemon = new Daemon({

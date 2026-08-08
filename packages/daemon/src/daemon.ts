@@ -1616,7 +1616,8 @@ export interface DaemonEvaluationOptions {
   observer?: EvaluationObserver
   /** Stable run identity shared by event, ATIF, and manifest artifacts. */
   runId?: string
-  /** Add-on treatment. Production defaults to both configured. */
+  /** Add-on treatment (memory only). Production defaults to configured. Collaboration
+   *  has no toggle: evaluation always runs the production tool surface and delivery. */
   capabilityProfile?: EvaluationCapabilityProfile
   /** Collaboration Arena environment (collaboration-arena.md §5): the effective
    *  integration registry projected into `agent.integrations` + the connection
@@ -2175,7 +2176,7 @@ export class Daemon {
       throw new Error('evaluation capability profile requires an evaluation observer')
     }
     this.evaluationProfile = EvaluationCapabilityProfileSchema.parse(
-      opts.evaluation?.capabilityProfile ?? { memory: 'configured', collaboration: 'configured' }
+      opts.evaluation?.capabilityProfile ?? { memory: 'configured' }
     )
     this.evaluation = new EvaluationEventEmitter({
       observer: opts.evaluation?.observer,
@@ -3047,7 +3048,6 @@ export class Daemon {
           )
         }),
       memoryEnabled: this.evaluationProfile.memory === 'configured',
-      collaborationEnabled: this.evaluationProfile.collaboration === 'configured',
       quoteForContextEvent: (event, replayed) => this.observedQuoteBlock(event, replayed),
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
@@ -3068,7 +3068,6 @@ export class Daemon {
       mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
-          collaboration: this.evaluationProfile.collaboration === 'configured',
           organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
@@ -8128,7 +8127,6 @@ export class Daemon {
 
   private wakeRejectionReason(req: MessageAgentReq): string | null {
     const platform = req.platform
-    if (this.evaluationProfile.collaboration === 'off') return 'capability_disabled'
     if (isPlatformMemberId(platform, req.toAgentId)) {
       return 'invalid_target'
     }
@@ -8182,14 +8180,6 @@ export class Daemon {
         }
       })
       return result
-    }
-    if (this.evaluationProfile.collaboration === 'off') {
-      const thread = req.thread ?? `agentcall:${req.channel}:collaboration-disabled`
-      return observe('collaboration.delivery.rejected', {
-        delivered: false,
-        targetSession: sessionKey(platform, req.channel, thread, req.toAgentId),
-        reason: 'capability_disabled'
-      })
     }
     // `toAgentId` is an AgentConnect id from listAgents / the trusted agent-call
     // envelope, never a platform member id. In particular, accepting Slack's U…/W… ids

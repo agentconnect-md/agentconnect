@@ -233,7 +233,7 @@ describe('evaluation event evidence', () => {
       schemaVersion: EVALUATION_RUN_SCHEMA_VERSION,
       runId: 'run-3',
       caseId: 'memory-cross-session-recall',
-      treatment: { name: 'memory-on', memory: 'configured', collaboration: 'off' },
+      treatment: { name: 'memory-on', memory: 'configured' },
       subject: { runtime: 'codex', model: 'gpt-5.5' },
       agentConnect: { commit: 'abc123', dirty: false },
       startedAt: '2026-07-21T00:00:00.000Z',

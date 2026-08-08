@@ -242,15 +242,6 @@ describe('toolsForIntegrations', () => {
     // which is a legitimate reason to send into a conversation the agent is not in.
     expect(description).toContain('@-mentions every listed user')
     expect(sendTargetBranch([slackInt], 'toUser').description).toContain('@-mentions every listed user')
-
-    // Collaboration off leaves only the visible platform targets, so the channel-root cost must
-    // still be stated there (spawnChannelRootSession runs either way).
-    const soloDescription = toolsForIntegrations([slackInt], { collaboration: false }).find(
-      (t) => t.name === 'sendMessage'
-    )!.description
-    expect(soloDescription).toContain('opens a NEW conversation')
-    expect(soloDescription).toContain('ordinary turn reply')
-    expect(soloDescription).toContain('{"toUser":"<Slack user id>","message":"..."}')
   })
 
   it('`toAgent` accepts the bare agent id OR an {agentId, needsReply} object', () => {
@@ -314,7 +305,7 @@ describe('toolsForIntegrations', () => {
     const surfaces = [
       toolsForIntegrations([]),
       toolsForIntegrations([slackInt, telegramInt, discordInt], { sessionTitle: true, organizationKnowledge: true }),
-      toolsForIntegrations([slackInt], { collaboration: false })
+      toolsForIntegrations([slackInt])
     ]
     for (const tools of surfaces) {
       for (const name of retired) expect(tools.map((t) => t.name)).not.toContain(name)
@@ -325,24 +316,31 @@ describe('toolsForIntegrations', () => {
     expect(COLLABORATION_TOOLS.map((t) => t.name)).not.toEqual(expect.arrayContaining(retired))
   })
 
-  it('removes peer targets for a collaboration-off treatment while preserving platform sends', () => {
-    expect(toolsForIntegrations([], { collaboration: false }).map((tool) => tool.name)).toEqual([
-      'readMemory',
-      'writeMemory'
-    ])
-
-    const tools = toolsForIntegrations([slackInt], { collaboration: false })
-    const names = tools.map((tool) => tool.name)
-    for (const gone of ['listAgents', 'listChannelAgents', 'viewSessionStatus']) {
-      expect(names).not.toContain(gone)
+  it('offers one surface only: every composition carries the full production target union', () => {
+    // The user-facing invariant behind removing the evaluation "collaboration off"
+    // toggle: there is exactly ONE tool surface, and it is the production one.
+    // Whatever options a caller composes with, the collaboration tools are present
+    // and sendMessage carries the full four-branch target union in stable order.
+    const surfaces = [
+      toolsForIntegrations([]),
+      toolsForIntegrations([slackInt]),
+      toolsForIntegrations([slackInt, telegramInt, discordInt], { sessionTitle: true, organizationKnowledge: true })
+    ]
+    for (const tools of surfaces) {
+      const names = tools.map((tool) => tool.name)
+      for (const required of ['listAgents', 'listChannelAgents', 'viewSessionStatus', 'sendMessage']) {
+        expect(names).toContain(required)
+      }
+      const send = tools.find((tool) => tool.name === 'sendMessage')!
+      const schema = send.inputSchema as unknown as ObjectSchema
+      expect(schema.oneOf?.map((branch) => branch.required)).toEqual([
+        ['toAgent', 'message'],
+        ['toUser', 'message'],
+        ['channel', 'message'],
+        ['sessionId', 'message']
+      ])
+      expect(send.description).not.toContain('disabled for this run')
     }
-    expect(names).toContain('sendMessage')
-    const send = tools.find((tool) => tool.name === 'sendMessage')!
-    const schema = send.inputSchema as unknown as ObjectSchema
-    expect(schema.oneOf).toHaveLength(2)
-    expect(schema.oneOf?.[0]?.required).toEqual(['toUser', 'message'])
-    expect(schema.oneOf?.[1]?.required).toEqual(['channel', 'message'])
-    expect(send.description).toContain('Peer-agent and parent-session delivery are disabled')
   })
 
   it('injects the session-title fallback only when the runtime is explicitly whitelisted', () => {

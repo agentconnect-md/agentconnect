@@ -10,6 +10,8 @@ providers:
       mode: raw-acp
       name: raw-acp
 
+  # Every daemon cell runs the production tool surface and messaging mechanism —
+  # collaboration has no off switch. Memory is the only capability treatment axis.
   - id: file://providers/agentconnect.ts
     label: daemon-core
     config:
@@ -17,7 +19,6 @@ providers:
       treatment:
         name: daemon-core
         memory: off
-        collaboration: off
 
   - id: file://providers/agentconnect.ts
     label: memory-only
@@ -26,25 +27,6 @@ providers:
       treatment:
         name: memory-only
         memory: configured
-        collaboration: off
-
-  - id: file://providers/agentconnect.ts
-    label: collaboration-only
-    config:
-      mode: daemon
-      treatment:
-        name: collaboration-only
-        memory: off
-        collaboration: configured
-
-  - id: file://providers/agentconnect.ts
-    label: both
-    config:
-      mode: daemon
-      treatment:
-        name: both
-        memory: configured
-        collaboration: configured
 
 tests: file://cases/addons.yaml
 

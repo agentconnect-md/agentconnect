@@ -130,15 +130,13 @@ function configuredTreatment(config: AgentConnectProviderConfig, mode: ProviderM
   if (mode === 'raw-acp') {
     return {
       name: config.name?.trim() || 'raw-acp',
-      memory: 'off',
-      collaboration: 'off'
+      memory: 'off'
     }
   }
   return (
     config.treatment ?? {
       name: config.name?.trim() || 'daemon-core',
-      memory: 'off',
-      collaboration: 'off'
+      memory: 'off'
     }
   )
 }

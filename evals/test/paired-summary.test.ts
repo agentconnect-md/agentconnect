@@ -45,14 +45,7 @@ describe('Promptfoo paired evaluation reporting', () => {
     try {
       await afterAll({
         evalId: 'eval-7319',
-        results: [
-          evalResult('raw-acp', 0.3),
-          evalResult('daemon-core', 0.2),
-          evalResult('memory-only', 0.6),
-          evalResult('collaboration-only', 0.5),
-          evalResult('both', 1),
-          failed
-        ],
+        results: [evalResult('raw-acp', 0.3), evalResult('daemon-core', 0.2), evalResult('memory-only', 0.6), failed],
         prompts: [],
         suite: {} as AfterAllExtensionHookContext['suite'],
         config: {}
@@ -69,13 +62,11 @@ describe('Promptfoo paired evaluation reporting', () => {
       cases: {
         'memory-collab-handoff': {
           treatments: {
-            both: { meanScore: 1, validTrials: 1, statuses: { passed: 1 } }
+            'memory-only': { meanScore: 0.6, validTrials: 1, statuses: { passed: 1 } }
           },
           deltas: {
             core: -0.1,
-            memory: 0.4,
-            collaboration: 0.3,
-            interaction: 0.1
+            memory: 0.4
           }
         }
       }

@@ -38,9 +38,10 @@ export const EvaluationEventTypeSchema = z.enum([
 
 export type EvaluationEventType = z.infer<typeof EvaluationEventTypeSchema>
 
+// Collaboration is deliberately NOT part of the profile: evaluation always runs
+// the exact production tool surface and messaging mechanism (no capability fork).
 export const EvaluationCapabilityProfileSchema = z.object({
-  memory: z.enum(['off', 'configured']),
-  collaboration: z.enum(['off', 'configured'])
+  memory: z.enum(['off', 'configured'])
 })
 
 export type EvaluationCapabilityProfile = z.infer<typeof EvaluationCapabilityProfileSchema>

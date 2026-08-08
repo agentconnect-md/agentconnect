@@ -224,7 +224,7 @@ describe('collaboration game runner — same-room counting with scripted hosts',
             stop: async () => {}
           }
         }) as never,
-        capabilityProfile: { memory: 'off', collaboration: 'configured' },
+        capabilityProfile: { memory: 'off' },
         limits: { maxSteps: 12, timeoutMs: 120_000 },
         agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
       })
@@ -288,7 +288,7 @@ describe('collaboration game runner — same-room counting with scripted hosts',
           cancel: async () => {},
           stop: async () => {}
         })) as never,
-        capabilityProfile: { memory: 'off', collaboration: 'configured' },
+        capabilityProfile: { memory: 'off' },
         limits: { maxSteps: 6, timeoutMs: 60_000 },
         agents: topology.agents.map((agent) => ({ agentId: agent.agentId, name: agent.alias }))
       })
