@@ -484,6 +484,11 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     return this.generations.get(`${botId}:${channel}`) ?? 0
   }
 
+  /** The `audiences` cache key — one constructor, shared by every reader. */
+  private audienceKey(botId: string, credentialRevision: number, channel: string): string {
+    return [botId, credentialRevision, channel].join(':')
+  }
+
   /** Cached + deduped conversation audience — the classifying wrapper every
    *  reader (and re-observer) of the `audiences` cache goes through. */
   private async audienceOf(
@@ -493,7 +498,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     token: string,
     signal: AbortSignal
   ): Promise<ObservedAudience | undefined> {
-    const key = [botId, credentialRevision, channel].join(':')
+    const key = this.audienceKey(botId, credentialRevision, channel)
     const generation = this.generationOf(botId, channel)
     const observed = await this.audiences.fetch(key, { context: { channel, token, signal } })
     // `unknown` is the CHECK failing, not an answer about the audience. Keeping
@@ -583,6 +588,13 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
         secret.botToken,
         AbortSignal.timeout(TIMEOUT_MS)
       )
+      // §4.2(6): past the recheck threshold `audienceOf` serves cached and
+      // re-observes DETACHED — right for a foreground read, wrong for a cadence
+      // sweep, which would fan out one detached provider call per scope and
+      // bypass the warmer's concurrency permit and settle(). Hold the warm open
+      // until the re-observation it (or a foreground read) fired lands; the
+      // task never rejects and its write stays behind the §4.2(4) fences.
+      await this.revalidating.get(this.audienceKey(bot.id, bot.credentialRevision, scope.resourceKey))
       if (!observed) return { outcome: 'failed', reason: 'audience_evicted' }
       if (observed.audience === 'unknown') return { outcome: 'failed', reason: observed.reason }
       return { outcome: 'warmed', verdict: observed.audience }

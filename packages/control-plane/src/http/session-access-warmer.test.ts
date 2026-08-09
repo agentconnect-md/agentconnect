@@ -33,7 +33,7 @@ function policyRecord(state: SessionExternalAccessPolicyRecord['state']): Sessio
   return { orgId: ORG, provider: 'slack', state, currentRev: 1n, readFenceRev: 1n }
 }
 
-function harness(opts: { random?: () => number; idleDropMs?: number } = {}) {
+function harness(opts: { random?: () => number; idleDropMs?: number; maxScopes?: number } = {}) {
   const clock = new FakeClock(EPOCH)
   const scopes = new Map<string, ExternalScopeRecord>([[SCOPE_ID, scopeRecord()]])
   const policies = new Map<string, SessionExternalAccessPolicyRecord>([[`${ORG}:slack`, policyRecord('enabled')]])
@@ -51,7 +51,8 @@ function harness(opts: { random?: () => number; idleDropMs?: number } = {}) {
     targets: new Map([['slack', target]]),
     clock,
     random: opts.random ?? (() => 0),
-    ...(opts.idleDropMs !== undefined ? { idleDropMs: opts.idleDropMs } : {})
+    ...(opts.idleDropMs !== undefined ? { idleDropMs: opts.idleDropMs } : {}),
+    ...(opts.maxScopes !== undefined ? { maxScopes: opts.maxScopes } : {})
   })
   return { clock, warmer, target, scopes, policies, getExternalScopes, getExternalAccessPolicy }
 }
@@ -229,6 +230,25 @@ describe('SessionAccessWarmer', () => {
     h.clock.advance(INTERVAL)
     await h.warmer.settle()
     expect(h.target).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the scheduled warm of a scope evicted from the working set', async () => {
+    const h = harness({ random: () => 0.5, maxScopes: 3 })
+    for (let index = 1; index <= 4; index++) {
+      h.scopes.set(`scope-${index}`, scopeRecord({ id: `scope-${index}` }))
+    }
+    h.warmer.start()
+    // Young-window jitter keeps every first warm pending as a timer.
+    for (let index = 1; index <= 4; index++) h.warmer.poke(ORG, `scope-${index}`)
+
+    // 1 loop timer + 3 scheduled: scope-1's timer left with its evicted entry.
+    expect(h.clock.pendingTimers()).toBe(4)
+
+    h.clock.advance(INTERVAL)
+    await h.warmer.settle()
+    const warmedIds = h.target.mock.calls.map(([warmed]) => warmed.id)
+    expect(warmedIds).toHaveLength(3)
+    expect(warmedIds).not.toContain('scope-1')
   })
 
   it('stop() cancels the loop and every scheduled warm', async () => {

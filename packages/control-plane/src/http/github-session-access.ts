@@ -260,11 +260,15 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     if (installation.revokedAt || installation.suspendedAt)
       return { outcome: 'skipped', reason: 'installation_revoked' }
     try {
-      const observed = await this.shapeOf(`${installation.installationId}:${scope.resourceKey}`, {
-        github,
-        ins: installation,
-        repoId: BigInt(scope.resourceKey)
-      })
+      const key = `${installation.installationId}:${scope.resourceKey}`
+      const observed = await this.shapeOf(key, { github, ins: installation, repoId: BigInt(scope.resourceKey) })
+      // §4.2(6): past the recheck threshold `shapeOf` serves cached and
+      // re-observes DETACHED — right for a foreground read, wrong for a cadence
+      // sweep, which would fan out one detached provider call per scope and
+      // bypass the warmer's concurrency permit and settle(). Hold the warm open
+      // until the re-observation it (or a foreground read) fired lands; the
+      // task never rejects and its write stays behind the object fence.
+      await this.revalidating.get(key)
       if (!observed) return { outcome: 'failed', reason: 'shape_evicted' }
       const shape = observed.shape
       return { outcome: 'warmed', verdict: shape === null ? 'ungranted' : shape.private ? 'private' : 'public' }

@@ -1225,6 +1225,47 @@ describe('SlackSessionAccessService', () => {
       expect(calls(fetchImpl, 'conversations.info')).toBe(2)
     })
 
+    // §4.2(6): a cadence warm on an already-leased entry must hold the warmer's
+    // permit for the REAL provider work — the touch-revalidation it fires —
+    // not resolve while that request is still in flight.
+    it('holds the warm open until its re-observation lands', async () => {
+      const clock = new FakeClock(EPOCH)
+      const state = { defer: false }
+      let release: (() => void) | undefined
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          if (state.defer) {
+            state.defer = false
+            return new Promise<Response>((resolve) => {
+              release = () => resolve(json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } }))
+            })
+          }
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await expect(resolver.warmAudience(scope())).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+
+      // Half a lease later the entry still serves but is past the recheck
+      // threshold, so this warm fires a re-observation — and must await it.
+      clock.advance(30 * 60_000)
+      state.defer = true
+      let settled = false
+      const warm = resolver.warmAudience(scope()).then((outcome) => {
+        settled = true
+        return outcome
+      })
+      await vi.waitFor(() => expect(release).toBeDefined())
+      expect(settled).toBe(false)
+
+      release!()
+      await expect(warm).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+      expect(resolver.stats.audienceRevalidations).toBe(1)
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+    })
+
     it('skips when a run-time fence refuses, with zero provider calls', async () => {
       const fetchImpl = vi.fn(async () => json({ ok: false, error: 'unreachable' }))
 

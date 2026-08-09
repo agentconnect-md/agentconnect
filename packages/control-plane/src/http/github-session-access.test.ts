@@ -360,6 +360,37 @@ describe('GithubSessionAccessService', () => {
       expect(h.repoRefById).toHaveBeenCalledTimes(2)
     })
 
+    // §4.2(6): a cadence warm on an already-leased entry must hold the warmer's
+    // permit for the REAL provider work — the touch-revalidation it fires —
+    // not resolve while that request is still in flight.
+    it('holds the warm open until its re-observation lands', async () => {
+      const h = make(false)
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+
+      // Half a lease later the entry still serves but is past the recheck
+      // threshold, so this warm fires a re-observation — and must await it.
+      h.clock.advance(30 * 60_000)
+      let release!: () => void
+      h.repoRefById.mockImplementationOnce(() => {
+        return new Promise((resolve) => {
+          release = () =>
+            resolve({ repoId: 123n, fullName: 'acme/private-repo', private: false, defaultBranch: 'main' })
+        })
+      })
+      let settled = false
+      const warm = h.service.warmShape(scope).then((outcome) => {
+        settled = true
+        return outcome
+      })
+      await vi.waitFor(() => expect(h.repoRefById).toHaveBeenCalledTimes(2))
+      expect(settled).toBe(false)
+
+      release()
+      await expect(warm).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+      expect(h.service.stats.shapeRevalidations).toBe(1)
+    })
+
     it('skips a revoked installation or a foreign scope with zero provider calls', async () => {
       const repoRefById = vi.fn().mockResolvedValue(PRIVATE_SHAPE)
       const service = new GithubSessionAccessService({

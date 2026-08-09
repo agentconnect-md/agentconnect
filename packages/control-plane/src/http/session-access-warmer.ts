@@ -72,6 +72,8 @@ export interface SessionAccessWarmerDeps {
   publicTtlMs?: number
   /** §4.3 working-set retention; default 24 h. Injectable for tests. */
   idleDropMs?: number
+  /** Working-set bound; default 10 000. Injectable for tests. */
+  maxScopes?: number
   /** Jitter source; injectable so tests are deterministic. */
   random?: () => number
 }
@@ -93,7 +95,14 @@ export class SessionAccessWarmer {
   readonly stats = { pokes: 0, warms: 0, warmed: 0, skipped: 0, failed: 0 }
 
   constructor(private readonly deps: SessionAccessWarmerDeps) {
-    this.entries = new LRUCache(cacheOptions(deps.clock, MAX_WORKING_SET))
+    this.entries = new LRUCache({
+      ...cacheOptions(deps.clock, deps.maxScopes ?? MAX_WORKING_SET),
+      // The working-set bound must bound the timers too: an entry leaving the
+      // set — LRU pressure or the idle drop — takes its scheduled warm with it,
+      // or a distinct-scope burst during the young window would grow
+      // `scheduled` past the advertised bound.
+      dispose: (_entry, scopeId) => this.cancelScheduled(scopeId)
+    })
     this.warmIntervalMs = Math.floor((deps.publicTtlMs ?? DEFAULT_PUBLIC_TTL_MS) / 2)
     this.idleDropMs = deps.idleDropMs ?? DEFAULT_IDLE_DROP_MS
     this.random = deps.random ?? Math.random
@@ -167,6 +176,14 @@ export class SessionAccessWarmer {
     } finally {
       this.armLoop()
     }
+  }
+
+  /** Cancel a scope's pending warm timer, if any (eviction/idle-drop dispose). */
+  private cancelScheduled(scopeId: string): void {
+    const timer = this.scheduled.get(scopeId)
+    if (timer === undefined) return
+    this.deps.clock.clearTimeout(timer)
+    this.scheduled.delete(scopeId)
   }
 
   /** Queue one warm — deduped against a scheduled or in-flight one. */
