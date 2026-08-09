@@ -108,6 +108,24 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(await readFile(join(cwd, '.cli-owned/skills/dream/SKILL.md'), 'utf8')).toContain('# dream')
   }, 120_000)
 
+  it('publishes a Codex skill through a contained workspace-local skill-root alias', async () => {
+    const sourceDir = await writeSkill(sources, 'audit', 'audit')
+    await mkdir(join(cwd, '.claude/skills'), { recursive: true })
+    await mkdir(join(cwd, '.agents'))
+    await symlink('../.claude/skills', join(cwd, '.agents/skills'))
+    const cli = fakeCli(() => '.agents')
+
+    const result = await installSkills({ id: 'a1', runtime: 'codex-acp', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [{ kind: 'dream', key: 'dream:audit', name: 'audit', sourceDir }],
+      runCli: cli.run
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.installed).toEqual(['.agents/skills/audit'])
+    expect(await readFile(join(cwd, '.claude/skills/audit/SKILL.md'), 'utf8')).toContain('# audit')
+  })
+
   it.each([
     ['direct skills root', ''],
     ['multi-component prefix', 'vendor/harness']
