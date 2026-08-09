@@ -71,8 +71,8 @@ const logSpy = () => ({
   info: vi.fn<(obj: object, msg: string) => void>()
 })
 type SvcLog = ReturnType<typeof logSpy>
-const svcOf = (fetchImpl: FetchImpl, clock: FakeClock, log?: SvcLog) =>
-  new LogtoIdentityService(MGMT, clock, MUTATIONS, fetchImpl, log)
+const svcOf = (fetchImpl: FetchImpl, clock: FakeClock, log?: SvcLog, opts?: { identityTtlMs?: number }) =>
+  new LogtoIdentityService(MGMT, clock, MUTATIONS, fetchImpl, log, opts)
 
 /** Drain a (released) background refresh — the fakes settle in micro/macrotasks,
  *  never on real timers, so a few event-loop turns are enough. */
@@ -214,6 +214,74 @@ describe('LogtoIdentityService refresh-ahead', () => {
 
     // The background refresh replaced the miss with the just-linked login.
     await expect(svc.githubLoginFor('sub-1', 120_000)).resolves.toBe('late')
+    expect(calls.user).toBe(2)
+  })
+})
+
+describe('LogtoIdentityService widened identity lease (SESSION_ACCESS_IDENTITY_TTL_SEC)', () => {
+  const HOUR = 3_600_000
+
+  it('serves a 15-minute-old entry without an upstream fetch — the positive TTL widens with the lease', async () => {
+    const clock = new FakeClock(0)
+    const { fetchImpl, calls } = fakeLogto({ 'sub-1': slackUser() })
+    const svc = svcOf(fetchImpl, clock, undefined, { identityTtlMs: HOUR })
+
+    await svc.slackIdentityFor('sub-1')
+    expect(calls.user).toBe(1)
+
+    // Age 15 min: past the 10 min display TTL that used to expire the entry —
+    // had only the caller cap moved, this read would block on Logto.
+    clock.advance(15 * 60_000)
+    await expect(svc.slackIdentityFor('sub-1')).resolves.toMatchObject({ teamId: 'T0EXAMPLE1' })
+    await settled()
+    expect(calls.user).toBe(1)
+  })
+
+  it('refresh-ahead fires past half of the widened lease', async () => {
+    const clock = new FakeClock(0)
+    const { fetchImpl, calls } = fakeLogto({ 'sub-1': slackUser() })
+    const svc = svcOf(fetchImpl, clock, undefined, { identityTtlMs: HOUR })
+
+    await svc.slackIdentityFor('sub-1')
+    clock.advance(HOUR / 2 + 1_000) // past half of the 1 h lease — renews behind the caller
+    await expect(svc.slackIdentityFor('sub-1')).resolves.toMatchObject({ teamId: 'T0EXAMPLE1' })
+    await settled()
+    expect(calls.user).toBe(2)
+
+    clock.advance(29 * 60_000) // 29 min past the renewal: under its half-lease, a quiet hit
+    await expect(svc.slackIdentityFor('sub-1')).resolves.toMatchObject({ teamId: 'T0EXAMPLE1' })
+    expect(calls.user).toBe(2)
+
+    clock.advance(HOUR) // past the full lease since the renewal — the idle return still blocks
+    await svc.slackIdentityFor('sub-1')
+    expect(calls.user).toBe(3)
+  })
+
+  it('the epoch fence still drops entries immediately regardless of the lease', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = { 'sub-1': slackUser('T0BEFORE00') }
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = svcOf(fetchImpl, clock, undefined, { identityTtlMs: HOUR })
+
+    await svc.slackIdentityFor('sub-1')
+    users['sub-1'] = slackUser('T0AFTER000')
+    svc.forgetUser('sub-1') // the in-product link/unlink path — immediacy is NOT lease-bound
+
+    await expect(svc.slackIdentityFor('sub-1')).resolves.toMatchObject({ teamId: 'T0AFTER000' })
+    expect(calls.user).toBe(2)
+  })
+
+  it('a negative entry still expires at 60 s — a just-linked account shows up fast', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = {}
+    const { fetchImpl, calls } = fakeLogto(users)
+    const svc = svcOf(fetchImpl, clock, undefined, { identityTtlMs: HOUR })
+
+    await expect(svc.githubLoginFor('sub-1', HOUR)).resolves.toBeNull() // 404 → negative entry
+    users['sub-1'] = githubUser('late')
+
+    clock.advance(61_000) // past the 60 s negative TTL, nowhere near the 1 h lease
+    await expect(svc.githubLoginFor('sub-1', HOUR)).resolves.toBe('late')
     expect(calls.user).toBe(2)
   })
 })

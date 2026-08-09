@@ -22,6 +22,11 @@ const SCOPE_CONCURRENCY = 6
 // session-access-cold-visit.md) when a caller constructs the service without them.
 const DEFAULT_RECHECK_MS = 120_000
 const DEFAULT_PUBLIC_TTL_MS = 3_600_000
+// Cap on an identity-backed allow: bounds what an unlink can leave in the per-viewer
+// verdict cache (keyed by local userId only, which link/unlink cannot invalidate).
+// Deliberately does NOT follow `SESSION_ACCESS_IDENTITY_TTL_SEC` — widening the
+// identity serving lease must not stretch unlink residue.
+const UNLINK_RESIDUE_CAP_MS = PROVIDER_IDENTITY_TTL_MS
 
 type Decision = 'allow' | 'deny' | 'unknown'
 /** Narrowed `repoRefById` result; null = outside the installation's grant. */
@@ -79,6 +84,8 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
   private readonly recheckMs: number
   /** §2.3 serving ceiling (ms) for a public repository shape. */
   private readonly publicTtlMs: number
+  /** §2.3 identity serving lease (ms) for the login leg — WHICH GitHub account the viewer is. */
+  private readonly identityTtlMs: number
   /** §5 instrumentation: fetch-method runs = shape-cache misses; revalidations = §4.2(5) firings. */
   readonly stats = { shapeFetches: 0, shapeRevalidations: 0 }
 
@@ -92,11 +99,14 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       recheckMs?: number
       /** `SESSION_ACCESS_PUBLIC_TTL_SEC` in ms; defaults so tests can omit it. */
       publicTtlMs?: number
+      /** `SESSION_ACCESS_IDENTITY_TTL_SEC` in ms; defaults so tests can omit it. */
+      identityTtlMs?: number
       log?: { debug: (obj: object, msg: string) => void }
     }
   ) {
     this.recheckMs = deps.recheckMs ?? DEFAULT_RECHECK_MS
     this.publicTtlMs = deps.publicTtlMs ?? DEFAULT_PUBLIC_TTL_MS
+    this.identityTtlMs = deps.identityTtlMs ?? PROVIDER_IDENTITY_TTL_MS
     this.cache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.shapes = new LRUCache({
       ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
@@ -188,10 +198,10 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
               // The permission is the revocable fact — demand it age-zero.
               // WHICH GitHub account the viewer is, is identity metadata that
               // changes only through link/unlink (both invalidate the cache),
-              // so it rides the same 120 s identity lease the Slack and Feishu
-              // session-access plugins already run on.
+              // so it rides the same configurable identity lease the Slack and
+              // Feishu session-access plugins already run on.
               maxCacheAgeMs: 0,
-              loginMaxAgeMs: PROVIDER_IDENTITY_TTL_MS
+              loginMaxAgeMs: this.identityTtlMs
             })) !== 'none'
               ? 'allow'
               : 'deny'
@@ -285,10 +295,11 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     // conversion window, bounded by touch-revalidation.
     //
     // An identity-backed allow (private repo: WHICH GitHub account the viewer is decided
-    // it) additionally caps at the provider-identity lease: the key carries only the
+    // it) additionally caps at the fixed unlink-residue bound: the key carries only the
     // local user id and link/unlink invalidates the identity caches, never this one, so
-    // a recheck knob above 120 s must not stretch what an unlink can leave behind.
-    const allowTtl = identityBacked ? Math.min(this.recheckMs, PROVIDER_IDENTITY_TTL_MS) : this.recheckMs
+    // neither the recheck knob nor the identity knob may stretch what an unlink can
+    // leave behind.
+    const allowTtl = identityBacked ? Math.min(this.recheckMs, UNLINK_RESIDUE_CAP_MS) : this.recheckMs
     const ttl = decision === 'allow' ? allowTtl : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
     this.cache.set(key, decision, { ttl })
   }

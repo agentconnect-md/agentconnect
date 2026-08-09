@@ -63,6 +63,9 @@ const CoreConfigShape = {
   // honored while nobody is looking; any access older than RECHECK re-verifies
   // immediately. Must be ≥ SESSION_ACCESS_RECHECK_SEC (checked below).
   SESSION_ACCESS_PUBLIC_TTL_SEC: z.coerce.number().int().min(300).max(14400).default(3600),
+  // Serving lease for a viewer's provider-identity projection (seconds); in-product
+  // link/unlink still invalidates immediately — only an out-of-band Logto edit waits this out.
+  SESSION_ACCESS_IDENTITY_TTL_SEC: z.coerce.number().int().min(30).max(86400).default(120),
   // HMAC pepper for `api_key.hash` (C4). Required, ≥32 chars. Effectively immutable —
   // rotating it invalidates every stored key hash. See daemon-api-key-auth.md.
   API_KEY_PEPPER: z.string().min(32),
