@@ -252,6 +252,11 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
    *  the entry when the call rejects. Leased by VERDICT (§2 verdict split):
    *  `public` serves for `publicTtlMs`, `members`/`gone` for `recheckMs`. */
   private readonly audiences: LRUCache<string, ObservedAudience, AudienceLookup>
+  /** (bot, channel) → §4.2(4) invalidation generation. A private snapshot bumps it so a
+   *  lookup already in flight — invisible to `entries()` as a background-fetch marker —
+   *  cannot land a pre-conversion `public` lease after the drop. Revision-free key: the
+   *  snapshot cannot know credential revisions, and fencing all of them is correct. */
+  private readonly generations = new LRUCache<string, number>({ max: MAX_CACHE_ENTRIES })
   /** In-flight §4.2(5) background re-observations, single-flighted per audience key. */
   private readonly revalidating = new Map<string, Promise<void>>()
   /** §2.3 recheck (ms): the per-principal allow/workspace lease AND the audience re-observation threshold. */
@@ -434,12 +439,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     if (!secret?.botToken) return unresolved('bot_token_missing')
     const recording: AnsweringBot = { botId, credentialRevision, token: secret.botToken }
     try {
-      const observed = await this.audienceOf(
-        [botId, credentialRevision, scope.resourceKey].join(':'),
-        scope.resourceKey,
-        secret.botToken,
-        signal
-      )
+      const observed = await this.audienceOf(botId, credentialRevision, scope.resourceKey, secret.botToken, signal)
       // Only reachable if the entry is dropped mid-flight; fail closed.
       if (!observed) return unresolved('audience_evicted')
       // The conversation is gone (or the bot is no longer in it): a settled fact
@@ -464,33 +464,54 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     }
   }
 
+  /** The §4.2(4) generation a lookup must be captured under to lease its result. */
+  private generationOf(botId: string, channel: string): number {
+    return this.generations.get(`${botId}:${channel}`) ?? 0
+  }
+
   /** Cached + deduped conversation audience — the classifying wrapper every
    *  reader (and re-observer) of the `audiences` cache goes through. */
   private async audienceOf(
-    key: string,
+    botId: string,
+    credentialRevision: number,
     channel: string,
     token: string,
     signal: AbortSignal
   ): Promise<ObservedAudience | undefined> {
+    const key = [botId, credentialRevision, channel].join(':')
+    const generation = this.generationOf(botId, channel)
     const observed = await this.audiences.fetch(key, { context: { channel, token, signal } })
     // `unknown` is the CHECK failing, not an answer about the audience. Keeping
     // it would pin a transient Slack blip for two minutes; it stays a
     // per-request verdict, as it is everywhere else here.
     if (observed?.audience === 'unknown') {
       this.audiences.delete(key)
+    } else if (observed && generation !== this.generationOf(botId, channel)) {
+      // A §4.2(4) private snapshot landed while this lookup was in flight, so the
+      // observation may predate the conversion. `dropPublicAudiences` could not see the
+      // in-flight fetch (a background-fetch marker is absent from `entries()`), so the
+      // drop happens here: serve THIS request its answer, but never lease it.
+      this.audiences.delete(key)
     } else if (observed && this.deps.clock.now() - observed.fetchedAt > this.recheckMs) {
       // §4.2(5) touch-revalidation: past the recheck threshold, serve cached and re-observe behind the response.
-      this.revalidateAudience(key, channel, token, observed)
+      this.revalidateAudience(key, botId, channel, token, observed)
     }
     return observed
   }
 
   /** §4.2(5) re-observation: single-flighted, never awaited by a request; a failure is
    *  logged, never cached, and never evicts the still-leased entry it failed to replace. */
-  private revalidateAudience(key: string, channel: string, token: string, replacing: ObservedAudience): void {
+  private revalidateAudience(
+    key: string,
+    botId: string,
+    channel: string,
+    token: string,
+    replacing: ObservedAudience
+  ): void {
     if (this.revalidating.has(key)) return
     this.stats.audienceRevalidations += 1
     this.deps.log?.debug?.({ provider: 'slack' }, 'slack audience touch-revalidation fired')
+    const generation = this.generationOf(botId, channel)
     const task = (async () => {
       try {
         const read = await this.conversationAudience(channel, token, AbortSignal.timeout(TIMEOUT_MS))
@@ -499,9 +520,11 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
           return
         }
         // Write fence: land only over the exact entry this re-observation set out to
-        // replace. A §4.2(4) drop or a newer observation since capture must win — an
-        // unfenced write would resurrect a just-invalidated `public` for the full lease.
+        // replace, and only under the generation it was captured in. A §4.2(4) drop or
+        // a newer observation since capture must win — an unfenced write would
+        // resurrect a just-invalidated `public` for the full lease.
         if (this.audiences.peek(key) !== replacing) return
+        if (generation !== this.generationOf(botId, channel)) return
         this.audiences.set(key, { ...read, fetchedAt: this.deps.clock.now() }, { ttl: this.audienceTtl(read.audience) })
       } catch (error) {
         const reason = thrownReason(error)
@@ -525,6 +548,13 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
   dropPublicAudiences(botId: string, channelIds: Iterable<string>): void {
     const channels = channelIds instanceof Set ? channelIds : new Set(channelIds)
     if (channels.size === 0) return
+    // Bump every named channel's generation FIRST: an in-flight lookup is a
+    // background-fetch marker `entries()` cannot see, and the bump is what stops
+    // its pre-conversion answer from leasing after this drop (see `audienceOf`).
+    for (const channel of channels) {
+      const genKey = `${botId}:${channel}`
+      this.generations.set(genKey, (this.generations.get(genKey) ?? 0) + 1)
+    }
     const dropped: string[] = []
     for (const [key, value] of this.audiences.entries()) {
       // Key shape `[botId, credentialRevision, channel]`: the channel is everything past the second colon.

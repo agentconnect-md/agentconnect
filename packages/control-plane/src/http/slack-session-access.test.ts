@@ -1072,6 +1072,51 @@ describe('SlackSessionAccessService', () => {
       expect(calls(fetchImpl, 'conversations.info')).toBe(3)
     })
 
+    // The generation fence: an in-flight COLD (or expired-entry) fetch is a
+    // background-fetch marker `entries()` cannot see, so without it the snapshot
+    // drops nothing and the pre-conversion `public` answer leases afterwards.
+    it('a snapshot invalidation wins over an in-flight cold fetch', async () => {
+      const clock = new FakeClock(EPOCH)
+      const state = { isPrivate: false, defer: false }
+      let release: (() => void) | undefined
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          if (state.defer) {
+            state.defer = false
+            return new Promise<Response>((resolve) => {
+              release = () => resolve(json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } }))
+            })
+          }
+          return json({ ok: true, channel: { is_private: state.isPrivate, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        return json({ ok: true, members: [], response_metadata: {} })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      // The very first audience lookup hangs at Slack…
+      state.defer = true
+      const first = resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+      await vi.waitFor(() => expect(release).toBeDefined())
+      // …the snapshot observes the channel private while the answer is in flight…
+      resolver.dropPublicAudiences(BOT_ID, [scope().resourceKey])
+      // …then the stale `public` answer arrives: the requester that started before
+      // the snapshot may ride it once, but it must not lease.
+      release!()
+      await expect(first).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }]
+      })
+
+      state.isPrivate = true
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))).resolves.toMatchObject({
+        allowedScopes: [],
+        degraded: false
+      })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+    })
+
     it('never drops verdicts held by a different bot', async () => {
       const clock = new FakeClock(EPOCH)
       const fetchImpl = vi.fn(async (url: string) => {
