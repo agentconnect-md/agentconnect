@@ -42,6 +42,12 @@ export interface SessionAccessResult {
   accessIssues?: SessionAccessIssue[]
 }
 
+/** §4.1 warm outcome (session-access-cold-visit.md): `warmed` carries the verdict now
+ *  leased; `skipped` is a fence refusing before any provider call; `failed` is a check
+ *  that ran and could not answer — and, by the wrapper invariant, was never cached. */
+export type SessionAccessWarmOutcome =
+  { outcome: 'warmed'; verdict: string } | { outcome: 'skipped' | 'failed'; reason: string }
+
 /** Provider-owned half of Session visibility. Core combines the provider
  * audience with the Session's own classification; Agent Team visibility is a
  * separate resource boundary. */

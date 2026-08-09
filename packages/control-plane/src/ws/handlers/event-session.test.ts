@@ -573,6 +573,72 @@ describe('handleEventSession', () => {
     )
   })
 
+  it('pokes the session-access warmer only after the commit-then-publish point', async () => {
+    const order: string[] = []
+    const poke = vi.fn(() => {
+      order.push('poke')
+    })
+    const recordMilestone = vi.fn().mockResolvedValue(
+      recorded({
+        orgId: 'org-1' as SessionMetaRecord['orgId'],
+        visibility: 'external',
+        externalScopeId: 'scope-1'
+      })
+    )
+    const deps = scopedDeps({
+      session: { recordMilestone },
+      events: { publish: vi.fn(() => order.push('publish')) },
+      sessionAccessWarmer: { poke }
+    })
+
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(order).toEqual(['publish', 'poke'])
+    expect(poke).toHaveBeenCalledWith('org-1', 'scope-1')
+  })
+
+  it('does not poke the warmer for a non-external milestone', async () => {
+    const poke = vi.fn()
+    const deps = scopedDeps({
+      session: {
+        recordMilestone: vi.fn().mockResolvedValue(recorded({ visibility: 'org', externalScopeId: null }))
+      },
+      events: { publish: vi.fn() },
+      sessionAccessWarmer: { poke }
+    })
+
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID } as DaemonConnection, deps)
+
+    expect(poke).not.toHaveBeenCalled()
+  })
+
+  // §4.2(6): a CP restart drains daemon outboxes as `event/session-sync` — one
+  // frame per active session, against cold cooldown state. Replays never poke.
+  it('never pokes the warmer from a replayed event/session-sync snapshot', async () => {
+    const poke = vi.fn()
+    const deps = scopedDeps({
+      session: {
+        recordMilestone: vi.fn().mockResolvedValue(
+          recorded({
+            orgId: 'org-1' as SessionMetaRecord['orgId'],
+            visibility: 'external',
+            externalScopeId: 'scope-1'
+          })
+        )
+      },
+      events: { publish: vi.fn() },
+      sessionAccessWarmer: { poke }
+    })
+
+    await handleEventSessionSync(
+      eventSessionFrame('event/session-sync'),
+      { daemonId: DAEMON_ID, replyTo: vi.fn(), sendError: vi.fn() } as unknown as DaemonConnection,
+      deps
+    )
+
+    expect(poke).not.toHaveBeenCalled()
+  })
+
   it('does not publish when persistence fails', async () => {
     const failure = new Error('write failed')
     const publish = vi.fn()

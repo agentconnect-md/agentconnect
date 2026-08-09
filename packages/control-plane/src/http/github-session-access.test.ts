@@ -314,4 +314,72 @@ describe('GithubSessionAccessService', () => {
     })
     expect(h.repoRefById).toHaveBeenCalledTimes(2)
   })
+
+  // §4.1 warm entry: a background warm observes through the SAME classifying
+  // wrapper as the read path, so a warmed shape leases and a failure pins nothing.
+  describe('warmShape (§4.1 warm entry)', () => {
+    it('leases the shape so a later resolve pays no lookup', async () => {
+      const h = make(false)
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+      expect(h.repoRefById).toHaveBeenCalledTimes(1)
+
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+      expect(h.repoRefById).toHaveBeenCalledTimes(1)
+      expect(h.permissionForUser).not.toHaveBeenCalled()
+    })
+
+    it('warms a private shape without ever running a per-principal check', async () => {
+      const h = make(true, vi.fn().mockResolvedValue('read'))
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'warmed', verdict: 'private' })
+      expect(h.permissionForUser).not.toHaveBeenCalled()
+
+      // The viewer's own resolve reuses the shape but still pays its age-0 permission.
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+      expect(h.repoRefById).toHaveBeenCalledTimes(1)
+      expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+    })
+
+    it('never caches a failed warm lookup', async () => {
+      const h = make(false)
+      h.repoRefById.mockRejectedValueOnce(new Error('provider unavailable'))
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'failed', reason: 'lookup_failed' })
+
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+      expect(h.repoRefById).toHaveBeenCalledTimes(2)
+    })
+
+    it('skips a revoked installation or a foreign scope with zero provider calls', async () => {
+      const repoRefById = vi.fn().mockResolvedValue(PRIVATE_SHAPE)
+      const service = new GithubSessionAccessService({
+        installations: {
+          get: vi.fn().mockResolvedValue({ ...installation, revokedAt: new Date(EPOCH) })
+        } as never,
+        github: { repoRefById },
+        userAuthz: { permissionForUser: vi.fn() },
+        clock: new FakeClock(EPOCH)
+      })
+
+      await expect(service.warmShape(scope)).resolves.toEqual({
+        outcome: 'skipped',
+        reason: 'installation_revoked'
+      })
+      await expect(service.warmShape({ ...scope, provider: 'slack' })).resolves.toEqual({
+        outcome: 'skipped',
+        reason: 'scope_shape'
+      })
+      expect(repoRefById).not.toHaveBeenCalled()
+    })
+  })
 })

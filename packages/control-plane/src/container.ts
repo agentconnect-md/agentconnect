@@ -186,6 +186,8 @@ import { configureFeishuHttpApp } from './http/feishu-app-config.js'
 import { SlackSessionAccessService } from './http/slack-session-access.js'
 import { GithubSessionAccessService } from './http/github-session-access.js'
 import { FeishuSessionAccessService } from './http/feishu-session-access.js'
+import { SessionAccessWarmer } from './http/session-access-warmer.js'
+import type { ExternalScopeRecord } from './persistence/ports.js'
 
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from './config/defaults.js'
 
@@ -1165,6 +1167,26 @@ export function buildContainer(
   const pendingInstallReapers = buildPendingInstallReapers(platforms, clock, http.log)
   const backgroundLoops = platformBackgroundLoops(platforms)
 
+  // §4 session-access warmer (session-access-cold-visit.md, Phase 3): keeps the
+  // resource facts behind ACTIVE external scopes leased so a cold console visit
+  // skips the per-resource provider sweep. Poked from `event/session` ingest;
+  // observes only through the plugins' classifying warm entries (§4.2(3)).
+  // Built here so the graph is whole, armed only by `startBackground()`.
+  const sessionAccessWarmer = new SessionAccessWarmer({
+    sessions: repos.session,
+    targets: new Map([
+      ['slack', (scope: ExternalScopeRecord) => slackSessionAccess.warmAudience(scope)],
+      ['github', (scope: ExternalScopeRecord) => githubSessionAccess.warmShape(scope)]
+    ]),
+    clock,
+    publicTtlMs: sessionAccessTtls.publicTtlMs,
+    log: {
+      debug: (o, m) => http.log.debug(o, m),
+      info: (o, m) => http.log.info(o, m),
+      warn: (o, m) => http.log.warn(o, m)
+    }
+  })
+
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
     auth,
@@ -1183,6 +1205,7 @@ export function buildContainer(
     githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,
+    sessionAccessWarmer,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,
@@ -1510,6 +1533,7 @@ export function buildContainer(
       hookRedeliveryReconciler?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
+      sessionAccessWarmer.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
@@ -1524,12 +1548,14 @@ export function buildContainer(
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()
+      sessionAccessWarmer.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
       await Promise.allSettled([
         webchatMcpOperationSettled,
         ...relayRegistrationTasks,
         visibilityPush.settle(),
+        sessionAccessWarmer.settle(),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()

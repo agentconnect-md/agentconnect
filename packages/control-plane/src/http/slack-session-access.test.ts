@@ -1134,4 +1134,115 @@ describe('SlackSessionAccessService', () => {
       expect(calls(fetchImpl, 'conversations.info')).toBe(1)
     })
   })
+
+  // §4.1 warm entry: a background warm observes through the SAME classifying
+  // wrapper as the read path, so its invariants — an `unknown` never cached,
+  // the §4.2(4) generation fence — hold for warmed observations too.
+  describe('warmAudience (§4.1 warm entry)', () => {
+    it('leases the audience so a later resolve pays no conversations.info', async () => {
+      const clock = new FakeClock(EPOCH)
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        throw new Error(`unexpected Slack request: ${url}`)
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await expect(resolver.warmAudience(scope())).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(1)
+
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }]
+      })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(1)
+    })
+
+    it('never caches a failed warm observation', async () => {
+      const state = { infoError: 'ratelimited' as string | undefined }
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          if (state.infoError) return json({ ok: false, error: state.infoError })
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+      })
+      const resolver = service(fetchImpl)
+
+      await expect(resolver.warmAudience(scope())).resolves.toEqual({ outcome: 'failed', reason: 'ratelimited' })
+
+      // Had the failure been cached as `unknown`, this read would degrade for
+      // its lease; instead it re-reads and resolves cleanly.
+      state.infoError = undefined
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false
+      })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+    })
+
+    // The fence test: a §4.2(4) invalidation landing while a WARM's observation
+    // is in flight must win — the warm reports its answer but never leases it.
+    it('a snapshot invalidation wins over an in-flight warm', async () => {
+      const clock = new FakeClock(EPOCH)
+      const state = { isPrivate: false, defer: false }
+      let release: (() => void) | undefined
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          if (state.defer) {
+            state.defer = false
+            return new Promise<Response>((resolve) => {
+              release = () => resolve(json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } }))
+            })
+          }
+          return json({ ok: true, channel: { is_private: state.isPrivate, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        return json({ ok: true, members: [], response_metadata: {} })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      // The warm's observation hangs at Slack…
+      state.defer = true
+      const warm = resolver.warmAudience(scope())
+      await vi.waitFor(() => expect(release).toBeDefined())
+      // …a daemon snapshot observes the channel private while it is in flight…
+      resolver.dropPublicAudiences(BOT_ID, [scope().resourceKey])
+      // …then the pre-conversion `public` arrives: reported once, never leased.
+      release!()
+      await expect(warm).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+
+      state.isPrivate = true
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))).resolves.toMatchObject({
+        allowedScopes: [],
+        degraded: false
+      })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+    })
+
+    it('skips when a run-time fence refuses, with zero provider calls', async () => {
+      const fetchImpl = vi.fn(async () => json({ ok: false, error: 'unreachable' }))
+
+      const revoked = service(fetchImpl, undefined, { bots: [bot({ revokedAt: new Date(EPOCH) })] })
+      await expect(revoked.warmAudience(scope())).resolves.toEqual({ outcome: 'skipped', reason: 'bot_unresolved' })
+
+      const tokenless = service(fetchImpl, undefined, { tokens: {} })
+      await expect(tokenless.warmAudience(scope())).resolves.toEqual({
+        outcome: 'skipped',
+        reason: 'bot_token_missing'
+      })
+
+      const foreign = service(fetchImpl)
+      await expect(foreign.warmAudience({ ...scope(), provider: 'github' })).resolves.toEqual({
+        outcome: 'skipped',
+        reason: 'scope_shape'
+      })
+      expect(fetchImpl).not.toHaveBeenCalled()
+    })
+  })
 })
