@@ -80,7 +80,10 @@ const NEGATIVE_TTL_MS = 60_000
 // the Logto account directly), a positive assertion is never reused beyond
 // this hard lease. Exported so callers holding provider identity evidence of
 // their own (the GitHub session-access login leg) can join the same lease
-// instead of inventing a second number.
+// instead of inventing a second number. `SESSION_ACCESS_RECHECK_SEC` defaults
+// to this same 120 s; the identity cap stays a constant on purpose (its safety
+// rests on the epoch fence, not on the operator knob), so tuning the knob does
+// not retune it — session-access-cold-visit.md §2.3.
 export const PROVIDER_IDENTITY_TTL_MS = 120_000
 // Bounds the BLOCKING lookups (first-ever read, idle return past a lease) —
 // refresh-ahead keeps actively-read entries off that path, so a hung upstream

@@ -792,20 +792,29 @@ export function buildContainer(
           clock
         })
       : undefined
+  // The §2.3 session-access cache-policy knobs (session-access-cold-visit.md),
+  // shared by every plugin holding a resource-fact cache.
+  const sessionAccessTtls = {
+    recheckMs: config.SESSION_ACCESS_RECHECK_SEC * 1000,
+    publicTtlMs: config.SESSION_ACCESS_PUBLIC_TTL_SEC * 1000
+  }
   const slackSessionAccess = new SlackSessionAccessService({
     bots: repos.bot,
     botSecrets: repos.botSecret,
     clock,
+    ...sessionAccessTtls,
     ...(logtoIdentity ? { identity: logtoIdentity } : {}),
     ...(opts.slackFetch ? { fetchImpl: opts.slackFetch } : {}),
     // Lazy over `http.log` (assigned below; only ever called at resolve time).
-    log: { warn: (o, m) => http.log.warn(o, m) }
+    log: { warn: (o, m) => http.log.warn(o, m), debug: (o, m) => http.log.debug(o, m) }
   })
   const githubSessionAccess = new GithubSessionAccessService({
     installations: repos.githubInstallation,
     ...(github ? { github } : {}),
     ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
-    clock
+    clock,
+    ...sessionAccessTtls,
+    log: { debug: (o, m) => http.log.debug(o, m) }
   })
   const feishuSessionAccess = new FeishuSessionAccessService({
     bots: repos.bot,
@@ -1172,6 +1181,7 @@ export function buildContainer(
     bot: repos.bot,
     githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
+    slackSessionAccess,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
     collabRoutes,

@@ -12,7 +12,6 @@ import type {
   SessionAccessViewer
 } from './session-access-plugin.js'
 
-const ALLOW_TTL_MS = 120_000
 const DENY_TTL_MS = 30_000
 const UNKNOWN_TTL_MS = 5_000
 const MAX_CACHE_ENTRIES = 10_000
@@ -23,17 +22,10 @@ const PAGE_SIZE = 200
 const TIMEOUT_MS = 5_000
 /** The one Slack scope a workspace-standing check spends (`users.info`). */
 const WORKSPACE_READ_SCOPE = 'users:read'
-/**
- * How long one conversation's audience (public / members-only / gone) is reused.
- *
- * Like the repository shape on the GitHub side, the audience is a property of
- * the CONVERSATION, not of the viewer, while the decision cache below is keyed
- * per principal — so every viewer paid their own uncached `conversations.info`,
- * and for a public channel that call is the first half of every check. Reusing
- * it costs no lease: an `allow` expires this long after the audience was
- * OBSERVED, not after it was reused (see `putCache`).
- */
-const AUDIENCE_TTL_MS = 120_000
+// Defaults for the §2.3 knobs (`SESSION_ACCESS_RECHECK_SEC` / `_PUBLIC_TTL_SEC`,
+// session-access-cold-visit.md) when a caller constructs the service without them.
+const DEFAULT_RECHECK_MS = 120_000
+const DEFAULT_PUBLIC_TTL_MS = 3_600_000
 
 type Decision = 'allow' | 'deny' | 'unknown'
 type ConversationAudience = 'public' | 'members' | 'gone' | 'unknown'
@@ -96,8 +88,6 @@ type ReadAudience =
   | { audience: Exclude<ConversationAudience, 'unknown'>; reason?: undefined }
   | { audience: 'unknown'; reason: DegradedReason }
 type ObservedAudience = ReadAudience & { fetchedAt: number }
-/** A verdict plus the age of the oldest evidence it rests on. */
-type CheckedAccess = Verdict & { evidenceAt: number }
 type CheckedWorkspaceAccess = { access: WorkspaceAccess; reason?: DegradedReason }
 type AudienceLookup = { channel: string; token: string; signal: AbortSignal }
 /** The credential a Slack question is asked WITH — and, through its bot id and
@@ -259,8 +249,17 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
   /** (bot, credential revision, channel) → audience. Shared across viewers,
    *  unlike `cache` and `workspaceAccessCache`, which are per principal.
    *  `fetch` hands concurrent callers of one key the same promise, and drops
-   *  the entry when the call rejects. */
+   *  the entry when the call rejects. Leased by VERDICT (§2 verdict split):
+   *  `public` serves for `publicTtlMs`, `members`/`gone` for `recheckMs`. */
   private readonly audiences: LRUCache<string, ObservedAudience, AudienceLookup>
+  /** In-flight §4.2(5) background re-observations, single-flighted per audience key. */
+  private readonly revalidating = new Map<string, Promise<void>>()
+  /** §2.3 recheck (ms): the per-principal allow/workspace lease AND the audience re-observation threshold. */
+  private readonly recheckMs: number
+  /** §2.3 serving ceiling (ms) for a `public` audience verdict. */
+  private readonly publicTtlMs: number
+  /** §5 instrumentation: fetch-method runs = audience-cache misses; revalidations = §4.2(5) firings. */
+  readonly stats = { audienceFetches: 0, audienceRevalidations: 0 }
 
   constructor(
     private readonly deps: {
@@ -269,24 +268,42 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       clock: Clock
       fetchImpl?: FetchLike
       identity?: Pick<LogtoIdentityService, 'slackIdentityFor'>
+      /** `SESSION_ACCESS_RECHECK_SEC` in ms; defaults so tests can omit it. */
+      recheckMs?: number
+      /** `SESSION_ACCESS_PUBLIC_TTL_SEC` in ms; defaults so tests can omit it. */
+      publicTtlMs?: number
       /** Optional so tests can omit it. Without one a degraded check leaves NO
        *  trace anywhere: every failure below collapses to `unknown`, which is
        *  reported to the caller as a hidden session and to the operator as
        *  nothing at all — which is what made an intermittent Slack blip
        *  indistinguishable, after the fact, from a real authorization denial. */
-      log?: { warn: (obj: object, msg: string) => void }
+      log?: { warn: (obj: object, msg: string) => void; debug?: (obj: object, msg: string) => void }
     }
   ) {
+    this.recheckMs = deps.recheckMs ?? DEFAULT_RECHECK_MS
+    this.publicTtlMs = deps.publicTtlMs ?? DEFAULT_PUBLIC_TTL_MS
     this.cache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.workspaceAccessCache = new LRUCache(cacheOptions(deps.clock, MAX_CACHE_ENTRIES))
     this.audiences = new LRUCache({
       ...cacheOptions(deps.clock, MAX_CACHE_ENTRIES),
-      ttl: AUDIENCE_TTL_MS,
-      fetchMethod: async (_key, _stale, { context }) => ({
-        ...(await this.conversationAudience(context.channel, context.token, context.signal)),
-        fetchedAt: deps.clock.now()
-      })
+      ttl: this.recheckMs,
+      // Per-entry TTL, set here because the verdict deciding it is only known after the fetch.
+      fetchMethod: async (_key, _stale, { context, options }) => {
+        this.stats.audienceFetches += 1
+        const observed = {
+          ...(await this.conversationAudience(context.channel, context.token, context.signal)),
+          fetchedAt: deps.clock.now()
+        }
+        options.ttl = this.audienceTtl(observed.audience)
+        return observed
+      }
     })
+  }
+
+  /** §2 verdict split: only `public` — a conversation fact whose late correction §2.1 bounds — leases long. */
+  private audienceTtl(audience: ConversationAudience): number {
+    if (audience === 'public') return this.publicTtlMs
+    return audience === 'unknown' ? UNKNOWN_TTL_MS : this.recheckMs
   }
 
   get available(): boolean {
@@ -395,15 +412,8 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       const key = [scope.id, scope.aclRevision.toString(), bot.credentialRevision, principal.key].join(':')
       let verdict = this.cache.get(key)
       if (!verdict) {
-        const { evidenceAt, ...checked } = await this.checkAccess(
-          scope,
-          principal,
-          bot.id,
-          bot.credentialRevision,
-          signal
-        )
-        verdict = checked
-        this.putCache(key, verdict, evidenceAt)
+        verdict = await this.checkAccess(scope, principal, bot.id, bot.credentialRevision, signal)
+        this.putCache(key, verdict)
       }
       if (verdict.decision === 'allow') return verdict
       // The FIRST cause is kept, not the last, so one degraded scope reports
@@ -419,10 +429,9 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     botId: string,
     credentialRevision: number,
     signal: AbortSignal
-  ): Promise<CheckedAccess> {
-    const now = this.deps.clock.now()
+  ): Promise<Verdict> {
     const secret = await this.deps.botSecrets.get(scope.orgId, BotId(botId)).catch(() => null)
-    if (!secret?.botToken) return { ...unresolved('bot_token_missing'), evidenceAt: now }
+    if (!secret?.botToken) return unresolved('bot_token_missing')
     const recording: AnsweringBot = { botId, credentialRevision, token: secret.botToken }
     try {
       const observed = await this.audienceOf(
@@ -432,34 +441,31 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
         signal
       )
       // Only reachable if the entry is dropped mid-flight; fail closed.
-      if (!observed) return { ...unresolved('audience_evicted'), evidenceAt: now }
-      const evidenceAt = observed.fetchedAt
+      if (!observed) return unresolved('audience_evicted')
       // The conversation is gone (or the bot is no longer in it): a settled fact
       // about the audience, not an unavailable check.
-      if (observed.audience === 'gone') return { decision: 'deny', evidenceAt }
-      if (observed.audience === 'unknown') return { decision: 'unknown', reason: observed.reason, evidenceAt }
+      if (observed.audience === 'gone') return { decision: 'deny' }
+      if (observed.audience === 'unknown') return { decision: 'unknown', reason: observed.reason }
       if (observed.audience === 'public') {
         const { access, ...cause } = await this.workspaceAccess(scope, principal, recording, signal)
-        if (access !== 'membership') return { decision: access, ...cause, evidenceAt }
-        const member = await this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
-        return { ...member, evidenceAt }
+        if (access !== 'membership') return { decision: access, ...cause }
+        return this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
       }
 
       const member = await this.checkMembership(scope.resourceKey, principal.userId, secret.botToken, signal)
-      if (member.decision !== 'allow' || principal.teamId === scope.realmKey) return { ...member, evidenceAt }
+      if (member.decision !== 'allow' || principal.teamId === scope.realmKey) return member
 
       // Slack Connect can return a member from another workspace. Verify the
       // identity's home team instead of treating the installing team as proof.
       const { access, ...cause } = await this.workspaceAccess(scope, principal, recording, signal)
-      return access === 'unknown' || access === 'deny'
-        ? { decision: access, ...cause, evidenceAt }
-        : { decision: 'allow', evidenceAt }
+      return access === 'unknown' || access === 'deny' ? { decision: access, ...cause } : { decision: 'allow' }
     } catch (error) {
-      return { ...unresolved(thrownReason(error)), evidenceAt: now }
+      return unresolved(thrownReason(error))
     }
   }
 
-  /** Cached + deduped conversation audience. */
+  /** Cached + deduped conversation audience — the classifying wrapper every
+   *  reader (and re-observer) of the `audiences` cache goes through. */
   private async audienceOf(
     key: string,
     channel: string,
@@ -470,8 +476,58 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     // `unknown` is the CHECK failing, not an answer about the audience. Keeping
     // it would pin a transient Slack blip for two minutes; it stays a
     // per-request verdict, as it is everywhere else here.
-    if (observed?.audience === 'unknown') this.audiences.delete(key)
+    if (observed?.audience === 'unknown') {
+      this.audiences.delete(key)
+    } else if (observed && this.deps.clock.now() - observed.fetchedAt > this.recheckMs) {
+      // §4.2(5) touch-revalidation: past the recheck threshold, serve cached and re-observe behind the response.
+      this.revalidateAudience(key, channel, token)
+    }
     return observed
+  }
+
+  /** §4.2(5) re-observation: single-flighted, never awaited by a request; a failure is
+   *  logged, never cached, and never evicts the still-leased entry it failed to replace. */
+  private revalidateAudience(key: string, channel: string, token: string): void {
+    if (this.revalidating.has(key)) return
+    this.stats.audienceRevalidations += 1
+    this.deps.log?.debug?.({ provider: 'slack' }, 'slack audience touch-revalidation fired')
+    const task = (async () => {
+      try {
+        const read = await this.conversationAudience(channel, token, AbortSignal.timeout(TIMEOUT_MS))
+        if (read.audience === 'unknown') {
+          this.deps.log?.debug?.({ provider: 'slack', reason: read.reason }, 'slack audience re-observation failed')
+          return
+        }
+        this.audiences.set(key, { ...read, fetchedAt: this.deps.clock.now() }, { ttl: this.audienceTtl(read.audience) })
+      } catch (error) {
+        const reason = thrownReason(error)
+        this.deps.log?.debug?.({ provider: 'slack', reason }, 'slack audience re-observation failed')
+      } finally {
+        this.revalidating.delete(key)
+      }
+    })()
+    this.revalidating.set(key, task)
+  }
+
+  /** Await in-flight background re-observations — nothing else ever awaits them. */
+  async settle(): Promise<void> {
+    await Promise.all([...this.revalidating.values()])
+  }
+
+  /** §4.2(4) cross-check: a daemon snapshot observed these channels private, so their cached
+   *  `public` verdicts drop and the next read routes through the members check. Invalidation
+   *  only — never a written verdict — and non-`public` entries stay (`members` is already
+   *  consistent with a private channel, and re-earning it costs a call). */
+  dropPublicAudiences(botId: string, channelIds: Iterable<string>): void {
+    const channels = channelIds instanceof Set ? channelIds : new Set(channelIds)
+    if (channels.size === 0) return
+    const dropped: string[] = []
+    for (const [key, value] of this.audiences.entries()) {
+      // Key shape `[botId, credentialRevision, channel]`: the channel is everything past the second colon.
+      const [keyBot, , ...rest] = key.split(':')
+      if (keyBot === botId && channels.has(rest.join(':')) && value?.audience === 'public') dropped.push(key)
+    }
+    for (const key of dropped) this.audiences.delete(key)
   }
 
   private async conversationAudience(channel: string, token: string, signal: AbortSignal): Promise<ReadAudience> {
@@ -679,21 +735,19 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     return (await response.json()) as T
   }
 
-  private putCache(key: string, verdict: Verdict, evidenceAt: number): void {
+  private putCache(key: string, verdict: Verdict): void {
     const { decision } = verdict
-    const ttl = decision === 'allow' ? ALLOW_TTL_MS : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
-    // An `allow` is leased from the EVIDENCE it rests on — `start` is the
-    // observation, not the reuse — so serving a cached audience can never
-    // stretch the window a fresh `conversations.info` would have granted.
-    // `deny` and `unknown` run from now: reused evidence can only narrow
-    // access, never widen it, so there is nothing to bound.
-    const start = decision === 'allow' ? Math.min(evidenceAt, this.deps.clock.now()) : undefined
-    this.cache.set(key, verdict, { ttl, ...(start !== undefined ? { start } : {}) })
+    // An `allow` leases from the per-principal check that just ran; the shared audience's
+    // age routes WHICH check runs and deliberately no longer bounds the verdict (§2.2) —
+    // anchoring to a warmed public observation would mint allows already past their TTL.
+    // What this relaxes is exactly the §2.1 conversion window, bounded by touch-revalidation.
+    const ttl = decision === 'allow' ? this.recheckMs : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
+    this.cache.set(key, verdict, { ttl })
   }
 
   private putWorkspaceAccess(key: string, checked: CheckedWorkspaceAccess): void {
     const { access } = checked
-    const ttl = access === 'allow' ? ALLOW_TTL_MS : access === 'unknown' ? UNKNOWN_TTL_MS : DENY_TTL_MS
+    const ttl = access === 'allow' ? this.recheckMs : access === 'unknown' ? UNKNOWN_TTL_MS : DENY_TTL_MS
     this.workspaceAccessCache.set(key, checked, { ttl })
   }
 }

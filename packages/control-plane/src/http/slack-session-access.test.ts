@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { FakeClock } from '../../test/fakes/fake-clock.js'
 import { BotId, OrgId } from '../domain/ids.js'
 import type { BotRecord, ExternalScopeRecord } from '../persistence/ports.js'
 import type { SessionAccessViewer } from './session-access-plugin.js'
@@ -6,6 +7,12 @@ import { SlackSessionAccessService } from './slack-session-access.js'
 
 const BOT_ID = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const SECOND_BOT_ID = BotId('a1a1a1a1-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+
+/** `Clock` reports wall-clock epoch milliseconds, and the verdict caches need
+ *  it to: lru-cache reads a falsy entry start as "no TTL recorded", so a clock
+ *  left at 0 would make the first entries immortal and hide every expiry
+ *  assertion below. */
+const EPOCH = 1_777_000_000_000
 
 function scope(): ExternalScopeRecord {
   return {
@@ -50,7 +57,13 @@ function bot(overrides: Partial<BotRecord> = {}): BotRecord {
 function service(
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
   log?: { warn: (obj: object, msg: string) => void },
-  fleet: { bots?: BotRecord[]; tokens?: Record<string, string> } = {}
+  fleet: {
+    bots?: BotRecord[]
+    tokens?: Record<string, string>
+    clock?: FakeClock
+    recheckMs?: number
+    publicTtlMs?: number
+  } = {}
 ) {
   const bots = fleet.bots ?? [bot()]
   const tokens = fleet.tokens ?? { [BOT_ID]: 'xoxb-test' }
@@ -60,10 +73,17 @@ function service(
       listForOrg: async () => bots
     } as never,
     botSecrets: { get: async (_orgId: unknown, id: string) => ({ botToken: tokens[id] }) } as never,
-    clock: { now: () => 1_000 } as never,
+    clock: fleet.clock ?? new FakeClock(EPOCH),
     fetchImpl,
+    ...(fleet.recheckMs !== undefined ? { recheckMs: fleet.recheckMs } : {}),
+    ...(fleet.publicTtlMs !== undefined ? { publicTtlMs: fleet.publicTtlMs } : {}),
     ...(log ? { log } : {})
   })
+}
+
+/** How many faked Slack calls hit the given API method. */
+function calls(fetchImpl: ReturnType<typeof vi.fn>, method: string): number {
+  return fetchImpl.mock.calls.filter(([url]) => String(url).includes(method)).length
 }
 
 /** The bearer token a faked Slack call was made with — which BOT answered. */
@@ -774,6 +794,256 @@ describe('SlackSessionAccessService', () => {
       const users = fetchImpl.mock.calls.filter(([url]) => String(url).includes('users.info'))
       expect(users).toHaveLength(1)
       expect(tokenOf(users[0]?.[1])).toBe('Bearer xoxb-checker')
+    })
+  })
+
+  // The §2 verdict split (session-access-cold-visit.md): a `public` audience
+  // serves for the long lease with §4.2(5) touch-revalidation past the recheck
+  // threshold, while `members`/`gone` — and every per-principal verdict — stay
+  // on the short lease.
+  describe('verdict-split serving leases', () => {
+    /** A workspace where the channel's privacy can be flipped mid-test. */
+    function flippable(members: string[] = []) {
+      const state = { isPrivate: false, infoError: undefined as string | undefined }
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          if (state.infoError) return json({ ok: false, error: state.infoError })
+          return json({ ok: true, channel: { is_private: state.isPrivate, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        return json({ ok: true, members, response_metadata: {} })
+      })
+      return { state, fetchImpl }
+    }
+
+    it('serves a public verdict at 50 minutes and corrects it through the background re-observation', async () => {
+      const clock = new FakeClock(EPOCH)
+      const { state, fetchImpl } = flippable()
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }]
+      })
+
+      // The channel converts to private; the leased `public` verdict keeps
+      // serving — had this read blocked on a fresh audience, the non-member
+      // viewer would have been denied via the members check.
+      state.isPrivate = true
+      clock.advance(50 * 60_000)
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false
+      })
+      expect(calls(fetchImpl, 'conversations.members')).toBe(0)
+
+      // The same read fired one re-observation; once it lands, the next viewer
+      // routes through the members check and is denied.
+      await resolver.settle()
+      expect(resolver.stats.audienceRevalidations).toBe(1)
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_THREE'))).resolves.toMatchObject({
+        allowedScopes: [],
+        degraded: false
+      })
+      expect(calls(fetchImpl, 'conversations.members')).toBe(1)
+    })
+
+    it('blocks on a fresh audience read past the public serving ceiling', async () => {
+      const clock = new FakeClock(EPOCH)
+      const { state, fetchImpl } = flippable()
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(1)
+
+      // Past the ceiling the conversion governs THIS read, not a later one.
+      state.isPrivate = true
+      clock.advance(3_600_001)
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))).resolves.toMatchObject({
+        allowedScopes: []
+      })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+      expect(resolver.stats.audienceRevalidations).toBe(0)
+    })
+
+    it('keeps a members verdict on the recheck lease', async () => {
+      const clock = new FakeClock(EPOCH)
+      const { state, fetchImpl } = flippable(['U_MEMBER'])
+      state.isPrivate = true
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(1)
+
+      clock.advance(120_001)
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }]
+      })
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+      expect(resolver.stats.audienceRevalidations).toBe(0)
+    })
+
+    it('keeps a gone verdict on the recheck lease', async () => {
+      const clock = new FakeClock(EPOCH)
+      const fetchImpl = vi.fn(async () => json({ ok: false, error: 'channel_not_found' }))
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      // The deny verdict expires before the audience does; the cached `gone`
+      // still answers without a provider call.
+      clock.advance(60_000)
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(1)
+
+      clock.advance(60_001)
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+    })
+
+    it('fires exactly one background re-observation for concurrent reads past the threshold', async () => {
+      const clock = new FakeClock(EPOCH)
+      const { fetchImpl } = flippable()
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+      clock.advance(150_000)
+      await Promise.all([
+        resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO')),
+        resolver.resolve([scope()], viewer('slack:T_INSTALL:U_THREE'))
+      ])
+      await resolver.settle()
+
+      expect(resolver.stats.audienceRevalidations).toBe(1)
+      expect(calls(fetchImpl, 'conversations.info')).toBe(2)
+    })
+
+    it('never caches a failed re-observation and keeps serving the leased verdict', async () => {
+      const clock = new FakeClock(EPOCH)
+      const { state, fetchImpl } = flippable()
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+
+      state.infoError = 'ratelimited'
+      clock.advance(150_000)
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false
+      })
+      await resolver.settle()
+
+      // Had the failed re-observation landed as `unknown`, this read would
+      // degrade; instead the public verdict is still serving.
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_THREE'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }],
+        degraded: false
+      })
+      await resolver.settle()
+    })
+
+    // The §2.2 regression this phase exists to prevent: leasing an allow from a
+    // warmed audience observation makes it BORN EXPIRED — lru-cache deletes an
+    // entry whose start predates its TTL on the next read — silently disabling
+    // the decision cache for the warmed-public population and re-running the
+    // members walk per request for guest viewers.
+    it('serves an allow built on an aged public audience for its full lease', async () => {
+      const clock = new FakeClock(EPOCH)
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        // A guest: workspace standing `membership`, so every fresh decision
+        // pays its own members walk.
+        if (url.includes('users.info')) return json({ ok: true, user: { team_id: 'T_INSTALL', is_restricted: true } })
+        return json({ ok: true, members: ['U_GUEST'], response_metadata: {} })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_GUEST'))
+      expect(calls(fetchImpl, 'conversations.members')).toBe(1)
+
+      // 45 minutes on: the audience is a warmed public entry; the fresh allow
+      // must anchor to the members walk it just ran, not to that observation.
+      clock.advance(45 * 60_000)
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_GUEST'))
+      expect(calls(fetchImpl, 'conversations.members')).toBe(2)
+
+      clock.advance(60_000)
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_GUEST'))).resolves.toMatchObject({
+        allowedScopes: [{ id: scope().id, aclRevision: 2n }]
+      })
+      expect(calls(fetchImpl, 'conversations.members')).toBe(2)
+      await resolver.settle()
+    })
+
+    it('honors configured recheck and public-ttl overrides', async () => {
+      const clock = new FakeClock(EPOCH)
+      const { fetchImpl } = flippable()
+      const resolver = service(fetchImpl, undefined, { clock, recheckMs: 60_000, publicTtlMs: 300_000 })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+      clock.advance(70_000)
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))
+      await resolver.settle()
+      // 70 s is past the overridden 60 s threshold.
+      expect(resolver.stats.audienceRevalidations).toBe(1)
+
+      // …and 300 s past the re-observation is past the overridden ceiling.
+      clock.advance(300_001)
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_THREE'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(3)
+      await resolver.settle()
+    })
+  })
+
+  // §4.2(4): the daemon's channel snapshots carry `isPrivate`; one observed as
+  // private drops a cached `public` verdict so the next read routes through the
+  // members check. Invalidation only — nothing is ever written from a snapshot.
+  describe('dropPublicAudiences (isPrivate cross-check)', () => {
+    it('drops the matching public verdicts and only those', async () => {
+      const clock = new FakeClock(EPOCH)
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          // C_CHANNEL_3 is private; the rest are public.
+          const isPrivate = url.includes('C_CHANNEL_3')
+          return json({ ok: true, channel: { is_private: isPrivate, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        return json({ ok: true, members: ['U_MEMBER', 'U_OTHER'], response_metadata: {} })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scopeAt(1), scopeAt(2), scopeAt(3)], viewer('slack:T_INSTALL:U_MEMBER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(3)
+
+      resolver.dropPublicAudiences(BOT_ID, ['C_CHANNEL_1', 'C_CHANNEL_3'])
+
+      // C1's public verdict is gone — the next viewer re-reads the audience.
+      await resolver.resolve([scopeAt(1)], viewer('slack:T_INSTALL:U_OTHER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(4)
+      // C2 was not named; C3 was named but holds a `members` verdict — both stay.
+      await resolver.resolve([scopeAt(2), scopeAt(3)], viewer('slack:T_INSTALL:U_OTHER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(4)
+    })
+
+    it('never drops verdicts held by a different bot', async () => {
+      const clock = new FakeClock(EPOCH)
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          return json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } })
+        }
+        return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_MEMBER'))
+      resolver.dropPublicAudiences(SECOND_BOT_ID, [scope().resourceKey])
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_OTHER'))
+      expect(calls(fetchImpl, 'conversations.info')).toBe(1)
     })
   })
 })
