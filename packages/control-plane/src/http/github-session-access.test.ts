@@ -45,7 +45,11 @@ function scopeAt(index: number): ExternalScopeRecord {
  *  assertion below. */
 const EPOCH = 1_777_000_000_000
 
-function make(privateRepo: boolean, permissionForUser = vi.fn(), ttls?: { recheckMs?: number; publicTtlMs?: number }) {
+function make(
+  privateRepo: boolean,
+  permissionForUser = vi.fn(),
+  ttls?: { recheckMs?: number; publicTtlMs?: number; identityTtlMs?: number }
+) {
   const clock = new FakeClock(EPOCH)
   const repoRefById = vi.fn().mockResolvedValue({
     repoId: 123n,
@@ -107,7 +111,8 @@ describe('GithubSessionAccessService', () => {
 
     expect((await allowed.service.resolve([scope], viewer)).allowedScopes).toHaveLength(1)
     // The permission itself is demanded age-zero; the login resolution rides
-    // the same 120 s identity lease as the Slack/Feishu session-access checks.
+    // the same identity lease as the Slack/Feishu session-access checks —
+    // 120 s when the identity knob is not configured.
     expect(allowed.permissionForUser).toHaveBeenCalledWith('user-1', installation, 'acme', 'private-repo', {
       maxCacheAgeMs: 0,
       loginMaxAgeMs: 120_000
@@ -115,6 +120,16 @@ describe('GithubSessionAccessService', () => {
     await expect(denied.service.resolve([scope], viewer)).resolves.toEqual({
       allowedScopes: [],
       degraded: false
+    })
+  })
+
+  it('threads a configured identity lease into the login leg, never the permission leg', async () => {
+    const h = make(true, vi.fn().mockResolvedValue('read'), { identityTtlMs: 3_600_000 })
+
+    await h.service.resolve([scope], viewer)
+    expect(h.permissionForUser).toHaveBeenCalledWith('user-1', installation, 'acme', 'private-repo', {
+      maxCacheAgeMs: 0,
+      loginMaxAgeMs: 3_600_000
     })
   })
 
@@ -255,10 +270,11 @@ describe('GithubSessionAccessService', () => {
   })
 
   // A private-repo allow is identity-backed: the key carries only the local user
-  // id, and link/unlink invalidates the identity caches, never this one — so the
-  // recheck knob must not stretch the allow past the provider-identity lease.
-  it('caps an identity-backed allow at the provider-identity lease under a long recheck', async () => {
-    const h = make(true, vi.fn().mockResolvedValue('read'), { recheckMs: 600_000 })
+  // id, and link/unlink invalidates the identity caches, never this one — so
+  // neither the recheck knob nor the identity knob may stretch the allow past
+  // the fixed 120 s unlink-residue cap.
+  it('caps an identity-backed allow at 120 s even under long recheck and identity leases', async () => {
+    const h = make(true, vi.fn().mockResolvedValue('read'), { recheckMs: 600_000, identityTtlMs: 3_600_000 })
 
     await h.service.resolve([scope], viewer)
     h.clock.advance(119_999)

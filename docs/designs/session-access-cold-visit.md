@@ -59,14 +59,14 @@ boundary (§6 derives it):
 Two axes — not implementation convenience — set each lease: how often the fact
 changes, and whether we hold a signal when it does.
 
-| Fact                                                 | Changes when                               | Invalidation signal we hold                                                                                | Lease today          | Lease under this design                                                                                                |
-| ---------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Viewer's linked identities (Logto projection)        | link / unlink                              | **Yes** — both flows invalidate through the CP (epoch fence); only an out-of-band Logto-admin edit escapes | 120 s hard           | **120 s, unchanged** — warmed at first authenticated touch (§3) so it is rarely awaited                                |
-| Channel audience (public / members / gone)           | public↔private conversion — rare, explicit | Partial — `integration/channels` snapshots carry `isPrivate` (§4.2)                                        | 120 s                | verdict-split: `public` → **60 min serving lease, 120 s revalidation threshold** (§2.1); `members` / `gone` stay 120 s |
-| GitHub repo shape (public flag)                      | rare                                       | None                                                                                                       | 120 s                | same split: public shape 60 min / 120 s revalidate; private shape stays 120 s                                          |
-| Workspace membership grade (`users.info`)            | join / leave / offboarding                 | None — **the offboarding enforcement point**                                                               | 120 s                | **unchanged**                                                                                                          |
-| Private-channel membership (`conversations.members`) | actually changes                           | Subscribed but unwired (member events)                                                                     | on demand            | **unchanged**                                                                                                          |
-| GitHub repo permission                               | revocable at GitHub any time               | None                                                                                                       | age-0 at every check | **unchanged**                                                                                                          |
+| Fact                                                 | Changes when                               | Invalidation signal we hold                                                                                | Lease today          | Lease under this design                                                                                                                                                                            |
+| ---------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Viewer's linked identities (Logto projection)        | link / unlink                              | **Yes** — both flows invalidate through the CP (epoch fence); only an out-of-band Logto-admin edit escapes | 120 s hard           | **`SESSION_ACCESS_IDENTITY_TTL_SEC`** (default 120 s) — the epoch fence carries in-product changes, so only an out-of-band Logto edit waits out the knob; warmed at first authenticated touch (§3) |
+| Channel audience (public / members / gone)           | public↔private conversion — rare, explicit | Partial — `integration/channels` snapshots carry `isPrivate` (§4.2)                                        | 120 s                | verdict-split: `public` → **60 min serving lease, 120 s revalidation threshold** (§2.1); `members` / `gone` stay 120 s                                                                             |
+| GitHub repo shape (public flag)                      | rare                                       | None                                                                                                       | 120 s                | same split: public shape 60 min / 120 s revalidate; private shape stays 120 s                                                                                                                      |
+| Workspace membership grade (`users.info`)            | join / leave / offboarding                 | None — **the offboarding enforcement point**                                                               | 120 s                | **unchanged**                                                                                                                                                                                      |
+| Private-channel membership (`conversations.members`) | actually changes                           | Subscribed but unwired (member events)                                                                     | on demand            | **unchanged**                                                                                                                                                                                      |
+| GitHub repo permission                               | revocable at GitHub any time               | None                                                                                                       | age-0 at every check | **unchanged**                                                                                                                                                                                      |
 
 The long lease applies only to the _public_ verdict — a property of a resource,
 where honoring a rare conversion late is a bounded, named cost (§2.1). It is
@@ -138,7 +138,7 @@ Phase 2 therefore includes a `putCache` redesign, and owns the semantic choice:
   constructor-level TTL today. Mechanical, but part of Phase 2, not an
   afterthought — which also corrects v1's "Phase 2 depends on nothing" claim.
 
-### 2.3 One serving function, two knobs — the unified cache policy
+### 2.3 One serving function, three knobs — the unified cache policy
 
 Every verdict-class cache on this path serves through one parametric function;
 what look like different strategies are different parameters:
@@ -155,14 +155,14 @@ refresh-ahead      = R == S/2    (#782's identity mechanism)
 touch-revalidation = R << S      (the §2.1 shape mechanism)
 ```
 
-| Cache                                                 | (R, S)                | Why these parameters                                                                                                                  |
-| ----------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Slack / GitHub / Feishu per-principal decision caches | (120 s, 120 s)        | Revocable, no invalidation signal — the fresh check IS the revocation mechanism; no stale window permitted                            |
-| Slack `workspaceAccess` (membership grade)            | (120 s, 120 s)        | Same; the offboarding enforcement point                                                                                               |
-| GitHub permission leg                                 | (0, 0) via caller cap | The most sensitive revocable fact; same mechanism, strictest parameters                                                               |
-| Logto `users` / `logins` (identity projection)        | (60 s, 120 s)         | Has a CP-side invalidation signal (epoch fence), so S stays the hard authorization lease and R = S/2 keeps active reads from blocking |
-| Slack audience / GitHub shape (resource facts)        | (120 s, 60 min)       | Viewer-independent, near-static, exposure self-limited by §2.1 touch-revalidation — the only R ≪ S row                                |
-| Session-access snapshot                               | (30 s, 60 s)          | Same function; S must NOT grow (§7 — it is a per-viewer authorization lease)                                                          |
+| Cache                                                 | (R, S)                                                          | Why these parameters                                                                                                                          |
+| ----------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Slack / GitHub / Feishu per-principal decision caches | (120 s, 120 s)                                                  | Revocable, no invalidation signal — the fresh check IS the revocation mechanism; no stale window permitted                                    |
+| Slack `workspaceAccess` (membership grade)            | (120 s, 120 s)                                                  | Same; the offboarding enforcement point                                                                                                       |
+| GitHub permission leg                                 | (0, 0) via caller cap                                           | The most sensitive revocable fact; same mechanism, strictest parameters                                                                       |
+| Logto `users` / `logins` (identity projection)        | (S/2, S), S = `SESSION_ACCESS_IDENTITY_TTL_SEC` (default 120 s) | The only fact class with an in-product invalidation closure (epoch fence), so S is an operator knob; R = S/2 keeps active reads from blocking |
+| Slack audience / GitHub shape (resource facts)        | (120 s, 60 min)                                                 | Viewer-independent, near-static, exposure self-limited by §2.1 touch-revalidation — the only R ≪ S row                                        |
+| Session-access snapshot                               | (30 s, 60 s)                                                    | Same function; S must NOT grow (§7 — it is a per-viewer authorization lease)                                                                  |
 
 Uniform across the table: `deny` 30 s and `unknown` 5 s (or never cached in
 shared caches) are retry semantics, not leases, and take no (R, S).
@@ -181,7 +181,7 @@ entry; _invalidation_ (revisions in keys — `aclRevision`,
 `credentialRevision`, policy rev; the identity epoch fence; the §4.2
 `isPrivate` cross-check) deletes entries event-style under any (R, S).
 
-**Configuration — two knobs, everything else derived or fixed:**
+**Configuration — three knobs, everything else derived or fixed:**
 
 ```bash
 # Any cached access decision older than this must be re-verified (seconds).
@@ -194,13 +194,22 @@ SESSION_ACCESS_RECHECK_SEC=120 # zod bounds [30, 600]
 # confirmation. Bounds how late a public→private conversion is honored while
 # nobody is looking; any access older than RECHECK re-verifies immediately.
 SESSION_ACCESS_PUBLIC_TTL_SEC=3600 # zod bounds [300, 14400], ≥ RECHECK
+
+# Serving lease for a viewer's provider-identity projection. Identity earns its
+# own knob because it is the only fact class with an in-product invalidation
+# closure — link/unlink bumps the epoch fence immediately, so only an
+# out-of-band Logto edit waits out this lease.
+SESSION_ACCESS_IDENTITY_TTL_SEC=120 # zod bounds [30, 86400]
 ```
 
 `RECHECK` has one meaning everywhere — "older than this ⇒ re-verify"; whether
 re-verification blocks is the fact-class's property, not the knob's. The
-identity refresh-ahead threshold derives as `RECHECK / 2`. The snapshot pair
-(30 s, 60 s) stays a code constant: changing its ceiling is the §7 product
-decision, not an operator knob. `deny`/`unknown` TTLs stay constants.
+identity refresh-ahead threshold derives as half the identity lease. The
+identity knob does not move the fixed 120 s cap on an identity-backed GitHub
+allow (a verdict keyed only by local userId, which an unlink cannot
+invalidate). The snapshot pair (30 s, 60 s) stays a code constant: changing
+its ceiling is the §7 product decision, not an operator knob. `deny`/`unknown`
+TTLs stay constants.
 
 ## 3. Pillar A — identity is warmed at first authenticated touch
 
@@ -238,7 +247,8 @@ concurrently and the org-scoped burst gates on `/orgs` alone, so the head start
 is one `/orgs` round trip plus render (~60–200 ms), not a two-hop ladder. §6
 carries the residue honestly at p50 and p95.
 
-Properties preserved: the 120 s authorization lease is untouched (this adds a
+Properties preserved: the identity authorization lease is untouched
+(`SESSION_ACCESS_IDENTITY_TTL_SEC`, default 120 s — this adds a
 trigger, not a serving rule); the epoch fence is untouched — the background
 refresh is the same fenced lookup, so a warm racing an unlink is returned to
 nobody and never cached; a Logto outage degrades exactly as today. Cost ceiling,
@@ -249,9 +259,12 @@ thousand calls/day against ~1.9 k today — acceptable, but named; if it grows,
 gate the trigger to org-scoped requests or coalesce the two lookups (they fetch
 the same Logto resource).
 
-Out of scope, deliberately: raising the identity lease and persisting the
-projection. Both remain Phase-2-of-#782 options with their recorded triggers.
-The win here comes from _overlap_, not staleness.
+Out of scope for this pillar: persisting the projection (still a recorded
+Phase-2-of-#782 option). Raising the identity lease was also out of scope
+here, but its recorded trigger has since fired — post-rollout measurement
+showed the residual tail dominated by blocking Logto fetches for viewers idle
+past 120 s — so it shipped as the §2.3 `SESSION_ACCESS_IDENTITY_TTL_SEC`
+knob. The win in this section still comes from _overlap_, not staleness.
 
 ## 4. Pillar B — resource shapes are warmed by session activity
 

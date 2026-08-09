@@ -780,11 +780,18 @@ export function buildContainer(
   const logtoMgmtCfg = resolveLogtoMgmtConfig(config)
   const logtoIdentity =
     logtoMgmtCfg && config.OIDC_ISSUER
-      ? new LogtoIdentityService(logtoMgmtCfg, clock, new PgSocialIdentityMutationGate(prisma), undefined, {
-          // Lazy over `http.log` (assigned below; only ever called at lookup time).
-          debug: (o, m) => http.log.debug(o, m),
-          info: (o, m) => http.log.info(o, m)
-        })
+      ? new LogtoIdentityService(
+          logtoMgmtCfg,
+          clock,
+          new PgSocialIdentityMutationGate(prisma),
+          undefined,
+          {
+            // Lazy over `http.log` (assigned below; only ever called at lookup time).
+            debug: (o, m) => http.log.debug(o, m),
+            info: (o, m) => http.log.info(o, m)
+          },
+          { identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000 }
+        )
       : undefined
   const githubUserAuthz =
     github && logtoIdentity
@@ -817,6 +824,7 @@ export function buildContainer(
     ...(githubUserAuthz ? { userAuthz: githubUserAuthz } : {}),
     clock,
     ...sessionAccessTtls,
+    identityTtlMs: config.SESSION_ACCESS_IDENTITY_TTL_SEC * 1000,
     log: { debug: (o, m) => http.log.debug(o, m) }
   })
   const feishuSessionAccess = new FeishuSessionAccessService({
