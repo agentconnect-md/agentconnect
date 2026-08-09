@@ -192,6 +192,64 @@ export const POST_TOOL_DESCRIPTOR = {
   }
 }
 
+/**
+ * Arm B's standing collaboration guidance — the prompt-side half of the surface.
+ *
+ * The production system prompt teaches `sendMessage` call shapes by name
+ * (session-manager.ts `collabAppend` / `parentReplyAppend`), so an arm that
+ * withholds `sendMessage` needs guidance that teaches ITS surface instead, or
+ * the prompt would prime the model with the other arm's vocabulary and tell it
+ * to call a tool it does not carry. Structure and every non-surface sentence
+ * (ordinary-reply rule, "act only on what is asked", quiet-about-mechanics,
+ * peer-roster memory) mirror the production text — only the tool teaching
+ * differs, which is the point.
+ */
+export const POST_COLLAB_GUIDANCE =
+  `# Collaborating with other agents\n` +
+  `- One tool, \`post\`, sends any message that leaves your current conversation. Choose three things ` +
+  `independently: WHICH conversation it belongs to, WHO it addresses, and whether it is visible on the platform.\n` +
+  `- To reach a specific agent privately: ` +
+  `\`post\` \`{"conversation":{"kind":"private"},"address":["<agent id>"],"visibility":"session-only",` +
+  `"message":"..."}\` — it wakes ONLY that agent and nothing appears in any channel. That call is ` +
+  `FIRE-AND-FORGET: the peer answers inside its own conversation and nothing comes back to you, not even a ` +
+  `failure. Whenever you expect an answer — your message asks a question or requests a result, or you were ` +
+  `asked to relay that agent's answer to someone — add \`"expectReply":true\`, which obliges it to report ` +
+  `into YOUR session when it finishes or fails.\n` +
+  `- To open a VISIBLE discussion at a channel's root: \`"conversation":{"kind":"channel","channel":` +
+  `"<channel id>"}\`. Put an agent id in \`address\` to pull that agent into the new discussion (you may ` +
+  `address yourself there to open one for yourself — use your ID from the # Agent block, never your platform ` +
+  `bot identity), or human platform ids to @-mention people. Omit \`address\` to leave a note that wakes ` +
+  `nobody.\n` +
+  `- To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
+  `call \`post\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get a peer's ` +
+  `exact \`mention\` token). To reach a HUMAN in their direct messages, use ` +
+  `\`"conversation":{"kind":"dm","user":"<platform user id>"}\` — never address an AgentConnect agent or your ` +
+  `own bot identity as a human user. If you were woken by another session, reply with ` +
+  `\`"conversation":{"kind":"parent","sessionId":"<Parent session>"}\`.\n` +
+  `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
+  `agents unless a human explicitly tells you to.\n` +
+  `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
+  `results like "delivered: true". Take the action, add at most one short status line if needed, then end your turn.\n` +
+  `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
+  `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
+  `yourself back or broadcast to everyone.`
+
+/** Arm B's parent-report append — mirrors the production text with only the
+ *  tool teaching swapped. */
+export function postParentReplyAppend(parentSessionId: string): string {
+  return (
+    `# Reporting back to your parent session\n` +
+    `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
+    `cannot finish — reply to it with ` +
+    `\`post\` \`{"conversation":{"kind":"parent","sessionId":"${parentSessionId}"},"message":"..."}\`, saying ` +
+    `whether you succeeded or failed and what the result was (on failure, what went wrong). Send it exactly ` +
+    `once, at the end; do not report progress along the way, and do not skip it because the task was small or ` +
+    `unsuccessful. Your ordinary assistant response in this child session is not delivered to the parent. Do ` +
+    `not write the result before or after the tool call; after the tool reports successful delivery, end your ` +
+    `turn immediately without repeating the message.`
+  )
+}
+
 /** Build arm B's registry entry. Every call compiles and is then executed by the
  *  PRODUCT tool, so the two arms share one implementation. */
 export function postFacadeTool(options: {

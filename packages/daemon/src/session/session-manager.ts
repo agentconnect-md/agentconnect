@@ -282,6 +282,16 @@ export class SessionManager {
       /** Whether this runtime needs AgentConnect's model-authored title fallback.
        *  Native-title runtimes (for example Claude) leave this false. */
       usesSessionTitleTool?: (agent: Agent) => boolean
+      /** EVALUATION-ONLY (daemon evaluation environment): replace the standing
+       *  collaboration guidance and the parent-report append, so an A/B arm's
+       *  system prompt teaches exactly the messaging surface that arm presents.
+       *  The prompt is part of a tool surface — an arm that withholds
+       *  `sendMessage` must not carry text describing it. Production never sets
+       *  this; everything else in the prompt stays byte-identical. */
+      collaborationGuidance?: {
+        collabAppend?: string
+        parentReplyAppend?: (parentSessionId: string) => string
+      }
       /** The runtime-definition env (daemon config `runtimes[].env`) for an agent's
        *  runtime. The spawn path detects config-file pointer-var conflicts over
        *  `{...runtimeEnv, ...agentEnv}` — supply the same base here so the
@@ -817,38 +827,41 @@ export class SessionManager {
     // reach humans, post at a channel root, or reply into a parent session. It has no
     // visible in-thread form: speaking in the current conversation is an ordinary reply.
     // `toAgent` without a `channel` is the postless, channel-invisible wake.
+    // An evaluation A/B arm that presents a different messaging surface swaps in its
+    // own guidance text (the prompt is part of the surface); production never sets it.
     const collabAppend =
+      this.deps.collaborationGuidance?.collabAppend ??
       `# Collaborating with other agents\n` +
-      `- To reach a specific agent privately, call \`sendMessage\` with ` +
-      `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
-      `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
-      `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
-      `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
-      `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
-      `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
-      `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
-      `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
-      `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
-      `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
-      `\`toAgent\` call without \`channel\` may not target yourself. ` +
-      `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
-      `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-      `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
-      `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
-      `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
-      `@-mention at the channel root. In that channel form, pass ` +
-      `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
-      `message; arrays are never DMs. If you were woken by another ` +
-      `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
-      `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
-      `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
-      `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
-      `agents unless a human explicitly tells you to.\n` +
-      `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
-      `results like "delivered: true". Take the action, add at most one short status line if needed, then end your turn.\n` +
-      `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
-      `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
-      `yourself back or broadcast to everyone.`
+        `- To reach a specific agent privately, call \`sendMessage\` with ` +
+        `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
+        `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
+        `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
+        `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
+        `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
+        `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
+        `(\`{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}\`, channel-root form) ` +
+        `to ALSO post a visible message at that channel's root and anchor the agent's conversation to that post. ` +
+        `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
+        `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
+        `\`toAgent\` call without \`channel\` may not target yourself. ` +
+        `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
+        `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
+        `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
+        `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
+        `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
+        `@-mention at the channel root. In that channel form, pass ` +
+        `an array such as \`"toUser":["<user id 1>","<user id 2>"]\` to @-mention multiple people in the one ` +
+        `message; arrays are never DMs. If you were woken by another ` +
+        `session, reply with \`{"sessionId":"<Parent session>","message":"..."}\`. To leave a visible note others ` +
+        `catch up on later without waking anyone, use \`{"channel":"<channel id>","message":"..."}\`. Every ` +
+        `visible \`sendMessage\` lands at a channel root and opens a new conversation there.\n` +
+        `- Act only on what is asked of YOU. Do not relay a message onward or start your own broadcast to other ` +
+        `agents unless a human explicitly tells you to.\n` +
+        `- Be quiet about mechanics: don't narrate each step or post a message per action, and don't restate tool ` +
+        `results like "delivered: true". Take the action, add at most one short status line if needed, then end your turn.\n` +
+        `- When another agent introduces itself to you, record it in your memory (a peer roster — id, name, what it ` +
+        `does, how to reach it) so you know who to delegate to later. Then just acknowledge briefly; do NOT re-introduce ` +
+        `yourself back or broadcast to everyone.`
 
     // The parent asked to be told how this session ends (`toAgent.needsReply`). Standing, not a
     // user turn — the obligation outlives the waking turn, so it belongs beside the collaboration
@@ -856,15 +869,16 @@ export class SessionManager {
     // scoped to a terminal report: nothing here asks for progress narration, which would turn every
     // delegated task into channel chatter.
     const parentReplyAppend = needsReplyToParent
-      ? `# Reporting back to your parent session\n` +
-        `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
-        `cannot finish — reply to it with ` +
-        `\`sendMessage\` \`{"sessionId":"${effectiveOriginSessionId}","message":"..."}\`, saying whether you ` +
-        `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
-        `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
-        `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
-        `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
-        `without repeating the message.`
+      ? (this.deps.collaborationGuidance?.parentReplyAppend?.(effectiveOriginSessionId!) ??
+        `# Reporting back to your parent session\n` +
+          `Another session delegated this work to you and is waiting on the outcome. When you finish — or when you ` +
+          `cannot finish — reply to it with ` +
+          `\`sendMessage\` \`{"sessionId":"${effectiveOriginSessionId}","message":"..."}\`, saying whether you ` +
+          `succeeded or failed and what the result was (on failure, what went wrong). Send it exactly once, at the ` +
+          `end; do not report progress along the way, and do not skip it because the task was small or unsuccessful. ` +
+          `Your ordinary assistant response in this child session is not delivered to the parent. Do not write the ` +
+          `result before or after the tool call; after the tool reports successful delivery, end your turn immediately ` +
+          `without repeating the message.`)
       : ''
 
     // Standing response-choice rule for EVERY agent session and delivery scenario. Direct

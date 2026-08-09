@@ -3065,6 +3065,12 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
+      // Evaluation-only surface-fidelity seam (see DaemonEvaluationEnvironment):
+      // an A/B arm that swaps the messaging tool surface swaps the matching
+      // guidance text with it. Absent everywhere outside evaluation runs.
+      ...(this.opts.evaluation?.environment?.collaborationGuidance
+        ? { collaborationGuidance: this.opts.evaluation.environment.collaborationGuidance }
+        : {}),
       // No runtime is whitelisted for the model-authored `setSessionTitle` fallback
       // anymore: codex-acp >= 1.1.3 emits native session_info_update titles itself
       // (issue #659), so every runtime now relies on its native ACP title path. The

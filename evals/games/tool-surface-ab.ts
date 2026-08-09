@@ -57,9 +57,11 @@ export const AB_SCENARIOS: AbScenario[] = [
     id: 'parent-session',
     expected: 'parent-session',
     needsCaller: true,
+    // Relayed to the subject INSIDE a needsReply wake by the caller agent, so
+    // the subject really does have a parent session to answer into.
     instruction: () =>
-      `Answer the question you were just asked, sending your answer back to whoever asked it so it reaches them ` +
-      `directly. Do not publish it anywhere public.`
+      `What is the sum of 17 and 25? Work it out and get your answer back to whoever is asking you, so it ` +
+      `reaches them directly. Do not publish the answer anywhere public.`
   }
 ]
 
@@ -84,6 +86,14 @@ export interface AbAttempt {
   error?: string
 }
 
+export interface AbTokenBreakdown {
+  total: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
 export interface AbTrialMetrics {
   attempts: AbAttempt[]
   /** Calls the surface itself refused: schema violation or illegal combination. */
@@ -96,6 +106,10 @@ export interface AbTrialMetrics {
   attemptsToSuccess: number
   toolCalls: number
   totalTokens: number
+  /** Component sums over the same turns as `totalTokens`. Cache traffic
+   *  dominates a local run, so input+output is reported alongside the total. */
+  tokens: AbTokenBreakdown
+  turns: number
   latencyMs: number
 }
 
@@ -120,15 +134,34 @@ interface AcpToolEvent {
  */
 export function extractTrialMetrics(
   events: { type: string; data: Record<string, unknown> }[],
-  options: { toolName: string; expected: SendForm; latencyMs: number }
+  options: {
+    toolName: string
+    expected: SendForm
+    latencyMs: number
+    /** Arm-specific bridge from raw tool input to the shared form vocabulary.
+     *  Arm A classifies the product args directly (default); arm B compiles the
+     *  façade input first, so both arms are scored on the SAME product shapes. */
+    classify?: (args: Record<string, unknown> | undefined) => SendForm
+  }
 ): AbTrialMetrics {
+  const classify = options.classify ?? classifySendForm
   const byId = new Map<string, AbAttempt>()
   const order: string[] = []
-  let totalTokens = 0
+  const tokens: AbTokenBreakdown = { total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  let turns = 0
   for (const event of events) {
     if (event.type === 'turn.completed') {
-      const usage = event.data.usage as { totalTokens?: unknown } | undefined
-      if (usage && typeof usage.totalTokens === 'number') totalTokens += usage.totalTokens
+      turns += 1
+      const usage = event.data.usage as Record<string, unknown> | undefined
+      const add = (key: keyof AbTokenBreakdown, field: string) => {
+        const value = usage?.[field]
+        if (typeof value === 'number' && Number.isFinite(value)) tokens[key] += value
+      }
+      add('total', 'totalTokens')
+      add('input', 'inputTokens')
+      add('output', 'outputTokens')
+      add('cacheRead', 'cachedReadTokens')
+      add('cacheWrite', 'cachedWriteTokens')
       continue
     }
     if (event.type !== 'acp.update') continue
@@ -149,7 +182,7 @@ export function extractTrialMetrics(
     const attempt = byId.get(id)!
     if (update.rawInput && typeof update.rawInput === 'object' && Object.keys(update.rawInput).length > 0) {
       attempt.args = update.rawInput as Record<string, unknown>
-      attempt.form = classifySendForm(attempt.args)
+      attempt.form = classify(attempt.args)
     }
     if (update.status === 'failed') {
       attempt.failed = true
@@ -167,8 +200,25 @@ export function extractTrialMetrics(
     completed: successIndex >= 0,
     attemptsToSuccess: successIndex >= 0 ? successIndex + 1 : 0,
     toolCalls: attempts.length,
-    totalTokens,
+    totalTokens: tokens.total,
+    tokens,
+    turns,
     latencyMs: options.latencyMs
+  }
+}
+
+/** Arm B's classifier: compile the façade input, then classify the product args
+ *  it becomes — the symmetry that makes the two arms score identically. An
+ *  input the façade refuses names no legal form. */
+export function classifyPostForm(
+  compile: (input: Record<string, unknown>) => { args: Record<string, unknown> },
+  args: Record<string, unknown> | undefined
+): SendForm {
+  if (!args) return 'unclassifiable'
+  try {
+    return classifySendForm(compile(args).args)
+  } catch {
+    return 'unclassifiable'
   }
 }
 

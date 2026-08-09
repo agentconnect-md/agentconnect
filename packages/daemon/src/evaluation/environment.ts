@@ -90,6 +90,18 @@ export interface DaemonEvaluationEnvironment {
    *  execute — a hidden tool remains fully functional if something calls it,
    *  which is exactly how a façade compiles down to it. */
   hideProductTools?: readonly string[]
+  /** EVALUATION-ONLY surface-fidelity seam, the prompt-side complement of
+   *  `hideProductTools`: the standing collaboration guidance and the
+   *  parent-report append teach `sendMessage` call shapes by name, so an arm
+   *  that withholds `sendMessage` would otherwise carry a system prompt
+   *  describing a tool it does not have — priming it with the OTHER arm's
+   *  vocabulary and sabotaging the comparison. An arm supplies texts that teach
+   *  exactly the surface it presents; everything else in the prompt stays
+   *  byte-identical. */
+  collaborationGuidance?: {
+    collabAppend?: string
+    parentReplyAppend?: (parentSessionId: string) => string
+  }
 }
 
 // ─── §4 ingress payloads ────────────────────────────────────────────────────

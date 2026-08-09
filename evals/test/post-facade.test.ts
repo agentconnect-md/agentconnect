@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { toolsForIntegrations } from '../../packages/daemon/src/mcp/tools.js'
 import { IntegrationSchema } from '../../packages/daemon/src/agents/agent-schema.js'
-import { POST_TOOL_DESCRIPTOR, PostCompileError, compilePost, postFacadeTool } from '../games/post-facade.js'
+import {
+  POST_COLLAB_GUIDANCE,
+  POST_TOOL_DESCRIPTOR,
+  PostCompileError,
+  compilePost,
+  postFacadeTool,
+  postParentReplyAppend
+} from '../games/post-facade.js'
 
 /**
  * Arm B's contract, credential-free: the façade must compile every legal
@@ -148,7 +155,9 @@ describe('static cost of each tool surface', () => {
       core: { mode: 'direct', bindRules: [] },
       config: { botToken: 'xoxb-x', appToken: 'xapp-x' }
     })
-    const tool = toolsForIntegrations([integration], { collaboration: true }).find((t) => t.name === 'sendMessage')
+    // #761 removed the evaluation-only collaboration toggle: the collaboration
+    // surface (sendMessage included) is unconditionally present.
+    const tool = toolsForIntegrations([integration]).find((t) => t.name === 'sendMessage')
     if (!tool) throw new Error('sendMessage descriptor not found')
     return tool
   }
@@ -163,6 +172,31 @@ describe('static cost of each tool surface', () => {
     expect(b.totalChars).toBeLessThan(a.totalChars)
     // Report them so a run of this test records the numbers.
     console.log(`static cost — sendMessage: ${JSON.stringify(a)}  post: ${JSON.stringify(b)}`)
+  })
+
+  it("arm B's standing guidance teaches its own surface and never the other arm's", () => {
+    // The system prompt is part of a tool surface. If arm B's guidance named
+    // `sendMessage` or its fields, the arm would be primed with vocabulary for
+    // a tool it does not carry — a measured confound, not a hypothetical.
+    for (const text of [POST_COLLAB_GUIDANCE, postParentReplyAppend('S1')]) {
+      for (const token of ['sendMessage', 'toAgent', 'toUser', 'needsReply']) {
+        expect(text, `arm B guidance leaks "${token}"`).not.toContain(token)
+      }
+      expect(text).toContain('post')
+    }
+    expect(postParentReplyAppend('S1')).toContain('"sessionId":"S1"')
+    expect(postParentReplyAppend('S1')).toContain('"kind":"parent"')
+  })
+
+  it("arm B's guidance keeps the non-surface behavioral rules of the production text verbatim", () => {
+    // Only the tool teaching may differ between the arms' prompts.
+    for (const sentence of [
+      'Act only on what is asked of YOU.',
+      "Be quiet about mechanics: don't narrate each step",
+      'When another agent introduces itself to you, record it in your memory'
+    ]) {
+      expect(POST_COLLAB_GUIDANCE).toContain(sentence)
+    }
   })
 
   it('the landed surface really does enumerate more forms than the façade', () => {
