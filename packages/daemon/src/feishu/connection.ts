@@ -193,7 +193,13 @@ function regionDomain(region: FeishuRegion): Lark.Domain {
 /** Default factory: adapt a real `Lark.Client` + `Lark.WSClient` to {@link FeishuClientHandle}. */
 function defaultFactory(appId: string, appSecret: string, region: FeishuRegion): FeishuClientHandle {
   const domain = regionDomain(region)
-  const client = new Lark.Client({ appId, appSecret, domain, loggerLevel: Lark.LoggerLevel.error })
+  const client = new Lark.Client({
+    appId,
+    appSecret,
+    domain,
+    logger: feishuSdkLogger,
+    loggerLevel: Lark.LoggerLevel.error
+  })
   let ws: Lark.WSClient | undefined
 
   const assertApiSuccess = <T extends { code?: number; msg?: string }>(result: T, api: string): T => {
@@ -366,7 +372,13 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
           return onCardAction(data)
         }
       })
-      ws = new Lark.WSClient({ appId, appSecret, domain, loggerLevel: Lark.LoggerLevel.error })
+      ws = new Lark.WSClient({
+        appId,
+        appSecret,
+        domain,
+        logger: feishuSdkLogger,
+        loggerLevel: Lark.LoggerLevel.error
+      })
       await ws.start({ eventDispatcher: dispatcher })
     },
     close() {
@@ -388,6 +400,44 @@ type FeishuPermissionState = { issue: FeishuPermissionIssue; scopes: string[] }
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return value && typeof value === 'object' ? (value as UnknownRecord) : undefined
+}
+
+export function feishuSdkErrorSummary(values: unknown[]): string {
+  let httpStatus: number | undefined
+  let providerCode: number | undefined
+
+  const visit = (value: unknown, depth = 0): void => {
+    if (depth > 4) return
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1)
+      return
+    }
+    const record = asRecord(value)
+    if (!record) return
+    if (httpStatus === undefined && typeof record.status === 'number' && record.status >= 100 && record.status < 600) {
+      httpStatus = record.status
+    }
+    const code = typeof record.code === 'number' ? record.code : Number(record.code)
+    if (providerCode === undefined && Number.isFinite(code)) providerCode = code
+    for (const key of ['response', 'data', 'error', 'cause']) visit(record[key], depth + 1)
+  }
+
+  visit(values)
+  const details = [
+    httpStatus === undefined ? '' : `http=${httpStatus}`,
+    providerCode === undefined ? '' : `code=${providerCode}`
+  ]
+    .filter(Boolean)
+    .join(' ')
+  return details ? `feishu SDK error (${details})` : 'feishu SDK error'
+}
+
+export const feishuSdkLogger: Lark.Logger = {
+  error: (...values) => console.error(`[agentconnect] ERROR ${feishuSdkErrorSummary(values)}`),
+  warn: () => undefined,
+  info: () => undefined,
+  debug: () => undefined,
+  trace: () => undefined
 }
 
 function feishuErrorBody(err: unknown): UnknownRecord | undefined {
