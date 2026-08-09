@@ -42,6 +42,40 @@ describe('loadConfig', () => {
   })
 })
 
+describe('session-access cache knobs (session-access-cold-visit.md §2.3)', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://agentconnect:agentconnect@localhost:5432/agentconnect',
+    API_KEY_PEPPER: 'a'.repeat(32)
+  }
+
+  it('defaults land when unset', () => {
+    const config = loadConfig(base)
+    expect(config.SESSION_ACCESS_RECHECK_SEC).toBe(120)
+    expect(config.SESSION_ACCESS_PUBLIC_TTL_SEC).toBe(3600)
+  })
+
+  it('coerces explicit values inside the bounds', () => {
+    const config = loadConfig({ ...base, SESSION_ACCESS_RECHECK_SEC: '60', SESSION_ACCESS_PUBLIC_TTL_SEC: '900' })
+    expect(config.SESSION_ACCESS_RECHECK_SEC).toBe(60)
+    expect(config.SESSION_ACCESS_PUBLIC_TTL_SEC).toBe(900)
+  })
+
+  it.each([
+    ['SESSION_ACCESS_RECHECK_SEC', '29'],
+    ['SESSION_ACCESS_RECHECK_SEC', '601'],
+    ['SESSION_ACCESS_PUBLIC_TTL_SEC', '299'],
+    ['SESSION_ACCESS_PUBLIC_TTL_SEC', '14401']
+  ])('rejects %s outside its bounds (%s)', (key, value) => {
+    expect(() => loadConfig({ ...base, [key]: value })).toThrow()
+  })
+
+  it('rejects a public serving lease shorter than the recheck threshold', () => {
+    expect(() =>
+      loadConfig({ ...base, SESSION_ACCESS_RECHECK_SEC: '600', SESSION_ACCESS_PUBLIC_TTL_SEC: '300' })
+    ).toThrow(/SESSION_ACCESS_PUBLIC_TTL_SEC/)
+  })
+})
+
 describe('corsWebOrigin', () => {
   it('returns a single concrete origin verbatim', () => {
     expect(corsWebOrigin('https://app.example.com')).toBe('https://app.example.com')

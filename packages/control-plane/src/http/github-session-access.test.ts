@@ -45,7 +45,7 @@ function scopeAt(index: number): ExternalScopeRecord {
  *  assertion below. */
 const EPOCH = 1_777_000_000_000
 
-function make(privateRepo: boolean, permissionForUser = vi.fn()) {
+function make(privateRepo: boolean, permissionForUser = vi.fn(), ttls?: { recheckMs?: number; publicTtlMs?: number }) {
   const clock = new FakeClock(EPOCH)
   const repoRefById = vi.fn().mockResolvedValue({
     repoId: 123n,
@@ -57,7 +57,8 @@ function make(privateRepo: boolean, permissionForUser = vi.fn()) {
     installations: { get: vi.fn().mockResolvedValue(installation) } as never,
     github: { repoRefById },
     userAuthz: { permissionForUser },
-    clock
+    clock,
+    ...(ttls ?? {})
   })
   return { service, repoRefById, permissionForUser, clock }
 }
@@ -71,6 +72,9 @@ const viewer: SessionAccessViewer = {
 
 /** A second console user asking about the same repository. */
 const other: SessionAccessViewer = { ...viewer, userId: 'user-2', identitySet: new Set(['user:user-2']) }
+const third: SessionAccessViewer = { ...viewer, userId: 'user-3', identitySet: new Set(['user:user-3']) }
+
+const PRIVATE_SHAPE = { repoId: 123n, fullName: 'acme/private-repo', private: true, defaultBranch: 'main' }
 
 describe('GithubSessionAccessService', () => {
   it('resolves allowed scopes beyond the first 200', async () => {
@@ -150,20 +154,153 @@ describe('GithubSessionAccessService', () => {
     expect(h.repoRefById).toHaveBeenCalledTimes(1)
   })
 
-  it('leases an allow from when the shape was observed, not from when it was reused', async () => {
-    const h = make(false)
+  // The §2 verdict split (session-access-cold-visit.md): a public shape serves
+  // for the long lease with §4.2(5) touch-revalidation past the recheck
+  // threshold; a private (or out-of-grant) shape stays on the short lease.
+  it('serves a public shape at 50 minutes and corrects it through the background re-observation', async () => {
+    const h = make(false, vi.fn().mockResolvedValue('read'))
 
     await h.service.resolve([scope], viewer)
-    h.clock.advance(60_000)
+    expect(h.repoRefById).toHaveBeenCalledTimes(1)
+
+    // The repository goes private; the leased public shape keeps serving —
+    // with no identity check, which is what the long lease routes around.
+    h.repoRefById.mockResolvedValue(PRIVATE_SHAPE)
+    h.clock.advance(50 * 60_000)
+    await expect(h.service.resolve([scope], other)).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    expect(h.permissionForUser).not.toHaveBeenCalled()
+
+    // The same read fired one re-observation; once it lands, the next viewer
+    // routes through the permission check.
+    await h.service.settle()
+    expect(h.service.stats.shapeRevalidations).toBe(1)
+    await h.service.resolve([scope], third)
+    expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+  })
+
+  it('blocks on a fresh shape read past the public serving ceiling', async () => {
+    const h = make(false, vi.fn().mockResolvedValue('read'))
+
+    await h.service.resolve([scope], viewer)
+    h.repoRefById.mockResolvedValue(PRIVATE_SHAPE)
+    h.clock.advance(3_600_001)
+
+    // Past the ceiling the conversion governs THIS read: the fresh private
+    // shape demands the permission check before anything serves.
+    await h.service.resolve([scope], viewer)
+    expect(h.repoRefById).toHaveBeenCalledTimes(2)
+    expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+    expect(h.service.stats.shapeRevalidations).toBe(0)
+  })
+
+  it('keeps a private shape on the recheck lease', async () => {
+    const h = make(true, vi.fn().mockResolvedValue('read'))
+
+    await h.service.resolve([scope], viewer)
+    h.clock.advance(119_999)
     await h.service.resolve([scope], other)
     expect(h.repoRefById).toHaveBeenCalledTimes(1)
 
-    // 120 s after the SHAPE was fetched. Had reuse restarted the lease, the
-    // second viewer's allow would still be cached here and nothing would be
-    // re-read; instead both the verdict and its evidence have expired.
-    h.clock.advance(60_001)
-    await h.service.resolve([scope], other)
+    h.clock.advance(2)
+    await h.service.resolve([scope], third)
     expect(h.repoRefById).toHaveBeenCalledTimes(2)
+    expect(h.service.stats.shapeRevalidations).toBe(0)
+  })
+
+  // §2.2: the allow anchors to the per-viewer check it just ran; leasing it
+  // from the warmed shape observation would mint it born expired and disable
+  // the decision cache for exactly the warmed-public population.
+  it('serves an allow built on an aged public shape for its full lease', async () => {
+    const h = make(false, vi.fn().mockResolvedValue('read'))
+
+    await h.service.resolve([scope], viewer)
+    h.clock.advance(45 * 60_000)
+    await h.service.resolve([scope], other)
+
+    h.clock.advance(60_000)
+    await expect(h.service.resolve([scope], other)).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    // Both later reads ride the served shape (plus its one re-observation) —
+    // never a foreground refetch per request.
+    await h.service.settle()
+    expect(h.repoRefById).toHaveBeenCalledTimes(2)
+    expect(h.service.stats.shapeRevalidations).toBe(1)
+  })
+
+  // The other face of §2.2: even once the shape entry itself lapses, an allow
+  // inside its own lease keeps answering — under the old evidence-anchored
+  // lease it was born expired and this read would refetch the shape.
+  it('keeps the allow lease anchored to the viewer check when the shape entry lapses', async () => {
+    const h = make(false, vi.fn(), { publicTtlMs: 300_000 })
+
+    await h.service.resolve([scope], viewer)
+    h.repoRefById.mockRejectedValueOnce(new Error('provider unavailable'))
+    h.clock.advance(240_000)
+    // Serves the aged public shape; the re-observation fails, so the entry
+    // keeps its original observation time and lapses at the 300 s ceiling.
+    await h.service.resolve([scope], other)
+    await h.service.settle()
+
+    h.clock.advance(61_000)
+    await expect(h.service.resolve([scope], other)).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    expect(h.repoRefById).toHaveBeenCalledTimes(2)
+  })
+
+  // A private-repo allow is identity-backed: the key carries only the local user
+  // id, and link/unlink invalidates the identity caches, never this one — so the
+  // recheck knob must not stretch the allow past the provider-identity lease.
+  it('caps an identity-backed allow at the provider-identity lease under a long recheck', async () => {
+    const h = make(true, vi.fn().mockResolvedValue('read'), { recheckMs: 600_000 })
+
+    await h.service.resolve([scope], viewer)
+    h.clock.advance(119_999)
+    await h.service.resolve([scope], viewer)
+    expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+
+    h.clock.advance(2)
+    await h.service.resolve([scope], viewer)
+    expect(h.permissionForUser).toHaveBeenCalledTimes(2)
+  })
+
+  it('fires exactly one background re-observation for concurrent reads past the threshold', async () => {
+    const h = make(false)
+
+    await h.service.resolve([scope], viewer)
+    h.clock.advance(150_000)
+    await Promise.all([h.service.resolve([scope], other), h.service.resolve([scope], third)])
+    await h.service.settle()
+
+    expect(h.service.stats.shapeRevalidations).toBe(1)
+    expect(h.repoRefById).toHaveBeenCalledTimes(2)
+  })
+
+  it('never caches a failed re-observation and keeps serving the leased shape', async () => {
+    const h = make(false)
+
+    await h.service.resolve([scope], viewer)
+    h.repoRefById.mockRejectedValueOnce(new Error('provider unavailable'))
+    h.clock.advance(150_000)
+    await expect(h.service.resolve([scope], other)).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    await h.service.settle()
+
+    // Had the failure been cached — or evicted the entry — this read would
+    // block or degrade; instead the public shape is still serving.
+    await expect(h.service.resolve([scope], third)).resolves.toEqual({
+      allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+      degraded: false
+    })
+    await h.service.settle()
   })
 
   it('keeps a failed shape lookup a per-request verdict rather than caching it', async () => {

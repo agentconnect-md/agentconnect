@@ -577,6 +577,17 @@ membership. Guests and Slack Connect users also require current conversation mem
 including for a channel that is public to full members of the installing workspace. The
 organization-owner role never bypasses these provider checks.
 
+Whether a conversation (or GitHub repository) is public is itself a cached provider
+observation with an accepted conversion window (session-access-cold-visit.md §2.1): after
+a public→private conversion, its recorded sessions may stay visible to the pre-conversion
+audience for up to `SESSION_ACCESS_PUBLIC_TTL_SEC` (default 60 minutes) while nobody reads
+them. The first read past the recheck threshold (`SESSION_ACCESS_RECHECK_SEC`, default
+2 minutes) serves the old audience once and fires the correcting re-observation, so a
+viewer retains access only for their already-cached per-user verdict (a few minutes), and
+the daemon's next channel snapshot independently drops a now-private channel's cached
+public status. Per-user checks — workspace membership, conversation membership, repository
+permission — never ride the long lease.
+
 An external membership check that cannot complete fails closed: affected sessions stay
 hidden. Provider API failures and unclassified degradation keep the generic unavailable
 notice. A missing Lark/Feishu `union_id` offers a one-time sign-in identity refresh in

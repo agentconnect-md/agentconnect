@@ -166,8 +166,13 @@ enum VisibilitySource {
   share-by-link (§8) covers the near-term "share this session" ask.
 - `ExternalScope` stores only the stable provider resource identity and the
   credential locator needed to ask the provider. It never stores provider ACLs.
-  Slack/Feishu/Lark conversation-access and GitHub repository-access decisions are bounded,
-  short-lived in-process cache entries. Linked Slack, Feishu/Lark, and GitHub identities
+  Slack/Feishu/Lark conversation-access and GitHub repository-access decisions are bounded
+  in-process cache entries, leased by verdict (session-access-cold-visit.md §2): per-user
+  decisions stay short-lived (`SESSION_ACCESS_RECHECK_SEC`, default 2 minutes), while a
+  conversation's or repository's `public` verdict may serve for up to
+  `SESSION_ACCESS_PUBLIC_TTL_SEC` (default 60 minutes), with any read past the recheck
+  threshold re-verifying it in the background and daemon channel snapshots invalidating
+  a stale `public` on observation. Linked Slack, Feishu/Lark, and GitHub identities
   remain provider-owned and are resolved from Logto rather than copied into the
   AgentConnect database. Feishu/Lark membership checks reuse each installed Bot
   App's required credential. The Login App secret remains static deployment

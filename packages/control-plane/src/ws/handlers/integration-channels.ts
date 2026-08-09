@@ -28,6 +28,14 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   const owned = await deps.integration.activeForDaemon(DaemonId(conn.daemonId))
   const integration = owned.find((i) => i.id === p.integrationId)
   if (!integration) return // unknown / just deleted / not this daemon's — drop silently
+  // §4.2(4) session-access cross-check (session-access-cold-visit.md): a channel observed
+  // private drops its cached `public` audience verdict. Invalidation only — never a written
+  // verdict, absent/false `isPrivate` changes nothing — so it can run ahead of the mutation
+  // gate (dropping a cache entry is safe even for a report that loses the gate).
+  if (integration.platform === 'slack') {
+    const privateChannels = p.channels.filter((c) => c.isPrivate === true).map((c) => c.id)
+    if (privateChannels.length > 0) deps.slackSessionAccess?.dropPublicAudiences(integration.botId, privateChannels)
+  }
   const release = deps.agentMutations.tryBeginMutation(integration.agentId)
   if (!release) return // a placement move owns this agent; its authoritative bundle wins
   try {

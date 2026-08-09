@@ -52,6 +52,17 @@ const CoreConfigShape = {
   // sweeps every CRON_RUN_REAP_INTERVAL_SEC.
   CRON_RUN_TTL_SEC: z.coerce.number().int().default(1800),
   CRON_RUN_REAP_INTERVAL_SEC: z.coerce.number().int().default(300),
+  // ── Session-access cache policy (session-access-cold-visit.md §2.3) ──
+  // Any cached access decision older than this must be re-verified (seconds).
+  // Per-user checks (workspace membership, repo permission) block until
+  // re-verified; resource facts (channel/repo publicness) re-verify in the
+  // background while the cached value serves.
+  SESSION_ACCESS_RECHECK_SEC: z.coerce.number().int().min(30).max(600).default(120),
+  // How long a channel/repo may still be treated as public after its last
+  // confirmation (seconds). Bounds how late a public→private conversion is
+  // honored while nobody is looking; any access older than RECHECK re-verifies
+  // immediately. Must be ≥ SESSION_ACCESS_RECHECK_SEC (checked below).
+  SESSION_ACCESS_PUBLIC_TTL_SEC: z.coerce.number().int().min(300).max(14400).default(3600),
   // HMAC pepper for `api_key.hash` (C4). Required, ≥32 chars. Effectively immutable —
   // rotating it invalidates every stored key hash. See daemon-api-key-auth.md.
   API_KEY_PEPPER: z.string().min(32),
@@ -270,9 +281,24 @@ function validateSecretCipher(config: SecretCipherEnv, ctx: z.RefinementCtx): vo
   }
 }
 
+// A public verdict must outlive its own re-check threshold, or every serve
+// would already be past its ceiling (session-access-cold-visit.md §2.3).
+function validateSessionAccess(
+  config: { SESSION_ACCESS_RECHECK_SEC: number; SESSION_ACCESS_PUBLIC_TTL_SEC: number },
+  ctx: z.RefinementCtx
+): void {
+  if (config.SESSION_ACCESS_PUBLIC_TTL_SEC < config.SESSION_ACCESS_RECHECK_SEC) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SESSION_ACCESS_PUBLIC_TTL_SEC'],
+      message: 'SESSION_ACCESS_PUBLIC_TTL_SEC must be ≥ SESSION_ACCESS_RECHECK_SEC'
+    })
+  }
+}
+
 /** Cross-field checks the flat schema can't express — fail-fast at boot, before
  *  the first secret write could silently land plaintext next to sealed rows. */
-const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
+const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher).superRefine(validateSessionAccess)
 
 const BootstrapConfigSchema = z
   .object({
