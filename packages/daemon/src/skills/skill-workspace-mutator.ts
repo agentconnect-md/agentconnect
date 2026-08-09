@@ -1,12 +1,48 @@
 import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, promises as fsp, realpathSync, rmSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { chmodSync, existsSync, mkdtempSync, promises as fsp, realpathSync, rmSync, type Stats } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { under } from '../fs/contained-path.js'
 import { offlineSandboxLaunch } from './offline-sandbox.js'
 import { currentSkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
 const MAX_MUTATION_OUTPUT = 64 * 1024
 const MUTATION_TIMEOUT_MS = 20_000
+
+// Resolve a contained CLI-owned alias before the confined helper walks the mutation path.
+export async function canonicalSkillMutationRoot(cwd: string, relativeRoot: string): Promise<string> {
+  const workspace = await fsp.realpath(cwd)
+  const lexicalTarget = resolve(workspace, relativeRoot)
+  if (isAbsolute(relativeRoot) || !under(workspace, lexicalTarget)) return relativeRoot
+
+  const parts = relativeRoot.split('/')
+  if (parts.length < 2 || parts.some((part) => !part || part === '.' || part === '..')) return relativeRoot
+  let sawLink = false
+  let current = workspace
+  for (const part of parts.slice(0, -1)) {
+    current = join(current, part)
+    let stat: Stats
+    try {
+      stat = await fsp.lstat(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return relativeRoot
+      throw error
+    }
+    if (stat.isSymbolicLink()) sawLink = true
+    else if (!stat.isDirectory()) return relativeRoot
+  }
+  if (!sawLink) return relativeRoot
+
+  const canonicalParent = await fsp.realpath(dirname(lexicalTarget))
+  if (!under(workspace, canonicalParent)) throw new Error('skill mutation alias resolves outside workspace')
+  const canonical = relative(workspace, join(canonicalParent, basename(lexicalTarget)))
+    .split(sep)
+    .join('/')
+  if (!canonical || canonical.startsWith('../') || isAbsolute(canonical)) {
+    throw new Error('skill mutation alias resolves outside workspace')
+  }
+  return canonical
+}
 
 function helperPath(): string {
   const modulePath = realpathSync(fileURLToPath(import.meta.url))
@@ -44,10 +80,16 @@ export async function runSkillWorkspaceMutation<T extends object>(
             sourceDir: realpathSync((candidate as Record<string, unknown>).sourceDir as string)
           }
         : candidate
+    const relativeRoot = (spec as Record<string, unknown>).relativeRoot
+    const normalizedRelativeRoot =
+      typeof relativeRoot === 'string'
+        ? await canonicalSkillMutationRoot(canonicalWorkspace, relativeRoot)
+        : relativeRoot
     const normalizedSpec = {
       ...spec,
       cwd: canonicalWorkspace,
-      ...(normalizedCandidate === undefined ? {} : { candidate: normalizedCandidate })
+      ...(normalizedCandidate === undefined ? {} : { candidate: normalizedCandidate }),
+      ...(normalizedRelativeRoot === undefined ? {} : { relativeRoot: normalizedRelativeRoot })
     }
     const home = join(root, 'home')
     const runnerCwd = join(root, 'workspace')
