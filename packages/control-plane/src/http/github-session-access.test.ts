@@ -314,4 +314,103 @@ describe('GithubSessionAccessService', () => {
     })
     expect(h.repoRefById).toHaveBeenCalledTimes(2)
   })
+
+  // §4.1 warm entry: a background warm observes through the SAME classifying
+  // wrapper as the read path, so a warmed shape leases and a failure pins nothing.
+  describe('warmShape (§4.1 warm entry)', () => {
+    it('leases the shape so a later resolve pays no lookup', async () => {
+      const h = make(false)
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+      expect(h.repoRefById).toHaveBeenCalledTimes(1)
+
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+      expect(h.repoRefById).toHaveBeenCalledTimes(1)
+      expect(h.permissionForUser).not.toHaveBeenCalled()
+    })
+
+    it('warms a private shape without ever running a per-principal check', async () => {
+      const h = make(true, vi.fn().mockResolvedValue('read'))
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'warmed', verdict: 'private' })
+      expect(h.permissionForUser).not.toHaveBeenCalled()
+
+      // The viewer's own resolve reuses the shape but still pays its age-0 permission.
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+      expect(h.repoRefById).toHaveBeenCalledTimes(1)
+      expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+    })
+
+    it('never caches a failed warm lookup', async () => {
+      const h = make(false)
+      h.repoRefById.mockRejectedValueOnce(new Error('provider unavailable'))
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'failed', reason: 'lookup_failed' })
+
+      await expect(h.service.resolve([scope], viewer)).resolves.toEqual({
+        allowedScopes: [{ id: scope.id, aclRevision: scope.aclRevision }],
+        degraded: false
+      })
+      expect(h.repoRefById).toHaveBeenCalledTimes(2)
+    })
+
+    // §4.2(6): a cadence warm on an already-leased entry must hold the warmer's
+    // permit for the REAL provider work — the touch-revalidation it fires —
+    // not resolve while that request is still in flight.
+    it('holds the warm open until its re-observation lands', async () => {
+      const h = make(false)
+
+      await expect(h.service.warmShape(scope)).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+
+      // Half a lease later the entry still serves but is past the recheck
+      // threshold, so this warm fires a re-observation — and must await it.
+      h.clock.advance(30 * 60_000)
+      let release!: () => void
+      h.repoRefById.mockImplementationOnce(() => {
+        return new Promise((resolve) => {
+          release = () =>
+            resolve({ repoId: 123n, fullName: 'acme/private-repo', private: false, defaultBranch: 'main' })
+        })
+      })
+      let settled = false
+      const warm = h.service.warmShape(scope).then((outcome) => {
+        settled = true
+        return outcome
+      })
+      await vi.waitFor(() => expect(h.repoRefById).toHaveBeenCalledTimes(2))
+      expect(settled).toBe(false)
+
+      release()
+      await expect(warm).resolves.toEqual({ outcome: 'warmed', verdict: 'public' })
+      expect(h.service.stats.shapeRevalidations).toBe(1)
+    })
+
+    it('skips a revoked installation or a foreign scope with zero provider calls', async () => {
+      const repoRefById = vi.fn().mockResolvedValue(PRIVATE_SHAPE)
+      const service = new GithubSessionAccessService({
+        installations: {
+          get: vi.fn().mockResolvedValue({ ...installation, revokedAt: new Date(EPOCH) })
+        } as never,
+        github: { repoRefById },
+        userAuthz: { permissionForUser: vi.fn() },
+        clock: new FakeClock(EPOCH)
+      })
+
+      await expect(service.warmShape(scope)).resolves.toEqual({
+        outcome: 'skipped',
+        reason: 'installation_revoked'
+      })
+      await expect(service.warmShape({ ...scope, provider: 'slack' })).resolves.toEqual({
+        outcome: 'skipped',
+        reason: 'scope_shape'
+      })
+      expect(repoRefById).not.toHaveBeenCalled()
+    })
+  })
 })

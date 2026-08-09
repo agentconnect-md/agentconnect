@@ -6,7 +6,12 @@ import type { ExternalScopeRecord, GithubInstallationRecord, GithubInstallationR
 import type { GithubService } from '../github/service.js'
 import { PROVIDER_IDENTITY_TTL_MS } from '../github/logto-identity.js'
 import { UserAuthzDeniedError, type GithubUserAuthzService } from '../github/user-authz.js'
-import type { SessionAccessPlugin, SessionAccessResult, SessionAccessViewer } from './session-access-plugin.js'
+import type {
+  SessionAccessPlugin,
+  SessionAccessResult,
+  SessionAccessViewer,
+  SessionAccessWarmOutcome
+} from './session-access-plugin.js'
 
 const DENY_TTL_MS = 30_000
 const UNKNOWN_TTL_MS = 5_000
@@ -23,6 +28,22 @@ type Decision = 'allow' | 'deny' | 'unknown'
 type RepoShape = { fullName: string; private: boolean } | null
 type ObservedRepoShape = { shape: RepoShape; fetchedAt: number }
 type ShapeLookup = { github: Pick<GithubService, 'repoRefById'>; ins: GithubInstallationRecord; repoId: bigint }
+
+/** The scope rows GitHub can answer for at all — the shared gate of the read path
+ *  (anything else is a plain deny) and the §4.1 warm entry (a skip). */
+function installationRepositoryScope(
+  scope: ExternalScopeRecord
+): scope is ExternalScopeRecord & { credentialId: string } {
+  return (
+    scope.provider === 'github' &&
+    scope.realmKey === 'github.com' &&
+    scope.resourceKind === 'repository' &&
+    scope.revokedAt === null &&
+    scope.credentialKind === 'github_installation' &&
+    !!scope.credentialId &&
+    /^[1-9]\d*$/.test(scope.resourceKey)
+  )
+}
 
 async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(values.length)
@@ -129,17 +150,7 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
   }
 
   private async resolveScope(scope: ExternalScopeRecord, userId: string): Promise<Decision> {
-    if (
-      scope.provider !== 'github' ||
-      scope.realmKey !== 'github.com' ||
-      scope.resourceKind !== 'repository' ||
-      scope.revokedAt !== null ||
-      scope.credentialKind !== 'github_installation' ||
-      !scope.credentialId ||
-      !/^[1-9]\d*$/.test(scope.resourceKey)
-    ) {
-      return 'deny'
-    }
+    if (!installationRepositoryScope(scope)) return 'deny'
     const github = this.deps.github
     if (!github) return 'unknown'
     // Fenced on the org recorded in the session's own external scope row — the
@@ -229,6 +240,41 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
   /** Await in-flight background re-observations — nothing else ever awaits them. */
   async settle(): Promise<void> {
     await Promise.all([...this.revalidating.values()])
+  }
+
+  /**
+   * §4.1 warm entry (session-access-cold-visit.md): observe one scope's
+   * repository shape so a later cold visit finds it leased. The observation
+   * goes through `shapeOf` — the classifying wrapper — never the raw cache
+   * (§4.2(3)): a rejected lookup stays a per-request failure, and a touch past
+   * the recheck threshold re-observes in the background under the write fence.
+   * The installation is resolved here, at execution, through the read path's
+   * own org fence (§4.2(2)); a failed fence skips and caches nothing.
+   */
+  async warmShape(scope: ExternalScopeRecord): Promise<SessionAccessWarmOutcome> {
+    if (!installationRepositoryScope(scope)) return { outcome: 'skipped', reason: 'scope_shape' }
+    const github = this.deps.github
+    if (!github) return { outcome: 'skipped', reason: 'github_unconfigured' }
+    const installation = await this.deps.installations.get(OrgId(scope.orgId), scope.credentialId).catch(() => null)
+    if (!installation) return { outcome: 'skipped', reason: 'installation_unresolved' }
+    if (installation.revokedAt || installation.suspendedAt)
+      return { outcome: 'skipped', reason: 'installation_revoked' }
+    try {
+      const key = `${installation.installationId}:${scope.resourceKey}`
+      const observed = await this.shapeOf(key, { github, ins: installation, repoId: BigInt(scope.resourceKey) })
+      // §4.2(6): past the recheck threshold `shapeOf` serves cached and
+      // re-observes DETACHED — right for a foreground read, wrong for a cadence
+      // sweep, which would fan out one detached provider call per scope and
+      // bypass the warmer's concurrency permit and settle(). Hold the warm open
+      // until the re-observation it (or a foreground read) fired lands; the
+      // task never rejects and its write stays behind the object fence.
+      await this.revalidating.get(key)
+      if (!observed) return { outcome: 'failed', reason: 'shape_evicted' }
+      const shape = observed.shape
+      return { outcome: 'warmed', verdict: shape === null ? 'ungranted' : shape.private ? 'private' : 'public' }
+    } catch {
+      return { outcome: 'failed', reason: 'lookup_failed' }
+    }
   }
 
   private putCache(key: string, decision: Decision, identityBacked: boolean): void {

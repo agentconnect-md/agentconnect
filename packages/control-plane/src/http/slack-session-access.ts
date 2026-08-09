@@ -9,7 +9,8 @@ import type {
   SessionAccessIssue,
   SessionAccessPlugin,
   SessionAccessResult,
-  SessionAccessViewer
+  SessionAccessViewer,
+  SessionAccessWarmOutcome
 } from './session-access-plugin.js'
 
 const DENY_TTL_MS = 30_000
@@ -217,6 +218,18 @@ function slackPrincipals(identitySet: ReadonlySet<string>): SlackPrincipal[] {
   return principals
 }
 
+/** The scope rows Slack can answer for at all — the shared gate of the read path
+ *  (anything else is a plain deny) and the §4.1 warm entry (a skip). */
+function botConversationScope(scope: ExternalScopeRecord): scope is ExternalScopeRecord & { credentialId: string } {
+  return (
+    scope.provider === 'slack' &&
+    scope.resourceKind === 'conversation' &&
+    scope.revokedAt === null &&
+    scope.credentialKind === 'bot' &&
+    !!scope.credentialId
+  )
+}
+
 async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(values.length)
   let next = 0
@@ -389,29 +402,9 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     principals: readonly SlackPrincipal[],
     signal: AbortSignal
   ): Promise<Verdict> {
-    if (
-      scope.provider !== 'slack' ||
-      scope.resourceKind !== 'conversation' ||
-      scope.revokedAt !== null ||
-      scope.credentialKind !== 'bot' ||
-      !scope.credentialId
-    ) {
-      return { decision: 'deny' }
-    }
-    // The credential behind a session's recorded external scope — system state,
-    // resolved without an org (org-scoped-data-layer.md §4). The scope row is
-    // itself reached through the session, which the caller already fenced.
-    const bot = await this.deps.bots.getUnscoped(BotId(scope.credentialId)).catch(() => null)
-    const realm = bot?.workspaceId ?? bot?.teamId
-    if (
-      !bot ||
-      bot.orgId !== scope.orgId ||
-      bot.platform !== 'slack' ||
-      bot.revokedAt !== null ||
-      realm !== scope.realmKey
-    ) {
-      return unresolved('bot_unresolved')
-    }
+    if (!botConversationScope(scope)) return { decision: 'deny' }
+    const bot = await this.recordingBotFor(scope)
+    if (!bot) return unresolved('bot_unresolved')
     let unknownReason: DegradedReason | undefined
     for (const principal of principals) {
       const key = [scope.id, scope.aclRevision.toString(), bot.credentialRevision, principal.key].join(':')
@@ -426,6 +419,28 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       if (verdict.decision === 'unknown') unknownReason ??= verdict.reason ?? 'unreported'
     }
     return unknownReason ? { decision: 'unknown', reason: unknownReason } : { decision: 'deny' }
+  }
+
+  /**
+   * Resolve + fence the credential behind a session's recorded external scope —
+   * system state, resolved without an org (org-scoped-data-layer.md §4). The
+   * scope row is itself reached through the session, which the caller already
+   * fenced. The §4.1 warm entry runs the same fences at execution time
+   * (§4.2(2)), so a poke-time snapshot gone stale skips instead of caching.
+   */
+  private async recordingBotFor(scope: ExternalScopeRecord & { credentialId: string }): Promise<BotRecord | null> {
+    const bot = await this.deps.bots.getUnscoped(BotId(scope.credentialId)).catch(() => null)
+    const realm = bot?.workspaceId ?? bot?.teamId
+    if (
+      !bot ||
+      bot.orgId !== scope.orgId ||
+      bot.platform !== 'slack' ||
+      bot.revokedAt !== null ||
+      realm !== scope.realmKey
+    ) {
+      return null
+    }
+    return bot
   }
 
   private async checkAccess(
@@ -469,6 +484,11 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     return this.generations.get(`${botId}:${channel}`) ?? 0
   }
 
+  /** The `audiences` cache key — one constructor, shared by every reader. */
+  private audienceKey(botId: string, credentialRevision: number, channel: string): string {
+    return [botId, credentialRevision, channel].join(':')
+  }
+
   /** Cached + deduped conversation audience — the classifying wrapper every
    *  reader (and re-observer) of the `audiences` cache goes through. */
   private async audienceOf(
@@ -478,7 +498,7 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
     token: string,
     signal: AbortSignal
   ): Promise<ObservedAudience | undefined> {
-    const key = [botId, credentialRevision, channel].join(':')
+    const key = this.audienceKey(botId, credentialRevision, channel)
     const generation = this.generationOf(botId, channel)
     const observed = await this.audiences.fetch(key, { context: { channel, token, signal } })
     // `unknown` is the CHECK failing, not an answer about the audience. Keeping
@@ -539,6 +559,48 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
   /** Await in-flight background re-observations — nothing else ever awaits them. */
   async settle(): Promise<void> {
     await Promise.all([...this.revalidating.values()])
+  }
+
+  /**
+   * §4.1 warm entry (session-access-cold-visit.md): observe one scope's
+   * conversation audience so a later cold visit finds it leased. The
+   * observation goes through `audienceOf` — the classifying wrapper — never the
+   * raw cache (§4.2(3)): an `unknown` is never cached, a §4.2(4) generation
+   * bump beats the in-flight answer, and a touch past the recheck threshold
+   * re-observes in the background. Credential and token are resolved here, at
+   * execution, through the read path's own fences (§4.2(2)); a failed fence
+   * skips and caches nothing.
+   */
+  async warmAudience(scope: ExternalScopeRecord): Promise<SessionAccessWarmOutcome> {
+    if (!botConversationScope(scope)) return { outcome: 'skipped', reason: 'scope_shape' }
+    const bot = await this.recordingBotFor(scope)
+    if (!bot) return { outcome: 'skipped', reason: 'bot_unresolved' }
+    // §4.2(7) secret economy: only `botToken` is needed, but the store opens the
+    // whole sealed material. TODO: a field-scoped BotSecretStore read would save
+    // the extra decrypts per warm; not worth redesigning the store here.
+    const secret = await this.deps.botSecrets.get(scope.orgId, BotId(bot.id)).catch(() => null)
+    if (!secret?.botToken) return { outcome: 'skipped', reason: 'bot_token_missing' }
+    try {
+      const observed = await this.audienceOf(
+        bot.id,
+        bot.credentialRevision,
+        scope.resourceKey,
+        secret.botToken,
+        AbortSignal.timeout(TIMEOUT_MS)
+      )
+      // §4.2(6): past the recheck threshold `audienceOf` serves cached and
+      // re-observes DETACHED — right for a foreground read, wrong for a cadence
+      // sweep, which would fan out one detached provider call per scope and
+      // bypass the warmer's concurrency permit and settle(). Hold the warm open
+      // until the re-observation it (or a foreground read) fired lands; the
+      // task never rejects and its write stays behind the §4.2(4) fences.
+      await this.revalidating.get(this.audienceKey(bot.id, bot.credentialRevision, scope.resourceKey))
+      if (!observed) return { outcome: 'failed', reason: 'audience_evicted' }
+      if (observed.audience === 'unknown') return { outcome: 'failed', reason: observed.reason }
+      return { outcome: 'warmed', verdict: observed.audience }
+    } catch (error) {
+      return { outcome: 'failed', reason: thrownReason(error) }
+    }
   }
 
   /** §4.2(4) cross-check: a daemon snapshot observed these channels private, so their cached
