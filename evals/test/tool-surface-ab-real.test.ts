@@ -205,14 +205,19 @@ async function runTrial(scenario: AbScenario, arm: AbArm, trial: number): Promis
   })
 
   // ── validity: infra failures measure nothing about the surface ──
-  const providerFailure = allEvents.some(
-    (event) =>
-      event.type === 'turn.timed_out' ||
-      (event.type === 'turn.failed' &&
-        (event.data.code === 'provider_auth_required' || event.data.code === 'provider_quota_exhausted'))
-  )
+  // ANY failed or timed-out turn invalidates: unlike a long arena game that can
+  // absorb one failed turn and still complete, this experiment is a single
+  // explicit send — a failed turn always poisons the measurement. Measured
+  // examples that must not score as behavior: an expired provider OAuth
+  // (provider_auth_required) and a subscription session limit, which surfaces
+  // as a generic turn_failed RequestError plus an apologetic delivered reply.
+  const failedTurn = allEvents.find((event) => event.type === 'turn.failed' || event.type === 'turn.timed_out')
   let invalidReason: string | undefined
-  if (providerFailure) invalidReason = 'provider failure or turn timeout'
+  if (failedTurn) {
+    invalidReason = `turn ${failedTurn.type === 'turn.timed_out' ? 'timed out' : 'failed'} (${String(
+      failedTurn.data.code ?? 'unknown'
+    )})`
+  }
   if (scenario.needsCaller) {
     const delegated = runnerEvents.some(
       (event) => event.type === 'turn.started' && String(event.data.input ?? '').includes('sum of 17 and 25')
