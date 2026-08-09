@@ -1,9 +1,9 @@
 # Tool-surface A/B: `sendMessage` (shipped) vs `post` (messaging primitives)
 
-Status: apparatus landed and contract-proven; static costs measured; the
-24-run behavioral matrix is implemented and one command from producing its
-table (see §6 — the run is currently blocked on local runtime credentials,
-not on anything in this repository).
+Status: **complete.** Apparatus landed and contract-proven; static costs
+measured; the full 24-run behavioral matrix ran on 2026-08-09 (local Claude
+Code over ACP, model `sonnet`) with 24/24 valid trials — results in §6,
+conclusion in §7.
 
 The question under test, verbatim from the request that started this work:
 **how much does the primitives design improve success rate and total token
@@ -162,53 +162,100 @@ Expected before any behavioral run, held to afterwards:
    net of cache, would _exceed_ this pre-registration and warrants scrutiny
    (and more trials) before belief.
 
-## 6. Behavioral results
+## 6. Behavioral results (2026-08-09, 24/24 valid trials)
 
-**Run status (2026-08-09): blocked on local runtime credentials.** The
-harness itself is verified to the provider boundary: the smoke trial booted
-the real daemon, materialized the real subject, launched the local
-`claude-acp` adapter, created the ACP session, and dispatched the kickoff
-turn — which failed with `provider_auth_required` ("OAuth session expired
-and could not be refreshed"). The local Claude Code CLI's OAuth refresh
-token expired on 2026-08-09 (the 2026-08-08 arena baseline re-run caught its
-last hours of validity), and re-authentication is an interactive login only
-the operator can perform.
-
-To produce the table (after `claude /login` on the host):
-
-```bash
-pnpm --filter @agentconnect.md/daemon build
-export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
-export AGENTCONNECT_EVAL_SUBJECT_ROOT=/absolute/path/to/subject   # §4.1 template shape, runtime id claude-acp
-export AGENTCONNECT_EVAL_GAME_TEMPLATE_AGENTS=<template-agent-id>
-npx vitest run evals/test/tool-surface-ab-real.test.ts
-```
-
-Per-run artifacts land in `.artifacts/evaluation/tool-surface-ab/<scenario>-<arm>-<trial>/`
-(events.jsonl, world-events.jsonl, trial.json) with an aggregated
-`summary.json`; the table below is its rendering.
+Run: local Claude Code over ACP (`claude-acp` 0.64.0 launched via `node`,
+model `sonnet`, `permissionMode: default`, memory off), 4 scenarios × 2 arms
+× 3 trials, counterbalanced arm order, sequential on one machine. Two
+harness defects were found and fixed by the first live trials before the
+scored run (both are commits on this branch): evaluation-registry tools
+lacked the system-tool permission auto-allow (arm B's calls hung on an
+unanswerable approval card — a fairness bug), and a subscription session
+limit could score as a behavioral trial (validity now rejects any failed
+turn). Per-run artifacts:
+`.artifacts/evaluation/tool-surface-ab/<scenario>-<arm>-<trial>/`
+(events.jsonl, world-events.jsonl, trial.json) plus `summary-merged.json`;
+copies under `~/arena-runs/ab-2026-08-09/` on the measurement host.
 
 | Scenario       | Arm | Success | First-attempt | Invalid calls | Mean tool calls | Mean subject tokens (total / in+out) | Mean wall time |
 | -------------- | --- | ------- | ------------- | ------------- | --------------- | ------------------------------------ | -------------- |
-| agent-channel  | A   | – /3    | – /3          | –             | –               | –                                    | –              |
-| agent-channel  | B   | – /3    | – /3          | –             | –               | –                                    | –              |
-| channel-bare   | A   | – /3    | – /3          | –             | –               | –                                    | –              |
-| channel-bare   | B   | – /3    | – /3          | –             | –               | –                                    | –              |
-| agent-postless | A   | – /3    | – /3          | –             | –               | –                                    | –              |
-| agent-postless | B   | – /3    | – /3          | –             | –               | –                                    | –              |
-| parent-session | A   | – /3    | – /3          | –             | –               | –                                    | –              |
-| parent-session | B   | – /3    | – /3          | –             | –               | –                                    | –              |
+| agent-channel  | A   | 3/3     | 3/3           | 0             | 1.0             | 203,578 / 915                        | 33.2s          |
+| agent-channel  | B   | 3/3     | 3/3           | 0             | 1.0             | 125,247 / 412                        | 22.7s          |
+| channel-bare   | A   | 3/3     | 3/3           | 0             | 1.0             | 173,850 / 782                        | 18.0s          |
+| channel-bare   | B   | 3/3     | 3/3           | 0             | 1.0             | 124,990 / 406                        | 14.3s          |
+| agent-postless | A   | 3/3     | 3/3           | 0             | 1.0             | 261,008 / 2,350                      | 186.7s         |
+| agent-postless | B   | 3/3     | 3/3           | 0             | 1.0             | 140,889 / 598                        | 66.9s          |
+| parent-session | A   | 2/3     | 0/3           | 0             | 2.33            | 48,812 / 286                         | 77.6s          |
+| parent-session | B   | 2/3     | 0/3           | 2             | 3.0             | 50,263 / 273                         | 98.1s          |
 
-## 7. Conclusion so far — the honest answer to the question
+Totals: success **11/12 vs 11/12**, first-attempt **9/12 vs 9/12** —
+identical. Subject tokens are the sum over the subject agent's completed
+turns (total includes cache read/write; in+out is uncached input plus
+output). Cache traffic dominates: e.g. agent-channel arm A ≈ 186.6k cache
+read + 16.1k cache write vs arm B ≈ 102.2k + 22.6k. Whole-run totals
+(subject + peer) show the same direction, e.g. agent-postless 338.2k (A) vs
+217.5k (B).
 
-On **token consumption**, the measurable half is already answered: the
-primitives surface is 4.8× smaller as a tool descriptor and 2.9× smaller
-including the standing guidance — roughly **2,000 fewer descriptor-tokens
-carried on every turn** of every session (mostly as cache traffic on a warm
-local run; as fresh input on cold sessions and non-caching deployments).
+### What actually happened, qualitatively
 
-On **success rate**, no behavioral claim is made yet: the pre-registered
-expectation is little or no difference at n=3 on these well-specified
-single-send tasks, with arm B's advantage expected in the invalid-call
-column — and partly by construction there. The 24-run matrix is implemented,
-contract-tested, and one credential refresh away from filling §6.
+- **Scenarios 1–3 were a clean sweep for both arms**: every trial, both
+  surfaces, one correct call on the first attempt — including the postless
+  ask, where both arms set the reply obligation (`needsReply` /
+  `expectReply`) in 3/3 trials.
+- **Scenario 4 (reply to your parent session) broke both arms identically.**
+  In trial 1 of BOTH arms the child answered through **Claude Code's own
+  built-in `SendMessage` tool** (`{to, recipient, summary, …}` — the
+  runtime's native inter-agent tool, a name-collision hazard with the
+  product's `sendMessage`), so the answer never reached the daemon and the
+  parent never got it: 0/1 in each arm. In the remaining trials both arms
+  eventually made the right parent-form call but shotgunned extra routes
+  around it (a postless call to the peer's agent id, arm B also a DM to a
+  bot user id — refused `unknown_channel` — and a channel post addressing
+  two recipients — refused by the façade's "at most one agent"). First
+  attempt was wrong in 6/6 scored parent-session trials across arms.
+- **The two invalid calls belong to arm B** (the DM-to-a-bot and the
+  two-recipient channel post above). Arm A produced zero invalid calls: its
+  wrong attempts were either the runtime's native tool (not the surface) or
+  legal-but-unnecessary product forms the daemon accepted.
+
+## 7. Conclusion — the answer to the question
+
+**Success rate: no improvement, and none was expected.** 11/12 vs 11/12
+overall, 9/12 vs 9/12 first-attempt — identical, exactly the pre-registered
+expectation for well-specified single-send tasks on a sonnet-class model.
+The one shared failure mode (the child session reaching for the runtime's
+native `SendMessage` instead of the platform surface) is a product finding
+that neither surface design fixes.
+
+**Token consumption: a consistent, large arm-B win in the parent-facing
+scenarios.** Where the session carries the full surface (scenarios 1–3),
+the primitives arm consumed **28–46% fewer total subject tokens**
+(125.2k vs 203.6k; 125.0k vs 173.9k; 140.9k vs 261.0k) and **47–75% fewer
+uncached input+output tokens**, with wall time 21–64% lower. In the child
+sessions of scenario 4 the arms were equal (≈49–50k). The static gap
+(~2,000 descriptor tokens per request) explains only part of this; the rest
+is behavioral — under the bigger surface the model generated ~2× the output
+and re-read its (larger) cached prompt across more loop steps. Honest
+caveat: that behavioral component is an observation at n=3, not a
+guaranteed mechanism, and local cache pricing makes the _billable_ gap
+deployment-dependent.
+
+**Against the pre-registration:** #1 confirmed (static cost, 4.8×/2.9×).
+#2 **refuted in direction** — arm B had MORE invalid calls (2 vs 0), not
+fewer: the façade refuses combinations the model then repairs, while arm
+A's model simply never emitted an illegal product combination in these 24
+runs (its errors routed around the surface instead). At n=3 per cell this
+is anecdote-grade, but it must be said: the "invalid-call win" this
+experiment pre-registered for the primitives did not appear. #3 confirmed
+(no success-rate difference). #4: the token effect in scenarios 1–3
+approaches but does not exceed the 2× totals threshold (in+out does exceed
+it) — treat the efficiency magnitude as promising, not proven.
+
+**Net:** the primitives design does not change whether a sonnet-class agent
+delivers a well-specified message (it delivers it either way), but it
+delivers the same outcome measurably cheaper and faster wherever the full
+surface is carried, and its structural inability to express most illegal
+combinations manifested as _actionable refusals_ rather than fewer errors.
+The scenario-4 findings — the native-tool name collision and the
+route-shotgunning child — are product problems upstream of either surface
+and worth fixing regardless of which surface ships.
