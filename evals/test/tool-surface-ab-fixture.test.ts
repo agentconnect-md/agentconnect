@@ -27,6 +27,16 @@ interface CapturedSession {
   binding?: DaemonMcpBinding
 }
 
+/** The collaboration-guidance section of a session prompt, measured from what
+ *  the daemon actually injected — the prompt-side static cost of a surface. */
+function guidanceSection(prompt: string): string {
+  const start = prompt.indexOf('# Collaborating with other agents')
+  if (start < 0) return ''
+  const rest = prompt.slice(start)
+  const next = rest.indexOf('\n# ', 1)
+  return next > 0 ? rest.slice(0, next) : rest
+}
+
 /** Scripted host seam that records every prompt and the session's MCP binding,
  *  and runs an optional per-turn script with real daemon-tool access. */
 function capturingHostFactory(
@@ -120,6 +130,10 @@ describe('tool-surface A/B fixture — each arm presents exactly one surface', (
     expect(prompt).toContain('# Collaborating with other agents')
     expect(prompt).toContain('sendMessage')
     expect(prompt).not.toContain('"kind":"channel"')
+    const section = guidanceSection(prompt)
+    console.log(
+      `guidance cost — arm A (sendMessage): ${section.length} chars (~${Math.round(section.length / 4)} tokens)`
+    )
   })
 
   it('arm B: `post` replaces `sendMessage` in descriptors AND in the prompt, and still executes through the product', async () => {
@@ -151,6 +165,8 @@ describe('tool-surface A/B fixture — each arm presents exactly one surface', (
     expect(prompt).toContain('# Collaborating with other agents')
     expect(prompt).toContain('`post`')
     expect(prompt).not.toContain('sendMessage')
+    const section = guidanceSection(prompt)
+    console.log(`guidance cost — arm B (post): ${section.length} chars (~${Math.round(section.length / 4)} tokens)`)
     // The execution: the façade compiled and the PRODUCT delivered a real,
     // world-authorized channel post (§7.2 path, not a shortcut).
     expect(postResult?.ok, JSON.stringify(postResult)).toBe(true)
