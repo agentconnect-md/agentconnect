@@ -33,8 +33,18 @@
  * RED/GREEN. Tests written as `it.fails(…)` are the ones the surface does not satisfy
  * today: they PASS while the affordance is still missing and start FAILING (flip them
  * to `it`) the moment it lands. Each names what has to change. The `it(…)` tests around
- * them are characterization pins: they record what the surface actually does now, so
- * the red tests are anchored in measured behavior rather than in a paraphrase.
+ * them are guards: they pin what the surface actually does now, so a later change
+ * cannot silently regress it.
+ *
+ * STATUS (re-verified 2026-08-08 against main). The parent-side half of the async
+ * contract SHIPPED: the `needsReply` wake result carries `reply`, `nextAction:
+ * 'finish-turn-and-wait'`, and prose stating that the answer arrives as a later
+ * turn; `viewSessionStatus` is described as optional diagnostics and no longer
+ * advises waiting; and `SessionStatusResult.reply.state` distinguishes "the child
+ * ended its turn" from "the child reported back". Those are GREEN guards below.
+ * The child-side half is still open: a headless child that answers in prose
+ * instead of `sendMessage {sessionId}` still has its answer dropped silently —
+ * that is the one remaining red pin, and the real-model half reproduces it.
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { COLLABORATION_TOOLS, toolsForIntegrations } from '../../packages/daemon/src/mcp/tools.js'
@@ -145,91 +155,80 @@ async function probeSameTurnPoll(): Promise<DelegationProbe> {
 }
 
 describe('delegate-and-forward — what the parent is told when it delegates', () => {
-  // CHARACTERIZATION (green): the exact surface the observed trace saw. If this
-  // ever changes, the red tests below are re-reading a different product.
-  it('records the surface as it is today: an instant wake result, and a same-turn poll that reports the child still running', async () => {
+  // GUARD (green): the surface as SHIPPED. A `needsReply` wake returns the ids
+  // plus the caller's half of the async contract — `reply` (requested/awaiting),
+  // a machine-readable `nextAction`, and prose `message` — and a same-turn poll
+  // still truthfully reports the child mid-turn.
+  it('pins the shipped surface: a wake result carrying the async contract, and a same-turn poll that reports the child still running', async () => {
     const probe = await probeSameTurnPoll()
 
-    // The wake result. `wake.targetSession` and `childSessionId` are ids; nothing
-    // else in it is prose addressed to the caller.
     expect(probe.wakeResult.ok).toBe(true)
     expect(probe.wakeResult).toMatchObject({ wake: { delivered: true } })
     expect(typeof probe.wakeResult.childSessionId).toBe('string')
-    expect([...Object.keys(probe.wakeResult)].sort()).toEqual(['childSessionId', 'ok', 'wake'])
+    expect([...Object.keys(probe.wakeResult)].sort()).toEqual([
+      'childSessionId',
+      'message',
+      'nextAction',
+      'ok',
+      'reply',
+      'wake'
+    ])
+    expect(probe.wakeResult).toMatchObject({
+      reply: { requested: true, state: 'awaiting' },
+      nextAction: 'finish-turn-and-wait'
+    })
 
-    // The same-turn poll — the tool the model reached for — answers that the
-    // child is still working. This is the observation the fabricated completion
-    // claim in the trace directly contradicted.
+    // The same-turn poll — the tool the observed trace reached for — answers
+    // that the child is still working. The fabricated completion claim in that
+    // trace directly contradicted this observation.
     expect(probe.sameTurnStatus).toMatchObject({ status: 'in-progress', state: 'prompting' })
   }, 120_000)
 
-  // RED — what must change: `executeTool`'s `sendMessage` branch
-  // (packages/daemon/src/mcp/ops.ts, the `toAgent` return around the
-  // `childSessionId` assembly) must, for a `needsReply` wake, return prose stating
-  // the asynchronous contract: the reply arrives later as a new turn in THIS
-  // session, and the caller should end its turn rather than wait or poll. Only the
-  // CHILD is told its half today (session-manager's `# Reporting back to your
-  // parent session`); the parent's half is unstated, which is what leaves "forward
-  // the reply" looking like a synchronous call that returned nothing.
-  it.fails(
-    'states the asynchronous contract in the needsReply wake result',
-    async () => {
-      const probe = await probeSameTurnPoll()
-      const prose = stringsIn(probe.wakeResult).join(' \n ').toLowerCase()
-      // (i) the reply comes back later, as a wake of this session…
-      expect(prose).toMatch(/wake|woken|later turn|new turn|report back|when it (finishes|replies)/)
-      // (ii) …so the right move now is to finish this turn.
-      expect(prose).toMatch(/end (your|this) turn|finish (your|this) turn|do not wait|don’t wait|do not poll/)
-    },
-    120_000
-  )
+  // GUARD (green, shipped): the `needsReply` wake result states the asynchronous
+  // contract to the CALLER — the reply arrives later as a new turn of this
+  // session, so the right move is to end the turn, not wait or poll. This was the
+  // parent-side half the observed trace was missing; pinned so it cannot regress.
+  it('states the asynchronous contract in the needsReply wake result', async () => {
+    const probe = await probeSameTurnPoll()
+    const prose = stringsIn(probe.wakeResult).join(' \n ').toLowerCase()
+    // (i) the reply comes back later, as a wake of this session…
+    expect(prose).toMatch(/wake|woken|later turn|new turn|report back|when it (finishes|replies)/)
+    // (ii) …so the right move now is to finish this turn.
+    expect(prose).toMatch(/end (your|this) turn|finish (your|this) turn|do not wait|don’t wait|do not poll/)
+  }, 120_000)
 
-  // RED — what must change: the `viewSessionStatus` description in
-  // packages/daemon/src/mcp/tools.ts currently closes with "Poll sparingly, and
-  // prefer waiting for the child’s reply over a tight polling loop." Inside a turn
-  // there is no way to wait: a turn either ends or blocks, and the model cannot
-  // block. Advising an impossible action is what turns "wait" into "poll once and
-  // then answer anyway".
-  it.fails('does not advise the caller to wait — an action no turn can take', () => {
-    expect(viewSessionStatusDescription().toLowerCase()).not.toMatch(/prefer waiting|wait for the child/)
+  // GUARD (green, shipped): the `viewSessionStatus` descriptor no longer advises
+  // "waiting" — an action no turn can take — and instead bounds the tool to what
+  // it honestly is: optional diagnostics that never carry the reply body, with
+  // `nextAction` driving what the caller does next. (An earlier red pin here also
+  // demanded "say when checking IS appropriate" phrasing; the shipped
+  // diagnostic-only framing supersedes that ask, so the pin was retired.)
+  it('describes viewSessionStatus as diagnostics that never advise waiting and never return the reply body', () => {
+    const description = viewSessionStatusDescription()
+    expect(description.toLowerCase()).not.toMatch(/prefer waiting|wait for the child/)
+    expect(description.toLowerCase()).toMatch(/diagnostic/)
+    expect(description).toContain('never returns the reply body')
+    expect(description).toContain('nextAction')
   })
 
-  // RED — same descriptor: having removed the impossible advice, it must say when
-  // the tool IS the right call. The honest cases are (a) you are already awake for
-  // some other reason and want a child's progress, and (b) the child you are
-  // checking is NOT the one whose reply woke you. Neither is expressible today.
-  it.fails(
-    'says when checking a child IS appropriate (already awake; a child other than the one that woke you)',
-    () => {
-      const description = viewSessionStatusDescription().toLowerCase()
-      expect(description).toMatch(/already (awake|running)|when you are awake|woken for another/)
-    }
-  )
-
-  // RED — what must change: `SessionStatusResult`
-  // (packages/daemon/src/mcp/ops.ts) collapses two different facts into `done`:
-  // "the child's last turn ended" and "the child has reported back to you". A
-  // caller that asked for `needsReply` cares only about the second, and today it
-  // cannot tell them apart — the two situations are byte-identical apart from the
-  // `updatedAt` clock. That is measured here rather than asserted as a field name,
-  // so any shape that distinguishes them satisfies this test.
-  it.fails(
-    'distinguishes "the child ended its turn" from "the child reported back"',
-    async () => {
-      const silent = await statusAfterChildTurn({ reportToParent: false })
-      await fixture?.stop()
-      fixture = undefined
-      const reported = await statusAfterChildTurn({ reportToParent: true })
-      expect(silent).toMatchObject({ status: 'done' })
-      expect(reported).toMatchObject({ status: 'done' })
-      // Run-specific identity and the wall clock are not answers to the caller's
-      // question, so they are removed before the comparison. Whatever remains is
-      // everything the tool actually TELLS a caller, and today it is identical in
-      // both situations.
-      expect(withoutRunIdentity(reported)).not.toEqual(withoutRunIdentity(silent))
-    },
-    240_000
-  )
+  // GUARD (green, shipped): `SessionStatusResult` no longer collapses "the
+  // child's last turn ended" and "the child has reported back to you" into one
+  // `done` — `reply.state` separates them. Measured over the whole result rather
+  // than asserted as a field name, so the guard holds for any shape that keeps
+  // the two situations distinguishable.
+  it('distinguishes "the child ended its turn" from "the child reported back"', async () => {
+    const silent = await statusAfterChildTurn({ reportToParent: false })
+    await fixture?.stop()
+    fixture = undefined
+    const reported = await statusAfterChildTurn({ reportToParent: true })
+    expect(silent).toMatchObject({ status: 'done' })
+    expect(reported).toMatchObject({ status: 'done' })
+    // Run-specific identity and the wall clock are not answers to the caller's
+    // question, so they are removed before the comparison. Whatever remains is
+    // everything the tool actually TELLS a caller, and it must differ between
+    // the two situations.
+    expect(withoutRunIdentity(reported)).not.toEqual(withoutRunIdentity(silent))
+  }, 240_000)
 
   // RED — and this one is not a hypothetical: it is what the real-model runs
   // actually produced in 2 of 5 trials (collaboration-arena-baseline.md §5.5).
@@ -355,14 +354,15 @@ async function statusAfterChildTurn(options: { reportToParent: boolean }): Promi
 }
 
 describe('delegate-and-forward — the standing guidance the two sides receive', () => {
-  // CHARACTERIZATION (green): the sendMessage descriptor does tell the model to
-  // set `needsReply`, and it does point at `viewSessionStatus` — but it never says
-  // the call is asynchronous. Pinned because it is the exact asymmetry the red
-  // tests above are about.
-  it('tells the caller to set needsReply and to poll, but never that the call is asynchronous', () => {
+  // GUARD (green): the sendMessage descriptor stays LEAN by design — it tells the
+  // model when to set `needsReply`, and that the wake result's `nextAction` (not
+  // a polling loop) drives what happens next, demoting `viewSessionStatus` to
+  // optional diagnostics. The async contract itself is delivered at call time in
+  // the wake result (guarded above), not restated in the always-loaded schema.
+  it('tells the caller when to set needsReply and to follow the returned nextAction, with status checks as optional diagnostics', () => {
     const description = sendMessageDescription()
     expect(description).toContain('needsReply')
-    expect(description).toContain('viewSessionStatus')
-    expect(description.toLowerCase()).not.toMatch(/asynchronous|end your turn|woken when|later turn/)
+    expect(description).toContain('nextAction')
+    expect(description).toMatch(/viewSessionStatus.*only for optional diagnostics/)
   })
 })

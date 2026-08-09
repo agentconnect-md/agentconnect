@@ -215,32 +215,38 @@ completed its turn but returned no message to forward."** The last sentence is
 contradicted by the state A had just read.
 
 Nothing in that trace is a routing fault: the wake was delivered and the child
-did run. What the case measures is that **`needsReply` is a two-sided contract
-with only one side stated**:
+did run. What the case originally measured is that **`needsReply` was a
+two-sided contract with only one side stated**:
 
-| Side       | What it is told                                                                                                                                              |
+| Side       | What it was told at the time of the trace                                                                                                                    |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Child**  | A standing `# Reporting back to your parent session` block (`packages/daemon/src/session/session-manager.ts`) naming the parent session and the reply shape. |
-| **Parent** | Nothing. Its tool result is `{ok, wake, childSessionId}` — three fields, no prose, no statement that the call was asynchronous.                              |
+| **Parent** | Nothing. Its tool result was `{ok, wake, childSessionId}` — three fields, no prose, no statement that the call was asynchronous.                             |
 
-The credential-free half pins the fixable affordances. Two of its tests are
-ordinary characterization pins (green), and five are `it.fails(…)` — the repo's
-expected-fail idiom: the assertion is written for the surface we want, it passes
-while the surface still fails it, and it starts failing the moment the fix lands.
-Each names the file and the change in a comment.
+The parent's half has since shipped (see the table below); the child's half —
+what happens when a headless child never discharges the obligation — is still
+open.
 
-| Assertion                                                                                   | Today                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The `needsReply` wake result states the async contract (reply arrives later; end your turn) | **Red.** The result is exactly `{ok, wake, childSessionId}` — measured, keys asserted.                                                                                        |
-| `viewSessionStatus` does not advise an action a turn cannot take                            | **Red.** It ends with "Poll sparingly, and prefer waiting for the child's reply over a tight polling loop." A turn cannot wait; it can only end or block.                     |
-| `viewSessionStatus` says when checking a child IS appropriate                               | **Red.** Nothing distinguishes "you are already awake for another reason" from "you are trying to synchronize".                                                               |
-| The status result separates "its turn ended" from "it reported back"                        | **Red.** Measured by running both situations and comparing: minus the child's ids and the clock, both answer `{status:'done', state:'idle'}` — byte-identical.                |
-| A headless child's answer is not silently dropped when it never reports back                | **Red.** Measured: the child's output reaches no platform effect (delivered or attempted) and no parent turn. See §5.5 — this is the failure the real runs actually produced. |
+The credential-free half pins the fixable affordances. When this case was first
+written every parent-side affordance was missing and the file carried five
+`it.fails(…)` pins. **The parent-side half has since SHIPPED on `main`**, and the
+file was re-verified and repinned on 2026-08-08: what used to be red is now a set
+of green guard tests so it cannot regress, and one genuinely open pin remains
+red.
 
-The two green pins record the surface as it is, so the red ones are anchored in
-measured behavior rather than a paraphrase: the wake result's exact key set, and
-a same-turn poll returning `{status:'in-progress', state:'prompting'}` while the
-child is provably mid-turn (an explicit rendezvous, not a sleep).
+| Assertion                                                                                   | Today                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The `needsReply` wake result states the async contract (reply arrives later; end your turn) | **Green guard.** The result now carries `reply: {requested, state}`, `nextAction: 'finish-turn-and-wait'`, and prose saying the reply arrives as a later turn of this session.                                                                                                   |
+| `viewSessionStatus` does not advise an action a turn cannot take                            | **Green guard.** The descriptor is now "diagnostic only; it never returns the reply body", with `nextAction` driving what the caller does next. (The earlier companion ask — phrasing for when checking IS appropriate — is superseded by that framing and its pin was retired.) |
+| The status result separates "its turn ended" from "it reported back"                        | **Green guard.** `SessionStatusResult.reply.state` distinguishes them (`not-sent` vs `queued-for-parent`); the guard measures the whole result, not a field name.                                                                                                                |
+| The sendMessage descriptor stays lean: `needsReply` + follow `nextAction`                   | **Green guard.** The async contract is delivered at call time in the wake result, not restated in the always-loaded schema.                                                                                                                                                      |
+| A headless child's answer is not silently dropped when it never reports back                | **Red — the one remaining `it.fails`.** Measured: a child that answers in prose instead of `sendMessage {sessionId}` reaches no platform effect (delivered or attempted) and no parent turn. See §5.5/§5.6 — this is the failure real runs actually produce.                     |
+
+The surface-characterization guard anchors all of this in measured behavior: the
+wake result's exact key set
+(`childSessionId, message, nextAction, ok, reply, wake`) and a same-turn poll
+returning `{status:'in-progress', state:'prompting'}` while the child is provably
+mid-turn (an explicit rendezvous, not a sleep).
 
 ## 4. Reproducing every result
 
@@ -251,7 +257,7 @@ pnpm install
 pnpm build # protocol must be built before typecheck
 
 # the whole arena gate
-pnpm eval:collab:contracts # 16 files, 122 tests
+pnpm eval:collab:contracts # 16 files, 121 tests
 
 # the routing acceptance cases alone
 pnpm eval:collab:routing # routing-acceptance + connection-surface
@@ -278,7 +284,7 @@ Full gate, measured on this branch:
 | Suite                                                  | Tests   |
 | ------------------------------------------------------ | ------- |
 | `evals/test/routing-acceptance.test.ts`                | 8       |
-| `evals/test/delegate-and-forward.test.ts`              | 7       |
+| `evals/test/delegate-and-forward.test.ts`              | 6       |
 | `evals/test/game-runner.test.ts`                       | 5       |
 | `evals/test/werewolf.test.ts`                          | 18      |
 | `evals/test/quota-counting.test.ts`                    | 8       |
@@ -293,11 +299,12 @@ Full gate, measured on this branch:
 | `evals/test/virtual-connections.test.ts`               | 4       |
 | `packages/daemon/test/evaluation-game-ingress.test.ts` | 5       |
 | `packages/daemon/test/evaluation-game-tools.test.ts`   | 3       |
-| **Total**                                              | **122** |
+| **Total**                                              | **121** |
 
-**5 expected-fail**, all of them in `delegate-and-forward.test.ts` (§3.5) and all
-naming a specific change to the tool surface. Every other pin in the gate is an
-ordinary assertion.
+**1 expected-fail** — `delegate-and-forward.test.ts`'s headless-child pin (§3.5),
+naming the one child-side change the surface still needs. Every other pin in the
+gate is an ordinary assertion, including the five §3.5 guards that pin the
+shipped parent-side contract.
 
 **One known flake, pre-existing and not from this work.** `werewolf.test.ts`'s
 `SCRIPTED BOUNDARY: a seven-player game exhausts the budget inside one 60s window`
@@ -318,6 +325,19 @@ before a single wave is injected (`preflightRealSubject` in
   corrupted `npx` cache produces exactly that, and the symptom without the check
   is a game that admits every wave, produces zero agent effects, and burns its
   whole deadline before writing an empty world.
+- **The runtime may not be launched through `npx`/`uvx`, and its id must be
+  `claude-acp`** (re-measured 2026-08-08; the earlier `npx -y …` recipe no
+  longer works as written). Two independent daemon policies bind here:
+  - `installedRuntimeCatalog` (`packages/daemon/src/runtimes/probe.ts`) filters
+    out package-launcher runtimes without a bespoke probe — the launcher being on
+    `$PATH` says nothing about the agent being installed — so an `npx`-launched
+    user runtime is reported "not installed" and every dispatch fails. Install
+    the adapter once (`npm install @agentclientprotocol/claude-agent-acp@0.64.0`)
+    and launch it as `node <path>/dist/index.js`.
+  - The subject's `memory: none` requires a **verified native off-switch**
+    (`packages/daemon/src/agents/runtime-memory.ts`). The policy matches the
+    exact runtime id `claude-acp` (the `node …/dist/index.js` argv does not match
+    the signature fallback), so a custom id fails with "off-switch unverified".
 - **The template must use `permissionMode: default`.** A non-prompting mode
   (`dontAsk`) makes the runtime deny every AgentConnect tool locally, before the
   daemon ever sees a permission request, so no game action can land (§5.1).
@@ -335,6 +355,31 @@ before a single wave is injected (`preflightRealSubject` in
 pnpm --filter @agentconnect.md/daemon build
 export AGENTCONNECT_DAEMON_ENTRY="$PWD/packages/daemon/dist/index.js"
 # then call runWerewolf({ subject: { kind: 'real', subjectRoot, templateAgentIds } })
+```
+
+A working template (the shape the 2026-08-08 re-run used):
+
+```jsonc
+// config.json
+{
+  "version": 1,
+  "controlPlane": { "enabled": false },
+  "runtimes": {
+    "claude-acp": {
+      "command": "node",
+      "args": ["<install dir>/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"]
+    }
+  }
+}
+// agents/<template-id>/agent.json
+{
+  "id": "<template-id>",
+  "name": "<template-id>",
+  "status": "active",
+  "runtime": "claude-acp",
+  "permissionMode": "default",
+  "runtimeOverrides": { "model": "sonnet" }
+}
 ```
 
 ## 5. Real-model runs
@@ -573,16 +618,13 @@ is the softer signal.
 ### 5.4 Peer-driven counting (historical)
 
 > **Provenance — read before quoting these.** These numbers were measured on
-> **`main` @ 87d36bc** with real local Claude Code over ACP (model sonnet). They
-> are **carried forward unrefreshed**: they have not been re-measured since.
->
-> They were also measured **when `MAX_AGENT_CALL_HOPS` was 8**. #628 has since
-> raised it to 20, so the depth-limited run below would terminate differently
-> today — and, per §6.1, on a different protection. Treat the **coordination
-> quality** figures (entropy, duplicates, regenerations) as the durable signal
-> and the **depth** figures as historical.
->
-> Everything in §2, §3, §4, §5.1–§5.3 and §6 **was** measured on the current branch.
+> **`main` @ 87d36bc** with real local Claude Code over ACP (model sonnet), when
+> `MAX_AGENT_CALL_HOPS` was 8. **They have since been re-measured: §5.6 is the
+> 2026-08-08 re-run on current `main`** (hop cap 20, orchestration tools retired,
+> evaluation toggle removed). The 2×20 run below stopped at 10 on the hop cap of
+> the day; the same run now completes 20/20 (§5.6), and the §6.1 prediction that
+> the automatic-turn budget would stop it at 16 edges turned out to be a
+> scripted-speed artifact. These tables are kept as the historical baseline.
 
 Both runs use the peer-driven variant: one human-sourced start message, then a
 silent referee.
@@ -675,7 +717,11 @@ gone wrong.
 
 That is the same observable the production trace reported — "returned no message to
 forward" — reached by a different mechanism, and from A's seat it was **true**. It
-is now pinned as the fifth expected-fail in §3.5.
+is pinned as the one remaining expected-fail in §3.5, and the 2026-08-08 re-run's
+single trial reproduced it again (§5.6): the child answered in prose to its
+headless session, the reply was lost, and the parent — which by then had the
+shipped async-contract wake result — correctly made zero status polls and no
+premature claim, and simply waited for a report that never came.
 
 **What worked, when it worked, was not quite what the child thought.** In trials 1,
 3 and 5 the child did call `sendMessage {sessionId:<parent>}` — but it described
@@ -690,9 +736,70 @@ posts, and the per-trial summary) are written to
 `.artifacts/evaluation/delegate-forward/` at mode 0600, redacted with the subject
 template's secret set. They are deliberately not committed.
 
+### 5.6 Full re-run on current `main`, 2026-08-08 — one trial per case
+
+Every real-model case re-run **once** on `main` @ `70d58cd1` — after the full
+sendMessage routing rework (#503/#549/#568), the hop-cap raise to 20 (#628), the
+orchestration-tool retirement (#732), and the evaluation-toggle removal (#761) —
+with real local Claude Code over ACP (`claude-agent-acp` 0.64.0, model `sonnet`,
+`permissionMode: default`, memory off, from-scratch workspace; template shape in
+§4.1). One trial is an observation, not a score (§8.1).
+
+**Fidelity note.** The counting and quota games were run **mention-gated** for
+the first time — the production shared-channel convention the routing-acceptance
+fixture always used — with the kickoff entering as an ordinary human platform
+message that @mentions every participant (`bindMatch: 'mention'` in
+`evals/games/engine.ts`; default `auto` unchanged). Continuation after the
+kickoff is the ordinary ladder: mention, thread affinity, agent-authored
+continuation. Werewolf keeps its referee-driven control conversations and
+`auto`-bound rooms by game design.
+
+| Case                                 | Result (2026-08-08)                                                                                                                                                                                                               | Historical                                | Terminal reason                  |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | -------------------------------- |
+| Peer counting 2×20, real             | **20/20 completed**, perfect alternation, entropy 1.0, 0 collisions, 0 gated wakes, 0 latches, 124 s                                                                                                                              | 2/20 (pre-#568); 10/20 (hop cap 8)        | `completed` — 19 of 20 hops used |
+| Peer counting 4×8, real              | **8/8 completed**, entropy **0.95**, all four spoke, 0 collisions, 14 regenerations, 61 s                                                                                                                                         | 8/8, entropy 0.70, one silent agent       | `completed`                      |
+| Quota 2×10, real                     | **10/10 completed-clean**, perfect alternation, exact quotas, 0 violations                                                                                                                                                        | completed-clean                           | `completed`                      |
+| Quota 4×20, real                     | **19/20**, classified **`deadlocked`**: only agent-a had quota left and had just posted #19 — the no-consecutive rule makes #20 unpostable. The agents diagnosed it themselves mid-run. Entropy 0.997, 3 collisions, 0 over-quota | 19/20 stalled (same shape)                | `deadlocked`                     |
+| Werewolf 7p, real (seed 201)         | **Completed, werewolves win, 4 rounds**; 3 days all `order_complete` (15/15 speeches), **1 out-of-order speech**, 0 unparseable, **0 leaks**, 0 unauthorized effects                                                              | 3/3 completed, werewolves, 0 out-of-order | `completed`                      |
+| Delegate-and-forward, real (1 trial) | Parent side clean (0 polls, no premature claim, `nextAction` honored); **child answered in prose, reply lost** — invariants 3 and 4 failed                                                                                        | 2/5 lost the reply the same way           | test `passed` (rates)            |
+| Cross-room handoff (scripted)        | Boundary unchanged: origin 1..6 clean, handoff refused (`thread` not expressible), 0 unauthorized / wrong-room / leaks                                                                                                            | identical                                 | `stalled`                        |
+| `eval:collab:contracts`              | **115/115** (plus the repinned §3.5 file: 5 green guards + 1 expected-fail)                                                                                                                                                       | 115/115                                   | —                                |
+| `eval:contracts`                     | **46/46**                                                                                                                                                                                                                         | 46/46                                     | —                                |
+
+**The headline is the 2×20 chain, and it corrects §6.1's real-model
+inference.** The scripted result — a chain stopped at 16 edges by the
+automatic-turn budget with hops to spare — is real but is a **scripted-speed
+artifact**, exactly like the §5.3 Werewolf collapse: a scripted chain spends all
+16 edges inside one 60-second loop-guard window. The real run spanned 124 s, the
+window rolled over mid-run, each agent's automatic counter reset, and the chain
+ran to the target with **zero** gated wakes — 19 hops used of the 20-hop cap.
+Under real timing the operative bound on a two-agent leaderless chain is now the
+**hop cap**, and a target of roughly 21+ would hit it. (The budget still binds
+per-window: it is the bound for anything that fans out or runs fast, per §6.3 and
+§6.5.)
+
+**Werewolf carried the game again, with two soft regressions stated plainly, both
+model behavior, not protections.** One out-of-order speech (day 1) versus zero
+across all historical trials, and the worst vote participation observed so far —
+3/6, 2/5, 2/4 across the three days (`incompleteVotes: 3`) — with zero gated
+wakes among the living. The run also produced the first observed in-game
+loop-guard latch: **the night-1 victim's circuit** (the seer, killed before day
+
+1. latched after absorbing echoes it could never answer — the §6.5 dead-players
+   limitation observed in a real game. It never affected a living player.
+
+**#761 changed nothing measurable, by construction.** The daemon registered
+`0 evaluation tool(s)` in every run; the agents saw exactly the production tool
+surface, and the counting/quota agents used no tools at all — bare ordinary
+replies through the routing ladder.
+
+Run artifacts (`world-events.jsonl`, `game-result.json`, `events.jsonl`,
+`topology.json`, `run.json`, full daemon logs) are preserved outside the
+repository, per run, by the operator.
+
 ## 6. Limitations
 
-### 6.1 The raised hop cap is unreachable — the automatic-turn budget binds first
+### 6.1 Which protection binds a chain depends on speed: the automatic-turn budget at scripted speed, the hop cap in real time
 
 Two protections bound an agent-to-agent chain, and **which one binds changed
 under this branch's feet**:
@@ -710,27 +817,29 @@ config-schema key, no CP env key, no `.env.example` entry). The loop guard's
 budget has no override either, and its latch is durable — only `!resume` clears
 it.
 
-**Measured on this branch:** a two-agent A→B→A chain advances one hop per edge in
+**Measured, scripted:** a two-agent A→B→A chain advances one hop per edge in
 strict alternation, exactly once per finalized response, and stops at **16
 edges** — with **4 hops still unspent**. Each agent spent exactly its 8 automatic
 turns. Raising only `MAX_AUTOMATIC_TURNS_PER_WINDOW` lets the identical chain run
 to hop 20 and stop on the cap instead, which is how the attribution was
 confirmed rather than inferred from arithmetic.
 
-So after #628 the hop cap is **not** the operative limit for a leaderless
-two-agent room; the automatic-turn budget is, at `2 × 8 = 16` edges. Raising the
-hop cap alone does not lengthen such a conversation.
+**Measured, real (2026-08-08, §5.6): the 16-edge bound is a scripted-speed
+artifact.** A scripted chain spends all 16 edges inside one 60-second loop-guard
+window; a real chain does not. The real 2×20 peer count spanned 124 s, the
+window rolled over mid-run, each agent's automatic counter reset, and the chain
+ran to its target — 19 hops used of the 20-hop cap, **zero** gated wakes, zero
+latches. An earlier revision of this section inferred that the same real run
+"would now stop at 16 edges on the automatic-turn budget"; that inference was
+wrong, exactly the way §5.3's scripted Werewolf collapse was a speed artifact.
 
-Consequence for the probe: a conversation carried purely by agent continuations
-gets the initial human-sourced wave plus 16 agent-to-agent edges, so with two
-participants roughly **17 numbers**. A longer target still needs a human or
-referee message to re-seed the budget. The arena cannot measure leaderless
-coordination **quality** past that depth — beyond it, the metric measures the
-protection.
-
-None of this is a defect. It is two protections composing, and the composition is
-worth stating plainly because the design's "advances until the cap" is currently
-unreachable.
+So under real timing the operative bound on a two-agent leaderless chain is the
+**hop cap** — a target of roughly 21+ numbers would hit it — while the
+automatic-turn budget remains the operative bound wherever turns are fast or
+fan-out is wide (§6.3, §6.5). The arena still cannot measure leaderless
+coordination quality past the cap: beyond it, the metric measures the
+protection. None of this is a defect; it is two protections composing, with
+wall-clock speed selecting which one binds.
 
 ### 6.2 A leaderless room does not stop at its goal
 
@@ -954,9 +1063,9 @@ Stated explicitly, since several claims above are structural rather than observe
 | Real Claude Code did NOT poll or fabricate on delegate-and-forward      | **Measured**, this branch — 5 trials, `viewSessionStatus` called 0 times, 0 premature claims (§5.5)                                               |
 | ...but the reply was lost in 2 of 5 trials                              | **Measured** (§5.5) — the child answered only in prose into a headless session                                                                    |
 | The missing parent-side affordances are not sufficient to cause the bug | **Inferred** from those 5 trials — a negative result on one model in one room shape, not a proof that the affordances do not matter               |
-| Real-model 2 × 20 → 10, entropy 1.0                                     | **Measured on `main` @ 87d36bc, when the hop cap was 8**; carried forward unrefreshed                                                             |
-| Real-model 4 × 8 → 8/8, entropy 0.70                                    | **Measured on `main` @ 87d36bc**, carried forward unrefreshed                                                                                     |
-| The same real-model run would now stop at 16 edges                      | **Inferred** from the scripted chain result; no real-model run has been done since #628                                                           |
-| A long leaderless count still cannot finish unaided                     | **Inferred** from the 16-edge bound plus the absence of any override                                                                              |
+| Real-model 2 × 20 → 10, entropy 1.0                                     | **Measured on `main` @ 87d36bc, when the hop cap was 8**; superseded by §5.6 (20/20 on current `main`)                                            |
+| Real-model 4 × 8 → 8/8, entropy 0.70                                    | **Measured on `main` @ 87d36bc**; superseded by §5.6 (8/8, entropy 0.95, all four spoke)                                                          |
+| A real 2-agent chain is bound by the hop cap, not the turn budget       | **Measured**, §5.6 — the earlier 16-edge inference was falsified: the 60 s window rolls at real speed (19 hops used, 0 gated)                     |
+| A real 2×20 leaderless count finishes unaided                           | **Measured**, §5.6 — the "cannot finish unaided" inference held only for scripted speed; a target past ~21 would still hit the cap (**inferred**) |
 | No hop-cap or loop-guard override exists                                | **Measured** by exhaustive grep of config schema, CP env, and `.env.example`                                                                      |
 | Participation unfairness under fan-out                                  | **Measured** (agents that never spoke) — the _cause_ attributed to scheduling order is **inferred**                                               |
