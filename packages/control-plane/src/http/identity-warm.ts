@@ -28,8 +28,21 @@ export interface IdentityWarmDeps {
 // Per-principal re-check cadence: half the 60 s refresh-ahead band, so a due warm
 // fires at most 30 s late while API-key sub resolution stays ≤ 2 reads/principal/min.
 const WARM_THROTTLE_MS = 30_000
-// Bounds both maps; the wholesale clear costs at most one extra check per principal.
+// Caps both maps below, enforced per entry by {@link boundedSet}.
 const MAX_TRACKED_PRINCIPALS = 10_000
+
+// Recency-ordered bounded write: refresh the key's position, evict only the
+// least-recently-written entry on overflow. A wholesale clear would let a working
+// set just past the cap defeat the throttle and the memo continuously; per-entry
+// eviction costs one early re-check for the evicted principal and nothing else.
+function boundedSet<T>(map: Map<string, T>, key: string, value: T): void {
+  map.delete(key)
+  map.set(key, value)
+  if (map.size > MAX_TRACKED_PRINCIPALS) {
+    const oldest = map.keys().next()
+    if (!oldest.done) map.delete(oldest.value)
+  }
+}
 
 /** Build the trigger the auth plugin fires after each successful authentication.
  *  Fire-and-forget by contract: it never throws and never surfaces a rejection. */
@@ -41,16 +54,12 @@ export function createIdentityWarmTrigger(
   // ever set it), so positives memoize for the process lifetime; a subless account
   // (devAuth-era row) is retried once per throttle window instead.
   const subs = new Map<string, string>()
-  const remember = (userId: string, sub: string) => {
-    if (subs.size >= MAX_TRACKED_PRINCIPALS && !subs.has(userId)) subs.clear()
-    subs.set(userId, sub)
-  }
+  const remember = (userId: string, sub: string) => boundedSet(subs, userId, sub)
   return ({ userId, oidcSubject }) => {
     const now = deps.clock.now()
     const last = lastCheckedAt.get(userId)
     if (last !== undefined && now - last < WARM_THROTTLE_MS) return
-    if (lastCheckedAt.size >= MAX_TRACKED_PRINCIPALS && !lastCheckedAt.has(userId)) lastCheckedAt.clear()
-    lastCheckedAt.set(userId, now)
+    boundedSet(lastCheckedAt, userId, now)
     const sub = oidcSubject ?? subs.get(userId)
     if (sub !== undefined) {
       remember(userId, sub)

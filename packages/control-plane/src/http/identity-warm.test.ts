@@ -97,4 +97,26 @@ describe('createIdentityWarmTrigger', () => {
     expect(getOidcSubject).not.toHaveBeenCalled()
     expect(ensureIdentityFresh).toHaveBeenNthCalledWith(2, 'sub-1')
   })
+
+  it('cardinality overflow evicts one principal from the throttle, never the whole book', () => {
+    const { trigger, ensureIdentityFresh } = harness()
+    for (let i = 0; i <= 10_000; i++) trigger({ userId: `u${i}`, oidcSubject: `s${i}` })
+    expect(ensureIdentityFresh).toHaveBeenCalledTimes(10_001)
+
+    trigger({ userId: 'u9999', oidcSubject: 's9999' }) // resident — still inside its window
+    expect(ensureIdentityFresh).toHaveBeenCalledTimes(10_001)
+
+    trigger({ userId: 'u0', oidcSubject: 's0' }) // only the evicted principal re-checks early
+    expect(ensureIdentityFresh).toHaveBeenCalledTimes(10_002)
+  })
+
+  it('the sub memo survives overflow for recent principals — no per-request DB reads under load', () => {
+    const { trigger, ensureIdentityFresh, getOidcSubject, clock } = harness()
+    for (let i = 0; i <= 10_000; i++) trigger({ userId: `u${i}`, oidcSubject: `s${i}` })
+
+    clock.advance(30_000)
+    trigger({ userId: 'u9999' }) // API-key shape: its binding is still memoized
+    expect(getOidcSubject).not.toHaveBeenCalled()
+    expect(ensureIdentityFresh).toHaveBeenLastCalledWith('s9999')
+  })
 })

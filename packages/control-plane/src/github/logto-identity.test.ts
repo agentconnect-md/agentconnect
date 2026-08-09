@@ -348,3 +348,19 @@ describe('LogtoIdentityService.ensureIdentityFresh (cold-visit warm trigger)', (
     expect(log.info).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('LogtoIdentityService subject-cache bounds', () => {
+  it('evicts the least-recently-written subject past the cap instead of growing forever', async () => {
+    const clock = new FakeClock(0)
+    const { fetchImpl, calls } = fakeLogto({}) // every subject 404s — tiny negative entries
+    const svc = svcOf(fetchImpl, clock)
+
+    for (let i = 0; i <= 10_000; i++) await svc.githubLoginFor(`sub-${i}`, 120_000)
+    expect(calls.user).toBe(10_001)
+
+    await svc.githubLoginFor('sub-10000', 120_000) // most recent write — still resident
+    expect(calls.user).toBe(10_001)
+    await svc.githubLoginFor('sub-0', 120_000) // the one evicted entry refetches
+    expect(calls.user).toBe(10_002)
+  })
+})

@@ -90,6 +90,12 @@ const TIMEOUT_MS = 5_000
 // which fixes a connector is picked up the same day, long enough that the probe
 // is not per click.
 const LINK_MODE_TTL_MS = 60 * 60_000
+// The subject-keyed caches are written for EVERY authenticated account (the §3 warm
+// trigger reaches them per subject), so they are size-bounded: a write refreshes the
+// entry's recency, overflow evicts the least-recently-written subject, and an evicted
+// entry simply refetches on its next read. Hot subjects rewrite at least every lease,
+// so write recency tracks read recency closely enough for eviction.
+const MAX_SUBJECT_ENTRIES = 10_000
 
 interface CachedLogin {
   login: string | null
@@ -388,6 +394,16 @@ export class LogtoIdentityService {
     if (maxAgeMs !== undefined && !inFlight) this.log?.info({ sub, cache }, 'logto identity blocking fetch')
   }
 
+  /** Recency-ordered bounded write — a subject cache never grows past its cap. */
+  private setBounded<T>(map: Map<string, T>, key: string, value: T): void {
+    map.delete(key)
+    map.set(key, value)
+    if (map.size > MAX_SUBJECT_ENTRIES) {
+      const oldest = map.keys().next()
+      if (!oldest.done) map.delete(oldest.value)
+    }
+  }
+
   /** The deduped in-flight user lookup — one upstream read serves every
    *  concurrent caller, blocking miss and refresh-ahead alike. */
   private pendingUser(sub: string): Promise<LogtoUser | null> {
@@ -547,7 +563,7 @@ export class LogtoIdentityService {
       // Deleted at the provider — cache the miss briefly.
       if (current()) {
         const fetchedAt = this.clock.now()
-        this.users.set(sub, { user: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+        this.setBounded(this.users, sub, { user: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
       }
       return null
     }
@@ -557,7 +573,7 @@ export class LogtoIdentityService {
     const user = (await res.json()) as LogtoUser
     if (current()) {
       const fetchedAt = this.clock.now()
-      this.users.set(sub, { user, fetchedAt, expiresAt: fetchedAt + LOGIN_TTL_MS })
+      this.setBounded(this.users, sub, { user, fetchedAt, expiresAt: fetchedAt + LOGIN_TTL_MS })
     }
     return user
   }
@@ -570,7 +586,7 @@ export class LogtoIdentityService {
       // Deleted at the provider — no identity, cache the miss briefly.
       if (current()) {
         const fetchedAt = this.clock.now()
-        this.logins.set(sub, { login: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+        this.setBounded(this.logins, sub, { login: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
       }
       return null
     }
@@ -582,7 +598,7 @@ export class LogtoIdentityService {
     const login = firstString(raw?.userInfo?.login, raw?.login)
     if (current()) {
       const fetchedAt = this.clock.now()
-      this.logins.set(sub, {
+      this.setBounded(this.logins, sub, {
         login,
         fetchedAt,
         expiresAt: fetchedAt + (login ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
