@@ -254,7 +254,7 @@ export class LogtoIdentityService {
     private readonly clock: Clock,
     private readonly mutations: SocialIdentityMutationGate,
     private readonly fetchImpl: FetchLike = fetch as FetchLike,
-    private readonly log?: { debug(obj: object, msg: string): void }
+    private readonly log?: { debug(obj: object, msg: string): void; info(obj: object, msg: string): void }
   ) {}
 
   /**
@@ -269,6 +269,7 @@ export class LogtoIdentityService {
       if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingLogin(sub))
       return cached.login
     }
+    this.noteColdBlock('logins', sub, maxAgeMs, this.loginInFlight.has(sub))
     return this.pendingLogin(sub)
   }
 
@@ -307,6 +308,28 @@ export class LogtoIdentityService {
   /** Linked Feishu/Lark identities, keyed by the provider's cross-app union_id. */
   async feishuIdentitiesFor(sub: string): Promise<FeishuIdentity[]> {
     return feishuIdentitiesOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
+  }
+
+  /**
+   * Warm-at-touch trigger (session-access-cold-visit.md §3): start, fire-and-forget,
+   * the background lookups a later authorization read of this subject would block on.
+   * Gated on the same dueness those reads apply (missing / expired against the 120 s
+   * cap / past its half-lease, nothing already in flight) so the debug line counts
+   * actual upstream fires. Rides the shared single-flight lookups and the epoch fence
+   * unchanged; the 120 s lease is untouched — this adds a trigger, not a serving rule.
+   */
+  ensureIdentityFresh(sub: string): void {
+    const now = this.clock.now()
+    const due = (cached: { fetchedAt: number; expiresAt: number } | undefined) =>
+      !cached ||
+      cached.expiresAt <= now ||
+      now - cached.fetchedAt >= PROVIDER_IDENTITY_TTL_MS ||
+      refreshAheadDue(cached, now, PROVIDER_IDENTITY_TTL_MS)
+    const users = due(this.users.get(sub)) && !this.userInFlight.has(sub)
+    const logins = due(this.logins.get(sub)) && !this.loginInFlight.has(sub)
+    if (users) this.refreshInBackground(sub, () => this.pendingUser(sub))
+    if (logins) this.refreshInBackground(sub, () => this.pendingLogin(sub))
+    if (users || logins) this.log?.debug({ sub, users, logins }, 'logto identity warm-ahead fired')
   }
 
   /**
@@ -353,7 +376,16 @@ export class LogtoIdentityService {
       if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingUser(sub))
       return cached.user
     }
+    this.noteColdBlock('users', sub, maxAgeMs, this.userInFlight.has(sub))
     return this.pendingUser(sub)
+  }
+
+  // Cold-block counter (session-access-cold-visit.md §5): an authorization-lease read
+  // (`maxAgeMs` set — display reads pass none) found neither a servable entry nor an
+  // in-flight lookup to join, so the caller stalls on Logto. The rate of this line is
+  // the number the §3 warm trigger exists to drive to ~zero for console traffic.
+  private noteColdBlock(cache: 'users' | 'logins', sub: string, maxAgeMs: number | undefined, inFlight: boolean): void {
+    if (maxAgeMs !== undefined && !inFlight) this.log?.info({ sub, cache }, 'logto identity blocking fetch')
   }
 
   /** The deduped in-flight user lookup — one upstream read serves every

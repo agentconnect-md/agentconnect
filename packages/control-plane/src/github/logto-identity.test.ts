@@ -7,7 +7,7 @@
  * by `slack-identity.test.ts`, the GitHub login half and the unlink writes by
  * `user-authz.test.ts`.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import type { SocialIdentityMutationGate } from '../persistence/ports.js'
 import { LogtoIdentityService } from './logto-identity.js'
@@ -29,6 +29,11 @@ function slackUser(teamId = 'T0EXAMPLE1') {
  *  by the last-sign-in-method guard). */
 function githubUser(login: string) {
   return { identities: { github: { details: { rawData: { userInfo: { login } } } }, google: { userId: 'g' } } }
+}
+
+/** A Logto user with both a Slack and a GitHub identity — one directory read feeds both caches. */
+function linkedUser() {
+  return { identities: { ...slackUser().identities, ...githubUser('octocat').identities } }
 }
 
 /**
@@ -61,7 +66,13 @@ function fakeLogto(users: Record<string, unknown>, opts: { parkRead?: number; on
   return { fetchImpl, calls, release: () => release(), parkedReadArrived }
 }
 
-const svcOf = (fetchImpl: FetchImpl, clock: FakeClock) => new LogtoIdentityService(MGMT, clock, MUTATIONS, fetchImpl)
+const logSpy = () => ({
+  debug: vi.fn<(obj: object, msg: string) => void>(),
+  info: vi.fn<(obj: object, msg: string) => void>()
+})
+type SvcLog = ReturnType<typeof logSpy>
+const svcOf = (fetchImpl: FetchImpl, clock: FakeClock, log?: SvcLog) =>
+  new LogtoIdentityService(MGMT, clock, MUTATIONS, fetchImpl, log)
 
 /** Drain a (released) background refresh — the fakes settle in micro/macrotasks,
  *  never on real timers, so a few event-loop turns are enough. */
@@ -204,5 +215,136 @@ describe('LogtoIdentityService refresh-ahead', () => {
     // The background refresh replaced the miss with the just-linked login.
     await expect(svc.githubLoginFor('sub-1', 120_000)).resolves.toBe('late')
     expect(calls.user).toBe(2)
+  })
+})
+
+describe('LogtoIdentityService.ensureIdentityFresh (cold-visit warm trigger)', () => {
+  it('cold caches: one background lookup per cache, then capped reads serve without blocking', async () => {
+    const clock = new FakeClock(0)
+    const log = logSpy()
+    const { fetchImpl, calls } = fakeLogto({ 'sub-1': linkedUser() })
+    const svc = svcOf(fetchImpl, clock, log)
+
+    svc.ensureIdentityFresh('sub-1')
+    await settled()
+    // One lookup per cache — users and logins read the same Logto resource.
+    expect(calls.user).toBe(2)
+    expect(log.debug).toHaveBeenCalledWith(
+      { sub: 'sub-1', users: true, logins: true },
+      'logto identity warm-ahead fired'
+    )
+
+    // The session path finds both caches fresh: no further fetch, no cold-block line.
+    await expect(svc.slackIdentityFor('sub-1')).resolves.toMatchObject({ teamId: 'T0EXAMPLE1' })
+    await expect(svc.feishuIdentitiesFor('sub-1')).resolves.toEqual([])
+    await expect(svc.githubLoginFor('sub-1', 120_000)).resolves.toBe('octocat')
+    expect(calls.user).toBe(2)
+    expect(log.info).not.toHaveBeenCalled()
+  })
+
+  it('fires only when an entry is missing or past half of the 120 s cap', async () => {
+    const clock = new FakeClock(0)
+    const log = logSpy()
+    const { fetchImpl, calls } = fakeLogto({ 'sub-1': linkedUser() })
+    const svc = svcOf(fetchImpl, clock, log)
+
+    svc.ensureIdentityFresh('sub-1')
+    await settled()
+    expect(calls.user).toBe(2)
+
+    log.debug.mockClear()
+    clock.advance(59_000) // age 59 s — under half of the cap, both entries quiet
+    svc.ensureIdentityFresh('sub-1')
+    await settled()
+    expect(calls.user).toBe(2)
+    expect(log.debug).not.toHaveBeenCalled()
+
+    clock.advance(2_000) // age 61 s — fresh by the 10 min TTL, due against the 120 s cap's half
+    svc.ensureIdentityFresh('sub-1')
+    await settled()
+    expect(calls.user).toBe(4)
+    expect(log.debug).toHaveBeenCalledWith(
+      { sub: 'sub-1', users: true, logins: true },
+      'logto identity warm-ahead fired'
+    )
+  })
+
+  it('concurrent triggers and a blocking read coalesce onto one in-flight lookup', async () => {
+    const clock = new FakeClock(0)
+    const log = logSpy()
+    const { fetchImpl, calls, release, parkedReadArrived } = fakeLogto({ 'sub-1': linkedUser() }, { parkRead: 2 })
+    const svc = svcOf(fetchImpl, clock, log)
+
+    // Read 1 — a genuine cold block on the logins cache, counted.
+    await expect(svc.githubLoginFor('sub-1', 120_000)).resolves.toBe('octocat')
+    expect(log.info).toHaveBeenCalledWith({ sub: 'sub-1', cache: 'logins' }, 'logto identity blocking fetch')
+
+    clock.advance(10_000) // logins young → the trigger has only the users cache to warm
+    svc.ensureIdentityFresh('sub-1') // parks upstream as read 2
+    await parkedReadArrived
+    svc.ensureIdentityFresh('sub-1') // users in flight, logins young — nothing new fires
+
+    const read = svc.slackIdentityFor('sub-1') // joins the parked lookup
+    release()
+    await expect(read).resolves.toMatchObject({ teamId: 'T0EXAMPLE1' })
+    await settled()
+    expect(calls.user).toBe(2)
+    // The joiner found the warm's lookup in flight — never counted as a cold block.
+    expect(log.info).toHaveBeenCalledTimes(1)
+  })
+
+  it('forgetUser racing a warm-fired lookup keeps its result out of the cache', async () => {
+    const clock = new FakeClock(0)
+    const users: Record<string, unknown> = { 'sub-1': linkedUser() }
+    const { fetchImpl, calls, release, parkedReadArrived } = fakeLogto(users, { parkRead: 2 })
+    const svc = svcOf(fetchImpl, clock)
+
+    await svc.githubLoginFor('sub-1', 120_000) // read 1 — leaves only the users cache cold
+    clock.advance(10_000)
+    svc.ensureIdentityFresh('sub-1') // fires the users lookup; parks as read 2
+    await parkedReadArrived
+
+    // The identity changes at the provider and the console announces it while the
+    // warm's lookup is still in flight holding the pre-change snapshot.
+    users['sub-1'] = slackUser('T0AFTER000')
+    svc.forgetUser('sub-1')
+    release()
+    await settled()
+
+    // The epoch fence dropped the parked result — the next read sees the new world.
+    await expect(svc.slackIdentityFor('sub-1')).resolves.toMatchObject({ teamId: 'T0AFTER000' })
+    expect(calls.user).toBe(3)
+  })
+
+  it('a failing warm is swallowed: debug-logged, nothing thrown', async () => {
+    const clock = new FakeClock(0)
+    const log = logSpy()
+    const failing: FetchImpl = async () => {
+      throw new Error('logto unreachable')
+    }
+    const svc = svcOf(failing, clock, log)
+
+    expect(() => svc.ensureIdentityFresh('sub-1')).not.toThrow()
+    await settled()
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'sub-1' }),
+      'logto refresh-ahead lookup failed'
+    )
+  })
+
+  it('counts a capped read blocking on a cold cache; display reads and warmed reads are quiet', async () => {
+    const clock = new FakeClock(0)
+    const log = logSpy()
+    const { fetchImpl } = fakeLogto({ 'sub-1': linkedUser() })
+    const svc = svcOf(fetchImpl, clock, log)
+
+    await svc.socialAccountFor('sub-1') // display read (no cap): cold, but not the authorization path
+    expect(log.info).not.toHaveBeenCalled()
+
+    await svc.githubLoginFor('sub-1', 120_000) // capped read on a cold logins cache
+    expect(log.info).toHaveBeenCalledWith({ sub: 'sub-1', cache: 'logins' }, 'logto identity blocking fetch')
+
+    await svc.slackIdentityFor('sub-1') // users cache already warm from the display read
+    expect(log.info).toHaveBeenCalledTimes(1)
   })
 })
