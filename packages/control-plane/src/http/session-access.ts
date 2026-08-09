@@ -22,6 +22,8 @@ export interface ResolvedSessionAccess {
   externalScopes: readonly ExternalScopeRecord[]
   degraded: boolean
   accessIssues: SessionAccessIssue[]
+  /** Set when this snapshot's last refresh-behind failed; cleared by the next one that lands. Observability only (#775). */
+  refreshFailedAt?: Date
 }
 
 export interface SessionAccessResolver {
@@ -97,6 +99,15 @@ type Sweep = {
   scopes: readonly ExternalScopeRecord[]
   viewer: SessionAccessViewer
   policies: PolicySnapshot
+  /** True for a refresh behind a served response; a cold blocking sweep reports its failure to the caller instead. */
+  background: boolean
+}
+
+/** A CAUSE, never a TARGET (the slack-session-access.ts discipline): the error's code or class name, never its message. */
+function refreshFailureCause(err: unknown): string {
+  if (!(err instanceof Error)) return typeof err
+  const code = (err as { code?: unknown }).code
+  return typeof code === 'string' || typeof code === 'number' ? String(code) : err.name
 }
 
 /** Exactly the inputs `forScopes` reads — org, the viewer it decides for, the
@@ -247,7 +258,18 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     // outlive its own freshness for there to be anything to serve while the
     // refresh runs. `SNAPSHOT_FRESH_MS` is applied by the reader below.
     ttl: SNAPSHOT_MAX_STALE_MS,
-    fetchMethod: (_key, _stale, { context }) => forScopes(context.scopes, context.viewer, context.policies)
+    fetchMethod: (_key, stale, { context }) =>
+      forScopes(context.scopes, context.viewer, context.policies).catch((err: unknown) => {
+        // A refresh-behind rejection reaches no caller: stamp the surviving entry and log the one countable warn.
+        if (context.background) {
+          if (stale) stale.refreshFailedAt = new Date(deps.clock.now())
+          context.viewer.request.log.warn(
+            { orgId: context.viewer.orgId, cause: refreshFailureCause(err) },
+            'session access refresh-behind failed — still serving the previous snapshot'
+          )
+        }
+        throw err
+      })
   })
 
   /** `forScopes` behind the snapshot window. Callers treat the record as
@@ -270,7 +292,7 @@ function buildSessionAccessResolver(deps: HttpDeps): SessionAccessResolver {
     // directly rather than reporting no external access, which would hide rows.
     const access =
       (await snapshots.fetch(key, {
-        context: { scopes, viewer, policies },
+        context: { scopes, viewer, policies, background: refreshBehind },
         ...(refreshBehind ? REFRESH_BEHIND : {})
       })) ?? (await forScopes(scopes, viewer, policies))
     return { ...access, identitySet: new Set(access.identitySet) }
