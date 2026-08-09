@@ -480,14 +480,14 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
       this.audiences.delete(key)
     } else if (observed && this.deps.clock.now() - observed.fetchedAt > this.recheckMs) {
       // §4.2(5) touch-revalidation: past the recheck threshold, serve cached and re-observe behind the response.
-      this.revalidateAudience(key, channel, token)
+      this.revalidateAudience(key, channel, token, observed)
     }
     return observed
   }
 
   /** §4.2(5) re-observation: single-flighted, never awaited by a request; a failure is
    *  logged, never cached, and never evicts the still-leased entry it failed to replace. */
-  private revalidateAudience(key: string, channel: string, token: string): void {
+  private revalidateAudience(key: string, channel: string, token: string, replacing: ObservedAudience): void {
     if (this.revalidating.has(key)) return
     this.stats.audienceRevalidations += 1
     this.deps.log?.debug?.({ provider: 'slack' }, 'slack audience touch-revalidation fired')
@@ -498,6 +498,10 @@ export class SlackSessionAccessService implements SessionAccessPlugin {
           this.deps.log?.debug?.({ provider: 'slack', reason: read.reason }, 'slack audience re-observation failed')
           return
         }
+        // Write fence: land only over the exact entry this re-observation set out to
+        // replace. A §4.2(4) drop or a newer observation since capture must win — an
+        // unfenced write would resurrect a just-invalidated `public` for the full lease.
+        if (this.audiences.peek(key) !== replacing) return
         this.audiences.set(key, { ...read, fetchedAt: this.deps.clock.now() }, { ttl: this.audienceTtl(read.audience) })
       } catch (error) {
         const reason = thrownReason(error)

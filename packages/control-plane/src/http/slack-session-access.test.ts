@@ -1029,6 +1029,49 @@ describe('SlackSessionAccessService', () => {
       expect(calls(fetchImpl, 'conversations.info')).toBe(4)
     })
 
+    // The write fence: without it, a re-observation that started before the snapshot
+    // lands its stale `public` AFTER the drop and resurrects the full long lease.
+    it('a snapshot invalidation wins over an in-flight re-observation', async () => {
+      const clock = new FakeClock(EPOCH)
+      const state = { isPrivate: false, defer: false }
+      let release: (() => void) | undefined
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url.includes('conversations.info')) {
+          if (state.defer) {
+            state.defer = false
+            return new Promise<Response>((resolve) => {
+              release = () => resolve(json({ ok: true, channel: { is_private: false, is_im: false, is_mpim: false } }))
+            })
+          }
+          return json({ ok: true, channel: { is_private: state.isPrivate, is_im: false, is_mpim: false } })
+        }
+        if (url.includes('users.info')) {
+          return json({ ok: true, user: { team_id: 'T_INSTALL', deleted: false, is_restricted: false } })
+        }
+        return json({ ok: true, members: [], response_metadata: {} })
+      })
+      const resolver = service(fetchImpl, undefined, { clock })
+
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_ONE'))
+      clock.advance(150_000)
+      // The read past the threshold fires a re-observation that hangs at Slack…
+      state.defer = true
+      await resolver.resolve([scope()], viewer('slack:T_INSTALL:U_TWO'))
+      // …then a daemon snapshot observes the channel private and drops the verdict…
+      resolver.dropPublicAudiences(BOT_ID, [scope().resourceKey])
+      // …and only then does the stale `public` answer arrive. It must not land.
+      release!()
+      await resolver.settle()
+
+      state.isPrivate = true
+      await expect(resolver.resolve([scope()], viewer('slack:T_INSTALL:U_THREE'))).resolves.toMatchObject({
+        allowedScopes: [],
+        degraded: false
+      })
+      // T0 + the deferred re-observation + U_THREE's fresh read — never a served stale entry.
+      expect(calls(fetchImpl, 'conversations.info')).toBe(3)
+    })
+
     it('never drops verdicts held by a different bot', async () => {
       const clock = new FakeClock(EPOCH)
       const fetchImpl = vi.fn(async (url: string) => {

@@ -153,6 +153,7 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     if (cached) return cached
 
     let decision: Decision
+    let identityBacked = false
     try {
       const observed = await this.shapeOf(`${installation.installationId}:${scope.resourceKey}`, {
         github,
@@ -169,7 +170,8 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       else {
         const [owner, name] = repo.fullName.split('/')
         if (!owner || !name) decision = 'unknown'
-        else
+        else {
+          identityBacked = true
           decision =
             (await this.deps.userAuthz.permissionForUser(userId, installation, owner, name, {
               // The permission is the revocable fact — demand it age-zero.
@@ -182,11 +184,12 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
             })) !== 'none'
               ? 'allow'
               : 'deny'
+        }
       }
     } catch (err) {
       decision = err instanceof UserAuthzDeniedError ? 'deny' : 'unknown'
     }
-    this.putCache(key, decision)
+    this.putCache(key, decision, identityBacked)
     return decision
   }
 
@@ -194,13 +197,15 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
    *  cached value and re-observes behind the response (§4.2(5) touch-revalidation). */
   private async shapeOf(key: string, context: ShapeLookup): Promise<ObservedRepoShape | undefined> {
     const observed = await this.shapes.fetch(key, { context })
-    if (observed && this.deps.clock.now() - observed.fetchedAt > this.recheckMs) this.revalidateShape(key, context)
+    if (observed && this.deps.clock.now() - observed.fetchedAt > this.recheckMs) {
+      this.revalidateShape(key, context, observed)
+    }
     return observed
   }
 
   /** §4.2(5) re-observation: single-flighted, never awaited by a request; a failure is
    *  logged, never cached, and never evicts the still-leased entry it failed to replace. */
-  private revalidateShape(key: string, context: ShapeLookup): void {
+  private revalidateShape(key: string, context: ShapeLookup, replacing: ObservedRepoShape): void {
     if (this.revalidating.has(key)) return
     this.stats.shapeRevalidations += 1
     this.deps.log?.debug({ provider: 'github' }, 'github repo-shape touch-revalidation fired')
@@ -208,6 +213,9 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
       try {
         const repo = await context.github.repoRefById(context.ins, context.repoId)
         const shape = repo ? { fullName: repo.fullName, private: repo.private } : null
+        // Write fence: land only over the exact entry this re-observation set out to
+        // replace — a newer observation since capture must not lose to a stale write.
+        if (this.shapes.peek(key) !== replacing) return
         this.shapes.set(key, { shape, fetchedAt: this.deps.clock.now() }, { ttl: this.shapeTtl(shape) })
       } catch {
         this.deps.log?.debug({ provider: 'github' }, 'github repo-shape re-observation failed')
@@ -223,13 +231,19 @@ export class GithubSessionAccessService implements SessionAccessPlugin {
     await Promise.all([...this.revalidating.values()])
   }
 
-  private putCache(key: string, decision: Decision): void {
+  private putCache(key: string, decision: Decision, identityBacked: boolean): void {
     // An `allow` leases from the per-viewer check that just ran (age-0 permission for a
     // private repo); the shared shape's age routes WHICH check runs and deliberately no
     // longer bounds the verdict (§2.2) — anchoring to a warmed public observation would
     // mint allows already past their TTL. What this relaxes is exactly the §2.1
     // conversion window, bounded by touch-revalidation.
-    const ttl = decision === 'allow' ? this.recheckMs : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
+    //
+    // An identity-backed allow (private repo: WHICH GitHub account the viewer is decided
+    // it) additionally caps at the provider-identity lease: the key carries only the
+    // local user id and link/unlink invalidates the identity caches, never this one, so
+    // a recheck knob above 120 s must not stretch what an unlink can leave behind.
+    const allowTtl = identityBacked ? Math.min(this.recheckMs, PROVIDER_IDENTITY_TTL_MS) : this.recheckMs
+    const ttl = decision === 'allow' ? allowTtl : decision === 'deny' ? DENY_TTL_MS : UNKNOWN_TTL_MS
     this.cache.set(key, decision, { ttl })
   }
 }

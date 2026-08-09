@@ -254,6 +254,22 @@ describe('GithubSessionAccessService', () => {
     expect(h.repoRefById).toHaveBeenCalledTimes(2)
   })
 
+  // A private-repo allow is identity-backed: the key carries only the local user
+  // id, and link/unlink invalidates the identity caches, never this one — so the
+  // recheck knob must not stretch the allow past the provider-identity lease.
+  it('caps an identity-backed allow at the provider-identity lease under a long recheck', async () => {
+    const h = make(true, vi.fn().mockResolvedValue('read'), { recheckMs: 600_000 })
+
+    await h.service.resolve([scope], viewer)
+    h.clock.advance(119_999)
+    await h.service.resolve([scope], viewer)
+    expect(h.permissionForUser).toHaveBeenCalledTimes(1)
+
+    h.clock.advance(2)
+    await h.service.resolve([scope], viewer)
+    expect(h.permissionForUser).toHaveBeenCalledTimes(2)
+  })
+
   it('fires exactly one background re-observation for concurrent reads past the threshold', async () => {
     const h = make(false)
 
