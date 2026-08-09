@@ -780,7 +780,8 @@ export function buildContainer(
     logtoMgmtCfg && config.OIDC_ISSUER
       ? new LogtoIdentityService(logtoMgmtCfg, clock, new PgSocialIdentityMutationGate(prisma), undefined, {
           // Lazy over `http.log` (assigned below; only ever called at lookup time).
-          debug: (o, m) => http.log.debug(o, m)
+          debug: (o, m) => http.log.debug(o, m),
+          info: (o, m) => http.log.info(o, m)
         })
       : undefined
   const githubUserAuthz =

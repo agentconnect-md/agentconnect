@@ -18,6 +18,7 @@ import Fastify, {
 import cors from '@fastify/cors'
 import { hasZodFastifySchemaValidationErrors, isResponseSerializationError } from 'fastify-type-provider-zod'
 import type { HttpDeps } from './deps.js'
+import { createIdentityWarmTrigger } from './identity-warm.js'
 import { installZod } from './plugins/zod.js'
 import { installOpenapi } from './plugins/openapi.js'
 import { humanAuthPlugin } from './plugins/auth.js'
@@ -124,6 +125,19 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
     resolveUser: (input) => deps.repos.user.provisionOidcUser(input),
     verifyApiKey: (token) => deps.apiKeys.authenticateUser(token),
     internalInvocationAuth: deps.internalInvocationAuth,
+    // Identity warm-at-touch (session-access-cold-visit.md §3): every authenticated
+    // request pre-warms the caller's Logto projection so a cold `/sessions` finds it
+    // fresh instead of blocking on the serial identity lookup.
+    ...(deps.logtoIdentity
+      ? {
+          ensureIdentityFresh: createIdentityWarmTrigger({
+            identity: deps.logtoIdentity,
+            users: deps.repos.user,
+            clock: deps.clock,
+            log: { debug: (o, m) => app.log.debug(o, m) }
+          })
+        }
+      : {}),
     // Lets the plane notice an account deleted underneath a live session (→ 401
     // ACCOUNT_GONE, which drives the console to sign out) instead of serving
     // requests for an identity that is no longer there.

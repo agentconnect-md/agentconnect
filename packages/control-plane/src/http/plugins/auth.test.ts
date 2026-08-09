@@ -1,9 +1,12 @@
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import Fastify from 'fastify'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { exportJWK, generateKeyPair, SignJWT } from 'jose'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { WebchatMcpGrantTokenCodec } from '../../registry/webchatMcpGrantToken.js'
 import { INTERNAL_INVOCATION_AUTH_HEADER, InternalInvocationAuth } from '../mcp/internal-invocation-auth.js'
 import type { InvocationContext } from '../mcp/remote-grant-authenticator.js'
-import { humanAuthPlugin, type VerifyApiKey } from './auth.js'
+import { humanAuthPlugin, type EnsureIdentityFresh, type HumanAuthOptions, type VerifyApiKey } from './auth.js'
 
 const CONTEXT: InvocationContext = {
   invocationId: '11111111-1111-4111-8111-111111111111',
@@ -129,5 +132,146 @@ describe('humanAuthPlugin internal invocation seam', () => {
 
     expect(response.statusCode).toBe(401)
     expect(verifyApiKey).toHaveBeenCalledWith(assertion)
+  })
+})
+
+/** An app with the given plugin options and one probed route behind humanAuth. */
+async function appWithOptions(options: Partial<HumanAuthOptions>) {
+  const app = Fastify({ logger: false })
+  apps.push(app)
+  await app.register(humanAuthPlugin, { DEFAULT_OWNER_ID: 'dev-owner', ...options })
+  app.get('/api/v1/probe', { preHandler: app.humanAuth }, async (req) => ({ principal: req.principal }))
+  await app.ready()
+  return app
+}
+
+describe('humanAuthPlugin identity warm trigger (api-key path)', () => {
+  const acceptKey: VerifyApiKey = async () => ({ userId: 'user-1', orgId: 'org-1', apiKeyId: 'key-1', scopes: [] })
+
+  it('fires with the resolved principal after api-key auth (the trigger resolves the sub itself)', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>()
+    const app = await appWithOptions({ verifyApiKey: acceptKey, ensureIdentityFresh: warm })
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/probe', headers: { authorization: 'Bearer k3y' } })
+
+    expect(response.statusCode).toBe(200)
+    expect(warm).toHaveBeenCalledWith({ userId: 'user-1' })
+  })
+
+  it('does not fire when the api key is rejected', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>()
+    const app = await appWithOptions({ verifyApiKey: async () => null, ensureIdentityFresh: warm })
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/probe', headers: { authorization: 'Bearer bad' } })
+
+    expect(response.statusCode).toBe(401)
+    expect(warm).not.toHaveBeenCalled()
+  })
+
+  it('a throwing trigger never fails the request', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>(() => {
+      throw new Error('warm exploded')
+    })
+    const app = await appWithOptions({ verifyApiKey: acceptKey, ensureIdentityFresh: warm })
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/probe', headers: { authorization: 'Bearer k3y' } })
+
+    expect(response.statusCode).toBe(200)
+    expect(warm).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('humanAuthPlugin identity warm trigger (oidc path)', () => {
+  // A loopback OIDC issuer: discovery + JWKS, and a signer for bearers — the same
+  // shape the OIDC integration tests use, without any database behind it.
+  let oidcServer: Server
+  let oidcIssuer = ''
+  let mintBearer: (subject: string) => Promise<string>
+
+  beforeAll(async () => {
+    const { privateKey, publicKey } = await generateKeyPair('RS256')
+    const jwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'warm-test', use: 'sig' }
+    oidcServer = createServer((req, res) => {
+      res.setHeader('content-type', 'application/json')
+      if (req.url === '/.well-known/openid-configuration') {
+        res.end(JSON.stringify({ issuer: oidcIssuer, jwks_uri: `${oidcIssuer}/jwks` }))
+        return
+      }
+      if (req.url === '/jwks') {
+        res.end(JSON.stringify({ keys: [jwk] }))
+        return
+      }
+      res.statusCode = 404
+      res.end('{}')
+    })
+    await new Promise<void>((resolve, reject) => {
+      oidcServer.once('error', reject)
+      oidcServer.listen(0, '127.0.0.1', resolve)
+    })
+    const { port } = oidcServer.address() as AddressInfo
+    oidcIssuer = `http://127.0.0.1:${port}`
+    mintBearer = (subject) =>
+      new SignJWT({})
+        .setProtectedHeader({ alg: 'RS256', kid: 'warm-test' })
+        .setIssuer(oidcIssuer)
+        .setSubject(subject)
+        .setIssuedAt()
+        .setExpirationTime('10m')
+        .sign(privateKey)
+  })
+
+  afterAll(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        oidcServer.close((err) => (err ? reject(err) : resolve()))
+      })
+  )
+
+  it('fires with the local principal and the verified subject', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>()
+    const app = await appWithOptions({
+      OIDC_ISSUER: oidcIssuer,
+      resolveUser: async ({ oidcSubject }) => ({ userId: `local-${oidcSubject}` }),
+      ensureIdentityFresh: warm
+    })
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/probe',
+      headers: { authorization: `Bearer ${await mintBearer('sub-42')}` }
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(warm).toHaveBeenCalledWith({ userId: 'local-sub-42', oidcSubject: 'sub-42' })
+  })
+
+  it('a throwing trigger does not 401 a valid token', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>(() => {
+      throw new Error('warm exploded')
+    })
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, ensureIdentityFresh: warm })
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/probe',
+      headers: { authorization: `Bearer ${await mintBearer('sub-42')}` }
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(warm).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire when the bearer is rejected', async () => {
+    const warm = vi.fn<EnsureIdentityFresh>()
+    const app = await appWithOptions({ OIDC_ISSUER: oidcIssuer, ensureIdentityFresh: warm })
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/probe',
+      headers: { authorization: 'Bearer not.a.jwt' }
+    })
+
+    expect(response.statusCode).toBe(401)
+    expect(warm).not.toHaveBeenCalled()
   })
 })
