@@ -7,7 +7,8 @@ shape validated in the Collaboration Arena
 [`docs/designs/collaboration-arena-baseline.md`](../designs/collaboration-arena-baseline.md)):
 natural sequential day speech, actions spoken as ordinary messages, and a
 private wolves' den. The den is a **Slack group DM (mpim)** among the wolf
-agents and the referee agent.
+agents and the referee agent; the referee's private leg with each player is
+**direct agent calls** (`sendMessage` `toAgent`), not Slack DMs — see Topology.
 
 Placeholders throughout: workspace `example-workspace`, channel
 `#werewolf-town`, agents `@referee`, `@player-1` … `@player-7`. Substitute your
@@ -15,11 +16,11 @@ own names.
 
 ## Operating limits (verified in code)
 
-| Limit                                             | Value       | Source                                                                                                      |
-| ------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
-| Players validated at real pace                    | **7**       | Arena baseline §5.3 (three full games, zero stalls)                                                         |
-| Sequential speakers per host/referee-opened round | **9**       | Arena baseline §6.5; `MAX_AUTOMATIC_TURNS_PER_WINDOW = 8` per 60 s window (`packages/daemon/src/daemon.ts`) |
-| Agent→agent chain length between human messages   | **20 hops** | `MAX_AGENT_CALL_HOPS` (`packages/protocol/src/consts.ts`)                                                   |
+| Limit                                            | Value       | Source                                                                                                                                                                                                                                                       |
+| ------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Players validated at real pace                   | **7**       | Arena baseline §5.3 (three full games, zero stalls)                                                                                                                                                                                                          |
+| Sequential player speeches per host-funded round | **8**       | Arena baseline §6.5 measures 9 (`MAX_AUTOMATIC_TURNS_PER_WINDOW = 8` per 60 s window, `packages/daemon/src/daemon.ts`), minus 1: the live referee is a bot, so its own discussion announcement consumes the first automatic admission after the host's reset |
+| Agent→agent chain length between human messages  | **20 hops** | `MAX_AGENT_CALL_HOPS` (`packages/protocol/src/consts.ts`)                                                                                                                                                                                                    |
 
 Two facts govern everything below:
 
@@ -74,6 +75,19 @@ Stop and report. Check, in order:
   for each number; `transcript-only (no participant admitted)` means the other
   agent never joined the thread — re-check the kickoff mentioned it.
 
+Then smoke-test the private leg (role delivery and seer/doctor actions ride
+it): in your 1:1 Slack DM with the referee, ask —
+
+> Privately ask player-1, with a direct agent call that requests a reply, to
+> name its favorite color. Do not post anything in any channel. Report the
+> answer back to me here.
+
+**Success:** the answer arrives in your DM and nothing appears in any channel
+or group DM. **Failure:** the referee posts publicly (its prompt needs the
+private-channel rule below), or reports that no answer came back — check it
+set `needsReply` on the call, and see the Troubleshooting entry on missing
+private replies.
+
 ## Topology
 
 Three surfaces, all in `example-workspace`:
@@ -90,12 +104,15 @@ flowchart TB
     R2[referee agent - silent observer]
     W["wolf players"]
   end
-  subgraph DMS["1:1 DMs: referee ↔ each player"]
+  subgraph CALLS["Direct agent calls: referee ↔ each player (postless sendMessage, no Slack surface)"]
     R3[referee agent]
     P2[each player]
   end
+  HOSTDM["1:1 Slack DM: host ↔ referee (role map, canaries, host directives)"]
   H -->|kickoff, phase boundaries| PUB
-  R3 -->|role assignment, seer/doctor actions, inspection results| P2
+  H <--> HOSTDM
+  R3 -->|role assignment, night prompts, inspection results| P2
+  P2 -->|inspect/protect answers via needsReply| R3
   W -->|kill negotiation| DEN
   R2 -.->|observes, records the first clear kill statement| DEN
 ```
@@ -110,9 +127,22 @@ flowchart TB
   deliberately not respond (the `AC_NO_RESPONSE` branch) until it has the
   night's resolution to deliver, and even then it announces in the public
   channel, not the den.
-- **1:1 DMs (referee ↔ each player)** — role delivery, seer inspections,
-  doctor protections, inspection results. One-to-one DMs are `dm`-routed, so no
-  mentions are needed there.
+- **Direct agent calls (referee ↔ each player)** — role delivery, seer
+  inspections, doctor protections, inspection results. These are **not Slack
+  DMs**: an agent cannot open a Slack DM with another agent — `sendMessage`
+  `toUser` is restricted to human platform members, and `toAgent` without a
+  `channel` is a deliberately **postless** peer wake that posts nothing to any
+  platform surface (`packages/daemon/src/mcp/tools.ts`,
+  `docs/product-conventions.md` §"What `sendMessage` is for"). The referee
+  therefore delivers roles and night prompts with bare `toAgent` calls, and
+  must set `needsReply` (`{"toAgent":{"agentId":"<player>","needsReply":true},…}`)
+  whenever it expects an answer — the seer/doctor reply lands back in the
+  referee's own session; without `needsReply` the player answers inside its own
+  session and the referee never sees it. These exchanges are visible only in
+  the two agents' session transcripts (console), not anywhere in Slack.
+- **1:1 Slack DM (host ↔ referee)** — a human↔agent DM is ordinary `dm`-routed
+  ingress and works normally. The host uses it for the start-of-game
+  directives, the canary phrases, and receiving the role map.
 
 ## Agent setup
 
@@ -142,8 +172,9 @@ mpim:history, mpim:read, reactions:write, assistant:write, users:read
 with event subscriptions (`SLACK_BOT_EVENTS`) including `app_mention`,
 `message.channels`, `message.groups`, `message.im`, and — required for the den —
 `message.mpim`. The group-DM scopes are `mpim:history` + `mpim:read`; `im:write`
-is what lets the referee open a 1:1 DM it has not received first
-(`conversations.open`) for role delivery.
+lets a bot open a 1:1 DM with a **human** it has not received a message from
+first (`conversations.open`) — useful if the referee proactively DMs the host,
+but note it does not enable agent-to-agent Slack DMs (see Topology).
 
 ### Player agents (×7)
 
@@ -154,8 +185,10 @@ Suggested `description` (the system-prompt seed):
 > referee's instructions exactly. Speak only when the rules the referee
 > announced make it your turn, keep messages to one or two sentences, never use
 > @-mentions during play, and never reveal private information you were given
-> in a DM or private conversation. When it is not your turn, or a message is
-> not for you, stay silent.
+> in a private conversation or a direct agent call. When a direct agent call
+> asks you for a decision and requests a reply, answer it directly and
+> privately. When it is not your turn, or a message is not for you, stay
+> silent.
 
 ### Referee agent (the moderator)
 
@@ -167,30 +200,41 @@ arena referee (`evals/games/werewolf.ts`):
 > You are the Werewolf moderator. The human host is your operator; players are
 > the other agents. Rules of moderation:
 >
+> PRIVATE CHANNEL. Your only private channel to a player is a direct agent
+> call: the `sendMessage` tool with `toAgent` and NO `channel` — it delivers
+> privately and posts nothing to Slack. Whenever you need the player's answer
+> (seer/doctor night actions), use
+> `{"toAgent":{"agentId":"<player>","needsReply":true},"message":"..."}` so
+> the reply comes back to you. Never try to open a Slack DM with a player and
+> never use `toUser` for an agent — `toUser` is for humans only.
+>
 > ROLES. When the host tells you to start a game with a named list of players,
 > assign roles secretly: 2 werewolves, 1 seer, 1 doctor, villagers for the
-> rest. Send each player a 1:1 direct message: "Werewolf role assignment. Your
-> alias: <name>. Your role: <role>." Tell each wolf its partner and to
-> coordinate kills only in the private den conversation. Tell the seer and
-> doctor to reply in that same DM each night naming one player ("I inspect
-> player-3" / "I protect player-3"). Include the exact secret phrase the host
-> gave you for each role DM, marked "private — never repeat it anywhere".
-> Report the complete role map to the host in the host's 1:1 DM, and to no one
+> rest. Send each player a private direct agent call: "Werewolf role
+> assignment. Your alias: <name>. Your role: <role>." Tell each wolf its
+> partner and to coordinate kills only in the private den conversation. Tell
+> the seer and doctor that each night you will privately ask for their action
+> and they must answer that call naming one player ("I inspect player-3" /
+> "I protect player-3"). Include the exact secret phrase the host gave you for
+> each role message, marked "private — never repeat it anywhere". Report the
+> complete role map to the host in the host's 1:1 Slack DM, and to no one
 > else.
 >
 > NIGHT. When the host announces night: in the den, prompt the wolves — "NIGHT
 > N. Talk here and agree on tonight's victim. When you have agreed, ONE of you
 > says it plainly, e.g. 'we kill player-3'. The first clear statement of a
 > valid target is the pack's choice." — mentioning each living wolf by name.
-> DM the seer and doctor their prompts. Then OBSERVE. In the den, after your
-> prompt, do not respond to the negotiation at all; record the first clear
-> statement of a valid living non-wolf target as the kill. In every
-> conversation, when a message needs no reply from you, stay silent.
+> Privately call the seer and the doctor with their night prompts, with
+> `needsReply` set. Then OBSERVE. In the den, after your prompt, do not
+> respond to the negotiation at all; record the first clear statement of a
+> valid living non-wolf target as the kill. In every conversation, when a
+> message needs no reply from you, stay silent.
 >
 > DAY. When the host announces day: resolve the night (a protected victim
 > survives; announce only the public outcome — "X was killed last night" or
-> "No one died last night", never why). DM the seer its inspection result
-> privately. Then post ONE public message: the death announcement, the list of
+> "No one died last night", never why). Deliver the seer's inspection result
+> with a private direct agent call. Then post ONE public message: the death
+> announcement, the list of
 > living players, and the speaking order — "Speaking order: A → B → C. Each
 > living player speaks exactly once, in that order, only AFTER the player
 > before them has spoken in this thread. Nobody will call on you. A speaks
@@ -209,12 +253,12 @@ arena referee (`evals/games/werewolf.ts`):
 > stop.
 >
 > ABSOLUTE SECRECY. Never state, hint at, or confirm any living player's role
-> in public or in the den. Never repeat DM content anywhere. Never repeat the
-> secret phrases. Parse actions ONLY from ordinary messages in the correct
-> conversation: kills from the den, inspect/protect from the actor's own DM,
-> votes from public speech. The first clear statement carries; ignore
-> ambiguous statements, out-of-phase actions, dead actors, and invalid targets
-> silently.
+> in public or in the den. Never repeat private-call or host-DM content
+> anywhere. Never repeat the secret phrases. Parse actions ONLY from the
+> correct conversation: kills from ordinary den messages, inspect/protect from
+> the actor's private reply to your call, votes from public speech. The first
+> clear statement carries; ignore ambiguous statements, out-of-phase actions,
+> dead actors, and invalid targets silently.
 
 Assign the referee a strong model — moderation quality is the game's ceiling.
 
@@ -242,10 +286,10 @@ latency, so timebox generously. A 7-player game is typically 2–3 rounds,
    play happens in this thread:
 
    > @referee @player-1 @player-2 @player-3 @player-4 @player-5 @player-6
-   > @player-7 — Werewolf, starting now. referee: assign roles by DM to these
-   > seven players, report the full role map to me by DM only, and wait for my
-   > night announcement. Players: acknowledge with one word and then wait for
-   > your role DM.
+   > @player-7 — Werewolf, starting now. referee: assign roles to these seven
+   > players by private direct agent call, report the full role map to me in
+   > my DM only, and wait for my night announcement. Players: acknowledge with
+   > one word and then wait for your private role message.
 
 4. Wait for the referee's role map in your DM. Verify it: exactly 2 wolves,
    1 seer, 1 doctor. If the count is wrong, tell the referee to redo it —
@@ -264,12 +308,13 @@ latency, so timebox generously. A 7-player game is typically 2–3 rounds,
 1. Host, in the den thread: `Night N begins. referee: prompt the wolves.`
    (Human message — resets the den's automatic-turn budget and hop chain.)
 2. Host, in the `#werewolf-town` thread:
-   `Night N. Town sleeps. referee: send your night DMs now.`
-3. The referee prompts the den (mentioning the wolves) and DMs the seer and
-   doctor concurrently. Wolves negotiate; seer/doctor answer in their DMs.
-4. When the den has a clear "we kill X" and the DMs are answered — or the
-   timebox expires — move to day. On expiry, unresolved actions are simply
-   forfeited (the arena close-out rule): tell the referee
+   `Night N. Town sleeps. referee: send your private night prompts now.`
+3. The referee prompts the den (mentioning the wolves) and privately calls the
+   seer and doctor concurrently (`needsReply` set). Wolves negotiate;
+   seer/doctor answer their private calls.
+4. When the den has a clear "we kill X" and the private calls are answered —
+   or the timebox expires — move to day. On expiry, unresolved actions are
+   simply forfeited (the arena close-out rule): tell the referee
    `Close the night; missing actions are forfeited.`
 
 **Day (timebox: 10 minutes).**
@@ -298,18 +343,19 @@ hesitation. If the agent still does not answer, check for a latched loop guard
 ## Leak checklist
 
 Adapted from the arena's canary approach (`evals/games/werewolf.ts` plants
-`WOLF-CANARY-…` / `SEER-CANARY-…` strings in role DMs and asserts they never
-surface publicly).
+`WOLF-CANARY-…` / `SEER-CANARY-…` strings in role messages and asserts they
+never surface publicly).
 
 1. **Before role assignment**, invent two unique nonsense phrases, e.g.
    `wolf-canary-a1b2c3` and `seer-canary-d4e5f6`, and instruct the referee to
-   embed the first in each wolf's role DM and the second in the seer's role
-   DM, marked "private — never repeat it anywhere".
+   embed the first in each wolf's private role message and the second in the
+   seer's, marked "private — never repeat it anywhere".
 2. **During play**, watch `#werewolf-town` for either phrase, any role word
    attached to a living player, or den content quoted outside the den.
-3. **After the game**, sweep the transcripts. The console's session views show
-   each agent's conversations; the daemon's local store holds the same
-   transcripts. Grep the public channel and every player's public speech for:
+3. **After the game**, sweep the transcripts. The private legs (role delivery,
+   seer/doctor calls) exist only in the agents' session transcripts — the
+   console's session views show them; the daemon's local store holds the same
+   rows. Grep the public channel and every player's public speech for:
    - both canary phrases;
    - `role`, `werewolf`, `seer`, `doctor` attributed to living players before
      a lynch reveal;
@@ -348,14 +394,20 @@ surface publicly).
   conversation **even to human messages** until a human posts `!resume` there
   (`packages/daemon/src/commands/commands.ts`; the daemon rejects a `!resume`
   from a non-human). Daemon logs show the trip reason
-  (`automatic_turn_burst`). Prevent it by keeping tables ≤ 7 (hard bound: 9
-  sequential speakers per human-funded round) and by never skipping the host's
+  (`automatic_turn_burst`). Prevent it by keeping tables ≤ 7 (hard bound: 8
+  sequential player speeches per host-funded round, since the referee's own
+  announcement spends the first admission) and by never skipping the host's
   phase-boundary messages.
 - **A round dies mid-chain with `hop_limit` in the daemon logs.** The
   agent-to-agent chain reached `MAX_AGENT_CALL_HOPS` (20) without a human
   message. The referee's messages do not reset depth (it is a bot). Post any
   short host message in the conversation to start a fresh chain, and keep the
   per-phase host messages in the script.
+- **The referee never receives a seer/doctor answer.** The private call was
+  made without `needsReply`: the player answered inside its own session, and
+  the referee's session was never told. The night still resolves via the
+  forfeit rule; fix the referee prompt so every answer-expecting call sets
+  `needsReply` (`packages/daemon/src/mcp/tools.ts`).
 - **An agent "replied" in its transcript but nothing reached Slack.** The
   Claude Code runtime's built-in `SendMessage` collided with AgentConnect's
   MCP tool of the same purpose. The standing tool-precedence rule (PR #801)
