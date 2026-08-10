@@ -344,11 +344,11 @@ export class ClusterSpawnDriver implements SpawnDriver {
       })
       return runtime
     } catch (err) {
-      // Timeouts are the interesting failure — they are what a missed target looks like — so
-      // they are distinguished from an outright error rather than pooled into one bucket.
-      timer.finish(
-        /did not become ready|did not bind a sandbox|bound in time/.test((err as Error).message) ? 'timeout' : 'error'
-      )
+      // Timeouts are the interesting failure — they are what a missed target looks like — so they
+      // are distinguished from an outright error. By TYPE: all three launch deadlines (claim bind,
+      // pod readiness, channel bind) throw LaunchTimeoutError, and the message regex this replaced
+      // silently stopped covering the channel wait the moment its wording changed.
+      timer.finish(err instanceof LaunchTimeoutError ? 'timeout' : 'error')
       throw err
     }
   }

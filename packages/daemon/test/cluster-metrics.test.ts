@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
-import { ClusterSpawnDriver, DRAIN_REQUESTED_ANNOTATION } from '../src/k8s/cluster-driver.js'
+import { ClusterSpawnDriver, DRAIN_REQUESTED_ANNOTATION, type ClusterDriverDeps } from '../src/k8s/cluster-driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
 import { K8sApiError } from '../src/k8s/http.js'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -114,19 +114,44 @@ function driverFor(
   metrics: ClusterMetrics,
   api: ReturnType<typeof fakeApi>,
   open: 'ok' | 'error' | 'timeout' = 'ok',
-  clock: FakeClock = new FakeClock()
+  clock: FakeClock = new FakeClock(),
+  awaitChannel?: ClusterDriverDeps['awaitChannel']
 ) {
   return new ClusterSpawnDriver({
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',
     publishSpawnRecord: () => {},
-    awaitChannel: async () => respondingConnection(open) as never,
+    awaitChannel: awaitChannel ?? (async () => respondingConnection(open) as never),
     clock,
     metrics,
     readyTimeoutMs: 5_000,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })
+}
+
+/**
+ * Launch while driving the fake clock forward.
+ *
+ * The claim-bind and pod-ready waits sleep on the driver's clock, so a FakeClock that nobody
+ * advances makes their deadline unreachable — the test would hang rather than observe a timeout.
+ */
+async function launchAdvancing(driver: ClusterSpawnDriver, clock: FakeClock): Promise<Error | 'resolved'> {
+  let outcome: Error | 'resolved' | undefined
+  const inflight = driver.launch(launchRequest).then(
+    () => {
+      outcome = 'resolved'
+    },
+    (err: Error) => {
+      outcome = err
+    }
+  )
+  for (let step = 0; step < 400 && outcome === undefined; step += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    clock.advance(1_000)
+  }
+  await inflight
+  return outcome ?? new Error('launch never settled')
 }
 
 async function settled(predicate: () => boolean, timeoutMs = 5_000): Promise<boolean> {
@@ -225,6 +250,72 @@ describe('cluster launch metrics', () => {
     expect(await settled(() => stuck.launches.length > 0)).toBe(true)
     expect(stuck.launches).toEqual([expect.objectContaining({ path: 'resume', outcome: 'timeout' })])
     expect(stuck.stages.map((entry) => entry.stage)).not.toContain('runtime_ready')
+  })
+
+  it('puts ALL THREE launch deadlines in the timeout bucket, by type not by wording', async () => {
+    // Claim bind, pod readiness and channel bind are three separate deadlines, and the message
+    // regex this replaced silently stopped covering the channel wait as soon as its wording
+    // changed — recording a genuine timeout as an error. Type-based classification cannot drift
+    // that way, and asserting all three is what stops one of them slipping out again.
+    const claimStuck = recorder()
+    const noClaim = fakeApi({ claimExists: false, mode: 'Suspended' })
+    noClaim.api.getClaim = async () => {
+      throw new K8sApiError(404, 'NotFound', 'no claim')
+    }
+    noClaim.api.ensureClaim = async (claim: SandboxClaim & { metadata: { name: string } }) => ({
+      claim,
+      created: true
+    })
+    const claimClock = new FakeClock()
+    const claimOutcome = await launchAdvancing(driverFor(claimStuck.metrics, noClaim, 'ok', claimClock), claimClock)
+    expect(String(claimOutcome)).toMatch(/did not bind/)
+    expect(claimStuck.launches).toEqual([expect.objectContaining({ outcome: 'timeout' })])
+
+    const podStuck = recorder()
+    const notReady = fakeApi({ claimExists: true, mode: 'Suspended' })
+    notReady.api.getSandbox = async () =>
+      ({
+        metadata: { name: 'sb-1', uid: 'sandbox-uid-1' },
+        spec: { operatingMode: notReady.state.mode },
+        status: { conditions: [{ type: 'Ready', status: 'False' }] }
+      }) as Sandbox
+    const podClock = new FakeClock()
+    const podOutcome = await launchAdvancing(driverFor(podStuck.metrics, notReady, 'ok', podClock), podClock)
+    expect(String(podOutcome)).toMatch(/did not become ready/)
+    expect(podStuck.launches).toEqual([expect.objectContaining({ path: 'resume', outcome: 'timeout' })])
+
+    // The channel wait is the one the regex missed. Its host-supplied rejection lands at the
+    // deadline we passed, which is the fact this driver owns.
+    const channelStuck = recorder()
+    const clock = new FakeClock()
+    const late: ClusterDriverDeps['awaitChannel'] = async (_agentId, _generation, timeoutMs) => {
+      clock.advance(timeoutMs)
+      throw new Error('no channel bound in time')
+    }
+    await expect(
+      driverFor(channelStuck.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }), 'ok', clock, late).launch(
+        launchRequest
+      )
+    ).rejects.toThrow(/no shim channel bound/)
+    expect(channelStuck.launches).toEqual([expect.objectContaining({ path: 'resume', outcome: 'timeout' })])
+  })
+
+  it('still calls a channel failure BEFORE the deadline an error', async () => {
+    // Otherwise every channel problem would read as a missed latency target.
+    const early = recorder()
+    const failing: ClusterDriverDeps['awaitChannel'] = async () => {
+      throw new Error('shim registry refused the bind')
+    }
+    await expect(
+      driverFor(
+        early.metrics,
+        fakeApi({ claimExists: true, mode: 'Suspended' }),
+        'ok',
+        new FakeClock(),
+        failing
+      ).launch(launchRequest)
+    ).rejects.toThrow(/registry refused/)
+    expect(early.launches).toEqual([expect.objectContaining({ outcome: 'error' })])
   })
 
   it('records every stage of the launch, in order', async () => {
