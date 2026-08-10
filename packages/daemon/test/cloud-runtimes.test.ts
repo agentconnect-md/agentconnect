@@ -97,10 +97,12 @@ describe('declaredRuntimeCatalog', () => {
     expect(result.catalog.entries).toEqual({})
   })
 
-  it('flags declared runtimes that would fetch at launch time', () => {
-    const result = declaredRuntimeCatalog(catalog(), { runtimes: [{ id: 'codex-acp' }] })
-    expect(result.packageLaunchers).toEqual(['codex-acp'])
-    // Still advertised — the image is expected to pre-install it; this is a warning, not a gate.
-    expect(Object.keys(result.catalog.entries)).toEqual(['codex-acp'])
+  it('drops declared runtimes that would fetch their artifact at launch time', () => {
+    const result = declaredRuntimeCatalog(catalog(), { runtimes: [{ id: 'codex-acp', version: '1.0.0' }] })
+    expect(result.rejectedPackageLaunchers).toEqual(['codex-acp'])
+    // An npx line fetches something the image never built and the version pin never named,
+    // and fails outright on a restricted egress — so it is not advertised or launchable.
+    expect(result.catalog.entries).toEqual({})
+    expect(result.catalog.runtimes).toEqual({})
   })
 })

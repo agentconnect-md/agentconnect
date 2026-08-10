@@ -5114,6 +5114,11 @@ export class Daemon {
   }
 
   private bootstrapUpgradeCapable(): boolean {
+    // A cloud daemon's version is its image, and self-installing would exit the pod for
+    // a version the cluster never asked for. Refuse on the mode, not on the absence of a
+    // supervisor marker or cli-entry pointer: a stale pointer on the root volume, or an
+    // inherited AGENTCONNECT_SUPERVISOR, would otherwise re-enable the whole path.
+    if (this.cloud) return false
     return (
       (this.opts.supervisor === 'cli' || this.opts.supervisor === 'service') && readCliEntry(this.root) !== undefined
     )
@@ -19433,10 +19438,11 @@ export class Daemon {
       this.log.warn(
         `runtimes: declared curated runtimes cannot be admitted under --cloud: ${declared.rejectedCurated.join(', ')}`
       )
-    // A package launcher fetches on first launch, which the pinned-image model rules out.
-    if (declared.packageLaunchers.length)
+    // A package launcher fetches its artifact at launch: not the image's build, not what
+    // the version pin names, and impossible on a restricted egress. Dropped, not warned.
+    if (declared.rejectedPackageLaunchers.length)
       this.log.warn(
-        `runtimes: declared runtimes launch through a package manager and will fetch at run time: ${declared.packageLaunchers.join(', ')}`
+        `runtimes: declared runtimes launch through a package manager and cannot be pinned to this image: ${declared.rejectedPackageLaunchers.join(', ')} — resolve them to a local executable in the catalog`
       )
     this.cloudDeclaredModels = declared.models
     return declared.catalog

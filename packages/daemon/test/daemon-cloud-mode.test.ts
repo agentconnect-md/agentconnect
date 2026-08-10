@@ -2,13 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 
 /** The behavior matrix for `--cloud`: each assertion here is one row of the mode
  *  contract, so cloud and self-hosted behavior cannot drift apart unnoticed. */
 
-function root(opts: { declared?: unknown; requireSandbox?: boolean } = {}): string {
+function root(opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean } = {}): string {
   const path = mkdtempSync(join(tmpdir(), 'ac-cloud-mode-'))
   writeFileSync(
     join(path, 'config.json'),
@@ -20,6 +21,14 @@ function root(opts: { declared?: unknown; requireSandbox?: boolean } = {}): stri
   )
   if (opts.declared !== undefined) {
     writeFileSync(join(path, 'cloud-runtimes.json'), JSON.stringify(opts.declared))
+  }
+  // A stale pointer left on the root volume is exactly the case that must NOT re-enable
+  // the self-installing upgrade path in cloud mode. readCliEntry only accepts a pointer
+  // whose target exists, so the fixture writes a real file to point at.
+  if (opts.cliEntry) {
+    const entry = join(path, 'cli-dist-entry.js')
+    writeFileSync(entry, '// stand-in for an installed CLI entry\n')
+    writeFileSync(join(path, 'cli-entry'), entry)
   }
   return path
 }
@@ -38,10 +47,11 @@ function catalog(): ResolvedRuntimeCatalog {
   }
 }
 
-function daemon(opts: { root: string; cloud: boolean; probe?: ReturnType<typeof vi.fn> }): Daemon {
+function daemon(opts: { root: string; cloud: boolean; probe?: ReturnType<typeof vi.fn>; supervisor?: string }): Daemon {
   return new Daemon({
     root: opts.root,
     cloud: opts.cloud,
+    ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
     hostFactory: () => ({}) as never
@@ -108,10 +118,39 @@ describe('daemon --cloud mode', () => {
       const features: string[] = (cloud as any).registrationFeatures()
       expect(features).not.toContain('sandbox')
       expect(features).not.toContain('sandbox-required')
-      // No CLI or version store in an image ⇒ no self-installing upgrade on offer.
-      expect((cloud as any).bootstrapUpgradeCapable()).toBe(false)
     } finally {
       await cloud.stop()
+    }
+  })
+
+  it('refuses the self-installing upgrade even with a supervisor marker and a cli-entry present', async () => {
+    // Both prerequisites of the normal capability check are satisfied here: without a
+    // mode-level refusal, the daemon would advertise bootstrap-upgrade and accept a
+    // command that runs the CLI installer and exits the pod for an unrequested version.
+    const cloud = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] }, cliEntry: true }),
+      cloud: true,
+      supervisor: 'service'
+    })
+    try {
+      await cloud.start()
+      expect((cloud as any).bootstrapUpgradeCapable()).toBe(false)
+      expect((cloud as any).registrationFeatures()).not.toContain(DAEMON_BOOTSTRAP_UPGRADE_FEATURE)
+    } finally {
+      await cloud.stop()
+    }
+  })
+
+  it('still offers the self-installing upgrade outside cloud mode with the same prerequisites', async () => {
+    // The control case, so the refusal above is attributable to the mode and not to a
+    // missing prerequisite in the fixture.
+    const local = daemon({ root: root({ cliEntry: true }), cloud: false, supervisor: 'service' })
+    try {
+      await local.start()
+      expect((local as any).bootstrapUpgradeCapable()).toBe(true)
+      expect((local as any).registrationFeatures()).toContain(DAEMON_BOOTSTRAP_UPGRADE_FEATURE)
+    } finally {
+      await local.stop()
     }
   })
 

@@ -60,8 +60,8 @@ export interface DeclaredCatalogResult {
   unresolved: string[]
   /** Declared curated-source ids: unlaunchable here, since curated admission needs a live probe. */
   rejectedCurated: string[]
-  /** Declared ids whose command is a package launcher, so starting them fetches at run time. */
-  packageLaunchers: string[]
+  /** Declared ids that launch through a package manager, so their artifact is not the image's. */
+  rejectedPackageLaunchers: string[]
   /** Model snapshots to seed, keyed by runtime id. */
   models: Record<string, string[]>
 }
@@ -70,9 +70,15 @@ const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
 
 /**
  * Project the resolved catalog down to what the image declares, replacing the
- * host-executable filter. Curated entries are dropped rather than left pending:
- * their admission gate requires a successful probe, and `--cloud` does not probe,
- * so keeping them would advertise runtimes that refuse to launch.
+ * host-executable filter. Two classes of declared runtime are dropped rather than
+ * advertised, because either would break at first use:
+ *
+ * - curated entries, whose admission gate requires a successful probe that
+ *   `--cloud` never runs;
+ * - package-launcher entries (`npx` / `uvx`), which fetch their artifact at launch:
+ *   that artifact is not the image's, is not what the declared version pin names,
+ *   and the fetch fails outright on a restricted egress. An image that ships such a
+ *   runtime must resolve it to a pinned local executable in the catalog first.
  */
 export function declaredRuntimeCatalog(
   catalog: ResolvedRuntimeCatalog,
@@ -82,7 +88,7 @@ export function declaredRuntimeCatalog(
   const runtimes: ResolvedRuntimeCatalog['runtimes'] = {}
   const unresolved: string[] = []
   const rejectedCurated: string[] = []
-  const packageLaunchers: string[] = []
+  const rejectedPackageLaunchers: string[] = []
   const models: Record<string, string[]> = {}
 
   for (const declared of table.runtimes) {
@@ -95,11 +101,14 @@ export function declaredRuntimeCatalog(
       rejectedCurated.push(declared.id)
       continue
     }
-    if (PACKAGE_LAUNCHERS.has(entry.runtime.command)) packageLaunchers.push(declared.id)
+    if (PACKAGE_LAUNCHERS.has(entry.runtime.command)) {
+      rejectedPackageLaunchers.push(declared.id)
+      continue
+    }
     entries[declared.id] = declared.version ? { ...entry, version: declared.version } : entry
     runtimes[declared.id] = entry.runtime
     if (declared.models?.length) models[declared.id] = [...declared.models]
   }
 
-  return { catalog: { entries, runtimes }, unresolved, rejectedCurated, packageLaunchers, models }
+  return { catalog: { entries, runtimes }, unresolved, rejectedCurated, rejectedPackageLaunchers, models }
 }
