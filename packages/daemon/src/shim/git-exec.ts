@@ -123,7 +123,11 @@ export class ShimGitRunner implements GitRunner {
   ) {}
 
   withEnv(env: Record<string, string>): GitRunner {
-    return new ShimGitRunner(this.requester, this.cwd, { ...this.env, ...env })
+    // Carry `env` itself, NOT merged over any previous one. simple-git's second .env() call
+    // replaces the first, so merging here would let a variable the new sanitized environment
+    // intentionally omitted survive on the remote runner alone — a divergence in exactly the
+    // direction that matters, since those omissions are the sanitization.
+    return new ShimGitRunner(this.requester, this.cwd, { ...env })
   }
 
   async raw(args: string[]): Promise<string> {
@@ -143,7 +147,10 @@ export class ShimGitRunner implements GitRunner {
     // porcelain=v2 rather than simple-git's own parse: the format is documented and stable,
     // which is what makes parsing it on this side of the channel safe. -z keeps unusual
     // filenames verbatim instead of C-quoted.
-    const result = await this.exec(['status', '--porcelain=v2', '--branch', '-z'])
+    // `-u` matches what the pinned simple-git runs (`status --porcelain -b -u --null`). Without
+    // it git collapses an untracked nested file to `nested/`, while the local runner reports
+    // `nested/file.txt` — the file list would differ by runner for the same tree.
+    const result = await this.exec(['status', '--porcelain=v2', '--branch', '-u', '-z'])
     return parsePorcelainV2(result.stdout)
   }
 
@@ -163,7 +170,9 @@ export class ShimGitRunner implements GitRunner {
       tool: 'git',
       args,
       ...(this.cwd ? { cwd: this.cwd } : {}),
-      ...(this.env && Object.keys(this.env).length > 0 ? { env: this.env } : {})
+      // Present whenever an environment was set, including an explicitly EMPTY one: "run with
+      // nothing" is a meaningful instruction and must not be indistinguishable from "unset".
+      ...(this.env !== undefined ? { env: this.env } : {})
     }
     const raw = await this.requester.request('exec', payload)
     const result = GitExecResultSchema.parse(raw)

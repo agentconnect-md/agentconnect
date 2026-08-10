@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gitFor, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
@@ -70,7 +70,11 @@ function sandboxRequester(root: string): ShimRequester & { seen: unknown[] } {
       expect(capability).toBe('exec')
       const parsed = GitExecPayloadSchema.parse(payload)
       try {
-        const stdout = git(parsed.cwd ?? root, parsed.args, parsed.env)
+        // As given, never merged into ambient env: merging here would have concealed the
+        // runner merging, which is the defect this parity suite exists to surface.
+        const stdout = parsed.env
+          ? execFileSync('git', parsed.args, { cwd: parsed.cwd ?? root, encoding: 'utf8', env: parsed.env })
+          : git(parsed.cwd ?? root, parsed.args)
         return { code: 0, stdout, stderr: '' }
       } catch (err) {
         const failure = err as { status?: number; stdout?: string; stderr?: string }
@@ -201,6 +205,37 @@ describe('git runner contract, local and shim-backed', () => {
     // The env travelled with the request rather than being set globally.
     const payload = requester.seen.at(-1) as { env?: Record<string, string> }
     expect(payload.env).toMatchObject(marker)
+  })
+
+  it('replaces rather than extends a chained environment, as simple-git does', async () => {
+    // remote.withEnv(A).withEnv(B) must behave like two .env() calls: B alone. Merging would
+    // keep a variable A had and B deliberately dropped — and the omission IS the sanitization.
+    const root = repository()
+    const { remote, requester } = runners(root)
+    const base = { ...workspaceGitLocalEnv(), GIT_AUTHOR_NAME: 'First', DROPPED_BY_SECOND: 'yes' }
+    const second = { ...workspaceGitLocalEnv(), GIT_AUTHOR_NAME: 'Second' }
+    await remote.withEnv(base).withEnv(second).raw(['rev-parse', '--verify', 'HEAD'])
+    const payload = requester.seen.at(-1) as { env?: Record<string, string> }
+    expect(payload.env?.GIT_AUTHOR_NAME).toBe('Second')
+    expect(payload.env?.DROPPED_BY_SECOND).toBeUndefined()
+  })
+
+  it('reports a nested untracked FILE, not just its directory, on both sides', async () => {
+    // simple-git runs status with `-u`, so it lists nested untracked files individually. An
+    // argv without it collapses them to `nested/`, which is a different answer to the same
+    // question depending on where git ran.
+    const root = mkdtempSync(join(tmpdir(), 'ac-gitnested-'))
+    roots.push(root)
+    git(root, ['init', '--initial-branch=main'])
+    writeFileSync(join(root, 'tracked.txt'), 'x\n')
+    git(root, ['add', 'tracked.txt'])
+    git(root, ['commit', '-m', 'base'])
+    mkdirSync(join(root, 'nested'), { recursive: true })
+    writeFileSync(join(root, 'nested', 'file.txt'), 'deep\n')
+    const { local, remote } = runners(root)
+    const [fromLocal, fromRemote] = await Promise.all([local.status(), remote.status()])
+    expect(fromRemote.files.map((file) => file.path)).toEqual(fromLocal.files.map((file) => file.path))
+    expect(fromRemote.files.map((file) => file.path)).toContain('nested/file.txt')
   })
 
   it('reports a staged RENAME identically on both sides', async () => {
