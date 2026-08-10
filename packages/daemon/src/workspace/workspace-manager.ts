@@ -104,10 +104,16 @@ const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 
-// Single-flight clone lock keyed by the absolute cwd. Two concurrent sessions
-// (especially multiple agents sharing one repo checkout) must not race into the
-// same dir — the second awaits the first's in-flight clone instead of re-cloning.
+// Single-flight clone lock. Two concurrent sessions (especially multiple agents sharing one repo
+// checkout) must not race into the same dir — the second awaits the first's in-flight clone.
 const cloneInFlight = new Map<string, Promise<void>>()
+
+// The key is the cwd for a local workspace, where sharing a path means sharing a checkout and
+// coalescing is the intent. For a cluster workspace the same path is a DIFFERENT filesystem per
+// agent, so coalescing there would hand one agent the other's clone; the agent id disambiguates.
+function cloneKey(agentId: string, cwd: string): string {
+  return resolveWorkspaceGitRunner?.(agentId, cwd) ? `${agentId}\u0000${cwd}` : cwd
+}
 
 function usesGithubApp(agent: Agent): boolean {
   return agent.workspace.mode === 'git-repo' && agent.workspace.gitCredential === 'github-app'
@@ -160,7 +166,7 @@ function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunne
 }
 
 async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
-  const clone = cloneInFlight.get(cwd)
+  const clone = cloneInFlight.get(cloneKey(agent.id, cwd))
   if (clone) await clone
   if (!existsSync(join(cwd, '.git'))) return
   const expected = gitRepoOf(agent)
@@ -890,7 +896,8 @@ async function cloneRepo(agent: Agent): Promise<void> {
 }
 
 async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
-  const inflight = cloneInFlight.get(cwd)
+  const key = cloneKey(agent.id, cwd)
+  const inflight = cloneInFlight.get(key)
   if (inflight) return inflight
 
   // Validate again at the execution boundary: a hand-edited/legacy agent.json
@@ -919,8 +926,8 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
     // can still push" half of the design.
     if (githubApp) await writeRepoHelperConfig(cwd, agent.id)
   })().finally(() => {
-    cloneInFlight.delete(cwd)
+    cloneInFlight.delete(key)
   })
-  cloneInFlight.set(cwd, p)
+  cloneInFlight.set(key, p)
   return p
 }

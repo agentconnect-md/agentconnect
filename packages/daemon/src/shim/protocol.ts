@@ -80,6 +80,16 @@ export const ShimRequestSchema = z.object({
   payload: z.unknown()
 })
 
+// Cancels an in-flight request by id. Carries credential and generation like every post-binding
+// frame, so a replayed cancel from a previous incarnation cannot kill a live request.
+export const ShimCancelSchema = z.object({
+  type: z.literal('shim/cancel'),
+  id: z.string().uuid(),
+  sessionCredential: z.string().min(1),
+  generation: z.number().int().nonnegative(),
+  reason: z.string().max(200).optional()
+})
+
 export const ShimResponseSchema = z.object({
   type: z.literal('shim/response'),
   id: z.string().uuid(),
@@ -110,6 +120,7 @@ export const ShimFrameSchema = z.discriminatedUnion('type', [
   ShimBoundSchema,
   ShimRejectedSchema,
   ShimRequestSchema,
+  ShimCancelSchema,
   ShimResponseSchema,
   ShimEventSchema
 ])
@@ -118,6 +129,7 @@ export type ShimHello = z.infer<typeof ShimHelloSchema>
 export type ShimBound = z.infer<typeof ShimBoundSchema>
 export type ShimRejected = z.infer<typeof ShimRejectedSchema>
 export type ShimRequest = z.infer<typeof ShimRequestSchema>
+export type ShimCancel = z.infer<typeof ShimCancelSchema>
 export type ShimResponse = z.infer<typeof ShimResponseSchema>
 export type ShimEvent = z.infer<typeof ShimEventSchema>
 export type ShimFrame = z.infer<typeof ShimFrameSchema>

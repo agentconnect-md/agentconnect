@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
+  prefetchWorkspace,
   removeSessionWorktree,
   sessionWorktreeRoot,
   setWorkspaceGitRunnerResolver,
@@ -85,6 +86,29 @@ function agentWithWorktree(sessionKey: string): { agent: Agent; worktree: string
 }
 
 /** Delegates to the local runner but records what the seam was asked to do. */
+/** Same shared path, different agent — the case the cwd-only key could not tell apart. */
+function clusterAgent(id: string, path: string): Agent {
+  return {
+    id,
+    dir: dirname(path),
+    name: id,
+    status: 'active',
+    runtime: 'claude',
+    workspace: {
+      mode: 'git-repo',
+      path,
+      gitRepo: 'https://github.com/acme/repo.git',
+      gitBranch: 'main',
+      pullOnNewSession: false,
+      skills: []
+    },
+    integrations: [],
+    output: { mode: 'medium' },
+    permissions: { policy: 'ask', autoApprove: [] },
+    crons: []
+  } as unknown as Agent
+}
+
 function recording(): {
   resolver: WorkspaceGitRunnerResolver
   calls: Array<{ agentId: string; cwd?: string }>
@@ -172,6 +196,43 @@ describe('workspace-manager git runner seam', () => {
     // No resolver installed: undefined means local, and the default must still work.
     expect(await removeSessionWorktree(agent, 'session-4')).toEqual({ outcome: 'removed' })
     expect(existsSync(worktree)).toBe(false)
+  })
+
+  it('does not coalesce two CLUSTER agents onto one clone, even at the same path', async () => {
+    // The single-flight lock was keyed on the textual cwd. For local agents that is the intent:
+    // one path means one checkout. For cluster agents the same path is a different filesystem per
+    // agent, so coalescing hands one agent the other's clone — and it looks like success.
+    const home = mkdtempSync(join(tmpdir(), 'ac-seam-clone-'))
+    roots.push(home)
+    const shared = join(home, 'checkout')
+    const cloned: string[] = []
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    // Clone is intercepted, so nothing reaches the network; the point is who asks and how often.
+    setWorkspaceGitRunnerResolver((agentId) => {
+      const runner = {
+        withEnv: () => runner,
+        raw: async () => '',
+        clone: async () => {
+          cloned.push(agentId)
+          await blocked
+        },
+        pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
+        status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
+        log: async () => []
+      } as GitRunner
+      return runner
+    })
+
+    const first = prefetchWorkspace(clusterAgent('bot-one', shared))
+    const second = prefetchWorkspace(clusterAgent('bot-two', shared))
+    // Both arrive while the other is in flight, which is the race the lock exists for.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    release()
+    await Promise.all([first, second])
+    expect(cloned.sort()).toEqual(['bot-one', 'bot-two'])
   })
 
   it('has no git call site left outside the seam', () => {

@@ -138,7 +138,10 @@ export class ShimGitRunner implements GitRunner {
   constructor(
     private readonly requester: ShimRequester,
     private readonly cwd?: string,
-    private readonly env?: Record<string, string>
+    private readonly env?: Record<string, string>,
+    // Cancels the git running IN THE SANDBOX, matching what the local runner's signal does to a
+    // local child. Without it the caller's budget expires while the remote git keeps index.lock.
+    private readonly abort?: AbortSignal
   ) {}
 
   withEnv(env: Record<string, string>): GitRunner {
@@ -146,7 +149,7 @@ export class ShimGitRunner implements GitRunner {
     // replaces the first, so merging here would let a variable the new sanitized environment
     // intentionally omitted survive on the remote runner alone — a divergence in exactly the
     // direction that matters, since those omissions are the sanitization.
-    return new ShimGitRunner(this.requester, this.cwd, { ...env })
+    return new ShimGitRunner(this.requester, this.cwd, { ...env }, this.abort)
   }
 
   async raw(args: string[]): Promise<string> {
@@ -216,7 +219,10 @@ export class ShimGitRunner implements GitRunner {
       // nothing" is a meaningful instruction and must not be indistinguishable from "unset".
       ...(this.env !== undefined ? { env: this.env } : {})
     }
-    const raw = await this.requester.request('exec', payload, deadlineMs + REQUEST_MARGIN_MS)
+    const raw = await this.requester.request('exec', payload, {
+      timeoutMs: deadlineMs + REQUEST_MARGIN_MS,
+      ...(this.abort ? { abort: this.abort } : {})
+    })
     const result = GitExecResultSchema.parse(raw)
     if (result.code !== 0) throw new GitExecError(result.code, result.stdout, result.stderr, args)
     return result

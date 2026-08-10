@@ -4,9 +4,25 @@ import type { ShimCapability, ShimResponse } from './protocol.js'
 import { parseShimFrame } from './protocol.js'
 import type { FileSink } from './file-sink.js'
 
+export interface ShimRequestOptions {
+  timeoutMs?: number
+  // Cancels the work IN THE SANDBOX, not just this side's wait. Abandoning the wait alone leaves
+  // the child running, and a running git keeps index.lock — which is what the local runner's
+  // abort-kills-the-child behaviour exists to prevent.
+  abort?: AbortSignal
+}
+
 /** How a daemon-side caller reaches a bound shim: one authorized request, one reply. */
 export interface ShimRequester {
-  request(capability: ShimCapability, payload: unknown, timeoutMs?: number): Promise<unknown>
+  request(capability: ShimCapability, payload: unknown, options?: ShimRequestOptions): Promise<unknown>
+}
+
+/** Raised when a request was cancelled rather than failing on its own merits. */
+export class ShimRequestAbortedError extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'ShimRequestAbortedError'
+  }
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
@@ -40,20 +56,39 @@ export class ShimChannel implements ShimRequester {
     return true
   }
 
-  request(capability: ShimCapability, payload: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<unknown> {
+  request(capability: ShimCapability, payload: unknown, options: ShimRequestOptions = {}): Promise<unknown> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     const id = randomUUID()
     return new Promise<unknown>((resolve, reject) => {
       const timer = this.deps.setTimeout(() => {
         this.pending.delete(id)
+        // Tell the sandbox too: a timeout that only gives up locally leaves the child running.
+        this.sendCancel(id, `timed out after ${timeoutMs}ms`)
         reject(new Error(`shim ${capability} request timed out after ${timeoutMs}ms`))
       }, timeoutMs)
+      const onAbort = (): void => {
+        if (!this.pending.delete(id)) return
+        this.deps.clearTimeout(timer)
+        this.sendCancel(id, 'aborted by caller')
+        reject(new ShimRequestAbortedError(`shim ${capability} request aborted`))
+      }
+      if (options.abort?.aborted) {
+        this.deps.clearTimeout(timer)
+        reject(new ShimRequestAbortedError(`shim ${capability} request aborted`))
+        return
+      }
+      options.abort?.addEventListener('abort', onAbort, { once: true })
+      const done = (): void => {
+        this.deps.clearTimeout(timer)
+        options.abort?.removeEventListener('abort', onAbort)
+      }
       this.pending.set(id, {
         resolve: (value) => {
-          this.deps.clearTimeout(timer)
+          done()
           resolve(value)
         },
         reject: (err) => {
-          this.deps.clearTimeout(timer)
+          done()
           reject(err)
         }
       })
@@ -66,6 +101,21 @@ export class ShimChannel implements ShimRequester {
         payload
       })
     })
+  }
+
+  // Best-effort: a dead channel cannot deliver it, and the shim's own deadline is the backstop.
+  private sendCancel(id: string, reason: string): void {
+    try {
+      this.connection.send({
+        type: 'shim/cancel',
+        id,
+        sessionCredential: this.credential,
+        generation: this.connection.binding.generation,
+        reason
+      })
+    } catch {
+      /* channel already gone */
+    }
   }
 
   /** Fail every in-flight request; the channel is gone and a caller must not hang on it. */
