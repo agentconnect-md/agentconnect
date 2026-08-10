@@ -100,12 +100,18 @@ export function toTelegramPhotoAttachment(sizes: TelegramPhotoSize[] | null | un
   if (!Array.isArray(sizes) || sizes.length === 0) return null
   const largest = sizes[sizes.length - 1]!
   if (!largest.file_id) return null
+  // Telegram returns `photo` sorted smallest→largest; the smallest rendition
+  // comfortably fits the console transcript's tight budget where the full-size
+  // photo often won't. Each size is its own file_id, resolved the same way as
+  // the full photo (getFile), so no extra download surface is needed.
+  const smallest = sizes[0]!
   return {
     id: largest.file_id,
     name: `${largest.file_unique_id ?? 'photo'}.jpg`,
     mimeType: 'image/jpeg',
     ...(typeof largest.file_size === 'number' ? { size: largest.file_size } : {}),
-    sourceUrl: largest.file_id
+    sourceUrl: largest.file_id,
+    ...(smallest.file_id && smallest.file_id !== largest.file_id ? { thumbnailUrl: smallest.file_id } : {})
   }
 }
 

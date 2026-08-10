@@ -150,7 +150,9 @@ describe('normalizeTelegramMessage', () => {
       }),
       ctx
     )
-    expect(n.attachments).toEqual([{ id: 'lg', name: 'uq9.jpg', mimeType: 'image/jpeg', size: 9000, sourceUrl: 'lg' }])
+    expect(n.attachments).toEqual([
+      { id: 'lg', name: 'uq9.jpg', mimeType: 'image/jpeg', size: 9000, sourceUrl: 'lg', thumbnailUrl: 'sm' }
+    ])
   })
 
   it('maps a document attachment, carrying file_id in sourceUrl', () => {

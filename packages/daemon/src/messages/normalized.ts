@@ -1,4 +1,4 @@
-import type { NormalizedPlatformMessage, PlatformAttachment } from '@agentconnect.md/protocol'
+import type { NormalizedPlatformMessage, PlatformAttachment, SessionImageAttachment } from '@agentconnect.md/protocol'
 
 /**
  * A file shared alongside a message. Platform ingresses carry metadata + a
@@ -20,6 +20,10 @@ export interface Attachment extends Omit<PlatformAttachment, 'sourceUrl'> {
   sourceUrl?: string
   /** Already-bounded bytes from webchat, absent for provider-backed attachments. */
   inlineData?: Buffer
+  /** Bytes fetched from `thumbnailUrl` for transcript preview only, set when the
+   *  full download (`inlineData`) doesn't fit the console history budget. Kept
+   *  apart from `inlineData` so the ACP prompt block never receives it. */
+  transcriptThumbnail?: { data: Buffer; mimeType: SessionImageAttachment['mimeType'] }
 }
 
 export interface NormalizedMessage extends Omit<

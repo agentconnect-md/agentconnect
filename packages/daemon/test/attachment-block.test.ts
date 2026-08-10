@@ -181,6 +181,28 @@ describe('hydrateTranscriptImage', () => {
     expect(download).toHaveBeenCalledOnce()
   })
 
+  it('fetches a separate thumbnail for the transcript when the full image is too big, without touching the prompt bytes', async () => {
+    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(WEBCHAT_IMAGE_MAX_BYTES)])
+    const jpegThumb = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from('thumb')])
+    const download = vi.fn(async (a: Attachment) => (a.sourceUrl === 'https://files/thumb' ? jpegThumb : png))
+    const attachments = [att({ thumbnailUrl: 'https://files/thumb' })]
+    await hydrateTranscriptImage(attachments, { download })
+    expect(download).toHaveBeenCalledTimes(2)
+    expect(transcriptImageAttachments(attachments)).toEqual([
+      { name: 'a.png', mimeType: 'image/jpeg', data: jpegThumb.toString('base64') }
+    ])
+    // The prompt block still gets the full-resolution bytes, never the thumbnail.
+    const blocks = await buildAttachmentBlocks(attachments, { download, supports: supportsAll })
+    expect(blocks[0]).toMatchObject({ type: 'image', data: png.toString('base64') })
+  })
+
+  it('skips the thumbnail fetch when the full image already fits the transcript budget', async () => {
+    const download = vi.fn(async () => Buffer.from('IMG'))
+    const attachments = [att({ thumbnailUrl: 'https://files/thumb' })]
+    await hydrateTranscriptImage(attachments, { download })
+    expect(download).toHaveBeenCalledOnce()
+  })
+
   it('survives a failed download', async () => {
     const attachments = [att()]
     await hydrateTranscriptImage(attachments, {

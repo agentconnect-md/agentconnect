@@ -1,7 +1,8 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import {
   SessionImageAttachment as SessionImageAttachmentSchema,
-  type SessionImageAttachment
+  type SessionImageAttachment,
+  WEBCHAT_IMAGE_MAX_BYTES
 } from '@agentconnect.md/protocol'
 import type { Attachment } from '../messages/normalized.js'
 
@@ -116,6 +117,15 @@ export function sniffImageMimeType(bytes: Buffer): SessionImageAttachment['mimeT
  * skipped identically here; the tighter transcript ceiling is enforced by the
  * `SessionImageAttachment` schema in `transcriptImageAttachments`.
  *
+ * The console history frame's budget (`WEBCHAT_IMAGE_MAX_BYTES`) is far tighter
+ * than `maxBytes` above, so a full-res download routinely clears the prompt cap
+ * but not the transcript one. When that happens — or the full download was
+ * never attempted because the declared size already exceeded `maxBytes` — a
+ * provider-supplied smaller rendition (`thumbnailUrl`: Slack `thumb_*`, a
+ * smaller Telegram `PhotoSize`, a resized Discord `proxy_url`) is fetched
+ * separately and kept in `transcriptThumbnail`, never in `inlineData`, so the
+ * agent's own prompt block always sees the full-resolution bytes.
+ *
  * ponytail: one image per message. A second one keeps the label; showing more
  * needs chunked/off-frame image reads, not a bigger cap.
  */
@@ -128,23 +138,39 @@ export async function hydrateTranscriptImage(
   )
   if (!image || image.inlineData) return
   const cap = deps.maxBytes ?? Infinity
-  if (typeof image.size === 'number' && image.size > cap) return
-  const bytes = await deps.download(image).catch(() => null)
-  if (!bytes || bytes.byteLength > cap) return
-  image.inlineData = bytes
-  const sniffed = sniffImageMimeType(bytes)
-  if (sniffed) image.mimeType = sniffed
+  if (!(typeof image.size === 'number' && image.size > cap)) {
+    const bytes = await deps.download(image).catch(() => null)
+    if (bytes && bytes.byteLength <= cap) {
+      image.inlineData = bytes
+      const sniffed = sniffImageMimeType(bytes)
+      if (sniffed) image.mimeType = sniffed
+    }
+  }
+  if (image.thumbnailUrl && (!image.inlineData || image.inlineData.byteLength > WEBCHAT_IMAGE_MAX_BYTES)) {
+    const thumbBytes = await deps.download({ ...image, sourceUrl: image.thumbnailUrl }).catch(() => null)
+    const sniffed = thumbBytes ? sniffImageMimeType(thumbBytes) : undefined
+    if (thumbBytes && sniffed && thumbBytes.byteLength <= WEBCHAT_IMAGE_MAX_BYTES) {
+      image.transcriptThumbnail = { data: thumbBytes, mimeType: sniffed }
+    }
+  }
 }
 
-/** Keep a validated bounded inline image beside its daemon-local transcript row. */
+/** Keep a validated bounded inline image beside its daemon-local transcript row.
+ *  Prefers a fetched `transcriptThumbnail` over the full-res `inlineData` — the
+ *  former exists only because the latter didn't fit the transcript's budget. */
 export function transcriptImageAttachments(attachments: Attachment[] | undefined): SessionImageAttachment[] {
   return (attachments ?? [])
     .flatMap((attachment) => {
-      if (!attachment.inlineData) return []
+      const image = attachment.transcriptThumbnail
+        ? { mimeType: attachment.transcriptThumbnail.mimeType, data: attachment.transcriptThumbnail.data }
+        : attachment.inlineData
+          ? { mimeType: attachment.mimeType, data: attachment.inlineData }
+          : undefined
+      if (!image) return []
       const parsed = SessionImageAttachmentSchema.safeParse({
         name: attachment.name,
-        mimeType: attachment.mimeType,
-        data: attachment.inlineData.toString('base64')
+        mimeType: image.mimeType,
+        data: image.data.toString('base64')
       })
       return parsed.success ? [parsed.data] : []
     })

@@ -364,7 +364,8 @@ export class DiscordConnection implements PlatformConnection {
         name: a.name,
         contentType: a.contentType,
         size: a.size,
-        url: a.url
+        url: a.url,
+        proxyUrl: a.proxyURL
       }))
     }
   }
