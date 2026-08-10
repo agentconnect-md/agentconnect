@@ -61,8 +61,8 @@ GitHub. Connect Claude Code, Codex, Gemini CLI, or any ACP-compatible runtime,
 then start work from a conversation, pull request, issue, webhook, or schedule.
 
 Give each agent a role, then choose the runtime, model, workspace, memory,
-tools, skills, permissions, and machine it needs. Agents can call one another
-while your team follows the work in shared channels and from one console.
+tools, skills, permissions, and sandbox policy it needs. Agents can call one
+another while your team follows the work in shared channels and from one console.
 
 A small daemon runs the agents in the environment you operate. One console lets
 your team configure the fleet, connect channels and triggers, control access,
