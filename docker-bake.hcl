@@ -56,6 +56,20 @@ target "control-plane" {
   )
 }
 
+// The runtime sandbox is NOT a service: it is what an agent's ACP runtime executes inside, so it
+// has its own Dockerfile and does not inherit `_release`'s. Its tag is the image pin the cluster
+// manifests reference, and the runtime table published with it describes exactly this build.
+target "runtime-sandbox" {
+  context    = "."
+  dockerfile = "docker/runtime-sandbox.Dockerfile"
+  platforms  = ["linux/amd64"]
+  target     = "runtime-sandbox"
+  tags = concat(
+    ["${REGISTRY}/${OWNER}/runtime-sandbox:${VERSION}"],
+    LATEST ? ["${REGISTRY}/${OWNER}/runtime-sandbox:latest"] : []
+  )
+}
+
 target "relay" {
   inherits = ["_release"]
   target   = "relay"

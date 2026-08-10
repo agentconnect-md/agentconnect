@@ -100,6 +100,36 @@ jobs:
 
   # Keep the fast, Docker-free suites away from the resource-heavy build group
   # so their short per-test timeouts measure code rather than runner contention.
+  runtime-sandbox-image:
+    name: Runtime Sandbox Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # A local tag only: this job proves the image is sound, it does not publish. Publication is
+      # build.yaml's `runtime-sandbox` bake target at release.
+      - name: Build the runtime sandbox image
+        run: docker build -f docker/runtime-sandbox.Dockerfile -t runtime-sandbox:ci .
+      # Against the BUILT image, not the Dockerfile: non-root, tini as PID 1, a root-owned shim
+      # the runtime cannot rewrite, a self-contained shim bundle, no smuggled service-account
+      # token, and the published runtime table agreeing with what the runtimes report.
+      - name: Verify the image properties and the runtime table
+        run: node scripts/verify-runtime-image.mjs runtime-sandbox:ci
+      # The acceptance criterion: a real container, the real shim dialling back, the real ACP
+      # runtime starting inside it, initialize and one session/new.
+      - name: Smoke test through the shim
+        run: pnpm --filter @agentconnect.md/daemon exec tsx scripts/smoke-runtime-image.mts runtime-sandbox:ci
+
   unit:
     name: Unit Test
     runs-on: ubuntu-latest
