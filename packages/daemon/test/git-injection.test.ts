@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
+import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import {
   assertSafeWorkspaceGitConfig,
   cloneGitEnv,
@@ -52,6 +53,12 @@ const POLLUTED = {
   GIT_CONFIG_KEY_0: 'core.editor',
   GIT_CONFIG_VALUE_0: 'vim'
 } as const
+
+// The audit takes a runner: it must read the config the git it guards reads, which for a cluster
+// workspace is the sandbox's filesystem rather than this one.
+function localRunner(cwd: string): GitRunner {
+  return new LocalGitRunner(gitFor(cwd))
+}
 
 function configPairs(env: Record<string, string>): Array<[string | undefined, string | undefined]> {
   return Array.from({ length: Number(env.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
@@ -265,7 +272,7 @@ describe('gitEnvBase', () => {
           env: workspaceGitEnvBase(repository)
         }).trim()
       ).toBe(repository)
-      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/disallowed network override/)
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/disallowed network override/)
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
@@ -311,7 +318,39 @@ describe('gitEnvBase', () => {
       execFileSync('git', ['-C', workspace, 'config', 'fetch.bundleURI', 'https://127.0.0.1/private.bundle'], {
         env: workspaceGitLocalEnv()
       })
-      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/disallowed network override/)
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/disallowed network override/)
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it(`audits the config of the filesystem the RUNNER reaches, not this daemon's disk`, async () => {
+    // Why the audit takes a runner: a cluster workspace's config lives on the sandbox pod, so a
+    // check performed here is performed on the wrong machine — passing while the real config is
+    // hostile.
+    const workspace = mkdtempSync(join(tmpdir(), 'git-audit-filesystem-'))
+    const localEnv = workspaceGitLocalEnv()
+    try {
+      // Locally CLEAN...
+      execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).resolves.toBeUndefined()
+
+      // ...while the runner's filesystem reports a hostile setting: the audit must follow it.
+      const hostile: GitRunner = {
+        withEnv: () => hostile,
+        raw: async () => 'filter.generated.process\0',
+        clone: async () => undefined,
+        pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
+        status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
+        log: async () => []
+      }
+      await expect(assertSafeWorkspaceGitConfig(hostile)).rejects.toThrow(/executable setting/)
+
+      // The converse proves the local disk is not consulted: unsafe LOCAL, clean runner, passes.
+      execFileSync('git', ['-C', workspace, 'config', 'filter.generated.process', './evil'], { env: localEnv })
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
+      const clean: GitRunner = { ...hostile, withEnv: () => clean, raw: async () => '' }
+      await expect(assertSafeWorkspaceGitConfig(clean)).resolves.toBeUndefined()
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
@@ -325,7 +364,7 @@ describe('gitEnvBase', () => {
       execFileSync('git', ['-C', workspace, 'config', 'filter.generated.process', './filter-process'], {
         env: localEnv
       })
-      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
@@ -340,13 +379,13 @@ describe('gitEnvBase', () => {
       execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
       writeFileSync(include, '[core]\n\thooksPath = .github/.githooks\n')
       execFileSync('git', ['-C', workspace, 'config', 'include.path', include], { env: localEnv })
-      await expect(assertSafeWorkspaceGitConfig(workspace)).resolves.toBeUndefined()
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).resolves.toBeUndefined()
 
       writeFileSync(
         include,
         '[core]\n\thooksPath = .github/.githooks\n[url "https://127.0.0.1.invalid/"]\n\tinsteadOf = https://github.com/\n'
       )
-      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/disallowed network override/)
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/disallowed network override/)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -364,7 +403,7 @@ describe('gitEnvBase', () => {
         env: localEnv
       })
 
-      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -378,7 +417,7 @@ describe('gitEnvBase', () => {
       execFileSync('git', ['-C', workspace, 'config', 'extensions.worktreeConfig', 'true'], { env: localEnv })
       writeFileSync(join(workspace, '.git', 'config.worktree'), '[filter "evil"]\n\tsmudge = ./filter-smudge\n')
 
-      await expect(assertSafeWorkspaceGitConfig(workspace)).rejects.toThrow(/executable setting/)
+      await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }

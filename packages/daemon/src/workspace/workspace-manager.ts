@@ -317,7 +317,7 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
     // The CP follows repository renames by numeric repo id. Repoint the existing
     // checkout instead of treating that canonical URL refresh as a new workspace.
     await convergeWorkspaceOrigin(agent, cwd)
-    await writeRepoHelperConfig(cwd, agent.id).catch(() => undefined)
+    await writeRepoHelperConfig(runnerFor(agent.id, cwd), agent.id).catch(() => undefined)
   } else {
     // Historical anonymous checkouts may still have credential-bearing or
     // disallowed origins even after their CP row has been sanitized.
@@ -338,7 +338,7 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
     try {
       const repository = gitRepoOf(agent)
-      await assertSafeWorkspaceGitConfig(cwd)
+      await assertSafeWorkspaceGitConfig(runnerFor(agent.id, cwd))
       const pullTarget = workspaceGitPullTarget(repository)
       const git = runnerFor(agent.id, cwd, abort.signal).withEnv({
         ...workspaceGitLocalEnv(),
@@ -516,7 +516,7 @@ async function fetchReviewRevision(
   const headRef = `${root}/head`
   const mergeRef = `${root}/merge`
   const repository = gitRepoOf(agent)
-  await assertSafeWorkspaceGitConfig(agent.workspace.path)
+  await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
   if (usesGithubApp(agent)) await preWarmGitCred(agent.id, 'pull')
   const pullTarget = workspaceGitPullTarget(repository)
   const abort = new AbortController()
@@ -644,14 +644,14 @@ export async function prepareSessionWorkspace(
     // prepareWorkspace's pull is best-effort (and may be disabled), but this
     // checkout runs in the daemon process. Unsafe executable config must gate
     // the worktree operation itself instead of being swallowed as a pull error.
-    await assertSafeWorkspaceGitConfig(agent.workspace.path)
+    await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
     await runnerFor(agent.id, agent.workspace.path)
       .withEnv(workspaceGitLocalEnv())
       .raw(['worktree', 'add', '--detach', cwd, target])
   } else if (review) {
     // Re-audit at the checkout boundary rather than relying on the earlier
     // network fetch audit; repository config may have changed while fetching.
-    await assertSafeWorkspaceGitConfig(agent.workspace.path)
+    await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
     const worktreeGit = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
     await worktreeGit.raw(['reset', '--hard', target])
     await worktreeGit.raw(['clean', '-ffdx'])
@@ -924,7 +924,7 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
     // Pin the repo-local helper so AGENT-run git in this checkout authenticates
     // through the daemon too — the "no credentials on the machine, but the agent
     // can still push" half of the design.
-    if (githubApp) await writeRepoHelperConfig(cwd, agent.id)
+    if (githubApp) await writeRepoHelperConfig(runnerFor(agent.id, cwd), agent.id)
   })().finally(() => {
     cloneInFlight.delete(key)
   })

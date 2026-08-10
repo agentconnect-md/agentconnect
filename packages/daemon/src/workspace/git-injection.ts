@@ -272,9 +272,11 @@ export function workspaceGitLocalEnv(): Record<string, string> {
  * separate worktree config scope is also disallowed because `--local` cannot
  * audit `.git/config.worktree`, while later daemon Git operations still read it.
  */
-export async function assertSafeWorkspaceGitConfig(cwd: string): Promise<void> {
-  const names = await gitFor(cwd)
-    .env(workspaceGitLocalEnv())
+export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void> {
+  // A runner, not a cwd: the audit must read the config the guarded git will read, which for a
+  // cluster workspace is the sandbox's — auditing this disk would pass a check nothing performed.
+  const names = await git
+    .withEnv(workspaceGitLocalEnv())
     .raw(['config', '--local', '--includes', '--name-only', '-z', '--list'])
   if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
     throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
@@ -402,8 +404,8 @@ export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentit
 }
 
 /** Post-clone: pin the repo-local helper so agent-run git in the checkout works. */
-export async function writeRepoHelperConfig(cwd: string, agentId: string): Promise<void> {
-  const git = gitFor(cwd).env(workspaceGitLocalEnv())
+export async function writeRepoHelperConfig(runner: GitRunner, agentId: string): Promise<void> {
+  const git = runner.withEnv(workspaceGitLocalEnv())
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
   await git.raw(['config', '--replace-all', 'credential.https://github.com.helper', ''])

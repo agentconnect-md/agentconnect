@@ -152,7 +152,7 @@ export function createWorkspaceGit(
         ) {
           return { agentId, isRepo: true, ok: false, detail: 'workspace origin is not a safe remote' }
         }
-        await assertSafeWorkspaceGitConfig(root)
+        await assertSafeWorkspaceGitConfig(runnerFor(root))
         const pullBranch = target.branch
         const pullTarget = workspaceGitPullTarget(expectedOrigin)
         timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
