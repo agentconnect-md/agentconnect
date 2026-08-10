@@ -243,6 +243,15 @@ type WebchatDone = {
   error?: string
 }
 
+/** One completed conversation post (mirrors protocol WebchatPost). Only rendered here
+ *  when its frame carries `initiator: 'agent'` (#753) — a user-authored post's reply
+ *  already streamed live via output/done and would double-render otherwise. */
+type WebchatPost = {
+  postId: string
+  author: { kind: 'user'; user?: string } | { kind: 'agent'; agentId: string }
+  text: string
+}
+
 /** One roster entry from the relay `ready` frame. */
 type WebchatParticipant = { agentId: string; primary?: boolean }
 
@@ -834,6 +843,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 output?: WebchatOutput
                 done?: WebchatDone
                 ack?: { accepted?: boolean; reason?: string; turnId?: string; agentId?: string }
+                post?: WebchatPost
+                initiator?: string
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -877,6 +888,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 if (m.output) receiveOutput(id, m.output)
               } else if (m.type === 'done') {
                 if (m.done) receiveDone(id, m.done)
+              } else if (m.type === 'post' && m.initiator === 'agent' && m.post?.author.kind === 'agent') {
+                // Agent-initiated turn (another participant's sendMessage/lineage-reply
+                // wake, #753): it never streamed output/done to this socket, so the
+                // completed post IS its first and only rendering here.
+                const agentId = m.post.author.agentId
+                pushStep(id, {
+                  kind: 'done',
+                  turnId: m.post.postId,
+                  agentId,
+                  ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
+                  text: m.post.text
+                })
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
                 let key = cursorKeyFor(id, m.ack?.agentId)
                 // The relay may target participants the client did not lane (a

@@ -231,7 +231,7 @@ export class RelayBrowserConnection implements ChatSink {
    */
   onPost(p: RdWebchatPost): void {
     if (p.conversationId !== this.deps.chatId) return
-    this.send({ type: 'post', post: p.post })
+    this.send({ type: 'post', post: p.post, ...(p.initiator ? { initiator: p.initiator } : {}) })
   }
 
   private onText(text: string): void {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { FakeClock, type Transport } from '@agentconnect.md/connection'
-import type { RdMsgWebchat } from '@agentconnect.md/protocol'
+import { buildRelayDaemonFrame, type RdMsgWebchat, type RelayDaemonFrame } from '@agentconnect.md/protocol'
 import { RelayManager } from '../../src/cp/relay-manager.js'
 import type { Logger } from '../../src/log.js'
 
@@ -10,6 +10,26 @@ const silentLog = { debug: () => {}, info: () => {}, warn: () => {}, error: () =
 function hangingConnect(): Promise<Transport> {
   return new Promise<Transport>(() => {})
 }
+
+/** A transport that captures every frame sent on it, for asserting a broadcast reached it. */
+class FakeTransport implements Transport {
+  readonly subprotocol = 'rd'
+  sent: RelayDaemonFrame[] = []
+  private msgCb?: (t: string) => void
+  onMessage(cb: (t: string) => void): void {
+    this.msgCb = cb
+  }
+  onClose(): void {}
+  close(): void {}
+  send(text: string): void {
+    this.sent.push(JSON.parse(text) as RelayDaemonFrame)
+  }
+  inject(frame: RelayDaemonFrame): void {
+    this.msgCb?.(JSON.stringify(frame))
+  }
+}
+
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 function manager() {
   const connect = vi.fn(hangingConnect)
@@ -71,5 +91,76 @@ describe('RelayManager.converge', () => {
     mgr.converge([entry('r1', 'wss://r1')])
     await mgr.stop()
     expect(mgr.size()).toBe(0)
+  })
+})
+
+/** A manager whose relays actually complete the rd/hello handshake, so `isReady()` is
+ *  true and `sendWebchatPost` can broadcast onto their transports. */
+function readyManager() {
+  const transports = new Map<string, FakeTransport>()
+  const connect = vi.fn(async (url: string) => {
+    const t = new FakeTransport()
+    transports.set(url, t)
+    return t
+  })
+  const mgr = new RelayManager({
+    apiKey: () => 'k',
+    daemonId: () => 'daemon-1',
+    clock: new FakeClock(),
+    connect,
+    log: silentLog,
+    jitter: () => 0,
+    onRelayMsg: (msg: RdMsgWebchat) => ({ msgId: msg.msgId, accepted: true })
+  })
+  return { mgr, transports }
+}
+
+async function toReady(t: FakeTransport, relayId: string): Promise<void> {
+  await flush()
+  const hello = [...t.sent].reverse().find((f) => f.type === 'rd/hello')!
+  t.inject(buildRelayDaemonFrame('rd/hello/ok', { relayId }, { corr: hello.id }))
+  await flush()
+}
+
+const POST = {
+  conversationId: '11111111-1111-4111-8111-111111111111',
+  agentId: '22222222-2222-4222-8222-222222222222',
+  post: {
+    postId: '33333333-3333-4333-8333-333333333333',
+    conversationId: '11111111-1111-4111-8111-111111111111',
+    author: { kind: 'agent' as const, agentId: '22222222-2222-4222-8222-222222222222' },
+    text: 'hi',
+    at: 1
+  },
+  initiator: 'agent' as const
+}
+
+const RELAY_1 = '44444444-4444-4444-8444-444444444444'
+const RELAY_2 = '55555555-5555-4555-8555-555555555555'
+
+describe('RelayManager.sendWebchatPost (#753)', () => {
+  it('broadcasts to every READY relay — only the one holding this conversation acts on it', async () => {
+    const { mgr, transports } = readyManager()
+    mgr.converge([entry(RELAY_1, 'wss://r1'), entry(RELAY_2, 'wss://r2')])
+    await toReady(transports.get('wss://r1')!, RELAY_1)
+    await toReady(transports.get('wss://r2')!, RELAY_2)
+
+    mgr.sendWebchatPost(POST)
+
+    for (const url of ['wss://r1', 'wss://r2']) {
+      const frame = transports.get(url)!.sent.find((f) => f.type === 'rd/webchat-post')
+      expect(frame?.payload).toEqual(POST)
+    }
+  })
+
+  it('skips a relay that has not completed its handshake yet', async () => {
+    const { mgr, transports } = readyManager()
+    mgr.converge([entry(RELAY_1, 'wss://r1'), entry(RELAY_2, 'wss://r2')])
+    await toReady(transports.get('wss://r1')!, RELAY_1) // r2 left mid-handshake
+
+    mgr.sendWebchatPost(POST)
+
+    expect(transports.get('wss://r1')!.sent.some((f) => f.type === 'rd/webchat-post')).toBe(true)
+    expect(transports.get('wss://r2')!.sent.some((f) => f.type === 'rd/webchat-post')).toBe(false)
   })
 })
