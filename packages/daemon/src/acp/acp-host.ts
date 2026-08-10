@@ -219,14 +219,13 @@ const PROVIDER_QUOTA_MESSAGES = [
  * call — so a Kubernetes RBAC denial would have told the user their provider credentials
  * needed attention. A type like `authentication_error` cannot arrive from an unrelated layer,
  * so it identifies the provider without needing to prove provenance separately.
+ *
+ * `permissionerror` and `unauthenticated` are deliberately absent for the same reason the
+ * status numbers are: this repository's own shim rejection reason IS `unauthenticated`, and
+ * `failureSignals` collects `reason` — so including it would classify our own handshake
+ * refusal as a provider credential problem. Only codes a provider alone emits belong here.
  */
-const PROVIDER_AUTH_CODES = new Set([
-  'authenticationerror',
-  'invalidapikey',
-  'invalidauthentication',
-  'permissionerror',
-  'unauthenticated'
-])
+const PROVIDER_AUTH_CODES = new Set(['authenticationerror', 'invalidapikey', 'apikeyinvalid', 'invalidauthentication'])
 
 const PROVIDER_AUTH_MESSAGES = [
   /\brefresh token was revoked\b/i,
@@ -239,7 +238,10 @@ const PROVIDER_AUTH_MESSAGES = [
   /\binvalid x-api-key\b/i,
   /\bincorrect api key provided\b/i,
   /\b(?:invalid|missing) (?:api )?(?:key|credentials)\b/i,
-  /\bno auth credentials found\b/i
+  /\bno auth credentials found\b/i,
+  // Gemini's documented envelope: the message is phrased the other way round from every
+  // other provider's, and its reason lives in a `details` array.
+  /\bapi key not valid\b/i
 ]
 
 /** Collect the small family of fields ACP adapters and provider SDKs use to
@@ -251,6 +253,12 @@ function failureSignals(value: unknown, depth = 0, seen = new Set<object>()): st
   if (!value || typeof value !== 'object' || depth >= 5 || seen.has(value)) return []
   seen.add(value)
   const out: string[] = []
+  // Providers put structured error detail in arrays — Gemini's `details[].reason` among them —
+  // so an array must be walked rather than treated as a leaf object.
+  if (Array.isArray(value)) {
+    for (const entry of value.slice(0, 20)) out.push(...failureSignals(entry, depth + 1, seen))
+    return out
+  }
   for (const key of [
     'message',
     'code',

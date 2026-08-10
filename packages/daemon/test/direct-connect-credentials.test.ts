@@ -59,12 +59,13 @@ describe('provider credentials in the direct-connect stage', () => {
       publishSpawnRecord: () => {},
       log: { info: () => {}, warn: () => {}, debug: () => {} }
     })
-    await driver.ensureSandbox('agent-a')
-    // Launch with a real secret in the runtime env, so the assertion below is about a value
-    // that was actually present to leak rather than one that never existed.
+    // launch() must be what creates the claim: pre-creating it would take the existing-launch
+    // fast path, so the request carrying the credential would never reach claim construction
+    // and a future leak from launch into the claim would still pass.
     await driver
       .launch({ command: 'runtime', args: [], env: { AC_AGENT_ID: 'agent-a', ANTHROPIC_API_KEY: SECRET } })
       .catch(() => undefined)
+    expect(created).toHaveLength(1)
     const serialized = JSON.stringify(created)
     expect(serialized).not.toContain(SECRET)
     expect(serialized).not.toContain('ANTHROPIC_API_KEY')
@@ -90,6 +91,35 @@ describe('provider credentials in the direct-connect stage', () => {
     expect(turnFailureCode(new Error('Incorrect API key provided: sk-***'))).toBe(
       HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
     )
+  })
+
+  it("recognises Gemini's envelope, whose message and reason are shaped unlike the others", () => {
+    // Documented Google shape: the wording is reversed relative to every other provider, and
+    // the machine-readable reason sits inside a `details` ARRAY — which the signal collector
+    // previously treated as a leaf and never entered.
+    const gemini = {
+      error: {
+        code: 400,
+        message: 'API key not valid. Please pass a valid API key.',
+        status: 'INVALID_ARGUMENT',
+        details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID' }]
+      }
+    }
+    expect(turnFailureCode(gemini)).toBe(HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
+    // The reason alone is enough, without the message.
+    expect(turnFailureCode({ error: { details: [{ reason: 'API_KEY_INVALID' }] } })).toBe(
+      HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    )
+  })
+
+  it('does not classify our OWN shim rejection reason as a provider problem', () => {
+    // The shim answers a refused handshake with reason `unauthenticated`, and failureSignals
+    // collects `reason`. Treating that as provider auth would repeat the K8s-403 mistake with
+    // a different field.
+    expect(turnFailureCode({ type: 'shim/rejected', reason: 'unauthenticated', message: 'not accepted' })).toBe(
+      'turn_failed'
+    )
+    expect(turnFailureCode({ reason: 'permission_error' })).toBe('turn_failed')
   })
 
   it('does NOT treat an unrelated 403 as a provider credential problem', () => {
