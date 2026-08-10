@@ -1,4 +1,4 @@
-import { ShimChannel } from './channels.js'
+import { ShimChannel, type ShimRequestOptions } from './channels.js'
 import type { ShimConnection } from './listener.js'
 import type { ShimCapability, ShimEvent } from './protocol.js'
 import { parseShimFrame } from './protocol.js'
@@ -78,8 +78,8 @@ export class ShimSession {
     return this.channel !== undefined
   }
 
-  request(capability: ShimCapability, payload: unknown, timeoutMs?: number): Promise<unknown> {
+  request(capability: ShimCapability, payload: unknown, options?: ShimRequestOptions): Promise<unknown> {
     if (!this.channel) throw new Error(`agent ${this.agentId} has no attached shim channel`)
-    return this.channel.request(capability, payload, timeoutMs)
+    return this.channel.request(capability, payload, options)
   }
 }

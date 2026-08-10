@@ -160,7 +160,7 @@ describe('shim channel', () => {
   it('times out a request rather than leaving a turn parked forever', async () => {
     const { connection } = fakeConnection()
     const channel = new ShimChannel(connection, 'cred-1', timers)
-    await expect(channel.request('materialize', {}, 10)).rejects.toThrow(/timed out/)
+    await expect(channel.request('materialize', {}, { timeoutMs: 10 })).rejects.toThrow(/timed out/)
     expect(channel.pendingCount()).toBe(0)
   })
 

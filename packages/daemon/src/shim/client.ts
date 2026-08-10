@@ -38,7 +38,7 @@ export interface ShimClientDeps {
   readToken?: () => string
   /** Handles an authorized non-ACP request from the daemon (materialize / exec / read /
    *  tunnel). The ACP capability is served by the built-in runner instead. */
-  handle?: (capability: ShimCapability, payload: unknown) => Promise<unknown>
+  handle?: (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown>
   /** Resolves executables in THIS filesystem for the ACP runner. */
   resolveCommand?: ResolveCommand
   clock?: Clock
@@ -58,6 +58,13 @@ export interface ShimClientDeps {
 export class ShimClient {
   /** ACP streams by the request id that opened them; each emits many events. */
   private readonly acpStreams = new Map<string, AcpRunner>()
+  // In-flight non-ACP work, so a cancel frame kills the child instead of only unblocking the
+  // daemon's wait. Keyed by request id and TIED TO ITS TRANSPORT: the daemon fails pending
+  // requests whenever a socket goes (including the routine half-TTL renewal), and work whose
+  // reply has nowhere to go must die with it — otherwise a clone, whose budget outlasts a
+  // renewal, keeps running and holding locks while the daemon retries over the new socket.
+  // ACP streams deliberately survive a renewal and are tracked separately.
+  private readonly inFlight = new Map<string, { transport: ShimTransport; controller: AbortController }>()
   /** Events produced while no transport is attached. A renewal closes the old socket before
    *  the replacement binds, and ACP bytes cannot simply be dropped — losing a fragment
    *  corrupts the protocol — so they wait here and flush on the next bind. */
@@ -137,6 +144,7 @@ export class ShimClient {
 
   stop(): void {
     this.stopped = true
+    if (this.transport) this.abortTransportWork(this.transport, 'shim stopping')
     this.bound = undefined
     this.channel?.end?.('lost')
     this.transport?.close(1000, 'shim stopping')
@@ -192,6 +200,9 @@ export class ShimClient {
         reject(new Error(message))
       }
       transport.onClose((code, reason) => {
+        // Unconditionally, and before the channel guard below: this transport's work is dead
+        // whichever channel is current, because its replies had this socket as their only route.
+        this.abortTransportWork(transport, `channel closed (${code})`)
         // Scoped to THIS transport. A close arriving late from a transport we already
         // replaced (a close-handshake timeout, say) must not clear the binding or end the
         // channel of the replacement that has since bound.
@@ -230,6 +241,7 @@ export class ShimClient {
           return
         }
         if (frame.type === 'shim/request') void this.serve(transport, frame)
+        if (frame.type === 'shim/cancel') this.cancel(frame)
       })
       // The token is the whole proof; nothing else about this pod is asserted.
       transport.send(JSON.stringify({ type: 'shim/hello', token } satisfies Extract<ShimFrame, { type: 'shim/hello' }>))
@@ -326,12 +338,38 @@ export class ShimClient {
         await this.serveAcp(transport, request)
         return
       }
-      const payload = await (this.deps.handle ?? (async () => undefined))(request.capability, request.payload)
-      transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload }))
+      const controller = new AbortController()
+      this.inFlight.set(request.id, { transport, controller })
+      try {
+        const handle = this.deps.handle ?? (async () => undefined)
+        const payload = await handle(request.capability, request.payload, controller.signal)
+        transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload }))
+      } finally {
+        this.inFlight.delete(request.id)
+      }
     } catch (err) {
       transport.send(
         JSON.stringify({ type: 'shim/response', id: request.id, ok: false, error: (err as Error).message })
       )
     }
+  }
+
+  // Fenced exactly like a request: a replayed cancel from a previous incarnation must not be able
+  // to kill this one's work, so the credential and generation are checked before anything is
+  // aborted. An unknown id is normal — the work may have finished as the cancel arrived.
+  // Abort every non-ACP request whose reply would have gone to this transport, and forget them.
+  private abortTransportWork(transport: ShimTransport, reason: string): void {
+    for (const [id, entry] of [...this.inFlight]) {
+      if (entry.transport !== transport) continue
+      this.inFlight.delete(id)
+      entry.controller.abort(new Error(reason))
+    }
+  }
+
+  private cancel(frame: Extract<ShimFrame, { type: 'shim/cancel' }>): void {
+    const bound = this.bound
+    if (!bound || frame.sessionCredential !== bound.sessionCredential || frame.generation !== bound.generation) return
+    this.inFlight.get(frame.id)?.controller.abort(new Error(frame.reason ?? 'cancelled by daemon'))
+    void this.acpStreams.get(frame.id)?.close(5_000)
   }
 }

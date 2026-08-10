@@ -144,18 +144,18 @@ function resolveCwd(root: string, requested: string | undefined): string {
  */
 export function createExecHandler(
   deps: ExecHandlerDeps
-): (capability: ShimCapability, payload: unknown) => Promise<unknown> {
-  return async (capability, payload) => {
+): (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown> {
+  return async (capability, payload, abort) => {
     if (capability === 'materialize') {
       await applyFileSinkPayload(payload)
       return null
     }
-    if (capability === 'exec') return runGit(payload, deps)
+    if (capability === 'exec') return runGit(payload, deps, abort)
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }
 }
 
-async function runGit(payload: unknown, deps: ExecHandlerDeps): Promise<GitExecResult> {
+async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSignal): Promise<GitExecResult> {
   const parsed = GitExecPayloadSchema.parse(payload)
   const [subcommand, ...rest] = parsed.args
   if (!subcommand || !ALLOWED_GIT_SUBCOMMANDS.has(subcommand)) {
@@ -194,6 +194,8 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps): Promise<GitExecR
         // moving that policy into the shim, which is a design change, not a patch.
         ...(parsed.env ? { env: parsed.env } : {}),
         timeout: timeoutMs,
+        // The daemon's abort kills the child here, matching what simple-git's signal does locally.
+        ...(abort ? { signal: abort } : {}),
         // A killed git leaves index.lock behind, so the timeout is a last resort rather than
         // the primary cancellation path — the daemon aborting its request is.
         killSignal: 'SIGTERM',
@@ -201,6 +203,12 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps): Promise<GitExecR
       },
       (error, stdout, stderr) => {
         const failure = error as (Error & { code?: unknown; signal?: string | null; killed?: boolean }) | null
+        if (failure?.code === 'ABORT_ERR') {
+          // A cancelled child reports neither killed nor a signal, so it must be classified before
+          // the checks below or it reads as a spawn failure.
+          reject(new ExecRefusedError(`git ${subcommand} was cancelled`))
+          return
+        }
         if (failure?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
           // Must precede the killed check: Node kills the child on overflow, so this would
           // otherwise be reported as a timeout.
