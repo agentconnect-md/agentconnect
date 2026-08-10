@@ -607,10 +607,14 @@ Known M1 follow-ups, none of which change what the code does today:
 - Two app-wiring mutants still survive: dropping the Files tab when
   `filesAgentId` is null, and the `dockTabKey` existence fallback. The primitives
   under them are covered; only the wiring is not.
-- Two review fixes are **unpinned by tests**: holding the Files surface while a
-  related session's isolation is still unknown, and keying the viewer on the
-  whole workspace scope rather than the path alone. Both need a multi-agent focus
-  fixture with a pending `extraHeaderDetail`, which this suite does not build yet.
+- Four review fixes are **unpinned by tests**, all for the same missing fixture —
+  a multi-agent focus menu with a pending or rejected `extraHeaderDetail`, which
+  this suite does not build: holding the Files surface while a related session's
+  isolation is unknown, the unavailable state when that read is rejected outright,
+  keying the viewer on the whole workspace scope rather than the path alone, and
+  the focus menu rewriting the link's `agent` so it is not a no-op while a file is
+  open. The code is right; the guard is missing, and a test that cannot construct
+  the state would be worse than none.
 
 - A pending **webchat MCP write approval** is concealed with the composer and has
   no header twin the way permission requests do (those stay reachable in the

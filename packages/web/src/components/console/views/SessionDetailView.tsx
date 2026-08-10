@@ -1743,13 +1743,23 @@ export default function SessionDetailView() {
   const storedHeaderFocusValid =
     headerFocusSelection.scope === headerFocusScope &&
     headerFocusOptions.some((option) => option.agentId === headerFocusSelection.agentId)
-  // A deep link's `agent` outranks both the stored selection and the default, but only while it names an agent this conversation actually has — a stale link must fall back rather than focus nothing.
+  // A deep link's `agent` outranks both the stored selection and the default while it names an agent this conversation actually has.
   const linkedFocusAgentId =
     viewerAgentParam && headerFocusOptions.some((option) => option.agentId === viewerAgentParam)
       ? viewerAgentParam
       : null
+  // An `agent` that is PRESENT but does not resolve fails CLOSED. Falling back to the default here would read the linked path from a different checkout and draw plausible-but-wrong content — exactly the ambiguity this parameter exists to remove. Only a link without `agent` at all gets the legacy default. Held until the roster has options, since an empty list means "not known yet", not "not there".
+  const linkedFocusStale = viewerAgentParam !== null && linkedFocusAgentId === null && headerFocusOptions.length > 0
   const headerFocusAgentId =
     linkedFocusAgentId ?? (storedHeaderFocusValid ? headerFocusSelection.agentId : defaultHeaderFocusAgentId)
+  // Both focus menus go through here, because a `?file=` with an `agent` OUTRANKS the local selection: writing only the selection would make the control a no-op — the menu closes and the URL's agent renders again. So the URL moves with the reader, and the open path follows them into the checkout they picked (where the viewer's own not-found state covers a path that agent does not have).
+  const changeHeaderFocus = useCallback(
+    (agentId: string) => {
+      setHeaderFocusSelection({ scope: headerFocusScope, agentId })
+      if (viewerPath !== null) setViewerFile(viewerPath, agentId)
+    },
+    [headerFocusScope, setViewerFile, viewerPath]
+  )
   useEffect(() => {
     if (!defaultHeaderFocusAgentId) return
     setHeaderFocusSelection((current) =>
@@ -1766,7 +1776,11 @@ export default function SessionDetailView() {
     headerFocusSessionId && headerFocusSessionId !== currentSessionDetail?.id && !syntheticPlayground
       ? headerFocusSessionId
       : null
-  const { data: extraHeaderDetail, mutate: mutateExtraHeaderDetail } = useSWR<SessionDetailDto>(
+  const {
+    data: extraHeaderDetail,
+    error: extraHeaderDetailError,
+    mutate: mutateExtraHeaderDetail
+  } = useSWR<SessionDetailDto>(
     consoleKeys.sessionDetail(activeOrg?.id, extraHeaderDetailId),
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string)
   )
@@ -1796,6 +1810,8 @@ export default function SessionDetailView() {
     extraHeaderDetailId === null ||
     extraHeaderDetail !== undefined ||
     focusedSession?.workspaceIsolation !== undefined
+  // A REJECTED isolation read is not a pending one. The checkout still may not be read — the answer is unknown either way — but a spinner that never resolves is a worse lie than saying so, so this state gets its own copy and the tab counts as answered.
+  const filesScopeFailed = !filesScopeReady && extraHeaderDetailError !== undefined
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
@@ -1854,8 +1870,8 @@ export default function SessionDetailView() {
   )
   // What tells "the list is still coming" from "there is no list": the dock withholds its chrome and holds its track for either, and the two only differ in the placeholder a sibling-tab-ready dock shows.
   const sessionsStatus = sessionsTabStatus(sessionsWouldHide, !seededRailLoading && railFamilySettled)
-  // `loading` also covers "we do not know which checkout yet": a related session's isolation is a round trip behind, and reading before it lands would read the wrong one.
-  const filesStatus = filesScopeReady ? filesTabStatus(filesRootSettled) : 'loading'
+  // `loading` also covers "we do not know which checkout yet": a related session's isolation is a round trip behind, and reading before it lands would read the wrong one. A failed isolation read is `ready` instead — it has copy to draw, and it is never going to resolve on its own.
+  const filesStatus = filesScopeFailed ? 'ready' : filesScopeReady ? filesTabStatus(filesRootSettled) : 'loading'
   // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
   const dockTabs = useMemo<DockTab[]>(
     () =>
@@ -2554,8 +2570,8 @@ export default function SessionDetailView() {
   // Scoped to this session's OWN worktree only where it has one. `hasSessionWorktree` is the same gate the Workspace link above uses, and it is load-bearing for the reads: the daemon answers a shared workspace's sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
   const filesSessionId = hasSessionWorktree && headerFocusSessionId ? headerFocusSessionId : undefined
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
-  // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it — nor before that checkout's scope is known.
-  const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady
+  // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
+  const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
@@ -3366,7 +3382,7 @@ export default function SessionDetailView() {
           <SessionAgentFocusMenu
             options={headerFocusOptions}
             value={headerFocusAgentId}
-            onChange={(agentId) => setHeaderFocusSelection({ scope: headerFocusScope, agentId })}
+            onChange={(agentId) => changeHeaderFocus(agentId)}
           />
           {headerCron ? (
             <Link
@@ -3485,6 +3501,17 @@ export default function SessionDetailView() {
           </div>
         )}
 
+        {/* The link named a workspace this conversation does not have. Saying so beats opening the same path against whichever agent the header would otherwise focus — that reads plausible and is wrong. */}
+        {linkedFocusStale && viewerPath !== null && (
+          <div
+            data-viewer-stale-link=""
+            className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3"
+          >
+            This link points at an agent that is not part of this conversation, so its file was not opened. Pick an
+            agent in the header and open the file from the Files tab.
+          </div>
+        )}
+
         {/* MOBILE HEADER ROW — the desktop meta row's shape at 390px: the focused
           agent, workspace, visibility, and everything numeric collapsed behind
           the SAME Details popover. It replaces the old 4-up stat strip and the
@@ -3496,7 +3523,7 @@ export default function SessionDetailView() {
             <SessionAgentFocusMenu
               options={headerFocusOptions}
               value={headerFocusAgentId}
-              onChange={(agentId) => setHeaderFocusSelection({ scope: headerFocusScope, agentId })}
+              onChange={(agentId) => changeHeaderFocus(agentId)}
             />
           </span>
           {workspaceHref ? (
@@ -4424,7 +4451,16 @@ export default function SessionDetailView() {
           />
         </DockPanel>
         <DockPanel active={dockTabKey === 'files'}>
-          {/* Withheld until the scope is known, so no listing is ever issued against a checkout we only assumed. */}
+          {/* Withheld until the scope is known, so no listing is ever issued against a checkout we only assumed. A rejected isolation read says so rather than spinning forever. */}
+          {filesScopeFailed ? (
+            <div
+              data-files-scope-failed=""
+              className="px-3 py-4 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
+            >
+              Couldn’t tell which checkout this session reads — its details didn’t load. Reopen the session, or read the
+              files from the agent’s workspace page.
+            </div>
+          ) : null}
           {filesAgentId && filesScopeReady ? (
             <FilesPanel
               agentId={filesAgentId}

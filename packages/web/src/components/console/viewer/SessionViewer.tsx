@@ -141,7 +141,8 @@ export function SessionViewer({
   const text = useMemo(() => lines.join('\n'), [lines])
   const gutter = useMemo(() => lines.map((_, index) => index + 1).join('\n'), [lines])
 
-  const [html, setHtml] = useState<string | null>(null)
+  // Highlighted HTML is stored WITH the source it was produced from. The highlighter is async, so a paginated or reloaded slice would otherwise render the previous revision's colouring — and its gutter — beside the new source for as many paints as the pass takes; escaped plain text is the correct thing to show in that window.
+  const [html, setHtml] = useState<{ text: string; name: string; html: string } | null>(null)
   useEffect(() => {
     if (!isText || !text) {
       setHtml(null)
@@ -150,7 +151,10 @@ export function SessionViewer({
     let active = true
     loadHljs().then(
       (hljs) => {
-        if (active) setHtml(highlight(hljs, text, name))
+        if (!active) return
+        // `highlight` declines an unknown language by returning null — the same "use escaped text" answer as a failed load.
+        const marked = highlight(hljs, text, name)
+        setHtml(marked === null ? null : { text, name, html: marked })
       },
       () => {
         // Highlighter unavailable: escaped plain text through the same pipeline.
@@ -161,7 +165,11 @@ export function SessionViewer({
       active = false
     }
   }, [isText, text, name])
-  const codeHtml = useMemo(() => (isText && text ? linkifyHtml(html ?? escapeHtml(text)) : null), [isText, text, html])
+  const fresh = html && html.text === text && html.name === name ? html.html : null
+  const codeHtml = useMemo(
+    () => (isText && text ? linkifyHtml(fresh ?? escapeHtml(text)) : null),
+    [isText, text, fresh]
+  )
 
   // What the file IS, for a reader who arrived on a link: the language only when the mapping is confident, and a line count that says so when it describes a slice rather than the whole file.
   const lineCount = `${lines.length} line${lines.length === 1 ? '' : 's'}`

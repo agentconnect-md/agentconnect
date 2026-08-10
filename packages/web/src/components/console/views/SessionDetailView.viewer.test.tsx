@@ -464,6 +464,17 @@ describe('the viewer route', () => {
     expect(written.get('agent')).toBe('agent-1')
   })
 
+  it('fails CLOSED when the link names a workspace this conversation does not have', async () => {
+    // The dangerous alternative is falling back to the default agent: the same path opens against a different checkout and draws plausible, wrong content — which is the ambiguity `agent=` exists to remove.
+    nav.search = 'file=a.ts&agent=agent-not-here'
+    await render()
+    expect(viewer()).toBeNull()
+    expect(container?.querySelector('[data-viewer-stale-link]')).not.toBeNull()
+    // And nothing was read from anyone's checkout on the strength of that link.
+    expect(wire.fileCalls).toEqual([])
+    expect(pane()?.className).toBe('contents')
+  })
+
   it('drops the workspace along with the file, so a closed viewer leaves no scope behind', async () => {
     nav.search = 'file=a.ts&agent=agent-1'
     await render()
