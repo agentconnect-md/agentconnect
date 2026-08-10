@@ -18,7 +18,14 @@ vi.mock('@/components/console/Shell', () => ({
   useMobileActionSlot: () => ({ action: null, register: (a: unknown) => mobileActions.push(a as never) })
 }))
 
-import { DOCK_LABEL_WIDTH, SessionDock, SessionDockSlot, type DockTab, type DockTabStatus } from './SessionDock'
+import {
+  DOCK_LABEL_WIDTH,
+  DockPanel,
+  SessionDock,
+  SessionDockSlot,
+  type DockTab,
+  type DockTabStatus
+} from './SessionDock'
 import {
   DOCK_BODY_FLOOR,
   DOCK_INLINE_CHROME,
@@ -953,6 +960,30 @@ describe('SessionDock overlay dialog semantics', () => {
       panel()!.querySelectorAll<HTMLElement>('[role="separator"],[data-dock-tab="files"],button')
     )
     expect(document.activeElement).toBe(stops.at(-1))
+  })
+
+  it('never wraps onto a control in the panel the reader cannot see', () => {
+    // An inactive DockPanel stays mounted at `display:none`, where `.focus()` is a no-op — counting its
+    // controls as stops makes the wrap a dead key and lets a forward Tab off the last VISIBLE stop leave
+    // the modal for one press. happy-dom does not enforce visibility, so assert the stop, not the paint.
+    render(
+      <SessionDock tabs={TABS} activeKey="files" onTabChange={() => {}}>
+        <DockPanel active={true}>
+          <button data-visible-stop="">shown</button>
+        </DockPanel>
+        <DockPanel active={false}>
+          <button data-hidden-stop="">concealed</button>
+        </DockPanel>
+      </SessionDock>
+    )
+    click(trigger())
+    tab(true)
+    const landed = document.activeElement as HTMLElement
+    expect(landed.hasAttribute('data-hidden-stop')).toBe(false)
+    expect(landed.hasAttribute('data-visible-stop')).toBe(true)
+    // And forward off that same last visible stop wraps back inside rather than out past the scrim.
+    tab()
+    expect(panel()?.contains(document.activeElement)).toBe(true)
   })
 
   it('pulls focus back in when it has escaped the dialog altogether', () => {

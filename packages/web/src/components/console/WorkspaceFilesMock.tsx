@@ -11,7 +11,7 @@ import dynamic from 'next/dynamic'
 import { flattenFiles, type WorkspaceFile } from '@/lib/data'
 import { indexWorkspaceFileTree, resolveWorkspaceMarkdownLink } from '@/components/console/workspace-links'
 import type { MarkdownLinkResolution } from '@/components/console/MarkdownView'
-import { StatusBadge } from '@/components/console/WorkspaceFiles'
+import { StatusBadge } from '@/components/console/workspace-tree'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import {
   FileBrowserLayout,

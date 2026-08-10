@@ -203,10 +203,11 @@ Fetching both blobs and reusing the LCS path instead would work but is worse on
 every axis — two round trips per file, quadratic matching on large files, and it
 throws away git's own rename/whitespace handling.
 
-**Deep-linking.** Open question: is the viewer URL-addressable
-(`/sessions/:id?file=…&mode=diff`) or transient component state? Addressable is
-strictly better for a review workflow — "look at this file" is a link people
-send — but it puts a second resource in a route that today is one session.
+**Deep-linking.** Settled in M1: the viewer is URL-addressable, `?file=<path>`
+plus `agent=<id>` on the session route. "Look at this file" is a link people send,
+so it has to survive a reload and name the workspace it was made from; §9's M1
+entry records the mechanics and why `replace` beats `push`. M2 adds `mode` to the
+same param set when the Diff view arrives.
 
 ## 5. Gap analysis — the two AI features
 
@@ -579,6 +580,64 @@ Known M0 follow-ups, none of which change what the code does today:
 viewer in File mode over `workspace/read` + `@/lib/highlight`, including the
 conversation↔viewer mode switch and the deep-link decision. No protocol change.
 _Exit:_ browse a session worktree and read any file without leaving the session.
+**Landed.**
+
+The deep-link question §12 Q1 left open is settled the addressable way: the
+viewer is `?file=<path>` on the session route, written with `router.replace` —
+it is a pane mode inside one route, not a place, so pushing would spend a history
+entry per tree click and Back would stop meaning "leave this session". The link
+carries `agent=<id>` beside the path, because a merged conversation's header focus
+is component state that follows whichever participant is newest: without the
+workspace identity, a link copied while focused on one agent reopens that path
+against another's checkout.
+
+The conversation pane is **concealed, not unmounted** (`hidden` vs `contents` on
+one JSX slot) — every expanded tool body, the composer's caret and any open
+@mention menu is state a file read must not spend.
+
+Known M1 follow-ups, none of which change what the code does today:
+
+- A `?file=` naming a **directory** — or a path that escapes the workspace —
+  reads as "the daemon may be offline". The daemon raises
+  `WorkspaceViolationError`, the CP maps that to 503, and the viewer cannot tell
+  it from a real outage. Distinguishing it needs a daemon/CP error code, not a
+  web change, so it waits for the next milestone that touches those layers.
+- The filter corpus is rebuilt and sorted on every folder expansion even while
+  the box is empty. Harmless at today's tree sizes; gate the memo on the query.
+- Two app-wiring mutants still survive: dropping the Files tab when
+  `filesAgentId` is null, and the `dockTabKey` existence fallback. The primitives
+  under them are covered; only the wiring is not.
+- Four review fixes are **unpinned by tests**, all for the same missing fixture —
+  a multi-agent focus menu with a pending or rejected `extraHeaderDetail`, which
+  this suite does not build: holding the Files surface while a related session's
+  isolation is unknown, the unavailable state when that read is rejected outright,
+  keying the viewer on the whole workspace scope rather than the path alone, and
+  the focus menu rewriting the link's `agent` so it is not a no-op while a file is
+  open. The code is right; the guard is missing, and a test that cannot construct
+  the state would be worse than none.
+
+- A pending **webchat MCP write approval** is concealed with the composer and has
+  no header twin the way permission requests do (those stay reachable in the
+  Requests popover). A reader with a file open sees the agent stall. Either that
+  card needs a home above the viewer, or the viewer needs to surface a pending
+  count.
+- The reader's **place in the transcript is not preserved** across a viewer round
+  trip: the concealed pane stops contributing height to `.content`, so the browser
+  clamps `scrollTop`. Restoring it needs the offset captured _before_ the swap and
+  keyed per session, which is more state than this seam carries.
+- The viewer's own scroller is a class-level arrangement: an `overflow-auto` box
+  under `min-h-0 flex-1`, inside the `min-h-full` body column. happy-dom has no
+  layout engine, so "it never grows the page" is unmeasured and needs a real
+  browser — the same caveat as M0's resize handle.
+- `SessionDetailFrame` keeps its 880px cap, so a cold load straight into `?file=`
+  paints the centred loading state at 880px for one round trip before the viewer
+  takes the full width. Invisible for a centred spinner; it becomes visible the
+  day that frame draws content.
+- The Files panel is mounted on **every** session page, not on first visit to its
+  tab. Its verdict is what keeps the dock out of `vacant`, and a lazily mounted
+  panel makes the tab unreachable — both tabs non-ready withholds the strip that
+  would mount it. Cost: one `workspace/list` and one or two `workspace/gitstatus`
+  reads per session page view.
 
 **M2 — Git read + diff viewer.** `WorkspaceGitFile.additions/deletions`, the
 `workspace/gitdiff` and `workspace/gitlog` frames + routes, the unified-diff
@@ -666,9 +725,8 @@ location, body, and the review state that already comes from `HookRun.verdict`.
 
 ## 12. Open questions
 
-1. **Viewer deep-linking.** URL-addressable (`?file=…&mode=diff`) or transient
-   state? Addressable is better for review workflows but puts a second resource
-   in a one-session route.
+1. ~~**Viewer deep-linking.**~~ Settled in M1 — addressable, `?file=` + `agent=`,
+   written with `replace`. See §4 and §9's M1 entry.
 2. **Thread resolution.** §5.2 leaves resolving GitHub threads to the agent's
    own write-back inside the Auto-fix turn. Is that reliable enough in practice,
    or does the panel eventually need its own resolve control? Worth revisiting
