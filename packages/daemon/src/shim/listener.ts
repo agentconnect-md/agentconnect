@@ -43,6 +43,9 @@ const DEFAULT_CREDENTIAL_TTL_MS = 10 * 60_000
 /** A bound shim connection the daemon can send requests on. */
 export interface ShimConnection {
   binding: Binding
+  /** The credential issued to THIS channel, so teardown can revoke exactly it rather than
+   *  whatever the pod currently holds — a renewal may already have replaced that. */
+  issuedCredential: string
   send(frame: ShimFrame): void
   close(reason: string): void
 }
@@ -202,6 +205,7 @@ export class ShimListener {
             }
             const connection: ShimConnection = {
               binding: result.binding,
+              issuedCredential: result.credential,
               send: (outbound) => ws.send(JSON.stringify(outbound)),
               close: (reason) => ws.close(4000, reason)
             }
@@ -257,10 +261,9 @@ export class ShimListener {
     ws.on('close', () => {
       if (bound) {
         this.connections.delete(bound)
-        // Revoke the credential too, not just the connection entry: a credential whose
-        // channel is gone is useless, and leaving it behind is what let a stale binding
-        // outlive its socket.
-        this.registry.revokePod(bound.binding.podUid)
+        // Revoke this channel's OWN credential: a same-pod renewal may already hold the
+        // pod's index, and revoking by pod here would delete the live replacement.
+        this.registry.revokeIssued(bound.issuedCredential)
       }
     })
   }

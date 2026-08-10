@@ -287,6 +287,72 @@ describe('shim handshake', () => {
     expect(instance.connectionsFor('agent-a')).toHaveLength(1)
   })
 
+  it('survives the superseded socket closing after a same-pod renewal has bound', async () => {
+    // The teardown-ownership race: renewal stores credential B under the same pod UID, and
+    // the superseded socket A closes afterwards. Revoking "whatever this pod holds" from
+    // A's late close deleted B, so renewal looked successful and then silently died.
+    const { instance, endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' })
+    })
+    const first = await rawConnect(endpoint)
+    first.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => first.frames.length > 0)
+    const a = first.frames[0] as ShimBound
+
+    // Same pod, same generation: a credential rotation, not a relaunch.
+    const second = await rawConnect(endpoint)
+    second.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => second.frames.length > 0)
+    const b = second.frames[0] as ShimBound
+    expect(b.sessionCredential).not.toBe(a.sessionCredential)
+    await waitFor(
+      () => instance.authorize({ credential: b.sessionCredential, generation: 3, capability: 'materialize' }).ok
+    )
+
+    // Now A finishes closing, after B is live.
+    first.socket.close()
+    await first.closed
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // B must still authorize, and be the one live channel.
+    expect(instance.authorize({ credential: b.sessionCredential, generation: 3, capability: 'materialize' }).ok).toBe(
+      true
+    )
+    expect(instance.authorize({ credential: a.sessionCredential, generation: 3, capability: 'materialize' }).ok).toBe(
+      false
+    )
+    expect(instance.connectionsFor('agent-a')).toHaveLength(1)
+    expect(instance.connectionsFor('agent-a')[0]?.issuedCredential).toBe(b.sessionCredential)
+  })
+
+  it('expiry of a superseded channel does not revoke the renewed credential', async () => {
+    // Same ordering hazard through the expiry backstop rather than a socket close.
+    const clock = new FakeClock()
+    const { instance, endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      now: () => clock.now(),
+      clock,
+      credentialTtlMs: 60_000
+    })
+    const first = await rawConnect(endpoint)
+    first.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => first.frames.length > 0)
+    const a = first.frames[0] as ShimBound
+
+    clock.advance(30_000)
+    const second = await rawConnect(endpoint)
+    second.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => second.frames.length > 0)
+    const b = second.frames[0] as ShimBound
+
+    // A's expiry deadline comes due while B is live and nowhere near its own.
+    clock.advance(30_001)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(instance.authorize({ credential: b.sessionCredential, generation: 3, capability: 'materialize' }).ok).toBe(
+      true
+    )
+  })
+
   it('re-binds a rescheduled pod under a NEW uid and drops the previous credential (invariants 4, 5)', async () => {
     // Resume, first bind and eviction are indistinguishable to the protocol: each new pod
     // presents its own token. Crucially the replacement pod has a DIFFERENT uid — keying

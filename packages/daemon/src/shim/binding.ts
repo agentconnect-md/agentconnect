@@ -126,11 +126,19 @@ export class ShimBindingRegistry {
     return { ok: true, binding: match }
   }
 
-  /** Drop a pod's binding — its sandbox went away, or the agent was deleted. */
-  revokePod(podUid: string): void {
-    const credential = this.credentialByPod.get(podUid)
-    if (credential) this.byCredential.delete(credential)
-    this.credentialByPod.delete(podUid)
+  /**
+   * Revoke exactly the credential given, leaving any newer one for the same pod intact.
+   *
+   * Compare-and-delete rather than delete-by-pod: a same-pod renewal re-points the pod
+   * index at the replacement before the superseded socket finishes closing, so revoking
+   * "whatever this pod currently holds" from that late close would delete the credential
+   * the live channel is using — renewal would appear to succeed and then silently die.
+   */
+  revokeIssued(credential: string): void {
+    const binding = this.byCredential.get(credential)
+    if (!binding) return
+    this.byCredential.delete(credential)
+    if (this.credentialByPod.get(binding.podUid) === credential) this.credentialByPod.delete(binding.podUid)
   }
 
   /** Drop every binding for an agent, across pod incarnations. */
@@ -156,8 +164,6 @@ export class ShimBindingRegistry {
   }
 
   private revokeCredential(credential: string): void {
-    const binding = this.byCredential.get(credential)
-    this.byCredential.delete(credential)
-    if (binding) this.credentialByPod.delete(binding.podUid)
+    this.revokeIssued(credential)
   }
 }
