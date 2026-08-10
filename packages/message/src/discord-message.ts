@@ -46,13 +46,37 @@ export interface DiscordMessageLike {
   attachments: DiscordAttachmentLike[]
 }
 
+/**
+ * media.discordapp.net's proxy honors a `width` query param, downscaling
+ * server-side — the console transcript needs a preview, not the original
+ * resolution. `proxyUrl` commonly arrives already signed (`ex`/`is`/`hm` from
+ * Discord's signed-attachment-CDN-URLs scheme), so `width` must be merged into
+ * the existing query string rather than string-concatenated — a naive
+ * `${url}?width=320` either mints a bogus `?width` key (when the URL already
+ * ends in `&…`) or corrupts the trailing `hm` signature value, and the proxy
+ * rejects both. This package stays dependency-free (no `URL`/DOM types), so
+ * the merge is done by hand rather than via `URLSearchParams`.
+ */
+function withThumbnailWidth(url: string, width: number): string {
+  const [withoutHash, hash = ''] = splitOnce(url, '#')
+  const [base, query = ''] = splitOnce(withoutHash, '?')
+  const params = query.split('&').filter((pair) => pair.length > 0 && !pair.startsWith('width='))
+  params.push(`width=${width}`)
+  return `${base}?${params.join('&')}${hash ? `#${hash}` : ''}`
+}
+
+function splitOnce(value: string, separator: string): [string, string?] {
+  const i = value.indexOf(separator)
+  return i === -1 ? [value] : [value.slice(0, i), value.slice(i + 1)]
+}
+
 /** Map public Discord CDN metadata into the shared attachment contract. */
 export function toDiscordAttachment(attachment: DiscordAttachmentLike | null | undefined): PlatformAttachment | null {
   if (!attachment || typeof attachment !== 'object' || !attachment.id || !attachment.url) return null
-  // media.discordapp.net's proxy honors `?width=`, downscaling server-side — the
-  // console transcript needs a preview, not the original resolution.
   const thumbnailUrl =
-    attachment.contentType?.startsWith('image/') && attachment.proxyUrl ? `${attachment.proxyUrl}?width=320` : undefined
+    attachment.contentType?.startsWith('image/') && attachment.proxyUrl
+      ? withThumbnailWidth(attachment.proxyUrl, 320)
+      : undefined
   return {
     id: attachment.id,
     name: attachment.name ?? attachment.id,

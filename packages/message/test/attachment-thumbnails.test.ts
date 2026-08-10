@@ -67,4 +67,19 @@ describe('toDiscordAttachment thumbnailUrl', () => {
     })
     expect(att?.thumbnailUrl).toBeUndefined()
   })
+
+  it('preserves a signed proxy URL’s ex/is/hm query params when adding width', () => {
+    const att = toDiscordAttachment({
+      id: 'a1',
+      name: 'shot.png',
+      contentType: 'image/png',
+      url: 'https://cdn.discordapp.com/attachments/1/2/shot.png?ex=66b1&is=66af&hm=deadbeef&',
+      proxyUrl: 'https://media.discordapp.net/attachments/1/2/shot.png?ex=66b1&is=66af&hm=deadbeef&'
+    })
+    const url = new URL(att!.thumbnailUrl!)
+    expect(url.searchParams.get('width')).toBe('320')
+    expect(url.searchParams.get('ex')).toBe('66b1')
+    expect(url.searchParams.get('is')).toBe('66af')
+    expect(url.searchParams.get('hm')).toBe('deadbeef')
+  })
 })
