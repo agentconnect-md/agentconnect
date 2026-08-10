@@ -2041,23 +2041,25 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        setMsgs(
-          mergeConversationRows(
-            sources,
-            rowsBySession,
-            conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current,
-            conversationSourceAgentByMessageRef.current
-          )
+        // #753: a peer participant's agent-initiated post lives only in ITS OWN
+        // session's rows, never the representative session's — reconcile against
+        // every source merged together, not just `sid`'s, or a peer's live post
+        // step never sees its own persisted confirmation.
+        const merged = mergeConversationRows(
+          sources,
+          rowsBySession,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
+        setMsgs(merged)
         setMsgLoading(false)
         setMsgPaging(false)
         liveCursorRef.current = cursors.get(sid) ?? null
         tailReadyRef.current = true
         setTailReady(true)
-        const repRows = rowsBySession.get(sid)
-        if (repRows && !sessionBusyRef.current) reconcileLiveSteps(sid, repRows, aid)
+        if (merged.length > 0 && !sessionBusyRef.current) reconcileLiveSteps(sid, merged, aid)
       })().catch((e) => {
         if (!active) return
         setMsgErr(e instanceof Error ? e.message : String(e))
@@ -2127,11 +2129,11 @@ export default function SessionDetailView() {
       const sources = conversationMembersRef.current ?? []
       const run = (async () => {
         const state = conversationSourcesRef.current
-        const repRows: SessionMessageDto[] = []
         // Per-source isolation, mirroring the initial fan-out: one member's
         // daemon going offline mid-conversation must degrade THAT source to
         // the partial-merge notice, never stall the whole tail round.
         let failed = 0
+        let fetchedAny = false
         for (const src of sources) {
           try {
             let cursor = state.cursors.get(src.sessionId) ?? null
@@ -2146,7 +2148,7 @@ export default function SessionDetailView() {
                 src.sessionId,
                 mergeSessionMessages(current, page.messages, platformTranscriptOrdering(src.platform))
               )
-              if (src.sessionId === sid) repRows.push(...page.messages)
+              if (page.messages.length > 0) fetchedAny = true
               if (page.liveCursor !== null) {
                 cursor = page.liveCursor
                 state.cursors.set(src.sessionId, cursor)
@@ -2159,18 +2161,21 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        setMsgs(
-          mergeConversationRows(
-            sources,
-            state.rows,
-            conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current,
-            conversationSourceAgentByMessageRef.current
-          )
+        // #753: reconcile against every source merged together — a peer
+        // participant's agent-initiated post lives only in ITS OWN session's
+        // rows, never the representative session's (see the initial-load fan-out
+        // above for the full rationale).
+        const merged = mergeConversationRows(
+          sources,
+          state.rows,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
-        if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
-          reconcileLiveSteps(sid, repRows, aid)
+        setMsgs(merged)
+        if (tailSessionRef.current === sid && !sessionBusyRef.current && fetchedAny)
+          reconcileLiveSteps(sid, merged, aid)
       })()
         .catch(() => {
           // Keep the last good transcript; the next signal retries.

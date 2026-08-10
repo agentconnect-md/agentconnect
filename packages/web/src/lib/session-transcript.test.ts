@@ -70,4 +70,58 @@ describe('reconcilePersistedLiveSteps', () => {
       live.slice(0, 2)
     )
   })
+
+  function persistedReply(seq: number, sender: string, text: string, ts: number, postId: string): SessionMessageDto {
+    return { seq, ts: String(ts), text, sender, kind: 'text', postId }
+  }
+
+  // #753: an agent-initiated post has no optimistic `msg` prompt to anchor a turn —
+  // it renders as a standalone step, identified only by its canonical postId.
+  it('drops a standalone agent-post step once ITS postId lands in a persisted row (adopted-conversation refresh)', () => {
+    const live = [
+      { kind: 'done', text: 'Sent "hello" to bot-b', agentId: 'bot-a', postId: 'post-1', observedAtMs: 1 }
+    ] satisfies SessionStep[]
+
+    expect(
+      reconcilePersistedLiveSteps(live, [persistedReply(1, 'bot-a', 'Sent "hello" to bot-b', 1, 'post-1')], agentId)
+    ).toEqual([])
+  })
+
+  it('keeps a standalone agent-post step whose postId has not been persisted yet', () => {
+    const live = [
+      { kind: 'done', text: 'Sent "hello" to bot-b', agentId: 'bot-a', postId: 'post-1', observedAtMs: 1 }
+    ] satisfies SessionStep[]
+
+    expect(
+      reconcilePersistedLiveSteps(live, [persistedReply(1, 'bot-a', 'unrelated', 1, 'post-other')], agentId)
+    ).toEqual(live)
+  })
+
+  // The reconciling view's OWN agent is "agent" here, but the confirming row belongs to
+  // a PEER participant's session (a merged multi-agent conversation, #753) — postId
+  // matching must not be gated by sender the way the prompt heuristic is.
+  it('drops a peer participant’s post confirmed by a row from that peer’s OWN session', () => {
+    const live = [
+      { kind: 'done', text: 'hi from bot-b', agentId: 'bot-b', postId: 'post-2', observedAtMs: 1 }
+    ] satisfies SessionStep[]
+
+    expect(
+      reconcilePersistedLiveSteps(live, [persistedReply(1, 'bot-b', 'hi from bot-b', 1, 'post-2')], agentId)
+    ).toEqual([])
+  })
+
+  it('reconciles a standalone post step and a prompt-anchored turn independently in the same refresh', () => {
+    const at = 1_785_000_000_000
+    const live = [
+      { kind: 'done', text: 'stale post', agentId: 'bot-a', postId: 'post-3', observedAtMs: at },
+      prompt('ship it', at + 1_000),
+      { kind: 'done', text: 'deployed', observedAtMs: at + 2_000 }
+    ] satisfies SessionStep[]
+
+    const persisted = [
+      persistedReply(1, 'bot-a', 'stale post', at, 'post-3'),
+      persistedPrompt(2, 'ship it', at + 1_050)
+    ]
+    expect(reconcilePersistedLiveSteps(live, persisted, agentId)).toEqual([])
+  })
 })

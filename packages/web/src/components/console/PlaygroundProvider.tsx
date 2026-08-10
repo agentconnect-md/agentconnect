@@ -896,6 +896,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 pushStep(id, {
                   kind: 'done',
                   turnId: m.post.postId,
+                  // The daemon persists this reply before the post frame ever arrives, so
+                  // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
+                  // the canonical row lands in a later transcript refresh (#753) — text/time
+                  // matching (the prompt-turn heuristic) has nothing to anchor on here.
+                  postId: m.post.postId,
                   agentId,
                   ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
                   text: m.post.text

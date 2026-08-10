@@ -877,6 +877,12 @@ export interface SessionStep {
    *  steps where the owning participant's session differs from the row's
    *  primary `realSessionId`; the on-demand tool-body read targets it. */
   toolSessionId?: string
+  /** Canonical webchat post id (#753) — set on a live step rendered from an
+   *  agent-initiated `rd/webchat-post` frame, which has no preceding optimistic
+   *  `msg` prompt to anchor a turn-shaped reconciliation. `reconcilePersistedLiveSteps`
+   *  drops the step outright once a persisted row carries the same `postId`, from
+   *  ANY conversation participant's session — not just this step's own author. */
+  postId?: string
 }
 
 // Per-session token accounting (protocol `SessionUsage`), metered by the daemon.

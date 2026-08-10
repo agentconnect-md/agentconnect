@@ -39,9 +39,14 @@ function promptKey(text: string, image?: SessionImage): string {
 }
 
 /**
- * Drop only adopted-WebChat turns whose optimistic user prompt has a matching,
- * newly persisted transcript row. Failed pre-admission turns have no such row
- * and therefore retain both the attempted prompt and its error feedback.
+ * Drop live steps a persisted refresh has superseded: an adopted-WebChat turn
+ * whose optimistic user prompt has a matching, newly persisted transcript row
+ * (fuzzy text+time match — a prompt carries no canonical id), and a standalone
+ * agent-initiated post step (#753) whose canonical `postId` now appears on ANY
+ * persisted row — an exact match, since that id is unique per post and shared
+ * verbatim across every participant's copy of it. Failed pre-admission turns
+ * have no persisted row at all and therefore retain both the attempted prompt
+ * and its error feedback.
  */
 export function reconcilePersistedLiveSteps(
   live: SessionStep[],
@@ -50,15 +55,20 @@ export function reconcilePersistedLiveSteps(
 ): SessionStep[] {
   if (live.length === 0 || persisted.length === 0) return live
 
+  const persistedPostIds = new Set(persisted.flatMap((m) => (m.postId ? [m.postId] : [])))
+  const withoutConfirmedPosts =
+    persistedPostIds.size === 0 ? live : live.filter((step) => !(step.postId && persistedPostIds.has(step.postId)))
+  if (withoutConfirmedPosts.length === 0) return withoutConfirmedPosts
+
   const turns: Array<{ start: number; end: number; key: string; observedAtMs: number }> = []
-  for (let start = 0; start < live.length;) {
-    if (live[start]!.kind !== 'msg') {
+  for (let start = 0; start < withoutConfirmedPosts.length;) {
+    if (withoutConfirmedPosts[start]!.kind !== 'msg') {
       start += 1
       continue
     }
     let end = start + 1
-    while (end < live.length && live[end]!.kind !== 'msg') end += 1
-    const prompt = live[start]!
+    while (end < withoutConfirmedPosts.length && withoutConfirmedPosts[end]!.kind !== 'msg') end += 1
+    const prompt = withoutConfirmedPosts[start]!
     if (prompt.observedAtMs != null && Number.isFinite(prompt.observedAtMs)) {
       turns.push({
         start,
@@ -69,7 +79,7 @@ export function reconcilePersistedLiveSteps(
     }
     start = end
   }
-  if (turns.length === 0) return live
+  if (turns.length === 0) return withoutConfirmedPosts
 
   const confirmed = new Set<number>()
   for (const message of persisted) {
@@ -89,12 +99,12 @@ export function reconcilePersistedLiveSteps(
     }
     if (bestTurn >= 0) confirmed.add(bestTurn)
   }
-  if (confirmed.size === 0) return live
+  if (confirmed.size === 0) return withoutConfirmedPosts
 
   const removed = new Set<number>()
   for (const index of confirmed) {
     const turn = turns[index]!
     for (let step = turn.start; step < turn.end; step++) removed.add(step)
   }
-  return live.filter((_, index) => !removed.has(index))
+  return withoutConfirmedPosts.filter((_, index) => !removed.has(index))
 }
