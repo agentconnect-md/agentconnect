@@ -9,12 +9,14 @@ export type OperatingMode = 'Running' | 'Suspended'
 
 export interface Sandbox extends K8sObject {
   spec?: { operatingMode?: OperatingMode; podTemplate?: unknown }
-  status?: { conditions?: Array<{ type?: string; status?: string }>; podIPs?: Array<{ ip?: string }> }
+  status?: { conditions?: Array<{ type?: string; status?: string }> }
 }
 
+/** The claim's status names the bound Sandbox; the Sandbox UID comes from that
+ *  object's `metadata.uid`, since the claim carries no uid of its own. */
 export interface SandboxClaim extends K8sObject {
   spec?: { warmPoolRef?: { name?: string }; additionalPodMetadata?: { labels?: Record<string, string> } }
-  status?: { sandbox?: { name?: string; uid?: string } }
+  status?: { sandbox?: { name?: string } }
 }
 
 export interface TokenReviewResult {
@@ -33,18 +35,9 @@ function collectionPath(group: string, namespace: string, plural: string): strin
   return `/apis/${group}/namespaces/${namespace}/${plural}`
 }
 
-/**
- * The daemon's complete Kubernetes surface, one method per granted verb.
- *
- * It is intentionally not a generic CRD client: the RBAC this runs under grants
- * SandboxClaim create/delete/get/list/watch, Sandbox get/watch/patch (restricted
- * to `spec.operatingMode` by an admission policy), and cluster-scoped TokenReview
- * create. A method here that the Role does not authorize would only fail at
- * runtime, so the type surface mirrors the Role exactly.
- *
- * The Pod API is deliberately absent — pods are materialized by the vendor
- * controller and the daemon never addresses them directly.
- */
+/** The daemon's Kubernetes surface, one method per granted verb: the type surface
+ *  mirrors the Role, since a method it does not authorize could only fail at runtime.
+ *  The Pod API is absent by design — pods are the vendor controller's to materialize. */
 export class SandboxApi {
   constructor(
     private http: K8sHttp,
@@ -59,11 +52,8 @@ export class SandboxApi {
     return collectionPath(SANDBOX_GROUP, this.namespace, 'sandboxes')
   }
 
-  /**
-   * Create a claim, treating an existing one as success: claim names are derived
-   * from the agent id, so a retry after a partial reconcile must converge rather
-   * than fail.
-   */
+  /** Create a claim, treating an existing one as success: names are derived from the
+   *  agent id, so a retry after a partial reconcile must converge rather than fail. */
   async ensureClaim(claim: SandboxClaim & { metadata: { name: string } }): Promise<SandboxClaim> {
     try {
       return await this.http.json<SandboxClaim>({
@@ -103,37 +93,26 @@ export class SandboxApi {
     return watchCollection<Sandbox>(this.http, { ...options, path: this.sandboxes() })
   }
 
-  /**
-   * Set a bound Sandbox's operating mode — the sleep/wake path.
-   *
-   * JSON Patch with a `test` guard rather than a bare replace: between reading a
-   * Sandbox and writing it, a message can wake an instance we decided to suspend
-   * (or vice versa). The `test` makes the write fail with a conflict instead of
-   * silently overriding the newer decision, and `expected` names what we believed.
-   * Pass `expected: null` to require the field to be currently unset.
-   */
-  async setOperatingMode(name: string, mode: OperatingMode, expected?: OperatingMode | null): Promise<Sandbox> {
-    const patch: Array<Record<string, unknown>> = []
-    if (expected !== undefined) {
-      patch.push({ op: 'test', path: '/spec/operatingMode', value: expected })
-    }
-    patch.push({ op: 'replace', path: '/spec/operatingMode', value: mode })
+  /** Set a bound Sandbox's operating mode — the sleep/wake path.
+   *  `observed` is mandatory: between reading a Sandbox and writing it, a message can
+   *  wake an instance we decided to suspend (or the reverse), so every write tests the
+   *  value we saw and fails as a conflict rather than clobbering a newer decision.
+   *  v1beta1 defaults the field to `Running`, so an observed value always exists. */
+  setOperatingMode(name: string, mode: OperatingMode, observed: OperatingMode): Promise<Sandbox> {
     return this.http.json<Sandbox>({
       method: 'PATCH',
       path: `${this.sandboxes()}/${name}`,
       contentType: 'application/json-patch+json',
-      body: patch
+      body: [
+        { op: 'test', path: '/spec/operatingMode', value: observed },
+        { op: 'replace', path: '/spec/operatingMode', value: mode }
+      ]
     })
   }
 
-  /**
-   * Verify a token the in-sandbox shim presented, and learn which pod it belongs
-   * to. `audiences` is not optional in practice: a token minted for a different
-   * audience must be rejected, and omitting the field would accept it.
-   *
-   * TokenReview is cluster-scoped, which is why this needs its own ClusterRole
-   * rather than the per-namespace Role that covers everything else here.
-   */
+  /** Verify a token the shim presented and learn which pod it belongs to. `audiences`
+   *  is required: omitting it would accept a token minted for something else.
+   *  TokenReview is cluster-scoped, hence its own ClusterRole rather than the Role. */
   async reviewToken(token: string, audiences: string[]): Promise<TokenReviewResult> {
     const review = await this.http.json<{
       status?: {

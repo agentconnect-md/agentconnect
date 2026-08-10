@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { getEventListeners } from 'node:events'
 import { createServer, type Server } from 'node:http'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -258,6 +259,62 @@ describe('watchCollection', () => {
     expect(lists).toBe(2)
   })
 
+  it('backs off a failed connection without accumulating abort listeners', async () => {
+    let lists = 0
+    const { config } = await fakeApiServer(() => {
+      lists += 1
+      return lists < 4
+        ? { status: 500, json: { kind: 'Status', reason: 'InternalError', message: 'apiserver down' } }
+        : { json: { metadata: { resourceVersion: '10' }, items: [] } }
+    })
+    const controller = new AbortController()
+    const clock = new FakeClock()
+    const source = watchCollection(new K8sHttp(config), {
+      path: '/apis/x/claims',
+      signal: controller.signal,
+      clock,
+      backoff: new Backoff({ jitter: () => 0 })
+    })
+    const collected: string[] = []
+    const drain = (async () => {
+      for await (const event of source) {
+        collected.push(event.kind)
+        break
+      }
+    })()
+    // Each failed list parks on a clock-driven delay; advancing releases it. A retry
+    // whose timer wins must unregister its listener, or a long outage grows them
+    // without bound on this one long-lived signal.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await waitUntil(() => lists === attempt + 1)
+      clock.advance(60_000)
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    }
+    await drain
+    expect(collected).toEqual(['synced'])
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    controller.abort()
+  })
+
+  it('returns immediately from a backoff delay on an already-aborted signal', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const { config } = await fakeApiServer(() => ({ status: 500, json: { kind: 'Status' } }))
+    const clock = new FakeClock()
+    const collected: string[] = []
+    // The loop must not park on a full backoff delay when the signal is already
+    // aborted before the listener is registered.
+    for await (const event of watchCollection(new K8sHttp(config), {
+      path: '/apis/x/claims',
+      signal: controller.signal,
+      clock,
+      backoff: new Backoff({ jitter: () => 0 })
+    })) {
+      collected.push(event.kind)
+    }
+    expect(collected).toEqual([])
+  })
+
   it('stops when aborted', async () => {
     const controller = new AbortController()
     const { config } = await fakeApiServer(({ url }) =>
@@ -305,6 +362,8 @@ describe('SandboxApi', () => {
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
     const claim = await api.ensureClaim({ metadata: { name: 'agent-a' }, spec: { warmPoolRef: { name: 'pool' } } })
     expect(posts).toBe(1)
+    // The claim names the bound Sandbox and nothing more; its UID comes from that
+    // object's metadata, which is what the spawn record has to key on.
     expect(claim.status?.sandbox?.name).toBe('sb-7')
     expect(requests.at(-1)?.pathname).toContain('/sandboxclaims/agent-a')
   })
@@ -355,15 +414,18 @@ describe('SandboxApi', () => {
     ])
   })
 
-  it('omits the guard only when the caller states no expectation', async () => {
+  it('carries the guard on the suspend direction too — there is no unguarded path', async () => {
     let patch: any
     const { config } = await fakeApiServer(({ body }) => {
       if (body) patch = JSON.parse(body)
       return { json: {} }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    await api.setOperatingMode('sb-1', 'Suspended')
-    expect(patch).toEqual([{ op: 'replace', path: '/spec/operatingMode', value: 'Suspended' }])
+    await api.setOperatingMode('sb-1', 'Suspended', 'Running')
+    expect(patch).toEqual([
+      { op: 'test', path: '/spec/operatingMode', value: 'Running' },
+      { op: 'replace', path: '/spec/operatingMode', value: 'Suspended' }
+    ])
   })
 
   it('reports a lost race as a conflict rather than overwriting the newer decision', async () => {
@@ -425,5 +487,14 @@ describe('SandboxApi', () => {
     expect(isSandboxReady({ status: { conditions: [{ type: 'Ready', status: 'True' }] } })).toBe(true)
     expect(isSandboxReady({ status: { conditions: [{ type: 'Ready', status: 'False' }] } })).toBe(false)
     expect(isSandboxReady({})).toBe(false)
+  })
+
+  it('exposes the Sandbox UID from object metadata, the only place it exists', async () => {
+    const { config } = await fakeApiServer(() => ({
+      json: { metadata: { name: 'sb-7', uid: 'sandbox-uid-9' }, spec: { operatingMode: 'Running' } }
+    }))
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    const sandbox = await api.getSandbox('sb-7')
+    expect(sandbox.metadata?.uid).toBe('sandbox-uid-9')
   })
 })

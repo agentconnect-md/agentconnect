@@ -11,11 +11,8 @@ export interface InClusterConfig {
   namespace: string
   /** PEM bundle for the API server, or undefined when the CA file is absent. */
   ca?: string
-  /**
-   * The current bearer token. Read per call, never captured: the kubelet rotates
-   * the projected token in place, and a token cached at boot expires under a
-   * long-lived daemon.
-   */
+  /** The current bearer token, read per call: the kubelet rotates the projected token in
+   *  place, so a value cached at boot expires under a long-lived daemon. */
   token(): string
 }
 
@@ -26,11 +23,8 @@ export class InClusterConfigError extends Error {
   }
 }
 
-/**
- * Discover in-cluster API access from the pod's environment and projected
- * ServiceAccount volume. Throws with the missing piece named rather than
- * returning a half-configured client: every caller needs all of it.
- */
+/** Discover in-cluster API access from the pod env and projected ServiceAccount volume.
+ *  Throws with the missing piece named rather than returning a half-configured client. */
 export function loadInClusterConfig(
   env: NodeJS.ProcessEnv = process.env,
   dir: string = SERVICE_ACCOUNT_DIR

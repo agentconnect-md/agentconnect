@@ -67,17 +67,11 @@ function statusFrom(status: number, raw: string): K8sApiError {
   return new K8sApiError(status, reason, `kubernetes ${status}${reason ? ` (${reason})` : ''}: ${message}`)
 }
 
-/**
- * The transport under the typed Kubernetes operations.
- *
- * Deliberately `node:http(s)` rather than `fetch`: the API server is presented
- * under its own CA, and pinning that CA per request is a plain option here while
- * `fetch` would need an undici dispatcher — a dependency this daemon does not
- * carry. It also hands us the raw response stream a watch needs.
- *
- * The bearer token is read from {@link InClusterConfig.token} on every request,
- * never captured: the kubelet rotates the projected token in place.
- */
+/** The transport under the typed operations. `node:http(s)` rather than `fetch`: the API
+ *  server presents its own CA, which is a plain per-request option here while `fetch`
+ *  would need an undici dispatcher we do not depend on, and this also hands us the raw
+ *  stream a watch needs. The bearer token is read per request, never captured — the
+ *  kubelet rotates the projected token in place. */
 export class K8sHttp {
   constructor(private cfg: InClusterConfig) {}
 
@@ -126,11 +120,8 @@ export class K8sHttp {
     return (text ? JSON.parse(text) : {}) as T
   }
 
-  /**
-   * A streaming request yielding one decoded JSON object per line — the shape
-   * `?watch=true` responds with. The iterator ends when the API server closes the
-   * stream, which a watch loop treats as "reconnect", not as an error.
-   */
+  /** One decoded JSON object per line — how `?watch=true` responds. The iterator ends
+   *  when the server closes the stream, which a watch loop treats as reconnect. */
   async *lines<T>(req: K8sRequest): AsyncGenerator<T> {
     const { status, message } = await this.send(req)
     if (status < 200 || status >= 300) {

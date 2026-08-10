@@ -36,40 +36,36 @@ export interface WatchOptions {
   log?: { debug?: (message: string) => void; warn?: (message: string) => void }
 }
 
+/** Clock-driven delay that leaves no listener behind — a long outage retries often
+ *  on one long-lived signal, so the timer path must unregister too. */
 function sleep(clock: Clock, ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve()
   return new Promise((resolve) => {
-    const handle = clock.setTimeout(resolve, ms)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clock.clearTimeout(handle)
-        resolve()
-      },
-      { once: true }
-    )
+    const cleanup = (): void => signal?.removeEventListener('abort', onAbort)
+    const onAbort = (): void => {
+      cleanup()
+      clock.clearTimeout(handle)
+      resolve()
+    }
+    const handle = clock.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    // Closes the race between the pre-check above and listener registration.
+    if (signal?.aborted) onAbort()
   })
 }
 
-/**
- * List-then-watch with resume, the one piece of a hand-rolled Kubernetes client
- * that is genuinely easy to get wrong.
- *
- * The contract this implements:
- *
- * - the initial LIST establishes both the snapshot and the `resourceVersion` the
- *   watch resumes from, so no change between the two is lost;
- * - `allowWatchBookmarks` asks the API server for periodic BOOKMARK events, which
- *   advance our resume point on an idle resource — without them a quiet watch
- *   drifts far enough behind to be Expired on the next reconnect;
- * - a `410 Gone` / `Expired` (the resume point aged out of etcd's history) is not
- *   an error: the only correct response is to re-LIST and re-sync, which is why
- *   `list` is a required verb in this client's RBAC and not an optional extra;
- * - a closed stream is normal (server-side timeout) and reconnects without
- *   backoff; a failed connection backs off through the shared policy.
- *
- * Yields a `synced` snapshot on every (re)sync so the consumer can converge its
- * own view rather than assume incremental continuity.
- */
+/** List-then-watch with resume — the one part of a hand-rolled client that is easy to
+ *  get wrong. The LIST establishes both the snapshot and the `resourceVersion` the watch
+ *  resumes from, so nothing in between is lost. `allowWatchBookmarks` keeps an idle
+ *  watch's resume point fresh; without it a quiet resource drifts far enough behind to
+ *  be Expired on reconnect. A 410 / Expired resume point is answered by re-LISTing, not
+ *  by failing — which is why `list` is a required verb here. A cleanly closed stream is
+ *  the server-side timeout and reconnects at once; a failed connection backs off.
+ *  Every (re)sync yields a `synced` snapshot so consumers converge rather than assume
+ *  incremental continuity across a gap. */
 export async function* watchCollection<T extends K8sObject>(
   http: K8sHttp,
   options: WatchOptions
