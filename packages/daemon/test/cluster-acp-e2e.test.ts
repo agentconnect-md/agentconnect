@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ClientTransport } from '@agentconnect.md/connection'
+import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
 import { AcpHost } from '../src/acp/acp-host.js'
 import { ClusterSpawnDriver } from '../src/k8s/cluster-driver.js'
 import { ShimListener, type ShimConnection } from '../src/shim/listener.js'
@@ -25,8 +25,10 @@ const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
 
 const listeners: ShimListener[] = []
 const clients: ShimClient[] = []
+const intervals: NodeJS.Timeout[] = []
 
 afterEach(async () => {
+  for (const timer of intervals.splice(0)) clearInterval(timer)
   for (const client of clients.splice(0)) client.stop()
   await Promise.all(listeners.splice(0).map((instance) => instance.stop()))
 })
@@ -70,19 +72,25 @@ function fakeApi() {
 }
 
 /** Wire a real listener, a real shim client, and a driver that connects them. */
-async function clusterUnderTest(): Promise<{
+async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Promise<{
   driver: ClusterSpawnDriver
   api: ReturnType<typeof fakeApi>
   connections: ShimConnection[]
+  shimClock: FakeClock
+  listener: ShimListener
+  bindCount: () => number
 }> {
   const api = fakeApi()
   let record: SpawnRecord | undefined
   const connections: ShimConnection[] = []
+  const shimClock = new FakeClock()
+  let binds = 0
   const listener = new ShimListener({
     verifier: { reviewToken: async () => ({ authenticated: true, podName: 'runtime-1', podUid: 'pod-uid-1' }) },
     spawnRecordForPod: () => record,
     now: () => Date.now(),
-    log: { info: () => {}, warn: () => {} }
+    ...(options.credentialTtlMs !== undefined ? { credentialTtlMs: options.credentialTtlMs } : {}),
+    log: { info: () => (binds += 0), warn: () => {} }
   })
   listeners.push(listener)
   const port = await listener.start(0, '127.0.0.1')
@@ -100,6 +108,8 @@ async function clusterUnderTest(): Promise<{
         dial: (url, opts) =>
           ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
         readToken: () => 'projected-token',
+        clock: shimClock,
+        backoff: new Backoff({ jitter: () => 0 }),
         log: { info: () => {}, warn: () => {} }
       })
       clients.push(client)
@@ -111,10 +121,12 @@ async function clusterUnderTest(): Promise<{
         const match = listener
           .connectionsFor(agentId)
           .find((connection) => connection.binding.generation === generation)
-        if (match) {
+        if (match && !connections.includes(match)) {
           connections.push(match)
+          binds += 1
           return match
         }
+        if (match) return match
         if (Date.now() > deadline) throw new Error('no channel bound in time')
         await new Promise((resolve) => setTimeout(resolve, 20))
       }
@@ -122,7 +134,18 @@ async function clusterUnderTest(): Promise<{
     readyTimeoutMs: 15_000,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })
-  return { driver, api, connections }
+  // Whoever owns the listener re-attaches a rebound channel; the daemon does this in
+  // production, and the test stands in for it.
+  const watchBinds = setInterval(() => {
+    for (const connection of listener.connectionsFor('agent-a')) {
+      if (connections.includes(connection)) continue
+      connections.push(connection)
+      binds += 1
+      driver.onChannelBound(connection)
+    }
+  }, 20)
+  intervals.push(watchBinds)
+  return { driver, api, connections, shimClock, listener, bindCount: () => binds }
 }
 
 describe('a full ACP turn over the cluster driver', () => {
@@ -171,18 +194,27 @@ describe('a full ACP turn over the cluster driver', () => {
     await vi.waitFor(() => expect(terminal).toBe(1), { timeout: 10_000 })
   }, 60_000)
 
-  it('survives a credential renewal: the same runtime keeps working across a rebind', async () => {
-    // The defect this covers: pinning a runtime to one physical connection strands it on the
-    // first ordinary renewal, because the shim reconnects at half TTL and the listener closes
-    // the superseded socket.
-    const { driver } = await clusterUnderTest()
+  it('keeps the SAME runtime working across a real credential renewal', async () => {
+    // The defect this covers: the shim's event sink captured the socket that handled `open`,
+    // so after the renewal at half TTL every byte of stdout went into a closed WebSocket.
+    // The previous version of this test performed one prompt and never renewed, so it could
+    // not have caught that — the case it was named for never occurred in it.
+    const { driver, shimClock, bindCount } = await clusterUnderTest({ credentialTtlMs: 600_000 })
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
       { driver, onUpdate: () => {}, env: { AC_AGENT_ID: 'agent-a' } }
     )
     await host.start()
-    const first = await host.newSession('/tmp')
-    expect(await host.prompt(first, [{ type: 'text', text: 'before' }])).toMatchObject({ stopReason: 'end_turn' })
+    const sessionId = await host.newSession('/tmp')
+    expect(await host.prompt(sessionId, [{ type: 'text', text: 'before' }])).toMatchObject({ stopReason: 'end_turn' })
+
+    const bindsBefore = bindCount()
+    // Half the advertised lifetime: the shim closes its socket and dials a replacement.
+    shimClock.advance(300_000)
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), { timeout: 15_000 })
+
+    // Same runtime, same ACP session, after the channel underneath was replaced.
+    expect(await host.prompt(sessionId, [{ type: 'text', text: 'after' }])).toMatchObject({ stopReason: 'end_turn' })
     await host.stop(2_000)
   }, 60_000)
 })

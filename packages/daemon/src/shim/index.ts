@@ -3,6 +3,7 @@
  *  (`/opt/agentconnect/shim`), root-owned and read-only, with tini as PID 1. */
 import { ClientTransport } from '@agentconnect.md/connection'
 import { ShimClient, type ShimTransport } from './client.js'
+import { resolveCommandInPath } from './path-resolve.js'
 import { SHIM_ENDPOINT_ENV } from './protocol.js'
 
 const log = {
@@ -20,6 +21,9 @@ async function main(): Promise<number> {
     endpoint,
     dial: (url, opts) =>
       ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
+    // Without this the runner skips executable hints entirely, so CLAUDE_CODE_EXECUTABLE and
+    // path-qualified registry commands would never resolve in the sandbox.
+    resolveCommand: resolveCommandInPath,
     log
   })
   // A signal is the pod being torn down; drop the channel rather than racing the

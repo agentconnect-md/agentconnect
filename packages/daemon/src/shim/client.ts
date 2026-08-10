@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
 import { AcpRunner, type ResolveCommand } from './acp-runner.js'
+
+/** Bounded so a long outage cannot grow the buffer without limit. */
+const MAX_BUFFERED_EVENTS = 2_000
 import {
   SHIM_IDENTITY_TOKEN_PATH,
   SHIM_SUBPROTOCOL,
@@ -8,6 +11,7 @@ import {
   parseShimFrame,
   type ShimBound,
   type ShimCapability,
+  type ShimEvent,
   type ShimFrame
 } from './protocol.js'
 
@@ -54,6 +58,10 @@ export interface ShimClientDeps {
 export class ShimClient {
   /** ACP streams by the request id that opened them; each emits many events. */
   private readonly acpStreams = new Map<string, AcpRunner>()
+  /** Events produced while no transport is attached. A renewal closes the old socket before
+   *  the replacement binds, and ACP bytes cannot simply be dropped — losing a fragment
+   *  corrupts the protocol — so they wait here and flush on the next bind. */
+  private readonly pendingEvents: string[] = []
   private transport?: ShimTransport
   private bound?: ShimBound
   private stopped = false
@@ -207,6 +215,8 @@ export class ShimClient {
         if (frame.type === 'shim/bound') {
           this.bound = frame
           this.backoff.reset()
+          // A live stream's output resumes here rather than being lost with the old socket.
+          this.flushPendingEvents(transport)
           if (!settled) {
             settled = true
             this.deps.log?.info(`shim: bound as ${frame.agentId} generation ${frame.generation}`)
@@ -243,7 +253,9 @@ export class ShimClient {
     const streamId = payload?.op === 'open' ? request.id : (payload?.streamId ?? '')
     if (payload?.op === 'open') {
       const runner = new AcpRunner({
-        emit: (event) => transport.send(JSON.stringify({ type: 'shim/event', streamId, event })),
+        // Deliberately NOT the transport that handled `open`: renewal closes that socket, and
+        // a captured reference would send every later byte into it.
+        emit: (event) => this.emitEvent(streamId, event),
         ...(this.deps.resolveCommand ? { resolveCommand: this.deps.resolveCommand } : {}),
         ...(this.deps.log ? { log: this.deps.log } : {})
       })
@@ -260,6 +272,40 @@ export class ShimClient {
     await runner.apply(request.payload)
     if (payload.op === 'close') this.acpStreams.delete(streamId)
     transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true }))
+  }
+
+  /** Send an event on whichever transport is currently bound, or hold it until one is. */
+  private emitEvent(streamId: string, event: ShimEvent['event']): void {
+    const text = JSON.stringify({ type: 'shim/event', streamId, event })
+    if (event.kind === 'exit') this.acpStreams.delete(streamId)
+    const transport = this.transport
+    if (transport && this.bound) {
+      transport.send(text)
+      return
+    }
+    if (this.pendingEvents.length >= MAX_BUFFERED_EVENTS) {
+      // Dropping ACP bytes silently would corrupt the stream, so fail it loudly instead.
+      this.deps.log?.warn(`shim: buffered ${MAX_BUFFERED_EVENTS} events with no channel — failing stream ${streamId}`)
+      this.pendingEvents.length = 0
+      void this.acpStreams.get(streamId)?.close(0)
+      this.acpStreams.delete(streamId)
+      this.pendingEvents.push(
+        JSON.stringify({
+          type: 'shim/event',
+          streamId,
+          event: { kind: 'exit', code: null, signal: null, error: 'channel unavailable too long' }
+        })
+      )
+      return
+    }
+    this.pendingEvents.push(text)
+  }
+
+  /** Flush events produced while the channel was down, oldest first. */
+  private flushPendingEvents(transport: ShimTransport): void {
+    if (this.pendingEvents.length === 0) return
+    this.deps.log?.info(`shim: flushing ${this.pendingEvents.length} event(s) buffered across a rebind`)
+    for (const text of this.pendingEvents.splice(0)) transport.send(text)
   }
 
   private async serve(transport: ShimTransport, request: Extract<ShimFrame, { type: 'shim/request' }>): Promise<void> {
