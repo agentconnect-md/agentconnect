@@ -4524,7 +4524,9 @@ export default function SessionDetailView() {
               refreshTick={gitRefreshTick}
               openPath={viewerOpen && viewerMode !== 'file' ? viewerPath : null}
               openStaged={viewerMode === 'staged'}
-              onOpenDiff={(path, staged) => setViewerFile(path, filesAgentId, staged ? 'staged' : 'diff')}
+              onOpenDiff={(path, staged, untracked) =>
+                setViewerFile(path, filesAgentId, untracked ? 'file' : staged ? 'staged' : 'diff')
+              }
               onVerdictChange={setGitVerdict}
             />
           ) : null}

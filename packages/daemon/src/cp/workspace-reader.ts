@@ -320,12 +320,18 @@ export function createWorkspaceReader(
       // Every OTHER non-regular target keeps the violation — a final-component
       // symlink is a containment matter and must not read as an ordinary answer.
       if (st.isDirectory()) {
+        // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
+        // directory inside the workspace would otherwise let this branch report the
+        // existence and mtime of a host directory outside it — the same oracle the
+        // git-diff seam had, reopened by making directories an ordinary answer.
+        const dir = await canonicalUnder(realRoot, resolved)
+        const canonSt = await fs.lstat(dir)
         return {
           agentId: req.agentId,
           path: req.path,
           exists: true,
           type: 'dir' as const,
-          mtime: st.mtime.toISOString()
+          mtime: canonSt.mtime.toISOString()
         }
       }
       if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')

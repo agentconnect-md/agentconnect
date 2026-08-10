@@ -51,7 +51,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 let container: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot> | undefined
-let opened: Array<{ path: string; staged: boolean }> = []
+let opened: Array<{ path: string; staged: boolean; untracked: boolean }> = []
 let verdicts: GitPanelVerdict[] = []
 
 function gitStatus(overrides: Partial<WorkspaceGitStatusDto> = {}): WorkspaceGitStatusDto {
@@ -108,7 +108,7 @@ function panel(props: Partial<PanelProps> = {}) {
     <GitPanel
       agentId="agent-a"
       sessionId="session-1"
-      onOpenDiff={(path, staged) => opened.push({ path, staged })}
+      onOpenDiff={(path, staged, untracked) => opened.push({ path, staged, untracked })}
       onVerdictChange={(verdict) => verdicts.push(verdict)}
       {...props}
     />
@@ -226,6 +226,17 @@ describe('GitPanel', () => {
     expect(label?.textContent).toBe('main')
   })
 
+  it('reports an untracked row as untracked, because git prints no diff for one', async () => {
+    // `git diff` shows nothing for a path it has never seen, so opening a `??` row in Diff mode
+    // says "no unstaged changes" about a file whose entire content is the change.
+    wire.git = gitStatus({ clean: false, files: [file('brand-new.ts', '?', '?')] })
+    await render()
+
+    expect(rowPaths('changes')).toEqual(['brand-new.ts'])
+    await click(rows('changes')[0], 'untracked row')
+    expect(opened).toEqual([{ path: 'brand-new.ts', staged: false, untracked: true }])
+  })
+
   it('splits staged from changes, shows each file’s counts, and opens the right side of the index', async () => {
     wire.git = gitStatus({
       clean: false,
@@ -242,8 +253,8 @@ describe('GitPanel', () => {
     await click(rows('changes')[0], 'changes row')
     // The section decides the scope: a staged row must not open the worktree-vs-index diff.
     expect(opened).toEqual([
-      { path: 'src/staged.ts', staged: true },
-      { path: 'src/edited.ts', staged: false }
+      { path: 'src/staged.ts', staged: true, untracked: false },
+      { path: 'src/edited.ts', staged: false, untracked: false }
     ])
   })
 

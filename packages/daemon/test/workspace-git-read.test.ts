@@ -242,7 +242,11 @@ describe('createWorkspaceGit.log against a real repo', () => {
     expect(l.commits[0]!.author).toBe('Ada Lovelace')
     expect(l.commits[0]!.sha).toMatch(/^[0-9a-f]{40}$/)
     expect(l.commits[0]!.shortSha).toBe(l.commits[0]!.sha.slice(0, l.commits[0]!.shortSha.length))
-    expect(l.commits[0]!.committedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/)
+    // RFC3339, which allows either a numeric offset or `Z` — git's `%cI` renders a zero
+    // offset one way on some builds and the other on others, and the wire contract does not
+    // care which. Assert the contract (parseable instant) rather than the local rendering.
+    expect(l.commits[0]!.committedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:[+-]\d\d:\d\d|Z)$/)
+    expect(Number.isNaN(Date.parse(l.commits[0]!.committedAt))).toBe(false)
     expect(l.truncated).toBe(false)
   })
 
@@ -283,6 +287,21 @@ describe('createWorkspaceGit.log against a real repo', () => {
     expect(s.isRepo).toBe(true)
     expect(s.files?.map((f) => f.path)).toEqual(['a.ts'])
     expect(s.files?.[0]).not.toHaveProperty('additions')
+  })
+
+  it('does not call an unreadable history an empty one', async () => {
+    // A read timeout, a permission failure or a corrupt object all made `git log` fail, and
+    // treating that as "no commits yet" is a confident lie. Only an unborn HEAD is data.
+    const broken = join(base, 'broken')
+    mkdirSync(broken, { recursive: true })
+    git(broken, 'init', '-b', 'main')
+    writeFileSync(join(broken, 'a.ts'), 'x\n')
+    git(broken, 'add', 'a.ts')
+    git(broken, 'commit', '-m', 'seed')
+    // HEAD exists, so this is not the unborn case — but its object store is gone.
+    rmSync(join(broken, '.git', 'objects'), { recursive: true, force: true })
+
+    await expect(createWorkspaceGit(() => broken).log({ agentId: AGENT, limit: 20 })).rejects.toThrow()
   })
 
   it('an empty repo is DATA (no commits), and a from-scratch workspace is isRepo:false', async () => {

@@ -244,8 +244,12 @@ export function createWorkspaceGit(
           METADATA_OUTPUT_BUDGET
         )
         parsed = parseLogZ(out.out.toString('utf8'))
-      } catch {
-        // A repo with no commits yet has no HEAD to log — the same empty answer.
+      } catch (err) {
+        // ONLY the unborn-HEAD case is an empty log. Swallowing everything here turned a
+        // read timeout, a permission failure or a corrupt object into a confident
+        // "No commits yet", which is a lie the reader cannot act on — those propagate to
+        // INTERNAL and the panel says it could not read the history.
+        if (!(await isUnbornHead(root))) throw err
         return { agentId: req.agentId, isRepo: true, commits: [], truncated: false }
       }
 
@@ -325,6 +329,26 @@ export function createWorkspaceGit(
       } finally {
         if (timer) clearTimeout(timer)
       }
+    }
+  }
+}
+
+/** Whether the checkout simply has no commit yet — the one `git log` failure that is an
+ *  ordinary answer rather than a fault. `rev-parse --verify` alone cannot tell it apart
+ *  from a corrupt object store (measured: both fail); `symbolic-ref` can, because an
+ *  unborn branch still HAS a symbolic HEAD while a repository git considers unusable does
+ *  not. Conservative on purpose: anything else propagates, so an unreadable history reads
+ *  as unreadable instead of as empty. */
+async function isUnbornHead(root: string): Promise<boolean> {
+  try {
+    await gitRead(root, ['rev-parse', '--verify', '--quiet', 'HEAD'], METADATA_OUTPUT_BUDGET)
+    return false // HEAD resolves, so whatever failed was not this
+  } catch {
+    try {
+      await gitRead(root, ['symbolic-ref', '-q', 'HEAD'], METADATA_OUTPUT_BUDGET)
+      return true
+    } catch {
+      return false
     }
   }
 }

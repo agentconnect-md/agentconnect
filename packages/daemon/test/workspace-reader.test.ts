@@ -414,4 +414,15 @@ describe('frame-size budget on listings', () => {
     expect(seen.size).toBe(500)
     expect(names.every((n) => seen.has(n))).toBe(true)
   })
+  it('refuses a DIRECTORY behind an intermediate symlink instead of reporting its mtime', async () => {
+    // Making a directory an ordinary answer reopened the oracle the git-diff seam had:
+    // `lstat` follows intermediate components, so `vendor/private` behind a symlinked
+    // `vendor` would report a host directory's existence and mtime.
+    mkdirSync(join(outside, 'private'), { recursive: true })
+    symlinkSync(outside, join(ws, 'vendor'), 'dir')
+
+    await expect(reader.read({ agentId: AGENT, path: 'vendor/private', offset: 0, limit: 1024 })).rejects.toMatchObject(
+      { reason: 'path-escape' }
+    )
+  })
 })

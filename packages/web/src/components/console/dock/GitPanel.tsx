@@ -118,7 +118,8 @@ export function GitPanel({
   /** Whether that open path is the STAGED diff, so the mark lands in the right section. */
   openStaged?: boolean
   /** A file row was pressed: open this path's diff, on this side of the index. The viewer is the caller's (§4). */
-  onOpenDiff: (path: string, staged: boolean) => void
+  /** A row was pressed. `untracked` rows have no diff to show — git prints nothing for a path it has never seen — so the caller opens the FILE instead. */
+  onOpenDiff: (path: string, staged: boolean, untracked: boolean) => void
   /** The inputs to {@link gitTabStatus} and the tab's badge. */
   onVerdictChange?: (verdict: GitPanelVerdict) => void
 }) {
@@ -158,6 +159,8 @@ export function GitPanel({
     const name = file.path.split('/').at(-1) ?? file.path
     const dir = file.path.slice(0, Math.max(0, file.path.length - name.length - 1))
     const selected = openPath === file.path && openStaged === staged
+    // `??` on either half: git has never seen this path, so `git diff` prints nothing for it and a Diff view would say "no unstaged changes" about a file whose whole content is the change. Its content IS the diff, so the row opens the file.
+    const untracked = file.index === '?' || file.workingDir === '?'
     return (
       <button
         key={`${staged ? 'staged' : 'changes'}:${file.path}`}
@@ -165,8 +168,8 @@ export function GitPanel({
         data-git-row={file.path}
         // The Files tree's own row affordance, so a path hovers and marks itself the same way in both tabs.
         className={`file-browser-item flex w-full cursor-pointer items-center gap-2 border-0 border-r-2 py-[5px] pr-[10px] pl-3 text-left [font:inherit] ${selected ? 'border-r-(--brand) bg-(--brand-soft)' : 'border-r-transparent bg-transparent'}`}
-        title={`${file.path}\n${staged ? 'Staged' : 'Not staged'} — open its diff`}
-        onClick={() => onOpenDiff(file.path, staged)}
+        title={`${file.path}\n${untracked ? 'Untracked — open the file' : staged ? 'Staged — open its diff' : 'Not staged — open its diff'}`}
+        onClick={() => onOpenDiff(file.path, staged, untracked)}
       >
         <StatusBadge ch={staged ? (file.index ?? 'M') : (file.workingDir ?? 'M')} />
         <span className="mono flex min-w-0 flex-1 items-baseline text-[12px] leading-normal">
