@@ -1,6 +1,3 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
-import { Readable, Writable } from 'node:stream'
 import {
   client as createClientApp,
   methods,
@@ -23,7 +20,6 @@ import {
   type McpTransportCapabilities
 } from '@agentconnect.md/protocol'
 import type { RuntimeDef } from '../config/config-schema.js'
-import { resolveCommandPath } from '../runtimes/probe.js'
 import {
   augmentClaudeEfforts,
   claudeInnerSandboxSettings,
@@ -32,7 +28,7 @@ import {
   type ClaudeProtectedSettings,
   ULTRACODE_EFFORT
 } from './claude-runtime.js'
-import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
+import { LocalDriver, type AcpSandboxLaunch, type SpawnDriver, type SpawnedRuntime } from './spawn-driver.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 import { permissionPresetSettings, type SessionApprovalsReviewer } from './permission-modes.js'
@@ -153,26 +149,9 @@ export interface SessionConfigPrefs {
   systemPrompt?: string
 }
 
-export interface AcpSandboxLaunch {
-  mechanism: SandboxMechanism
-  writable: string[]
-  /** Common filesystem policy, consumed through SRT settings. */
-  denyReadRoots?: string[]
-  allowReadRoots?: string[]
-  /** Trusted SRT policy for ordinary ACP hosts. */
-  settingsPath?: string
-  /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
-  cwd?: string
-  /** Credential paths available to the trusted ACP runtime itself but denied to
-   * model-authored commands by a runtime-native nested sandbox. */
-  protectedCredentialRoots?: string[]
-  /** A deliberately exposed model-side Unix channel, currently gitcred.sock for
-   * GitHub App workspaces. Linux SRT cannot allow AF_UNIX by pathname. */
-  allowModelToolUnixSockets?: boolean
-  /** SDK flag settings that pin protected parent-only profile selection after
-   * Claude merges workspace-controlled settings. */
-  claudeProtectedSettings?: ClaudeProtectedSettings
-}
+// The launch shape lives with the driver that consumes it; re-exported here because
+// this module is where callers have always imported it from.
+export type { AcpSandboxLaunch, SpawnDriver, SpawnedRuntime } from './spawn-driver.js'
 
 /** The `session/set_config_option` call that applies a desired value, or the reason none is needed. */
 export type ConfigSelectionPlan = { configId: string; value: string } | { skip: string }
@@ -481,7 +460,7 @@ export function fastOptionFrom(configOptions: SessionConfigOption[] | null | und
 }
 
 export class AcpHost {
-  private child?: ChildProcess
+  private spawned?: SpawnedRuntime
   private conn?: ClientConnection
   // acpSessionIds this process created (or loaded). ACP sessions are in-memory in
   // the subprocess, so an id persisted across a daemon restart / host eviction is
@@ -585,6 +564,10 @@ export class AcpHost {
       /** Called once when the owned adapter process reaches terminal exit. The
        *  delegated host manager uses this to tear down its fenced cell. */
       onTerminal?: () => void
+      /** Where the runtime runs. Defaults to a child process of this daemon; a
+       *  cluster driver launches it in a sandbox pod and carries ACP over the
+       *  network, leaving everything below this line unchanged. */
+      driver?: SpawnDriver
       log?: Logger
     }
   ) {}
@@ -597,7 +580,7 @@ export class AcpHost {
   }
 
   async start(): Promise<void> {
-    if (this.child) throw new Error('AcpHost: already started')
+    if (this.spawned) throw new Error('AcpHost: already started')
     const env: NodeJS.ProcessEnv = {
       ...(this.opts.inheritProcessEnv === false ? {} : process.env),
       ...Object.fromEntries(this.runtime.env.map((e) => [e.name, e.value])),
@@ -623,80 +606,41 @@ export class AcpHost {
           `signed-in account apps/connectors may be inherited${detail}`
       )
     }
-    // The claude-agent-sdk resolves the Claude Code binary from its own bundled
-    // native package (an OPTIONAL npm dep, often missing under npx / --omit=optional)
-    // OR from `CLAUDE_CODE_EXECUTABLE`. If nothing set it but a `claude` CLI is on
-    // PATH, point at it so an out-of-the-box Claude Code install just works.
-    if (!env.CLAUDE_CODE_EXECUTABLE && this.isClaudeRuntime()) {
-      const claude = resolveCommandPath('claude', env)
-      if (claude) {
-        env.CLAUDE_CODE_EXECUTABLE = claude
-        this.opts.log?.info(`acp: CLAUDE_CODE_EXECUTABLE not set — using claude on PATH (${claude})`)
-      }
-    }
     // NOTE: the memory-backend env (disable the runtime's own memory for `managed`,
     // or redirect it under the private runtime HOME for `native`) is assembled by the daemon
     // in ensureHost via memoryProviderFor(agent).runtimeEnv() and passed in through
     // `opts.env` — it is NOT set here, so it stays per-agent-configurable. The
     // runtime prober / chat CLI construct AcpHost without that env and therefore get
     // the runtime's default memory behavior.
-    // Resolve the command through resolveCommandPath so spawn gets an absolute path
-    // (or a path-qualified relative one for auto-downloaded archives). This handles
-    // ACP registry binary commands with a `./` prefix ("./opencode", "./goose", …)
-    // that spawn() would otherwise resolve only against CWD and miss the binary on
-    // `$PATH`. Falls back to the raw command when resolution fails (spawn's own error
-    // surface is clearer than a synthetic ours).
-    const resolvedCommand = resolveCommandPath(this.runtime.command, env) ?? this.runtime.command
-    const resolved = this.opts.sandbox && existsSync(resolvedCommand) ? realpathSync(resolvedCommand) : resolvedCommand
     // appendArgs carries any account-app-isolation flags (e.g. Copilot's
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
-    // Linux SRT sandbox (issue #312). Fail-open — ensureHost only sets
-    // opts.sandbox after a live probe, so no mechanism means the adapter runs
-    // unconfined unless daemon policy required sandboxing and refused startup.
-    const launch = this.opts.sandbox
-      ? sandboxWrap(resolved, spawnArgs, this.opts.sandbox)
-      : { cmd: resolved, args: spawnArgs }
-    const child = spawn(launch.cmd, launch.args, {
-      stdio: ['pipe', 'pipe', this.opts.suppressChildStderr ? 'ignore' : 'inherit'],
-      env,
-      // Own process group (POSIX): a foreground daemon's Ctrl-C sends SIGINT to the
-      // whole terminal group, which killed adapters out from under the graceful
-      // drain; and stop()'s escalation must reach the full tree — npx-distributed
-      // runtimes run the real adapter as a grandchild of the npm wrapper, and
-      // SIGKILLing just the wrapper orphans the adapter. The group id (= child pid)
-      // lets stop() signal wrapper + adapter + their children in one kill.
-      detached: process.platform !== 'win32'
+    const driver = this.opts.driver ?? new LocalDriver({ log: this.opts.log })
+    const spawned = await driver.launch({
+      command: this.runtime.command,
+      args: spawnArgs,
+      env: env as Record<string, string>,
+      // The claude-agent-sdk resolves the Claude Code binary from its own bundled
+      // native package (an OPTIONAL npm dep, often missing under npx / --omit=optional)
+      // OR from `CLAUDE_CODE_EXECUTABLE`. If nothing set it but a `claude` CLI is on
+      // PATH, point at it so an out-of-the-box Claude Code install just works. The
+      // lookup belongs to the driver: only it knows the filesystem the runtime sees.
+      ...(this.isClaudeRuntime() ? { hints: [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] } : {}),
+      ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
+      ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {})
     })
-    this.child = child
-    child.once('exit', () => {
-      // Sweep group survivors (an adapter orphaned by its npx wrapper's death) NOW:
-      // moments after the leader exits its pgid cannot have been recycled — a pgid
-      // stays reserved while any member lives — so this can never hit a stranger.
-      // A later sweep could (pid reuse), which is why stop() never signals a child
-      // it found already dead. Clearing the handle also lets stop() early-return
-      // instead of waiting on an 'exit' that already fired.
-      if (child.pid && process.platform !== 'win32') {
-        try {
-          process.kill(-child.pid, 'SIGTERM')
-        } catch {
-          /* group already empty */
-        }
-      }
-      if (this.child === child) this.child = undefined
+    this.spawned = spawned
+    spawned.onExit(() => {
+      // Clearing the handle lets stop() early-return instead of waiting on an exit
+      // that already fired.
+      if (this.spawned === spawned) this.spawned = undefined
       try {
         this.opts.onTerminal?.()
       } catch (err) {
         this.opts.log?.debug(`acp: terminal observer failed: ${(err as Error).message}`)
       }
     })
-
-    if (!child.stdin || !child.stdout) {
-      throw new Error('AcpHost: subprocess stdin/stdout are not piped')
-    }
-    const toAgent = Writable.toWeb(child.stdin) as WritableStream<Uint8Array>
-    const fromAgent = Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>
-    const stream = ndJsonStream(toAgent, fromAgent)
+    const stream = ndJsonStream(spawned.toAgent, spawned.fromAgent)
 
     const self = this
     // fs read/write handlers are intentionally omitted (we advertise fs:false);
@@ -1174,55 +1118,9 @@ export class AcpHost {
    *  Idempotent — the child handle is cleared up front so a concurrent stop (drain
    *  + reconcile racing) is a no-op rather than a double-kill. */
   async stop(deadlineMs = 5000): Promise<void> {
-    const child = this.child
-    if (!child) return
-    this.child = undefined
-    // Group signal when the child has its own group (detached spawn); fall back to
-    // the direct child on win32 or once the group is gone (ESRCH).
-    const kill = (sig: NodeJS.Signals) => {
-      if (child.pid && process.platform !== 'win32') {
-        try {
-          process.kill(-child.pid, sig)
-          return
-        } catch {
-          /* group already gone — try the direct child */
-        }
-      }
-      child.kill(sig)
-    }
-    // A child that already exited on its own has emitted 'exit' already: once('exit')
-    // below would never fire and stop() would hang the daemon forever, kill() being a
-    // no-op on a reaped pid. No group sweep here — the child may have been dead for
-    // minutes (idle sweep cadence) and its pgid recycled to an unrelated process;
-    // the spawn-time 'exit' listener already swept while the pgid was provably ours.
-    if (child.exitCode !== null || child.signalCode !== null) return
-    // Graceful first: ACP is a stdio protocol, EOF on stdin is the idiomatic "we're
-    // done" and propagates through an npx wrapper to the adapter. The web-stream
-    // wrapper may hold the pipe locked mid-write — then the signals below still land.
-    try {
-      child.stdin?.end()
-    } catch {
-      /* stream locked/destroyed — signals still land */
-    }
-    kill('SIGTERM')
-    await new Promise<void>((resolve) => {
-      let settled = false
-      let killFailsafe: NodeJS.Timeout | undefined
-      const done = () => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        clearTimeout(killFailsafe)
-        resolve()
-      }
-      const timer = setTimeout(() => {
-        this.opts.log?.warn(`acp: child ignored SIGTERM after ${deadlineMs}ms — sending SIGKILL`)
-        kill('SIGKILL')
-        // SIGKILL on a live child always ends in 'exit'; the failsafe only covers a
-        // kill with nothing left to hit, so stop() resolves no matter what.
-        killFailsafe = setTimeout(done, 2000)
-      }, deadlineMs)
-      child.once('exit', done)
-    })
+    const spawned = this.spawned
+    if (!spawned) return
+    this.spawned = undefined
+    await spawned.stop(deadlineMs)
   }
 }
