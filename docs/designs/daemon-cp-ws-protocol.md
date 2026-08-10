@@ -76,7 +76,7 @@ sequenceDiagram
 
 `CONNECTING → AUTHENTICATING → REGISTERING → READY → (DRAINING) → CLOSED`, plus the off-socket state `DEGRADED` (local autonomy, §7).
 
-- **READY** is the only state in which the CP issues orchestration control. Before READY, only `auth`/`register` frames are valid; anything else → `error PROTOCOL_STATE`.
+- **READY** is the only state in which the CP issues ordinary orchestration control. Before READY, `auth`/`register` are valid, plus the narrowly scoped `daemon/bootstrap/result` while `REGISTERING`; anything else → `error PROTOCOL_STATE`.
 - **DRAINING** is entered on `daemon/drain` (§6) — daemon stops accepting new `route/assign`, finishes in-flight, then closes.
 
 ### 2.2 Heartbeat & watchdog
@@ -102,6 +102,7 @@ const AuthReq = z.object({
   machineId: z.string().uuid().optional(), // reserved scope-attestation identity (§3.2), not the auth credential
   attestation: z.string().optional(), // reserved signed proof (JWS), see §3.2
   agentVersion: z.string(), // daemon build/version
+  bootstrapProtocolVersion: z.literal(1).optional(), // auth-only upgrade recovery support
   resume: z
     .object({
       // present only on reconnect
@@ -118,6 +119,13 @@ const AuthOk = z.object({
   webAppUrl: z.string().optional(), // optional console-base override for session deep links;
   // daemon fallback order is local config, this value, then http://localhost:3000
   orgSlug: z.string().optional(), // org slug for those links (console routes are org-scoped)
+  lifecycle: z
+    .object({
+      operationId: z.string(),
+      action: z.literal('upgrade'),
+      targetVersion: z.string()
+    })
+    .optional(), // durable upgrade intent, only for bootstrap-capable callers
   resume: z
     .object({
       accepted: z.boolean() // false ⇒ daemon must do a full register reconcile
@@ -125,6 +133,14 @@ const AuthOk = z.object({
     .optional()
 })
 ```
+
+`bootstrapProtocolVersion: 1` is a frozen recovery handshake implemented by the
+thin daemon entry before the full daemon graph loads. When a pending upgrade
+exists, the CP arms it at auth delivery and returns `lifecycle`; the daemon
+installs through its local CLI and reports
+`daemon/bootstrap/result {operationId,status:'installed'|'failed',reason?}`.
+`installed` is progress only. Success still requires a later authenticated
+connection to reach `READY` with `agentVersion == targetVersion`.
 
 **`sessionEpoch` is the global fencing token.** Every C→D control frame that mutates routing or sessions carries the `epoch` it was issued under (see §4 envelope-ext). A daemon **rejects** any control frame whose `epoch < its current sessionEpoch` (a late frame from a pre-reconnect CP view) with `error STALE_EPOCH`.
 

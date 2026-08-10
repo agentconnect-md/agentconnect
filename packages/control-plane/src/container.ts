@@ -1198,6 +1198,7 @@ export function buildContainer(
   // ── daemon WS edge (mounted on the live http.Server after listen) ──────────
   const wsDeps: DaemonWsServerDeps = {
     auth,
+    lifecycleOps: repos.daemonLifecycleOp,
     registry,
     orchestrator,
     connReg,

@@ -34,6 +34,7 @@ function fencingDeps(clock: FakeClock): DaemonWsDeps {
   const connReg = new ConnectionRegistry()
   return {
     auth: {} as DaemonWsDeps['auth'],
+    lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],
     orchestrator: {} as DaemonWsDeps['orchestrator'],
     connReg,

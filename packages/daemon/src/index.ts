@@ -23,10 +23,8 @@ if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-ru
 }
 
 const telemetry = startDaemonOpenTelemetry({ serviceVersion: DAEMON_VERSION })
-const [{ Command }, { runChat }, { runForeground }, { acquireSingletonLock }, { resolveRoot }] = await Promise.all([
+const [{ Command }, { acquireSingletonLock }, { resolveRoot }] = await Promise.all([
   import('commander'),
-  import('./cli/chat.js'),
-  import('./cli/run-foreground.js'),
   import('./lock.js'),
   import('./paths.js')
 ])
@@ -90,6 +88,24 @@ program
       return exit(1)
     }
     try {
+      const bootstrap = await import('./bootstrap-upgrade.js')
+      const bootstrapOutcome = await bootstrap.runBootstrapUpgrade({
+        root: opts.root,
+        configPath: opts.config,
+        supervisor: process.env.AGENTCONNECT_SUPERVISOR,
+        overrides: {
+          apiUrl: opts.apiUrl,
+          apiKey: opts.apiKey,
+          noCp: opts.cp === false,
+          daemonId: opts.daemonId
+        }
+      })
+      if (bootstrapOutcome === 'restart') {
+        lock.release()
+        return exit(bootstrap.BOOTSTRAP_RESTART_CODE)
+      }
+      // Load the business graph only after auth-only recovery.
+      const { runForeground } = await import('./cli/run-foreground.js')
       await runForeground({
         root: opts.root,
         configPath: opts.config,
@@ -190,6 +206,7 @@ program
   .action(async (message?: string) => {
     const opts = program.opts()
     try {
+      const { runChat } = await import('./cli/chat.js')
       await runChat({
         agentsDir: opts.agentsDir,
         agentName: opts.agent,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { FakeTransport } from './fake-transport.js'
@@ -510,5 +510,88 @@ describe('CpClient handshake', () => {
     )
     await tick()
     expect(adopted).toEqual([ASSIGNED])
+  })
+
+  it('reports an auth-time installation before restarting without registering', async () => {
+    const t = new FakeTransport()
+    const directives: unknown[] = []
+    const restart = vi.fn()
+    const client = new CpClient(
+      makeDeps(t, {
+        onBootstrapUpgrade: async (lifecycle) => {
+          directives.push(lifecycle)
+          return { status: 'installed', restart }
+        }
+      })
+    )
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    expect(auth.payload.bootstrapProtocolVersion).toBe(1)
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          {
+            daemonId: DAEMON_ID,
+            sessionEpoch: 4,
+            heartbeatSec: 15,
+            serverTime: '2026-06-26T00:00:00.000Z',
+            lifecycle: { operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }
+          },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    expect(directives).toEqual([{ operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }])
+    const result = t.lastSent()
+    expect(result).toMatchObject({
+      type: 'daemon/bootstrap/result',
+      payload: { operationId: 'op-1', status: 'installed' }
+    })
+    expect(restart).not.toHaveBeenCalled()
+    t.pushInbound(JSON.stringify(buildEnvelope('ack', { ok: true }, { corr: result.id })))
+    await tick()
+    expect(restart).toHaveBeenCalledOnce()
+    expect(t.closed).toEqual({ code: 1000, reason: 'bootstrap upgrade installed' })
+    expect(t.sent.map((text) => JSON.parse(text).type)).not.toContain('register')
+  })
+
+  it('reports installer failure and continues registration on the same connection', async () => {
+    const t = new FakeTransport()
+    const client = new CpClient(
+      makeDeps(t, {
+        onBootstrapUpgrade: async () => ({ status: 'failed', reason: 'registry unavailable' })
+      })
+    )
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          {
+            daemonId: DAEMON_ID,
+            sessionEpoch: 4,
+            heartbeatSec: 15,
+            serverTime: '2026-06-26T00:00:00.000Z',
+            lifecycle: { operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }
+          },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    const result = t.lastSent()
+    expect(result).toMatchObject({
+      type: 'daemon/bootstrap/result',
+      payload: { operationId: 'op-1', status: 'failed', reason: 'registry unavailable' }
+    })
+    t.pushInbound(JSON.stringify(buildEnvelope('ack', { ok: true }, { corr: result.id })))
+    await tick()
+    expect(t.lastSent().type).toBe('register')
+    expect(t.closed).toBeUndefined()
   })
 })

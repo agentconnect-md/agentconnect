@@ -137,6 +137,7 @@ import {
   FactsRuntimeProfile,
   DaemonRuntimes,
   ConfigPush,
+  DaemonBootstrapResult,
   DaemonRestart,
   DaemonUpgrade,
   DaemonControlAck,
@@ -359,6 +360,7 @@ export const FRAME_SCHEMAS = {
   'managed-skill/chunk': ManagedSkillChunk,
   // ── fleet / config ──
   'config/push': ConfigPush,
+  'daemon/bootstrap/result': DaemonBootstrapResult,
   'daemon/restart': DaemonRestart,
   'daemon/upgrade': DaemonUpgrade,
   // ── generic replies ──
@@ -564,6 +566,7 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('managed-skill/read', FRAME_SCHEMAS['managed-skill/read']),
   frame('managed-skill/chunk', FRAME_SCHEMAS['managed-skill/chunk']),
   frame('config/push', FRAME_SCHEMAS['config/push']),
+  frame('daemon/bootstrap/result', FRAME_SCHEMAS['daemon/bootstrap/result']),
   frame('daemon/restart', FRAME_SCHEMAS['daemon/restart']),
   frame('daemon/upgrade', FRAME_SCHEMAS['daemon/upgrade']),
   frame('daemon/control/ack', FRAME_SCHEMAS['daemon/control/ack']),

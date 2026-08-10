@@ -2,8 +2,8 @@
  * `DaemonConnection` — the per-socket lifecycle actor + FSM (design §4.4,
  * protocol §2.1).
  *
- * Owns the `LifecycleState`, gates which frames are legal in each state (before
- * READY only `auth`/`register`; anything else → `error PROTOCOL_STATE`), routes
+ * Owns the `LifecycleState`, gates which frames are legal in each state (`auth`,
+ * then `register` or one bootstrap result; anything else → `error PROTOCOL_STATE`), routes
  * correlated REPs to the `ReqRep`, and dispatches legal inbound frames to the
  * `FrameRouter`. Every byte crosses the {@link Transport} seam, so the
  * `InMemoryDaemonStub` drives it with no real socket.
@@ -128,7 +128,7 @@ export class DaemonConnection implements ConnChannel {
       case 'AUTHENTICATING':
         return type === 'auth'
       case 'REGISTERING':
-        return type === 'register'
+        return type === 'register' || type === 'daemon/bootstrap/result'
       case 'READY':
       case 'DRAINING':
         return true

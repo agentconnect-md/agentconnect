@@ -7,7 +7,7 @@
  * legal-frame gate (protocol §2.1) is checked there too — so a handler only ever
  * sees a legal, fully-validated inbound frame.
  *
- * Registers `auth`, `register`, `heartbeat`, `facts/runtime-profile`,
+ * Registers `auth`, `daemon/bootstrap/result`, `register`, `heartbeat`, `facts/runtime-profile`,
  * `facts/daemon-runtimes`, `usage/report`, `integration/channels`, `cron/report`.
  * Unhandled-but-legal EVTs (telemetry that lands in later phases) are a deliberate
  * no-op (forward-compat), never an error.
@@ -17,6 +17,7 @@ import type { DaemonWsDeps } from '../deps.js'
 // Type-only import — erased at runtime, so there is no cycle with connection.ts.
 import type { DaemonConnection } from '../connection.js'
 import { handleAuth } from './auth.js'
+import { handleDaemonBootstrapResult } from './daemon-bootstrap-result.js'
 import { handleRegister } from './register.js'
 import { handleCapabilitiesUpdate } from './capabilities-update.js'
 import { handleHeartbeat } from './heartbeat.js'
@@ -57,6 +58,7 @@ export class FrameRouter {
   constructor(overrides: Partial<Record<FrameType, Handler>> = {}) {
     this.table = {
       auth: handleAuth,
+      'daemon/bootstrap/result': handleDaemonBootstrapResult,
       register: handleRegister,
       'capabilities/update': handleCapabilitiesUpdate,
       heartbeat: handleHeartbeat,
@@ -98,6 +100,7 @@ export class FrameRouter {
 
 export {
   handleAuth,
+  handleDaemonBootstrapResult,
   handleRegister,
   handleCapabilitiesUpdate,
   handleHeartbeat,

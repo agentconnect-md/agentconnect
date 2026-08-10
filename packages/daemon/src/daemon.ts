@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
-import { existsSync, readFileSync, type Stats } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
+import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
@@ -279,7 +280,7 @@ import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './runtimes/launch
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
-import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH } from './cp/client.js'
+import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -295,6 +296,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
   AGENT_CONFIG_REVISION_FEATURE,
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -2027,6 +2029,8 @@ export class Daemon {
   // Guards against a second CP lifecycle command (restart/upgrade) racing one
   // already in flight (§7.1). Cleared only if an upgrade aborts before exiting.
   private lifecycleInFlight = false
+  private fleetUpgradeInFlight?: { targetVersion: string; installation: Promise<boolean> }
+  private fleetExitStarted = false
   // Whole-daemon drain gate: once set, no new turns are dispatched (SIGTERM, or a
   // scope:daemon drain). Agent-scoped drains gate just their agentId.
   private draining = false
@@ -2150,6 +2154,8 @@ export class Daemon {
       clock?: Clock
       /** How the daemon exits for daemon/restart + daemon/upgrade (spied in tests). */
       requestExit?: (code: number) => void
+      /** Test seam for a blocked or failed CLI upgrade installation. */
+      upgradeInstaller?: typeof runCliUpgrade
       /** Who supervises this process — 'cli' (respawn shell) or 'service' (launchd/
        *  systemd). Set by the launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown
        *  means no supervisor (bare `node dist/index.js run`), so CP-commanded
@@ -5067,6 +5073,7 @@ export class Daemon {
       // organization environment entry on this marker. Static — the fence is
       // unconditional daemon code, with no runtime dependency.
       AGENT_CONFIG_REVISION_FEATURE,
+      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE] : []),
       // Multi-agent webchat conversations (webchat-multi-agents.md): mentions/post
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
@@ -5077,6 +5084,12 @@ export class Daemon {
       // built-in preset; turn-time dispatch rechecks the replicated marker.
       ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
     ]
+  }
+
+  private bootstrapUpgradeCapable(): boolean {
+    return (
+      (this.opts.supervisor === 'cli' || this.opts.supervisor === 'service') && readCliEntry(this.root) !== undefined
+    )
   }
 
   private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
@@ -18053,59 +18066,65 @@ export class Daemon {
     // negotiates ACK support; scheduling here would hammer legacy EVT delivery.
   }
 
-  /** daemon/restart + daemon/upgrade (§8.3): ack now, then drain + stop + exit so
-   *  the supervisor relaunches (the new binary, for upgrade). Refused when no
-   *  supervisor is present, since exiting would leave the daemon down (§7.1). */
-  private scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck {
+  private admitFleetExit(
+    kind: 'restart' | 'upgrade',
+    targetVersion?: string
+  ):
+    { accepted: false; reason: string } | { accepted: true; root: string; cliEntry?: string; willDrainUntil?: string } {
+    const refuse = (reason: string) => {
+      this.log.warn(`cp: ${kind} refused — ${reason}`)
+      return { accepted: false as const, reason }
+    }
     const supervisor = this.opts.supervisor
     if (supervisor !== 'cli' && supervisor !== 'service') {
       const reason = `no supervisor (AGENTCONNECT_SUPERVISOR=${supervisor ?? 'unset'}) — a bare \`run\` cannot ${kind}; use the CLI or an installed service`
-      this.log.warn(`cp: ${kind} refused — ${reason}`)
-      return { accepted: false, reason }
+      return refuse(reason)
     }
     if (this.lifecycleInFlight) {
-      const reason = 'another lifecycle operation is already in progress'
-      this.log.warn(`cp: ${kind} refused — ${reason}`)
-      return { accepted: false, reason }
+      return refuse('another lifecycle operation is already in progress')
     }
 
     const root = resolveRoot(this.opts.root)
-
-    // An upgrade must locate the CLI (the out-of-band installer, §7.1) up front, so
-    // an unreachable CLI is refused now rather than silently downgraded to a restart.
     let cliEntry: string | undefined
     if (kind === 'upgrade') {
-      cliEntry = this.readCliEntry(root)
+      cliEntry = readCliEntry(root)
       if (!cliEntry) {
         const reason = `cannot locate the CLI (${cliEntryPointer(root)} missing or invalid) to run the upgrade`
-        this.log.warn(`cp: upgrade refused — ${reason}`)
-        return { accepted: false, reason }
+        return refuse(reason)
       }
-      if (!targetVersion) {
-        return { accepted: false, reason: 'upgrade requires a targetVersion' }
-      }
+      if (!targetVersion) return refuse('upgrade requires a targetVersion')
     }
 
     this.lifecycleInFlight = true
-    // restart drains on a predictable timer; upgrade's install runs FIRST and its
-    // duration is unbounded, so `willDrainUntil` would be misleading — omit it (§7.1).
     const willDrainUntil =
       kind === 'restart' ? new Date(this.clock.now() + this.cfg.limits.shutdownDrainMs).toISOString() : undefined
     this.log.info(`cp: ${kind}${targetVersion ? ` → ${targetVersion}` : ''} accepted`)
+    return { accepted: true, root, ...(cliEntry ? { cliEntry } : {}), ...(willDrainUntil ? { willDrainUntil } : {}) }
+  }
 
-    void (async () => {
-      // §7.1 ②: for upgrade, swap `current` via the CLI BEFORE draining. On failure
-      // the daemon stays up, fully intact — no drain, no exit, `current` untouched.
-      if (kind === 'upgrade') {
-        const ok = await this.runCliUpgrade(cliEntry!, targetVersion!, root)
+  private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
+    const installation = Promise.resolve()
+      .then(() => (this.opts.upgradeInstaller ?? runCliUpgrade)(cliEntry, targetVersion, root, this.log))
+      .catch((err) => {
+        this.log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)
+        return false
+      })
+      .then((ok) => {
         if (!ok) {
           this.log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
           this.lifecycleInFlight = false
-          return
+          if (this.fleetUpgradeInFlight?.installation === installation) this.fleetUpgradeInFlight = undefined
         }
-      }
-      // §7.1 ③: drain then exit with the reserved code so the supervisor relaunches
-      // (the new bundle via <root>/current for upgrade).
+        return ok
+      })
+    this.fleetUpgradeInFlight = { targetVersion, installation }
+    return installation
+  }
+
+  private finishFleetExit(kind: 'restart' | 'upgrade'): void {
+    if (this.fleetExitStarted) return
+    this.fleetExitStarted = true
+    void (async () => {
       try {
         await this.stop()
       } catch (err) {
@@ -18114,39 +18133,37 @@ export class Daemon {
         this.requestExit(RESERVED_RESTART_CODE)
       }
     })()
-
-    return { accepted: true, willDrainUntil }
   }
 
-  /** Read the CLI entry path the CLI self-heals into `<root>/cli-entry` (§3). */
-  private readCliEntry(root: string): string | undefined {
-    try {
-      const entry = readFileSync(cliEntryPointer(root), 'utf8').trim()
-      return entry && existsSync(entry) ? entry : undefined
-    } catch {
-      return undefined
+  /** Admit immediately, then install before the existing drain-and-relaunch path. */
+  private scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck {
+    const admission = this.admitFleetExit(kind, targetVersion)
+    if (!admission.accepted) return admission
+    void (async () => {
+      if (kind === 'upgrade' && !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))) {
+        return
+      }
+      this.finishFleetExit(kind)
+    })()
+
+    return { accepted: true, ...(admission.willDrainUntil ? { willDrainUntil: admission.willDrainUntil } : {}) }
+  }
+
+  private async runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome> {
+    if (targetVersion === DAEMON_VERSION) return { status: 'current' }
+    const existing = this.fleetUpgradeInFlight
+    if (existing?.targetVersion === targetVersion) {
+      const installed = await existing.installation
+      return installed
+        ? { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
+        : { status: 'failed', reason: `failed to install ${targetVersion}` }
     }
-  }
-
-  /** Run `agentconnect upgrade --to <v> --root <root>` (no --restart; the daemon's
-   *  own exit + supervisor relaunch applies it). Resolves true iff it exits 0. */
-  private async runCliUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
-    const { spawn } = await import('node:child_process')
-    this.log.info(`cp: installing daemon ${targetVersion} via ${cliEntry}`)
-    return await new Promise<boolean>((resolve) => {
-      const child = spawn(process.execPath, [cliEntry, 'upgrade', '--to', targetVersion, '--root', root], {
-        stdio: 'inherit'
-      })
-      child.on('exit', (code) => {
-        if (code === 0) this.log.info(`cp: daemon ${targetVersion} installed and activated`)
-        else this.log.error(`cp: CLI upgrade exited ${code ?? 'via signal'}`)
-        resolve(code === 0)
-      })
-      child.on('error', (err) => {
-        this.log.error(`cp: could not launch CLI upgrade: ${formatErr(err)}`)
-        resolve(false)
-      })
-    })
+    const admission = this.admitFleetExit('upgrade', targetVersion)
+    if (!admission.accepted) return { status: 'failed', reason: admission.reason }
+    if (!(await this.startFleetUpgrade(admission.cliEntry!, targetVersion, admission.root))) {
+      return { status: 'failed', reason: `failed to install ${targetVersion}` }
+    }
+    return { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
   }
 
   // ── ConfigApply seam (CP changes config, never live routing) ──
@@ -19193,6 +19210,12 @@ export class Daemon {
         this.cpOrgSlug = slug
         if (slug) this.log.debug(`cp: org slug "${slug}" (session deep links)`)
       },
+      ...(this.bootstrapUpgradeCapable()
+        ? {
+            onBootstrapUpgrade: (lifecycle: { targetVersion: string }) =>
+              this.runBootstrapFleetUpgrade(lifecycle.targetVersion)
+          }
+        : {}),
       agentVersion: DAEMON_VERSION,
       host: hostname(),
       heartbeatDefaultMs: cp.heartbeatMs,

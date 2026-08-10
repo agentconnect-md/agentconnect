@@ -124,6 +124,7 @@ export function buildDaemonApp(prisma: PrismaClient): DaemonApp {
     listening = true
     createDaemonWsServer(app, {
       auth,
+      lifecycleOps: repos.daemonLifecycleOp,
       registry,
       orchestrator,
       connReg,

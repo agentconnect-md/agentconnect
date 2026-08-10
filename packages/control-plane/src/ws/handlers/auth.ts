@@ -51,5 +51,23 @@ export const handleAuth: Handler = async (frame, conn, deps) => {
     launches: new Map()
   })
 
-  conn.replyTo(frame, 'auth/ok', verdict.okFrame)
+  let okFrame = verdict.okFrame
+  if (req.bootstrapProtocolVersion === 1) {
+    await deps.lifecycleOps.expireOverdue(new Date(deps.clock.now()), verdict.daemonId)
+    const op = await deps.lifecycleOps.pendingForDaemon(verdict.daemonId)
+    if (op?.op === 'upgrade' && op.targetVersion) {
+      // An already-target process may READY now; any other version must re-auth after install.
+      const commandEpoch =
+        req.agentVersion === op.targetVersion
+          ? BigInt(Math.max(0, verdict.okFrame.sessionEpoch - 1))
+          : BigInt(verdict.okFrame.sessionEpoch)
+      await deps.lifecycleOps.markAccepted(op.id, new Date(deps.clock.now()), commandEpoch)
+      okFrame = {
+        ...okFrame,
+        lifecycle: { operationId: op.id, action: 'upgrade', targetVersion: op.targetVersion }
+      }
+    }
+  }
+
+  conn.replyTo(frame, 'auth/ok', okFrame)
 }

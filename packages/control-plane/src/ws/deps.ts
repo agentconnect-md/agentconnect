@@ -23,7 +23,8 @@ import type {
   LaunchRepo,
   OrganizationKnowledgeRepo,
   BotRepo,
-  GithubInstallationRepo
+  GithubInstallationRepo,
+  DaemonLifecycleOpRepo
 } from '../persistence/ports.js'
 import type { SessionVisibilityPushService } from '../orchestrator/visibilityPush.js'
 import type { RelayRosterEntry } from '@agentconnect.md/protocol'
@@ -51,6 +52,8 @@ export interface WsConfig {
 
 export interface DaemonWsDeps {
   auth: DaemonAuth
+  /** Durable lifecycle intent exposed during auth-only bootstrap. */
+  lifecycleOps: DaemonLifecycleOpRepo
   registry: DaemonRegistry
   orchestrator: ReconcileService
   connReg: ConnectionRegistry

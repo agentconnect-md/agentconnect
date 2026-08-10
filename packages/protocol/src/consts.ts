@@ -113,6 +113,12 @@ export const SLACK_SESSION_AUDIENCE_FEATURE = 'slack-session-audience-v1'
  */
 export const AGENT_CONFIG_REVISION_FEATURE = 'agent-config-revision-v1'
 
+/** Auth-only recovery capability that permits CP to queue an offline daemon upgrade. */
+export const DAEMON_BOOTSTRAP_UPGRADE_FEATURE = 'daemon-bootstrap-upgrade-v1'
+
+/** Frozen version of the auth-only bootstrap handshake. */
+export const DAEMON_BOOTSTRAP_PROTOCOL_VERSION = 1
+
 /**
  * Per-value ceiling for an environment variable or secret, shared by the agent
  * and organization surfaces so one entry can never be sized past what any

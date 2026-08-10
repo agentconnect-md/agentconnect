@@ -26,7 +26,7 @@ import { DaemonId, OrgId } from '../../src/domain/ids.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import { retryArm } from '../../src/http/routes/daemons.js'
-import type { DaemonControlAck } from '@agentconnect.md/protocol'
+import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE, type DaemonControlAck } from '@agentconnect.md/protocol'
 
 // Console routes are org-scoped: /orgs/:orgId/… (devAuth = seeded owner of the default org).
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -43,23 +43,25 @@ afterEach(async () => {
 /** A liveness index backed by a plain map — what the in-memory ConnectionRegistry is, sans
  *  socket. `sessionEpoch` defaults to 1 (seedDaemon's first auth epoch). */
 function liveness(
-  entries: Record<string, { state: string; reachable: boolean; sessionEpoch?: number }>
+  entries: Record<string, { state: string; reachable: boolean; sessionEpoch?: number }>,
+  reconnectForBootstrap?: DaemonLiveness['reconnectForBootstrap']
 ): DaemonLiveness {
   return {
     get: (id) => {
       const e = entries[id]
       return e ? { state: e.state, reachable: e.reachable, sessionEpoch: e.sessionEpoch ?? 1 } : undefined
-    }
+    },
+    ...(reconnectForBootstrap ? { reconnectForBootstrap } : {})
   }
 }
 
 /** Seed a registered daemon row (status `ready`, host + capabilities + version). */
-async function seedDaemon() {
+async function seedDaemon(features = ['worktree-iso']) {
   const repo = new PgDaemonRepo(prisma)
   await repo.upsertOnAuth({ daemonId: DaemonId(DAEMON), orgId: OrgId(DEFAULT_ORG_ID), agentVersion: '0.4.2' })
   await repo.applyRegister(DaemonId(DAEMON), {
     host: 'macbook-pro',
-    capabilities: { platforms: ['slack'], runtimes: ['claude', 'codex'], acp: true, features: ['worktree-iso'] },
+    capabilities: { platforms: ['slack'], runtimes: ['claude', 'codex'], acp: true, features },
     maxAgents: 3
   })
 }
@@ -678,6 +680,41 @@ describe('POST /daemons/:id/upgrade', () => {
     expect(res.statusCode).toBe(503)
     expect(calls).toHaveLength(0)
     expect(await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))).toBeNull()
+  })
+
+  it('queues an upgrade without sending control when the offline daemon supports bootstrap recovery', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_BOOTSTRAP_UPGRADE_FEATURE])
+    const { spy, calls } = controlSpy({ accepted: true })
+    running = buildHttpApp(prisma, undefined, liveness({}), spy)
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '0.5.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(calls).toHaveLength(0)
+    const op = await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))
+    expect(op).toMatchObject({ op: 'upgrade', targetVersion: '0.5.0', acceptedAt: null })
+  })
+
+  it('reconnects a registering daemon after enqueue so auth cannot miss the upgrade', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_BOOTSTRAP_UPGRADE_FEATURE])
+    const reconnect = vi.fn(() => true)
+    const { spy, calls } = controlSpy({ accepted: true })
+    running = buildHttpApp(
+      prisma,
+      undefined,
+      liveness({ [DAEMON]: { state: 'REGISTERING', reachable: true } }, reconnect),
+      spy
+    )
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '0.5.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(calls).toHaveLength(0)
+    expect(reconnect).toHaveBeenCalledWith(DAEMON, 1)
   })
 
   it('409s a second command while one is already in flight', async () => {

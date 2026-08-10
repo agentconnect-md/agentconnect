@@ -89,7 +89,8 @@ import type {
   ManagedSkillReadReq,
   ManagedSkillChunk,
   OrganizationSuggestionReadReq,
-  OrganizationSuggestionReviewReq
+  OrganizationSuggestionReviewReq,
+  BootstrapLifecycle
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -99,7 +100,8 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
-  ORGANIZATION_KNOWLEDGE_FEATURE
+  ORGANIZATION_KNOWLEDGE_FEATURE,
+  DAEMON_BOOTSTRAP_PROTOCOL_VERSION
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
@@ -130,6 +132,9 @@ const REGISTERING_CONTROL_QUEUE_LIMIT = 1024
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
 export type CpState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'DRAINING' | 'CLOSED' | 'DEGRADED'
+
+export type BootstrapUpgradeOutcome =
+  { status: 'current' } | { status: 'failed'; reason: string } | { status: 'installed'; restart: () => void }
 
 interface RegisterControlBarrier {
   transport: Transport
@@ -196,6 +201,8 @@ export interface CpClientDeps {
    *  resolve it). The console is org-scoped, so this becomes the `<orgSlug>` segment of a
    *  session deep link (`<webAppUrl>/<orgSlug>/sessions/<id>`). */
   onOrgSlug?: (orgSlug: string | undefined) => void
+  /** Auth-time recovery directive handled before full registration. */
+  onBootstrapUpgrade?: (lifecycle: BootstrapLifecycle) => Promise<BootstrapUpgradeOutcome>
   /** Called once the daemon reaches READY on each (re)connect, after the initial
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
@@ -343,7 +350,8 @@ export class CpClient {
     this.state = 'AUTHENTICATING'
     const authPayload: Record<string, unknown> = {
       apiKey: this.deps.token,
-      agentVersion: this.deps.agentVersion
+      agentVersion: this.deps.agentVersion,
+      ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }
     // Send daemonId only if configured; otherwise the CP derives it from the
     // token's `sub` and returns it in auth/ok (token-only onboarding).
@@ -360,6 +368,7 @@ export class CpClient {
       heartbeatSec: number
       webAppUrl?: string
       orgSlug?: string
+      lifecycle?: BootstrapLifecycle
     }
     this.sessionEpoch = ok.sessionEpoch
     this.lastAuthedEpoch = ok.sessionEpoch
@@ -373,9 +382,28 @@ export class CpClient {
     this.deps.onWebAppUrl?.(ok.webAppUrl)
     // Adopt the org slug the daemon belongs to — the `<orgSlug>` path segment of a deep link.
     this.deps.onOrgSlug?.(ok.orgSlug)
+    this.state = 'REGISTERING'
+    if (ok.lifecycle && this.deps.onBootstrapUpgrade) {
+      let outcome: BootstrapUpgradeOutcome
+      try {
+        outcome = await this.deps.onBootstrapUpgrade(ok.lifecycle)
+      } catch (err) {
+        outcome = { status: 'failed', reason: err instanceof Error ? err.message : String(err) }
+      }
+      if (outcome.status === 'failed') {
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'failed', outcome.reason)
+      } else if (outcome.status === 'installed') {
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'installed').catch((err) => {
+          this.deps.log.error(`cp: could not confirm bootstrap installation: ${(err as Error).message}`)
+        })
+        this.stopped = true
+        outcome.restart()
+        expectedTransport.close(1000, 'bootstrap upgrade installed')
+        throw new Error(`bootstrap upgrade to ${ok.lifecycle.targetVersion} installed`)
+      }
+    }
 
     // ── register ──
-    this.state = 'REGISTERING'
     const registerCapabilities = this.deps.capabilities()
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
@@ -441,6 +469,23 @@ export class CpClient {
     // arrive later as another `facts/daemon-runtimes` snapshot that replaces
     // the one just sent.
     this.deps.onReady?.()
+  }
+
+  private async reportBootstrapResult(
+    transport: Transport,
+    lifecycle: BootstrapLifecycle,
+    status: 'installed' | 'failed',
+    reason?: string
+  ): Promise<void> {
+    const result = buildEnvelope('daemon/bootstrap/result', {
+      operationId: lifecycle.operationId,
+      status,
+      ...(reason ? { reason: reason.slice(0, 500) } : {})
+    })
+    const reply = await this.correlator.request(result, (encoded) => transport.send(encoded))
+    if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) {
+      throw new Error('control plane rejected the bootstrap result')
+    }
   }
 
   /**
