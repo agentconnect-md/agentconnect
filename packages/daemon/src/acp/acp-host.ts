@@ -210,13 +210,36 @@ const PROVIDER_QUOTA_MESSAGES = [
   /\b(?:billing|plan|account) quota (?:has been )?(?:reached|exceeded|exhausted)\b/i
 ]
 
+/**
+ * Provider auth error TYPES and CODES, as the providers themselves emit them.
+ *
+ * Deliberately not HTTP status numbers. An earlier revision matched a nested numeric 401/403
+ * and that was wrong in a way worth remembering: `K8sApiError` and `GithubHttpError` both
+ * carry a numeric `status`, and `turnFailureCode` sees failures from far beyond the model
+ * call — so a Kubernetes RBAC denial would have told the user their provider credentials
+ * needed attention. A type like `authentication_error` cannot arrive from an unrelated layer,
+ * so it identifies the provider without needing to prove provenance separately.
+ */
+const PROVIDER_AUTH_CODES = new Set([
+  'authenticationerror',
+  'invalidapikey',
+  'invalidauthentication',
+  'permissionerror',
+  'unauthenticated'
+])
+
 const PROVIDER_AUTH_MESSAGES = [
   /\brefresh token was revoked\b/i,
   /\baccess token could not be refreshed\b[\s\S]{0,160}\b(?:log out|sign out) and sign in again\b/i,
   // claude-agent-acp with an expired-but-present OAuth credential: the SDK fails
   // the refresh and the adapter surfaces it as a -32603 internal error with this
   // exact wording (a FRESH logged-out credential rejects -32000 instead).
-  /\boauth session expired and could not be refreshed\b/i
+  /\boauth session expired and could not be refreshed\b/i,
+  // Anthropic and OpenAI both say this verbatim when the key itself is rejected.
+  /\binvalid x-api-key\b/i,
+  /\bincorrect api key provided\b/i,
+  /\b(?:invalid|missing) (?:api )?(?:key|credentials)\b/i,
+  /\bno auth credentials found\b/i
 ]
 
 /** Collect the small family of fields ACP adapters and provider SDKs use to
@@ -251,44 +274,13 @@ function failureSignals(value: unknown, depth = 0, seen = new Set<object>()): st
   return out
 }
 
-/**
- * HTTP statuses that mean "this credential will not work", whatever the wording.
- *
- * A provider reached directly answers with a status, not prose, and the wording varies by
- * provider and SDK version — so a message-only classifier reports an upstream 401 as a bare
- * `turn_failed`, which tells a user nothing actionable. 429 is deliberately NOT here: it is
- * transient rate limiting, and calling it quota exhaustion would tell someone their plan ran
- * out when it did not.
- */
-const PROVIDER_AUTH_STATUSES = new Set([401, 403])
-
-/** HTTP-ish statuses carried on a wrapped upstream failure, ignoring JSON-RPC codes. */
-function failureStatuses(value: unknown, depth = 0, seen = new Set<object>()): number[] {
-  if (!value || typeof value !== 'object' || depth >= 5 || seen.has(value)) return []
-  seen.add(value)
-  const out: number[] = []
-  for (const key of ['status', 'statusCode', 'status_code', 'httpStatus', 'http_status']) {
-    const candidate = Reflect.get(value, key)
-    // A plausible HTTP status only: JSON-RPC codes are negative and must not be read as one.
-    if (typeof candidate === 'number' && candidate >= 100 && candidate <= 599) out.push(candidate)
-  }
-  for (const key of ['error', 'data', 'details', 'cause', 'response']) {
-    try {
-      out.push(...failureStatuses(Reflect.get(value, key), depth + 1, seen))
-    } catch {
-      // A hostile getter must not replace the original turn error.
-    }
-  }
-  return out
-}
-
 export function turnFailureCode(err: unknown): TurnFailureCode {
   const signals = failureSignals(err)
-  if (failureStatuses(err).some((status) => PROVIDER_AUTH_STATUSES.has(status))) {
-    return HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
-  }
   if (signals.some((signal) => PROVIDER_QUOTA_CODES.has(signal.toLowerCase().replace(/[^a-z0-9]/g, '')))) {
     return HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+  }
+  if (signals.some((signal) => PROVIDER_AUTH_CODES.has(signal.toLowerCase().replace(/[^a-z0-9]/g, '')))) {
+    return HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
   }
   const message = signals.join('\n')
   if (PROVIDER_AUTH_MESSAGES.some((pattern) => pattern.test(message))) {

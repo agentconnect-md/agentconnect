@@ -60,8 +60,11 @@ describe('provider credentials in the direct-connect stage', () => {
       log: { info: () => {}, warn: () => {}, debug: () => {} }
     })
     await driver.ensureSandbox('agent-a')
-    // The whole claim, serialized: a secret must not appear anywhere in it, not merely be
-    // absent from the field we happened to check.
+    // Launch with a real secret in the runtime env, so the assertion below is about a value
+    // that was actually present to leak rather than one that never existed.
+    await driver
+      .launch({ command: 'runtime', args: [], env: { AC_AGENT_ID: 'agent-a', ANTHROPIC_API_KEY: SECRET } })
+      .catch(() => undefined)
     const serialized = JSON.stringify(created)
     expect(serialized).not.toContain(SECRET)
     expect(serialized).not.toContain('ANTHROPIC_API_KEY')
@@ -75,26 +78,47 @@ describe('provider credentials in the direct-connect stage', () => {
     expect([...RUNTIME_GRANTS].sort()).toEqual(['acp', 'exec', 'materialize', 'read', 'tunnel'])
   })
 
-  it('classifies an upstream 401 as a credential problem, whatever the wording', () => {
-    // A provider reached directly answers with a status, not prose. Before this, a numeric
-    // status was skipped entirely and the user saw a bare "turn failed".
-    expect(turnFailureCode({ status: 401, message: 'Unauthorized' })).toBe(HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
-    expect(turnFailureCode({ data: { response: { statusCode: 403 } } })).toBe(HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
-    expect(turnFailureCode({ cause: { http_status: 401 } })).toBe(HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED)
+  it('classifies a provider auth rejection by the type the provider itself sends', () => {
+    // Anthropic and OpenAI both send a typed code; that identifies the provider, which an
+    // HTTP number does not.
+    expect(turnFailureCode({ error: { type: 'authentication_error', message: 'invalid x-api-key' } })).toBe(
+      HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    )
+    expect(turnFailureCode({ data: { error: { code: 'invalid_api_key' } } })).toBe(
+      HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    )
+    expect(turnFailureCode(new Error('Incorrect API key provided: sk-***'))).toBe(
+      HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+    )
   })
 
-  it('does not call a 429 quota exhaustion, because it is not', () => {
-    // Rate limiting is transient. Reporting it as quota exhausted would tell someone their
-    // plan ran out when it did not, which is worse than a generic failure.
-    expect(turnFailureCode({ status: 429, message: 'Too Many Requests' })).toBe('turn_failed')
-    // A message that genuinely says the quota is gone still classifies as quota.
-    expect(turnFailureCode({ status: 429, message: "You've hit your usage limit" })).toBe('provider_quota_exhausted')
+  it('does NOT treat an unrelated 403 as a provider credential problem', () => {
+    // The defect an earlier revision of this PR introduced. K8sApiError carries a numeric
+    // status, and turnFailureCode sees failures from far beyond the model call — so matching
+    // on 401/403 told users their provider key was bad when Kubernetes RBAC had denied a
+    // claim. A status belongs to whichever layer produced it, so it is not evidence.
+    const rbacDenial = new K8sApiError(403, 'Forbidden', 'sandboxclaims is forbidden: cannot create')
+    expect(turnFailureCode(rbacDenial)).toBe('turn_failed')
+    expect(turnFailureCode({ status: 401, message: 'Unauthorized' })).toBe('turn_failed')
+    expect(turnFailureCode({ data: { response: { statusCode: 403 } } })).toBe('turn_failed')
   })
 
-  it('ignores a JSON-RPC code that happens to be numeric', () => {
-    // -32603 must not be read as an HTTP status, and 500 is not an auth problem.
-    expect(turnFailureCode({ code: -32603, message: 'Internal error' })).toBe('turn_failed')
-    expect(turnFailureCode({ status: 500, message: 'Internal Server Error' })).toBe('turn_failed')
+  it('survives a hostile getter while classifying, keeping the original failure', () => {
+    // The classifier runs while handling someone else's error; throwing from it would replace
+    // the failure a user needs to see with one about our own traversal.
+    const hostile = new Error('the original failure')
+    Object.defineProperty(hostile, 'message', {
+      get() {
+        throw new Error('getter exploded')
+      }
+    })
+    Object.defineProperty(hostile, 'data', {
+      get() {
+        throw new Error('getter exploded')
+      }
+    })
+    expect(() => turnFailureCode(hostile)).not.toThrow()
+    expect(turnFailureCode(hostile)).toBe('turn_failed')
   })
 
   it('still recognises the message-shaped auth failures it always did', () => {
