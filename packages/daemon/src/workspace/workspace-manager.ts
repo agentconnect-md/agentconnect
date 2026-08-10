@@ -142,14 +142,8 @@ function isTrustedGithubOrigin(input: string): boolean {
   }
 }
 
-/**
- * Resolves where one agent's git runs.
- *
- * Per-agent rather than global because the answer is per-agent: a cluster-backed workspace lives
- * on its own sandbox pod's volume and its runner sends argv over that pod's shim channel, while a
- * self-hosted agent beside it runs git here. Returning undefined means "local", which is also
- * what an unconfigured daemon does — so the local path needs no registration.
- */
+// Resolves where one agent's git runs. Per-agent because a cluster workspace's runner is bound to
+// that agent's own sandbox channel; undefined means local, so self-hosting needs no registration.
 export type WorkspaceGitRunnerResolver = (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
 
 /** Module-level init, mirroring cloneInFlight and git-injection's own registration. */
@@ -159,8 +153,8 @@ export function setWorkspaceGitRunnerResolver(resolver: WorkspaceGitRunnerResolv
   resolveWorkspaceGitRunner = resolver
 }
 
-/** Every git operation in this file goes through here. A site that calls gitFor directly would
- *  keep working locally and silently run on the WRONG filesystem for a cluster agent. */
+// Every git operation here routes through this: a direct gitFor still passes locally and then runs
+// a cluster agent's git on the wrong filesystem.
 function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
   return resolveWorkspaceGitRunner?.(agentId, cwd, abort) ?? new LocalGitRunner(gitFor(cwd, abort))
 }

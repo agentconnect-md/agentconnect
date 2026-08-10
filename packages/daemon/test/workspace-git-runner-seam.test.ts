@@ -14,15 +14,9 @@ import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import { gitFor } from '../src/workspace/git-injection.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
-/**
- * The resolver seam in workspace-manager, which is what lets a cluster-backed workspace run its
- * git on the sandbox pod's volume instead of this daemon's disk.
- *
- * The migration it exists for is only as good as its completeness: a single site left calling
- * `gitFor` keeps passing every local test and then, for a cluster agent, runs git against the
- * WRONG filesystem — reporting a clean tree for a workspace it cannot see. So this covers both
- * halves: the operations do route through the resolver, and no operation gets to bypass it.
- */
+// The resolver seam that lets a cluster workspace run git on its sandbox pod instead of this disk.
+// Its value is completeness: one site left on gitFor passes every local test, then reports a clean
+// tree for a workspace it cannot see. So both halves are covered — routed, and unbypassable.
 
 const roots: string[] = []
 
@@ -55,9 +49,8 @@ function agentWithWorktree(sessionKey: string): { agent: Agent; worktree: string
   writeFileSync(join(path, 'a.txt'), 'a\n')
   git(path, ['add', 'a.txt'])
   git(path, ['commit', '-m', 'base'])
-  // A real workspace is a CLONE, so its commits are reachable from a remote ref. Without one
-  // every commit counts as unique to the worktree and removal is refused — which is the
-  // judgement working, not a fixture detail to assert around.
+  // A real workspace is a CLONE, so commits are reachable from a remote ref. Without one every
+  // commit is unique to the worktree and removal is correctly refused.
   const origin = join(home, 'origin.git')
   git(home, ['init', '--bare', '--initial-branch=main', origin])
   git(path, ['remote', 'add', 'origin', origin])
@@ -141,8 +134,7 @@ describe('workspace-manager git runner seam', () => {
     // Real removal against a real worktree — the outcome proves the routed argv actually ran.
     expect(outcome).toEqual({ outcome: 'removed' })
     expect(existsSync(worktree)).toBe(false)
-    // The resolver has to be told WHICH agent: the runner for a cluster workspace is bound to
-    // that agent's own sandbox channel, so a seam taking only a cwd could not pick one.
+    // The resolver needs the agent: a cwd-only seam could not pick which sandbox channel to use.
     expect(calls.length).toBeGreaterThan(0)
     expect(new Set(calls.map((call) => call.agentId))).toEqual(new Set(['bot-seam']))
     const flat = argv.map((args) => args.join(' '))
@@ -159,16 +151,14 @@ describe('workspace-manager git runner seam', () => {
     const { resolver } = recording()
     setWorkspaceGitRunnerResolver(resolver)
 
-    // The decision has to come from the runner's answer: a site reading the daemon's own disk
-    // instead would judge a cluster workspace it cannot see.
+    // The decision must come from the runner's answer, not from this daemon's own disk.
     expect(await removeSessionWorktree(agent, 'session-2')).toEqual({ outcome: 'retained', reason: 'dirty' })
     expect(existsSync(worktree)).toBe(true)
   })
 
   it('cannot be bypassed: a refusing resolver stops the operation instead of falling back', async () => {
     const { agent, worktree } = agentWithWorktree('session-3')
-    // If any site still reached git directly, the removal would succeed despite the seam
-    // refusing everything — which is exactly the silent failure this guards.
+    // A site still reaching git directly would succeed despite the seam refusing everything.
     setWorkspaceGitRunnerResolver(() => {
       throw new Error('seam refused')
     })
@@ -185,9 +175,8 @@ describe('workspace-manager git runner seam', () => {
   })
 
   it('has no git call site left outside the seam', () => {
-    // A source-level check because the alternative is booting all twelve call sites, and the
-    // failure mode is a NEW site added later: it would pass every local test while running a
-    // cluster agent's git on the wrong machine. `runnerFor` is the one permitted caller.
+    // Source-level because the failure mode is a NEW site added later, which every local test
+    // would pass. `runnerFor` is the one permitted caller.
     const source = readFileSync(new URL('../src/workspace/workspace-manager.ts', import.meta.url), 'utf8')
     const offenders = source
       .split('\n')
