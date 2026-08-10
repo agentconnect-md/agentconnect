@@ -14,6 +14,10 @@ export const GitExecPayloadSchema = z.object({
   tool: z.literal('git'),
   cwd: z.string().min(1).optional(),
   args: z.array(z.string()).min(1).max(64),
+  /** How long the caller will wait, so the sandbox kills the child before the request is
+   *  abandoned — otherwise a slow git keeps running (and keeps index.lock) past the point
+   *  anything is listening for its result. Bounded again on the shim side. */
+  timeoutMs: z.number().int().min(1_000).max(900_000).optional(),
   /** The COMPLETE environment for this invocation, replacing rather than extending whatever
    *  the sandbox has. Callers build it by sanitizing (stripping host GIT_CONFIG_*, protocol
    *  allowances and so on), so merging would defeat that; the shim must apply it as given.
@@ -103,6 +107,13 @@ export function parseShortstat(stdout: string): { insertions: number; deletions:
   return { insertions: Number(insertions?.[1] ?? 0), deletions: Number(deletions?.[1] ?? 0) }
 }
 
+/** Subcommands whose duration is set by a remote rather than by local work. */
+const NETWORK_SUBCOMMANDS = new Set(['clone', 'fetch', 'pull'])
+const NETWORK_DEADLINE_MS = 10 * 60_000
+const LOCAL_DEADLINE_MS = 120_000
+/** The requester outwaits the child so a terminated result is delivered rather than raced. */
+const REQUEST_MARGIN_MS = 15_000
+
 /** A git failure that carries what the sandbox reported, so a caller can act on it. */
 export class GitExecError extends Error {
   constructor(
@@ -191,15 +202,21 @@ export class ShimGitRunner implements GitRunner {
   }
 
   private async exec(args: string[]): Promise<GitExecResult> {
+    // A subcommand that talks to a remote is bounded by the network, not by local work, and the
+    // requester's 30s default cannot clone a real repository. The child's deadline is the
+    // shorter of the two so it is reaped and reported before the request is abandoned — an
+    // abandoned request leaves git running, and a running git keeps index.lock.
+    const deadlineMs = NETWORK_SUBCOMMANDS.has(args[0] ?? '') ? NETWORK_DEADLINE_MS : LOCAL_DEADLINE_MS
     const payload: GitExecPayload = {
       tool: 'git',
       args,
+      timeoutMs: deadlineMs,
       ...(this.cwd ? { cwd: this.cwd } : {}),
       // Present whenever an environment was set, including an explicitly EMPTY one: "run with
       // nothing" is a meaningful instruction and must not be indistinguishable from "unset".
       ...(this.env !== undefined ? { env: this.env } : {})
     }
-    const raw = await this.requester.request('exec', payload)
+    const raw = await this.requester.request('exec', payload, deadlineMs + REQUEST_MARGIN_MS)
     const result = GitExecResultSchema.parse(raw)
     if (result.code !== 0) throw new GitExecError(result.code, result.stdout, result.stderr, args)
     return result

@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError, createExecHandler } from '../src/shim/exec-handler.js'
 import { configFilesDir } from '../src/agents/config-file-env.js'
 import type { GitExecResult } from '../src/shim/git-exec.js'
@@ -143,6 +144,104 @@ describe('sandbox exec handler', () => {
       args: ['config', '--get', 'user.name']
     })) as GitExecResult
     expect(withoutEnv.stdout.trim()).not.toBe('Only From Request')
+  })
+
+  it('refuses a short alias that reaches execution, without banning the same spelling elsewhere', async () => {
+    // `git clone -u <program>` IS --upload-pack and RUNS the program — measured against git
+    // 2.43, not assumed. The blocklist only covered the long spelling.
+    const root = repository()
+    const evil = join(root, 'evil.sh')
+    writeFileSync(evil, '#!/bin/sh\necho EVIL-RAN >&2\nexit 1\n', { mode: 0o755 })
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['clone', '-u', evil, 'file:///nonexistent', join(root, 'dst')] })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    // `git config -e` opens GIT_EDITOR, also measured; no call site edits config.
+    await expect(handler(root)('exec', { tool: 'git', args: ['config', '-e'] })).rejects.toBeInstanceOf(
+      ExecRefusedError
+    )
+
+    // And NOT a blanket ban: `-u` means --untracked-files to status, which the daemon sends on
+    // every status call, so refusing the spelling everywhere would break the feature.
+    const status = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['status', '--porcelain=v2', '--branch', '-u', '-z']
+    })) as GitExecResult
+    expect(status.code).toBe(0)
+  })
+
+  it('refuses a cwd that escapes through a SYMLINK beneath the root', async () => {
+    // Containment was lexical, so `<root>/link` passed the prefix check while pointing anywhere.
+    const root = repository()
+    const outside = mkdtempSync(join(tmpdir(), 'ac-symlink-target-'))
+    roots.push(outside)
+    execFileSync('git', ['init', '--initial-branch=main'], { cwd: outside })
+    const link = join(root, 'link')
+    symlinkSync(outside, link)
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['status', '--porcelain'], cwd: link })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+
+    // A symlink that stays inside is still fine — the rule is where it LANDS, not that it is one.
+    mkdirSync(join(root, 'real'), { recursive: true })
+    symlinkSync(join(root, 'real'), join(root, 'inner-link'))
+    const inside = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['status', '--porcelain'],
+      cwd: join(root, 'inner-link')
+    })) as GitExecResult
+    expect(inside.code).toBe(0)
+  })
+
+  it('refuses a result too large to frame instead of assembling one the transport will drop', async () => {
+    // The result crosses as ONE shim frame capped at MAX_FRAME_BYTES. A 32 MiB buffer did not
+    // permit large results, it produced a result the transport discards — killing the channel
+    // rather than failing the call.
+    const root = repository()
+    const many = join(root, 'many')
+    mkdirSync(many, { recursive: true })
+    for (let i = 0; i < 4000; i += 1) writeFileSync(join(many, `file-with-a-longish-name-${i}.txt`), 'x')
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['status', '--porcelain=v2', '--branch', '-u', '-z'] })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    // The guard has to sit below the frame cap, not at it: the JSON envelope carries both
+    // streams plus escaping.
+    expect(MAX_FRAME_BYTES).toBeGreaterThan(64 * 1024)
+  })
+
+  it('reports a TIMED-OUT git as a failure, never as exit 0', async () => {
+    // Node gives a signalled child `code: null`, which an earlier version mapped to 0 — so a
+    // timed-out `status` returned success with partial output, which every caller reads as a
+    // clean tree. The hang is real: git blocks reading a config file that is a FIFO.
+    const root = repository()
+    const blocking = join(root, 'blocking.gitconfig')
+    execFileSync('mkfifo', [blocking])
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['config', '--get', 'user.name'],
+      env: { PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_GLOBAL: blocking },
+      timeoutMs: 1_000
+    })) as GitExecResult
+    expect(result.code).not.toBe(0)
+    // 128 + SIGTERM, the shell convention, and a reason the daemon can surface.
+    expect(result.code).toBe(143)
+    expect(result.stderr).toMatch(/terminated by SIGTERM after 1000ms/)
+  })
+
+  it('bounds a caller-supplied deadline rather than trusting it', async () => {
+    // The deadline arrives from the daemon, so the sandbox keeps a ceiling: otherwise a
+    // compromised caller pins a child here for as long as it likes.
+    const root = repository()
+    const bounded = createExecHandler({ workspaceRoot: root, timeoutMs: 1_000 })
+    const blocking = join(root, 'ceiling.gitconfig')
+    execFileSync('mkfifo', [blocking])
+    const result = (await bounded('exec', {
+      tool: 'git',
+      args: ['config', '--get', 'user.name'],
+      env: { PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_GLOBAL: blocking },
+      timeoutMs: 900_000
+    })) as GitExecResult
+    expect(result.code).toBe(143)
+    expect(result.stderr).toMatch(/after 1000ms/)
   })
 
   it('serves materialization and refuses a path escaping the sink root', async () => {
