@@ -152,7 +152,7 @@ function fakeKeyEvent(key: string): ReactKeyboardEvent<HTMLTextAreaElement> & { 
 // which trapped keyboard focus inside the composer (Tab couldn't leave it)
 // while `pick()` silently no-opped.
 describe('useMentionAutocomplete — every match dimmed', () => {
-  it('lets Tab and Enter fall through instead of consuming them with nothing reachable', () => {
+  it("lets Tab fall through AND closes the picker — it can't survive focus leaving anyway", () => {
     const { api, setDraft } = mountHarness(() => undefined, [{ id: 'x', name: 'offline-bot', dimmed: true }])
     act(() => {
       setDraft('@off')
@@ -161,19 +161,32 @@ describe('useMentionAutocomplete — every match dimmed', () => {
     expect(api().matches).toHaveLength(1)
 
     const tab = fakeKeyEvent('Tab')
-    let consumedTab!: boolean
+    let consumed!: boolean
     act(() => {
-      consumedTab = api().handleKeyDown(tab)
+      consumed = api().handleKeyDown(tab)
     })
-    expect(consumedTab).toBe(false)
+    expect(consumed).toBe(false)
     expect(tab.defaultPrevented).toBe(false)
+    // Left open, it would sit there orphaned next to a textarea that no
+    // longer has focus — Tab already moved on, so the menu should too.
+    expect(api().open).toBe(false)
+  })
+
+  it("lets Enter fall through WITHOUT closing — focus never left, so there's nothing to dismiss", () => {
+    const { api, setDraft } = mountHarness(() => undefined, [{ id: 'x', name: 'offline-bot', dimmed: true }])
+    act(() => {
+      setDraft('@off')
+      api().sync('@off', 4)
+    })
+    expect(api().matches).toHaveLength(1)
 
     const enter = fakeKeyEvent('Enter')
-    let consumedEnter!: boolean
+    let consumed!: boolean
     act(() => {
-      consumedEnter = api().handleKeyDown(enter)
+      consumed = api().handleKeyDown(enter)
     })
-    expect(consumedEnter).toBe(false)
+    expect(consumed).toBe(false)
     expect(enter.defaultPrevented).toBe(false)
+    expect(api().open).toBe(true)
   })
 })

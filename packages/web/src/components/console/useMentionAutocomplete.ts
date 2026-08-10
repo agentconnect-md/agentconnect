@@ -234,12 +234,18 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
       return true
     }
     if (event.key === 'Enter' || event.key === 'Tab') {
-      // Nothing reachable to land on (every match dimmed) — don't consume
-      // the key at all, so Tab still moves focus out of the composer and
-      // Enter still falls through to the composer's own send handling,
-      // instead of both being silently swallowed while `pick()` no-ops.
       const candidate = matches[activeIndex]
-      if (!candidate || candidate.dimmed) return false
+      // Nothing reachable to land on (every match dimmed) — don't consume
+      // the key itself, so Tab still moves focus out of the composer and
+      // Enter still falls through to the composer's own send handling.
+      if (!candidate || candidate.dimmed) {
+        // Tab is ALSO leaving the textarea, and the picker doesn't survive
+        // that anyway — close it now rather than leaving it visibly open,
+        // orphaned, next to a control that isn't focused anymore. Enter
+        // doesn't move focus, so it has nothing to close for.
+        if (event.key === 'Tab') close()
+        return false
+      }
       event.preventDefault()
       pick(candidate)
       return true
