@@ -408,14 +408,24 @@ describe('SessionDock resize', () => {
     expect(readDockWidth('org-1')).toBe(540)
   })
 
-  it('reports the ceiling the drag really stops at as the separator maximum, not the preference cap', () => {
-    // Announcing 760 on a 1440px viewport promises 256px of travel the edge will never make.
+  // The separator's maximum is pinned as LITERALS on both sides of the cap, because
+  // re-deriving it with the component's own formula cannot catch a wrong formula.
+  it('reports the geometric ceiling where that binds, not the preference cap', () => {
+    // 1440 − 296 chrome − 640 floor = 504, so announcing 760 would promise 256px the edge never travels.
     writeDockWidth('org-1', 600)
     window.innerWidth = 1440
     render(dock())
     expect(handle().getAttribute('aria-valuemin')).toBe(String(DOCK_WIDTH_MIN))
-    expect(handle().getAttribute('aria-valuemax')).toBe(String(dockWidthCeiling(1440)))
-    expect(dockWidthCeiling(1440)).toBeLessThan(DOCK_WIDTH_MAX)
+    expect(handle().getAttribute('aria-valuemax')).toBe('504')
+  })
+
+  it('reports the preference cap where the ceiling exceeds it, rather than the geometry', () => {
+    // 1920 − 296 − 640 = 984, but the drag clamps at 760 first, so 984 would over-report by 224px.
+    writeDockWidth('org-1', 600)
+    window.innerWidth = 1920
+    render(dock())
+    expect(handle().getAttribute('aria-valuemax')).toBe(String(DOCK_WIDTH_MAX))
+    expect(dockWidthCeiling(1920)).toBeGreaterThan(DOCK_WIDTH_MAX)
   })
 
   it('reports the full preference cap below the inline band, where the overlay withholds nothing', () => {
