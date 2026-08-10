@@ -57,8 +57,9 @@ function blockingRepository(): { root: string; env: Record<string, string>; mark
 
 /** Real listener + real shim client, the client serving git through the production handler. */
 async function channelUnderTest(
-  workspaceRoot: string
-): Promise<{ channel: ShimChannel; connection: ShimConnection; sent: ShimFrame[] }> {
+  workspaceRoot: string,
+  options: { credentialTtlMs?: number; shimClock?: FakeClock } = {}
+): Promise<{ channel: ShimChannel; connection: ShimConnection; sent: ShimFrame[]; listener: ShimListener }> {
   const record: SpawnRecord = {
     agentId: 'agent-a',
     generation: 1,
@@ -70,6 +71,7 @@ async function channelUnderTest(
     verifier: { reviewToken: async () => ({ authenticated: true, podName: 'runtime-1', podUid: 'pod-uid-1' }) },
     spawnRecordForPod: () => record,
     now: () => Date.now(),
+    ...(options.credentialTtlMs !== undefined ? { credentialTtlMs: options.credentialTtlMs } : {}),
     log: { info: () => {}, warn: () => {} }
   })
   listeners.push(listener)
@@ -80,7 +82,7 @@ async function channelUnderTest(
     dial: (url, opts) =>
       ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
     readToken: () => 'projected-token',
-    clock: new FakeClock(),
+    clock: options.shimClock ?? new FakeClock(),
     backoff: new Backoff({ jitter: () => 0 }),
     handle: createExecHandler({ workspaceRoot, log: { info: () => {}, warn: () => {} } }),
     log: { info: () => {}, warn: () => {} }
@@ -106,7 +108,12 @@ async function channelUnderTest(
         onFrame: (listen) => connection.onFrame(listen),
         close: (reason) => connection.close(reason)
       }
-      return { channel: new ShimChannel(observed, connection.issuedCredential, timers), connection: observed, sent }
+      return {
+        channel: new ShimChannel(observed, connection.issuedCredential, timers),
+        connection: observed,
+        sent,
+        listener
+      }
     }
     if (Date.now() > deadline) throw new Error('no channel bound in time')
     await new Promise((resolve) => setTimeout(resolve, 20))
@@ -185,6 +192,41 @@ describe('shim request cancellation', () => {
     expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
     expect(await inflight).toMatch(/timed out/)
     // A timeout that only gives up locally leaves the child holding whatever it holds.
+    expect(await until(() => liveGitChildren(marker) === 0)).toBe(true)
+  })
+})
+
+describe('shim work spanning a credential renewal', () => {
+  it('kills work whose transport is replaced, so a renewal cannot orphan a running child', async () => {
+    // The daemon fails pending requests on every rebind, including the routine half-TTL renewal.
+    // A child whose reply has nowhere to go must die with the socket: a clone's budget outlasts a
+    // renewal, so otherwise it keeps running — and holding locks — while the daemon retries.
+    const { root, env, marker } = blockingRepository()
+    const shimClock = new FakeClock()
+    const { channel } = await channelUnderTest(root, { credentialTtlMs: 4_000, shimClock })
+
+    const inflight = channel
+      .request('exec', { tool: 'git', args: ['config', '--get', `user.${marker}`], env }, { timeoutMs: 120_000 })
+      .then(() => 'resolved')
+      .catch((err: Error) => err.message)
+    expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
+
+    // Renewal fires at half the TTL on the shim's own clock — the real trigger, not a close.
+    shimClock.advance(2_500)
+    expect(await until(() => liveGitChildren(marker) === 0)).toBe(true)
+    void inflight
+  })
+
+  it('kills work when the client stops', async () => {
+    // Guards the property, not one line: stop() closes the transport, so the close hook reaches
+    // this too. Both would have to regress for the child to survive — which is the point.
+    const { root, env, marker } = blockingRepository()
+    const { channel } = await channelUnderTest(root)
+    void channel
+      .request('exec', { tool: 'git', args: ['config', '--get', `user.${marker}`], env }, { timeoutMs: 120_000 })
+      .catch(() => undefined)
+    expect(await until(() => liveGitChildren(marker) > 0)).toBe(true)
+    for (const client of clients) client.stop()
     expect(await until(() => liveGitChildren(marker) === 0)).toBe(true)
   })
 })
