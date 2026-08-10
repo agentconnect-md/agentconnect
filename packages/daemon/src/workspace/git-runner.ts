@@ -29,10 +29,27 @@ export interface GitRunner {
   /** Run a git subcommand with argv, never a composed shell string. */
   raw(args: string[]): Promise<string>
   clone(repo: string, target: string, options?: string[]): Promise<void>
-  pull(remote: string, branch: string, options?: string[]): Promise<void>
+  /** Pull, returning what the console reports: which files moved and by how much. */
+  pull(remote: string, branch: string, options?: string[]): Promise<GitPullSummary>
   status(): Promise<GitStatusSummary>
-  /** Commit subjects, newest first, bounded by `maxCount`. */
-  log(options: { maxCount: number }): Promise<Array<{ hash: string; message: string }>>
+  /** Commits newest first, bounded by `maxCount`. */
+  log(options: { maxCount: number }): Promise<GitLogEntry[]>
+}
+
+/** The pull result the BFF surfaces to the console; nothing here is decorative. */
+export interface GitPullSummary {
+  files: string[]
+  insertions: number
+  deletions: number
+}
+
+/** A commit as the workspace views consume it — the committer date included, because the
+ *  console shows when HEAD last moved and an interface without it cannot serve that. */
+export interface GitLogEntry {
+  hash: string
+  subject: string
+  /** Strict-ISO committer date (`%cI`), empty when the runtime reported none. */
+  committedAt: string
 }
 
 /** The status fields the daemon reads; simple-git returns many more. */
@@ -70,8 +87,13 @@ export class LocalGitRunner implements GitRunner {
     await this.git.clone(repo, target, options)
   }
 
-  async pull(remote: string, branch: string, options: string[] = []): Promise<void> {
-    await this.git.pull(remote, branch, options)
+  async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {
+    const result = await this.git.pull(remote, branch, options)
+    return {
+      files: [...result.files],
+      insertions: result.summary.insertions,
+      deletions: result.summary.deletions
+    }
   }
 
   async status(): Promise<GitStatusSummary> {
@@ -89,8 +111,15 @@ export class LocalGitRunner implements GitRunner {
     }
   }
 
-  async log(options: { maxCount: number }): Promise<Array<{ hash: string; message: string }>> {
-    const result = await this.git.log({ maxCount: options.maxCount })
-    return result.all.map((entry) => ({ hash: entry.hash, message: entry.message }))
+  async log(options: { maxCount: number }): Promise<GitLogEntry[]> {
+    const result = await this.git.log({
+      maxCount: options.maxCount,
+      format: { hash: '%H', date: '%cI', subject: '%s' }
+    })
+    return result.all.map((entry) => ({
+      hash: entry.hash,
+      subject: entry.subject ?? '',
+      committedAt: entry.date ?? ''
+    }))
   }
 }
