@@ -31,17 +31,24 @@ export interface TokenReviewResult {
 const POD_NAME_EXTRA = 'authentication.kubernetes.io/pod-name'
 const POD_UID_EXTRA = 'authentication.kubernetes.io/pod-uid'
 
-/** The sleep/wake guard rejected the write: the Sandbox moved between our read and our
- *  patch. Retryable by re-reading and re-deciding — never by forcing the write through. */
-export class OperatingModeConflictError extends Error {
+/** A guarded operating-mode write was rejected, so the decision behind it is stale:
+ *  re-read the Sandbox, decide again, and write again — never force the write through.
+ *  It deliberately does NOT claim what the intervening state was. The API server reports
+ *  a failed JSON Patch `test` and any other patch rejection with the same 422, and any
+ *  later read is a fresh snapshot rather than evidence about the failure, so inferring a
+ *  cause would be a guess dressed as a fact. Callers must bound their retries: a
+ *  permanently invalid patch would otherwise re-read and re-attempt forever. */
+export class OperatingModeRejectedError extends Error {
   constructor(
     readonly sandbox: string,
     readonly observed: OperatingMode,
-    readonly actual: OperatingMode,
-    readonly cause: unknown
+    readonly requested: OperatingMode,
+    readonly cause: K8sApiError
   ) {
-    super(`sandbox ${sandbox} is ${actual}, not the observed ${observed} — operating mode write rejected`)
-    this.name = 'OperatingModeConflictError'
+    super(
+      `sandbox ${sandbox}: guarded write to ${requested} was rejected (observed ${observed}) — re-read and decide again`
+    )
+    this.name = 'OperatingModeRejectedError'
   }
 }
 
@@ -112,7 +119,7 @@ export class SandboxApi {
    *  wake an instance we decided to suspend (or the reverse), so every write tests the
    *  value we saw rather than clobbering a newer decision. v1beta1 defaults the field to
    *  `Running`, so an observed value always exists.
-   *  Throws {@link OperatingModeConflictError} when the guard is what rejected the write. */
+   *  A rejected write raises {@link OperatingModeRejectedError} — re-read and re-decide. */
   async setOperatingMode(name: string, mode: OperatingMode, observed: OperatingMode): Promise<Sandbox> {
     try {
       return await this.http.json<Sandbox>({
@@ -125,16 +132,13 @@ export class SandboxApi {
         ]
       })
     } catch (err) {
-      if (!(err instanceof K8sApiError) || !err.isUnprocessable) throw err
-      // The API server reports every rejected JSON Patch as 422 Invalid, and the text
-      // for a failed `test` comes from the patch library, so it varies by version.
-      // Confirm by state instead: re-read and see whether the guard is what failed.
-      const actual = await this.getSandbox(name).then(
-        (sandbox) => sandbox.spec?.operatingMode,
-        () => undefined
-      )
-      if (actual !== undefined && actual !== observed) {
-        throw new OperatingModeConflictError(name, observed, actual, err)
+      // The API server answers every rejected JSON Patch — a failed `test` included —
+      // with 422 Invalid, and the text comes from the patch library, so it varies by
+      // version. Nothing here can prove why the write was rejected: a later read is a
+      // fresh snapshot, not evidence, and the mode can change away and back between the
+      // two. So report the rejection as itself and let the caller re-decide.
+      if (err instanceof K8sApiError && err.isUnprocessable) {
+        throw new OperatingModeRejectedError(name, observed, mode, err)
       }
       throw err
     }

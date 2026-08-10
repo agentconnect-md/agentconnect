@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import { InClusterConfigError, loadInClusterConfig } from '../src/k8s/config.js'
 import { K8sApiError, K8sHttp } from '../src/k8s/http.js'
-import { OperatingModeConflictError, SandboxApi, isSandboxReady } from '../src/k8s/sandbox-api.js'
+import { OperatingModeRejectedError, SandboxApi, isSandboxReady } from '../src/k8s/sandbox-api.js'
 import { watchCollection, type ResourceEvent } from '../src/k8s/watch.js'
 import type { InClusterConfig } from '../src/k8s/config.js'
 
@@ -428,62 +428,60 @@ describe('SandboxApi', () => {
     ])
   })
 
-  it('reports a lost race as a typed conflict, from the 422 the API server really sends', async () => {
+  it('reports a rejected guarded write from the 422 the API server really sends', async () => {
     // A failed JSON Patch `test` comes back as 422 Invalid — never 409 — and its message
-    // text comes from the patch library, so classification cannot rely on it.
-    const { config, requests } = await fakeApiServer(({ method }) =>
-      method === 'PATCH'
-        ? {
-            status: 422,
-            json: {
-              kind: 'Status',
-              apiVersion: 'v1',
-              status: 'Failure',
-              code: 422,
-              reason: 'Invalid',
-              message: 'testing value /spec/operatingMode failed'
-            }
-          }
-        : { json: { metadata: { name: 'sb-1' }, spec: { operatingMode: 'Running' } } }
-    )
+    // text comes from the patch library, so classification cannot rely on it either.
+    const { config, requests } = await fakeApiServer(() => ({
+      status: 422,
+      json: {
+        kind: 'Status',
+        apiVersion: 'v1',
+        status: 'Failure',
+        code: 422,
+        reason: 'Invalid',
+        message: 'testing value /spec/operatingMode failed'
+      }
+    }))
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    const error = await api.setOperatingMode('sb-1', 'Suspended', 'Suspended').catch((err: unknown) => err)
-    expect(error).toBeInstanceOf(OperatingModeConflictError)
-    const typed = error as OperatingModeConflictError
+    const error = await api.setOperatingMode('sb-1', 'Running', 'Suspended').catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(OperatingModeRejectedError)
+    const typed = error as OperatingModeRejectedError
     expect(typed.observed).toBe('Suspended')
-    expect(typed.actual).toBe('Running')
-    // Confirmed by re-reading the object, not by matching the message text.
-    expect(requests.filter((url) => url.pathname.endsWith('/sandboxes/sb-1'))).toHaveLength(2)
+    expect(typed.requested).toBe('Running')
+    expect(typed.cause.isUnprocessable).toBe(true)
+    // No confirming read: a later snapshot is not evidence about why the patch failed.
+    expect(requests).toHaveLength(1)
   })
 
-  it('does not dress an unrelated 422 up as a concurrency conflict', async () => {
-    const { config } = await fakeApiServer(({ method }) =>
-      method === 'PATCH'
-        ? {
-            status: 422,
-            json: { kind: 'Status', code: 422, reason: 'Invalid', message: 'spec.operatingMode: Unsupported value' }
-          }
-        : // The guard held — the mode is still what we observed — so the 422 came from
-          // something else and must surface as itself.
-          { json: { metadata: { name: 'sb-1' }, spec: { operatingMode: 'Running' } } }
-    )
+  it('reports the same rejection when the mode changes away and back before any re-read', async () => {
+    // The sequence that defeats confirm-by-read: we observed Suspended, another actor
+    // set Running (so the guard correctly failed), then set it back to Suspended. A
+    // post-failure read would see Suspended, match `observed`, and wrongly conclude the
+    // guard held. Reporting the rejection without inferring state is immune to it.
+    let patched = false
+    const { config } = await fakeApiServer(({ method }) => {
+      if (method === 'PATCH') {
+        patched = true
+        return { status: 422, json: { kind: 'Status', code: 422, reason: 'Invalid', message: 'test failed' } }
+      }
+      return { json: { metadata: { name: 'sb-1' }, spec: { operatingMode: 'Suspended' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    const error = await api.setOperatingMode('sb-1', 'Running', 'Suspended').catch((err: unknown) => err)
+    expect(patched).toBe(true)
+    expect(error).toBeInstanceOf(OperatingModeRejectedError)
+  })
+
+  it('passes through a rejection that is not a patch rejection', async () => {
+    const { config } = await fakeApiServer(() => ({
+      status: 403,
+      json: { kind: 'Status', code: 403, reason: 'Forbidden', message: 'admission policy denied the update' }
+    }))
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
     const error = await api.setOperatingMode('sb-1', 'Suspended', 'Running').catch((err: unknown) => err)
     expect(error).toBeInstanceOf(K8sApiError)
-    expect(error).not.toBeInstanceOf(OperatingModeConflictError)
-    expect((error as K8sApiError).isUnprocessable).toBe(true)
-  })
-
-  it('surfaces the original error when the confirming read is unavailable', async () => {
-    const { config } = await fakeApiServer(({ method }) =>
-      method === 'PATCH'
-        ? { status: 422, json: { kind: 'Status', code: 422, reason: 'Invalid', message: 'rejected' } }
-        : { status: 500, json: { kind: 'Status', code: 500, reason: 'InternalError' } }
-    )
-    const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    const error = await api.setOperatingMode('sb-1', 'Suspended', 'Running').catch((err: unknown) => err)
-    expect(error).toBeInstanceOf(K8sApiError)
-    expect((error as K8sApiError).status).toBe(422)
+    expect(error).not.toBeInstanceOf(OperatingModeRejectedError)
+    expect((error as K8sApiError).status).toBe(403)
   })
 
   it('reviews a shim token with its audience and returns the bound pod identity', async () => {
