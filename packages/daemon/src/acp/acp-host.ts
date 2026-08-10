@@ -251,8 +251,42 @@ function failureSignals(value: unknown, depth = 0, seen = new Set<object>()): st
   return out
 }
 
+/**
+ * HTTP statuses that mean "this credential will not work", whatever the wording.
+ *
+ * A provider reached directly answers with a status, not prose, and the wording varies by
+ * provider and SDK version — so a message-only classifier reports an upstream 401 as a bare
+ * `turn_failed`, which tells a user nothing actionable. 429 is deliberately NOT here: it is
+ * transient rate limiting, and calling it quota exhaustion would tell someone their plan ran
+ * out when it did not.
+ */
+const PROVIDER_AUTH_STATUSES = new Set([401, 403])
+
+/** HTTP-ish statuses carried on a wrapped upstream failure, ignoring JSON-RPC codes. */
+function failureStatuses(value: unknown, depth = 0, seen = new Set<object>()): number[] {
+  if (!value || typeof value !== 'object' || depth >= 5 || seen.has(value)) return []
+  seen.add(value)
+  const out: number[] = []
+  for (const key of ['status', 'statusCode', 'status_code', 'httpStatus', 'http_status']) {
+    const candidate = Reflect.get(value, key)
+    // A plausible HTTP status only: JSON-RPC codes are negative and must not be read as one.
+    if (typeof candidate === 'number' && candidate >= 100 && candidate <= 599) out.push(candidate)
+  }
+  for (const key of ['error', 'data', 'details', 'cause', 'response']) {
+    try {
+      out.push(...failureStatuses(Reflect.get(value, key), depth + 1, seen))
+    } catch {
+      // A hostile getter must not replace the original turn error.
+    }
+  }
+  return out
+}
+
 export function turnFailureCode(err: unknown): TurnFailureCode {
   const signals = failureSignals(err)
+  if (failureStatuses(err).some((status) => PROVIDER_AUTH_STATUSES.has(status))) {
+    return HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED
+  }
   if (signals.some((signal) => PROVIDER_QUOTA_CODES.has(signal.toLowerCase().replace(/[^a-z0-9]/g, '')))) {
     return HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
   }
