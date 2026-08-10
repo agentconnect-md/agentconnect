@@ -183,6 +183,16 @@ The declared table lives at `<root>/cloud-runtimes.json` (override with `AGENTCO
 
 `--cloud` selects an implementation; it must not change product semantics. A `cloud` branch inside business logic — rather than in the driver, reporting, or startup-assembly layers — means a seam is missing.
 
+#### Kubernetes as the supervisor
+
+`AGENTCONNECT_SUPERVISOR=k8s` declares that the kubelet stands in for launchd/systemd **and** for the CLI's version store. Kubernetes supervises those two roles asymmetrically, so the lifecycle contract distinguishes them rather than gating both on "is a supervisor present":
+
+- **`daemon/restart` is supported.** The daemon drains and exits with the reserved restart code, and `restartPolicy: Always` brings the container back in place, in the same pod — the same shape as a systemd process restart. Re-register plus an incremented epoch remains the control plane's completion signal. Note the kubelet applies an exponential restart backoff (capped in the minutes), so repeated restarts complete more slowly than under systemd; a control-plane timeout should be calibrated against that rather than against a local restart.
+- **`daemon/upgrade` is refused**, with a reason that says the version is the image. The daemon-side capability is already off in cloud mode, so this is the belt to that braces: were a command to arrive anyway, the refusal must not read "no supervisor" when a `cli-entry` happens to exist, or it sends an operator looking in the wrong place. Upgrading means rolling the Deployment's image.
+- **A declared supervisor is still required.** `--cloud` alone does not admit a restart: exiting with nothing to bring the process back leaves the daemon down, so the launcher has to declare `k8s`.
+
+Draining is the existing SIGTERM path — gate new turns, await in-flight ones to `limits.shutdownDrainMs`, cancel stragglers — which is what a `preStop` hook and a SIGTERM both reach. **`terminationGracePeriodSeconds` must exceed `shutdownDrainMs`**, or the kubelet SIGKILLs mid-drain and the graceful window is a promise the deployment cannot keep. The daemon cannot read its own grace period (it has no pod read access), so at startup in cloud mode it logs the drain deadline it will actually use and leaves the alignment to the deployment. Single-instance safety is unchanged: the singleton lock plus a `ReadWriteOncePod` volume, with `strategy: Recreate` so no two daemons overlap on the same state.
+
 ---
 
 ## 3. Configuration File: `~/.agentconnect/config.json`
