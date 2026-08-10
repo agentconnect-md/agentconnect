@@ -17,6 +17,15 @@ export interface ShimRequester {
   request(capability: ShimCapability, payload: unknown, options?: ShimRequestOptions): Promise<unknown>
 }
 
+/** Raised when a request outlived its deadline, so a caller can tell a slow peer from a broken
+ *  one without matching on message text. */
+export class ShimRequestTimeoutError extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'ShimRequestTimeoutError'
+  }
+}
+
 /** Raised when a request was cancelled rather than failing on its own merits. */
 export class ShimRequestAbortedError extends Error {
   constructor(reason: string) {
@@ -64,7 +73,7 @@ export class ShimChannel implements ShimRequester {
         this.pending.delete(id)
         // Tell the sandbox too: a timeout that only gives up locally leaves the child running.
         this.sendCancel(id, `timed out after ${timeoutMs}ms`)
-        reject(new Error(`shim ${capability} request timed out after ${timeoutMs}ms`))
+        reject(new ShimRequestTimeoutError(`shim ${capability} request timed out after ${timeoutMs}ms`))
       }, timeoutMs)
       const onAbort = (): void => {
         if (!this.pending.delete(id)) return

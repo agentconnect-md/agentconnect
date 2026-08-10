@@ -28,6 +28,12 @@ export interface TokenReviewResult {
   error?: string
 }
 
+/** An ensure result: the claim, plus whether this call is the one that created it. */
+export interface EnsuredClaim {
+  claim: SandboxClaim
+  created: boolean
+}
+
 const POD_NAME_EXTRA = 'authentication.kubernetes.io/pod-name'
 const POD_UID_EXTRA = 'authentication.kubernetes.io/pod-uid'
 
@@ -75,15 +81,21 @@ export class SandboxApi {
 
   /** Create a claim, treating an existing one as success: names are derived from the
    *  agent id, so a retry after a partial reconcile must converge rather than fail. */
-  async ensureClaim(claim: SandboxClaim & { metadata: { name: string } }): Promise<SandboxClaim> {
+  // Reports whether it CREATED the claim, because that is the only trustworthy cold-start
+  // signal: a first claim is the launch that pays PVC provisioning and an image pull, and the
+  // AlreadyExists branch is exactly the case that does not.
+  async ensureClaim(claim: SandboxClaim & { metadata: { name: string } }): Promise<EnsuredClaim> {
     try {
-      return await this.http.json<SandboxClaim>({
+      const created = await this.http.json<SandboxClaim>({
         method: 'POST',
         path: this.claims(),
         body: { apiVersion: SANDBOX_EXTENSIONS_GROUP, kind: 'SandboxClaim', ...claim }
       })
+      return { claim: created, created: true }
     } catch (err) {
-      if (err instanceof K8sApiError && err.isAlreadyExists) return this.getClaim(claim.metadata.name)
+      if (err instanceof K8sApiError && err.isAlreadyExists) {
+        return { claim: await this.getClaim(claim.metadata.name), created: false }
+      }
       throw err
     }
   }
