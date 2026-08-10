@@ -9,6 +9,24 @@ export interface MentionCandidate {
   name: string
 }
 
+/** Mirrors MentionMenu's `max-h` — the worst-case list height used to decide
+ *  whether "below the caret" still fits the viewport. */
+export const MENTION_MENU_MAX_HEIGHT = 220
+
+export interface MentionCoords {
+  /** Caret's line, relative to the textarea's own box (post-scroll). */
+  top: number
+  left: number
+  height: number
+  /** The textarea's own box height — lets the menu anchor by `bottom` when
+   *  flipped upward without knowing its own rendered height in advance. */
+  elHeight: number
+  /** True when there isn't room below the caret in the viewport (a
+   *  SessionDetail composer pinned near the bottom of the screen) — the menu
+   *  opens upward from the caret's line instead. */
+  openUpward: boolean
+}
+
 /** Composer @mention autocomplete (webchat-multi-agents.md §9.1/§9.2). Typing
  *  `@` opens a picker over `candidates`; picking one inserts `@Name ` at the
  *  query's start. That inline text is the whole contract with the send path —
@@ -30,7 +48,7 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
   // line being typed — not the textarea's edge, which reads as broken on a
   // tall, mostly-empty composer (a multi-row textarea's bottom can be far from
   // a first-line "@").
-  const [coords, setCoords] = useState<{ top: number; left: number; height: number } | null>(null)
+  const [coords, setCoords] = useState<MentionCoords | null>(null)
 
   const matches = useMemo(() => {
     if (!anchor) return []
@@ -46,7 +64,16 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     setAnchor(next)
     setActiveIndex(0)
     const el = ref.current
-    setCoords(next && el ? caretCoordinates(el, next.start) : null)
+    if (!next || !el) {
+      setCoords(null)
+      return
+    }
+    const c = caretCoordinates(el, next.start)
+    // Viewport-relative Y just below the caret's line — a SessionDetail
+    // composer pinned near the bottom of the screen often has no room there.
+    const belowY = el.getBoundingClientRect().top + c.top + c.height
+    const openUpward = window.innerHeight - belowY < MENTION_MENU_MAX_HEIGHT + 8
+    setCoords({ ...c, elHeight: el.offsetHeight, openUpward })
   }
 
   const close = () => {

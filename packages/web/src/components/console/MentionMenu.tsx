@@ -2,6 +2,7 @@
 
 import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
+import { MENTION_MENU_MAX_HEIGHT, type MentionCoords } from '@/components/console/useMentionAutocomplete'
 
 export interface MentionOption {
   id: string
@@ -27,18 +28,22 @@ export function MentionMenu({
   options: readonly MentionOption[]
   activeIndex: number
   /** Where the triggering `@` sits inside the textarea (useMentionAutocomplete's
-   *  `coords`) — the list anchors right under that line, not the textarea's edge. */
-  coords: { top: number; left: number; height: number } | null
+   *  `coords`) — the list anchors right under (or, near the bottom of the
+   *  viewport, above) that line, not the textarea's edge. */
+  coords: MentionCoords | null
   onHover: (index: number) => void
   onPick: (option: MentionOption) => void
 }) {
   if (options.length === 0 || !coords) return null
+  const position = coords.openUpward
+    ? { bottom: coords.elHeight - coords.top + 4 }
+    : { top: coords.top + coords.height + 4 }
   return (
     <div
       role="listbox"
       aria-label="Mention an agent"
-      style={{ top: coords.top + coords.height + 4, left: Math.max(0, coords.left - 4) }}
-      className="absolute z-50 max-h-[220px] w-[220px] max-w-[calc(100%-15px)] overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
+      style={{ ...position, left: Math.max(0, coords.left - 4), maxHeight: MENTION_MENU_MAX_HEIGHT }}
+      className="absolute z-50 w-[220px] max-w-[calc(100%-15px)] overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
     >
       {options.map((option, index) => (
         <button
