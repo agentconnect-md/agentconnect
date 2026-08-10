@@ -101,12 +101,22 @@ export interface DeletedIdentityStore {
   record: (oidcSubject: string, cutoffAt: Date, expiresAt: Date) => Promise<void>
 }
 
+/**
+ * Fire-and-forget warm of the caller's provider-identity projection
+ * (session-access-cold-visit.md §3), fired after every successful OIDC or
+ * API-key authentication. `oidcSubject` rides along when the OIDC path already
+ * verified it; the API-key path resolves it behind the trigger. Never awaited —
+ * the request must complete identically whether it fires, throws, or is absent.
+ */
+export type EnsureIdentityFresh = (principal: { userId: string; oidcSubject?: string }) => void
+
 /** Registration options: the config plus the optional JIT resolver + API-key verifier. */
 export type HumanAuthOptions = HumanAuthConfig & {
   resolveUser?: ResolveOidcUser
   verifyApiKey?: VerifyApiKey
   principalExists?: PrincipalExists
   deletedIdentities?: DeletedIdentityStore
+  ensureIdentityFresh?: EnsureIdentityFresh
   /** In-process one-time nonce verifier for nested delegated MCP REST calls. */
   internalInvocationAuth?: Pick<InternalInvocationAuth, 'authorizeInjectedRequest'>
 }
@@ -399,6 +409,13 @@ function oidcAuth(cfg: HumanAuthOptions & { OIDC_ISSUER: string }): preHandlerHo
       // (`/orgs/:orgId/…`, verified by the org-scope guard).
       req.principal = { userId: identity.userId, email: email ?? headerEmail }
       req.oidcSubject = sub
+      // Warm the identity projection behind this response (cold-visit §3). Contained:
+      // a throw here must not fall into the outer catch and 401 a valid token.
+      try {
+        cfg.ensureIdentityFresh?.({ userId: identity.userId, oidcSubject: sub })
+      } catch (warmErr) {
+        req.log.debug({ err: warmErr }, 'humanAuth: identity warm trigger failed')
+      }
     } catch (err) {
       // Surface WHY verification failed — expiry vs. audience/issuer vs. signature.
       // jose tags each with a stable `code` (ERR_JWT_EXPIRED,
@@ -428,7 +445,11 @@ function bearerApiKey(header: string | undefined): string | null {
  * `apiKeyOrgId`); an invalid one is a hard 401 (never falls through to devAuth's
  * admit-all). Any other Authorization (a JWT, or none) delegates to `base`.
  */
-function withApiKeyAuth(verify: VerifyApiKey, base: preHandlerHookHandler): preHandlerHookHandler {
+function withApiKeyAuth(
+  verify: VerifyApiKey,
+  base: preHandlerHookHandler,
+  ensureIdentityFresh?: EnsureIdentityFresh
+): preHandlerHookHandler {
   // Our dev/oidc handlers are async 2-arg preHandlers (Fastify awaits them, never
   // passing `done`); call `base` through that shape rather than the 3-arg hook type.
   const delegate = base as (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
@@ -451,6 +472,14 @@ function withApiKeyAuth(verify: VerifyApiKey, base: preHandlerHookHandler): preH
     req.apiKeyId = resolved.apiKeyId
     req.apiKeyOrgId = resolved.orgId
     req.apiKeyScopes = resolved.scopes
+    // Cold-visit §3: for API-key readers (agent-assistant MCP) the first authenticated
+    // request can BE `/sessions`, so the warm fires here too; the trigger resolves the
+    // sub itself. Contained — it must never fail an authenticated request.
+    try {
+      ensureIdentityFresh?.({ userId: resolved.userId })
+    } catch (warmErr) {
+      req.log.debug({ err: warmErr }, 'humanAuth: identity warm trigger failed')
+    }
   }
 }
 
@@ -475,7 +504,7 @@ export const humanAuthPlugin = fp(
   function humanAuthPlugin(app: FastifyInstance, cfg: HumanAuthOptions, done: (err?: Error) => void) {
     const realOidc = cfg.OIDC_ISSUER ? oidcAuth({ ...cfg, OIDC_ISSUER: cfg.OIDC_ISSUER }) : undefined
     const base = realOidc ?? devAuth(cfg, app.log)
-    const externalHandler = cfg.verifyApiKey ? withApiKeyAuth(cfg.verifyApiKey, base) : base
+    const externalHandler = cfg.verifyApiKey ? withApiKeyAuth(cfg.verifyApiKey, base, cfg.ensureIdentityFresh) : base
     const handler = cfg.internalInvocationAuth
       ? withInternalInvocationAuth(cfg.internalInvocationAuth, externalHandler)
       : externalHandler

@@ -323,6 +323,65 @@ describe('makeSessionAccessResolver snapshot', () => {
     })
   })
 
+  it('emits one countable warn and stamps the snapshot when a refresh behind the request fails', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(30_001)
+    resolve.mockRejectedValueOnce(
+      Object.assign(new Error('getaddrinfo failed for the provider host'), { code: 'ENOTFOUND' })
+    )
+
+    const kicker = request()
+    await expect(resolver.forQuery(kicker, query)).resolves.toMatchObject({ degraded: false })
+    await settle()
+
+    // The failure reached no caller, so this warn is its only trace: a CAUSE and the org, never the message.
+    expect(kicker.log.warn).toHaveBeenCalledTimes(1)
+    expect(kicker.log.warn).toHaveBeenCalledWith(
+      { orgId: 'org-1', cause: 'ENOTFOUND' },
+      'session access refresh-behind failed — still serving the previous snapshot'
+    )
+    // The entry it left behind says when it went stale-and-failing, and still serves the recorded answer.
+    const served = await resolver.forQuery(request(), query)
+    expect(served.refreshFailedAt).toEqual(new Date(clock.now()))
+    expect(served.degraded).toBe(false)
+    expect(served.externalAccess.allowedScopes).toEqual([{ id: scope.id, aclRevision: scope.aclRevision }])
+  })
+
+  it('clears the staleness stamp once a refresh lands', async () => {
+    const { deps, clock, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+
+    await resolver.forQuery(request(), query)
+    clock.advance(30_001)
+    resolve.mockRejectedValueOnce(new Error('slack unreachable'))
+    await resolver.forQuery(request(), query)
+    await settle()
+
+    // Still inside the stale window: this read serves the stamped entry and kicks a refresh that succeeds.
+    expect((await resolver.forQuery(request(), query)).refreshFailedAt).toBeDefined()
+    await settle()
+
+    const after = await resolver.forQuery(request(), query)
+    expect(after.refreshFailedAt).toBeUndefined()
+    // `degraded` marks the third sweep's answer: the stamp is gone because the refresh REPLACED the entry.
+    expect(after.degraded).toBe(true)
+    expect(resolve).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not emit the refresh-behind warn when a cold blocking sweep fails', async () => {
+    const { deps, resolve } = harness()
+    const resolver = makeSessionAccessResolver(deps)
+    resolve.mockRejectedValueOnce(new Error('slack unreachable'))
+
+    // A cold sweep's failure already surfaces to its caller; only the invisible background class is logged.
+    const req = request()
+    await expect(resolver.forQuery(req, query)).rejects.toThrow('slack unreachable')
+    expect(req.log.warn).not.toHaveBeenCalled()
+  })
+
   // The ceiling has to hold even when a refresh straddles it. `fetch` coalesces
   // a later caller onto the SAME in-flight promise and settles it with the
   // options of the fetch that created it, so a stale-on-rejection policy set by

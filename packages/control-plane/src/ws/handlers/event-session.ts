@@ -166,7 +166,12 @@ async function recordEventSession(
   p: EventSession,
   agentId: AgentId,
   daemonId: DaemonId,
-  deps: DaemonWsDeps
+  deps: DaemonWsDeps,
+  /** §4.1 poke sink (session-access-cold-visit.md) — live `event/session` only. A CP
+   *  restart drains daemon outboxes as `event/session-sync`, and replaying those as
+   *  pokes would herd the warmer against cold cooldown state (§4.2(6)), so the sync
+   *  handler passes nothing. */
+  warmer?: DaemonWsDeps['sessionAccessWarmer']
 ): Promise<void> {
   const [classification, candidate] = await Promise.all([
     classifyMilestone(p, agentId, deps),
@@ -221,6 +226,11 @@ async function recordEventSession(
   // invalidation signal and immediately re-read `/sessions`; publishing first
   // would race that GET against the upsert and leave the new row invisible.
   deps.events.publish(daemonId, p)
+  // Fire-and-forget §4.1 activity poke, after commit-then-publish: external
+  // sessions only, carrying nothing but the committed scope coordinates.
+  if (session?.visibility === 'external' && session.externalScopeId) {
+    warmer?.poke(session.orgId, session.externalScopeId)
+  }
 }
 
 export const handleEventSession: Handler = async (frame, conn, deps) => {
@@ -228,7 +238,9 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
   const p = frame.payload
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
-  await runForReportingAgent(agentId, daemonId, deps, () => recordEventSession(p, agentId, daemonId, deps))
+  await runForReportingAgent(agentId, daemonId, deps, () =>
+    recordEventSession(p, agentId, daemonId, deps, deps.sessionAccessWarmer)
+  )
 }
 
 /** Durable variant. Lease contention is retryable; a deleted/moved agent is a

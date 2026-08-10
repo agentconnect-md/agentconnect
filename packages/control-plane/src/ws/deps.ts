@@ -38,6 +38,8 @@ import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
+import type { SlackSessionAccessService } from '../http/slack-session-access.js'
+import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
 
 /** Config slice the WS edge reads. */
 export interface WsConfig {
@@ -79,6 +81,13 @@ export interface DaemonWsDeps {
   githubInstallation?: GithubInstallationRepo
   /** Persists authoritative membership snapshots and partial conversation reports. */
   integrationChannel: IntegrationChannelRepo
+  /** §4.2(4) `isPrivate` cross-check (session-access-cold-visit.md): a snapshot observing a
+   *  channel private drops its cached `public` audience verdict — invalidation only. */
+  slackSessionAccess?: Pick<SlackSessionAccessService, 'dropPublicAudiences'>
+  /** §4.1 activity poke (session-access-cold-visit.md): a committed live `event/session`
+   *  milestone marks its external scope active so the warmer keeps its resource facts
+   *  leased. Replayed `event/session-sync` frames never poke (§4.2(6)). */
+  sessionAccessWarmer?: Pick<SessionAccessWarmer, 'poke'>
   /** Shares the HTTP agent-move boundary with daemon-originated conversation reports. */
   agentMutations: AgentMutationGate
   /** Resumes durable move tombstones advertised by a reconnecting daemon. */

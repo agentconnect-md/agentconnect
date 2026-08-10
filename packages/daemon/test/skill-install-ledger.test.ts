@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -110,6 +110,20 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     expect(recovered.phase).toBe('ready')
     expect(recovered.owned).toEqual([])
     expect(existsSync(join(cwd, '.runtime'))).toBe(false)
+  })
+
+  it('recovers an old journal through a contained workspace-local skill-root alias', async () => {
+    await mkdir(join(cwd, '.claude/skills'), { recursive: true })
+    await mkdir(join(cwd, '.agents'))
+    await symlink('../.claude/skills', join(cwd, '.agents/skills'))
+    const location = await writeApplying([operation('.agents/skills/never-started')])
+    const applying = await readSkillLedger(location)
+
+    const recovered = await recover(location, applying!)
+
+    expect(recovered.phase).toBe('ready')
+    expect(recovered.owned).toEqual([])
+    expect(existsSync(join(cwd, '.claude/skills/never-started'))).toBe(false)
   })
 
   it('discards only content-free reservation shapes before inode authority is journaled', async () => {

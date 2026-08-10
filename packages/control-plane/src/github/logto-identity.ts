@@ -13,8 +13,9 @@
  * `https://tenant.example.com/api`).
  *
  * Caching: the M2M token until 60s before expiry; display/GitHub projections
- * keep a 10 min positive / 60 s negative user cache, while provider authorization
- * caps reuse of a positive assertion at 2 min. A hit past half of the lease it
+ * keep a ≥10 min positive / 60 s negative user cache, while provider authorization
+ * caps reuse of a positive assertion at the identity lease
+ * (`SESSION_ACCESS_IDENTITY_TTL_SEC`, default 2 min). A hit past half of the lease it
  * ran under also renews the entry in the background (refresh-ahead), so an
  * entry read at least once per half-lease never ages into a blocking refetch —
  * the leases themselves stay hard for first-ever and idle-return reads.
@@ -75,12 +76,13 @@ export class LogtoApiError extends Error {
 const TOKEN_SKEW_MS = 60_000
 const LOGIN_TTL_MS = 10 * 60_000
 const NEGATIVE_TTL_MS = 60_000
-// Provider identity participates in live Session authorization. Even if no
-// in-product unlink invalidation fires (for example an administrator changes
-// the Logto account directly), a positive assertion is never reused beyond
-// this hard lease. Exported so callers holding provider identity evidence of
-// their own (the GitHub session-access login leg) can join the same lease
-// instead of inventing a second number.
+// Two roles (session-access-cold-visit.md §2.3). (1) The DEFAULT identity serving
+// lease — the per-instance `identityTtlMs` (`SESSION_ACCESS_IDENTITY_TTL_SEC`) is
+// what actually bounds reuse of a positive assertion, and may run far longer:
+// in-product link/unlink invalidates through the epoch fence, so only an
+// out-of-band Logto-admin edit waits out the lease. (2) The FIXED cap on what an
+// unlink can leave in per-viewer verdict caches (github-session-access.ts), which
+// deliberately does not follow the knob.
 export const PROVIDER_IDENTITY_TTL_MS = 120_000
 // Bounds the BLOCKING lookups (first-ever read, idle return past a lease) —
 // refresh-ahead keeps actively-read entries off that path, so a hung upstream
@@ -90,6 +92,12 @@ const TIMEOUT_MS = 5_000
 // which fixes a connector is picked up the same day, long enough that the probe
 // is not per click.
 const LINK_MODE_TTL_MS = 60 * 60_000
+// The subject-keyed caches are written for EVERY authenticated account (the §3 warm
+// trigger reaches them per subject), so they are size-bounded: a write refreshes the
+// entry's recency, overflow evicts the least-recently-written subject, and an evicted
+// entry simply refetches on its next read. Hot subjects rewrite at least every lease,
+// so write recency tracks read recency closely enough for eviction.
+const MAX_SUBJECT_ENTRIES = 10_000
 
 interface CachedLogin {
   login: string | null
@@ -107,9 +115,10 @@ interface CachedUser {
  * Should a hit that satisfied its caller also renew the entry in the
  * background? Yes once the entry is past HALF the lease the read ran under —
  * the tighter of the entry's own window (positive or negative TTL) and the
- * caller's `maxAgeMs` cap. E.g. a provider-identity read (120 s cap) starts
- * refreshing at 60 s, so a subject read at least once a minute never ages out.
- * Strictly greater than: at exactly half the lease the hit is still quiet.
+ * caller's `maxAgeMs` cap. E.g. a provider-identity read under the default
+ * 120 s lease starts refreshing at 60 s, so a subject read at least once per
+ * half-lease never ages out. Strictly greater than: at exactly half the lease
+ * the hit is still quiet.
  */
 function refreshAheadDue(cached: { fetchedAt: number; expiresAt: number }, now: number, maxAgeMs?: number): boolean {
   const leaseMs = Math.min(cached.expiresAt - cached.fetchedAt, maxAgeMs ?? Number.POSITIVE_INFINITY)
@@ -249,13 +258,25 @@ export class LogtoIdentityService {
   // caches its result if the epoch it started under is still current.
   private readonly cacheEpochs = new Map<string, number>()
 
+  // The §2.3 identity serving lease (`SESSION_ACCESS_IDENTITY_TTL_SEC` in ms) —
+  // safety rests on the epoch fence, so the operator may widen it well past 120 s.
+  private readonly identityTtlMs: number
+  // Positive entry TTL: the lease may widen the 10 min display window, never shrink it —
+  // caps do the tightening. Without this, raising the lease alone would still expire
+  // entries at 10 min and reintroduce the blocking fetch the knob exists to remove.
+  private readonly positiveTtlMs: number
+
   constructor(
     private readonly cfg: LogtoMgmtConfig,
     private readonly clock: Clock,
     private readonly mutations: SocialIdentityMutationGate,
     private readonly fetchImpl: FetchLike = fetch as FetchLike,
-    private readonly log?: { debug(obj: object, msg: string): void }
-  ) {}
+    private readonly log?: { debug(obj: object, msg: string): void; info(obj: object, msg: string): void },
+    opts?: { identityTtlMs?: number }
+  ) {
+    this.identityTtlMs = opts?.identityTtlMs ?? PROVIDER_IDENTITY_TTL_MS
+    this.positiveTtlMs = Math.max(LOGIN_TTL_MS, this.identityTtlMs)
+  }
 
   /**
    * The GitHub login behind a local user's OIDC subject, or null when the
@@ -269,6 +290,7 @@ export class LogtoIdentityService {
       if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingLogin(sub))
       return cached.login
     }
+    this.noteColdBlock('logins', sub, maxAgeMs, this.loginInFlight.has(sub))
     return this.pendingLogin(sub)
   }
 
@@ -301,12 +323,34 @@ export class LogtoIdentityService {
    * console's refresh call (`forgetUser`).
    */
   async slackIdentityFor(sub: string): Promise<SlackIdentity | null> {
-    return slackIdentityOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
+    return slackIdentityOf(await this.logtoUser(sub, this.identityTtlMs))
   }
 
   /** Linked Feishu/Lark identities, keyed by the provider's cross-app union_id. */
   async feishuIdentitiesFor(sub: string): Promise<FeishuIdentity[]> {
-    return feishuIdentitiesOf(await this.logtoUser(sub, PROVIDER_IDENTITY_TTL_MS))
+    return feishuIdentitiesOf(await this.logtoUser(sub, this.identityTtlMs))
+  }
+
+  /**
+   * Warm-at-touch trigger (session-access-cold-visit.md §3): start, fire-and-forget,
+   * the background lookups a later authorization read of this subject would block on.
+   * Gated on the same dueness those reads apply (missing / expired against the
+   * identity lease / past its half-lease, nothing already in flight) so the debug line
+   * counts actual upstream fires. Rides the shared single-flight lookups and the epoch
+   * fence unchanged; the lease is untouched — this adds a trigger, not a serving rule.
+   */
+  ensureIdentityFresh(sub: string): void {
+    const now = this.clock.now()
+    const due = (cached: { fetchedAt: number; expiresAt: number } | undefined) =>
+      !cached ||
+      cached.expiresAt <= now ||
+      now - cached.fetchedAt >= this.identityTtlMs ||
+      refreshAheadDue(cached, now, this.identityTtlMs)
+    const users = due(this.users.get(sub)) && !this.userInFlight.has(sub)
+    const logins = due(this.logins.get(sub)) && !this.loginInFlight.has(sub)
+    if (users) this.refreshInBackground(sub, () => this.pendingUser(sub))
+    if (logins) this.refreshInBackground(sub, () => this.pendingLogin(sub))
+    if (users || logins) this.log?.debug({ sub, users, logins }, 'logto identity warm-ahead fired')
   }
 
   /**
@@ -353,7 +397,26 @@ export class LogtoIdentityService {
       if (refreshAheadDue(cached, now, maxAgeMs)) this.refreshInBackground(sub, () => this.pendingUser(sub))
       return cached.user
     }
+    this.noteColdBlock('users', sub, maxAgeMs, this.userInFlight.has(sub))
     return this.pendingUser(sub)
+  }
+
+  // Cold-block counter (session-access-cold-visit.md §5): an authorization-lease read
+  // (`maxAgeMs` set — display reads pass none) found neither a servable entry nor an
+  // in-flight lookup to join, so the caller stalls on Logto. The rate of this line is
+  // the number the §3 warm trigger exists to drive to ~zero for console traffic.
+  private noteColdBlock(cache: 'users' | 'logins', sub: string, maxAgeMs: number | undefined, inFlight: boolean): void {
+    if (maxAgeMs !== undefined && !inFlight) this.log?.info({ sub, cache }, 'logto identity blocking fetch')
+  }
+
+  /** Recency-ordered bounded write — a subject cache never grows past its cap. */
+  private setBounded<T>(map: Map<string, T>, key: string, value: T): void {
+    map.delete(key)
+    map.set(key, value)
+    if (map.size > MAX_SUBJECT_ENTRIES) {
+      const oldest = map.keys().next()
+      if (!oldest.done) map.delete(oldest.value)
+    }
   }
 
   /** The deduped in-flight user lookup — one upstream read serves every
@@ -515,7 +578,7 @@ export class LogtoIdentityService {
       // Deleted at the provider — cache the miss briefly.
       if (current()) {
         const fetchedAt = this.clock.now()
-        this.users.set(sub, { user: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+        this.setBounded(this.users, sub, { user: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
       }
       return null
     }
@@ -525,7 +588,7 @@ export class LogtoIdentityService {
     const user = (await res.json()) as LogtoUser
     if (current()) {
       const fetchedAt = this.clock.now()
-      this.users.set(sub, { user, fetchedAt, expiresAt: fetchedAt + LOGIN_TTL_MS })
+      this.setBounded(this.users, sub, { user, fetchedAt, expiresAt: fetchedAt + this.positiveTtlMs })
     }
     return user
   }
@@ -538,7 +601,7 @@ export class LogtoIdentityService {
       // Deleted at the provider — no identity, cache the miss briefly.
       if (current()) {
         const fetchedAt = this.clock.now()
-        this.logins.set(sub, { login: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
+        this.setBounded(this.logins, sub, { login: null, fetchedAt, expiresAt: fetchedAt + NEGATIVE_TTL_MS })
       }
       return null
     }
@@ -550,10 +613,10 @@ export class LogtoIdentityService {
     const login = firstString(raw?.userInfo?.login, raw?.login)
     if (current()) {
       const fetchedAt = this.clock.now()
-      this.logins.set(sub, {
+      this.setBounded(this.logins, sub, {
         login,
         fetchedAt,
-        expiresAt: fetchedAt + (login ? LOGIN_TTL_MS : NEGATIVE_TTL_MS)
+        expiresAt: fetchedAt + (login ? this.positiveTtlMs : NEGATIVE_TTL_MS)
       })
     }
     return login
