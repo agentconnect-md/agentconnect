@@ -14,12 +14,12 @@ export interface MentionOption {
   /** Already a conversation participant — picking it only inserts the name.
    *  Not yet in the roster — picking it also joins the conversation. */
   inRoster: boolean
-  /** Offline / no signed-in runtime — shown dimmed with `description` as the
-   *  reason, but still pickable: matches ComposerMenu's existing add-agent
-   *  options ("Render the option dimmed (still selectable)"), so picking one
-   *  here has the exact same consequence picking it there already does —
-   *  Send disables once the roster has an unready member, with the reason in
-   *  the Send button's own tooltip (see HomeView's `notReadyMember`). */
+  /** Offline / no signed-in runtime — shown, with `description` as the
+   *  reason, but not reachable by mouse or keyboard: useMentionAutocomplete's
+   *  arrow-nav skips it and `pick()` refuses it, so — unlike ComposerMenu's
+   *  add-agent options, which ARE still selectable — this can't silently
+   *  disable Send with no visible cause (the mention picker has no per-member
+   *  blocked banner the way HomeView's primary-agent composer does). */
   dimmed?: boolean
   description?: string
 }
@@ -65,17 +65,21 @@ export function MentionMenu({
           type="button"
           role="option"
           aria-selected={index === activeIndex}
+          aria-disabled={option.dimmed}
+          disabled={option.dimmed}
           title={option.description}
           className={`fopt min-h-8 w-full gap-2 rounded-md px-2 py-[5px] text-[12px] ${
             index === activeIndex ? 'bg-(--surface-hover)' : ''
-          } ${option.dimmed ? 'opacity-55' : ''}`}
-          onMouseEnter={() => onHover(index)}
+          } ${option.dimmed ? 'cursor-not-allowed opacity-55' : ''}`}
+          onMouseEnter={() => {
+            if (!option.dimmed) onHover(index)
+          }}
           onMouseDown={(event) => {
             // preventDefault keeps focus in the textarea — a plain click
             // would blur it, and `pick()` needs `ref.current` still pointed
             // at the live element to restore the caret afterward.
             event.preventDefault()
-            onPick(option)
+            if (!option.dimmed) onPick(option)
           }}
         >
           <span className="av h-[18px] w-[18px] flex-none rounded-xs">

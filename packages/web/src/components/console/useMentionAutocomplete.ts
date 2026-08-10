@@ -7,6 +7,9 @@ import { caretCoordinates } from '@/components/console/caret-coordinates'
 export interface MentionCandidate {
   id: string
   name: string
+  /** Shown (so the user can see it exists and why it's out) but not
+   *  reachable by mouse, keyboard nav, or Enter/Tab — see `pick`/`handleKeyDown`. */
+  dimmed?: boolean
 }
 
 /** Mirrors MentionMenu's `max-h` — the worst-case list height used to decide
@@ -28,6 +31,19 @@ export interface MentionCoords {
    *  SessionDetail composer pinned near the bottom of the screen) — the menu
    *  opens upward from the caret's line instead. */
   openUpward: boolean
+}
+
+/** The next index in `list`, `dir` steps from `from`, skipping `dimmed`
+ *  entries — wraps around, and returns `from` unchanged if every entry (or
+ *  the list itself) has nothing reachable to land on. */
+function nextSelectableIndex<T extends MentionCandidate>(list: readonly T[], from: number, dir: 1 | -1): number {
+  if (list.length === 0) return from
+  let i = from
+  for (let steps = 0; steps < list.length; steps++) {
+    i = (i + dir + list.length) % list.length
+    if (!list[i]?.dimmed) return i
+  }
+  return from
 }
 
 /** Composer @mention autocomplete (webchat-multi-agents.md §9.1/§9.2). Typing
@@ -117,8 +133,22 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     if (anchor && value[anchor.start] !== '@') close()
   }, [value, anchor])
 
+  // A fresh `matches` list (a new query, or the roster/readiness underneath
+  // it changing) can default `activeIndex` onto a dimmed entry — snap it to
+  // the first reachable one instead, so the default highlight is always
+  // something Enter/Tab can actually land on.
+  useEffect(() => {
+    if (matches.length === 0 || !matches[activeIndex]?.dimmed) return
+    const firstReachable = matches.findIndex((m) => !m.dimmed)
+    if (firstReachable !== -1) setActiveIndex(firstReachable)
+  }, [matches, activeIndex])
+
   const pick = (candidate: T) => {
-    if (!anchor) return
+    // Dimmed candidates are visible (so the reason in `description` explains
+    // why) but not choosable — matching HomeView's non-mention "+" add-agent
+    // menu would let one through and silently disable Send with no visible
+    // cause here, since the mention picker has no per-member blocked banner.
+    if (!anchor || candidate.dimmed) return
     const el = ref.current
     // The token's FULL extent, not just the prefix up to the caret — the
     // caret can sit mid-token (see `sync`'s note), and replacing only up to
@@ -165,12 +195,12 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     if (event.nativeEvent.isComposing) return false
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      setActiveIndex((i) => (i + 1) % matches.length)
+      setActiveIndex((i) => nextSelectableIndex(matches, i, 1))
       return true
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault()
-      setActiveIndex((i) => (i - 1 + matches.length) % matches.length)
+      setActiveIndex((i) => nextSelectableIndex(matches, i, -1))
       return true
     }
     if (event.key === 'Enter' || event.key === 'Tab') {
