@@ -14,9 +14,11 @@ export const GitExecPayloadSchema = z.object({
   tool: z.literal('git'),
   cwd: z.string().min(1).optional(),
   args: z.array(z.string()).min(1).max(64),
-  /** Extra environment for THIS invocation only — the credential-helper pointers among it.
-   *  Scoped to the request rather than set on the sandbox, so a runtime cannot read it back
-   *  out of its own process environment later. */
+  /** The COMPLETE environment for this invocation, replacing rather than extending whatever
+   *  the sandbox has. Callers build it by sanitizing (stripping host GIT_CONFIG_*, protocol
+   *  allowances and so on), so merging would defeat that; the shim must apply it as given.
+   *  Scoped to the request, so a runtime cannot read the credential pointers back out of its
+   *  own process environment afterwards. */
   env: z.record(z.string(), z.string()).optional()
 })
 export type GitExecPayload = z.infer<typeof GitExecPayloadSchema>
@@ -28,46 +30,67 @@ export const GitExecResultSchema = z.object({
 })
 export type GitExecResult = z.infer<typeof GitExecResultSchema>
 
-/** Parse a `git status --porcelain=v2 --branch` payload into the fields the daemon reads. */
+/**
+ * Parse `git status --porcelain=v2 --branch -z` into the fields the daemon reads.
+ *
+ * The three changed-entry record types have DIFFERENT field counts before the path, and an
+ * earlier version of this treated them alike: a staged rename came back with its similarity
+ * score and original path glued into `path`, and an unmerged record was dropped entirely — so
+ * a conflicted tree looked clean to any caller deriving cleanliness from `files.length`.
+ *
+ * `-z` rather than newlines because paths are NUL-terminated verbatim; the default format
+ * C-quotes unusual filenames, which would diverge from what the local runner reports.
+ */
 export function parsePorcelainV2(stdout: string): GitStatusSummary {
   const summary: GitStatusSummary = { current: null, tracking: null, ahead: 0, behind: 0, files: [] }
-  for (const line of stdout.split('\n')) {
-    if (!line) continue
-    if (line.startsWith('# branch.head ')) {
-      const head = line.slice('# branch.head '.length).trim()
+  const entries = stdout.split('\0')
+  const push = (path: string, xy: string): void => {
+    summary.files.push({
+      path,
+      index: xy[0] === '.' ? ' ' : (xy[0] ?? ' '),
+      working_dir: xy[1] === '.' ? ' ' : (xy[1] ?? ' ')
+    })
+  }
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]
+    if (!entry) continue
+    if (entry.startsWith('# branch.head ')) {
+      const head = entry.slice('# branch.head '.length).trim()
       // A detached HEAD reports `(detached)`, which is not a branch name.
       summary.current = head === '(detached)' ? null : head
       continue
     }
-    if (line.startsWith('# branch.upstream ')) {
-      summary.tracking = line.slice('# branch.upstream '.length).trim()
+    if (entry.startsWith('# branch.upstream ')) {
+      summary.tracking = entry.slice('# branch.upstream '.length).trim()
       continue
     }
-    if (line.startsWith('# branch.ab ')) {
-      const [ahead, behind] = line.slice('# branch.ab '.length).trim().split(' ')
+    if (entry.startsWith('# branch.ab ')) {
+      const [ahead, behind] = entry.slice('# branch.ab '.length).trim().split(' ')
       summary.ahead = Math.abs(Number(ahead ?? 0)) || 0
       summary.behind = Math.abs(Number(behind ?? 0)) || 0
       continue
     }
-    if (line.startsWith('1 ') || line.startsWith('2 ')) {
-      // `1 XY ... <path>` (ordinary) / `2 XY ... <path><sep><origPath>` (renamed).
-      const fields = line.split(' ')
-      const xy = fields[1] ?? '..'
-      const path =
-        line
-          .slice(line.indexOf(' ', line.indexOf(' ') + 1))
-          .trim()
-          .split('\t')[0] ?? ''
-      summary.files.push({
-        path: fields.slice(8).join(' ') || path,
-        index: xy[0] === '.' ? ' ' : (xy[0] ?? ' '),
-        working_dir: xy[1] === '.' ? ' ' : (xy[1] ?? ' ')
-      })
+    if (entry.startsWith('# ')) continue
+    const fields = entry.split(' ')
+    // `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>` — eight fields, then the path.
+    if (entry.startsWith('1 ')) {
+      push(fields.slice(8).join(' '), fields[1] ?? '..')
       continue
     }
-    if (line.startsWith('? ')) {
-      summary.files.push({ path: line.slice(2), index: '?', working_dir: '?' })
+    // `2 <XY> ... <X><score> <path>` — NINE fields (the extra is the rename score), and with
+    // -z the ORIGINAL path follows as its own entry, which must be consumed, not parsed.
+    if (entry.startsWith('2 ')) {
+      push(fields.slice(9).join(' '), fields[1] ?? '..')
+      index += 1
+      continue
     }
+    // `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>` — ten fields. Dropping these is
+    // what made a conflicted workspace look clean.
+    if (entry.startsWith('u ')) {
+      push(fields.slice(10).join(' '), fields[1] ?? 'UU')
+      continue
+    }
+    if (entry.startsWith('? ')) push(entry.slice(2), '??')
   }
   return summary
 }
@@ -118,8 +141,9 @@ export class ShimGitRunner implements GitRunner {
 
   async status(): Promise<GitStatusSummary> {
     // porcelain=v2 rather than simple-git's own parse: the format is documented and stable,
-    // which is what makes parsing it on this side of the channel safe.
-    const result = await this.exec(['status', '--porcelain=v2', '--branch'])
+    // which is what makes parsing it on this side of the channel safe. -z keeps unusual
+    // filenames verbatim instead of C-quoted.
+    const result = await this.exec(['status', '--porcelain=v2', '--branch', '-z'])
     return parsePorcelainV2(result.stdout)
   }
 

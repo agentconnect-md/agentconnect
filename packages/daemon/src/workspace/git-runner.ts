@@ -14,13 +14,16 @@ import type { SimpleGit } from 'simple-git'
  */
 export interface GitRunner {
   /**
-   * A runner carrying extra environment for its invocations.
+   * A runner whose invocations use `env` as their COMPLETE environment, replacing rather than
+   * extending the ambient one.
    *
-   * Every existing call site threads env per invocation — the credential-helper pointers, the
-   * safe-directory and hooks overrides — so the seam has to model it or the migration cannot
-   * preserve behaviour. It matters more remotely than locally: this env is how the runtime's
-   * git reaches the daemon's credential helper, so it crosses the channel with the request and
-   * belongs to that request alone rather than to the sandbox at large.
+   * Every existing call site threads env per invocation, and replacement is the point: callers
+   * build it by sanitizing (`workspaceGitLocalEnv` strips host `GIT_CONFIG_*`, clears protocol
+   * allowances, injects config pairs), so merging would quietly undo that sanitization. A
+   * caller therefore supplies a whole environment, including identity, not a few overrides.
+   *
+   * Remotely the environment travels with the request rather than being set on the sandbox, so
+   * a runtime cannot read the credential-helper pointers back out of its own env afterwards.
    */
   withEnv(env: Record<string, string>): GitRunner
   /** Run a git subcommand with argv, never a composed shell string. */
