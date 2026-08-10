@@ -27,7 +27,10 @@ export const ShimCapabilitySchema = z.enum([
   /** Read a bounded file back out (BFF workspace reads). */
   'read',
   /** Proxy an in-pod unix socket back to a daemon-side server (gitcred, gh, MCP). */
-  'tunnel'
+  'tunnel',
+  /** Run the ACP runtime and relay its stdio as a stream (its own channel: ACP is already
+   *  a complete protocol, and reinterpreting it here would add a second place to break). */
+  'acp'
 ])
 export type ShimCapability = z.infer<typeof ShimCapabilitySchema>
 
@@ -80,12 +83,30 @@ export const ShimResponseSchema = z.object({
   error: z.string().max(500).optional()
 })
 
+/** A recurring event on an open stream. Unlike a response, many arrive per request: an ACP
+ *  runtime emits stdout continuously and exits once, and neither fits one-shot correlation. */
+export const ShimEventSchema = z.object({
+  type: z.literal('shim/event'),
+  /** The request id that opened the stream. */
+  streamId: z.string().uuid(),
+  event: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('chunk'), data: z.string() }),
+    z.object({
+      kind: z.literal('exit'),
+      code: z.number().int().nullable(),
+      signal: z.string().nullable(),
+      error: z.string().max(500).optional()
+    })
+  ])
+})
+
 export const ShimFrameSchema = z.discriminatedUnion('type', [
   ShimHelloSchema,
   ShimBoundSchema,
   ShimRejectedSchema,
   ShimRequestSchema,
-  ShimResponseSchema
+  ShimResponseSchema,
+  ShimEventSchema
 ])
 
 export type ShimHello = z.infer<typeof ShimHelloSchema>
@@ -93,6 +114,7 @@ export type ShimBound = z.infer<typeof ShimBoundSchema>
 export type ShimRejected = z.infer<typeof ShimRejectedSchema>
 export type ShimRequest = z.infer<typeof ShimRequestSchema>
 export type ShimResponse = z.infer<typeof ShimResponseSchema>
+export type ShimEvent = z.infer<typeof ShimEventSchema>
 export type ShimFrame = z.infer<typeof ShimFrameSchema>
 
 /** Parse an inbound frame, returning undefined rather than throwing: a malformed frame

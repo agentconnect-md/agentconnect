@@ -255,10 +255,10 @@ export class ShimListener {
         ws.close(4403, 'not bound')
         return
       }
-      if (frame.type === 'shim/response') {
-        // A reply to something the daemon asked for: hand it to whoever is waiting. The
-        // frame is not trusted beyond its correlation id — the channel only resolves a
-        // request it actually issued.
+      if (frame.type === 'shim/response' || frame.type === 'shim/event') {
+        // A reply, or a recurring event on a stream the daemon opened: hand it to whoever is
+        // waiting. Neither is trusted beyond its correlation id — a channel only resolves a
+        // request it actually issued, and a stream consumer only accepts its own stream id.
         const text = typeof data === 'string' ? data : String(data)
         for (const listener of frameListeners) listener(text)
         return
