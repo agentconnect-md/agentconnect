@@ -69,7 +69,7 @@ your team configure the fleet, connect channels and triggers, control access,
 and follow the work they are allowed to see.
 
 <p align="center">
-  <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, and Tools & skills views" width="880" />
+  <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
 </p>
 
 ## Why AgentConnect?
