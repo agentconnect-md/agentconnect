@@ -562,8 +562,9 @@ Known M0 follow-ups, none of which change what the code does today:
   fix — the ready handle needs the fixed panel as its positioning context.
 - `aria-label="Resize panel"` on the handle names a panel that the vacant state
   withholds.
-- The separator's `aria-valuemin` / `aria-valuemax` are unasserted; dropping
-  either keeps the dock suite green.
+- ~~The separator's `aria-valuemin` / `aria-valuemax` are unasserted.~~ Closed in
+  review: `aria-valuemax` now derives from the same viewport ceiling the drag
+  stops at, and both bounds are asserted in both bands.
 - The vacant handle rides `.content`'s inner edge while the ready handle rides a
   viewport-fixed panel, so the two may sit a scrollbar-width apart. Unmeasured —
   happy-dom has no layout engine, so this needs a real browser to confirm.

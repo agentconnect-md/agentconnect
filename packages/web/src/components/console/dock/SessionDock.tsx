@@ -20,9 +20,9 @@ import { useMobileActionSlot } from '@/components/console/Shell'
 import {
   DOCK_WIDTH_DEFAULT,
   DOCK_WIDE_MIN,
-  DOCK_WIDTH_MAX,
   DOCK_WIDTH_MIN,
   DOCK_WIDTH_PROPERTY,
+  dockWidthCeiling,
   fitDockWidth,
   readDockWidth,
   writeDockWidth
@@ -310,6 +310,8 @@ export function SessionDock({
   const startDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button > 0) return
+      // One drag at a time: a second finger would install its own listener set over `detachRef`, and then the pointer that ends FIRST would clear the ref and restore selection while the other drag is still live and no longer detachable.
+      if (detachRef.current) return
       event.preventDefault()
       const pointerId = event.pointerId
       const startX = event.clientX
@@ -387,7 +389,8 @@ export function SessionDock({
       aria-label="Resize panel"
       aria-valuenow={width}
       aria-valuemin={DOCK_WIDTH_MIN}
-      aria-valuemax={DOCK_WIDTH_MAX}
+      // The ceiling the drag actually stops at, not the 760 preference cap: in the inline band that can be far lower (504 at 1440px), and announcing range the separator will not move through is a lie to assistive tech.
+      aria-valuemax={dockWidthCeiling(viewportWidth)}
       tabIndex={0}
       onPointerDown={startDrag}
       onKeyDown={onHandleKey}

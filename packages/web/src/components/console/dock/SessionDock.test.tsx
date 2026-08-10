@@ -28,6 +28,7 @@ import {
   DOCK_WIDTH_MAX,
   DOCK_WIDTH_MIN,
   DOCK_WIDTH_PROPERTY,
+  dockWidthCeiling,
   fitDockWidth,
   readDockWidth,
   writeDockWidth
@@ -379,6 +380,49 @@ describe('SessionDock resize', () => {
     act(() => {
       window.dispatchEvent(pointer('pointerup', 1000))
     })
+  })
+
+  it('serializes drags, so a second finger cannot strand the first one undetachable', () => {
+    // Without the guard the second pointerdown installs its own listener set over `detachRef`, and then whichever pointer ends FIRST restores selection and clears the ref while the other drag is still live.
+    writeDockWidth('org-1', 600)
+    render(dock())
+    press(1000)
+    act(() => {
+      handle().dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, clientX: 1000, pointerId: 2, pointerType: 'touch' })
+      )
+    })
+    act(() => {
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: 1000, pointerId: 2, pointerType: 'touch' }))
+    })
+    // The first drag still owns the edge: it moves, and selection is still suppressed because it has not released.
+    expect(document.body.style.userSelect).toBe('none')
+    act(() => {
+      window.dispatchEvent(pointer('pointermove', 1060))
+    })
+    expect(handle().getAttribute('aria-valuenow')).toBe('540')
+    act(() => {
+      window.dispatchEvent(pointer('pointerup', 1060))
+    })
+    expect(document.body.style.userSelect).toBe('')
+    expect(readDockWidth('org-1')).toBe(540)
+  })
+
+  it('reports the ceiling the drag really stops at as the separator maximum, not the preference cap', () => {
+    // Announcing 760 on a 1440px viewport promises 256px of travel the edge will never make.
+    writeDockWidth('org-1', 600)
+    window.innerWidth = 1440
+    render(dock())
+    expect(handle().getAttribute('aria-valuemin')).toBe(String(DOCK_WIDTH_MIN))
+    expect(handle().getAttribute('aria-valuemax')).toBe(String(dockWidthCeiling(1440)))
+    expect(dockWidthCeiling(1440)).toBeLessThan(DOCK_WIDTH_MAX)
+  })
+
+  it('reports the full preference cap below the inline band, where the overlay withholds nothing', () => {
+    writeDockWidth('org-1', 600)
+    window.innerWidth = 1200
+    render(dock())
+    expect(handle().getAttribute('aria-valuemax')).toBe(String(DOCK_WIDTH_MAX))
   })
 
   it('has no handle at all in the bottom sheet, whose width the dock does not own', () => {
