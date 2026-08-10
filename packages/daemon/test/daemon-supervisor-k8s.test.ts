@@ -56,10 +56,42 @@ describe('daemon lifecycle under the k8s supervisor', () => {
       expect(ack.accepted).toBe(false)
       // The reason has to describe the real situation: a cli-entry exists here, so the
       // generic "no supervisor" message would send an operator looking in the wrong place.
-      expect(ack.reason).toMatch(/version is its image/)
+      expect(ack.reason).toMatch(/image/)
       expect(ack.reason).not.toMatch(/no supervisor/)
       // A refused admission must not latch the lifecycle, or later restarts wedge.
       expect((instance as any).lifecycleInFlight).toBe(false)
+    } finally {
+      await instance.stop()
+    }
+  }, 20_000)
+
+  it.each(['service', 'cli'])(
+    'refuses an upgrade in cloud mode even with an inherited %s marker and a valid cli-entry',
+    async (marker) => {
+      // The state that must not reach the installer: a live daemon/upgrade is delivered
+      // without consulting the advertised capability, so admission is the last defence,
+      // and both prerequisites of the ordinary path are satisfied here.
+      const instance = daemon({ cloud: true, supervisor: marker })
+      await instance.start()
+      try {
+        const ack = (instance as any).admitFleetExit('upgrade', '9.9.9')
+        expect(ack.accepted).toBe(false)
+        expect(ack.reason).toMatch(/image/)
+        expect((instance as any).lifecycleInFlight).toBe(false)
+      } finally {
+        await instance.stop()
+      }
+    },
+    20_000
+  )
+
+  it('still admits a restart in cloud mode under an inherited service marker', async () => {
+    // Restart is not what cloud mode refuses: whatever supervises the process can bring
+    // it back, so only the self-installing upgrade is gated on the mode.
+    const instance = daemon({ cloud: true, supervisor: 'service' })
+    await instance.start()
+    try {
+      expect((instance as any).admitFleetExit('restart').accepted).toBe(true)
     } finally {
       await instance.stop()
     }

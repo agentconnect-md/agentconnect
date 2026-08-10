@@ -18120,14 +18120,16 @@ export class Daemon {
       return { accepted: false as const, reason }
     }
     const supervisor = this.opts.supervisor
-    // Kubernetes supervises restart but not upgrade: the kubelet restarts the container
-    // in place after the reserved exit code, while a version is the image and only
-    // whoever owns the Deployment can change it. Refuse upgrade on that ground rather
-    // than through the "no supervisor" message, which would misdescribe the situation.
+    const imageOwnsVersion = "the running version is this pod's image — roll the Deployment instead of self-installing"
+    // Refused on the MODE, not the marker: a live upgrade is delivered without consulting
+    // the advertised capability, so this is the last line of defence, and an inherited
+    // AGENTCONNECT_SUPERVISOR plus a stale cli-entry on the root volume must not reach the
+    // installer — the same invariant bootstrapUpgradeCapable() already holds.
+    if (kind === 'upgrade' && this.cloud) return refuse(imageOwnsVersion)
+    // The kubelet restarts the container in place after the reserved exit code, but never
+    // changes the image, so it supervises restart and not upgrade.
     if (supervisor === K8S_SUPERVISOR) {
-      if (kind === 'upgrade') {
-        return refuse("a cloud daemon's version is its image — upgrade the Deployment instead of self-installing")
-      }
+      if (kind === 'upgrade') return refuse(imageOwnsVersion)
     } else if (supervisor !== 'cli' && supervisor !== 'service') {
       const reason = `no supervisor (AGENTCONNECT_SUPERVISOR=${supervisor ?? 'unset'}) — a bare \`run\` cannot ${kind}; use the CLI or an installed service`
       return refuse(reason)
