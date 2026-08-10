@@ -35,7 +35,7 @@ import {
   workspaceGitPullTarget,
   writeRepoHelperConfig
 } from './git-injection.js'
-import { LocalGitRunner } from './git-runner.js'
+import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
 
 const skillsLog = makeLogger('info')
@@ -142,12 +142,35 @@ function isTrustedGithubOrigin(input: string): boolean {
   }
 }
 
+/**
+ * Resolves where one agent's git runs.
+ *
+ * Per-agent rather than global because the answer is per-agent: a cluster-backed workspace lives
+ * on its own sandbox pod's volume and its runner sends argv over that pod's shim channel, while a
+ * self-hosted agent beside it runs git here. Returning undefined means "local", which is also
+ * what an unconfigured daemon does — so the local path needs no registration.
+ */
+export type WorkspaceGitRunnerResolver = (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+
+/** Module-level init, mirroring cloneInFlight and git-injection's own registration. */
+let resolveWorkspaceGitRunner: WorkspaceGitRunnerResolver | undefined
+
+export function setWorkspaceGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
+  resolveWorkspaceGitRunner = resolver
+}
+
+/** Every git operation in this file goes through here. A site that calls gitFor directly would
+ *  keep working locally and silently run on the WRONG filesystem for a cluster agent. */
+function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
+  return resolveWorkspaceGitRunner?.(agentId, cwd, abort) ?? new LocalGitRunner(gitFor(cwd, abort))
+}
+
 async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
   const clone = cloneInFlight.get(cwd)
   if (clone) await clone
   if (!existsSync(join(cwd, '.git'))) return
   const expected = gitRepoOf(agent)
-  const git = gitFor(cwd).env(workspaceGitLocalEnv())
+  const git = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
   let current: string
   try {
     current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
@@ -317,9 +340,7 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
       const repository = gitRepoOf(agent)
       await assertSafeWorkspaceGitConfig(cwd)
       const pullTarget = workspaceGitPullTarget(repository)
-      // Through the runner, because pullWorkspaceRef is orchestration and now speaks the
-      // contract. The remaining gitFor sites in this file migrate with the rest of #815.
-      const git = new LocalGitRunner(gitFor(cwd, abort.signal)).withEnv({
+      const git = runnerFor(agent.id, cwd, abort.signal).withEnv({
         ...workspaceGitLocalEnv(),
         ...pullTarget.env,
         ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
@@ -400,7 +421,7 @@ export type SessionWorktreeRemoval =
  * on-disk state. */
 export async function removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
   const id = sessionWorktreeId(sessionKey)
-  const primaryGit = () => gitFor(agent.workspace.path).env(workspaceGitLocalEnv())
+  const primaryGit = () => runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv())
   // Drop the stale Git registration and this worktree's daemon-owned review refs.
   // Ref deletion is best-effort: most worktrees never had review refs.
   const cleanupRegistrations = async () => {
@@ -439,7 +460,7 @@ export async function removeSessionWorktree(agent: Agent, sessionKey: string): P
       await cleanupRegistrations()
       return { outcome: 'removed' }
     }
-    const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
+    const worktreeGit = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
     if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '') {
       return { outcome: 'retained', reason: 'dirty' }
     }
@@ -472,10 +493,10 @@ function exactObjectId(value: string, label: string): string {
   return value.toLowerCase()
 }
 
-async function revParse(cwd: string, ref: string): Promise<string> {
+async function revParse(agentId: string, cwd: string, ref: string): Promise<string> {
   return (
-    await gitFor(cwd)
-      .env(workspaceGitLocalEnv())
+    await runnerFor(agentId, cwd)
+      .withEnv(workspaceGitLocalEnv())
       .raw(['rev-parse', '--verify', `${ref}^{commit}`])
   ).trim()
 }
@@ -501,7 +522,7 @@ async function fetchReviewRevision(
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
   try {
-    const git = gitFor(agent.workspace.path, abort.signal).env({
+    const git = runnerFor(agent.id, agent.workspace.path, abort.signal).withEnv({
       ...pullTarget.env,
       ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
       GIT_TERMINAL_PROMPT: '0'
@@ -515,10 +536,10 @@ async function fetchReviewRevision(
       `+${base}:${baseRef}`,
       `+refs/pull/${review.pullNumber}/head:${headRef}`
     ])
-    if ((await revParse(agent.workspace.path, baseRef)).toLowerCase() !== base) {
+    if ((await revParse(agent.id, agent.workspace.path, baseRef)).toLowerCase() !== base) {
       throw new Error('github review base ref did not resolve to the requested SHA')
     }
-    if ((await revParse(agent.workspace.path, headRef)).toLowerCase() !== head) {
+    if ((await revParse(agent.id, agent.workspace.path, headRef)).toLowerCase() !== head) {
       throw new Error('github review head ref did not resolve to the requested SHA')
     }
 
@@ -535,11 +556,11 @@ async function fetchReviewRevision(
         pullTarget.remote,
         `+refs/pull/${review.pullNumber}/merge:${mergeRef}`
       ])
-      const merge = (await revParse(agent.workspace.path, mergeRef)).toLowerCase()
+      const merge = (await revParse(agent.id, agent.workspace.path, mergeRef)).toLowerCase()
       const expectedMerge = review.mergeCommitSha ? exactObjectId(review.mergeCommitSha, 'merge SHA') : undefined
       const parents = (
-        await gitFor(agent.workspace.path)
-          .env(workspaceGitLocalEnv())
+        await runnerFor(agent.id, agent.workspace.path)
+          .withEnv(workspaceGitLocalEnv())
           .raw(['rev-list', '--parents', '-n', '1', mergeRef])
       )
         .trim()
@@ -611,7 +632,7 @@ export async function prepareSessionWorkspace(
   let attached = existsSync(join(cwd, '.git'))
   if (attached) {
     try {
-      await revParse(cwd, 'HEAD')
+      await revParse(agent.id, cwd, 'HEAD')
     } catch {
       attached = false
       rmSync(cwd, { recursive: true, force: true })
@@ -619,21 +640,23 @@ export async function prepareSessionWorkspace(
   }
   if (!attached) {
     rmSync(cwd, { recursive: true, force: true })
-    await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
+    await runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
     // prepareWorkspace's pull is best-effort (and may be disabled), but this
     // checkout runs in the daemon process. Unsafe executable config must gate
     // the worktree operation itself instead of being swallowed as a pull error.
     await assertSafeWorkspaceGitConfig(agent.workspace.path)
-    await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'add', '--detach', cwd, target])
+    await runnerFor(agent.id, agent.workspace.path)
+      .withEnv(workspaceGitLocalEnv())
+      .raw(['worktree', 'add', '--detach', cwd, target])
   } else if (review) {
     // Re-audit at the checkout boundary rather than relying on the earlier
     // network fetch audit; repository config may have changed while fetching.
     await assertSafeWorkspaceGitConfig(agent.workspace.path)
-    const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
+    const worktreeGit = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
     await worktreeGit.raw(['reset', '--hard', target])
     await worktreeGit.raw(['clean', '-ffdx'])
   }
-  if (review && (await revParse(cwd, 'HEAD')).toLowerCase() !== review.checkout) {
+  if (review && (await revParse(agent.id, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
     throw new Error('github review worktree HEAD does not match the verified revision')
   }
   const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
@@ -884,11 +907,11 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
 
   const p = (async () => {
     // github-app: credentials ride the env-injected helper (no repo config exists
-    // yet). SPREAD over process.env — simple-git's .env() REPLACES the child env.
+    // yet). SPREAD over process.env — withEnv REPLACES the child env, as .env() did.
     if (githubApp) await preWarmGitCred(agent.id, 'clone')
     const git = githubApp
-      ? gitFor().env({ ...workspaceGitEnvBase(gitRepo), ...cloneGitEnv(agent.id, gitRepo) })
-      : gitFor().env({ ...workspaceGitEnvBase(gitRepo), GIT_TERMINAL_PROMPT: '0' })
+      ? runnerFor(agent.id).withEnv({ ...workspaceGitEnvBase(gitRepo), ...cloneGitEnv(agent.id, gitRepo) })
+      : runnerFor(agent.id).withEnv({ ...workspaceGitEnvBase(gitRepo), GIT_TERMINAL_PROMPT: '0' })
     try {
       await git.clone(gitRepo, cwd, ['--branch', branch, '--single-branch'])
     } catch (e) {
