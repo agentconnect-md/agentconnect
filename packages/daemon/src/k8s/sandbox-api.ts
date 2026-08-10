@@ -31,6 +31,20 @@ export interface TokenReviewResult {
 const POD_NAME_EXTRA = 'authentication.kubernetes.io/pod-name'
 const POD_UID_EXTRA = 'authentication.kubernetes.io/pod-uid'
 
+/** The sleep/wake guard rejected the write: the Sandbox moved between our read and our
+ *  patch. Retryable by re-reading and re-deciding — never by forcing the write through. */
+export class OperatingModeConflictError extends Error {
+  constructor(
+    readonly sandbox: string,
+    readonly observed: OperatingMode,
+    readonly actual: OperatingMode,
+    readonly cause: unknown
+  ) {
+    super(`sandbox ${sandbox} is ${actual}, not the observed ${observed} — operating mode write rejected`)
+    this.name = 'OperatingModeConflictError'
+  }
+}
+
 function collectionPath(group: string, namespace: string, plural: string): string {
   return `/apis/${group}/namespaces/${namespace}/${plural}`
 }
@@ -96,18 +110,34 @@ export class SandboxApi {
   /** Set a bound Sandbox's operating mode — the sleep/wake path.
    *  `observed` is mandatory: between reading a Sandbox and writing it, a message can
    *  wake an instance we decided to suspend (or the reverse), so every write tests the
-   *  value we saw and fails as a conflict rather than clobbering a newer decision.
-   *  v1beta1 defaults the field to `Running`, so an observed value always exists. */
-  setOperatingMode(name: string, mode: OperatingMode, observed: OperatingMode): Promise<Sandbox> {
-    return this.http.json<Sandbox>({
-      method: 'PATCH',
-      path: `${this.sandboxes()}/${name}`,
-      contentType: 'application/json-patch+json',
-      body: [
-        { op: 'test', path: '/spec/operatingMode', value: observed },
-        { op: 'replace', path: '/spec/operatingMode', value: mode }
-      ]
-    })
+   *  value we saw rather than clobbering a newer decision. v1beta1 defaults the field to
+   *  `Running`, so an observed value always exists.
+   *  Throws {@link OperatingModeConflictError} when the guard is what rejected the write. */
+  async setOperatingMode(name: string, mode: OperatingMode, observed: OperatingMode): Promise<Sandbox> {
+    try {
+      return await this.http.json<Sandbox>({
+        method: 'PATCH',
+        path: `${this.sandboxes()}/${name}`,
+        contentType: 'application/json-patch+json',
+        body: [
+          { op: 'test', path: '/spec/operatingMode', value: observed },
+          { op: 'replace', path: '/spec/operatingMode', value: mode }
+        ]
+      })
+    } catch (err) {
+      if (!(err instanceof K8sApiError) || !err.isUnprocessable) throw err
+      // The API server reports every rejected JSON Patch as 422 Invalid, and the text
+      // for a failed `test` comes from the patch library, so it varies by version.
+      // Confirm by state instead: re-read and see whether the guard is what failed.
+      const actual = await this.getSandbox(name).then(
+        (sandbox) => sandbox.spec?.operatingMode,
+        () => undefined
+      )
+      if (actual !== undefined && actual !== observed) {
+        throw new OperatingModeConflictError(name, observed, actual, err)
+      }
+      throw err
+    }
   }
 
   /** Verify a token the shim presented and learn which pod it belongs to. `audiences`

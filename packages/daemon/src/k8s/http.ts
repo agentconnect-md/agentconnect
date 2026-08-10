@@ -29,6 +29,12 @@ export class K8sApiError extends Error {
     return this.status === 404
   }
 
+  /** 422 Invalid — how the API server reports a rejected JSON Patch application,
+   *  including a failed `test` operation. Not a concurrency signal on its own. */
+  get isUnprocessable(): boolean {
+    return this.status === 422
+  }
+
   /** The object already exists; idempotent create-if-absent treats this as success. */
   get isAlreadyExists(): boolean {
     return this.status === 409 && this.reason === 'AlreadyExists'
