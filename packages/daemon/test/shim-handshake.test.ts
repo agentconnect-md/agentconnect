@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
+import { noopClusterMetrics, type ClusterMetrics } from '../src/k8s/cluster-metrics.js'
 import { ShimListener, type PodIdentityVerifier } from '../src/shim/listener.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import {
@@ -43,6 +44,8 @@ async function listener(deps: {
   now?: () => number
   clock?: FakeClock
   credentialTtlMs?: number
+  metrics?: ClusterMetrics
+  log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }): Promise<{ instance: ShimListener; endpoint: string }> {
   const instance = new ShimListener({
     verifier: deps.verifier,
@@ -50,7 +53,8 @@ async function listener(deps: {
     now: deps.now ?? (() => Date.now()),
     ...(deps.clock ? { clock: deps.clock } : {}),
     ...(deps.credentialTtlMs !== undefined ? { credentialTtlMs: deps.credentialTtlMs } : {}),
-    log: { info: () => {}, warn: () => {} }
+    ...(deps.metrics ? { metrics: deps.metrics } : {}),
+    log: deps.log ?? { info: () => {}, warn: () => {} }
   })
   listeners.push(instance)
   const port = await instance.start(0, '127.0.0.1')
@@ -88,6 +92,130 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 10))
   }
 }
+
+/** Records only what these tests assert on; the rest is a no-op. */
+function countingMetrics(): { metrics: ClusterMetrics; rejections: string[]; tokenReviews: () => number } {
+  const rejections: string[] = []
+  let tokenReviews = 0
+  return {
+    rejections,
+    tokenReviews: () => tokenReviews,
+    metrics: {
+      ...noopClusterMetrics,
+      handshakeRejected: (reason) => rejections.push(reason),
+      tokenReviewRejected: () => (tokenReviews += 1)
+    }
+  }
+}
+
+describe('handshake operability counters', () => {
+  it('counts an API-server token rejection apart from this daemon fencing a frame', async () => {
+    // D7 shipped a bug from conflating these: an identity failure and our own fencing working as
+    // designed are different events, and one counter cannot tell an operator which is happening.
+    const counted = countingMetrics()
+    const { endpoint } = await listener({
+      verifier: verifier({ authenticated: false, error: 'expired' }),
+      metrics: counted.metrics
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 'bad' })
+    await waitFor(() => counted.tokenReviews() > 0)
+    expect(counted.tokenReviews()).toBe(1)
+    expect(counted.rejections).toEqual(['unauthenticated'])
+  })
+
+  it('counts an unknown pod and a stale generation as their own reasons', async () => {
+    const unknown = countingMetrics()
+    const noRecord = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-x', podUid: 'pod-x' }),
+      spawnRecordForPod: () => undefined,
+      metrics: unknown.metrics
+    })
+    const first = await rawConnect(noRecord.endpoint)
+    first.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => unknown.rejections.length > 0)
+    // Authenticated but not ours is a different operational story from a token failure — usually
+    // a stale pod rather than a broken identity.
+    expect(unknown.rejections).toEqual(['unknown_pod'])
+    expect(unknown.tokenReviews()).toBe(0)
+
+    const stale = countingMetrics()
+    // The newer pod binds first, then the OLDER launch's pod tries the same sandbox. Both are
+    // genuinely authenticated, so the refusal is the fencing working rather than an identity
+    // failure — which is the distinction the two counters exist to keep.
+    const pods = ['pod-new', 'pod-old']
+    let call = 0
+    const generations = new Map([
+      ['pod-new', 4],
+      ['pod-old', 2]
+    ])
+    const superseded = await listener({
+      verifier: {
+        reviewToken: vi.fn(async () => ({
+          authenticated: true,
+          podName: 'runtime',
+          podUid: pods[Math.min(call++, pods.length - 1)]!
+        }))
+      },
+      spawnRecordForPod: (pod) => record({ generation: generations.get(pod.uid) ?? 1 }),
+      metrics: stale.metrics
+    })
+    const newer = await rawConnect(superseded.endpoint)
+    newer.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => newer.frames.length > 0)
+    expect(stale.rejections).toEqual([])
+
+    const older = await rawConnect(superseded.endpoint)
+    older.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => stale.rejections.length > 0 || older.frames.length > 0)
+    expect(stale.rejections).toEqual(['stale_generation'])
+    expect(stale.tokenReviews()).toBe(0)
+  })
+
+  it('never writes the presented token or the issued credential into a log line', async () => {
+    // The hygiene requirement, checked rather than asserted in a comment: these two strings are
+    // the whole authorization surface, and a log is the one place they leak without anyone
+    // noticing until the logs are already somewhere else.
+    const lines: string[] = []
+    const token = 'TOKEN-c8f2a1d4e7b9'
+    const { endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      log: { info: (m) => lines.push(m), warn: (m) => lines.push(m), debug: (m) => lines.push(m) }
+    })
+    const bound = await rawConnect(endpoint)
+    bound.send({ type: 'shim/hello', token })
+    await waitFor(() => bound.frames.length > 0)
+    const credential = (bound.frames[0] as ShimBound).sessionCredential
+    expect(credential.length).toBeGreaterThan(8)
+
+    // And a rejection path too, which is where a diagnostic is most tempting to over-share.
+    const refused = await listener({
+      verifier: verifier({ authenticated: false, error: `token ${token} was not accepted` }),
+      log: { info: (m) => lines.push(m), warn: (m) => lines.push(m), debug: (m) => lines.push(m) }
+    })
+    const rejectedClient = await rawConnect(refused.endpoint)
+    rejectedClient.send({ type: 'shim/hello', token })
+    await waitFor(() => lines.some((line) => /unauthenticated/.test(line)))
+
+    expect(lines.length).toBeGreaterThan(0)
+    for (const line of lines) {
+      expect(line).not.toContain(token)
+      expect(line).not.toContain(credential)
+    }
+  })
+
+  it('counts a malformed frame rather than only closing the socket', async () => {
+    const malformed = countingMetrics()
+    const { endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      metrics: malformed.metrics
+    })
+    const client = await rawConnect(endpoint)
+    client.socket.send('{not a frame')
+    await waitFor(() => malformed.rejections.length > 0)
+    expect(malformed.rejections).toEqual(['malformed'])
+  })
+})
 
 describe('shim handshake', () => {
   it('binds a pod whose token verifies against a spawn record, and issues only then', async () => {

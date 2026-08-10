@@ -1,3 +1,4 @@
+import { LaunchTimer, noopClusterMetrics, type ClusterMetrics } from './cluster-metrics.js'
 import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
@@ -31,6 +32,8 @@ export interface ClusterDriverDeps {
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** How long to wait for a pod to become Ready and its shim to bind. */
   readyTimeoutMs?: number
+  /** Staged latency and operability recorder; omit to record nothing. */
+  metrics?: ClusterMetrics
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 90_000
@@ -52,6 +55,7 @@ interface Launch {
  * existing agent from starting or stopping its runtime.
  */
 export class ClusterSpawnDriver implements SpawnDriver {
+  private readonly metrics: ClusterMetrics
   private readonly launches = new Map<string, Launch>()
   private readonly generations = new Map<string, number>()
   /** Agents whose Sandbox carries a drain request: hold off waking until it clears. */
@@ -67,6 +71,7 @@ export class ClusterSpawnDriver implements SpawnDriver {
 
   constructor(private readonly deps: ClusterDriverDeps) {
     this.clock = deps.clock ?? systemClock
+    this.metrics = deps.metrics ?? noopClusterMetrics
   }
 
   claimName(agentId: string): string {
@@ -81,11 +86,11 @@ export class ClusterSpawnDriver implements SpawnDriver {
    * bypasses warm-pool adoption, and pool pods are stamped before any user exists, so
    * identity travels over the shim handshake instead.
    */
-  async ensureSandbox(agentId: string): Promise<Launch> {
+  async ensureSandbox(agentId: string, timer?: LaunchTimer): Promise<Launch> {
     const existing = this.launches.get(agentId)
     if (existing) return existing
     const name = this.claimName(agentId)
-    await this.deps.api.ensureClaim({
+    const ensured = await this.deps.api.ensureClaim({
       metadata: {
         name,
         annotations: undefined
@@ -100,7 +105,15 @@ export class ClusterSpawnDriver implements SpawnDriver {
     // here would block the only call that could bring it back. Resume is "patch Running,
     // then wait", in that order.
     const sandboxName = await this.awaitBoundSandbox(name)
+    timer?.mark('claim_bound')
     const sandbox = await this.deps.api.getSandbox(sandboxName)
+    // Cold is "the claim did not exist", which is the launch that pays PVC provisioning and an
+    // image pull. A claim that existed and a Sandbox already Running is warm; existing and
+    // Suspended is the resume path. Guessing from elapsed time instead would make the metric
+    // depend on the thing it is supposed to measure.
+    timer?.observedPath(
+      ensured.created ? 'cold' : (sandbox.spec?.operatingMode ?? 'Running') === 'Running' ? 'warm' : 'resume'
+    )
     const sandboxUid = sandbox.metadata?.uid
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} has no metadata.uid to bind against`)
     const generation = (this.generations.get(agentId) ?? 0) + 1
@@ -172,6 +185,7 @@ export class ClusterSpawnDriver implements SpawnDriver {
         return
       } catch (err) {
         if (!(err instanceof OperatingModeRejectedError)) throw err
+        this.metrics.writeRetry('rejected_precondition')
         this.deps.log.debug?.(
           `cluster: ${desired} write for ${launch.sandboxName} rejected (attempt ${attempt}) — re-reading`
         )
@@ -255,34 +269,58 @@ export class ClusterSpawnDriver implements SpawnDriver {
     if (this.draining.has(agentId)) {
       // Launching now would wait out the readiness timeout against a sandbox we are
       // deliberately holding down. Say so instead of timing out.
+      this.metrics.launch('warm', 'draining', 0)
       throw new Error(`agent ${agentId} is draining for an image rollout — retry once it clears`)
     }
-    const launch = await this.ensureSandbox(agentId)
-    // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
-    // something asks for Running.
-    await this.wake(agentId)
-    await this.awaitReady(launch.sandboxName)
-    const connection = await this.deps.awaitChannel(
-      agentId,
-      launch.generation,
-      this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
-    )
-    const session = new ShimSession(agentId, launch.generation, {
-      setTimeout: (fn, ms) => this.clock.setTimeout(fn, ms),
-      clearTimeout: (handle) => this.clock.clearTimeout(handle as never)
-    })
-    session.attach(connection)
-    this.sessions.set(agentId, session)
-    return createRemoteRuntime({ session, request, log: this.deps.log })
+    const timer = new LaunchTimer(this.metrics, () => this.clock.now())
+    try {
+      const launch = await this.ensureSandbox(agentId, timer)
+      // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
+      // something asks for Running.
+      await this.wake(agentId)
+      timer.mark('mode_running')
+      await this.awaitReady(launch.sandboxName)
+      timer.mark('pod_ready')
+      const connection = await this.deps.awaitChannel(
+        agentId,
+        launch.generation,
+        this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
+      )
+      timer.mark('shim_handshake')
+      this.metrics.channel('bound')
+      const session = new ShimSession(agentId, launch.generation, {
+        setTimeout: (fn, ms) => this.clock.setTimeout(fn, ms),
+        clearTimeout: (handle) => this.clock.clearTimeout(handle as never)
+      })
+      session.attach(connection)
+      this.sessions.set(agentId, session)
+      const runtime = createRemoteRuntime({ session, request, log: this.deps.log, metrics: this.metrics })
+      timer.mark('runtime_ready')
+      timer.finish('ok')
+      return runtime
+    } catch (err) {
+      // Timeouts are the interesting failure — they are what a missed target looks like — so
+      // they are distinguished from an outright error rather than pooled into one bucket.
+      timer.finish(
+        /did not become ready|did not bind a sandbox|bound in time/.test((err as Error).message) ? 'timeout' : 'error'
+      )
+      throw err
+    }
   }
 
   /** Re-attach a renewed or replacement connection to the launch it belongs to. */
   onChannelBound(connection: ShimConnection): void {
-    this.sessions.get(connection.binding.agentId)?.attach(connection)
+    const session = this.sessions.get(connection.binding.agentId)
+    if (!session) return
+    // Counted apart from the first bind: a re-establishment rate is the signal that renewals or
+    // pod churn are happening more than they should, and pooling the two hides exactly that.
+    this.metrics.channel('reestablished')
+    session.attach(connection)
   }
 
   /** Report that an agent's channel is gone, so its runtime learns rather than hanging. */
   onChannelLost(agentId: string, reason: string): void {
+    this.metrics.channel('dropped')
     this.sessions.get(agentId)?.lose(reason)
   }
 }
@@ -299,6 +337,7 @@ function createRemoteRuntime(opts: {
   session: ShimSession
   request: SpawnRequest
   log: { info: (m: string) => void; warn: (m: string) => void }
+  metrics?: ClusterMetrics
 }): SpawnedRuntime {
   const exitListeners: Array<() => void> = []
   let stopped = false
@@ -374,7 +413,14 @@ function createRemoteRuntime(opts: {
       stopped = true
       await opened.catch(() => undefined)
       if (streamId) {
-        await opts.session.request('acp', { op: 'close', streamId, deadlineMs }).catch(() => undefined)
+        // A close that does not land means the rollout cannot confirm this runtime went quiet —
+        // invisible before, because the failure was swallowed to keep teardown best-effort.
+        await opts.session.request('acp', { op: 'close', streamId, deadlineMs }).catch(() => {
+          opts.metrics?.drainTimeout()
+          opts.log.warn(
+            `cluster: runtime for agent ${opts.session.agentId} did not confirm close within ${deadlineMs}ms`
+          )
+        })
       }
       opts.session.offEvent(onEvent)
     }

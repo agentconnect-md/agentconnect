@@ -360,12 +360,29 @@ describe('SandboxApi', () => {
       return { json: { metadata: { name: 'agent-a' }, status: { sandbox: { name: 'sb-7' } } } }
     })
     const api = new SandboxApi(new K8sHttp(config), 'org-test')
-    const claim = await api.ensureClaim({ metadata: { name: 'agent-a' }, spec: { warmPoolRef: { name: 'pool' } } })
+    const ensured = await api.ensureClaim({ metadata: { name: 'agent-a' }, spec: { warmPoolRef: { name: 'pool' } } })
     expect(posts).toBe(1)
     // The claim names the bound Sandbox and nothing more; its UID comes from that
     // object's metadata, which is what the spawn record has to key on.
-    expect(claim.status?.sandbox?.name).toBe('sb-7')
+    expect(ensured.claim.status?.sandbox?.name).toBe('sb-7')
     expect(requests.at(-1)?.pathname).toContain('/sandboxclaims/agent-a')
+    // AlreadyExists is NOT a cold start: this launch pays no PVC provisioning and no image
+    // pull, and reporting it as one would put resume latencies in the cold-start distribution.
+    expect(ensured.created).toBe(false)
+  })
+
+  it('reports a first claim as CREATED, which is the cold-start signal', async () => {
+    // The cold/resume split has to come from a fact, not from elapsed time — a latency metric
+    // whose own bucketing is inferred from latency cannot settle a latency target.
+    const { config } = await fakeApiServer(({ method }) =>
+      method === 'POST'
+        ? { status: 201, json: { metadata: { name: 'agent-b', uid: 'claim-uid' } } }
+        : { json: { metadata: { name: 'agent-b' } } }
+    )
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    const ensured = await api.ensureClaim({ metadata: { name: 'agent-b' }, spec: { warmPoolRef: { name: 'pool' } } })
+    expect(ensured.created).toBe(true)
+    expect(ensured.claim.metadata?.uid).toBe('claim-uid')
   })
 
   it('sends a claim body carrying the pool reference and no per-agent env', async () => {

@@ -1,4 +1,5 @@
 import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
+import type { ClusterMetrics } from './cluster-metrics.js'
 import { K8sApiError, type K8sHttp } from './http.js'
 
 export interface K8sObject {
@@ -34,6 +35,8 @@ export interface WatchOptions {
   clock?: Clock
   backoff?: Backoff
   log?: { debug?: (message: string) => void; warn?: (message: string) => void }
+  /** Operability counters; a re-list is invisible in logs alone at any real volume. */
+  metrics?: ClusterMetrics
 }
 
 /** Clock-driven delay that leaves no listener behind — a long outage retries often
@@ -126,6 +129,7 @@ export async function* watchCollection<T extends K8sObject>(
           const status = event.object as unknown as { reason?: string; message?: string; code?: number }
           const error = new K8sApiError(status.code ?? 0, status.reason, status.message ?? 'watch error')
           if (!error.isExpired) throw error
+          options.metrics?.watchRelist('in_band')
           options.log?.debug?.(`k8s: watch ${options.path} expired in-band — re-listing`)
           resourceVersion = undefined
           break
@@ -139,6 +143,7 @@ export async function* watchCollection<T extends K8sObject>(
     } catch (err) {
       if (options.signal?.aborted) return
       if (err instanceof K8sApiError && err.isExpired) {
+        options.metrics?.watchRelist('status')
         options.log?.debug?.(`k8s: watch ${options.path} resume point expired — re-listing`)
         resourceVersion = undefined
         continue

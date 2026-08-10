@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { noopClusterMetrics, type ClusterMetrics } from '../k8s/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
@@ -36,9 +37,18 @@ export interface ShimListenerDeps {
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** Session-credential lifetime; a shim re-handshakes rather than refreshing. */
   credentialTtlMs?: number
+  /** Operability counters; omit to record nothing. */
+  metrics?: ClusterMetrics
 }
 
 const DEFAULT_CREDENTIAL_TTL_MS = 10 * 60_000
+
+// A verifier's error is an unbounded string from an external system, and it reaches a log. Keep
+// the diagnostic but never the credential inside it: a token in a log outlives the request by
+// however long the logs are kept, and by then it is somewhere nobody is auditing.
+function withoutToken(message: string, token: string): string {
+  return token.length > 0 ? message.split(token).join('[redacted]') : message
+}
 
 /** A bound shim connection the daemon can send requests on. */
 export interface ShimConnection {
@@ -66,12 +76,14 @@ export class ShimListener {
   private server?: Server
   private wss?: WebSocketServer
   private readonly registry: ShimBindingRegistry
+  private readonly metrics: ClusterMetrics
   private readonly clock: Clock
   private readonly connections = new Set<ShimConnection>()
   private port?: number
 
   constructor(private readonly deps: ShimListenerDeps) {
     this.registry = new ShimBindingRegistry(deps.now, deps.credentialTtlMs ?? DEFAULT_CREDENTIAL_TTL_MS)
+    this.metrics = deps.metrics ?? noopClusterMetrics
     this.clock = deps.clock ?? systemClock
   }
 
@@ -175,6 +187,7 @@ export class ShimListener {
       if (isBinary) return
       const frame = parseShimFrame(typeof data === 'string' ? data : String(data))
       if (!frame) {
+        this.metrics.handshakeRejected('malformed')
         ws.close(4400, 'malformed frame')
         return
       }
@@ -291,8 +304,13 @@ export class ShimListener {
   > {
     const review = await this.deps.verifier.reviewToken(token, [SHIM_TOKEN_AUDIENCE])
     if (!review.authenticated || !review.podName || !review.podUid) {
+      // The API server did not accept the token: an identity failure, counted apart from our
+      // own fencing refusals below, which are this daemon working as designed.
+      this.metrics.tokenReviewRejected()
+      this.metrics.handshakeRejected('unauthenticated')
       this.deps.log.warn(
-        `shim: rejected an unauthenticated callback from ${remoteAddress}${review.error ? ` (${review.error})` : ''}`
+        `shim: rejected an unauthenticated callback from ${remoteAddress}` +
+          `${review.error ? ` (${withoutToken(review.error, token)})` : ''}`
       )
       return {
         ok: false,
@@ -304,6 +322,7 @@ export class ShimListener {
     if (!record) {
       // Authenticated, but not a pod this daemon launched — or one whose spawn record is
       // gone. Either way there is nothing to bind it to.
+      this.metrics.handshakeRejected('unknown_pod')
       this.deps.log.warn(`shim: no spawn record for pod ${pod.name} (${remoteAddress})`)
       return { ok: false, rejected: { type: 'shim/rejected', reason: 'unknown_pod', message: 'pod not recognized' } }
     }
@@ -314,6 +333,7 @@ export class ShimListener {
     if (!bound.ok) {
       // A newer launch already holds this sandbox. Refusing without mutating is what stops
       // a terminating pod from reclaiming the channel during overlap.
+      this.metrics.handshakeRejected('stale_generation')
       this.deps.log.warn(
         `shim: refused generation ${record.generation} for agent ${record.agentId} — ` +
           `generation ${bound.current} already holds the channel`
