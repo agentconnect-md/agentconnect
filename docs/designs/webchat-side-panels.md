@@ -579,6 +579,56 @@ Known M0 follow-ups, none of which change what the code does today:
 viewer in File mode over `workspace/read` + `@/lib/highlight`, including the
 conversation↔viewer mode switch and the deep-link decision. No protocol change.
 _Exit:_ browse a session worktree and read any file without leaving the session.
+**Landed.**
+
+The deep-link question §12 left open is settled: the viewer IS URL-addressable,
+`?file=<path>` on the session route, written with `router.replace` so reading N
+files costs no history entries and Back still means leaving the session. The
+conversation pane is **concealed, not unmounted** (`hidden` vs `contents` on one
+JSX slot) — every expanded tool body, the composer's caret and any open @mention
+menu is state a file read must not spend.
+
+Known M1 follow-ups:
+
+- A `?file=` naming a **directory** — or a path that escapes the workspace —
+  reads as "the daemon may be offline". The daemon raises
+  `WorkspaceViolationError`, the CP maps that to 503, and the viewer cannot tell
+  it from a real outage. Distinguishing it needs a daemon/CP error code, not a
+  web change, so it waits for the next milestone that touches those layers.
+- The filter corpus is rebuilt and sorted on every folder expansion even while
+  the box is empty. Harmless at today's tree sizes; gate the memo on the query.
+- Two app-wiring mutants still survive: dropping the Files tab when
+  `filesAgentId` is null, and the `dockTabKey` existence fallback. The primitives
+  under them are covered; only the wiring is not.
+  **Landed.** The deep-link question (§4, §12 Q1) is settled the addressable way:
+  `?file=<path>` on the session route, written with `router.replace` — the viewer is
+  a pane mode inside one route, so pushing would spend a history entry per tree
+  click and Back would stop meaning "leave this session".
+
+Known M1 follow-ups, none of which change what the code does today:
+
+- A pending **webchat MCP write approval** is concealed with the composer and has
+  no header twin the way permission requests do (those stay reachable in the
+  Requests popover). A reader with a file open sees the agent stall. Either that
+  card needs a home above the viewer, or the viewer needs to surface a pending
+  count.
+- The reader's **place in the transcript is not preserved** across a viewer round
+  trip: the concealed pane stops contributing height to `.content`, so the browser
+  clamps `scrollTop`. Restoring it needs the offset captured _before_ the swap and
+  keyed per session, which is more state than this seam carries.
+- The viewer's own scroller is a class-level arrangement: an `overflow-auto` box
+  under `min-h-0 flex-1`, inside the `min-h-full` body column. happy-dom has no
+  layout engine, so "it never grows the page" is unmeasured and needs a real
+  browser — the same caveat as M0's resize handle.
+- `SessionDetailFrame` keeps its 880px cap, so a cold load straight into `?file=`
+  paints the centred loading state at 880px for one round trip before the viewer
+  takes the full width. Invisible for a centred spinner; it becomes visible the
+  day that frame draws content.
+- The Files panel is mounted on **every** session page, not on first visit to its
+  tab. Its verdict is what keeps the dock out of `vacant`, and a lazily mounted
+  panel makes the tab unreachable — both tabs non-ready withholds the strip that
+  would mount it. Cost: one `workspace/list` and one or two `workspace/gitstatus`
+  reads per session page view.
 
 **M2 — Git read + diff viewer.** `WorkspaceGitFile.additions/deletions`, the
 `workspace/gitdiff` and `workspace/gitlog` frames + routes, the unified-diff

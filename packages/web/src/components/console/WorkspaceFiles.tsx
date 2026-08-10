@@ -1,17 +1,8 @@
 'use client'
 
-// Live workspace file browser for one agent — modelled on GitHub's file explorer:
-// a single workspace card up top, an expandable directory tree on the left, and
-// a file preview on the right. Listings and file bytes are proxied through the CP
-// straight from the owning daemon (never stored on the CP — body-locality), so a
-// 503 here just means that daemon is offline / the agent is unplaced — an expected
-// state, rendered as a friendly notice.
-//
-// This component owns the live git read model (status / pull) but not the card
-// that displays it: it projects that state into a <WorkspaceHeaderInfo> and hands
-// it to `renderHeader`, so the workspace card can also carry the source and
-// repository-authorization controls, which need agent-level data this component
-// has no business fetching. Demo agents use <WorkspaceFilesMock>.
+// Live workspace file browser for one agent, GitHub-style: a workspace card up top, an expandable tree on the left, a file preview on the right. Demo agents use <WorkspaceFilesMock>.
+// The tree and git-status read model is `workspace-tree.tsx`, shared with the dock's Files panel; this file owns the preview, the editor and the pull, and file bytes are proxied live from the owning daemon (body-locality), so a 503 is an expected state rendered as a notice.
+// It projects the git read model into a <WorkspaceHeaderInfo> for `renderHeader` rather than drawing the card, which also carries source and repository-authorization controls needing agent-level data this component has no business fetching.
 
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import dynamic from 'next/dynamic'
@@ -20,13 +11,9 @@ import {
   deleteWorkspaceFile,
   fetchWorkspaceFile,
   fetchWorkspaceFileFull,
-  fetchWorkspaceFiles,
-  fetchWorkspaceGitStatus,
   writeWorkspaceFile,
   workspaceGitPull,
-  type WorkspaceEntryDto,
-  type WorkspaceFileDto,
-  type WorkspaceGitStatusDto
+  type WorkspaceFileDto
 } from '@/lib/api'
 import { Spinner } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
@@ -45,11 +32,17 @@ import {
   FileBrowserRow,
   FileBrowserShell,
   MARKDOWN_FILE_RE,
-  fileBrowserGlyph,
   formatFileMtime,
   formatFileSize,
   type FileBrowserEditorDraft
 } from '@/components/console/FileBrowser'
+import {
+  StatusBadge,
+  useWorkspaceGitStatus,
+  useWorkspaceTree,
+  workspaceDirtyMap,
+  workspaceEntryIcon
+} from '@/components/console/workspace-tree'
 
 // react-markdown + remark-gfm are heavy and only needed when a markdown file is
 // previewed, so keep them out of the main console bundle (lazy client chunk).
@@ -82,13 +75,6 @@ export function workspaceReadModelKey(agent: Pick<Agent, 'id' | 'workspace' | 'w
   return ws.mode === 'github' ? `${at}:github:${ws.repo}@${ws.branch}:${ws.agentDir}` : `${at}:scratch`
 }
 
-function entryIcon(e: WorkspaceEntryDto): string {
-  if (e.type === 'dir') return 'folder'
-  if (e.type === 'symlink') return 'link-2'
-  if (e.type === 'other') return 'file-question-mark'
-  return fileBrowserGlyph(e.name)
-}
-
 // Parse a full git remote address (https or ssh) into a display label ("org/repo")
 // and a browsable https URL. Returns null when it doesn't look like a hosted repo.
 function parseRemote(repo: string | null): { label: string; host: string; url: string } | null {
@@ -96,43 +82,6 @@ function parseRemote(repo: string | null): { label: string; host: string; url: s
   const m = repo.match(/^https?:\/\/([^/]+)\/(.+?)(?:\.git)?\/?$/) ?? repo.match(/^git@([^:]+):(.+?)(?:\.git)?\/?$/)
   if (!m) return null
   return { host: m[1]!, label: m[2]!, url: `https://${m[1]}/${m[2]}` }
-}
-
-// A one-letter git status for the tree badge, coloured GitHub-style: modified/renamed
-// amber, added/untracked green, deleted red.
-function statusMeta(ch: string): { color: string; title: string } {
-  switch (ch) {
-    case 'A':
-    case 'U':
-      return { color: 'var(--green-500)', title: ch === 'U' ? 'Untracked' : 'Added' }
-    case 'D':
-      return { color: 'var(--red-500)', title: 'Deleted' }
-    case 'R':
-      return { color: 'var(--amber-500)', title: 'Renamed' }
-    default:
-      return { color: 'var(--amber-500)', title: 'Modified' }
-  }
-}
-
-// Per-directory listing state, keyed by directory path ('' = workspace root). Loaded
-// lazily: the root on mount, each folder on first expand.
-type DirState = {
-  entries: WorkspaceEntryDto[] | null
-  exists: boolean
-  nextCursor: string | null
-  loading: boolean
-  loadingMore: boolean
-  err: string | null
-  moreErr: string | null
-}
-const LOADING_DIR: DirState = {
-  entries: null,
-  exists: true,
-  nextCursor: null,
-  loading: true,
-  loadingMore: false,
-  err: null,
-  moreErr: null
 }
 
 type Viewer = {
@@ -177,85 +126,23 @@ export function WorkspaceFiles({
   renderHeader: (header: WorkspaceHeaderInfo) => ReactNode
 }) {
   const isMobile = useIsMobile()
-  const [dirs, setDirs] = useState<Record<string, DirState>>({})
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [viewer, setViewer] = useState<Viewer | null>(null)
   const [editor, setEditor] = useState<FileBrowserEditorDraft | null>(null)
   const [deleteDraft, setDeleteDraft] = useState<DeleteDraft | null>(null)
   const [mobileListSignal, setMobileListSignal] = useState(0)
-  // git-repo workspaces: current-checkout status + on-demand pull. Null while
-  // loading, for a non-repo workspace, and when the owning daemon is offline —
-  // the workspace card falls back to the agent's configured source in all three.
-  const [git, setGit] = useState<WorkspaceGitStatusDto | null>(null)
-  const [primaryBranch, setPrimaryBranch] = useState<string | null>(null)
   const [gitPulling, setGitPulling] = useState(false)
   const [gitMsg, setGitMsg] = useState<string | null>(null)
   // Bumped after a pull to re-fetch both the git status and the tree.
   const [refreshTick, setRefreshTick] = useState(0)
+  // The tree and git halves of the read model, shared with the dock's Files panel.
+  const { dirs, expanded, toggleDir, loadMoreDir, openPath } = useWorkspaceTree(agentId, sessionId, refreshTick)
+  // `git` is null while loading, for a non-repo workspace, and when the owning daemon is offline — the workspace card falls back to the agent's configured source in all three.
+  const { git, primaryBranch } = useWorkspaceGitStatus(agentId, sessionId, refreshTick)
   // One-shot: on first entry, auto-preview the project guide (CLAUDE.md / README.md).
   const autoOpenedRef = useRef(false)
   // A path check alone cannot distinguish A → B → A requests. Sequence every file
   // read so an older response can never replace or append to a newer selection.
   const viewerRequestRef = useRef(0)
-
-  // Patch one directory's state, seeding from LOADING_DIR when first seen.
-  const patchDir = (path: string, patch: Partial<DirState>) =>
-    setDirs((prev) => ({ ...prev, [path]: { ...(prev[path] ?? LOADING_DIR), ...patch } }))
-
-  // Fetch a folder's first page (root on mount, or a folder on first expand).
-  const loadDir = (path: string) => {
-    patchDir(path, { loading: true, err: null })
-    fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
-      (page) =>
-        setDirs((prev) => ({
-          ...prev,
-          [path]: {
-            entries: page.entries,
-            exists: page.exists,
-            nextCursor: page.nextCursor,
-            loading: false,
-            loadingMore: false,
-            err: null,
-            moreErr: null
-          }
-        })),
-      (e) => patchDir(path, { loading: false, err: msg(e) })
-    )
-  }
-
-  const loadMoreDir = (path: string) => {
-    const d = dirs[path]
-    if (!d?.nextCursor || d.loadingMore) return
-    patchDir(path, { loadingMore: true, moreErr: null })
-    fetchWorkspaceFiles(agentId, { path, cursor: d.nextCursor, ...(sessionId ? { sessionId } : {}) }).then(
-      (page) =>
-        setDirs((prev) => {
-          const cur = prev[path]
-          if (!cur) return prev
-          return {
-            ...prev,
-            [path]: {
-              ...cur,
-              entries: [...(cur.entries ?? []), ...page.entries],
-              nextCursor: page.nextCursor,
-              loadingMore: false
-            }
-          }
-        }),
-      (e) => patchDir(path, { loadingMore: false, moreErr: msg(e) })
-    )
-  }
-
-  const toggleDir = (path: string) => {
-    const willOpen = !expanded.has(path)
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-    if (willOpen && !dirs[path]) loadDir(path)
-  }
 
   // Select a file into the right-hand preview pane (fetch its first slice).
   const selectFile = (filePath: string, name: string) => {
@@ -292,35 +179,6 @@ export function WorkspaceFiles({
     if (!viewer) return undefined
     return resolveWorkspaceMarkdownLink(viewer.path, href, (target) => selectFile(target.path, target.name))
   }
-
-  // Reset the tree and load the root whenever the agent changes or a pull lands.
-  useEffect(() => {
-    let active = true
-    setDirs({ '': { ...LOADING_DIR } })
-    setExpanded(new Set())
-    fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}) }).then(
-      (page) => {
-        if (!active) return
-        setDirs({
-          '': {
-            entries: page.entries,
-            exists: page.exists,
-            nextCursor: page.nextCursor,
-            loading: false,
-            loadingMore: false,
-            err: null,
-            moreErr: null
-          }
-        })
-      },
-      (e) => {
-        if (active) setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e) } })
-      }
-    )
-    return () => {
-      active = false
-    }
-  }, [agentId, refreshTick, sessionId])
 
   // Per-agent view reset (NOT on a refreshTick bump — that would erase the pull
   // message and yank the open file / re-run the one-shot auto-open).
@@ -376,38 +234,6 @@ export function WorkspaceFiles({
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [deleteDraft])
-
-  // git status of the workspace checkout. A non-repo answer and a thrown request
-  // (offline daemon) both leave `git` unset — the workspace card then renders the
-  // agent's configured source with no live status half.
-  useEffect(() => {
-    let active = true
-    fetchWorkspaceGitStatus(agentId, sessionId).then(
-      (s) => {
-        if (!active) return
-        setGit(s.isRepo ? s : null)
-        if (!sessionId) setPrimaryBranch(s.isRepo ? s.branch : null)
-      },
-      () => {
-        if (!active) return
-        setGit(null)
-        if (!sessionId) setPrimaryBranch(null)
-      }
-    )
-    if (sessionId) {
-      fetchWorkspaceGitStatus(agentId).then(
-        (s) => {
-          if (active) setPrimaryBranch(s.isRepo ? s.branch : null)
-        },
-        () => {
-          if (active) setPrimaryBranch(null)
-        }
-      )
-    }
-    return () => {
-      active = false
-    }
-  }, [agentId, refreshTick, sessionId])
 
   // On first entry, preload the project guide so the desktop preview isn't empty.
   // Mobile starts unselected on the shared browser's file list.
@@ -471,25 +297,8 @@ export function WorkspaceFiles({
     selectFile(path, path.split('/').at(-1) ?? path)
   }
 
-  // Map browse-relative path → git status letter for the tree badges. git file paths
-  // are repo-relative; if the browse root sits in a repo subdir (agentDir), also index
-  // the subdir-relative form so badges match whichever root the daemon lists from.
-  const dirtyMap = useMemo(() => {
-    const m = new Map<string, string>()
-    if (!git) return m
-    const ad = (git.agentDir ?? '').replace(/^\.?\/*/, '').replace(/\/+$/, '')
-    for (const f of git.files) {
-      const x = (f.index ?? '').trim()
-      const y = (f.workingDir ?? '').trim()
-      const ch = x === '?' || y === '?' ? 'U' : (x || y || 'M').charAt(0)
-      const put = (p: string) => {
-        if (p && !m.has(p)) m.set(p, ch)
-      }
-      put(f.path)
-      if (ad && (f.path === ad || f.path.startsWith(`${ad}/`))) put(f.path.slice(ad.length + 1))
-    }
-    return m
-  }, [git])
+  // Browse-relative path → git status letter for the tree badges.
+  const dirtyMap = useMemo(() => workspaceDirtyMap(git), [git])
 
   const root = dirs['']
   const selectedDirectory = viewer ? viewer.path.split('/').slice(0, -1).join('/') : ''
@@ -604,11 +413,7 @@ export function WorkspaceFiles({
     const targetDirectory = [editor.directory, ...typedDirectories].filter(Boolean).join('/')
     if (!targetDirectory) return
     const parts = targetDirectory.split('/').filter(Boolean)
-    const paths = parts.map((_, index) => parts.slice(0, index + 1).join('/'))
-    setExpanded((current) => new Set([...current, ...paths]))
-    for (const directory of paths) {
-      if (!dirs[directory]) loadDir(directory)
-    }
+    openPath(parts.map((_, index) => parts.slice(0, index + 1).join('/')))
   }
 
   const breadcrumbPath = editor ? editor.target || editor.directory : (viewer?.path ?? '')
@@ -661,7 +466,7 @@ export function WorkspaceFiles({
             <FileBrowserRow
               key={full}
               depth={depth}
-              icon={entryIcon(e)}
+              icon={workspaceEntryIcon(e)}
               name={e.name}
               title={meta}
               trailing={status ? <StatusBadge ch={status} /> : undefined}
@@ -889,19 +694,6 @@ function EmptyNote({ text }: { text: string }) {
       <Icon name="folder" size={20} color="var(--text-tertiary)" />
       <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{text}</div>
     </div>
-  )
-}
-
-export function StatusBadge({ ch }: { ch: string }) {
-  const { color, title } = statusMeta(ch)
-  return (
-    <span
-      className="mono inline-flex h-[15px] w-[15px] flex-none items-center justify-center rounded-xs bg-(--surface-sunken) text-[10px] font-bold"
-      title={`${title} (uncommitted)`}
-      style={{ color }}
-    >
-      {ch}
-    </span>
   )
 }
 

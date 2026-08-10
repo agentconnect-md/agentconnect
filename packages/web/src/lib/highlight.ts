@@ -87,6 +87,49 @@ export function langForName(name: string): string | null {
   return NAME_LANG[lower] ?? null
 }
 
+// What to CALL the language, for a viewer header that names what it is showing. Keyed by language id, since that is what the maps above resolve to.
+const LANG_LABEL: Record<string, string> = {
+  typescript: 'TypeScript',
+  javascript: 'JavaScript',
+  json: 'JSON',
+  python: 'Python',
+  go: 'Go',
+  rust: 'Rust',
+  ruby: 'Ruby',
+  java: 'Java',
+  kotlin: 'Kotlin',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  php: 'PHP',
+  swift: 'Swift',
+  bash: 'Shell',
+  sql: 'SQL',
+  xml: 'XML',
+  css: 'CSS',
+  scss: 'SCSS',
+  less: 'Less',
+  yaml: 'YAML',
+  ini: 'INI',
+  markdown: 'Markdown',
+  dockerfile: 'Dockerfile',
+  makefile: 'Makefile',
+  diff: 'Diff'
+}
+
+// The extensions that share a highlighter with a differently-named language: `.html`/`.svg`/`.vue` all highlight as xml and `.toml` as ini, and calling an HTML file "XML" would be wrong where highlighting it as XML is merely approximate.
+const EXT_LABEL: Record<string, string> = { html: 'HTML', svg: 'SVG', vue: 'Vue', toml: 'TOML' }
+
+/** The language's display name for a file name, or null when no confident mapping exists — the caller then names no language rather than guessing one from auto-detection. */
+export function languageLabel(name: string): string | null {
+  const lower = name.toLowerCase()
+  const ext = lower.includes('.') ? lower.split('.').pop()! : ''
+  const override = ext ? EXT_LABEL[ext] : undefined
+  if (override) return override
+  const lang = langForName(name)
+  return lang ? (LANG_LABEL[lang] ?? null) : null
+}
+
 // Highlight `code`, returning an HTML string of `<span class="hljs-…">` tokens.
 // Uses the mapped language when known and registered, otherwise auto-detects.
 // Returns null if highlighting throws (the caller renders plain text instead).

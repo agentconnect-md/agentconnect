@@ -117,9 +117,15 @@ function usePublishedWidth(width: number | null): void {
 }
 
 // Every tab stop inside the panel, in order. The `tabindex` ATTRIBUTE, not `tabIndex`: the strip's roving −1 tabs are not stops, and a default 0 is never written.
+// An INACTIVE DockPanel stays mounted but `display:none`, and `.focus()` on such a node is a no-op — leaving its controls in this list makes the wrap a dead key and lets a forward Tab off the last visible stop walk out past the scrim for one press.
 function focusStops(panel: HTMLElement): HTMLElement[] {
   const found = panel.querySelectorAll<HTMLElement>('a[href],button,input,select,textarea,[tabindex]')
-  return Array.from(found).filter((el) => !el.hasAttribute('disabled') && el.getAttribute('tabindex') !== '-1')
+  return Array.from(found).filter(
+    (el) =>
+      !el.hasAttribute('disabled') &&
+      el.getAttribute('tabindex') !== '-1' &&
+      !el.closest('[data-dock-panel]:not([data-dock-panel-active])')
+  )
 }
 
 // Tab off either end of the dialog wraps to the other, and focus that has escaped it entirely is brought back to the near end.
@@ -148,6 +154,16 @@ export function SessionDockSlot() {
   // Storage is read for the property, never for the markup (the slot renders one tree on both sides), and withheld until the viewport is measured as the dock withholds until storage is read: at the seeded 0 the ceiling is `DOCK_WIDTH_MAX`, so an unfitted width would land over the script's fitted one.
   usePublishedWidth(viewportWidth === 0 ? null : fitDockWidth(readDockWidth(activeOrg?.id ?? ''), viewportWidth))
   return <div aria-hidden="true" data-dock-track="" className={TRACK} />
+}
+
+/** One hosted panel among several: drawn when its tab is active, MOUNTED and undrawn when it is not. */
+// `contents` rather than a box of its own, so an active panel is the flex child of the body the dock renders and its geometry is the same whether it is hosted alone or beside four siblings; unmounting instead would silence the verdict that sets its own tab's status and throw away its scroll position, tree and filter — the same reason the dock keeps `body` at one tree position across the vacant boundary.
+export function DockPanel({ active, children }: { active: boolean; children: ReactNode }) {
+  return (
+    <div data-dock-panel="" data-dock-panel-active={active ? '' : undefined} className={active ? 'contents' : 'hidden'}>
+      {children}
+    </div>
+  )
 }
 
 export function SessionDock({
