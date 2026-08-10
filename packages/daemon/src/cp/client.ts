@@ -133,6 +133,9 @@ const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
 export type CpState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'DRAINING' | 'CLOSED' | 'DEGRADED'
 
+export type BootstrapUpgradeOutcome =
+  { status: 'current' } | { status: 'failed'; reason: string } | { status: 'installed'; restart: () => void }
+
 interface RegisterControlBarrier {
   transport: Transport
   registerRequestId: string
@@ -199,7 +202,7 @@ export interface CpClientDeps {
    *  session deep link (`<webAppUrl>/<orgSlug>/sessions/<id>`). */
   onOrgSlug?: (orgSlug: string | undefined) => void
   /** Auth-time recovery directive handled before full registration. */
-  onBootstrapUpgrade?: (lifecycle: BootstrapLifecycle) => boolean
+  onBootstrapUpgrade?: (lifecycle: BootstrapLifecycle) => Promise<BootstrapUpgradeOutcome>
   /** Called once the daemon reaches READY on each (re)connect, after the initial
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
@@ -379,15 +382,28 @@ export class CpClient {
     this.deps.onWebAppUrl?.(ok.webAppUrl)
     // Adopt the org slug the daemon belongs to — the `<orgSlug>` path segment of a deep link.
     this.deps.onOrgSlug?.(ok.orgSlug)
-    if (ok.lifecycle && this.deps.onBootstrapUpgrade?.(ok.lifecycle)) {
-      // Stop reconnecting into the same directive while the daemon-owned installer runs.
-      this.stopped = true
-      expectedTransport.close(1000, 'bootstrap upgrade accepted')
-      throw new Error(`bootstrap upgrade to ${ok.lifecycle.targetVersion} accepted`)
+    this.state = 'REGISTERING'
+    if (ok.lifecycle && this.deps.onBootstrapUpgrade) {
+      let outcome: BootstrapUpgradeOutcome
+      try {
+        outcome = await this.deps.onBootstrapUpgrade(ok.lifecycle)
+      } catch (err) {
+        outcome = { status: 'failed', reason: err instanceof Error ? err.message : String(err) }
+      }
+      if (outcome.status === 'failed') {
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'failed', outcome.reason)
+      } else if (outcome.status === 'installed') {
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'installed').catch((err) => {
+          this.deps.log.error(`cp: could not confirm bootstrap installation: ${(err as Error).message}`)
+        })
+        this.stopped = true
+        outcome.restart()
+        expectedTransport.close(1000, 'bootstrap upgrade installed')
+        throw new Error(`bootstrap upgrade to ${ok.lifecycle.targetVersion} installed`)
+      }
     }
 
     // ── register ──
-    this.state = 'REGISTERING'
     const registerCapabilities = this.deps.capabilities()
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
@@ -453,6 +469,23 @@ export class CpClient {
     // arrive later as another `facts/daemon-runtimes` snapshot that replaces
     // the one just sent.
     this.deps.onReady?.()
+  }
+
+  private async reportBootstrapResult(
+    transport: Transport,
+    lifecycle: BootstrapLifecycle,
+    status: 'installed' | 'failed',
+    reason?: string
+  ): Promise<void> {
+    const result = buildEnvelope('daemon/bootstrap/result', {
+      operationId: lifecycle.operationId,
+      status,
+      ...(reason ? { reason: reason.slice(0, 500) } : {})
+    })
+    const reply = await this.correlator.request(result, (encoded) => transport.send(encoded))
+    if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) {
+      throw new Error('control plane rejected the bootstrap result')
+    }
   }
 
   /**

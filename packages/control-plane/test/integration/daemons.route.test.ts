@@ -43,13 +43,15 @@ afterEach(async () => {
 /** A liveness index backed by a plain map — what the in-memory ConnectionRegistry is, sans
  *  socket. `sessionEpoch` defaults to 1 (seedDaemon's first auth epoch). */
 function liveness(
-  entries: Record<string, { state: string; reachable: boolean; sessionEpoch?: number }>
+  entries: Record<string, { state: string; reachable: boolean; sessionEpoch?: number }>,
+  reconnectForBootstrap?: DaemonLiveness['reconnectForBootstrap']
 ): DaemonLiveness {
   return {
     get: (id) => {
       const e = entries[id]
       return e ? { state: e.state, reachable: e.reachable, sessionEpoch: e.sessionEpoch ?? 1 } : undefined
-    }
+    },
+    ...(reconnectForBootstrap ? { reconnectForBootstrap } : {})
   }
 }
 
@@ -693,6 +695,26 @@ describe('POST /daemons/:id/upgrade', () => {
     expect(calls).toHaveLength(0)
     const op = await new PgDaemonLifecycleOpRepo(prisma).pendingForDaemon(DaemonId(DAEMON))
     expect(op).toMatchObject({ op: 'upgrade', targetVersion: '0.5.0', acceptedAt: null })
+  })
+
+  it('reconnects a registering daemon after enqueue so auth cannot miss the upgrade', async () => {
+    await seedDaemon(['worktree-iso', DAEMON_BOOTSTRAP_UPGRADE_FEATURE])
+    const reconnect = vi.fn(() => true)
+    const { spy, calls } = controlSpy({ accepted: true })
+    running = buildHttpApp(
+      prisma,
+      undefined,
+      liveness({ [DAEMON]: { state: 'REGISTERING', reachable: true } }, reconnect),
+      spy
+    )
+    const res = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/daemons/${DAEMON}/upgrade`,
+      payload: { version: '0.5.0' }
+    })
+    expect(res.statusCode).toBe(202)
+    expect(calls).toHaveLength(0)
+    expect(reconnect).toHaveBeenCalledWith(DAEMON, 1)
   })
 
   it('409s a second command while one is already in flight', async () => {

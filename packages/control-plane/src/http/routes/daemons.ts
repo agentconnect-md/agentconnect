@@ -460,8 +460,13 @@ export function daemonRoutes(deps: HttpDeps) {
         deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
       })
 
-      // A bootstrap-capable daemon consumes this durable intent on its next auth.
-      if (!liveReady) {
+      // Re-resolve after open: READY receives direct control; pre-READY reconnects through auth.
+      const deliveryConn = deps.liveness.get(id)
+      const deliveryReady = Boolean(deliveryConn?.reachable && deliveryConn.state === 'READY')
+      if (!deliveryReady && bootstrapUpgrade) {
+        if (deliveryConn?.reachable) {
+          deps.liveness.reconnectForBootstrap?.(id, deliveryConn.sessionEpoch)
+        }
         return reply.code(202).send({
           id: opRow.id,
           op: opRow.op,
