@@ -80,8 +80,12 @@ interface PlaygroundData {
   /** Add a participant to a LIVE conversation (mid-conversation join,
    *  webchat-multi-agents.md §3.1). Registers the agent with the CP, then
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
-   *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
-  pgAddAgent: (id: string, agent: Agent) => Promise<void>
+   *  Failures surface as a ⚠️ transcript step AND resolve to `false` — the
+   *  promise settling is not itself success (refused-while-busy and rejected
+   *  joins settle normally too), so a caller that gates routing on this join
+   *  (e.g. the mention picker) can tell an actual join from a no-op/refusal.
+   *  Refused while a turn streams. */
+  pgAddAgent: (id: string, agent: Agent) => Promise<boolean>
   /** Returns whether the send was ACCEPTED — false only when there is nothing to
    *  send. A send while a turn is still streaming is accepted too: it QUEUES
    *  (Claude Code-style) and dispatches in order as turns finish. Callers that
@@ -1021,15 +1025,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const pgAddAgent = useCallback(
-    async (id: string, added: Agent): Promise<void> => {
+    async (id: string, added: Agent): Promise<boolean> => {
       const orgId = activeOrg?.id
       const session = pgSessions[id]
       const primaryId = session?.agentId
-      if (!orgId || !primaryId) return
-      if (primaryId === added.id || session.participants?.some((p) => p.agentId === added.id)) return
+      if (!orgId || !primaryId) return false
+      // Already there — nothing to join, but not a failure either.
+      if (primaryId === added.id || session.participants?.some((p) => p.agentId === added.id)) return true
       if (busyRef.current[id]) {
         pushStep(id, { kind: 'done', text: '⚠️ Wait for the current reply to finish before adding an agent.' })
-        return
+        return false
       }
       const conversationId = conversationIds.current.get(id)
       if (conversationId) {
@@ -1040,7 +1045,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             kind: 'done',
             text: `⚠️ ${err instanceof ApiError ? err.message : `Could not add ${agentLabel(added)}.`}`
           })
-          return
+          return false
         }
       }
       const ids = rosterAgentIds.current.get(id) ?? [primaryId]
@@ -1075,6 +1080,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         connect(id, primaryId, conversationId).ready.catch(() => {})
       }
+      return true
     },
     [activeOrg, pgSessions, connect, pushStep]
   )

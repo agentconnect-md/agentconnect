@@ -84,6 +84,8 @@ import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
+import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
 import {
   WORK_LANES,
   sessionTurnInFlight,
@@ -211,36 +213,77 @@ function ComposerTextarea({
   sessionId,
   placeholder,
   onSend,
-  onImageFile
+  onImageFile,
+  mentionCandidates,
+  onPickMention,
+  onMentionJoiningChange
 }: {
   sessionId: string
   placeholder: string
   onSend: () => void
   onImageFile: (file: File) => void
+  mentionCandidates: MentionOption[]
+  onPickMention: (option: MentionOption) => void | Promise<boolean>
+  /** Mirrors `mention.joining` up to the parent so the (separately isolated)
+   *  Send button can disable itself too — see the effect below. */
+  onMentionJoiningChange: (joining: boolean) => void
 }) {
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // @mention picker (webchat-multi-agents.md §9.1/§9.2) — same contract as the
+  // Home composer's: picking a candidate inserts "@Name " and typedMentionIds()
+  // resolves that text back into a structural mention on send.
+  const mention = useMentionAutocomplete({
+    ref: textareaRef,
+    value: draft,
+    setValue: (v) => setPgInput(sessionId, v),
+    candidates: mentionCandidates,
+    onPick: onPickMention
+  })
+  useEffect(() => onMentionJoiningChange(mention.joining), [mention.joining, onMentionJoiningChange])
   return (
-    <textarea
-      className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-      placeholder={placeholder}
-      value={draft}
-      onChange={(e) => setPgInput(sessionId, e.target.value)}
-      onPaste={(event) => {
-        const image = clipboardImageFile(event.clipboardData)
-        if (!image) return
-        event.preventDefault()
-        onImageFile(image)
-      }}
-      onKeyDown={(e) => {
-        // Enter sends — but NOT while an IME is composing (that Enter
-        // just confirms the candidate), and Shift+Enter is a newline.
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-          e.preventDefault()
-          onSend()
-        }
-      }}
-    />
+    <div className="relative">
+      <textarea
+        ref={textareaRef}
+        className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+        placeholder={placeholder}
+        value={draft}
+        onChange={(e) => {
+          setPgInput(sessionId, e.target.value)
+          mention.sync(e.target.value, e.target.selectionStart ?? e.target.value.length)
+        }}
+        onSelect={(e) => {
+          // Re-derives the anchor on every caret move, not just typing — see
+          // the Home composer's identical handler for why.
+          const el = e.currentTarget
+          mention.sync(el.value, el.selectionStart ?? el.value.length)
+        }}
+        onPaste={(event) => {
+          const image = clipboardImageFile(event.clipboardData)
+          if (!image) return
+          event.preventDefault()
+          onImageFile(image)
+        }}
+        onKeyDown={(e) => {
+          if (mention.handleKeyDown(e)) return
+          // Enter sends — but NOT while an IME is composing (that Enter
+          // just confirms the candidate), while a mention join is still in
+          // flight (see onMentionJoiningChange), and Shift+Enter is a newline.
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !mention.joining) {
+            e.preventDefault()
+            onSend()
+          }
+        }}
+      />
+      <MentionMenu
+        options={mention.matches}
+        activeIndex={mention.activeIndex}
+        coords={mention.coords}
+        onHover={mention.setActiveIndex}
+        onPick={mention.pick}
+      />
+    </div>
   )
 }
 
@@ -253,6 +296,7 @@ function ComposerSendButton({
   busy,
   imagePreparing,
   hasImage,
+  mentionJoining,
   onSend,
   onStop
 }: {
@@ -260,6 +304,9 @@ function ComposerSendButton({
   busy: boolean
   imagePreparing: boolean
   hasImage: boolean
+  /** A picked @mention's mid-conversation join is still in flight — see
+   *  ComposerTextarea's onMentionJoiningChange for why Send holds off too. */
+  mentionJoining: boolean
   onSend: () => void
   onStop: () => void
 }) {
@@ -269,7 +316,7 @@ function ComposerSendButton({
       className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
       aria-label={busy ? 'Stop response' : 'Send message'}
       onClick={() => (busy ? onStop() : onSend())}
-      disabled={!busy && (imagePreparing || (!hasText && !hasImage))}
+      disabled={!busy && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
     >
       <Icon name={busy ? 'square' : 'arrow-up'} size={busy ? 10 : 14} />
     </button>
@@ -1390,6 +1437,11 @@ export default function SessionDetailView() {
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
+  // Mirrors ComposerTextarea's mention.joining (isolated from this component
+  // to keep typing cheap) — true while a picked @mention's mid-conversation
+  // join is still in flight, so the separately-isolated Send button can
+  // disable itself for the same reason ComposerTextarea holds off Enter-send.
+  const [mentionJoining, setMentionJoining] = useState(false)
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
@@ -2507,7 +2559,7 @@ export default function SessionDetailView() {
   // Resume the webchat conversation by its id (session.channelId == the conversationId);
   // a synthetic playground turn omits it (the CP mints a fresh id).
   const onPgSend = (text?: string) => {
-    if (imagePreparing) return
+    if (imagePreparing || mentionJoining) return
     setImageError(null)
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
@@ -2575,6 +2627,34 @@ export default function SessionDetailView() {
           )
         }))
     : []
+  // Same candidate pool as addAgentOptions (isPg can invite; an adopted session
+  // can only narrow among the roster it already has), reshaped for the
+  // @mention picker — see ComposerTextarea's `mention` above.
+  const mentionCandidates: MentionOption[] = isPg
+    ? agents.map((a) => ({
+        id: a.id,
+        name: liveRoster.find((p) => p.agentId === a.id)?.name ?? agentLabel(a),
+        icon: a.icon,
+        runtime: a.runtime,
+        inRoster: liveRoster.some((p) => p.agentId === a.id)
+      }))
+    : multiLive
+      ? liveRoster.flatMap((p) => {
+          const a = agents.find((x) => x.id === p.agentId)
+          return a ? [{ id: a.id, name: p.name, icon: a.icon, runtime: a.runtime, inRoster: true }] : []
+        })
+      : []
+  // Returns the join's promise (not fire-and-forget): pgAddAgent awaits the
+  // HTTP request before the roster reflects the new participant, and the
+  // composer holds Enter-send off until it settles — sending against the OLD
+  // roster would find no typed mention for the just-picked name and silently
+  // fall back to messaging every existing participant instead (or, on a
+  // failed join, leave the inserted "@Name" text pointing at nobody).
+  const onPickMention = (option: MentionOption): Promise<boolean> | void => {
+    if (option.inRoster) return
+    const picked = agents.find((a) => a.id === option.id)
+    return picked ? pgAddAgent(session.id, picked) : undefined
+  }
   const onCopyLink = () => {
     try {
       const canonicalId = session.realSessionId ?? session.id
@@ -3987,6 +4067,9 @@ export default function SessionDetailView() {
                     }
                     onSend={() => onPgSend()}
                     onImageFile={(file) => void onImageFile(file)}
+                    mentionCandidates={mentionCandidates}
+                    onPickMention={onPickMention}
+                    onMentionJoiningChange={setMentionJoining}
                   />
                   <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
                     <div className="relative flex-none">
@@ -4252,6 +4335,7 @@ export default function SessionDetailView() {
                       busy={pgBusy}
                       imagePreparing={imagePreparing}
                       hasImage={!!pgImage}
+                      mentionJoining={mentionJoining}
                       onSend={() => onPgSend()}
                       onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
                     />

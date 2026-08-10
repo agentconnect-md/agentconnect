@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { resolveRoster, selfConversationPath, typedMentionIds, wireMentions } from './conversation-addressing'
+import {
+  mentionQueryAt,
+  mentionSpanEnd,
+  resolveRoster,
+  selfConversationPath,
+  typedMentionIds,
+  wireMentions
+} from './conversation-addressing'
 
 const roster = [{ agentId: 'a-primary', primary: true }, { agentId: 'b-peer' }]
 
@@ -105,6 +112,45 @@ describe('typedMentionIds', () => {
 
   it('never narrows a single-agent conversation', () => {
     expect(typedMentionIds([{ agentId: 'solo', name: 'solo' }], '@solo hi')).toEqual([])
+  })
+})
+
+describe('mentionQueryAt', () => {
+  it('finds the run typed after the triggering @', () => {
+    expect(mentionQueryAt('hello @cla', 10)).toEqual({ start: 6, query: 'cla' })
+    expect(mentionQueryAt('hi @', 4)).toEqual({ start: 3, query: '' })
+  })
+
+  it('ends the query at the first space — a finished word is a stale @', () => {
+    expect(mentionQueryAt('hi @agent typing more', 10)).toBeNull()
+  })
+
+  it('ignores an @ welded to the word before it', () => {
+    expect(mentionQueryAt('mail me at foo@test.dev', 15)).toBeNull()
+  })
+
+  it('sees no query without an @', () => {
+    expect(mentionQueryAt('no at signs here', 5)).toBeNull()
+  })
+
+  it('reads the caret position, not the end of the text', () => {
+    expect(mentionQueryAt('@agentconnect', 5)).toEqual({ start: 0, query: 'agen' })
+  })
+})
+
+describe('mentionSpanEnd', () => {
+  it('runs to the end of the token, past where the caret currently sits', () => {
+    // "hello @al" with the caret backed up between 'a' and 'l' (position 8) —
+    // the token itself still spans 6..9, so a pick must replace all of it.
+    expect(mentionSpanEnd('hello @al', 6)).toBe(9)
+  })
+
+  it('stops at the next space', () => {
+    expect(mentionSpanEnd('@bob says hi', 0)).toBe(4)
+  })
+
+  it('runs to the end of the text when the token is unterminated', () => {
+    expect(mentionSpanEnd('@bob', 0)).toBe(4)
   })
 })
 
