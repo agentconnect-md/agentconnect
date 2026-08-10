@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { realpathSync } from 'node:fs'
 import { isAbsolute, normalize, resolve, sep } from 'node:path'
 import { applyFileSinkPayload } from './file-sink.js'
@@ -35,40 +36,58 @@ export const ALLOWED_GIT_SUBCOMMANDS = new Set([
  * Argument forms refused regardless of subcommand: each turns a git invocation into an
  * arbitrary-execution primitive, so no member of the inventory above may carry one.
  *
- * Attached spellings are absent deliberately: git 2.43 rejects `-ccore.pager=x` and
- * `--config=k=v` as unknown options itself, so a pattern for them would guard nothing.
+ * Matched as PREFIXES, never as exact tokens. Every one of these has at least three accepted
+ * spellings — separated (`-c k=v`), attached (`-ck=v`) and long-with-equals (`--config=k=v`) —
+ * all measured against git 2.43, and an exact-token list catches only the first. `-c` in
+ * particular is not just a global option: `git clone -c` is clone's OWN option, which is how
+ * `-cprotocol.ext.allow=always ext::<helper>` reaches a helper the caller names.
+ *
+ * No argv the daemon sends starts with `-c` or `--config` (`--count` does not match `/^-c/`,
+ * whose second character is `c`), so the width costs nothing real.
  */
 const REFUSED_ARGUMENT = [
-  /^-c$/, // ad-hoc config: -c core.pager=… / -c protocol.ext.allow=always
+  /^-c/, // ad-hoc config in any spelling: -c k=v, -ck=v
+  /^--config/, // --config=k=v, --config-env=…
   /^--exec-path/, // relocates git's helper binaries
   /^--upload-pack/,
-  /^--receive-pack/,
-  /^--config-env/
+  /^--receive-pack/
 ]
 
 /**
- * Short aliases that reach execution for ONE subcommand, where the same spelling is ordinary
+ * Options that reach execution for ONE subcommand, where the same spelling is ordinary
  * elsewhere — so the check has to be subcommand-aware rather than a blanket ban.
  *
- * `git clone -u <program>` is `--upload-pack` and runs the program (measured, git 2.43), while
- * `status -u` is `--untracked-files` and `fetch -u` is `--update-head-ok`; the daemon sends both
- * of those. `git config -e` opens `GIT_EDITOR`, also measured, and no call site edits config.
+ * `git clone -u <program>` is `--upload-pack` and runs the program, attached spelling included
+ * (`-u<program>`); measured, not assumed. Meanwhile `status -u` is `--untracked-files` and
+ * `fetch -u` is `--update-head-ok`, and the daemon sends both — a blanket `-u` refusal would
+ * break every status call. `git config -e` opens `GIT_EDITOR`, also measured, and no call site
+ * edits config.
  */
 const REFUSED_SUBCOMMAND_ARGUMENT: Record<string, RegExp[]> = {
-  clone: [/^-u$/],
-  config: [/^-e$/, /^--edit$/]
+  clone: [/^-u/],
+  config: [/^-e$/, /^--edit/]
 }
 
 /**
- * Per-stream output ceiling.
+ * Per-stream raw ceiling — a cheap first bound, NOT the authoritative one.
  *
- * The result travels as ONE shim frame, and `MAX_FRAME_BYTES` is 256 KiB — so a 32 MiB buffer
- * did not mean "large results are allowed", it meant a large result was assembled and then
- * dropped by the transport, taking the channel with it. A quarter of the frame per stream keeps
- * both plus JSON escaping inside the envelope, and exceeding it now surfaces as a refusal the
- * caller can report rather than a disconnect it has to diagnose.
+ * The result travels as ONE shim frame, and `MAX_FRAME_BYTES` is 256 KiB, so a 32 MiB buffer did
+ * not mean "large results are allowed": it meant a large result was assembled and then dropped
+ * by the transport, taking the channel with it.
  */
 const MAX_STREAM_BYTES = 64 * 1024
+
+/**
+ * The authoritative bound: the SERIALIZED size, because JSON encoding is not size-preserving.
+ *
+ * `git status -z` emits filenames verbatim, control bytes included, and JSON expands each one to
+ * a six-byte `\uXXXX` escape — so ~57 KB of raw output measured 333 KB serialized, passing a raw
+ * check and then failing the 256 KiB frame. Checking the encoded form is the only check that
+ * corresponds to what the transport will accept. The headroom covers the frame envelope
+ * (correlation id, capability, generation) that wraps this payload.
+ */
+const FRAME_ENVELOPE_HEADROOM_BYTES = 4 * 1024
+const MAX_RESPONSE_BYTES = MAX_FRAME_BYTES - FRAME_ENVELOPE_HEADROOM_BYTES
 
 /** Shell convention for a signalled child, so a killed git is never mistaken for exit 0. */
 const SIGNAL_EXIT_BASE = 128
@@ -168,6 +187,11 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps): Promise<GitExecR
         cwd,
         // The env REPLACES rather than extends, matching the contract: the daemon sanitizes it,
         // and merging the sandbox's own environment back in would undo that.
+        // Boundary worth stating: env is a TRUSTED input here and argv filtering does not close
+        // it — GIT_SSH_COMMAND, or GIT_CONFIG_COUNT pairs naming an executable setting, still
+        // reach execution. It cannot simply be filtered, because those same mechanisms are how
+        // the daemon delivers credential helpers and pins hooksPath; making it untrusted means
+        // moving that policy into the shim, which is a design change, not a patch.
         ...(parsed.env ? { env: parsed.env } : {}),
         timeout: timeoutMs,
         // A killed git leaves index.lock behind, so the timeout is a last resort rather than
@@ -187,13 +211,26 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps): Promise<GitExecR
           )
           return
         }
+        const deliver = (result: GitExecResult): void => {
+          // Measured on the encoded form, since that is what the transport frames.
+          const serialized = Buffer.byteLength(JSON.stringify(result), 'utf8')
+          if (serialized > MAX_RESPONSE_BYTES) {
+            reject(
+              new ExecRefusedError(
+                `git ${subcommand} result is ${serialized} bytes once encoded, over the ${MAX_RESPONSE_BYTES} a shim frame can carry`
+              )
+            )
+            return
+          }
+          resolvePromise(result)
+        }
         if (failure && (failure.killed === true || typeof failure.signal === 'string')) {
           // A signalled child has NO exit code — Node reports `code: null`, `signal: SIGTERM`.
           // Mapping that to 0 was the dangerous case: a timed-out `status` came back as success
           // with partial output, which every caller reads as a clean tree, and a timed-out
           // `rev-parse` as an empty HEAD. Non-zero makes it a failure the daemon raises.
           const signal = failure.signal ?? ''
-          resolvePromise({
+          deliver({
             code: SIGNAL_EXIT_BASE + (SIGNAL_NUMBERS[signal] ?? 0),
             stdout: String(stdout),
             stderr: `${String(stderr)}\ngit ${subcommand} was terminated${signal ? ` by ${signal}` : ''} after ${timeoutMs}ms`
@@ -206,7 +243,7 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps): Promise<GitExecR
           reject(new ExecRefusedError(`git could not be run: ${failure.message}`))
           return
         }
-        resolvePromise({
+        deliver({
           code: typeof failure?.code === 'number' ? failure.code : 0,
           stdout: String(stdout),
           stderr: String(stderr)

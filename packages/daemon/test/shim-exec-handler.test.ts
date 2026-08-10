@@ -146,27 +146,44 @@ describe('sandbox exec handler', () => {
     expect(withoutEnv.stdout.trim()).not.toBe('Only From Request')
   })
 
-  it('refuses a short alias that reaches execution, without banning the same spelling elsewhere', async () => {
-    // `git clone -u <program>` IS --upload-pack and RUNS the program — measured against git
-    // 2.43, not assumed. The blocklist only covered the long spelling.
+  it('refuses every accepted SPELLING of an execution option, not just the separated one', async () => {
+    // The first version of this guard matched exact tokens and probed `-c` in the GLOBAL
+    // position, where git rejects the attached form. That was the wrong position: `git clone -c`
+    // is clone's own option and accepts `-ck=v` and `--config=k=v`, which is how
+    // `-cprotocol.ext.allow=always ext::<helper>` reaches a helper the caller names. All of the
+    // spellings below were measured executing against git 2.43 before being refused here.
     const root = repository()
     const evil = join(root, 'evil.sh')
     writeFileSync(evil, '#!/bin/sh\necho EVIL-RAN >&2\nexit 1\n', { mode: 0o755 })
-    await expect(
-      handler(root)('exec', { tool: 'git', args: ['clone', '-u', evil, 'file:///nonexistent', join(root, 'dst')] })
-    ).rejects.toBeInstanceOf(ExecRefusedError)
-    // `git config -e` opens GIT_EDITOR, also measured; no call site edits config.
-    await expect(handler(root)('exec', { tool: 'git', args: ['config', '-e'] })).rejects.toBeInstanceOf(
-      ExecRefusedError
-    )
+    const spellings = [
+      ['clone', '-u', evil, 'file:///nonexistent', join(root, 'd1')], // separated
+      ['clone', `-u${evil}`, 'file:///nonexistent', join(root, 'd2')], // attached
+      ['clone', `--upload-pack=${evil}`, 'file:///nonexistent', join(root, 'd3')], // long, =
+      ['clone', '--upload-pack', evil, 'file:///nonexistent', join(root, 'd4')], // long, separated
+      ['clone', '-cprotocol.ext.allow=always', `ext::${evil}`, join(root, 'd5')], // clone's own -c
+      ['clone', '--config=protocol.ext.allow=always', `ext::${evil}`, join(root, 'd6')],
+      ['clone', '-c', 'protocol.ext.allow=always', `ext::${evil}`, join(root, 'd7')],
+      ['config', '-e'],
+      ['config', '--edit'],
+      ['status', '-ccore.pager=EVIL'],
+      ['status', '--config-env=core.pager=EVIL']
+    ]
+    for (const args of spellings) {
+      await expect(handler(root)('exec', { tool: 'git', args })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+    // Nothing ran: the helper writes to stderr, and a refusal happens before any spawn.
+    expect(readFileSync(evil, 'utf8')).toContain('EVIL-RAN')
 
-    // And NOT a blanket ban: `-u` means --untracked-files to status, which the daemon sends on
-    // every status call, so refusing the spelling everywhere would break the feature.
+    // And NOT a blanket ban. `-u` means --untracked-files to status, which the daemon sends on
+    // every status call, and `--count` must survive `/^-c/` — its second character is `-`.
     const status = (await handler(root)('exec', {
       tool: 'git',
       args: ['status', '--porcelain=v2', '--branch', '-u', '-z']
     })) as GitExecResult
     expect(status.code).toBe(0)
+    const count = (await handler(root)('exec', { tool: 'git', args: ['rev-list', '--count', 'HEAD'] })) as GitExecResult
+    expect(count.code).toBe(0)
+    expect(count.stdout.trim()).toBe('1')
   })
 
   it('refuses a cwd that escapes through a SYMLINK beneath the root', async () => {
@@ -206,6 +223,21 @@ describe('sandbox exec handler', () => {
     // The guard has to sit below the frame cap, not at it: the JSON envelope carries both
     // streams plus escaping.
     expect(MAX_FRAME_BYTES).toBeGreaterThan(64 * 1024)
+  })
+
+  it('refuses a result under the raw cap but over the WIRE cap once encoded', async () => {
+    // JSON encoding is not size-preserving: `git status -z` emits filenames verbatim, control
+    // bytes included, and each becomes a six-byte \uXXXX escape. A raw-only check passed this
+    // and the transport then dropped the frame — measured at 51,682 raw / 302,976 encoded, so
+    // the earlier 64 KiB raw guard did not see it at all.
+    const root = repository()
+    const control = String.fromCharCode(1).repeat(200)
+    for (let i = 0; i < 250; i += 1) writeFileSync(join(root, `f${i}${control}`), 'x')
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['status', '--porcelain=v2', '--branch', '-u', '-z'] })
+    ).rejects.toThrow(/once encoded/)
+    // The guard has to sit below the frame cap, since the envelope shares the frame.
+    expect(MAX_FRAME_BYTES).toBe(256 * 1024)
   })
 
   it('reports a TIMED-OUT git as a failure, never as exit 0', async () => {
