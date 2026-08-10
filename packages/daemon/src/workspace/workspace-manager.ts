@@ -35,6 +35,7 @@ import {
   workspaceGitPullTarget,
   writeRepoHelperConfig
 } from './git-injection.js'
+import { LocalGitRunner } from './git-runner.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
 
 const skillsLog = makeLogger('info')
@@ -316,7 +317,10 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
       const repository = gitRepoOf(agent)
       await assertSafeWorkspaceGitConfig(cwd)
       const pullTarget = workspaceGitPullTarget(repository)
-      const git = gitFor(cwd, abort.signal).env({
+      // Through the runner, because pullWorkspaceRef is orchestration and now speaks the
+      // contract. The remaining gitFor sites in this file migrate with the rest of #815.
+      const git = new LocalGitRunner(gitFor(cwd, abort.signal)).withEnv({
+        ...workspaceGitLocalEnv(),
         ...pullTarget.env,
         ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
         GIT_TERMINAL_PROMPT: '0'

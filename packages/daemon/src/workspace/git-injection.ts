@@ -31,6 +31,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type GitCommitIdentity } from '@agentconnect.md/protocol'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../cp/gitcred-server.js'
@@ -298,7 +299,7 @@ export function sessionGitPolicyEnv(): Record<string, string> {
  * origin/<branch> current for status. check-ref-format prevents a configured
  * branch from being interpreted as an option or refspec.
  */
-export async function pullWorkspaceRef(git: SimpleGit, remote: string, branch: string) {
+export async function pullWorkspaceRef(git: GitRunner, remote: string, branch: string): Promise<GitPullSummary> {
   await git.raw(['check-ref-format', '--branch', branch])
   const refspec = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
   return git.pull(remote, refspec, ['--ff-only', '--no-recurse-submodules'])
