@@ -2029,6 +2029,8 @@ export class Daemon {
   // Guards against a second CP lifecycle command (restart/upgrade) racing one
   // already in flight (§7.1). Cleared only if an upgrade aborts before exiting.
   private lifecycleInFlight = false
+  private fleetUpgradeInFlight?: { targetVersion: string; installation: Promise<boolean> }
+  private fleetExitStarted = false
   // Whole-daemon drain gate: once set, no new turns are dispatched (SIGTERM, or a
   // scope:daemon drain). Agent-scoped drains gate just their agentId.
   private draining = false
@@ -2152,6 +2154,8 @@ export class Daemon {
       clock?: Clock
       /** How the daemon exits for daemon/restart + daemon/upgrade (spied in tests). */
       requestExit?: (code: number) => void
+      /** Test seam for a blocked or failed CLI upgrade installation. */
+      upgradeInstaller?: typeof runCliUpgrade
       /** Who supervises this process — 'cli' (respawn shell) or 'service' (launchd/
        *  systemd). Set by the launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown
        *  means no supervisor (bare `node dist/index.js run`), so CP-commanded
@@ -18098,16 +18102,28 @@ export class Daemon {
     return { accepted: true, root, ...(cliEntry ? { cliEntry } : {}), ...(willDrainUntil ? { willDrainUntil } : {}) }
   }
 
-  private async installFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
-    const ok = await runCliUpgrade(cliEntry, targetVersion, root, this.log)
-    if (!ok) {
-      this.log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
-      this.lifecycleInFlight = false
-    }
-    return ok
+  private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
+    const installation = Promise.resolve()
+      .then(() => (this.opts.upgradeInstaller ?? runCliUpgrade)(cliEntry, targetVersion, root, this.log))
+      .catch((err) => {
+        this.log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)
+        return false
+      })
+      .then((ok) => {
+        if (!ok) {
+          this.log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
+          this.lifecycleInFlight = false
+          if (this.fleetUpgradeInFlight?.installation === installation) this.fleetUpgradeInFlight = undefined
+        }
+        return ok
+      })
+    this.fleetUpgradeInFlight = { targetVersion, installation }
+    return installation
   }
 
   private finishFleetExit(kind: 'restart' | 'upgrade'): void {
+    if (this.fleetExitStarted) return
+    this.fleetExitStarted = true
     void (async () => {
       try {
         await this.stop()
@@ -18124,10 +18140,7 @@ export class Daemon {
     const admission = this.admitFleetExit(kind, targetVersion)
     if (!admission.accepted) return admission
     void (async () => {
-      if (
-        kind === 'upgrade' &&
-        !(await this.installFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))
-      ) {
+      if (kind === 'upgrade' && !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))) {
         return
       }
       this.finishFleetExit(kind)
@@ -18138,9 +18151,16 @@ export class Daemon {
 
   private async runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome> {
     if (targetVersion === DAEMON_VERSION) return { status: 'current' }
+    const existing = this.fleetUpgradeInFlight
+    if (existing?.targetVersion === targetVersion) {
+      const installed = await existing.installation
+      return installed
+        ? { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
+        : { status: 'failed', reason: `failed to install ${targetVersion}` }
+    }
     const admission = this.admitFleetExit('upgrade', targetVersion)
     if (!admission.accepted) return { status: 'failed', reason: admission.reason }
-    if (!(await this.installFleetUpgrade(admission.cliEntry!, targetVersion, admission.root))) {
+    if (!(await this.startFleetUpgrade(admission.cliEntry!, targetVersion, admission.root))) {
       return { status: 'failed', reason: `failed to install ${targetVersion}` }
     }
     return { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
