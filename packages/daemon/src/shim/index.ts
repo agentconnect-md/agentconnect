@@ -3,8 +3,9 @@
  *  (`/opt/agentconnect/shim`), root-owned and read-only, with tini as PID 1. */
 import { ClientTransport } from '@agentconnect.md/connection'
 import { ShimClient, type ShimTransport } from './client.js'
+import { createExecHandler } from './exec-handler.js'
 import { resolveCommandInPath } from './path-resolve.js'
-import { SHIM_ENDPOINT_ENV } from './protocol.js'
+import { SHIM_ENDPOINT_ENV, SHIM_WORKSPACE_ROOT_ENV } from './protocol.js'
 
 const log = {
   info: (message: string) => console.error(`[shim] ${message}`),
@@ -24,6 +25,9 @@ async function main(): Promise<number> {
     // Without this the runner skips executable hints entirely, so CLAUDE_CODE_EXECUTABLE and
     // path-qualified registry commands would never resolve in the sandbox.
     resolveCommand: resolveCommandInPath,
+    // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
+    // trusting that the daemon sent only permitted subcommands.
+    handle: createExecHandler({ workspaceRoot: process.env[SHIM_WORKSPACE_ROOT_ENV] ?? '/agent', log }),
     log
   })
   // A signal is the pod being torn down; drop the channel rather than racing the

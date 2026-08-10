@@ -1,0 +1,169 @@
+import { afterAll, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { ALLOWED_GIT_SUBCOMMANDS, ExecRefusedError, createExecHandler } from '../src/shim/exec-handler.js'
+import { configFilesDir } from '../src/agents/config-file-env.js'
+import type { GitExecResult } from '../src/shim/git-exec.js'
+
+/**
+ * The sandbox side of the exec channel, which is where the declared git inventory is actually
+ * ENFORCED.
+ *
+ * The daemon declaring a closed list is not a control: this process spawns git, so a
+ * compromised or buggy daemon reaching arbitrary git — and through `-c`, hooks or
+ * `--upload-pack`, arbitrary execution — is refused here or not at all. Every case below runs
+ * the real handler against a real repository.
+ */
+
+const roots: string[] = []
+
+afterAll(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function repository(): string {
+  const root = mkdtempSync(join(tmpdir(), 'ac-execguard-'))
+  roots.push(root)
+  execFileSync('git', ['init', '--initial-branch=main'], { cwd: root })
+  writeFileSync(join(root, 'file.txt'), 'x\n')
+  execFileSync('git', ['add', 'file.txt'], { cwd: root })
+  execFileSync('git', ['commit', '-m', 'seed'], {
+    cwd: root,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'T',
+      GIT_AUTHOR_EMAIL: 't@e',
+      GIT_COMMITTER_NAME: 'T',
+      GIT_COMMITTER_EMAIL: 't@e'
+    }
+  })
+  return root
+}
+
+function handler(root: string) {
+  return createExecHandler({ workspaceRoot: root, log: { info: () => {}, warn: () => {} } })
+}
+
+describe('sandbox exec handler', () => {
+  it('runs a permitted subcommand and reports its output', async () => {
+    const root = repository()
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['rev-parse', '--verify', 'HEAD']
+    })) as GitExecResult
+    expect(result.code).toBe(0)
+    expect(result.stdout.trim()).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  it('reports a git failure as an exit code rather than throwing', async () => {
+    const root = repository()
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['rev-parse', '--verify', 'refs/heads/missing']
+    })) as GitExecResult
+    // A git-level failure is data the daemon interprets; only a refusal is exceptional.
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).not.toBe('')
+  })
+
+  it('refuses a subcommand outside the declared inventory', async () => {
+    const root = repository()
+    for (const subcommand of ['push', 'submodule', 'daemon', 'gc', 'apply']) {
+      await expect(handler(root)('exec', { tool: 'git', args: [subcommand] })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+    // And the inventory is the daemon's declared list, not a superset invented here.
+    expect(ALLOWED_GIT_SUBCOMMANDS.has('push')).toBe(false)
+    expect(ALLOWED_GIT_SUBCOMMANDS.has('status')).toBe(true)
+  })
+
+  it('refuses arguments that turn a permitted subcommand into arbitrary execution', async () => {
+    const root = repository()
+    // Each of these reaches execution THROUGH git, so a permitted subcommand is not sufficient.
+    const attacks = [
+      ['-c', 'core.pager=sh -c "id"', 'status'],
+      ['status', '-c', 'protocol.ext.allow=always'],
+      ['--exec-path=/tmp/evil', 'status'],
+      ['fetch', '--upload-pack=sh -c "id"', 'origin'],
+      ['--config-env=core.pager=EVIL', 'status']
+    ]
+    for (const args of attacks) {
+      await expect(handler(root)('exec', { tool: 'git', args })).rejects.toBeInstanceOf(ExecRefusedError)
+    }
+  })
+
+  it('refuses a cwd outside the workspace root, whatever the daemon asked for', async () => {
+    const root = repository()
+    const outside = mkdtempSync(join(tmpdir(), 'ac-outside-'))
+    roots.push(outside)
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['status', '--porcelain'], cwd: outside })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['status', '--porcelain'], cwd: join(root, '..') })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    await expect(
+      handler(root)('exec', { tool: 'git', args: ['status', '--porcelain'], cwd: 'relative' })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+
+    // A subdirectory of the root is fine — the check is containment, not equality.
+    mkdirSync(join(root, 'sub'), { recursive: true })
+    const inside = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['status', '--porcelain'],
+      cwd: join(root, 'sub')
+    })) as GitExecResult
+    expect(inside.code).toBe(0)
+  })
+
+  it('applies the request env as given rather than merging the sandbox environment', async () => {
+    // Verified through `config`, which IS in the inventory. An earlier version of this test used
+    // `commit` — and the guard refused it, correctly: the daemon never commits, so `commit` is
+    // not on the list. The test reaching for a convenient command it does not use was the bug.
+    const root = repository()
+    const globalConfig = join(root, 'from-request.gitconfig')
+    writeFileSync(globalConfig, '[user]\n\tname = Only From Request\n')
+    const result = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['config', '--get', 'user.name'],
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: root,
+        GIT_CONFIG_GLOBAL: globalConfig
+      }
+    })) as GitExecResult
+    // git only reads that file if the request env reached the child.
+    expect(result.stdout.trim()).toBe('Only From Request')
+
+    // And without it, the same argv does not see that name — so the previous result was the
+    // env doing the work rather than ambient configuration.
+    const withoutEnv = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['config', '--get', 'user.name']
+    })) as GitExecResult
+    expect(withoutEnv.stdout.trim()).not.toBe('Only From Request')
+  })
+
+  it('serves materialization and refuses a path escaping the sink root', async () => {
+    const root = repository()
+    await handler(root)('materialize', {
+      op: 'write',
+      root: configFilesDir(root),
+      relPath: ['kubeconfig'],
+      content: 'apiVersion: v1\n'
+    })
+    expect(readFileSync(join(configFilesDir(root), 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
+    await expect(
+      handler(root)('materialize', { op: 'write', root: configFilesDir(root), relPath: ['..', 'escape'], content: 'x' })
+    ).rejects.toThrow()
+  })
+
+  it('refuses a capability it does not serve', async () => {
+    const root = repository()
+    // acp is served by the runner and tunnel is not implemented here; neither may fall through
+    // to the git path by accident.
+    await expect(handler(root)('acp', { op: 'open' })).rejects.toBeInstanceOf(ExecRefusedError)
+    await expect(handler(root)('tunnel', { op: 'open' })).rejects.toBeInstanceOf(ExecRefusedError)
+  })
+})
