@@ -262,7 +262,12 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
-import { cloudRuntimesPath, declaredRuntimeCatalog, loadCloudRuntimeTable } from './runtimes/cloud-runtimes.js'
+import {
+  cloudRuntimesPath,
+  declaredRuntimeCatalog,
+  loadCloudRuntimeTable,
+  type CloudRuntimeAcpSnapshot
+} from './runtimes/cloud-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   probeAllRuntimes,
@@ -1961,6 +1966,10 @@ export class Daemon {
   // Model snapshot declared alongside the cloud runtime image; applied after the
   // SQLite catalog hydrate so the image's list wins over a stale cached one.
   private cloudDeclaredModels: Record<string, string[]> = {}
+  // The image's `initialize` snapshot. --cloud runs no probe, so without this the fields
+  // runtimeProfiles() reports — ACP protocol version, the adapter's own version, MCP transports —
+  // stay empty and the published snapshot describes nothing.
+  private cloudDeclaredAcp: Record<string, CloudRuntimeAcpSnapshot> = {}
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -2776,6 +2785,16 @@ export class Daemon {
     for (const [runtimeId, models] of Object.entries(this.cloudDeclaredModels)) {
       this.runtimeModels.set(runtimeId, [...models])
       this.runtimeModelsSource.set(runtimeId, 'cached')
+    }
+    // The image probed these at build time, so they are the same facts a live probe would report —
+    // and they populate the same maps runtimeProfiles() reads, rather than a parallel surface.
+    for (const [runtimeId, snapshot] of Object.entries(this.cloudDeclaredAcp)) {
+      if (snapshot.protocolVersion !== undefined) this.runtimeAcpVersions.set(runtimeId, snapshot.protocolVersion)
+      const mcp = snapshot.capabilities?.mcpCapabilities
+      if (mcp && typeof mcp === 'object') {
+        const caps = mcp as { http?: unknown; sse?: unknown }
+        this.runtimeMcpCaps.set(runtimeId, { http: caps.http === true, sse: caps.sse === true })
+      }
     }
     this.modelCatalogSvc = new ModelCatalogService({
       store: this.store,
@@ -19467,6 +19486,7 @@ export class Daemon {
         `runtimes: declared runtimes launch through a package manager and cannot be pinned to this image: ${declared.rejectedPackageLaunchers.join(', ')} — resolve them to a local executable in the catalog`
       )
     this.cloudDeclaredModels = declared.models
+    this.cloudDeclaredAcp = declared.acp
     return declared.catalog
   }
 
