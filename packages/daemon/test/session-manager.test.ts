@@ -1934,6 +1934,30 @@ describe('SessionManager — collaboration preamble', () => {
     store.close()
   })
 
+  it('leads the guidance with the tool-precedence rule naming the built-in SendMessage hazard (issue #800)', async () => {
+    // Measured (tool-surface A/B, 2026-08-09): a Claude Code child session also
+    // carries the runtime's own built-in `SendMessage` — a literal name match
+    // for a report-back instruction — and a child that picks it loses its
+    // parent report silently. The standing context must say, before anything
+    // else about collaboration, that AgentConnect's MCP tools are the only
+    // channel that reaches anyone and that similarly-named built-ins are lost.
+    const store = newStore()
+    const host = { newSession: vi.fn(async () => 'acp-1') } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
+    const first = (blocks[0] as any).text as string
+    expect(first).toContain('ONLY channel that reaches other agents and humans')
+    expect(first).toContain('mcp__agentconnect__sendMessage')
+    expect(first).toContain('a bare `SendMessage`')
+    expect(first).toContain('do NOT reach AgentConnect')
+    expect(first).toContain('Never use them for messaging, reporting back, or collaboration')
+    // It LEADS the collaboration section: the collision fires exactly when the
+    // model is choosing a messaging tool, so the warning must come first.
+    const section = first.slice(first.indexOf('# Collaborating with other agents'))
+    expect(section.indexOf('ONLY channel that reaches')).toBeLessThan(section.indexOf('To reach a specific agent'))
+    store.close()
+  })
+
   it('states the needsReply rule in the standing context, not only in the tool descriptor', async () => {
     // The descriptor is one input among many; this context is ALWAYS present and used to
     // present the bare `toAgent` form as the normal way to reach a peer privately, with no
