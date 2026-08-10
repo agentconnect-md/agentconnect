@@ -24,6 +24,11 @@ export type AuthorizeFailure =
 
 export type AuthorizeResult = { ok: true; binding: Binding } | { ok: false; failure: AuthorizeFailure }
 
+export type BindResult =
+  | { ok: true; credential: string; binding: Binding; superseded: Binding[] }
+  /** A newer launch already holds this sandbox's channel; the caller must not bind. */
+  | { ok: false; reason: 'superseded_generation'; current: number }
+
 /** Constant-time compare that cannot throw on a length mismatch. */
 function sameSecret(a: string, b: string): boolean {
   const left = Buffer.from(a)
@@ -64,13 +69,17 @@ export class ShimBindingRegistry {
    * credential live and its generation authorized: precisely the replay the fence exists
    * to stop. The superseded bindings are returned so the caller can close their channels.
    */
-  bind(
-    record: SpawnRecord,
-    pod: { name: string; uid: string }
-  ): { credential: string; binding: Binding; superseded: Binding[] } {
+  bind(record: SpawnRecord, pod: { name: string; uid: string }): BindResult {
     const superseded: Binding[] = []
     for (const [credential, existing] of [...this.byCredential]) {
       if (existing.agentId !== record.agentId || existing.sandboxUid !== record.sandboxUid) continue
+      // Monotonic, and mutating nothing when it is not: an older incarnation can bind
+      // AFTER a newer one — a terminating pod reconnecting during overlap, or simply a
+      // slower TokenReview — and replacing the current binding would hand the channel back
+      // to the sandbox that is going away.
+      if (existing.generation >= record.generation) {
+        return { ok: false, reason: 'superseded_generation', current: existing.generation }
+      }
       superseded.push(existing)
       this.byCredential.delete(credential)
       this.credentialByPod.delete(existing.podUid)
@@ -85,7 +94,7 @@ export class ShimBindingRegistry {
     }
     this.byCredential.set(credential, binding)
     this.credentialByPod.set(pod.uid, credential)
-    return { credential, binding, superseded }
+    return { ok: true, credential, binding, superseded }
   }
 
   /**

@@ -142,6 +142,11 @@ export class ShimListener {
   private accept(ws: WebSocket, remoteAddress: string): void {
     let bound: ShimConnection | undefined
     let binding = false
+    // TokenReview is a network round trip, so the socket can close while it is pending.
+    // The continuation must not then issue a credential, supersede a live binding, or
+    // publish a connection for a socket that is already gone.
+    let socketOpen = true
+    ws.once('close', () => (socketOpen = false))
     const reject = (rejected: ShimRejected): void => {
       // The wire answer is identical for every pre-binding failure. An earlier version
       // sent the precise reason, which let a caller distinguish "token not accepted" from
@@ -175,9 +180,15 @@ export class ShimListener {
           return
         }
         binding = true
-        void this.bindFrom(frame.token, remoteAddress).then(
+        void this.bindFrom(frame.token, remoteAddress, () => socketOpen).then(
           (result) => {
             binding = false
+            if (!result.ok && 'abandoned' in result) {
+              // The socket closed mid-review; bindFrom stopped before the registry.
+              this.deps.log.info('shim: callback closed before its token review finished')
+              return
+            }
+            if (!socketOpen) return
             if (!result.ok) return reject(uniformRejection)
             // Close the superseded incarnation's channel: its credential is already gone
             // from the registry, and leaving the socket open would keep a dead binding in
@@ -250,9 +261,12 @@ export class ShimListener {
 
   private async bindFrom(
     token: string,
-    remoteAddress: string
+    remoteAddress: string,
+    stillOpen: () => boolean
   ): Promise<
-    { ok: true; credential: string; binding: Binding; superseded: Binding[] } | { ok: false; rejected: ShimRejected }
+    | { ok: true; credential: string; binding: Binding; superseded: Binding[] }
+    | { ok: false; rejected: ShimRejected }
+    | { ok: false; abandoned: true }
   > {
     const review = await this.deps.verifier.reviewToken(token, [SHIM_TOKEN_AUDIENCE])
     if (!review.authenticated || !review.podName || !review.podUid) {
@@ -272,7 +286,19 @@ export class ShimListener {
       this.deps.log.warn(`shim: no spawn record for pod ${pod.name} (${remoteAddress})`)
       return { ok: false, rejected: { type: 'shim/rejected', reason: 'unknown_pod', message: 'pod not recognized' } }
     }
-    const { credential, binding, superseded } = this.registry.bind(record, pod)
-    return { ok: true, credential, binding, superseded }
+    // Last check before the only mutation in this path: the registry must not be touched
+    // on behalf of a socket that closed while the review was in flight.
+    if (!stillOpen()) return { ok: false, abandoned: true }
+    const bound = this.registry.bind(record, pod)
+    if (!bound.ok) {
+      // A newer launch already holds this sandbox. Refusing without mutating is what stops
+      // a terminating pod from reclaiming the channel during overlap.
+      this.deps.log.warn(
+        `shim: refused generation ${record.generation} for agent ${record.agentId} — ` +
+          `generation ${bound.current} already holds the channel`
+      )
+      return { ok: false, rejected: { type: 'shim/rejected', reason: 'stale_generation', message: 'superseded' } }
+    }
+    return { ok: true, credential: bound.credential, binding: bound.binding, superseded: bound.superseded }
   }
 }

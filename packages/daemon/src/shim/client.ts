@@ -17,6 +17,14 @@ export interface ShimTransport {
   close(code: number, reason: string): void
 }
 
+/** One dial's channel. `ended` records a close that arrived before the supervision loop
+ *  armed `end`, so the wait cannot miss it and park forever. */
+interface Channel {
+  transport: ShimTransport
+  end?: (reason: 'renew' | 'lost') => void
+  ended?: 'renew' | 'lost'
+}
+
 export interface ShimClientDeps {
   endpoint: string
   /** Dial the daemon. Injected so tests need no real WebSocket. */
@@ -43,8 +51,10 @@ export class ShimClient {
   private transport?: ShimTransport
   private bound?: ShimBound
   private stopped = false
-  /** Ends the current channel so the supervision loop rebuilds it. */
-  private endChannel?: () => void
+  /** The channel in service. Every transport callback compares against this before
+   *  mutating shared state: a delayed close from a transport being replaced must not tear
+   *  down the healthy replacement that already bound. */
+  private channel?: Channel
   private readonly clock: Clock
   private readonly backoff: Backoff
 
@@ -78,14 +88,25 @@ export class ShimClient {
             return
           }
           try {
-            const bound = await this.connectOnce()
+            const { bound, channel } = await this.connectOnce()
             if (!ready) {
               ready = true
               resolve(bound)
             }
             // connectOnce resolves at binding; wait here for the channel to end, whether
             // from a close or from the renewal deadline coming due.
-            await this.runUntilRebindNeeded(bound)
+            const reason = await this.runUntilRebindNeeded(bound, channel)
+            if (reason === 'renew') {
+              // A planned renewal is not a failure: re-dial at once, and keep the backoff
+              // counter clean so a later genuine drop starts from its base delay.
+              this.backoff.reset()
+              continue
+            }
+            // A drop IS a failure signal, so it goes through backoff — the daemon may be
+            // rolling, and hammering it with immediate re-dials is what backoff prevents.
+            const delay = this.backoff.next()
+            this.deps.log?.warn(`shim: channel dropped, re-dialing in ${delay}ms`)
+            await new Promise<void>((settle) => this.clock.setTimeout(settle, delay))
           } catch (err) {
             if (this.stopped) {
               if (!ready) reject(err)
@@ -103,9 +124,10 @@ export class ShimClient {
   stop(): void {
     this.stopped = true
     this.bound = undefined
-    this.endChannel?.()
+    this.channel?.end?.('lost')
     this.transport?.close(1000, 'shim stopping')
     this.transport = undefined
+    this.channel = undefined
   }
 
   /**
@@ -113,33 +135,42 @@ export class ShimClient {
    * close enough to expiry to renew. Renewing at half the lifetime leaves a full half as
    * margin for a slow TokenReview or a re-dial.
    */
-  private runUntilRebindNeeded(bound: ShimBound): Promise<void> {
-    return new Promise<void>((resolve) => {
+  private runUntilRebindNeeded(bound: ShimBound, channel: Channel): Promise<'renew' | 'lost'> {
+    if (channel.ended) {
+      if (this.channel === channel) this.channel = undefined
+      if (this.transport === channel.transport) this.transport = undefined
+      this.bound = undefined
+      return Promise.resolve(channel.ended)
+    }
+    return new Promise<'renew' | 'lost'>((resolve) => {
       const renewInMs = Math.max(1_000, Math.floor((bound.expiresInSeconds * 1000) / 2))
       const timer = this.clock.setTimeout(() => {
         this.deps.log?.info('shim: renewing the session credential before it expires')
-        finish()
+        finish('renew')
       }, renewInMs)
-      const finish = (): void => {
+      const finish = (reason: 'renew' | 'lost'): void => {
         this.clock.clearTimeout(timer)
-        this.endChannel = undefined
-        this.transport?.close(1000, 'rebinding')
-        this.transport = undefined
+        if (this.channel !== channel) return
+        this.channel = undefined
+        channel.transport.close(1000, reason === 'renew' ? 'rebinding' : 'channel lost')
+        if (this.transport === channel.transport) this.transport = undefined
         this.bound = undefined
-        resolve()
+        resolve(reason)
       }
-      this.endChannel = finish
+      channel.end = finish
     })
   }
 
-  private async connectOnce(): Promise<ShimBound> {
+  private async connectOnce(): Promise<{ bound: ShimBound; channel: Channel }> {
     const token = (this.deps.readToken ?? (() => readFileSync(SHIM_IDENTITY_TOKEN_PATH, 'utf8').trim()))()
     const transport = await this.deps.dial(this.deps.endpoint, {
       subprotocol: SHIM_SUBPROTOCOL,
       path: SHIM_WS_PATH
     })
     this.transport = transport
-    return await new Promise<ShimBound>((resolve, reject) => {
+    const channel: Channel = { transport }
+    this.channel = channel
+    return await new Promise<{ bound: ShimBound; channel: typeof channel }>((resolve, reject) => {
       let settled = false
       const fail = (message: string): void => {
         if (settled) return
@@ -147,12 +178,19 @@ export class ShimClient {
         reject(new Error(message))
       }
       transport.onClose((code, reason) => {
+        // Scoped to THIS transport. A close arriving late from a transport we already
+        // replaced (a close-handshake timeout, say) must not clear the binding or end the
+        // channel of the replacement that has since bound.
+        if (this.channel !== channel) return
         this.bound = undefined
         if (this.transport === transport) this.transport = undefined
         // Before binding this fails the dial; after binding it ends the channel so the
         // supervision loop re-dials instead of leaving the process alive but detached.
         fail(`connection closed (${code}${reason ? ` ${reason}` : ''})`)
-        this.endChannel?.()
+        // A close can land between binding and the loop arming `end`. Recording it means
+        // the wait below observes it instead of parking on a channel that is already gone.
+        if (channel.end) channel.end('lost')
+        else channel.ended = 'lost'
       })
       transport.onMessage((text) => {
         const frame = parseShimFrame(text)
@@ -166,7 +204,7 @@ export class ShimClient {
           if (!settled) {
             settled = true
             this.deps.log?.info(`shim: bound as ${frame.agentId} generation ${frame.generation}`)
-            resolve(frame)
+            resolve({ bound: frame, channel })
           }
           return
         }

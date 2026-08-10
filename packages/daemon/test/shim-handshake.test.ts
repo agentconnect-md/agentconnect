@@ -225,6 +225,68 @@ describe('shim handshake', () => {
     expect(reason).toBe('credential expired')
   })
 
+  it('refuses an older generation binding after a newer one, without disturbing it', async () => {
+    // The overlap case: generation 4 has bound, then the terminating generation-3 pod
+    // reconnects (or its slower TokenReview lands late). Replacing here would hand the
+    // channel back to the sandbox that is going away.
+    let generation = 4
+    let podUid = 'pod-uid-new'
+    const { instance, endpoint } = await listener({
+      verifier: { reviewToken: async () => ({ authenticated: true, podName: 'p', podUid }) },
+      spawnRecordForPod: () => record({ generation })
+    })
+    const newer = await rawConnect(endpoint)
+    newer.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => newer.frames.length > 0)
+    const held = newer.frames[0] as ShimBound
+
+    generation = 3
+    podUid = 'pod-uid-old'
+    const older = await rawConnect(endpoint)
+    older.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => older.frames.length > 0)
+    expect(older.frames[0]).toMatchObject({ type: 'shim/rejected' })
+
+    // Generation 4 is untouched: still the only connection, still authorized.
+    expect(instance.connectionsFor('agent-a')).toHaveLength(1)
+    expect(instance.connectionsFor('agent-a')[0]?.binding.generation).toBe(4)
+    expect(
+      instance.authorize({ credential: held.sessionCredential, generation: 4, capability: 'materialize' }).ok
+    ).toBe(true)
+  })
+
+  it('issues nothing when the socket closes while its token review is in flight', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const clock = new FakeClock()
+    const { instance, endpoint } = await listener({
+      verifier: {
+        reviewToken: async () => {
+          await gate
+          return { authenticated: true, podName: 'p', podUid: 'u' }
+        }
+      },
+      now: () => clock.now(),
+      clock
+    })
+    // A live binding for the same agent, which the late continuation must not supersede.
+    const live = await rawConnect(endpoint)
+    const abandoned = await rawConnect(endpoint)
+    abandoned.send({ type: 'shim/hello', token: 't' })
+    abandoned.socket.close()
+    await abandoned.closed
+    release()
+    // Give the continuation a turn to run before asserting it did nothing.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(instance.connectionsFor('agent-a')).toHaveLength(0)
+
+    // And the endpoint still works afterwards, so the guard did not wedge it.
+    live.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => live.frames.length > 0)
+    expect(live.frames[0]).toMatchObject({ type: 'shim/bound' })
+    expect(instance.connectionsFor('agent-a')).toHaveLength(1)
+  })
+
   it('re-binds a rescheduled pod under a NEW uid and drops the previous credential (invariants 4, 5)', async () => {
     // Resume, first bind and eviction are indistinguishable to the protocol: each new pod
     // presents its own token. Crucially the replacement pod has a DIFFERENT uid — keying
@@ -261,13 +323,47 @@ describe('shim handshake', () => {
   })
 })
 
+/** bind() can refuse (a newer generation holds the channel); these cases expect success. */
+function mustBind(
+  bindings: ShimBindingRegistry,
+  spawn: SpawnRecord,
+  pod: { name: string; uid: string }
+): { credential: string } {
+  const result = bindings.bind(spawn, pod)
+  if (!result.ok) throw new Error(`unexpected bind refusal: ${result.reason}`)
+  return { credential: result.credential }
+}
+
 describe('shim binding registry', () => {
   const clock = { value: 1_000 }
   const registry = (): ShimBindingRegistry => new ShimBindingRegistry(() => clock.value, 60_000)
 
+  it('rejects a lower generation instead of replacing the current binding', () => {
+    clock.value = 1_000
+    const bindings = registry()
+    const newer = bindings.bind(record({ generation: 4 }), { name: 'p-new', uid: 'u-new' })
+    const older = bindings.bind(record({ generation: 3 }), { name: 'p-old', uid: 'u-old' })
+    expect(older).toEqual({ ok: false, reason: 'superseded_generation', current: 4 })
+    // The newer binding is untouched — not merely "not replaced", but still authorized.
+    expect(
+      newer.ok && bindings.authorize({ credential: newer.credential, generation: 4, capability: 'materialize' }).ok
+    ).toBe(true)
+    expect(bindings.size()).toBe(1)
+  })
+
+  it('rejects rebinding the same generation, so a duplicate hello cannot rotate the credential', () => {
+    clock.value = 1_000
+    const bindings = registry()
+    const first = bindings.bind(record({ generation: 3 }), { name: 'p', uid: 'u' })
+    expect(bindings.bind(record({ generation: 3 }), { name: 'p', uid: 'u' })).toMatchObject({ ok: false })
+    expect(
+      first.ok && bindings.authorize({ credential: first.credential, generation: 3, capability: 'materialize' }).ok
+    ).toBe(true)
+  })
+
   it('refuses a stale generation even with a live credential (invariant 4)', () => {
     const bindings = registry()
-    const { credential } = bindings.bind(record({ generation: 7 }), { name: 'p', uid: 'u' })
+    const { credential } = mustBind(bindings, record({ generation: 7 }), { name: 'p', uid: 'u' })
     expect(bindings.authorize({ credential, generation: 7, capability: 'materialize' }).ok).toBe(true)
     expect(bindings.authorize({ credential, generation: 6, capability: 'materialize' })).toEqual({
       ok: false,
@@ -277,7 +373,7 @@ describe('shim binding registry', () => {
 
   it('refuses a capability the launch was not granted (invariant 3)', () => {
     const bindings = registry()
-    const { credential } = bindings.bind(record({ grants: ['materialize'] }), { name: 'p', uid: 'u' })
+    const { credential } = mustBind(bindings, record({ grants: ['materialize'] }), { name: 'p', uid: 'u' })
     // Holding the channel is not holding every operation on it: one runtime must not be
     // able to reach a capability its own launch never received.
     expect(bindings.authorize({ credential, generation: 3, capability: 'exec' })).toEqual({
@@ -293,7 +389,7 @@ describe('shim binding registry', () => {
   it('expires a credential rather than honouring it indefinitely (invariant 5)', () => {
     clock.value = 1_000
     const bindings = registry()
-    const { credential } = bindings.bind(record(), { name: 'p', uid: 'u' })
+    const { credential } = mustBind(bindings, record(), { name: 'p', uid: 'u' })
     clock.value = 61_001
     expect(bindings.authorize({ credential, generation: 3, capability: 'materialize' })).toEqual({
       ok: false,
@@ -307,8 +403,8 @@ describe('shim binding registry', () => {
   it('does not leak one agent credential to another agent (invariant 3)', () => {
     const bindings = registry()
     clock.value = 1_000
-    const a = bindings.bind(record({ agentId: 'agent-a' }), { name: 'pa', uid: 'ua' })
-    const b = bindings.bind(record({ agentId: 'agent-b', grants: ['exec'] }), { name: 'pb', uid: 'ub' })
+    const a = mustBind(bindings, record({ agentId: 'agent-a' }), { name: 'pa', uid: 'ua' })
+    const b = mustBind(bindings, record({ agentId: 'agent-b', grants: ['exec'] }), { name: 'pb', uid: 'ub' })
     expect(bindings.authorize({ credential: a.credential, generation: 3, capability: 'exec' }).ok).toBe(false)
     const resolved = bindings.authorize({ credential: b.credential, generation: 3, capability: 'exec' })
     expect(resolved.ok && resolved.binding.agentId).toBe('agent-b')
@@ -317,8 +413,8 @@ describe('shim binding registry', () => {
   it('revokes by agent across pod incarnations', () => {
     const bindings = registry()
     clock.value = 1_000
-    const first = bindings.bind(record(), { name: 'p1', uid: 'u1' })
-    const second = bindings.bind(record({ generation: 4 }), { name: 'p2', uid: 'u2' })
+    const first = mustBind(bindings, record(), { name: 'p1', uid: 'u1' })
+    const second = mustBind(bindings, record({ generation: 4 }), { name: 'p2', uid: 'u2' })
     bindings.revokeAgent('agent-a')
     expect(bindings.size()).toBe(0)
     expect(bindings.authorize({ credential: first.credential, generation: 3, capability: 'materialize' }).ok).toBe(
@@ -446,6 +542,117 @@ describe('shim client', () => {
     // healthy pod, which is what made the channel silently die after ten minutes.
     clock.advance(300_000)
     await waitFor(() => dials === 2)
+    client.stop()
+  })
+
+  it('ignores a delayed close from a transport that has already been replaced', async () => {
+    // Renewal closes transport A and binds B. If A's close event lands late — a
+    // close-handshake timeout, say — it must not clear B's binding or end B's channel.
+    const clock = new FakeClock()
+    const closers: Array<(code: number, reason: string) => void> = []
+    const messagers: Array<(text: string) => void> = []
+    const client = new ShimClient({
+      endpoint: 'ws://daemon:9000',
+      dial: async () => ({
+        send: () => {},
+        onMessage: (cb) => messagers.push(cb),
+        onClose: (cb) => closers.push(cb),
+        close: () => {}
+      }),
+      readToken: () => 't',
+      clock,
+      backoff: new Backoff({ jitter: () => 0 }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    const bind = (index: number, generation: number) =>
+      messagers[index]?.(
+        JSON.stringify({
+          type: 'shim/bound',
+          sessionCredential: `cred-${generation}`,
+          expiresInSeconds: 600,
+          agentId: 'agent-a',
+          generation,
+          grants: ['materialize']
+        })
+      )
+    const started = client.start()
+    await waitFor(() => messagers.length === 1)
+    bind(0, 3)
+    await started
+
+    clock.advance(300_000) // renewal deadline: A is closed, B is dialed
+    await waitFor(() => messagers.length === 2)
+    bind(1, 4)
+    await waitFor(() => client.binding()?.generation === 4)
+
+    // A's delayed close arrives now.
+    closers[0]?.(1006, 'late close from the replaced transport')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.binding()?.generation).toBe(4)
+    expect(messagers).toHaveLength(2) // no spurious third dial
+    client.stop()
+  })
+
+  it('backs off after a drop but re-dials a planned renewal at once', async () => {
+    const clock = new FakeClock()
+    let dials = 0
+    const closers: Array<(code: number, reason: string) => void> = []
+    const messagers: Array<(text: string) => void> = []
+    const client = new ShimClient({
+      endpoint: 'ws://daemon:9000',
+      dial: async () => {
+        dials += 1
+        return {
+          send: () => {},
+          onMessage: (cb) => messagers.push(cb),
+          onClose: (cb) => closers.push(cb),
+          close: () => {}
+        }
+      },
+      readToken: () => 't',
+      clock,
+      backoff: new Backoff({ jitter: () => 0 }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    const bind = (index: number, generation: number) =>
+      messagers[index]?.(
+        JSON.stringify({
+          type: 'shim/bound',
+          sessionCredential: `c${generation}`,
+          expiresInSeconds: 600,
+          agentId: 'agent-a',
+          generation,
+          grants: ['materialize']
+        })
+      )
+    const started = client.start()
+    // Wait for the transport's callbacks, not the dial counter: the counter increments
+    // before connectOnce registers them, so binding on it fires into an empty slot.
+    await waitFor(() => messagers.length === 1)
+    bind(0, 3)
+    await started
+
+    // A renewal is not a failure: it re-dials without waiting out a backoff delay.
+    clock.advance(300_000)
+    await waitFor(() => messagers.length === 2)
+    expect(dials).toBe(2)
+    bind(1, 4)
+    await waitFor(() => client.binding()?.generation === 4)
+
+    // A drop IS a failure signal, so the next dial waits for the backoff delay. The daemon
+    // may be rolling, and immediate re-dials are what backoff exists to prevent.
+    expect(closers).toHaveLength(2)
+    closers[1]?.(1006, 'dropped')
+    await waitFor(() => client.binding() === undefined)
+    // Let the loop arm its backoff timer, then assert it has NOT re-dialed: a drop must
+    // wait out the delay, because the daemon may be rolling and immediate re-dials are
+    // exactly what backoff prevents.
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(dials).toBe(2)
+    clock.advance(60_000)
+    await waitFor(() => messagers.length === 3)
+    expect(dials).toBe(3)
+    expect(dials).toBe(3)
     client.stop()
   })
 
