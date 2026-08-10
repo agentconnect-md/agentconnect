@@ -23,6 +23,17 @@ const PROVIDED = [
 ]
 
 const PROBE_TIMEOUT_MS = 60_000
+
+/** ACP reserves JSON-RPC -32000 for "authentication required" — the same code the daemon's own
+ *  prober keys on. Matching the rendered MESSAGE instead is what an earlier version did, and a
+ *  message merely containing "auth" ("failed to initialize auth database") would have been
+ *  accepted as an unauthenticated runtime rather than a broken one. */
+export const ACP_AUTH_REQUIRED_CODE = -32000
+
+/** A JSON-RPC error the probe should treat as "this runtime is unauthenticated, not broken". */
+export function isAuthRequired(error) {
+  return error?.acpCode === ACP_AUTH_REQUIRED_CODE
+}
 const PROBE_CWD = process.env.AC_PROBE_CWD ?? process.cwd()
 
 /** Drive one runtime over stdio far enough to learn what it is: initialize, then a session. */
@@ -53,7 +64,12 @@ async function probe(bin) {
     const deadline = Date.now() + PROBE_TIMEOUT_MS
     for (;;) {
       const reply = replies.get(id)
-      if (reply?.error) throw new Error(`${bin} ${method} failed: ${JSON.stringify(reply.error).slice(0, 200)}`)
+      if (reply?.error) {
+        // The CODE travels with the error, so classification never depends on rendered text.
+        const failure = new Error(`${bin} ${method} failed: ${JSON.stringify(reply.error).slice(0, 200)}`)
+        failure.acpCode = reply.error.code
+        throw failure
+      }
       if (reply) return reply.result
       if (Date.now() > deadline) throw new Error(`${bin} did not answer ${method} within ${PROBE_TIMEOUT_MS}ms`)
       await new Promise((resolve) => setTimeout(resolve, 100))
@@ -73,11 +89,10 @@ async function probe(bin) {
     const session = await call(2, 'session/new', { cwd: PROBE_CWD, mcpServers: [] }).then(
       (result) => ({ result, outcome: 'ok' }),
       (err) => {
-        // ONLY "authentication required" is acceptable. Any other failure is a runtime that cannot
-        // open a session in this image, and swallowing it as an `unavailable` snapshot would let a
-        // broken runtime be published and verified — the smoke test exercises Claude, so nothing
-        // else would have noticed.
-        if (!/auth/i.test(err.message)) throw err
+        // ONLY the ACP auth-required code is acceptable. Any other failure is a runtime that cannot
+        // open a session in this image, and swallowing it would let a broken runtime be published
+        // and verified — the smoke test exercises Claude, so nothing else would notice.
+        if (!isAuthRequired(err)) throw err
         return { result: undefined, outcome: 'auth-required' }
       }
     )
