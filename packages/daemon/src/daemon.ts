@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
-import { existsSync, readFileSync, type Stats } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
+import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
@@ -295,6 +296,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
   AGENT_CONFIG_REVISION_FEATURE,
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
@@ -5067,6 +5069,7 @@ export class Daemon {
       // organization environment entry on this marker. Static — the fence is
       // unconditional daemon code, with no runtime dependency.
       AGENT_CONFIG_REVISION_FEATURE,
+      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE] : []),
       // Multi-agent webchat conversations (webchat-multi-agents.md): mentions/post
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
@@ -5077,6 +5080,12 @@ export class Daemon {
       // built-in preset; turn-time dispatch rechecks the replicated marker.
       ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
     ]
+  }
+
+  private bootstrapUpgradeCapable(): boolean {
+    return (
+      (this.opts.supervisor === 'cli' || this.opts.supervisor === 'service') && readCliEntry(this.root) !== undefined
+    )
   }
 
   private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
@@ -18075,7 +18084,7 @@ export class Daemon {
     // an unreachable CLI is refused now rather than silently downgraded to a restart.
     let cliEntry: string | undefined
     if (kind === 'upgrade') {
-      cliEntry = this.readCliEntry(root)
+      cliEntry = readCliEntry(root)
       if (!cliEntry) {
         const reason = `cannot locate the CLI (${cliEntryPointer(root)} missing or invalid) to run the upgrade`
         this.log.warn(`cp: upgrade refused — ${reason}`)
@@ -18097,7 +18106,7 @@ export class Daemon {
       // §7.1 ②: for upgrade, swap `current` via the CLI BEFORE draining. On failure
       // the daemon stays up, fully intact — no drain, no exit, `current` untouched.
       if (kind === 'upgrade') {
-        const ok = await this.runCliUpgrade(cliEntry!, targetVersion!, root)
+        const ok = await runCliUpgrade(cliEntry!, targetVersion!, root, this.log)
         if (!ok) {
           this.log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
           this.lifecycleInFlight = false
@@ -18116,37 +18125,6 @@ export class Daemon {
     })()
 
     return { accepted: true, willDrainUntil }
-  }
-
-  /** Read the CLI entry path the CLI self-heals into `<root>/cli-entry` (§3). */
-  private readCliEntry(root: string): string | undefined {
-    try {
-      const entry = readFileSync(cliEntryPointer(root), 'utf8').trim()
-      return entry && existsSync(entry) ? entry : undefined
-    } catch {
-      return undefined
-    }
-  }
-
-  /** Run `agentconnect upgrade --to <v> --root <root>` (no --restart; the daemon's
-   *  own exit + supervisor relaunch applies it). Resolves true iff it exits 0. */
-  private async runCliUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
-    const { spawn } = await import('node:child_process')
-    this.log.info(`cp: installing daemon ${targetVersion} via ${cliEntry}`)
-    return await new Promise<boolean>((resolve) => {
-      const child = spawn(process.execPath, [cliEntry, 'upgrade', '--to', targetVersion, '--root', root], {
-        stdio: 'inherit'
-      })
-      child.on('exit', (code) => {
-        if (code === 0) this.log.info(`cp: daemon ${targetVersion} installed and activated`)
-        else this.log.error(`cp: CLI upgrade exited ${code ?? 'via signal'}`)
-        resolve(code === 0)
-      })
-      child.on('error', (err) => {
-        this.log.error(`cp: could not launch CLI upgrade: ${formatErr(err)}`)
-        resolve(false)
-      })
-    })
   }
 
   // ── ConfigApply seam (CP changes config, never live routing) ──
@@ -19193,6 +19171,14 @@ export class Daemon {
         this.cpOrgSlug = slug
         if (slug) this.log.debug(`cp: org slug "${slug}" (session deep links)`)
       },
+      ...(this.bootstrapUpgradeCapable()
+        ? {
+            onBootstrapUpgrade: (lifecycle: { targetVersion: string }) => {
+              if (lifecycle.targetVersion === DAEMON_VERSION) return false
+              return this.scheduleFleetExit('upgrade', lifecycle.targetVersion).accepted
+            }
+          }
+        : {}),
       agentVersion: DAEMON_VERSION,
       host: hostname(),
       heartbeatDefaultMs: cp.heartbeatMs,

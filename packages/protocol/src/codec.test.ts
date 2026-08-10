@@ -79,6 +79,33 @@ describe('decodeEnvelope — first failing test (design §6 Phase 0)', () => {
     expect(AuthReq.safeParse(r.frame.payload).success).toBe(true)
   })
 
+  it('round-trips the frozen auth-time bootstrap upgrade contract', () => {
+    const auth = decodeEnvelope(envelope('auth', { ...validAuthPayload, bootstrapProtocolVersion: 1 }))
+    expect(auth.ok).toBe(true)
+    if (!auth.ok || !isFrame('auth')(auth.frame)) throw new Error('expected auth')
+    expect(auth.frame.payload.bootstrapProtocolVersion).toBe(1)
+
+    const ok = decodeEnvelope(
+      envelope('auth/ok', {
+        daemonId: DAEMON_ID,
+        sessionEpoch: 2,
+        heartbeatSec: 15,
+        serverTime: TS,
+        lifecycle: { operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }
+      })
+    )
+    expect(ok.ok).toBe(true)
+    if (!ok.ok || !isFrame('auth/ok')(ok.frame)) throw new Error('expected auth/ok')
+    expect(ok.frame.payload.lifecycle?.targetVersion).toBe('2.0.0')
+
+    const result = decodeEnvelope(envelope('daemon/bootstrap/result', { operationId: 'op-1', status: 'installed' }))
+    expect(result.ok).toBe(true)
+    if (!result.ok || !isFrame('daemon/bootstrap/result')(result.frame)) {
+      throw new Error('expected bootstrap result')
+    }
+    expect(result.frame.payload.status).toBe('installed')
+  })
+
   it('rejects an unknown type with UNKNOWN_FRAME (a REP, not a close)', () => {
     const r = decodeEnvelope(envelope('totally/unknown', { whatever: true }))
     expect(r).toEqual({ ok: false, id: ID, msg: 'UNKNOWN_FRAME' })

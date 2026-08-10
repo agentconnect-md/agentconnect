@@ -10,6 +10,8 @@
 // ── cross-package wire + lifecycle constants ──
 export {
   AGENT_CONFIG_REVISION_FEATURE,
+  DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   CP_SUBPROTOCOL,
   CP_WS_PATH,
   hasReachedAgentCallHopLimit,

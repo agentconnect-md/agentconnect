@@ -290,10 +290,12 @@ The upgrade body supplies a version string. The Control Plane sends only that
 version in `daemon/upgrade`; registry choice, package name, and tarball
 resolution remain local to the CLI.
 
-The Control Plane authorizes the caller against the daemon, requires a live
-`READY` connection, and permits one pending lifecycle operation per daemon. It
-persists an operation record before sending the epoch-fenced
-`daemon/restart` or `daemon/upgrade` request.
+The Control Plane authorizes the caller against the daemon and permits one
+pending lifecycle operation per daemon. Restart still requires a live `READY`
+connection. Upgrade uses the same live path when available; a daemon that has
+previously advertised `daemon-bootstrap-upgrade-v1` may instead receive a
+durable queued upgrade while offline or stuck before `READY`. The Control Plane
+persists the operation before either delivery path.
 
 The lifecycle request is not retransmitted. A definite rejection closes the
 operation as failed. A lost reply is ambiguous because the daemon may already
@@ -336,6 +338,35 @@ supervisor then launches the new `current` version.
 Remote completion is determined by the later `READY` registration. Unlike a
 local `upgrade --restart`, the remote flow does not perform process-level
 automatic rollback after the old daemon exits.
+
+### 6.3 Auth-time bootstrap recovery
+
+The installed daemon entry performs a bounded auth-only bootstrap check before
+loading the full daemon business graph. It advertises
+`bootstrapProtocolVersion: 1` only when a CLI/service supervisor and a valid
+`<root>/cli-entry` are present. The check reads only the Control Plane URL and
+daemon key; complete config validation remains the full daemon's responsibility.
+A Control Plane or network failure skips the check and preserves local-first
+startup.
+
+When the authenticated daemon has a pending upgrade, `auth/ok.lifecycle`
+carries its operation id and target version. The bootstrap invokes the existing
+CLI `upgrade --to <version> --root <root>` implementation. Failure leaves the
+current version selected, reports `daemon/bootstrap/result{status:"failed"}`
+while the connection is still registering, and continues ordinary startup.
+Success reports `installed` and exits with `RESERVED_RESTART_CODE`; the existing
+supervisor then resolves the newly selected `current` entry.
+
+If the process was already running and repeatedly failing the full register
+handshake, the ordinary daemon CP client advertises and consumes the same
+auth-time directive. This prevents a locally alive but protocol-incompatible
+daemon from waiting forever for a `READY`-only command.
+
+The directive is idempotent and remains pending until a daemon reaches `READY`
+on the exact target version. A process already running that version proceeds to
+registration instead of reinstalling or restarting again. Historical daemons
+that never advertised `daemon-bootstrap-upgrade-v1` cannot be recovered through
+this path and still require an online control connection or host-side upgrade.
 
 ## 7. Security and trust boundaries
 

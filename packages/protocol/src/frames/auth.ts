@@ -18,6 +18,8 @@ export const AuthReq = z.object({
   machineId: z.string().uuid().optional(), // 🅼 machine identity (scope-attestation, §3.2) — NOT the auth credential
   attestation: z.string().optional(), // 🅼 signed proof (JWS), §3.2
   agentVersion: z.string(), // daemon build/version
+  // Auth-time lifecycle support; optional for rolling compatibility.
+  bootstrapProtocolVersion: z.literal(1).optional(),
   resume: z
     .object({
       lastEpoch: z.number().int() // sessionEpoch the daemon last held
@@ -25,6 +27,13 @@ export const AuthReq = z.object({
     .optional()
 })
 export type AuthReq = z.infer<typeof AuthReq>
+
+export const BootstrapLifecycle = z.object({
+  operationId: z.string(),
+  action: z.literal('upgrade'),
+  targetVersion: z.string()
+})
+export type BootstrapLifecycle = z.infer<typeof BootstrapLifecycle>
 
 export const AuthOk = z.object({
   daemonId: z.string().uuid(),
@@ -39,6 +48,8 @@ export const AuthOk = z.object({
   // (`<webAppUrl>/<orgSlug>/sessions/<id>`), so the daemon needs it to build a link that
   // resolves. Omitted when the CP can't resolve it; then the daemon drops the segment.
   orgSlug: z.string().optional(),
+  // Durable upgrade intent returned only to bootstrap-capable callers.
+  lifecycle: BootstrapLifecycle.optional(),
   resume: z
     .object({
       accepted: z.boolean() // false ⇒ daemon must do a full register reconcile

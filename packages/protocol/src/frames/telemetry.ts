@@ -356,6 +356,14 @@ export const ConfigPush = z.object({
 })
 export type ConfigPush = z.infer<typeof ConfigPush>
 
+/** Auth-time upgrade result, legal before full registration. */
+export const DaemonBootstrapResult = z.object({
+  operationId: z.string(),
+  status: z.enum(['installed', 'failed']),
+  reason: z.string().max(500).optional()
+})
+export type DaemonBootstrapResult = z.infer<typeof DaemonBootstrapResult>
+
 /** Fleet: drain+exit, supervisor restarts — C→D REQ, protocol §8.3 / frame #27. */
 export const DaemonRestart = z.object({
   reason: z.string(),

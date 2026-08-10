@@ -12,7 +12,7 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
-import { SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
+import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE, SESSION_RETENTION_RE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { DaemonView, DaemonLiveness, DaemonRegistry } from '../../ports.js'
@@ -417,12 +417,7 @@ export function daemonRoutes(deps: HttpDeps) {
       }
     )
 
-    // Command a live daemon to drain + exit so its supervisor relaunches it —
-    // `upgrade` first installs `targetVersion` via the daemon's CLI (cli-daemon-split.md
-    // §7). Owner-only fleet op. Opens a pending lifecycle op and sends the C→D REQ; the
-    // 202 returns the op (with its `id`) — it only means the daemon ACCEPTED the command.
-    // Success is closed out-of-band on its READY re-register; the console tracks the op by
-    // `id` in the fleet read model's `lifecycleOp` and renders terminal state from `status`.
+    // Open a fleet lifecycle op; bootstrap-capable upgrades may wait durably for the next auth.
     const commandLifecycle = async (
       req: FastifyRequest,
       reply: FastifyReply,
@@ -435,23 +430,21 @@ export function daemonRoutes(deps: HttpDeps) {
       if (!existing) {
         return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
       }
-      // Restart/upgrade use the ordinary daemon edit policy: the resource must
-      // be visible and the caller must not be a viewer.
+      // Restart/upgrade use the ordinary daemon edit policy: visible and not viewer-owned.
       if (!canEdit(existing, ctxOf(req))) {
         return reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot manage this daemon' })
       }
       const liveConn = deps.liveness.get(id)
-      // Must be READY: `reachable` also covers AUTHENTICATING/REGISTERING, where the daemon
-      // protocol only permits `register` and a lifecycle frame would be rejected (PROTOCOL_STATE).
-      if (!liveConn || !liveConn.reachable || liveConn.state !== 'READY') {
+      // Direct delivery requires READY; only advertised bootstrap upgrades can queue offline.
+      const liveReady = Boolean(liveConn?.reachable && liveConn.state === 'READY')
+      const bootstrapUpgrade =
+        op === 'upgrade' && existing.capabilities.features.includes(DAEMON_BOOTSTRAP_UPGRADE_FEATURE)
+      if (!liveReady && !bootstrapUpgrade) {
         return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: 'daemon is not ready' })
       }
-      // Clock-driven expiry FIRST: a prior op whose daemon accepted the command but never
-      // re-registered is still `pending` in the DB and the partial unique index still
-      // reserves the daemon. Fail it now so a stuck op can't block every later command.
+      // Expire stale operations before the partial unique index admits another command.
       await deps.repos.daemonLifecycleOp.expireOverdue(new Date(), DaemonId(id))
-      // One lifecycle op at a time (the daemon also refuses a concurrent one, §7.1). A
-      // pre-check gives a clear 409; the partial unique index backstops a race.
+      // The pre-check gives a clear 409; the partial unique index backstops races.
       if (await deps.repos.daemonLifecycleOp.pendingForDaemon(DaemonId(id))) {
         return reply
           .code(409)
@@ -462,14 +455,23 @@ export function daemonRoutes(deps: HttpDeps) {
         op,
         ...(targetVersion ? { targetVersion } : {}),
         ...(req.principal?.userId ? { initiator: req.principal.userId } : {}),
-        // Pre-send ESTIMATE; overwritten on arm with the sender's ACTUAL connection epoch.
-        commandEpoch: BigInt(liveConn.sessionEpoch),
+        // Live delivery replaces this estimate with the sender's actual connection epoch.
+        commandEpoch: BigInt(liveConn?.sessionEpoch ?? existing.sessionEpoch),
         deadline: new Date(Date.now() + LIFECYCLE_DEADLINE_MS)
       })
 
-      // Arm the op (set acceptedAt + the EXACT sent epoch) — only an armed op settles on a
-      // later READY. Retried in-request; a persistent failure falls back to background
-      // recovery so an accepted command is never stranded unarmed (falsely timed out).
+      // A bootstrap-capable daemon consumes this durable intent on its next auth.
+      if (!liveReady) {
+        return reply.code(202).send({
+          id: opRow.id,
+          op: opRow.op,
+          status: opRow.status,
+          targetVersion: opRow.targetVersion,
+          outcome: opRow.outcome
+        })
+      }
+
+      // Arm with the exact sent epoch; background recovery handles exhausted write retries.
       const arm = async (epoch: bigint): Promise<boolean> => {
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
@@ -565,7 +567,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Upgrade a daemon',
           description:
-            'Command a daemon to install a target version via its CLI, then drain and relaunch onto it. The 202 returns the opened lifecycle op (with its id) and only means the daemon accepted the command; success is confirmed when it re-registers on the new version — track the op by id via the fleet read model’s lifecycleOp.',
+            'Open an upgrade op for a daemon. A ready daemon receives it immediately; an offline daemon that previously advertised bootstrap recovery consumes it during its next auth. The 202 means accepted or durably queued, while success requires READY on the target version.',
           operationId: 'upgradeDaemon',
           params: IdParam,
           body: DaemonUpgradeBody,

@@ -511,4 +511,40 @@ describe('CpClient handshake', () => {
     await tick()
     expect(adopted).toEqual([ASSIGNED])
   })
+
+  it('consumes an auth-time upgrade before register and stops reconnecting', async () => {
+    const t = new FakeTransport()
+    const directives: unknown[] = []
+    const client = new CpClient(
+      makeDeps(t, {
+        onBootstrapUpgrade: (lifecycle) => {
+          directives.push(lifecycle)
+          return true
+        }
+      })
+    )
+    client.start()
+    await tick()
+    const auth = t.lastSent()
+    expect(auth.payload.bootstrapProtocolVersion).toBe(1)
+    t.pushInbound(
+      JSON.stringify(
+        buildEnvelope(
+          'auth/ok',
+          {
+            daemonId: DAEMON_ID,
+            sessionEpoch: 4,
+            heartbeatSec: 15,
+            serverTime: '2026-06-26T00:00:00.000Z',
+            lifecycle: { operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }
+          },
+          { corr: auth.id }
+        )
+      )
+    )
+    await tick()
+    expect(directives).toEqual([{ operationId: 'op-1', action: 'upgrade', targetVersion: '2.0.0' }])
+    expect(t.closed).toEqual({ code: 1000, reason: 'bootstrap upgrade accepted' })
+    expect(t.sent.map((text) => JSON.parse(text).type)).not.toContain('register')
+  })
 })
