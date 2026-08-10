@@ -1,4 +1,6 @@
 import { createServer, type Server } from 'node:http'
+import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
 import {
@@ -29,6 +31,8 @@ export interface ShimListenerDeps {
   /** The spawn record for a pod, or undefined when this daemon did not launch it. */
   spawnRecordForPod: (pod: { name: string; uid: string }) => SpawnRecord | undefined
   now: () => number
+  /** Time seam for the credential-expiry backstop; a FakeClock drives it in tests. */
+  clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** Session-credential lifetime; a shim re-handshakes rather than refreshing. */
   credentialTtlMs?: number
@@ -57,11 +61,13 @@ export class ShimListener {
   private server?: Server
   private wss?: WebSocketServer
   private readonly registry: ShimBindingRegistry
+  private readonly clock: Clock
   private readonly connections = new Set<ShimConnection>()
   private port?: number
 
   constructor(private readonly deps: ShimListenerDeps) {
     this.registry = new ShimBindingRegistry(deps.now, deps.credentialTtlMs ?? DEFAULT_CREDENTIAL_TTL_MS)
+    this.clock = deps.clock ?? systemClock
   }
 
   async start(port = 0, host = '0.0.0.0'): Promise<number> {
@@ -70,7 +76,9 @@ export class ShimListener {
       res.statusCode = 404
       res.end()
     })
-    const wss = new WebSocketServer({ noServer: true })
+    // Same 256 KiB cap the CP gateways use: a half-trusted peer must not be able to make
+    // the daemon buffer an arbitrarily large frame.
+    const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
     server.on('upgrade', (req, socket, head) => {
       if (!(req.url ?? '').startsWith(SHIM_WS_PATH)) {
         socket.destroy()
@@ -133,15 +141,23 @@ export class ShimListener {
 
   private accept(ws: WebSocket, remoteAddress: string): void {
     let bound: ShimConnection | undefined
+    let binding = false
     const reject = (rejected: ShimRejected): void => {
-      // One coarse reason, never which check failed: a caller must not be able to probe
-      // for valid pod names by comparing responses.
+      // The wire answer is identical for every pre-binding failure. An earlier version
+      // sent the precise reason, which let a caller distinguish "token not accepted" from
+      // "pod not recognized" and probe for pods this daemon launched — the exact thing the
+      // anti-probing claim rules out. The precise reason stays in the daemon's own logs.
       try {
         ws.send(JSON.stringify(rejected))
       } catch {
         /* peer already gone */
       }
       ws.close(4403, rejected.reason)
+    }
+    const uniformRejection: ShimRejected = {
+      type: 'shim/rejected',
+      reason: 'unauthenticated',
+      message: 'not accepted'
     }
 
     ws.on('message', (data: unknown, isBinary?: boolean) => {
@@ -152,13 +168,27 @@ export class ShimListener {
         return
       }
       if (frame.type === 'shim/hello') {
-        if (bound) {
-          ws.close(4400, 'already bound')
+        // Single-flight: a second hello arriving while TokenReview is in flight would bind
+        // twice and leave a stale connection entry behind.
+        if (bound || binding) {
+          ws.close(4400, 'already binding')
           return
         }
+        binding = true
         void this.bindFrom(frame.token, remoteAddress).then(
           (result) => {
-            if (!result.ok) return reject(result.rejected)
+            binding = false
+            if (!result.ok) return reject(uniformRejection)
+            // Close the superseded incarnation's channel: its credential is already gone
+            // from the registry, and leaving the socket open would keep a dead binding in
+            // connectionsFor().
+            for (const previous of result.superseded) {
+              for (const connection of [...this.connections]) {
+                if (connection.binding.podUid !== previous.podUid) continue
+                this.connections.delete(connection)
+                connection.close('superseded by a newer launch')
+              }
+            }
             const connection: ShimConnection = {
               binding: result.binding,
               send: (outbound) => ws.send(JSON.stringify(outbound)),
@@ -166,20 +196,34 @@ export class ShimListener {
             }
             bound = connection
             this.connections.add(connection)
+            const remainingMs = result.binding.expiresAtMs - this.deps.now()
             connection.send({
               type: 'shim/bound',
               sessionCredential: result.credential,
-              expiresInSeconds: Math.max(1, Math.floor((result.binding.expiresAtMs - this.deps.now()) / 1000)),
+              expiresInSeconds: Math.max(1, Math.floor(remainingMs / 1000)),
               agentId: result.binding.agentId,
               generation: result.binding.generation,
               grants: result.binding.grants
             })
+            // Backstop the shim's own re-handshake: if it never comes, close at expiry so
+            // the peer observes a dead channel instead of holding an expired credential.
+            const expiry = this.clock.setTimeout(
+              () => {
+                if (bound !== connection) return
+                this.connections.delete(connection)
+                this.deps.log.info(`shim: credential expired for agent ${result.binding.agentId} — closing channel`)
+                connection.close('credential expired')
+              },
+              Math.max(0, remainingMs)
+            )
+            ws.once('close', () => this.clock.clearTimeout(expiry))
             this.deps.log.info(
               `shim: bound agent ${result.binding.agentId} generation ${result.binding.generation} ` +
                 `(pod ${result.binding.podName}, from ${remoteAddress})`
             )
           },
           (err: unknown) => {
+            binding = false
             this.deps.log.warn(`shim: binding failed (${(err as Error).message})`)
             reject({ type: 'shim/rejected', reason: 'unavailable', message: 'binding unavailable' })
           }
@@ -207,7 +251,9 @@ export class ShimListener {
   private async bindFrom(
     token: string,
     remoteAddress: string
-  ): Promise<{ ok: true; credential: string; binding: Binding } | { ok: false; rejected: ShimRejected }> {
+  ): Promise<
+    { ok: true; credential: string; binding: Binding; superseded: Binding[] } | { ok: false; rejected: ShimRejected }
+  > {
     const review = await this.deps.verifier.reviewToken(token, [SHIM_TOKEN_AUDIENCE])
     if (!review.authenticated || !review.podName || !review.podUid) {
       this.deps.log.warn(
@@ -226,7 +272,7 @@ export class ShimListener {
       this.deps.log.warn(`shim: no spawn record for pod ${pod.name} (${remoteAddress})`)
       return { ok: false, rejected: { type: 'shim/rejected', reason: 'unknown_pod', message: 'pod not recognized' } }
     }
-    const { credential, binding } = this.registry.bind(record, pod)
-    return { ok: true, credential, binding }
+    const { credential, binding, superseded } = this.registry.bind(record, pod)
+    return { ok: true, credential, binding, superseded }
   }
 }

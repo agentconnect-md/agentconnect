@@ -43,6 +43,8 @@ export class ShimClient {
   private transport?: ShimTransport
   private bound?: ShimBound
   private stopped = false
+  /** Ends the current channel so the supervision loop rebuilds it. */
+  private endChannel?: () => void
   private readonly clock: Clock
   private readonly backoff: Backoff
 
@@ -55,26 +57,79 @@ export class ShimClient {
     return this.bound
   }
 
-  /** Dial and bind, retrying with backoff until stopped. Resolves on first binding. */
-  async start(): Promise<ShimBound> {
-    for (;;) {
-      if (this.stopped) throw new Error('shim: stopped before binding')
-      try {
-        return await this.connectOnce()
-      } catch (err) {
-        if (this.stopped) throw err
-        const delay = this.backoff.next()
-        this.deps.log?.warn(`shim: bind failed, retrying in ${delay}ms (${(err as Error).message})`)
-        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, delay))
-      }
-    }
+  /**
+   * Run the channel for the pod's lifetime, resolving once the FIRST binding succeeds so a
+   * caller can wait for readiness. The supervision loop keeps running after that: a
+   * dropped socket re-dials with backoff, and the credential is renewed by re-handshaking
+   * before it expires.
+   *
+   * Both halves matter. Returning after the first bind and stopping there left a live
+   * executable permanently disconnected after any close, and let the daemon-side credential
+   * expire under a perfectly healthy pod — a channel that works for ten minutes and then
+   * silently never again.
+   */
+  start(): Promise<ShimBound> {
+    return new Promise<ShimBound>((resolve, reject) => {
+      let ready = false
+      void (async () => {
+        for (;;) {
+          if (this.stopped) {
+            if (!ready) reject(new Error('shim: stopped before binding'))
+            return
+          }
+          try {
+            const bound = await this.connectOnce()
+            if (!ready) {
+              ready = true
+              resolve(bound)
+            }
+            // connectOnce resolves at binding; wait here for the channel to end, whether
+            // from a close or from the renewal deadline coming due.
+            await this.runUntilRebindNeeded(bound)
+          } catch (err) {
+            if (this.stopped) {
+              if (!ready) reject(err)
+              return
+            }
+            const delay = this.backoff.next()
+            this.deps.log?.warn(`shim: channel lost, re-dialing in ${delay}ms (${(err as Error).message})`)
+            await new Promise<void>((settle) => this.clock.setTimeout(settle, delay))
+          }
+        }
+      })()
+    })
   }
 
   stop(): void {
     this.stopped = true
     this.bound = undefined
+    this.endChannel?.()
     this.transport?.close(1000, 'shim stopping')
     this.transport = undefined
+  }
+
+  /**
+   * Resolve when the channel needs rebuilding: the socket closed, or the credential is
+   * close enough to expiry to renew. Renewing at half the lifetime leaves a full half as
+   * margin for a slow TokenReview or a re-dial.
+   */
+  private runUntilRebindNeeded(bound: ShimBound): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const renewInMs = Math.max(1_000, Math.floor((bound.expiresInSeconds * 1000) / 2))
+      const timer = this.clock.setTimeout(() => {
+        this.deps.log?.info('shim: renewing the session credential before it expires')
+        finish()
+      }, renewInMs)
+      const finish = (): void => {
+        this.clock.clearTimeout(timer)
+        this.endChannel = undefined
+        this.transport?.close(1000, 'rebinding')
+        this.transport = undefined
+        this.bound = undefined
+        resolve()
+      }
+      this.endChannel = finish
+    })
   }
 
   private async connectOnce(): Promise<ShimBound> {
@@ -94,7 +149,10 @@ export class ShimClient {
       transport.onClose((code, reason) => {
         this.bound = undefined
         if (this.transport === transport) this.transport = undefined
+        // Before binding this fails the dial; after binding it ends the channel so the
+        // supervision loop re-dials instead of leaving the process alive but detached.
         fail(`connection closed (${code}${reason ? ` ${reason}` : ''})`)
+        this.endChannel?.()
       })
       transport.onMessage((text) => {
         const frame = parseShimFrame(text)

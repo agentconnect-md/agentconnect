@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Backoff, FakeClock } from '@agentconnect.md/connection'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
 import { ShimListener, type PodIdentityVerifier } from '../src/shim/listener.js'
@@ -40,12 +41,14 @@ async function listener(deps: {
   verifier: PodIdentityVerifier
   spawnRecordForPod?: (pod: { name: string; uid: string }) => SpawnRecord | undefined
   now?: () => number
+  clock?: FakeClock
   credentialTtlMs?: number
 }): Promise<{ instance: ShimListener; endpoint: string }> {
   const instance = new ShimListener({
     verifier: deps.verifier,
     spawnRecordForPod: deps.spawnRecordForPod ?? (() => record()),
     now: deps.now ?? (() => Date.now()),
+    ...(deps.clock ? { clock: deps.clock } : {}),
     ...(deps.credentialTtlMs !== undefined ? { credentialTtlMs: deps.credentialTtlMs } : {}),
     log: { info: () => {}, warn: () => {} }
   })
@@ -111,7 +114,7 @@ describe('shim handshake', () => {
     const client = await rawConnect(endpoint)
     client.send({ type: 'shim/hello', token: 'wrong-audience' })
     await waitFor(() => client.frames.length > 0)
-    expect(client.frames[0]).toMatchObject({ type: 'shim/rejected', reason: 'unauthenticated' })
+    expect(client.frames[0]).toMatchObject({ type: 'shim/rejected' })
     const { code } = await client.closed
     expect(code).toBe(4403)
   })
@@ -126,7 +129,8 @@ describe('shim handshake', () => {
     const client = await rawConnect(endpoint)
     client.send({ type: 'shim/hello', token: 'genuine-but-unrelated' })
     await waitFor(() => client.frames.length > 0)
-    expect(client.frames[0]).toMatchObject({ type: 'shim/rejected', reason: 'unknown_pod' })
+    // Same wire answer as an unauthenticated token, deliberately (see the probing test).
+    expect(client.frames[0]).toMatchObject({ type: 'shim/rejected' })
   })
 
   it('gives the same coarse rejection shape for both failures, so it cannot be probed', async () => {
@@ -135,16 +139,19 @@ describe('shim handshake', () => {
       verifier: verifier({ authenticated: true, podName: 'p', podUid: 'u' }),
       spawnRecordForPod: () => undefined
     })
+    const seen: string[] = []
     for (const target of [unauthenticated, unknownPod]) {
       const client = await rawConnect(target.endpoint)
       client.send({ type: 'shim/hello', token: 't' })
       await waitFor(() => client.frames.length > 0)
-      const frame = client.frames[0] as { type: string; message: string }
+      const frame = client.frames[0] as { type: string; reason: string; message: string }
       expect(frame.type).toBe('shim/rejected')
-      // The reason distinguishes them for our own logs, but the message never names a
-      // pod, a token, or which check ran.
+      seen.push(`${frame.reason}|${frame.message}`)
       expect(frame.message).not.toMatch(/pod-uid|token-|agent-a/)
     }
+    // Byte-identical on the wire. Sending the precise reason would let a caller tell
+    // "token not accepted" from "pod not recognized" and probe for launched pods.
+    expect(new Set(seen).size).toBe(1)
   })
 
   it('refuses an upgrade that does not offer the shim subprotocol', async () => {
@@ -182,12 +189,51 @@ describe('shim handshake', () => {
     expect(code).toBe(4400)
   })
 
-  it('re-binds a rebuilt pod and drops the previous credential (invariants 4, 5)', async () => {
+  it('closes a second hello arriving while the first is still being reviewed', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const { endpoint } = await listener({
+      verifier: {
+        reviewToken: async () => {
+          await gate
+          return { authenticated: true, podName: 'p', podUid: 'u' }
+        }
+      }
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 't' })
+    // Without single-flight this would bind twice and leave a stale connection entry.
+    client.send({ type: 'shim/hello', token: 't' })
+    const { code } = await client.closed
+    expect(code).toBe(4400)
+    release()
+  })
+
+  it('closes the channel when the credential expires, so the peer cannot hold a dead one', async () => {
+    const clock = new FakeClock()
+    const { endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'p', podUid: 'u' }),
+      now: () => clock.now(),
+      clock,
+      credentialTtlMs: 60_000
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => client.frames.length > 0)
+    clock.advance(60_001)
+    const { reason } = await client.closed
+    expect(reason).toBe('credential expired')
+  })
+
+  it('re-binds a rescheduled pod under a NEW uid and drops the previous credential (invariants 4, 5)', async () => {
     // Resume, first bind and eviction are indistinguishable to the protocol: each new pod
-    // presents its own token. What must not survive is the old pod's credential.
+    // presents its own token. Crucially the replacement pod has a DIFFERENT uid — keying
+    // supersession on the pod would leave the evicted incarnation's credential live, which
+    // is exactly the replay the fence exists to stop.
     let generation = 3
+    let podUid = 'pod-uid-1'
     const { instance, endpoint } = await listener({
-      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      verifier: { reviewToken: async () => ({ authenticated: true, podName: `runtime-${podUid}`, podUid }) },
       spawnRecordForPod: () => record({ generation })
     })
     const first = await rawConnect(endpoint)
@@ -196,6 +242,7 @@ describe('shim handshake', () => {
     const before = first.frames[0] as ShimBound
 
     generation = 4
+    podUid = 'pod-uid-2'
     const second = await rawConnect(endpoint)
     second.send({ type: 'shim/hello', token: 't' })
     await waitFor(() => second.frames.length > 0)
@@ -204,10 +251,13 @@ describe('shim handshake', () => {
     expect(after.generation).toBe(4)
     expect(after.sessionCredential).not.toBe(before.sessionCredential)
     // The superseded credential authorizes nothing, so a frame replayed from the previous
-    // incarnation cannot act.
+    // incarnation cannot act — at its OWN generation, which is the case that matters.
     expect(
       instance.authorize({ credential: before.sessionCredential, generation: 3, capability: 'materialize' })
     ).toEqual({ ok: false, failure: 'unknown_credential' })
+    // And the dead channel is gone rather than lingering as a bindable connection.
+    await waitFor(() => instance.connectionsFor('agent-a').length === 1)
+    expect(instance.connectionsFor('agent-a')[0]?.binding.podUid).toBe('pod-uid-2')
   })
 })
 
@@ -312,6 +362,91 @@ describe('shim client', () => {
     const bound = await started
     expect(bound.agentId).toBe('agent-a')
     expect(client.binding()?.sessionCredential).toBe('cred-1')
+  })
+
+  it('re-dials after the channel drops instead of staying alive but detached', async () => {
+    const clock = new FakeClock()
+    const dials: Array<{ send: (t: string) => void; close: (c: number, r: string) => void }> = []
+    let onMessage: ((text: string) => void) | undefined
+    let onClose: ((code: number, reason: string) => void) | undefined
+    const client = new ShimClient({
+      endpoint: 'ws://daemon:9000',
+      dial: async () => {
+        const transport: ShimTransport = {
+          send: () => {},
+          onMessage: (cb) => (onMessage = cb),
+          onClose: (cb) => (onClose = cb),
+          close: () => {}
+        }
+        dials.push(transport)
+        return transport
+      },
+      readToken: () => 't',
+      clock,
+      backoff: new Backoff({ jitter: () => 0 }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    const bind = (generation: number) =>
+      onMessage?.(
+        JSON.stringify({
+          type: 'shim/bound',
+          sessionCredential: `cred-${generation}`,
+          expiresInSeconds: 600,
+          agentId: 'agent-a',
+          generation,
+          grants: ['materialize']
+        })
+      )
+    const started = client.start()
+    await waitFor(() => dials.length === 1)
+    bind(3)
+    await started
+
+    // The pod is healthy; the socket simply dropped. Previously this left the executable
+    // running with no channel and no retry.
+    onClose?.(1006, 'abnormal closure')
+    // The loop parks on a clock-driven backoff; advancing releases it.
+    await waitFor(() => client.binding() === undefined)
+    clock.advance(60_000)
+    await waitFor(() => dials.length === 2)
+    bind(4)
+    await waitFor(() => client.binding()?.generation === 4)
+    client.stop()
+  })
+
+  it('re-handshakes before the credential expires rather than going stale', async () => {
+    const clock = new FakeClock()
+    let dials = 0
+    let onMessage: ((text: string) => void) | undefined
+    const client = new ShimClient({
+      endpoint: 'ws://daemon:9000',
+      dial: async () => {
+        dials += 1
+        return { send: () => {}, onMessage: (cb) => (onMessage = cb), onClose: () => {}, close: () => {} }
+      },
+      readToken: () => 't',
+      clock,
+      backoff: new Backoff({ jitter: () => 0 }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    const started = client.start()
+    await waitFor(() => dials === 1)
+    onMessage?.(
+      JSON.stringify({
+        type: 'shim/bound',
+        sessionCredential: 'cred-1',
+        expiresInSeconds: 600,
+        agentId: 'agent-a',
+        generation: 3,
+        grants: ['materialize']
+      })
+    )
+    await started
+    // Renewal at half the lifetime: a daemon-side credential must never expire under a
+    // healthy pod, which is what made the channel silently die after ten minutes.
+    clock.advance(300_000)
+    await waitFor(() => dials === 2)
+    client.stop()
   })
 
   it('refuses to serve a request whose credential or generation is not its own', async () => {

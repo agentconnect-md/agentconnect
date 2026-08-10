@@ -44,7 +44,7 @@ function sameSecret(a: string, b: string): boolean {
  */
 export class ShimBindingRegistry {
   private readonly byCredential = new Map<string, Binding>()
-  /** Credential per pod UID, so re-binding the same pod replaces rather than stacks. */
+  /** Credential per bound pod UID, for revoking one incarnation by identity. */
   private readonly credentialByPod = new Map<string, string>()
 
   constructor(
@@ -54,13 +54,27 @@ export class ShimBindingRegistry {
 
   /**
    * Issue a credential for a pod that proved its identity and matched a spawn record.
-   * The credential is the only thing the shim ever holds: it is short-lived, bound to
-   * this pod and generation, and re-obtained by re-handshaking, so the shim never
-   * carries a long-lived org credential.
+   * The credential is the only thing the shim ever holds: short-lived, bound to this pod
+   * and generation, re-obtained by re-handshaking, so no long-lived credential is in the
+   * sandbox.
+   *
+   * Binding supersedes every earlier binding for the same launch identity — the agent's
+   * sandbox — NOT merely the same pod UID. A rescheduled or resumed pod arrives with a
+   * NEW UID, so keying supersession on the pod would leave the evicted incarnation's
+   * credential live and its generation authorized: precisely the replay the fence exists
+   * to stop. The superseded bindings are returned so the caller can close their channels.
    */
-  bind(record: SpawnRecord, pod: { name: string; uid: string }): { credential: string; binding: Binding } {
-    const previous = this.credentialByPod.get(pod.uid)
-    if (previous) this.byCredential.delete(previous)
+  bind(
+    record: SpawnRecord,
+    pod: { name: string; uid: string }
+  ): { credential: string; binding: Binding; superseded: Binding[] } {
+    const superseded: Binding[] = []
+    for (const [credential, existing] of [...this.byCredential]) {
+      if (existing.agentId !== record.agentId || existing.sandboxUid !== record.sandboxUid) continue
+      superseded.push(existing)
+      this.byCredential.delete(credential)
+      this.credentialByPod.delete(existing.podUid)
+    }
     const credential = randomBytes(32).toString('base64url')
     const binding: Binding = {
       ...record,
@@ -71,7 +85,7 @@ export class ShimBindingRegistry {
     }
     this.byCredential.set(credential, binding)
     this.credentialByPod.set(pod.uid, credential)
-    return { credential, binding }
+    return { credential, binding, superseded }
   }
 
   /**
