@@ -83,6 +83,14 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
   // against a draft that no longer exists.
   const valueRef = useRef(value)
   valueRef.current = value
+  // Every pick with a join still pending, keyed by its CURRENT (self-adjusting)
+  // insertion range — a plain per-pick closure over its pick-time offsets would
+  // go stale the moment an EARLIER pending pick rolls back: removing that
+  // token shifts every later offset left, and a later pick's own rollback
+  // would then compare against the wrong slice and silently no-op, leaving a
+  // dangling unresolved mention behind. Sharing one mutable array lets a
+  // rollback walk the others and adjust them before removing itself.
+  const pendingRangesRef = useRef<Array<{ start: number; end: number; text: string }>>([])
   // Where the triggering `@` sits on screen, so the list drops right under the
   // line being typed — not the textarea's edge, which reads as broken on a
   // tall, mostly-empty composer (a multi-row textarea's bottom can be far from
@@ -166,8 +174,8 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     })
     const result = onPick?.(candidate)
     if (result instanceof Promise) {
-      const insertStart = before.length
-      const insertEnd = insertStart + insertedText.length
+      const range = { start: before.length, end: before.length + insertedText.length, text: insertedText }
+      pendingRangesRef.current.push(range)
       setPendingJoins((n) => n + 1)
       result
         .then((success) => {
@@ -177,11 +185,23 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
           // that range — never eat into unrelated edits the user made while
           // the join was in flight.
           const cur = valueRef.current
-          if (cur.slice(insertStart, insertEnd) === insertedText) {
-            setValue(cur.slice(0, insertStart) + cur.slice(insertEnd))
+          if (cur.slice(range.start, range.end) !== range.text) return
+          setValue(cur.slice(0, range.start) + cur.slice(range.end))
+          // This removal shifts every OTHER still-pending range that sits
+          // after it — keep them pointed at their own token so THEIR
+          // eventual rollback (if any) lands on the right slice too.
+          const removedLength = range.end - range.start
+          for (const other of pendingRangesRef.current) {
+            if (other !== range && other.start >= range.end) {
+              other.start -= removedLength
+              other.end -= removedLength
+            }
           }
         })
-        .finally(() => setPendingJoins((n) => n - 1))
+        .finally(() => {
+          pendingRangesRef.current = pendingRangesRef.current.filter((r) => r !== range)
+          setPendingJoins((n) => n - 1)
+        })
     }
   }
 

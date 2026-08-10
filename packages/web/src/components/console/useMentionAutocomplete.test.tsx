@@ -1,0 +1,96 @@
+// @vitest-environment happy-dom
+import { act, useRef, useState } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, describe, expect, it } from 'vitest'
+import { useMentionAutocomplete } from './useMentionAutocomplete'
+
+interface Candidate {
+  id: string
+  name: string
+}
+
+let root: Root | null = null
+let container: HTMLDivElement | null = null
+
+afterEach(() => {
+  if (root) act(() => root!.unmount())
+  container?.remove()
+  root = null
+  container = null
+})
+
+function mountHarness(onPick: (c: Candidate) => Promise<boolean> | void) {
+  let api!: ReturnType<typeof useMentionAutocomplete<Candidate>>
+  let setDraft!: (v: string) => void
+  let getValue!: () => string
+
+  function Harness() {
+    const [value, setValue] = useState('')
+    const ref = useRef<HTMLTextAreaElement>(null)
+    api = useMentionAutocomplete<Candidate>({ ref, value, setValue, candidates: [], onPick })
+    setDraft = setValue
+    getValue = () => value
+    return <textarea ref={ref} value={value} readOnly />
+  }
+
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+  act(() => root!.render(<Harness />))
+  return { api: () => api, setDraft: (v: string) => setDraft(v), getValue: () => getValue() }
+}
+
+// A pending join's rollback range is tracked by absolute offset — the
+// regression this covers: an EARLIER pending pick's rollback removes text
+// and shifts everything after it, and a LATER pick's own tracked range has
+// to move with it or its eventual rollback compares against the wrong slice
+// and silently leaves a dangling, unresolved "@Name" behind.
+describe('useMentionAutocomplete — overlapping failed joins', () => {
+  it('shifts a later pending range when an earlier one rolls back first, so both roll back correctly', async () => {
+    let resolveA!: (v: boolean) => void
+    let resolveB!: (v: boolean) => void
+    const pending: Record<string, Promise<boolean>> = {}
+    const { api, setDraft, getValue } = mountHarness(
+      (c) =>
+        new Promise<boolean>((resolve) => {
+          if (c.id === 'a') resolveA = resolve
+          else resolveB = resolve
+        })
+    )
+    void pending
+
+    act(() => {
+      setDraft('@a')
+      api().sync('@a', 2)
+    })
+    act(() => {
+      api().pick({ id: 'a', name: 'alice' })
+    })
+    expect(getValue()).toBe('@alice ')
+
+    act(() => {
+      setDraft('@alice @b')
+      api().sync('@alice @b', 9)
+    })
+    act(() => {
+      api().pick({ id: 'b', name: 'bob' })
+    })
+    expect(getValue()).toBe('@alice @bob ')
+
+    // alice's join fails first — rolls back, and bob's tracked range must
+    // shift left with it or the next rollback targets stale offsets.
+    await act(async () => {
+      resolveA(false)
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(getValue()).toBe('@bob ')
+
+    // bob's join ALSO fails — without the shift, this compares against the
+    // pre-shift slice, finds no match, and leaves "@bob " behind for good.
+    await act(async () => {
+      resolveB(false)
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(getValue()).toBe('')
+  })
+})
