@@ -47,6 +47,8 @@ export interface ShimConnection {
    *  whatever the pod currently holds — a renewal may already have replaced that. */
   issuedCredential: string
   send(frame: ShimFrame): void
+  /** Observe inbound frames — how a ShimChannel receives the replies to its requests. */
+  onFrame(listener: (text: string) => void): void
   close(reason: string): void
 }
 
@@ -145,6 +147,7 @@ export class ShimListener {
   private accept(ws: WebSocket, remoteAddress: string): void {
     let bound: ShimConnection | undefined
     let binding = false
+    const frameListeners: Array<(text: string) => void> = []
     // TokenReview is a network round trip, so the socket can close while it is pending.
     // The continuation must not then issue a credential, supersede a live binding, or
     // publish a connection for a socket that is already gone.
@@ -207,6 +210,7 @@ export class ShimListener {
               binding: result.binding,
               issuedCredential: result.credential,
               send: (outbound) => ws.send(JSON.stringify(outbound)),
+              onFrame: (listener) => frameListeners.push(listener),
               close: (reason) => ws.close(4000, reason)
             }
             bound = connection
@@ -249,6 +253,14 @@ export class ShimListener {
       // has no credential to authorize and must not be treated as anything else.
       if (!bound) {
         ws.close(4403, 'not bound')
+        return
+      }
+      if (frame.type === 'shim/response') {
+        // A reply to something the daemon asked for: hand it to whoever is waiting. The
+        // frame is not trusted beyond its correlation id — the channel only resolves a
+        // request it actually issued.
+        const text = typeof data === 'string' ? data : String(data)
+        for (const listener of frameListeners) listener(text)
         return
       }
       if (frame.type === 'shim/request') {
