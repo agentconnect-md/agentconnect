@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { GitRunner, GitStatusSummary } from '../workspace/git-runner.js'
+import type { GitLogEntry, GitPullSummary, GitRunner, GitStatusSummary } from '../workspace/git-runner.js'
 import type { ShimRequester } from './channels.js'
 
 /**
@@ -95,6 +95,13 @@ export function parsePorcelainV2(stdout: string): GitStatusSummary {
   return summary
 }
 
+/** `N files changed, N insertions(+), N deletions(-)` — a fixed shape, unlike --stat prose. */
+export function parseShortstat(stdout: string): { insertions: number; deletions: number } {
+  const insertions = /(\d+) insertions?\(\+\)/.exec(stdout)
+  const deletions = /(\d+) deletions?\(-\)/.exec(stdout)
+  return { insertions: Number(insertions?.[1] ?? 0), deletions: Number(deletions?.[1] ?? 0) }
+}
+
 /** A git failure that carries what the sandbox reported, so a caller can act on it. */
 export class GitExecError extends Error {
   constructor(
@@ -139,8 +146,22 @@ export class ShimGitRunner implements GitRunner {
     await this.exec(['clone', ...options, repo, target])
   }
 
-  async pull(remote: string, branch: string, options: string[] = []): Promise<void> {
+  async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {
+    // `--stat=...` would need parsing prose; the shortstat line has a fixed shape, and the
+    // changed-file list comes from a name-only diff against the pre-pull HEAD.
+    const before = await this.exec(['rev-parse', 'HEAD']).then(
+      (result) => result.stdout.trim(),
+      () => ''
+    )
     await this.exec(['pull', ...options, remote, branch])
+    const after = (await this.exec(['rev-parse', 'HEAD'])).stdout.trim()
+    if (!before || before === after) return { files: [], insertions: 0, deletions: 0 }
+    const names = await this.exec(['diff', '--name-only', `${before}..${after}`])
+    const shortstat = await this.exec(['diff', '--shortstat', `${before}..${after}`])
+    return {
+      files: names.stdout.split('\n').filter((line) => line.trim().length > 0),
+      ...parseShortstat(shortstat.stdout)
+    }
   }
 
   async status(): Promise<GitStatusSummary> {
@@ -154,14 +175,17 @@ export class ShimGitRunner implements GitRunner {
     return parsePorcelainV2(result.stdout)
   }
 
-  async log(options: { maxCount: number }): Promise<Array<{ hash: string; message: string }>> {
-    const result = await this.exec(['log', `--max-count=${options.maxCount}`, '--format=%H%x1f%s'])
+  async log(options: { maxCount: number }): Promise<GitLogEntry[]> {
+    // %cI is git's strict-ISO committer date, matching what the local runner asks simple-git
+    // for; a unit separator keeps subjects that contain spaces or tabs intact.
+    const SEP = '\u001f'
+    const result = await this.exec(['log', `--max-count=${options.maxCount}`, `--format=%H%x1f%cI%x1f%s`])
     return result.stdout
       .split('\n')
-      .filter((line) => line.includes(''))
+      .filter((line) => line.includes(SEP))
       .map((line) => {
-        const [hash, message] = line.split('')
-        return { hash: hash ?? '', message: message ?? '' }
+        const [hash, committedAt, subject] = line.split(SEP)
+        return { hash: hash ?? '', committedAt: committedAt ?? '', subject: subject ?? '' }
       })
   }
 

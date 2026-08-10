@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gitFor, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
-import { GitExecError, GitExecPayloadSchema, ShimGitRunner, parsePorcelainV2 } from '../src/shim/git-exec.js'
+import {
+  GitExecError,
+  GitExecPayloadSchema,
+  ShimGitRunner,
+  parsePorcelainV2,
+  parseShortstat
+} from '../src/shim/git-exec.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 
 /**
@@ -117,9 +123,13 @@ describe('git runner contract, local and shim-backed', () => {
     const root = repository()
     const { local, remote } = runners(root)
     const [fromLocal, fromRemote] = await Promise.all([local.log({ maxCount: 5 }), remote.log({ maxCount: 5 })])
-    expect(fromRemote.map((entry) => entry.message)).toEqual(fromLocal.map((entry) => entry.message))
-    expect(fromRemote.map((entry) => entry.message)).toEqual(['second commit', 'first commit'])
+    expect(fromRemote.map((entry) => entry.subject)).toEqual(fromLocal.map((entry) => entry.subject))
+    expect(fromRemote.map((entry) => entry.subject)).toEqual(['second commit', 'first commit'])
     expect(fromRemote.map((entry) => entry.hash)).toEqual(fromLocal.map((entry) => entry.hash))
+    // The committer date is consumed by the console's workspace view, so parity covers it too:
+    // an interface that dropped it could not serve "when did HEAD last move".
+    expect(fromRemote.map((entry) => entry.committedAt)).toEqual(fromLocal.map((entry) => entry.committedAt))
+    for (const entry of fromRemote) expect(entry.committedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 
   it('returns the same output for the raw subcommands the daemon actually uses', async () => {
@@ -280,6 +290,69 @@ describe('git runner contract, local and shim-backed', () => {
     expect(fromRemote.files.map((file) => file.path)).toContain('shared.txt')
   })
 
+  it('reports the same pull summary from both sides', async () => {
+    // The console shows how many files a pull moved and by how much, so the summary is part of
+    // the contract rather than a convenience: an interface returning void could not serve it.
+    // A real upstream is needed, so this clones from one and pushes a change into it.
+    const upstream = mkdtempSync(join(tmpdir(), 'ac-gitupstream-'))
+    roots.push(upstream)
+    git(upstream, ['init', '--bare', '--initial-branch=main'])
+    const seed = mkdtempSync(join(tmpdir(), 'ac-gitseed-'))
+    roots.push(seed)
+    git(seed, ['clone', upstream, '.'])
+    writeFileSync(join(seed, 'shared.txt'), 'one\n')
+    git(seed, ['add', 'shared.txt'])
+    git(seed, ['commit', '-m', 'seed'])
+    git(seed, ['push', 'origin', 'main'])
+
+    const makeClone = (): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'ac-gitclone-'))
+      roots.push(dir)
+      git(dir, ['clone', upstream, '.'])
+      return dir
+    }
+    const forLocal = makeClone()
+    const forRemote = makeClone()
+
+    // One more upstream commit touching two files, so the summary is non-trivial.
+    writeFileSync(join(seed, 'shared.txt'), 'one\ntwo\n')
+    writeFileSync(join(seed, 'added.txt'), 'new\n')
+    git(seed, ['add', '.'])
+    git(seed, ['commit', '-m', 'upstream change'])
+    git(seed, ['push', 'origin', 'main'])
+
+    const fromLocal = await new LocalGitRunner(gitFor(forLocal)).pull('origin', 'main')
+    const fromRemote = await new ShimGitRunner(sandboxRequester(forRemote), forRemote).pull('origin', 'main')
+
+    expect([...fromRemote.files].sort()).toEqual([...fromLocal.files].sort())
+    expect([...fromRemote.files].sort()).toEqual(['added.txt', 'shared.txt'])
+    expect(fromRemote.insertions).toBe(fromLocal.insertions)
+    expect(fromRemote.deletions).toBe(fromLocal.deletions)
+    expect(fromRemote.insertions).toBeGreaterThan(0)
+  })
+
+  it('reports an up-to-date pull as no change on both sides', async () => {
+    const upstream = mkdtempSync(join(tmpdir(), 'ac-gitupstream2-'))
+    roots.push(upstream)
+    git(upstream, ['init', '--bare', '--initial-branch=main'])
+    const seed = mkdtempSync(join(tmpdir(), 'ac-gitseed2-'))
+    roots.push(seed)
+    git(seed, ['clone', upstream, '.'])
+    writeFileSync(join(seed, 'only.txt'), 'x\n')
+    git(seed, ['add', 'only.txt'])
+    git(seed, ['commit', '-m', 'seed'])
+    git(seed, ['push', 'origin', 'main'])
+    const clone = mkdtempSync(join(tmpdir(), 'ac-gitclone2-'))
+    roots.push(clone)
+    git(clone, ['clone', upstream, '.'])
+
+    const fromLocal = await new LocalGitRunner(gitFor(clone)).pull('origin', 'main')
+    const fromRemote = await new ShimGitRunner(sandboxRequester(clone), clone).pull('origin', 'main')
+    expect(fromRemote).toEqual({ files: [], insertions: 0, deletions: 0 })
+    expect(fromLocal.files).toEqual([])
+    expect(fromLocal.insertions).toBe(0)
+  })
+
   it('parses a detached HEAD and upstream tracking the way git reports them', () => {
     // Unit-level, because a detached checkout is awkward to stage and the format is the part
     // that can silently drift.
@@ -293,6 +366,11 @@ describe('git runner contract, local and shim-backed', () => {
     // A rename record consumes the following original-path entry rather than parsing it.
     const renames = parsePorcelainV2('2 R. N... 100644 100644 100644 aaa bbb R100 new.txt\0old.txt\0')
     expect(renames.files).toEqual([{ path: 'new.txt', index: 'R', working_dir: ' ' }])
+    expect(parseShortstat(' 2 files changed, 3 insertions(+), 1 deletion(-)\n')).toEqual({
+      insertions: 3,
+      deletions: 1
+    })
+    expect(parseShortstat(' 1 file changed, 1 insertion(+)\n')).toEqual({ insertions: 1, deletions: 0 })
     const unmerged = parsePorcelainV2('u UU N... 100644 100644 100644 100644 aaa bbb ccc conflict.txt\0')
     expect(unmerged.files).toEqual([{ path: 'conflict.txt', index: 'U', working_dir: 'U' }])
   })
