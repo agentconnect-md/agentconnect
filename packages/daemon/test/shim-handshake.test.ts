@@ -204,6 +204,26 @@ describe('handshake operability counters', () => {
     }
   })
 
+  it('counts the unavailable rejection it sends, rather than sending one silently', async () => {
+    // Every reason the listener SENDS must have a counter, or a dashboard shows a healthy
+    // handshake rate while peers are being turned away. This one had none: the first version's
+    // edit missed the site and nothing failed, because no test asserted the pairing.
+    const unavailable = countingMetrics()
+    const { endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      spawnRecordForPod: () => {
+        throw new Error('registry unavailable')
+      },
+      metrics: unavailable.metrics
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => client.frames.length > 0 || unavailable.rejections.length > 0)
+    const rejected = client.frames[0] as ShimRejected | undefined
+    expect(rejected?.reason).toBe('unavailable')
+    expect(unavailable.rejections).toEqual(['unavailable'])
+  })
+
   it('counts a malformed frame rather than only closing the socket', async () => {
     const malformed = countingMetrics()
     const { endpoint } = await listener({

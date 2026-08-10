@@ -138,15 +138,16 @@ export class ClusterSpawnDriver implements SpawnDriver {
     }
   }
 
-  /** Wake a suspended Sandbox, or confirm it is already running. */
-  async wake(agentId: string): Promise<void> {
+  /** Wake a suspended Sandbox, or confirm it is already running. Reports the mode it found, which
+   *  is the only place a CACHED launch can learn whether it is resuming or already warm. */
+  async wake(agentId: string): Promise<OperatingMode | undefined> {
     if (this.draining.has(agentId)) {
       // A drain request is in flight: new messages queue rather than reviving the instance,
       // or one message would resurrect the image the rollout is replacing.
       this.deps.log.info(`cluster: holding agent ${agentId} suspended — a drain request is pending`)
-      return
+      return undefined
     }
-    await this.setMode(agentId, 'Running')
+    return await this.setMode(agentId, 'Running')
   }
 
   /** Suspend an idle Sandbox. The object and its volume survive; only the pod goes. */
@@ -161,28 +162,35 @@ export class ClusterSpawnDriver implements SpawnDriver {
    * correct response is to look again — and the retry budget is finite because a permanently
    * invalid patch would otherwise loop forever.
    */
-  private setMode(agentId: string, desired: OperatingMode): Promise<void> {
+  private setMode(agentId: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
     const previous = this.modeQueue.get(agentId) ?? Promise.resolve()
     const next = previous.catch(() => undefined).then(() => this.applyMode(agentId, desired))
     // Keep the chain even when a link rejects, so a failed transition cannot strand the queue.
     this.modeQueue.set(
       agentId,
-      next.catch(() => undefined)
+      next.then(
+        () => undefined,
+        () => undefined
+      )
     )
     return next
   }
 
-  private async applyMode(agentId: string, desired: OperatingMode): Promise<void> {
+  private async applyMode(agentId: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
     const launch = this.launches.get(agentId)
     if (!launch) throw new Error(`no sandbox launch recorded for agent ${agentId}`)
+    // The mode observed on the FIRST read, before this call changed anything. A later attempt
+    // sees the state we produced, which would say nothing about where the launch started.
+    let first: OperatingMode | undefined
     for (let attempt = 1; attempt <= MAX_MODE_ATTEMPTS; attempt += 1) {
       const sandbox = await this.deps.api.getSandbox(launch.sandboxName)
       const observed = sandbox.spec?.operatingMode ?? 'Running'
-      if (observed === desired) return
+      if (observed === desired) return first ?? observed
+      first ??= observed
       try {
         await this.deps.api.setOperatingMode(launch.sandboxName, desired, observed)
         this.deps.log.info(`cluster: agent ${agentId} sandbox ${launch.sandboxName} → ${desired}`)
-        return
+        return first
       } catch (err) {
         if (!(err instanceof OperatingModeRejectedError)) throw err
         this.metrics.writeRetry('rejected_precondition')
@@ -277,7 +285,11 @@ export class ClusterSpawnDriver implements SpawnDriver {
       const launch = await this.ensureSandbox(agentId, timer)
       // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
       // something asks for Running.
-      await this.wake(agentId)
+      const modeBeforeWake = await this.wake(agentId)
+      // A launch this daemon already has cached returns from ensureSandbox before any sandbox
+      // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
+      // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
+      if (modeBeforeWake) timer.observedPath(modeBeforeWake === 'Suspended' ? 'resume' : 'warm')
       timer.mark('mode_running')
       await this.awaitReady(launch.sandboxName)
       timer.mark('pod_ready')
@@ -294,9 +306,19 @@ export class ClusterSpawnDriver implements SpawnDriver {
       })
       session.attach(connection)
       this.sessions.set(agentId, session)
-      const runtime = createRemoteRuntime({ session, request, log: this.deps.log, metrics: this.metrics })
-      timer.mark('runtime_ready')
-      timer.finish('ok')
+      // The open is asynchronous, so the stage closes when the runtime reports — not when the
+      // call returns. Marking it here measured the cost of constructing a stream pair and called
+      // a runtime that never started a success.
+      const runtime = createRemoteRuntime({
+        session,
+        request,
+        log: this.deps.log,
+        metrics: this.metrics,
+        onRuntimeOpen: (outcome) => {
+          timer.mark('runtime_ready')
+          timer.finish(outcome)
+        }
+      })
       return runtime
     } catch (err) {
       // Timeouts are the interesting failure — they are what a missed target looks like — so
@@ -338,6 +360,8 @@ function createRemoteRuntime(opts: {
   request: SpawnRequest
   log: { info: (m: string) => void; warn: (m: string) => void }
   metrics?: ClusterMetrics
+  /** Reports when the ACP open resolved, which is when the runtime is genuinely ready. */
+  onRuntimeOpen?: (outcome: 'ok' | 'error') => void
 }): SpawnedRuntime {
   const exitListeners: Array<() => void> = []
   let stopped = false
@@ -399,10 +423,14 @@ function createRemoteRuntime(opts: {
     }
   })
 
-  void opened.catch((err: unknown) => {
-    opts.log.warn(`cluster: runtime failed to start in the sandbox (${(err as Error).message})`)
-    finish()
-  })
+  void opened.then(
+    () => opts.onRuntimeOpen?.('ok'),
+    (err: unknown) => {
+      opts.log.warn(`cluster: runtime failed to start in the sandbox (${(err as Error).message})`)
+      opts.onRuntimeOpen?.('error')
+      finish()
+    }
+  )
 
   return {
     toAgent,

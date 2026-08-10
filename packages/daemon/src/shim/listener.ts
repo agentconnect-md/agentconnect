@@ -256,6 +256,7 @@ export class ShimListener {
           },
           (err: unknown) => {
             binding = false
+            this.metrics.handshakeRejected('unavailable')
             this.deps.log.warn(`shim: binding failed (${(err as Error).message})`)
             reject({ type: 'shim/rejected', reason: 'unavailable', message: 'binding unavailable' })
           }

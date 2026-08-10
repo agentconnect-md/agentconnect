@@ -121,6 +121,7 @@ export class LaunchTimer {
   // the earliest stage — claim → bound — is the one that carries PVC provisioning, so emitting
   // it under a provisional tag would file cold-start time under whatever we had assumed.
   private readonly pending: Array<{ stage: LaunchStage; durationMs: number }> = []
+  private finished = false
 
   constructor(
     private readonly metrics: ClusterMetrics,
@@ -130,8 +131,10 @@ export class LaunchTimer {
     this.last = this.started
   }
 
-  /** The path is only knowable once the claim and the sandbox's mode have been observed. */
+  // First observation wins. The earliest determination is the most specific — a created claim is
+  // cold whatever mode the sandbox reports a moment later — and a second call would overwrite it.
   observedPath(path: LaunchPath): void {
+    if (this.path !== undefined) return
     this.path = path
     for (const entry of this.pending.splice(0)) this.metrics.stage(entry.stage, path, entry.durationMs)
   }
@@ -149,7 +152,11 @@ export class LaunchTimer {
 
   // A launch that failed before its path was observed is reported as `warm`: nothing was created
   // and nothing was resumed, so attributing it to either target would be a claim we cannot make.
+  // Idempotent, because the runtime-open outcome arrives asynchronously while the failure path
+  // may already have reported — and two samples for one launch is a corrupted distribution.
   finish(outcome: LaunchOutcome): void {
+    if (this.finished) return
+    this.finished = true
     const path = this.path ?? 'warm'
     for (const entry of this.pending.splice(0)) this.metrics.stage(entry.stage, path, entry.durationMs)
     this.metrics.launch(path, outcome, this.now() - this.started)

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import { ClusterSpawnDriver, DRAIN_REQUESTED_ANNOTATION } from '../src/k8s/cluster-driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
@@ -81,25 +82,52 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
   }
 }
 
-function driverFor(metrics: ClusterMetrics, api: ReturnType<typeof fakeApi>) {
+/**
+ * A connection that ANSWERS the ACP open, because the runtime-ready stage closes when the open
+ * resolves — not when `launch()` returns. A silent fake made that stage measure the cost of
+ * constructing a stream pair, which is how a runtime that never started looked like a success.
+ */
+function respondingConnection(outcome: 'ok' | 'error') {
+  const listeners: Array<(text: string) => void> = []
+  return {
+    binding: { agentId: 'agent-a', generation: 1, grants: ['acp'], podName: 'p', podUid: 'u' },
+    issuedCredential: 'cred',
+    send: (frame: { type: string; id: string }) => {
+      if (frame.type !== 'shim/request') return
+      const reply =
+        outcome === 'ok'
+          ? { type: 'shim/response', id: frame.id, ok: true, payload: { streamId: randomUUID() } }
+          : { type: 'shim/response', id: frame.id, ok: false, error: 'runtime exited immediately' }
+      setTimeout(() => {
+        for (const listen of listeners) listen(JSON.stringify(reply))
+      }, 0)
+    },
+    onFrame: (listen: (text: string) => void) => listeners.push(listen),
+    close: () => {}
+  }
+}
+
+function driverFor(metrics: ClusterMetrics, api: ReturnType<typeof fakeApi>, open: 'ok' | 'error' = 'ok') {
   return new ClusterSpawnDriver({
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',
     publishSpawnRecord: () => {},
-    awaitChannel: async () =>
-      ({
-        binding: { agentId: 'agent-a', generation: 1, grants: ['acp'], podName: 'p', podUid: 'u' },
-        issuedCredential: 'cred',
-        send: () => {},
-        onFrame: () => {},
-        close: () => {}
-      }) as never,
+    awaitChannel: async () => respondingConnection(open) as never,
     clock: new FakeClock(),
     metrics,
     readyTimeoutMs: 5_000,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })
+}
+
+async function settled(predicate: () => boolean, timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  return predicate()
 }
 
 const launchRequest = { command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a' }, cwd: '/agent' } as never
@@ -111,11 +139,13 @@ describe('cluster launch metrics', () => {
     // could not settle either number.
     const cold = recorder()
     await driverFor(cold.metrics, fakeApi({ claimExists: false, mode: 'Suspended' })).launch(launchRequest)
+    expect(await settled(() => cold.launches.length > 0)).toBe(true)
     expect(new Set(cold.stages.map((entry) => entry.path))).toEqual(new Set(['cold']))
     expect(cold.launches).toEqual([expect.objectContaining({ path: 'cold', outcome: 'ok' })])
 
     const resume = recorder()
     await driverFor(resume.metrics, fakeApi({ claimExists: true, mode: 'Suspended' })).launch(launchRequest)
+    expect(await settled(() => resume.launches.length > 0)).toBe(true)
     expect(new Set(resume.stages.map((entry) => entry.path))).toEqual(new Set(['resume']))
     expect(resume.launches).toEqual([expect.objectContaining({ path: 'resume', outcome: 'ok' })])
 
@@ -123,12 +153,50 @@ describe('cluster launch metrics', () => {
     // distribution down with launches that paid nothing.
     const warm = recorder()
     await driverFor(warm.metrics, fakeApi({ claimExists: true, mode: 'Running' })).launch(launchRequest)
+    expect(await settled(() => warm.launches.length > 0)).toBe(true)
     expect(new Set(warm.stages.map((entry) => entry.path))).toEqual(new Set(['warm']))
+  })
+
+  it('tags the ORDINARY resume — launch, suspend, launch on one daemon — as a resume', async () => {
+    // The common path, and the one the first version got wrong. `suspend()` keeps the cached
+    // launch on purpose, so the second launch returns from ensureSandbox before any sandbox read:
+    // the timer never saw a path and reported `warm`, excluding real resumes from resume p95.
+    const seen = recorder()
+    const driver = driverFor(seen.metrics, fakeApi({ claimExists: true, mode: 'Running' }))
+    await driver.launch(launchRequest)
+    expect(await settled(() => seen.launches.length === 1)).toBe(true)
+    expect(seen.launches[0]?.path).toBe('warm')
+
+    await driver.suspend('agent-a')
+    await driver.launch(launchRequest)
+    expect(await settled(() => seen.launches.length === 2)).toBe(true)
+    expect(seen.launches[1]).toEqual(expect.objectContaining({ path: 'resume', outcome: 'ok' }))
+    // No claim was submitted on this path, so there is no claim → bound duration to report.
+    // Emitting a zero would put a sample in the distribution that never happened.
+    const secondStages = seen.stages.slice(seen.stages.findIndex((entry) => entry.path === 'resume'))
+    expect(secondStages.map((entry) => entry.stage)).not.toContain('claim_bound')
+    expect(secondStages.every((entry) => entry.path === 'resume')).toBe(true)
+  })
+
+  it('closes runtime_ready when the ACP open resolves, and calls a failed open an error', async () => {
+    // createRemoteRuntime only STARTS the open. Recording the stage on return measured the cost
+    // of constructing a stream pair — a near-zero success for a runtime that never came up.
+    const failed = recorder()
+    const driver = driverFor(failed.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }), 'error')
+    await driver.launch(launchRequest)
+    expect(await settled(() => failed.launches.length > 0)).toBe(true)
+    expect(failed.launches).toEqual([expect.objectContaining({ path: 'resume', outcome: 'error' })])
+
+    // And exactly one sample: the failure path may also report, and two samples for one launch
+    // is a corrupted distribution rather than a lost one.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(failed.launches).toHaveLength(1)
   })
 
   it('records every stage of the launch, in order', async () => {
     const seen = recorder()
     await driverFor(seen.metrics, fakeApi({ claimExists: true, mode: 'Suspended' })).launch(launchRequest)
+    expect(await settled(() => seen.launches.length > 0)).toBe(true)
     // A missing stage is worse than a wrong one: the dashboard silently attributes its time to
     // the next stage, which is how "the pull is slow" becomes "the pod is slow".
     expect(seen.stages.map((entry) => entry.stage)).toEqual([
