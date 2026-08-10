@@ -1,65 +1,140 @@
 #!/usr/bin/env node
-// Generates the declared runtime table from the image it runs inside.
+// Generates the declared runtime table by ASKING each runtime, inside the image it ships in.
 //
-// Derived, never hand-written. The table is what the daemon reports in `--cloud` mode instead of
-// probing a host, so a hand-maintained one is a claim about the image that nothing checks — and
-// the failure is silent: the daemon advertises a runtime version the image does not have, and the
-// mismatch surfaces as a confused user rather than a failed build.
+//   generate-runtime-table.mjs <output path>   # write the table (build time)
+//   generate-runtime-table.mjs -               # print it (consistency check)
 //
-// Runs at build time (versions come from the installed packages) and again in CI against the
-// built image, where the two results are compared.
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+// Derived, never hand-written, and derived from `initialize` rather than from a manifest or a
+// `--version` string. The table is what the daemon reports in `--cloud` mode instead of probing a
+// host, so what matters is that it says what the runtime will say when a session starts. A
+// manifest version only agrees with npm; `agentInfo.version` at initialize is the runtime's own
+// claim, and the capabilities beside it are the part a caller behaves differently on.
+//
+// Run twice: at build time to produce the artifact, and in CI against the built image to compare.
+import { spawn } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-/** Runtime ids this image provides, with the package each one's version is read from. */
+/** Runtime ids this image provides and the executable each is launched as. */
 const PROVIDED = [
-  { id: 'claude-acp', package: '@agentclientprotocol/claude-agent-acp', bin: 'claude-agent-acp' },
-  { id: 'codex-acp', package: '@agentclientprotocol/codex-acp', bin: 'codex-acp' }
+  { id: 'claude-acp', bin: 'claude-agent-acp' },
+  { id: 'codex-acp', bin: 'codex-acp' }
 ]
 
-function globalRoot() {
-  return execFileSync('npm', ['root', '--global'], { encoding: 'utf8' }).trim()
-}
+const PROBE_TIMEOUT_MS = 60_000
+const PROBE_CWD = process.env.AC_PROBE_CWD ?? process.cwd()
 
-/** The installed version, from the package's own manifest rather than from `--version` output:
- *  a runtime's CLI is free to print whatever it likes, and the manifest is what npm resolved. */
-function installedVersion(root, packageName) {
-  const manifest = JSON.parse(readFileSync(`${root}/${packageName}/package.json`, 'utf8'))
-  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
-    throw new Error(`${packageName} has no version in its manifest`)
+/** Drive one runtime over stdio far enough to learn what it is: initialize, then a session. */
+async function probe(bin) {
+  // Ambient HOME and cwd, NOT a pinned /agent: a runtime writes state into both, so whoever runs
+  // this decides where that lands. Pinning the workspace meant the build-time probe left
+  // root-owned .claude/.codex state in /agent that the runtime user could not then write.
+  const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'ignore'], env: process.env, cwd: PROBE_CWD })
+  const replies = new Map()
+  let buffered = ''
+  child.stdout.on('data', (chunk) => {
+    buffered += chunk.toString('utf8')
+    const lines = buffered.split('\n')
+    buffered = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const message = JSON.parse(line)
+        if (typeof message.id === 'number') replies.set(message.id, message)
+      } catch {
+        /* a notification, which this probe does not need */
+      }
+    }
+  })
+
+  const call = async (id, method, params) => {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    const deadline = Date.now() + PROBE_TIMEOUT_MS
+    for (;;) {
+      const reply = replies.get(id)
+      if (reply?.error) throw new Error(`${bin} ${method} failed: ${JSON.stringify(reply.error).slice(0, 200)}`)
+      if (reply) return reply.result
+      if (Date.now() > deadline) throw new Error(`${bin} did not answer ${method} within ${PROBE_TIMEOUT_MS}ms`)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
   }
-  return manifest.version
+
+  try {
+    const initialized = await call(1, 'initialize', {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } }
+    })
+    // A session too, because `modes` exists only once there is one. Best-effort on purpose: this
+    // image carries no provider credentials, and codex-acp answers `session/new` with
+    // "Authentication required" while claude-agent-acp does not. That is a runtime that is
+    // unauthenticated, not one that is broken, so it must not fail the build — and the table says
+    // which it was rather than leaving an unexplained gap.
+    const session = await call(2, 'session/new', { cwd: PROBE_CWD, mcpServers: [] }).then(
+      (result) => ({ result, outcome: 'ok' }),
+      (err) => ({ result: undefined, outcome: /auth/i.test(err.message) ? 'auth-required' : 'unavailable' })
+    )
+    return { initialized, session: session.result, sessionProbe: session.outcome }
+  } finally {
+    child.kill('SIGTERM')
+  }
 }
 
-function resolveBin(bin) {
-  // Absent means the entry would resolve to nothing at spawn time, which is exactly the drift
-  // this generator exists to make impossible.
-  return execFileSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).trim()
+/** Deeply key-sorted, so two builds of identical inputs produce identical bytes. */
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, stable(value[key])])
+    )
+  }
+  return value
 }
 
-export function buildTable() {
-  const root = globalRoot()
-  return {
-    runtimes: PROVIDED.map((entry) => ({
+export async function buildTable() {
+  const runtimes = []
+  for (const entry of PROVIDED) {
+    const { initialized, session, sessionProbe } = await probe(entry.bin)
+    const version = initialized?.agentInfo?.version
+    if (typeof version !== 'string' || version.length === 0) {
+      throw new Error(`${entry.bin} reported no agentInfo.version at initialize`)
+    }
+    runtimes.push({
       id: entry.id,
-      version: installedVersion(root, entry.package)
-    }))
+      version,
+      // The ACP snapshot: what the daemon can state about this runtime without probing it, and
+      // what CI compares a fresh probe against.
+      acp: stable({
+        protocolVersion: initialized.protocolVersion ?? null,
+        agentName: initialized.agentInfo?.name ?? null,
+        authMethods: (initialized.authMethods ?? []).map((method) => method?.id ?? method?.name ?? String(method)),
+        capabilities: initialized.agentCapabilities ?? {},
+        modes: (session?.modes?.availableModes ?? []).map((mode) => mode.id).sort(),
+        // Why a mode list may be empty, so an absent one is a recorded fact rather than a gap.
+        sessionProbe
+      })
+      // No `models` key: a model list needs provider credentials, and this image deliberately
+      // carries none. Publishing a guessed one would put a claim in the daemon's mouth that no
+      // probe supports; the model snapshot belongs wherever those credentials live.
+    })
   }
+  runtimes.sort((a, b) => a.id.localeCompare(b.id))
+  return { runtimes }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  // Written sorted and with a trailing newline so two builds of the same inputs produce the same
-  // bytes — a table that differs only in key order would make every image look changed.
-  const table = buildTable()
-  table.runtimes.sort((a, b) => a.id.localeCompare(b.id))
   const target = process.argv[2]
-  if (!target) throw new Error('usage: generate-runtime-table.mjs <output path>')
-  mkdirSync(dirname(target), { recursive: true })
-  writeFileSync(target, `${JSON.stringify(table, null, 2)}\n`)
-  // Resolve every bin now, so a table naming a runtime the image cannot launch fails the BUILD
-  // rather than the first session that asks for it.
-  for (const entry of PROVIDED) resolveBin(entry.bin)
-  process.stdout.write(`runtime table written to ${target}\n`)
+  if (!target) throw new Error('usage: generate-runtime-table.mjs <output path>|-')
+  const table = await buildTable()
+  const rendered = `${JSON.stringify(table, null, 2)}\n`
+  if (target === '-') {
+    process.stdout.write(rendered)
+  } else {
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, rendered)
+    // stderr, so `-` stays machine-readable on stdout.
+    process.stderr.write(`runtime table written to ${target}\n`)
+  }
 }

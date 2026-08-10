@@ -35,7 +35,7 @@ variable "MEM0_BACKEND_VERSION" {
 }
 
 group "default" {
-  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend"]
+  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "runtime-sandbox"]
 }
 
 target "_release" {

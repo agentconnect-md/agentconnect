@@ -125,6 +125,12 @@ jobs:
       # token, and the published runtime table agreeing with what the runtimes report.
       - name: Verify the image properties and the runtime table
         run: node scripts/verify-runtime-image.mjs runtime-sandbox:ci
+      # The smoke test's DAEMON side imports the listener from source, which imports the
+      # workspace packages by their built entry points. A tree that happens to have them built
+      # hides this — it passed locally and failed here, which is the same missing-build defect the
+      # image itself had one layer down.
+      - name: Build the workspace packages the daemon side imports
+        run: pnpm --filter "@agentconnect.md/daemon^..." build
       # The acceptance criterion: a real container, the real shim dialling back, the real ACP
       # runtime starting inside it, initialize and one session/new.
       - name: Smoke test through the shim

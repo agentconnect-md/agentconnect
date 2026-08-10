@@ -104,29 +104,36 @@ check('carries no service-account token of its own', () => {
   return 'none'
 })
 
-// The acceptance criterion: the published table must match what the runtimes actually report.
-check('the published runtime table matches what the runtimes report', () => {
-  const table = JSON.parse(inImage(`cat ${TABLE_PATH}`))
+// The acceptance criterion: the published table must match what the runtimes report AT
+// INITIALIZE — not what a manifest or a `--version` string says. So it is checked by re-running
+// the same generator in the built image and diffing: a table that merely agrees with its own
+// source would prove only that the generator ran once.
+check('the published runtime table matches a fresh ACP probe of this image', () => {
+  const published = inImage(`cat ${TABLE_PATH}`)
+  const fresh = execFileSync(
+    'docker',
+    ['run', '--rm', '--entrypoint', 'node', image, '/opt/agentconnect/bin/generate-runtime-table.mjs', '-'],
+    { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }
+  ).trim()
+  const table = JSON.parse(published)
   if (!Array.isArray(table.runtimes) || table.runtimes.length === 0) {
-    throw new Error('table declares no runtimes, so the daemon would advertise none')
+    throw new Error('the table declares no runtimes, so the daemon would advertise none')
   }
-  const bins = { 'claude-acp': 'claude-agent-acp', 'codex-acp': 'codex-acp' }
-  const mismatches = []
   for (const entry of table.runtimes) {
-    const bin = bins[entry.id]
-    if (!bin) {
-      mismatches.push(`${entry.id}: declared but this check knows no executable for it`)
-      continue
+    if (typeof entry.acp?.protocolVersion !== 'number') {
+      throw new Error(`${entry.id} has no ACP protocol version, so the snapshot is not from initialize`)
     }
-    // Compared against what the CLI PRINTS, not against the manifest the table was generated
-    // from: agreeing with its own source would prove only that the generator ran.
-    const reported = inImage(`${bin} --version 2>&1 | head -1`)
-    if (!reported.includes(entry.version)) {
-      mismatches.push(`${entry.id}: table says ${entry.version}, runtime reports "${reported}"`)
+    if (!entry.acp.capabilities || Object.keys(entry.acp.capabilities).length === 0) {
+      throw new Error(`${entry.id} publishes no ACP capabilities`)
     }
   }
-  if (mismatches.length > 0) throw new Error(mismatches.join('; '))
-  return table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(' ')
+  if (published !== fresh) {
+    // Deliberately shows the ids rather than the whole diff: the point is which runtime drifted.
+    const before = JSON.parse(published).runtimes.map((r) => `${r.id}@${r.version}`)
+    const after = JSON.parse(fresh).runtimes.map((r) => `${r.id}@${r.version}`)
+    throw new Error(`the shipped table differs from a fresh probe (published ${before}, probed ${after})`)
+  }
+  return table.runtimes.map((entry) => `${entry.id}@${entry.version} acp/${entry.acp.protocolVersion}`).join(' ')
 })
 
 // The workspace surface runs git INSIDE the sandbox over the shim's exec channel, so a missing
@@ -136,6 +143,16 @@ check('provides the executables the shim must resolve', () => {
   const missing = required.filter((bin) => inImage(`command -v ${bin} >/dev/null && echo y || echo n`) === 'n')
   if (missing.length > 0) throw new Error(`missing: ${missing.join(', ')}`)
   return required.join(' ')
+})
+
+// A build step that ran as root inside the workspace leaves state the runtime cannot write, and
+// the symptom is a runtime that will not start for the user that owns its own home. The table
+// generator did exactly this once.
+check('the workspace contains nothing the runtime user cannot write', () => {
+  const uid = inImage('id -u')
+  const foreign = inImage(`find /agent -maxdepth 2 ! -uid ${uid} -printf '%u %p\\n' 2>/dev/null | head -10`)
+  if (foreign) throw new Error(`entries not owned by the runtime user: ${foreign.split('\n').join(', ')}`)
+  return 'clean'
 })
 
 // The volume outlives the image, so a uid that shifts between versions makes an agent's own
