@@ -23,11 +23,11 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   assertSafeWorkspaceGitConfig,
+  gitFor,
   pullWorkspaceRef,
   workspaceGitLocalEnv,
   workspaceGitPullTarget
 } from '../workspace/git-injection.js'
-import { gitFor } from '../workspace/git-injection.js'
 import { LocalGitRunner, type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { WorkspaceViolationError } from './workspace-reader.js'
