@@ -87,13 +87,16 @@ function fakeApi(options: { claimExists: boolean; mode: 'Running' | 'Suspended' 
  * resolves — not when `launch()` returns. A silent fake made that stage measure the cost of
  * constructing a stream pair, which is how a runtime that never started looked like a success.
  */
-function respondingConnection(outcome: 'ok' | 'error') {
+function respondingConnection(outcome: 'ok' | 'error' | 'timeout') {
   const listeners: Array<(text: string) => void> = []
   return {
     binding: { agentId: 'agent-a', generation: 1, grants: ['acp'], podName: 'p', podUid: 'u' },
     issuedCredential: 'cred',
     send: (frame: { type: string; id: string }) => {
       if (frame.type !== 'shim/request') return
+      // A timeout is modelled by never answering, which is what a wedged runtime actually does.
+      // Answering with an error would exercise the failure path instead.
+      if (outcome === 'timeout') return
       const reply =
         outcome === 'ok'
           ? { type: 'shim/response', id: frame.id, ok: true, payload: { streamId: randomUUID() } }
@@ -107,14 +110,19 @@ function respondingConnection(outcome: 'ok' | 'error') {
   }
 }
 
-function driverFor(metrics: ClusterMetrics, api: ReturnType<typeof fakeApi>, open: 'ok' | 'error' = 'ok') {
+function driverFor(
+  metrics: ClusterMetrics,
+  api: ReturnType<typeof fakeApi>,
+  open: 'ok' | 'error' | 'timeout' = 'ok',
+  clock: FakeClock = new FakeClock()
+) {
   return new ClusterSpawnDriver({
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',
     publishSpawnRecord: () => {},
     awaitChannel: async () => respondingConnection(open) as never,
-    clock: new FakeClock(),
+    clock,
     metrics,
     readyTimeoutMs: 5_000,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
@@ -191,6 +199,32 @@ describe('cluster launch metrics', () => {
     // is a corrupted distribution rather than a lost one.
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(failed.launches).toHaveLength(1)
+  })
+
+  it('records NO runtime_ready stage for an open that never succeeded', async () => {
+    // The stage histogram has no outcome attribute, so a failed open recorded as a completed
+    // stage sits in the runtime-ready latency distribution as a fast success and cannot be
+    // filtered back out. Only a successful open crossed that boundary.
+    const failed = recorder()
+    await driverFor(failed.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }), 'error').launch(launchRequest)
+    expect(await settled(() => failed.launches.length > 0)).toBe(true)
+    expect(failed.stages.map((entry) => entry.stage)).not.toContain('runtime_ready')
+    expect(failed.launches).toEqual([expect.objectContaining({ outcome: 'error' })])
+  })
+
+  it('calls a runtime open that never answers a TIMEOUT, not an error', async () => {
+    // A wedged runtime and one that refuses to start are different operational stories, and the
+    // request deadline is what separates them — matched by type rather than by message text.
+    const stuck = recorder()
+    const clock = new FakeClock()
+    await driverFor(stuck.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }), 'timeout', clock).launch(
+      launchRequest
+    )
+    // The channel's own deadline is driven by this clock, so advancing past it is what fires.
+    clock.advance(31_000)
+    expect(await settled(() => stuck.launches.length > 0)).toBe(true)
+    expect(stuck.launches).toEqual([expect.objectContaining({ path: 'resume', outcome: 'timeout' })])
+    expect(stuck.stages.map((entry) => entry.stage)).not.toContain('runtime_ready')
   })
 
   it('records every stage of the launch, in order', async () => {
