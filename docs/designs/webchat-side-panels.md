@@ -203,10 +203,11 @@ Fetching both blobs and reusing the LCS path instead would work but is worse on
 every axis — two round trips per file, quadratic matching on large files, and it
 throws away git's own rename/whitespace handling.
 
-**Deep-linking.** Open question: is the viewer URL-addressable
-(`/sessions/:id?file=…&mode=diff`) or transient component state? Addressable is
-strictly better for a review workflow — "look at this file" is a link people
-send — but it puts a second resource in a route that today is one session.
+**Deep-linking.** Settled in M1: the viewer is URL-addressable, `?file=<path>`
+plus `agent=<id>` on the session route. "Look at this file" is a link people send,
+so it has to survive a reload and name the workspace it was made from; §9's M1
+entry records the mechanics and why `replace` beats `push`. M2 adds `mode` to the
+same param set when the Diff view arrives.
 
 ## 5. Gap analysis — the two AI features
 
@@ -581,14 +582,20 @@ conversation↔viewer mode switch and the deep-link decision. No protocol change
 _Exit:_ browse a session worktree and read any file without leaving the session.
 **Landed.**
 
-The deep-link question §12 left open is settled: the viewer IS URL-addressable,
-`?file=<path>` on the session route, written with `router.replace` so reading N
-files costs no history entries and Back still means leaving the session. The
-conversation pane is **concealed, not unmounted** (`hidden` vs `contents` on one
-JSX slot) — every expanded tool body, the composer's caret and any open @mention
-menu is state a file read must not spend.
+The deep-link question §12 Q1 left open is settled the addressable way: the
+viewer is `?file=<path>` on the session route, written with `router.replace` —
+it is a pane mode inside one route, not a place, so pushing would spend a history
+entry per tree click and Back would stop meaning "leave this session". The link
+carries `agent=<id>` beside the path, because a merged conversation's header focus
+is component state that follows whichever participant is newest: without the
+workspace identity, a link copied while focused on one agent reopens that path
+against another's checkout.
 
-Known M1 follow-ups:
+The conversation pane is **concealed, not unmounted** (`hidden` vs `contents` on
+one JSX slot) — every expanded tool body, the composer's caret and any open
+@mention menu is state a file read must not spend.
+
+Known M1 follow-ups, none of which change what the code does today:
 
 - A `?file=` naming a **directory** — or a path that escapes the workspace —
   reads as "the daemon may be offline". The daemon raises
@@ -600,12 +607,10 @@ Known M1 follow-ups:
 - Two app-wiring mutants still survive: dropping the Files tab when
   `filesAgentId` is null, and the `dockTabKey` existence fallback. The primitives
   under them are covered; only the wiring is not.
-  **Landed.** The deep-link question (§4, §12 Q1) is settled the addressable way:
-  `?file=<path>` on the session route, written with `router.replace` — the viewer is
-  a pane mode inside one route, so pushing would spend a history entry per tree
-  click and Back would stop meaning "leave this session".
-
-Known M1 follow-ups, none of which change what the code does today:
+- Two review fixes are **unpinned by tests**: holding the Files surface while a
+  related session's isolation is still unknown, and keying the viewer on the
+  whole workspace scope rather than the path alone. Both need a multi-agent focus
+  fixture with a pending `extraHeaderDetail`, which this suite does not build yet.
 
 - A pending **webchat MCP write approval** is concealed with the composer and has
   no header twin the way permission requests do (those stay reachable in the
@@ -716,9 +721,8 @@ location, body, and the review state that already comes from `HookRun.verdict`.
 
 ## 12. Open questions
 
-1. **Viewer deep-linking.** URL-addressable (`?file=…&mode=diff`) or transient
-   state? Addressable is better for review workflows but puts a second resource
-   in a one-session route.
+1. ~~**Viewer deep-linking.**~~ Settled in M1 — addressable, `?file=` + `agent=`,
+   written with `replace`. See §4 and §9's M1 entry.
 2. **Thread resolution.** §5.2 leaves resolving GitHub threads to the agent's
    own write-back inside the Auto-fix turn. Is that reliable enough in practice,
    or does the panel eventually need its own resolve control? Worth revisiting

@@ -454,6 +454,31 @@ describe('FilesPanel session scope', () => {
     ])
   })
 
+  it('discards a directory reply that belongs to the checkout it has left', async () => {
+    // The panel SURVIVES a scope change, so an in-flight subdirectory read is not cancelled by anything. Without a generation fence its entries land in the NEW scope's cache — and because `dirs['src']` is then populated, expanding `src` there skips the fetch that would have corrected it, so the wrong worktree's listing simply stays.
+    const reply = (path: string, entries: Entry[]) => ({ path, exists: true, entries, nextCursor: null })
+    let releaseStale: (() => void) | undefined
+    wire.listings = { '': { entries: [dir('src')] } }
+    await render()
+    // Hold session-1's `src` open, then leave for session-2 before it answers.
+    vi.mocked(fetchWorkspaceFiles).mockImplementationOnce(
+      () => new Promise((resolve) => (releaseStale = () => resolve(reply('src', [textFile('from-session-1.ts')]))))
+    )
+    await click(row('src'), 'src folder row')
+
+    wire.listings = { '': { entries: [dir('src')] }, src: { entries: [textFile('from-session-2.ts')] } }
+    await rerender({ sessionId: 'session-2' })
+    await act(async () => {
+      releaseStale?.()
+      await Promise.resolve()
+    })
+
+    // session-1's file never appears, and `src` is still unexpanded in session-2 — so opening it fetches session-2's listing rather than reading a poisoned cache.
+    expect(text()).not.toContain('from-session-1.ts')
+    await click(row('src'), 'src folder row in session-2')
+    expect(rowNames()).toEqual(['src', 'from-session-2.ts'])
+  })
+
   it('scopes EVERY listing, not just the root one', async () => {
     // The root read is the easy one. A subdirectory expansion and a cursor page are separate call sites, and either dropping the id would silently read the agent's primary checkout while every other assertion here still passed.
     wire.listings = {

@@ -3,7 +3,7 @@
 // The live workspace read model, shared by the agent-detail file browser and the dock's Files panel: the per-directory listing cache with its cursor paging and expand set, the git status a tree's badges join against, and that badge.
 // Listings and status are proxied through the CP straight from the owning daemon (body-locality), so a rejected read means that daemon is offline or the agent is unplaced — an expected state every consumer renders as data.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ApiError,
   fetchWorkspaceFiles,
@@ -60,6 +60,8 @@ export interface WorkspaceTree {
 export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTick = 0): WorkspaceTree {
   const [dirs, setDirs] = useState<Record<string, WorkspaceDirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  // Which checkout+refresh a reply was asked for. The panel SURVIVES a scope change, so an in-flight directory read from the previous agent or worktree would otherwise splice its entries into the new one's cache — and worse, leave `dirs[path]` populated, so expanding that folder in the new scope skips the fetch that would have corrected it.
+  const generation = useRef(0)
 
   // Patch one directory's state, seeding from LOADING_DIR when first seen.
   const patchDir = useCallback(
@@ -71,9 +73,11 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
   // Fetch a folder's first page (a folder on first expand, or one typed into a path).
   const loadDir = useCallback(
     (path: string) => {
+      const gen = generation.current
       patchDir(path, { loading: true, err: null, errStatus: null })
       fetchWorkspaceFiles(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
-        (page) =>
+        (page) => {
+          if (gen !== generation.current) return
           setDirs((prev) => ({
             ...prev,
             [path]: {
@@ -86,8 +90,12 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
               errStatus: null,
               moreErr: null
             }
-          })),
-        (e) => patchDir(path, { loading: false, err: msg(e), errStatus: statusOf(e) })
+          }))
+        },
+        (e) => {
+          if (gen !== generation.current) return
+          patchDir(path, { loading: false, err: msg(e), errStatus: statusOf(e) })
+        }
       )
     },
     [agentId, patchDir, sessionId]
@@ -97,9 +105,11 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
     (path: string) => {
       const d = dirs[path]
       if (!d?.nextCursor || d.loadingMore) return
+      const gen = generation.current
       patchDir(path, { loadingMore: true, moreErr: null })
       fetchWorkspaceFiles(agentId, { path, cursor: d.nextCursor, ...(sessionId ? { sessionId } : {}) }).then(
-        (page) =>
+        (page) => {
+          if (gen !== generation.current) return
           setDirs((prev) => {
             const cur = prev[path]
             if (!cur) return prev
@@ -112,8 +122,12 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
                 loadingMore: false
               }
             }
-          }),
-        (e) => patchDir(path, { loadingMore: false, moreErr: msg(e) })
+          })
+        },
+        (e) => {
+          if (gen !== generation.current) return
+          patchDir(path, { loadingMore: false, moreErr: msg(e) })
+        }
       )
     },
     [agentId, dirs, patchDir, sessionId]
@@ -146,12 +160,15 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
 
   // Reset the tree and load the root whenever the scope changes or a refresh lands.
   useEffect(() => {
-    let active = true
+    // Bumped FIRST, so any directory read still in flight for the previous checkout is already fenced by the time this one's root lands.
+    generation.current += 1
+    const gen = generation.current
+    const active = () => gen === generation.current
     setDirs({ '': { ...LOADING_DIR } })
     setExpanded(new Set())
     fetchWorkspaceFiles(agentId, { path: '', ...(sessionId ? { sessionId } : {}) }).then(
       (page) => {
-        if (!active) return
+        if (!active()) return
         setDirs({
           '': {
             entries: page.entries,
@@ -166,11 +183,12 @@ export function useWorkspaceTree(agentId: string, sessionId?: string, refreshTic
         })
       },
       (e) => {
-        if (active) setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e) } })
+        if (active()) setDirs({ '': { ...LOADING_DIR, loading: false, err: msg(e), errStatus: statusOf(e) } })
       }
     )
     return () => {
-      active = false
+      // A teardown is its own generation change: the next mount's reads must not be answered by this one's.
+      generation.current += 1
     }
   }, [agentId, refreshTick, sessionId])
 

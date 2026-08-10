@@ -1226,14 +1226,19 @@ export default function SessionDetailView() {
   const flatView = isFlatSessionView(searchParams)
   const { id: routeId, key: conversationKeyParam } = useParams<{ id?: string; key?: string }>()
   // Which file the viewer holds, and the ONLY place that answer lives (§4): "look at this file" is a link a reviewer sends, so the pane mode is addressable and survives a reload. Derived from the route rather than mirrored into state — that is also what makes it per-session for free, since a session link carries no `file`.
-  const viewerParam = searchParams.get('file')?.trim()
-  const viewerPath = viewerParam ? viewerParam : null
+  // NOT trimmed: a POSIX filename may legitimately begin or end with whitespace, and `URLSearchParams` round-trips those bytes faithfully — trimming would ask the daemon for a different file, or close the viewer outright on a name made only of spaces. Only an absent or empty param means "no file".
+  const viewerPath = searchParams.get('file') || null
+  // Which workspace that path was read from. A merged conversation's header focus is component state that defaults to the current REPRESENTATIVE, and the representative changes as another participant becomes newest — so without this a link copied while focused on agent B reopens B's path against A's checkout.
+  const viewerAgentParam = searchParams.get('agent')
   // REPLACE, never push. The viewer is a pane mode inside one route, not a place: pushing would spend a history entry per tree click, so a reader who read six files would need seven Back presses to leave the session, and Back would stop meaning "leave this session". The cost, accepted: Back does not step file-by-file within a visit. Writing through URLSearchParams is also what makes a path with slashes and spaces round-trip — `router.replace` on `.toString()`, `searchParams.get` back.
   const setViewerFile = useCallback(
-    (next: string | null) => {
+    (next: string | null, agentId?: string | null) => {
       const query = new URLSearchParams(searchParams)
       if (next) query.set('file', next)
       else query.delete('file')
+      // The workspace travels with the path, so the link resolves to the checkout it was made from rather than to whichever agent the header happens to focus on reopening.
+      if (next && agentId) query.set('agent', agentId)
+      else query.delete('agent')
       const search = query.toString()
       router.replace(search ? `${pathname}?${search}` : pathname, { scroll: false })
     },
@@ -1738,7 +1743,13 @@ export default function SessionDetailView() {
   const storedHeaderFocusValid =
     headerFocusSelection.scope === headerFocusScope &&
     headerFocusOptions.some((option) => option.agentId === headerFocusSelection.agentId)
-  const headerFocusAgentId = storedHeaderFocusValid ? headerFocusSelection.agentId : defaultHeaderFocusAgentId
+  // A deep link's `agent` outranks both the stored selection and the default, but only while it names an agent this conversation actually has — a stale link must fall back rather than focus nothing.
+  const linkedFocusAgentId =
+    viewerAgentParam && headerFocusOptions.some((option) => option.agentId === viewerAgentParam)
+      ? viewerAgentParam
+      : null
+  const headerFocusAgentId =
+    linkedFocusAgentId ?? (storedHeaderFocusValid ? headerFocusSelection.agentId : defaultHeaderFocusAgentId)
   useEffect(() => {
     if (!defaultHeaderFocusAgentId) return
     setHeaderFocusSelection((current) =>
@@ -1779,6 +1790,12 @@ export default function SessionDetailView() {
         daemon: focusedSessionBase.daemon ?? focusedAgent?.daemon
       }
     : null
+  // Whether the focused session's workspace isolation has an ANSWER yet. A related session in the focus menu has an id but no detail until its own round trip lands, and both isolation sources read undefined until then — so a surface mounted now would take "not isolated" for an answer and read the agent's primary checkout instead of the worktree the session actually owns. Withhold rather than guess.
+  const filesScopeReady =
+    !headerFocusSessionId ||
+    extraHeaderDetailId === null ||
+    extraHeaderDetail !== undefined ||
+    focusedSession?.workspaceIsolation !== undefined
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
@@ -1837,11 +1854,12 @@ export default function SessionDetailView() {
   )
   // What tells "the list is still coming" from "there is no list": the dock withholds its chrome and holds its track for either, and the two only differ in the placeholder a sibling-tab-ready dock shows.
   const sessionsStatus = sessionsTabStatus(sessionsWouldHide, !seededRailLoading && railFamilySettled)
-  const filesStatus = filesTabStatus(filesRootSettled)
-  // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab.
+  // `loading` also covers "we do not know which checkout yet": a related session's isolation is a round trip behind, and reading before it lands would read the wrong one.
+  const filesStatus = filesScopeReady ? filesTabStatus(filesRootSettled) : 'loading'
+  // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
   const dockTabs = useMemo<DockTab[]>(
     () =>
-      DOCK_TABS.filter((tab) => tab.key !== 'files' || filesAgentId !== null).map((tab) =>
+      DOCK_TABS.filter((tab) => tab.key !== 'files' || (filesAgentId !== null && !MOCK_MODE)).map((tab) =>
         tab.key === 'sessions'
           ? { ...tab, status: sessionsStatus }
           : tab.key === 'files'
@@ -2536,8 +2554,8 @@ export default function SessionDetailView() {
   // Scoped to this session's OWN worktree only where it has one. `hasSessionWorktree` is the same gate the Workspace link above uses, and it is load-bearing for the reads: the daemon answers a shared workspace's sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
   const filesSessionId = hasSessionWorktree && headerFocusSessionId ? headerFocusSessionId : undefined
   const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
-  // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it.
-  const viewerOpen = viewerPath !== null && filesAgentId !== null
+  // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it — nor before that checkout's scope is known.
+  const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
@@ -3564,9 +3582,9 @@ export default function SessionDetailView() {
         {!isLive && approvalCard('mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4')}
 
         {viewerOpen && viewerPath && filesAgentId ? (
-          // Keyed on the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous file's bytes — and its line count and size — under the new file's name. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across files.
+          // Keyed on the whole WORKSPACE SCOPE, not just the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous read's bytes — and its line count and size — under the new heading. The path alone is not that scope: switching header focus from one agent to another while `?file=` holds still is the same stale paint. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across either axis.
           <SessionViewer
-            key={viewerPath}
+            key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerPath}`}
             agentId={filesAgentId}
             {...(filesSessionId ? { sessionId: filesSessionId } : {})}
             path={viewerPath}
@@ -4406,14 +4424,15 @@ export default function SessionDetailView() {
           />
         </DockPanel>
         <DockPanel active={dockTabKey === 'files'}>
-          {filesAgentId ? (
+          {/* Withheld until the scope is known, so no listing is ever issued against a checkout we only assumed. */}
+          {filesAgentId && filesScopeReady ? (
             <FilesPanel
               agentId={filesAgentId}
               {...(filesSessionId ? { sessionId: filesSessionId } : {})}
               {...(filesWorkdir ? { workdir: filesWorkdir } : {})}
               refreshTick={filesRefreshTick}
               openFilePath={viewerPath}
-              onOpenFile={(path) => setViewerFile(path)}
+              onOpenFile={(path) => setViewerFile(path, filesAgentId)}
               onRootSettledChange={setFilesRootSettled}
             />
           ) : null}

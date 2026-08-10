@@ -435,6 +435,43 @@ describe('the viewer route', () => {
     expect(wire.fileCalls.at(-1)?.path).toBe(full)
   })
 
+  it('asks for the bytes the param carries, whitespace and all', async () => {
+    // A POSIX filename may begin or end with a space. `URLSearchParams` round-trips those bytes, so trimming here would ask the daemon for a DIFFERENT file — and a name made only of spaces would close the viewer instead of opening it.
+    nav.search = `file=${encodeURIComponent(' padded .ts ')}`
+    await render()
+    expect(wire.fileCalls.at(-1)?.path).toBe(' padded .ts ')
+    expect(viewer()).not.toBeNull()
+  })
+
+  it('records which workspace the path was read from, and reopens against that one', async () => {
+    // Header focus is component state that defaults to the current representative, and on a merged conversation that representative moves as another participant becomes newest — so a link carrying only `file` reopens someone else's checkout under the same path.
+    await render()
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-dock-tab="files"]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    const row = Array.from(container?.querySelectorAll<HTMLElement>('[data-dock-panel] button') ?? []).find((button) =>
+      button.textContent?.includes('notes.md')
+    )
+    await act(async () => {
+      row?.click()
+      await Promise.resolve()
+    })
+    await render()
+    const written = new URLSearchParams((nav.replaced.at(-1) ?? '').split('?')[1] ?? '')
+    expect(written.get('file')).toBe('notes.md')
+    expect(written.get('agent')).toBe('agent-1')
+  })
+
+  it('drops the workspace along with the file, so a closed viewer leaves no scope behind', async () => {
+    nav.search = 'file=a.ts&agent=agent-1'
+    await render()
+    await press('[data-viewer-close]')
+    expect(nav.replaced.at(-1)).not.toContain('agent=')
+    expect(nav.replaced.at(-1)).not.toContain('file=')
+  })
+
   it('replaces rather than pushes, so reading N files costs no history entries', async () => {
     nav.search = 'file=a.ts'
     await render()
