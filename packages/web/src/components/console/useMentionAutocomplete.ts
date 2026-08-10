@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type KeyboardEvent, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
 import { mentionQueryAt, mentionSpanEnd } from '@/lib/conversation-addressing'
 import { caretCoordinates } from '@/components/console/caret-coordinates'
 
@@ -43,15 +43,30 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
   setValue: (v: string) => void
   candidates: readonly T[]
   /** May join the conversation over the network (SessionDetail's mid-conversation
-   *  add) — while that's in flight, `joining` is true so composers can hold off
-   *  sending until the roster actually reflects the pick (or the join failed and
-   *  surfaced its own error) instead of racing an Enter against it. */
-  onPick?: (candidate: T) => void | Promise<void>
+   *  add) — while any such join is in flight, `joining` is true so composers can
+   *  hold off sending until the roster actually reflects the pick(s) instead of
+   *  racing an Enter against them. The promise settling is NOT itself success —
+   *  return `false` for a refusal/failure (a `void`/sync return, e.g. Home's, is
+   *  never a failure — there was nothing to join) — a `false` rolls back the
+   *  optimistically-inserted "@Name " if it's still there untouched, since that
+   *  agent never actually joined and the mention would otherwise look routable
+   *  while resolving to nobody. */
+  onPick?: (candidate: T) => void | Promise<boolean>
 }) {
   const { ref, value, setValue, candidates, onPick } = params
   const [anchor, setAnchor] = useState<{ start: number; query: string } | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
-  const [joining, setJoining] = useState(false)
+  // A COUNT, not a bool: two quick non-roster picks overlap their joins, and
+  // whichever settles first must not clear the gate out from under the other
+  // still-pending one.
+  const [pendingJoins, setPendingJoins] = useState(0)
+  const joining = pendingJoins > 0
+  // Mirrors `value` for pick()'s rollback, which can run long after the pick
+  // that started it (an async join settling) — by then `value` has moved on
+  // via further edits, and closing over the pick-time value would roll back
+  // against a draft that no longer exists.
+  const valueRef = useRef(value)
+  valueRef.current = value
   // Where the triggering `@` sits on screen, so the list drops right under the
   // line being typed — not the textarea's edge, which reads as broken on a
   // tall, mostly-empty composer (a multi-row textarea's bottom can be far from
@@ -121,8 +136,22 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     })
     const result = onPick?.(candidate)
     if (result instanceof Promise) {
-      setJoining(true)
-      result.finally(() => setJoining(false))
+      const insertStart = before.length
+      const insertEnd = insertStart + insertedText.length
+      setPendingJoins((n) => n + 1)
+      result
+        .then((success) => {
+          if (success !== false) return
+          // Best-effort, bounded rollback: only remove the token if it's
+          // EXACTLY what this pick inserted and nothing since has touched
+          // that range — never eat into unrelated edits the user made while
+          // the join was in flight.
+          const cur = valueRef.current
+          if (cur.slice(insertStart, insertEnd) === insertedText) {
+            setValue(cur.slice(0, insertStart) + cur.slice(insertEnd))
+          }
+        })
+        .finally(() => setPendingJoins((n) => n - 1))
     }
   }
 

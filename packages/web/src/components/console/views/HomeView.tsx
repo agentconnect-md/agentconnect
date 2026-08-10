@@ -285,9 +285,12 @@ export default function HomeView() {
       : authRequiredFor(agent)
         ? 'auth'
         : null
-  // A multi-agent create needs every roster pick startable (the picker only
-  // offers ready agents, but readiness can change while composing).
+  // A multi-agent create needs every roster pick startable — the "+" menu only
+  // OFFERS ready agents, but the @mention picker (unlike it) also lists unready
+  // ones dimmed (so a typed name still resolves to a real candidate), and
+  // readiness can change mid-compose regardless of how a member was added.
   const canSend = !!agent && blocked === null && members.every(agentReady)
+  const notReadyMember = members.find((m) => !agentReady(m))
   const daemonHref = owningDaemon ? orgPath(`/daemons/${owningDaemon.daemonId}`) : null
 
   const onImageFile = async (file: File | undefined): Promise<void> => {
@@ -708,7 +711,11 @@ export default function HomeView() {
                 ? `${agentLabel(agent!)} is offline — can't start a session`
                 : blocked === 'auth'
                   ? `No AI runtime is signed in on ${owningDaemon?.name ?? 'the daemon'} — can't start a session`
-                  : 'Send'
+                  : notReadyMember
+                    ? !isOnline(notReadyMember)
+                      ? `${agentLabel(notReadyMember)} is offline — can't start a session`
+                      : `${agentLabel(notReadyMember)} has no AI runtime signed in — can't start a session`
+                    : 'Send'
             }
           >
             <Icon name="arrow-up" size={15} color="#fff" />

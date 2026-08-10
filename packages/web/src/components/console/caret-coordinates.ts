@@ -54,12 +54,22 @@ export function caretCoordinates(
   // instead of the span.
   span.textContent = el.value.slice(position) || '.'
   div.appendChild(span)
+  // `line-height` usually resolves to a pixel value even for the CSS keyword
+  // `normal` (e.g. Tailwind's `leading-normal`, used by both composers), but
+  // that resolution isn't guaranteed everywhere — and falling through to
+  // `span.offsetHeight` here would silently reintroduce the multi-line-suffix
+  // bug this height calculation exists to avoid. `font-size * 1.2` is the
+  // standard approximation of a `normal` line box, so it's a safe second
+  // fallback; only an unparseable font-size (essentially never) reaches the
+  // span itself.
   const lineHeight = parseFloat(computed.lineHeight)
-  const coords = {
-    top: span.offsetTop - el.scrollTop,
-    left: span.offsetLeft,
-    height: Number.isFinite(lineHeight) ? lineHeight : span.offsetHeight
-  }
+  const fontSize = parseFloat(computed.fontSize)
+  const height = Number.isFinite(lineHeight)
+    ? lineHeight
+    : Number.isFinite(fontSize)
+      ? fontSize * 1.2
+      : span.offsetHeight
+  const coords = { top: span.offsetTop - el.scrollTop, left: span.offsetLeft, height }
   document.body.removeChild(div)
   return coords
 }

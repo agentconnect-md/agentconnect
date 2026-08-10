@@ -14,9 +14,12 @@ export interface MentionOption {
   /** Already a conversation participant — picking it only inserts the name.
    *  Not yet in the roster — picking it also joins the conversation. */
   inRoster: boolean
-  /** Not selectable right now (offline / no signed-in runtime) — still shown,
-   *  dimmed, with `description` as the reason, matching ComposerMenu's
-   *  existing add-agent options. */
+  /** Offline / no signed-in runtime — shown dimmed with `description` as the
+   *  reason, but still pickable: matches ComposerMenu's existing add-agent
+   *  options ("Render the option dimmed (still selectable)"), so picking one
+   *  here has the exact same consequence picking it there already does —
+   *  Send disables once the roster has an unready member, with the reason in
+   *  the Send button's own tooltip (see HomeView's `notReadyMember`). */
   dimmed?: boolean
   description?: string
 }

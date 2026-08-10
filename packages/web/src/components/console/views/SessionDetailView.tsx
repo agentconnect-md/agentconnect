@@ -217,7 +217,7 @@ function ComposerTextarea({
   onSend: () => void
   onImageFile: (file: File) => void
   mentionCandidates: MentionOption[]
-  onPickMention: (option: MentionOption) => void | Promise<void>
+  onPickMention: (option: MentionOption) => void | Promise<boolean>
   /** Mirrors `mention.joining` up to the parent so the (separately isolated)
    *  Send button can disable itself too — see the effect below. */
   onMentionJoiningChange: (joining: boolean) => void
@@ -2599,7 +2599,7 @@ export default function SessionDetailView() {
   // roster would find no typed mention for the just-picked name and silently
   // fall back to messaging every existing participant instead (or, on a
   // failed join, leave the inserted "@Name" text pointing at nobody).
-  const onPickMention = (option: MentionOption): Promise<void> | void => {
+  const onPickMention = (option: MentionOption): Promise<boolean> | void => {
     if (option.inRoster) return
     const picked = agents.find((a) => a.id === option.id)
     return picked ? pgAddAgent(session.id, picked) : undefined
