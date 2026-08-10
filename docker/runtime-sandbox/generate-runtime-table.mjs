@@ -72,7 +72,14 @@ async function probe(bin) {
     // which it was rather than leaving an unexplained gap.
     const session = await call(2, 'session/new', { cwd: PROBE_CWD, mcpServers: [] }).then(
       (result) => ({ result, outcome: 'ok' }),
-      (err) => ({ result: undefined, outcome: /auth/i.test(err.message) ? 'auth-required' : 'unavailable' })
+      (err) => {
+        // ONLY "authentication required" is acceptable. Any other failure is a runtime that cannot
+        // open a session in this image, and swallowing it as an `unavailable` snapshot would let a
+        // broken runtime be published and verified — the smoke test exercises Claude, so nothing
+        // else would have noticed.
+        if (!/auth/i.test(err.message)) throw err
+        return { result: undefined, outcome: 'auth-required' }
+      }
     )
     return { initialized, session: session.result, sessionProbe: session.outcome }
   } finally {
@@ -112,6 +119,14 @@ export async function buildTable() {
         authMethods: (initialized.authMethods ?? []).map((method) => method?.id ?? method?.name ?? String(method)),
         capabilities: initialized.agentCapabilities ?? {},
         modes: (session?.modes?.availableModes ?? []).map((mode) => mode.id).sort(),
+        // The model/permission/effort surface the console renders. Ids, categories and option
+        // values only — the prose descriptions would make the table churn on every wording change.
+        configOptions: (session?.configOptions ?? []).map((option) => ({
+          id: option.id,
+          category: option.category ?? null,
+          type: option.type ?? null,
+          values: (option.options ?? []).map((choice) => choice.value).sort()
+        })),
         // Why a mode list may be empty, so an absent one is a recorded fact rather than a gap.
         sessionProbe
       })

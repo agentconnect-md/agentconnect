@@ -6,12 +6,33 @@ import type { ResolvedRuntimeCatalog } from './registry.js'
 /** Path override for the declared runtime table (a mounted ConfigMap in a cluster). */
 export const CLOUD_RUNTIMES_ENV = 'AGENTCONNECT_CLOUD_RUNTIMES'
 
+/**
+ * What the runtime image observed at `initialize`, published so `--cloud` can report it without
+ * probing. Only the fields the daemon actually reports are typed — an unrecognized key here would
+ * be silently dropped, which is how the first version of this shipped a snapshot nothing consumed.
+ */
+const CloudRuntimeAcpSchema = z.object({
+  protocolVersion: z.number().int().nonnegative().optional(),
+  agentName: z.string().optional(),
+  authMethods: z.array(z.string()).optional(),
+  capabilities: z.record(z.string(), z.unknown()).optional(),
+  modes: z.array(z.string()).optional(),
+  /** The model/permission/effort surface a session offers; what the console renders. */
+  configOptions: z.array(z.record(z.string(), z.unknown())).optional(),
+  /** Whether a session could be opened during the image probe, so an empty mode list is a
+   *  recorded fact rather than a gap. */
+  sessionProbe: z.enum(['ok', 'auth-required']).optional()
+})
+export type CloudRuntimeAcpSnapshot = z.infer<typeof CloudRuntimeAcpSchema>
+
 const CloudRuntimeEntrySchema = z.object({
   id: z.string().min(1),
   /** Overrides the catalog's declared version — the image pin is authoritative for what actually ships. */
   version: z.string().optional(),
   /** Optional model snapshot; reported with `modelsSource: 'cached'` because no live probe confirmed it. */
-  models: z.array(z.string()).optional()
+  models: z.array(z.string()).optional(),
+  /** The image's `initialize` snapshot for this runtime. */
+  acp: CloudRuntimeAcpSchema.optional()
 })
 
 export const CloudRuntimeTableSchema = z.object({ runtimes: z.array(CloudRuntimeEntrySchema).min(1) })
@@ -64,6 +85,8 @@ export interface DeclaredCatalogResult {
   rejectedPackageLaunchers: string[]
   /** Model snapshots to seed, keyed by runtime id. */
   models: Record<string, string[]>
+  /** Per-runtime `initialize` snapshot from the image, keyed by runtime id. */
+  acp: Record<string, CloudRuntimeAcpSnapshot>
 }
 
 const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
@@ -90,6 +113,7 @@ export function declaredRuntimeCatalog(
   const rejectedCurated: string[] = []
   const rejectedPackageLaunchers: string[] = []
   const models: Record<string, string[]> = {}
+  const acp: Record<string, CloudRuntimeAcpSnapshot> = {}
 
   for (const declared of table.runtimes) {
     const entry = catalog.entries[declared.id]
@@ -108,7 +132,8 @@ export function declaredRuntimeCatalog(
     entries[declared.id] = declared.version ? { ...entry, version: declared.version } : entry
     runtimes[declared.id] = entry.runtime
     if (declared.models?.length) models[declared.id] = [...declared.models]
+    if (declared.acp) acp[declared.id] = declared.acp
   }
 
-  return { catalog: { entries, runtimes }, unresolved, rejectedCurated, rejectedPackageLaunchers, models }
+  return { catalog: { entries, runtimes }, unresolved, rejectedCurated, rejectedPackageLaunchers, models, acp }
 }
