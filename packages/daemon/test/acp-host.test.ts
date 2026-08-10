@@ -579,7 +579,8 @@ describe('AcpHost.stop', () => {
     // Kill the child out from under the host — the terminal delivering SIGINT to
     // the whole foreground process group does exactly this — and wait until its
     // 'exit' has actually been emitted, so stop() runs against a reaped child.
-    const child = (host as unknown as { child: import('node:child_process').ChildProcess }).child
+    // The process handle now lives in the local spawn driver's launched target.
+    const child = (host as unknown as { spawned: { child: import('node:child_process').ChildProcess } }).spawned.child
     await new Promise<void>((resolve) => {
       child.once('exit', () => resolve())
       child.kill('SIGKILL')
