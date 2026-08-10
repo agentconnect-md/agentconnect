@@ -98,7 +98,8 @@ import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
-import { SessionRail, SessionRailSlot } from '@/components/console/SessionRail'
+import { SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
+import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
 import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
@@ -1171,24 +1172,23 @@ function MobileSessionFamilyLinks({
   )
 }
 
-/**
- * Loading stays on the same rail + body tracks as the transcript that replaces it.
- * A resolved missing resource opts out of the rail so its standalone 404 card uses
- * the whole content wrap instead of reserving an empty session-list column.
- */
-function SessionDetailFrame({ children, withRail = true }: { children: ReactNode; withRail?: boolean }) {
+/** The dock's tabs. Files / Git / PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
+const DOCK_TABS: DockTab[] = [{ key: 'sessions', label: 'Sessions', icon: 'messages-square' }]
+
+/** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
+function SessionDetailFrame({ children, withDock = true }: { children: ReactNode; withDock?: boolean }) {
   return (
     <div className="flex min-h-full items-stretch gap-[26px]">
       <div
         className={
-          withRail
+          withDock
             ? 'mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:p-4'
             : 'flex min-h-full min-w-0 flex-1 flex-col max-desktop:p-4'
         }
       >
         {children}
       </div>
-      {withRail ? <SessionRailSlot /> : null}
+      {withDock ? <SessionDockSlot /> : null}
     </div>
   )
 }
@@ -1598,15 +1598,8 @@ export default function SessionDetailView() {
       : sessionBase
   const agentRuntime = session?.runtime || owner?.runtime || ''
 
-  // The lineage links the rail and the mobile card draw, in their three levels
-  // rather than either source's wire shape: what woke the open row, the row
-  // itself, what it woke.
-  //
-  // A conversation contributes no lineage SIBLINGS. That relation is "the other
-  // children of my parent session" — a per-session fact the CP derives, which a
-  // room has no version of — so the slot stays absent here instead of carrying
-  // this page's additional parent conversations under a name that means
-  // something else. Those are parents, and they render as parents.
+  // The lineage links the Sessions panel and the mobile card draw, in their three levels rather than either source's wire shape: what woke the open row, the row itself, what it woke.
+  // A conversation contributes no lineage SIBLINGS: "the other children of my parent session" is a per-session fact the CP derives and a room has no version of, so the slot stays absent rather than carrying this page's additional parent conversations under a name that means something else — those are parents and render as parents.
   const familyLinks = useMemo(() => {
     if (conversationFamily) {
       return { parentSessions: conversationFamily.parentSessions, childSessions: conversationFamily.childSessions }
@@ -1767,24 +1760,10 @@ export default function SessionDetailView() {
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
-  // Other sessions for the left rail, scoped by the rail's own agent filter — see
-  // lib/session-rail-filter.ts for why an untouched filter follows the route and an
-  // edited one does not.
-  //
-  // Seeded DURING RENDER rather than in an effect. An effect commits one frame in
-  // which the filter is still empty while the roster is already known — long enough
-  // to paint "All agents" over org-wide rows and fire the unfiltered request before
-  // snapping to the default. `seedRailAgentFilter` is pure and returns an edited
-  // filter unchanged, so the stored state only ever holds the reader's own choice
-  // and the seed is recomputed from the route every time.
-  //
-  // The seed is the whole conversation roster: in conversation mode the resolver's
-  // members, in session mode the same resolver's probe (already fetched above for
-  // the §5.3 redirect), falling back to the lone owning agent.
-  // (The ladder itself — resolver, then this browser's own live roster, then the
-  // owning agent — is railSeedAgentIds. Joined into a string so the roster's fresh
-  // array identity per render, rebuilt from the detail snapshot, cannot churn the memo.)
+  // Other sessions for the dock's Sessions panel, scoped by that panel's own agent filter — see lib/session-rail-filter.ts for why an untouched filter follows the route and an edited one does not.
+  // Joined into a string so the roster's fresh array identity per render, rebuilt from the detail snapshot, cannot churn the memo below.
   const liveSeedAgentIds = (session?.participants ?? []).map((p) => p.agentId).join(',')
+  // The seed is the whole conversation roster (`railSeedAgentIds`): the resolver's members — in session mode its §5.3 redirect probe — then this browser's own live roster, then the lone owning agent.
   const seedAgentIds = useMemo(
     () =>
       railSeedAgentIds(
@@ -1795,53 +1774,46 @@ export default function SessionDetailView() {
     [conversationKey, conversationMembers, selfConversation, liveSeedAgentIds, session?.agentId]
   )
   const [chosenRailFilter, setChosenRailFilter] = useState<RailAgentFilter>(EMPTY_RAIL_AGENT_FILTER)
+  // Seeded DURING RENDER: an effect would commit one frame of "All agents" over org-wide rows and fire the unfiltered request first, and `seedRailAgentFilter` is pure — state only ever holds the reader's own choice, the seed is recomputed from the route.
   const railFilter = seedRailAgentFilter(chosenRailFilter, seedAgentIds)
   const setRailAgentIds = useCallback((agentIds: string[]) => setChosenRailFilter({ agentIds, touched: true }), [])
 
-  // With agents selected this reads a FILTERED page, not the org-wide `allSessions`
-  // window — a busy org's newest 50 may not include them at all, which would hide
-  // the rail on an agent that has plenty of runs. Cleared, the unfiltered page IS
-  // the question being asked. A null query means the filter has nothing to say yet
-  // (no session, and the reader has not touched it), so the org key stays null and
-  // no page is fetched to be thrown away.
-  //
-  // The ordinary detail rail is conversation-shaped. An explicit flat route keeps
-  // the same raw-session mode so navigating the rail cannot silently return to the
-  // grouped list or hide superseded sessions again.
+  // With agents selected this reads a FILTERED page, not the org-wide `allSessions` window — a busy org's newest 50 may not include them at all, leaving the panel empty on an agent that has plenty of runs.
+  // Cleared, the unfiltered page IS the question; `null` means the filter has nothing to say yet (no session, untouched), so the org key stays null and no page is fetched to be thrown away.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
+  // The panel's list is conversation-shaped as the detail route is; an explicit flat route keeps the same raw-session mode, so navigating the panel cannot silently return to the grouped list or re-hide superseded sessions.
   const {
     sessions: seededRailRows,
     total: seededRailTotal,
     isLoading: seededRailLoading
   } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {}, { grouped: !flatView })
-  // A seed that narrows the rail down to the conversation already on screen would
-  // hide the rail — and the picker that could widen it — behind SessionRail's
-  // `empty`. Re-ask that question unfiltered instead of stranding the reader.
-  //
-  // The rail reports the verdict because only it can reach the whole of it: its
-  // rows are this page merged with globally hydrated pins and the open row, and
-  // lineage alone can keep a one-row page worth drawing. Latched to the SEED, not
-  // held as a boolean — widening replaces the rows, so the collapse that
-  // justified it stops being observable the moment it works.
-  //
-  // Lineage is waited on here because the rail cannot tell a conversation with no
-  // relatives from one whose relatives have not arrived: `conversationFamily` is an
-  // EMPTY family, not `undefined`, for as long as its own multi-request fetch is in
-  // flight. Latching on that would widen a rail that is about to grow a Related
-  // tree — the very regression this gate exists to prevent, reached by a race
-  // instead of a miscount. The rail withholds its verdict over its own pins.
+  // Which panel is on screen. One tab in M0, so it never changes; state because a second tab makes it change.
+  const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
+  // A seed narrowed to the conversation already on screen hides the list AND the picker that could widen it, so re-ask it unfiltered.
   const railSeedKeyNow = railSeedKey(railFilter)
+  // Waited on because an in-flight family reads as EMPTY, not `undefined`: latching there widens a list about to grow a Related tree.
   const railFamilySettled = conversationMode
     ? conversationLineage !== undefined || conversationLineageError !== undefined
     : !sessionDetailLoading
+  // Latched to the SEED, not held as a boolean: widening replaces the rows, so the collapse that justified it stops being observable.
   const [widenedSeed, setWidenedSeed] = useState<string | null>(null)
-  const handleRailWouldHide = useCallback(
+  // The same verdict as a live boolean for the tab status — `null` until the panel has reported one, which is not the answer `true` is.
+  const [sessionsWouldHide, setSessionsWouldHide] = useState<boolean | null>(null)
+  // Reported by the panel rather than re-derived here: only it can reach the whole verdict, its page merged with globally hydrated pins and the open row.
+  const handleSessionsWouldHide = useCallback(
     (wouldHide: boolean) => {
+      setSessionsWouldHide(wouldHide)
       if (!railSeedShouldWiden(railSeedKeyNow, wouldHide, !seededRailLoading && railFamilySettled)) return
       setWidenedSeed(railSeedKeyNow)
     },
     [railSeedKeyNow, seededRailLoading, railFamilySettled]
+  )
+  // What tells "the list is still coming" from "there is no list": the dock withholds its chrome and holds its track for either, and the two only differ in the placeholder a sibling-tab-ready dock shows.
+  const sessionsStatus = sessionsTabStatus(sessionsWouldHide, !seededRailLoading && railFamilySettled)
+  const dockTabs = useMemo<DockTab[]>(
+    () => DOCK_TABS.map((tab) => (tab.key === 'sessions' ? { ...tab, status: sessionsStatus } : tab)),
+    [sessionsStatus]
   )
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
@@ -1851,25 +1823,21 @@ export default function SessionDetailView() {
   )
   const railSessionRows = railSeedWidened ? widenedRailRows : seededRailRows
   const railSessionTotal = railSeedWidened ? widenedRailTotal : seededRailTotal
-  // The chips have to describe the list actually on screen — a widened rail is
-  // unfiltered, and leaving the seed's chips up would misname it.
+  // The chips describe the list on screen, and a widened rail is unfiltered — leaving the seed's chips up would misname it.
   const railDisplayAgentIds = railSeedWidened ? [] : railFilter.agentIds
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
     if (railAgentIds.length === 0) return allSessions
     if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!)
-    // The demo fixtures carry no conversation grouping, so stand in for it with
-    // the channel — enough for the multi-agent filter to behave like the real one.
+    // The demo fixtures carry no conversation grouping, so the channel stands in for it — enough for the multi-agent filter to behave like the real one.
     const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform}\0${s.channel}`))
     const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
     return allSessions.filter(
       (s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform}\0${s.channel}`)
     )
   }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
-  // The open row as the rail sees it: its conversation and, where the resolver
-  // has answered, that conversation's full membership. Both are identity the rail
-  // matches on, and neither is on the session row itself.
+  // The open row as the Sessions panel sees it: its conversation and, where the resolver has answered, that conversation's full membership — both identity the panel matches on, and neither on the session row itself.
   const railCurrentKey = conversationKey ?? selfKey
   const railCurrentMemberIds = useMemo(() => {
     const roster = conversationKey ? conversationMembers : (selfConversation?.sessions ?? null)
@@ -2355,7 +2323,7 @@ export default function SessionDetailView() {
   if (conversationKey && (conversationError || (conversationAccessDegraded && !conversationRoster))) {
     const notice = unverifiedConversationNotice(Boolean(conversationError), conversationAccessIssues, orgPath)
     return (
-      <SessionDetailFrame withRail={false}>
+      <SessionDetailFrame withDock={false}>
         <div className="card p-6">
           <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">{notice.message}</div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -2377,7 +2345,7 @@ export default function SessionDetailView() {
     // A grace-expired null or a resolved-but-empty roster, with the access
     // checks themselves healthy — so absence here is a real answer.
     return (
-      <SessionDetailFrame withRail={false}>
+      <SessionDetailFrame withDock={false}>
         <NotFound
           icon="message-square-off"
           kind="CONVERSATION"
@@ -2404,7 +2372,7 @@ export default function SessionDetailView() {
       )
     }
     return (
-      <SessionDetailFrame withRail={false}>
+      <SessionDetailFrame withDock={false}>
         <NotFound
           icon="message-square-off"
           kind="SESSION"
@@ -3283,12 +3251,7 @@ export default function SessionDetailView() {
     ) : null
 
   return (
-    // Three-column track ([nav · body · rail]): the full-width row lets the
-    // sibling-session rail sit flush against the page's right edge while the 880px
-    // body centres in what remains. The rail always occupies its column above the
-    // `wide` breakpoint, even with no rows to show, so this is the one position the
-    // body ever takes. Keep the row in step with SessionDetailFrame, which draws
-    // the same two columns for every state that precedes or replaces a session.
+    // Body · dock track, 26px apart in a full-width row: the −30px bleed reaches the page's right edge while the 880px body centres in what remains, and the track is a column only above `wide:` (below it the dock is an overlay and spends nothing) but holds that column in every tab status, so the body's position is a constant of the band — keep in step with SessionDetailFrame, whose slot holds the identical box while the session loads.
     <div className="flex min-h-full items-stretch gap-[26px]">
       {/* No bottom padding here on mobile: the sticky composer cancels exactly
           `.content`'s bottom inset (see its negative `bottom`), so any padding
@@ -4346,27 +4309,23 @@ export default function SessionDetailView() {
           )}
         </div>
       </div>
-      <SessionRail
-        sessions={railSessions}
-        // The open row has to name its conversation and its members, because that
-        // is how the rail collapses it against the grouped list and how a pin
-        // finds it — matching on the session id alone would double the row (or
-        // lose its pin) whenever the two disagree on which member is newest.
-        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
-        // single-participant thread is deduplicated on exactly the same terms, and
-        // the roster resolver is not agent-filtered, so its members are complete.
-        current={railCurrent ?? session}
-        total={railSessionTotal}
-        agentIds={railDisplayAgentIds}
-        filterTouched={railFilter.touched}
-        onAgentIdsChange={setRailAgentIds}
-        family={familyLinks}
-        flatView={flatView}
-        childOriginById={conversationLineage?.childOriginById}
-        roomLineage={conversationLineage?.roomLineage}
-        onSelect={setRouteSession}
-        onWouldHideChange={handleRailWouldHide}
-      />
+      <SessionDock tabs={dockTabs} activeKey={dockTab} onTabChange={setDockTab} overlayKey={session.id} label="Panels">
+        <SessionsPanel
+          sessions={railSessions}
+          // Named by conversation and members (the §5.1 key, roster complete): that is how the panel collapses this row and how a pin finds it.
+          current={railCurrent ?? session}
+          total={railSessionTotal}
+          agentIds={railDisplayAgentIds}
+          filterTouched={railFilter.touched}
+          onAgentIdsChange={setRailAgentIds}
+          family={familyLinks}
+          flatView={flatView}
+          childOriginById={conversationLineage?.childOriginById}
+          roomLineage={conversationLineage?.roomLineage}
+          onSelect={setRouteSession}
+          onWouldHideChange={handleSessionsWouldHide}
+        />
+      </SessionDock>
     </div>
   )
 }

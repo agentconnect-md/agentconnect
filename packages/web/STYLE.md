@@ -58,10 +58,22 @@ whiteSpace:nowrap` → `truncate`.
    `sm:`–`2xl:` variants are **disabled** in `@theme` — the app's mobile
    boundary is `max-width: 768px` (see `useIsMobile`), and stock `md:` would
    disagree at exactly 768px. Inside an `if (isMobile)` fork you normally need
-   no variant at all. The one exception is `wide:` (≥1240px, `@theme` in
-   `globals.css`) — the session detail page's nav·body·rail three-column
-   threshold; below it the rail collapses to a floating button. It is scoped
-   to that one layout, not a second general breakpoint.
+   no variant at all. The one exception is `wide:` (≥1316px, `@theme` in
+   `globals.css`) — the session detail page's nav·body·dock three-column
+   threshold; below it the dock collapses to an overlay (right drawer, or a
+   bottom sheet at ≤768px). It is scoped to that one layout, not a second
+   general breakpoint. Its value is arithmetic, not taste:
+   `240 rail (expanded) + 60 .content padding + 26 gap − 30 dock-track bleed + 380 min dock + 640 transcript floor`,
+   mirrored by `DOCK_WIDE_MIN` in `components/console/dock/dock-width.ts` (a test
+   asserts the two agree). Above the threshold the dock's APPLIED width is clamped
+   so the transcript keeps that 640px floor — change either number in both places.
+
+   The dock's own width is the one size that does **not** ride an inline `style`
+   despite being data: it is the `--dock-width` property, set on `<html>` by the
+   `(app)` layout's pre-paint script (`DOCK_WIDTH_INIT`) and spent through
+   `w-[var(--dock-width)]`. localStorage does not exist during SSR and React 19
+   will not patch a mismatched inline style over server markup, so a width React
+   rendered would paint at the default for a round-trip. Keep it a property.
 
 8. **What stays as inline `style`**: values computed from data — status colors
    from a map, `orgColor(id)`, progress-bar `width: pct%`, grid templates held
