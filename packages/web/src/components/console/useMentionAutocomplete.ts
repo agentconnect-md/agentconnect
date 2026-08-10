@@ -1,7 +1,7 @@
 'use client'
 
-import { useMemo, useState, type KeyboardEvent, type RefObject } from 'react'
-import { mentionQueryAt } from '@/lib/conversation-addressing'
+import { useEffect, useMemo, useState, type KeyboardEvent, type RefObject } from 'react'
+import { mentionQueryAt, mentionSpanEnd } from '@/lib/conversation-addressing'
 import { caretCoordinates } from '@/components/console/caret-coordinates'
 
 export interface MentionCandidate {
@@ -21,6 +21,9 @@ export interface MentionCoords {
   /** The textarea's own box height — lets the menu anchor by `bottom` when
    *  flipped upward without knowing its own rendered height in advance. */
   elHeight: number
+  /** The textarea's own box width — lets the menu clamp its right edge to the
+   *  composer instead of overflowing a narrow one. */
+  elWidth: number
   /** True when there isn't room below the caret in the viewport (a
    *  SessionDetail composer pinned near the bottom of the screen) — the menu
    *  opens upward from the caret's line instead. */
@@ -39,11 +42,16 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
   value: string
   setValue: (v: string) => void
   candidates: readonly T[]
-  onPick?: (candidate: T) => void
+  /** May join the conversation over the network (SessionDetail's mid-conversation
+   *  add) — while that's in flight, `joining` is true so composers can hold off
+   *  sending until the roster actually reflects the pick (or the join failed and
+   *  surfaced its own error) instead of racing an Enter against it. */
+  onPick?: (candidate: T) => void | Promise<void>
 }) {
   const { ref, value, setValue, candidates, onPick } = params
   const [anchor, setAnchor] = useState<{ start: number; query: string } | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
+  const [joining, setJoining] = useState(false)
   // Where the triggering `@` sits on screen, so the list drops right under the
   // line being typed — not the textarea's edge, which reads as broken on a
   // tall, mostly-empty composer (a multi-row textarea's bottom can be far from
@@ -58,7 +66,11 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
 
   const open = matches.length > 0
 
-  /** Call from the textarea's onChange with the just-committed value + caret. */
+  /** Call from the textarea's onChange AND onSelect with the current value +
+   *  caret — re-deriving the anchor on every caret move (not just typing) is
+   *  what keeps `pick()`'s replace range live: arrow keys, Home/End, or a
+   *  click can move the caret without an onChange, and picking against a
+   *  stale anchor either duplicates or drops the token's tail. */
   const sync = (nextValue: string, caret: number) => {
     const next = mentionQueryAt(nextValue, caret)
     setAnchor(next)
@@ -73,7 +85,7 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     // composer pinned near the bottom of the screen often has no room there.
     const belowY = el.getBoundingClientRect().top + c.top + c.height
     const openUpward = window.innerHeight - belowY < MENTION_MENU_MAX_HEIGHT + 8
-    setCoords({ ...c, elHeight: el.offsetHeight, openUpward })
+    setCoords({ ...c, elHeight: el.offsetHeight, elWidth: el.offsetWidth, openUpward })
   }
 
   const close = () => {
@@ -81,27 +93,47 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     setCoords(null)
   }
 
+  // A draft can change out from under the anchor without going through
+  // `sync` — a queued send clearing it, a session switch, an external reset —
+  // and picking against a now-mismatched anchor would splice the replacement
+  // into the wrong place. Cheap invariant: the anchor's `@` must still be
+  // there; if `value` moved on without it, drop the stale anchor.
+  useEffect(() => {
+    if (anchor && value[anchor.start] !== '@') close()
+  }, [value, anchor])
+
   const pick = (candidate: T) => {
     if (!anchor) return
     const el = ref.current
-    const caret = el?.selectionStart ?? value.length
+    // The token's FULL extent, not just the prefix up to the caret — the
+    // caret can sit mid-token (see `sync`'s note), and replacing only up to
+    // it would leave the token's tail dangling as stray text.
+    const end = mentionSpanEnd(value, anchor.start)
     const before = value.slice(0, anchor.start)
-    const after = value.slice(caret)
+    const after = value.slice(end)
     const insertedText = `@${candidate.name} `
     setValue(before + insertedText + after)
-    onPick?.(candidate)
     close()
     const pos = before.length + insertedText.length
     requestAnimationFrame(() => {
       el?.focus()
       el?.setSelectionRange(pos, pos)
     })
+    const result = onPick?.(candidate)
+    if (result instanceof Promise) {
+      setJoining(true)
+      result.finally(() => setJoining(false))
+    }
   }
 
   /** Call from the textarea's onKeyDown BEFORE any Enter-sends handling — a
    *  `true` return means the key was consumed by the picker. */
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
     if (!open) return false
+    // An IME candidate window uses Enter/arrows too (to confirm/navigate a
+    // composition) — let those through untouched instead of the picker
+    // hijacking them while composing.
+    if (event.nativeEvent.isComposing) return false
     if (event.key === 'ArrowDown') {
       event.preventDefault()
       setActiveIndex((i) => (i + 1) % matches.length)
@@ -125,5 +157,5 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     return false
   }
 
-  return { open, matches, activeIndex, setActiveIndex, coords, sync, handleKeyDown, pick, close }
+  return { open, matches, activeIndex, setActiveIndex, coords, joining, sync, handleKeyDown, pick, close }
 }

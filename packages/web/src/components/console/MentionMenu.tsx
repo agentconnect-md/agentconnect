@@ -4,6 +4,8 @@ import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { MENTION_MENU_MAX_HEIGHT, type MentionCoords } from '@/components/console/useMentionAutocomplete'
 
+const MENU_WIDTH = 220
+
 export interface MentionOption {
   id: string
   name: string
@@ -12,6 +14,11 @@ export interface MentionOption {
   /** Already a conversation participant — picking it only inserts the name.
    *  Not yet in the roster — picking it also joins the conversation. */
   inRoster: boolean
+  /** Not selectable right now (offline / no signed-in runtime) — still shown,
+   *  dimmed, with `description` as the reason, matching ComposerMenu's
+   *  existing add-agent options. */
+  dimmed?: boolean
+  description?: string
 }
 
 /** The @mention picker's floating list (webchat-multi-agents.md §9.1/§9.2).
@@ -38,11 +45,15 @@ export function MentionMenu({
   const position = coords.openUpward
     ? { bottom: coords.elHeight - coords.top + 4 }
     : { top: coords.top + coords.height + 4 }
+  // Clamp the LEFT edge too: near the right side of a narrow composer,
+  // `max-w-[calc(100%-15px)]` bounds the menu's own width but not how far
+  // `left` can push it past the textarea's right edge.
+  const left = Math.min(Math.max(0, coords.left - 4), Math.max(0, coords.elWidth - MENU_WIDTH))
   return (
     <div
       role="listbox"
       aria-label="Mention an agent"
-      style={{ ...position, left: Math.max(0, coords.left - 4), maxHeight: MENTION_MENU_MAX_HEIGHT }}
+      style={{ ...position, left, maxHeight: MENTION_MENU_MAX_HEIGHT }}
       className="absolute z-50 w-[220px] max-w-[calc(100%-15px)] overflow-y-auto rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
     >
       {options.map((option, index) => (
@@ -51,13 +62,15 @@ export function MentionMenu({
           type="button"
           role="option"
           aria-selected={index === activeIndex}
+          title={option.description}
           className={`fopt min-h-8 w-full gap-2 rounded-md px-2 py-[5px] text-[12px] ${
             index === activeIndex ? 'bg-(--surface-hover)' : ''
-          }`}
+          } ${option.dimmed ? 'opacity-55' : ''}`}
           onMouseEnter={() => onHover(index)}
           onMouseDown={(event) => {
-            // preventDefault keeps focus (and the caret) in the textarea —
-            // a plain click would blur it before onPick can read selectionStart.
+            // preventDefault keeps focus in the textarea — a plain click
+            // would blur it, and `pick()` needs `ref.current` still pointed
+            // at the live element to restore the caret afterward.
             event.preventDefault()
             onPick(option)
           }}

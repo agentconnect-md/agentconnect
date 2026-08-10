@@ -47,9 +47,19 @@ export function caretCoordinates(
   const span = document.createElement('span')
   // An empty span at the very end of the text collapses to zero width — give
   // it a character so offsetTop/offsetLeft still land on the caret's line.
+  // Keeping the actual suffix (rather than just that placeholder) matters for
+  // wrapping fidelity when it's short, but a long suffix can wrap across
+  // several lines — span.offsetHeight would then be that whole block's
+  // height, not one line, so height comes from the mirrored line-height
+  // instead of the span.
   span.textContent = el.value.slice(position) || '.'
   div.appendChild(span)
-  const coords = { top: span.offsetTop - el.scrollTop, left: span.offsetLeft, height: span.offsetHeight }
+  const lineHeight = parseFloat(computed.lineHeight)
+  const coords = {
+    top: span.offsetTop - el.scrollTop,
+    left: span.offsetLeft,
+    height: Number.isFinite(lineHeight) ? lineHeight : span.offsetHeight
+  }
   document.body.removeChild(div)
   return coords
 }

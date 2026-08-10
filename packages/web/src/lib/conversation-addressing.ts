@@ -109,6 +109,20 @@ export function mentionQueryAt(text: string, caret: number): { start: number; qu
   return { start: at, query }
 }
 
+/** The full extent of the @mention token starting at `start` (the `@`'s
+ *  index) — the run of non-space characters after it, regardless of where the
+ *  caret currently sits inside that run. Picking an option replaces this
+ *  whole span, not just the prefix up to the caret: the caret can land
+ *  mid-token (arrow keys, a click) after `mentionQueryAt` first found it, and
+ *  replacing only up to a mid-token caret would leave the token's tail behind
+ *  as stray text instead of being consumed by the inserted name.
+ */
+export function mentionSpanEnd(text: string, start: number): number {
+  let end = start + 1
+  while (end < text.length && !/\s/.test(text[end]!)) end++
+  return end
+}
+
 /** Where a `/sessions/:id` deep link goes when its session turns out to belong
  *  to a multi-participant conversation (merged-conversation-view.md §5.3).
  *

@@ -16,7 +16,7 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { useConsoleData } from '@/lib/data-context'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
-import { MentionMenu } from '@/components/console/MentionMenu'
+import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
 import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
 import { Card, CardLink, EmptyRow, RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import {
@@ -168,17 +168,28 @@ export default function HomeView() {
   // it also stages that agent as a participant — the same effect as "+ add
   // agents" — and typedMentionIds() resolves the inserted text back into a
   // structural mention on send, so no extra state travels with the message.
-  const mentionCandidates = useMemo(
-    () =>
-      agents.map((a) => ({
-        id: a.id,
-        name: agentLabel(a),
-        icon: a.icon,
-        runtime: a.runtime,
-        inRoster: a.id === agent?.id || memberIds.includes(a.id)
-      })),
-    [agents, agent?.id, memberIds]
-  )
+  // Not memoized: cheap over a handful of agents, and it depends on
+  // `agentReady`/`isOnline` closures that aren't worth tracking as deps —
+  // matches `addOptions` below, which computes the same way.
+  const mentionCandidates: MentionOption[] = agents.map((a) => {
+    const inRoster = a.id === agent?.id || memberIds.includes(a.id)
+    const ready = agentReady(a)
+    return {
+      id: a.id,
+      name: agentLabel(a),
+      icon: a.icon,
+      runtime: a.runtime,
+      inRoster,
+      dimmed: !inRoster && !ready,
+      description: inRoster
+        ? undefined
+        : ready
+          ? 'Add to this conversation'
+          : !isOnline(a)
+            ? `${agentLabel(a)} is offline — its daemon isn't serving`
+            : `${agentLabel(a)} has no AI runtime signed in`
+    }
+  })
   const mention = useMentionAutocomplete({
     ref: textareaRef,
     value: input,
@@ -296,7 +307,7 @@ export default function HomeView() {
 
   const send = () => {
     const text = input.trim()
-    if ((!text && !image) || imagePreparing) return
+    if ((!text && !image) || imagePreparing || mention.joining) return
     if (!agent || !canSend) return // offline / unsigned-in agents can't take a session
     const id = openPlayground(agent, members, !multi && githubWorkspace ? { worktree } : undefined)
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
@@ -471,6 +482,14 @@ export default function HomeView() {
             onChange={(e) => {
               setInput(e.target.value)
               mention.sync(e.target.value, e.target.selectionStart ?? e.target.value.length)
+            }}
+            onSelect={(e) => {
+              // Re-derives the anchor on every caret move, not just typing —
+              // arrow keys/Home/End/a click can shift the caret without an
+              // onChange, and a stale anchor would make the next pick replace
+              // the wrong range (or stay open after the caret left the token).
+              const el = e.currentTarget
+              mention.sync(el.value, el.selectionStart ?? el.value.length)
             }}
             onPaste={(event) => {
               const file = clipboardImageFile(event.clipboardData)
@@ -682,7 +701,7 @@ export default function HomeView() {
           <button
             type="button"
             className="sendbtn h-7 w-7 flex-none rounded-[7px]"
-            disabled={(!input.trim() && !image) || !canSend || imagePreparing}
+            disabled={(!input.trim() && !image) || !canSend || imagePreparing || mention.joining}
             onClick={send}
             title={
               blocked === 'offline'

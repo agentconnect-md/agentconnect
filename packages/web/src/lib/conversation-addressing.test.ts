@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   mentionQueryAt,
+  mentionSpanEnd,
   resolveRoster,
   selfConversationPath,
   typedMentionIds,
@@ -134,6 +135,22 @@ describe('mentionQueryAt', () => {
 
   it('reads the caret position, not the end of the text', () => {
     expect(mentionQueryAt('@agentconnect', 5)).toEqual({ start: 0, query: 'agen' })
+  })
+})
+
+describe('mentionSpanEnd', () => {
+  it('runs to the end of the token, past where the caret currently sits', () => {
+    // "hello @al" with the caret backed up between 'a' and 'l' (position 8) —
+    // the token itself still spans 6..9, so a pick must replace all of it.
+    expect(mentionSpanEnd('hello @al', 6)).toBe(9)
+  })
+
+  it('stops at the next space', () => {
+    expect(mentionSpanEnd('@bob says hi', 0)).toBe(4)
+  })
+
+  it('runs to the end of the text when the token is unterminated', () => {
+    expect(mentionSpanEnd('@bob', 0)).toBe(4)
   })
 })
 
