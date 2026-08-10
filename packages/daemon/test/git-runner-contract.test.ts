@@ -5,13 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gitFor, workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
-import {
-  GitExecError,
-  GitExecPayloadSchema,
-  ShimGitRunner,
-  parsePorcelainV2,
-  parseShortstat
-} from '../src/shim/git-exec.js'
+import { GitExecError, ShimGitRunner, parsePorcelainV2, parseShortstat } from '../src/shim/git-exec.js'
+import { createExecHandler } from '../src/shim/exec-handler.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 
 /**
@@ -66,30 +61,24 @@ function repository(): string {
   return root
 }
 
-/** Stands in for the shim: actually runs the requested git argv in the target directory. */
+/**
+ * The shim side, served by the handler that actually ships.
+ *
+ * An earlier version ran git itself here. That made the parity claim weaker than it looked: it
+ * held between the runner and a test helper, while production paired the runner with
+ * `createExecHandler`. Routing through the real handler also means every argv the daemon
+ * genuinely sends is checked against the declared inventory by this suite — the inventory was
+ * derived by reading call sites, and a call site the reading missed fails here.
+ */
 function sandboxRequester(root: string): ShimRequester & { seen: unknown[] } {
   const seen: unknown[] = []
+  const handle = createExecHandler({ workspaceRoot: root, log: { info: () => {}, warn: () => {} } })
   return {
     seen,
     request: async (capability, payload) => {
       seen.push(payload)
       expect(capability).toBe('exec')
-      const parsed = GitExecPayloadSchema.parse(payload)
-      try {
-        // As given, never merged into ambient env: merging here would have concealed the
-        // runner merging, which is the defect this parity suite exists to surface.
-        const stdout = parsed.env
-          ? execFileSync('git', parsed.args, { cwd: parsed.cwd ?? root, encoding: 'utf8', env: parsed.env })
-          : git(parsed.cwd ?? root, parsed.args)
-        return { code: 0, stdout, stderr: '' }
-      } catch (err) {
-        const failure = err as { status?: number; stdout?: string; stderr?: string }
-        return {
-          code: failure.status ?? 1,
-          stdout: String(failure.stdout ?? ''),
-          stderr: String(failure.stderr ?? '')
-        }
-      }
+      return await handle(capability, payload)
     }
   }
 }
@@ -224,41 +213,29 @@ describe('git runner contract, local and shim-backed', () => {
     // pointers back out of its own environment afterwards.
     const root = repository()
     const { local, remote, requester } = runners(root)
-    // The env REPLACES rather than extends, because callers build it by sanitizing — so a
-    // caller supplies a whole environment including identity. Passing only an author, as an
-    // earlier version of this test did, leaves git with no committer and fails anywhere the
-    // ambient config does not happen to supply one. It passed on my machine and was red in CI.
-    const marker = { GIT_AUTHOR_NAME: 'Env Applied' }
+    // Proven through `config`, a subcommand the daemon actually calls. An earlier version used
+    // `commit` and the shim handler refused it — correctly, since the daemon never commits and
+    // the inventory is the list of what it does. Widening the inventory to suit a test would
+    // have removed the guard the inventory exists to be.
+    const globalConfig = join(root, 'from-request.gitconfig')
+    writeFileSync(globalConfig, '[user]\n\tname = Env Applied\n')
     // Built from the production helper rather than raw process.env: that is what call sites
     // pass, and it is also what simple-git's own checker accepts — raw process.env carries
     // names it refuses, such as GIT_EDITOR, which is the sanitization earning its keep.
-    const complete = (extra: Record<string, string>): Record<string, string> => ({
-      ...workspaceGitLocalEnv(),
-      GIT_AUTHOR_NAME: 'T',
-      GIT_AUTHOR_EMAIL: 't@e',
-      GIT_COMMITTER_NAME: 'T',
-      GIT_COMMITTER_EMAIL: 't@e',
-      ...extra
-    })
+    const complete: Record<string, string> = { ...workspaceGitLocalEnv(), GIT_CONFIG_GLOBAL: globalConfig }
 
-    writeFileSync(join(root, 'third.txt'), 'three\n')
-    git(root, ['add', 'third.txt'])
-    await local
-      .withEnv(complete({ ...marker, GIT_AUTHOR_EMAIL: 'env@example.com' }))
-      .raw(['commit', '-m', 'local env commit'])
-    const localAuthor = git(root, ['log', '-1', '--format=%an']).trim()
-    expect(localAuthor).toBe('Env Applied')
-
-    writeFileSync(join(root, 'fourth.txt'), 'four\n')
-    git(root, ['add', 'fourth.txt'])
-    await remote
-      .withEnv(complete({ ...marker, GIT_AUTHOR_EMAIL: 'env@example.com' }))
-      .raw(['commit', '-m', 'remote env commit'])
-    expect(git(root, ['log', '-1', '--format=%an']).trim()).toBe('Env Applied')
+    const [fromLocal, fromRemote] = await Promise.all([
+      local.withEnv(complete).raw(['config', '--get', 'user.name']),
+      remote.withEnv(complete).raw(['config', '--get', 'user.name'])
+    ])
+    // git only reads that file if the env reached the child, so agreeing on its content is what
+    // establishes both sides applied it.
+    expect(fromRemote.trim()).toBe(fromLocal.trim())
+    expect(fromRemote.trim()).toBe('Env Applied')
 
     // The env travelled with the request rather than being set globally.
     const payload = requester.seen.at(-1) as { env?: Record<string, string> }
-    expect(payload.env).toMatchObject(marker)
+    expect(payload.env).toMatchObject({ GIT_CONFIG_GLOBAL: globalConfig })
   })
 
   it('replaces rather than extends a chained environment, as simple-git does', async () => {

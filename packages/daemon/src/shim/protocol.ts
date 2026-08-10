@@ -16,6 +16,11 @@ export const SHIM_IDENTITY_TOKEN_PATH = '/var/run/ac-identity/token'
  *  is safe in a SandboxTemplate whose pods are stamped before any user exists. */
 export const SHIM_ENDPOINT_ENV = 'AC_SHIM_ENDPOINT'
 
+/** Root the sandbox permits filesystem work inside — the mounted agent volume. Also non-secret,
+ *  and fixed by the image rather than chosen per request, since the shim uses it to refuse a
+ *  cwd that escapes it. */
+export const SHIM_WORKSPACE_ROOT_ENV = 'AC_SHIM_WORKSPACE_ROOT'
+
 /** Operations the daemon may ask a bound shim to perform. Every one is authorized
  *  individually against the binding's grants — a channel is not a blanket permission.
  *  The bodies land in #814 / #815; this is the authorization vocabulary they use. */
