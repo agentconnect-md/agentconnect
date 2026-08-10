@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
+import { ClientTransport } from '@agentconnect.md/connection'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
 import { ShimListener, type PodIdentityVerifier } from '../src/shim/listener.js'
@@ -351,14 +352,35 @@ describe('shim binding registry', () => {
     expect(bindings.size()).toBe(1)
   })
 
-  it('rejects rebinding the same generation, so a duplicate hello cannot rotate the credential', () => {
+  it('allows the same generation from the same pod: renewal and reconnect do not relaunch', () => {
+    // The generation counts pod launches, but a half-TTL credential renewal and a reconnect
+    // after a dropped socket both happen inside one pod. Refusing equality here stranded a
+    // healthy pod permanently unbindable.
     clock.value = 1_000
     const bindings = registry()
-    const first = bindings.bind(record({ generation: 3 }), { name: 'p', uid: 'u' })
-    expect(bindings.bind(record({ generation: 3 }), { name: 'p', uid: 'u' })).toMatchObject({ ok: false })
-    expect(
-      first.ok && bindings.authorize({ credential: first.credential, generation: 3, capability: 'materialize' }).ok
-    ).toBe(true)
+    const first = mustBind(bindings, record({ generation: 3 }), { name: 'p', uid: 'u' })
+    const renewed = mustBind(bindings, record({ generation: 3 }), { name: 'p', uid: 'u' })
+    expect(renewed.credential).not.toBe(first.credential)
+    expect(bindings.authorize({ credential: renewed.credential, generation: 3, capability: 'materialize' }).ok).toBe(
+      true
+    )
+    // The rotated-away credential stops working, so a renewal is still a replacement.
+    expect(bindings.authorize({ credential: first.credential, generation: 3, capability: 'materialize' }).ok).toBe(
+      false
+    )
+    expect(bindings.size()).toBe(1)
+  })
+
+  it('refuses the same generation from a DIFFERENT pod, which is the ambiguous case', () => {
+    clock.value = 1_000
+    const bindings = registry()
+    const held = mustBind(bindings, record({ generation: 3 }), { name: 'p1', uid: 'u1' })
+    expect(bindings.bind(record({ generation: 3 }), { name: 'p2', uid: 'u2' })).toEqual({
+      ok: false,
+      reason: 'generation_claimed_by_another_pod',
+      current: 3
+    })
+    expect(bindings.authorize({ credential: held.credential, generation: 3, capability: 'materialize' }).ok).toBe(true)
   })
 
   it('refuses a stale generation even with a live credential (invariant 4)', () => {
@@ -564,11 +586,11 @@ describe('shim client', () => {
       backoff: new Backoff({ jitter: () => 0 }),
       log: { info: () => {}, warn: () => {} }
     })
-    const bind = (index: number, generation: number) =>
+    const bind = (index: number, generation: number, credential = `cred-${generation}`) =>
       messagers[index]?.(
         JSON.stringify({
           type: 'shim/bound',
-          sessionCredential: `cred-${generation}`,
+          sessionCredential: credential,
           expiresInSeconds: 600,
           agentId: 'agent-a',
           generation,
@@ -582,13 +604,15 @@ describe('shim client', () => {
 
     clock.advance(300_000) // renewal deadline: A is closed, B is dialed
     await waitFor(() => messagers.length === 2)
-    bind(1, 4)
-    await waitFor(() => client.binding()?.generation === 4)
+    // Same generation: a renewal does not relaunch the pod. The replacement is identified
+    // by its credential, not by a bumped generation.
+    bind(1, 3, 'cred-renewed')
+    await waitFor(() => client.binding()?.sessionCredential === 'cred-renewed')
 
     // A's delayed close arrives now.
     closers[0]?.(1006, 'late close from the replaced transport')
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(client.binding()?.generation).toBe(4)
+    expect(client.binding()?.sessionCredential).toBe('cred-renewed')
     expect(messagers).toHaveLength(2) // no spurious third dial
     client.stop()
   })
@@ -614,11 +638,11 @@ describe('shim client', () => {
       backoff: new Backoff({ jitter: () => 0 }),
       log: { info: () => {}, warn: () => {} }
     })
-    const bind = (index: number, generation: number) =>
+    const bind = (index: number, generation: number, credential = `c${index}`) =>
       messagers[index]?.(
         JSON.stringify({
           type: 'shim/bound',
-          sessionCredential: `c${generation}`,
+          sessionCredential: credential,
           expiresInSeconds: 600,
           agentId: 'agent-a',
           generation,
@@ -636,8 +660,8 @@ describe('shim client', () => {
     clock.advance(300_000)
     await waitFor(() => messagers.length === 2)
     expect(dials).toBe(2)
-    bind(1, 4)
-    await waitFor(() => client.binding()?.generation === 4)
+    bind(1, 3)
+    await waitFor(() => client.binding()?.sessionCredential === 'c1')
 
     // A drop IS a failure signal, so the next dial waits for the backoff delay. The daemon
     // may be rolling, and immediate re-dials are what backoff exists to prevent.
@@ -720,4 +744,61 @@ describe('shim client', () => {
     expect(sent.at(-1)).toMatchObject({ ok: true, payload: 'executed' })
     client.stop()
   })
+})
+
+describe('shim renewal, end to end', () => {
+  it('renews and reconnects at an UNCHANGED generation, against the real listener', async () => {
+    // The case the client-only tests masked by synthesizing a new generation: the pod never
+    // relaunches, so SpawnRecord.generation stays put across a credential renewal and a
+    // reconnect. This drives the real ShimClient against the real ShimListener over a real
+    // socket, so nothing about the generation is stubbed.
+    const clock = new FakeClock()
+    const { instance, endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      now: () => clock.now(),
+      clock,
+      credentialTtlMs: 600_000
+    })
+    const clientClock = new FakeClock()
+    const client = new ShimClient({
+      endpoint,
+      dial: (url, opts) =>
+        ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
+      readToken: () => 'projected-token',
+      clock: clientClock,
+      backoff: new Backoff({ jitter: () => 0 }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    try {
+      const first = await client.start()
+      expect(first.generation).toBe(3)
+      await waitFor(() => instance.connectionsFor('agent-a').length === 1)
+
+      // Renewal at half the advertised lifetime, with the generation unchanged.
+      clientClock.advance(300_000)
+      await waitFor(
+        () => client.binding() !== undefined && client.binding()?.sessionCredential !== first.sessionCredential
+      )
+      const renewed = client.binding()!
+      expect(renewed.generation).toBe(3)
+      // Exactly one live channel, and the new credential is the one that authorizes.
+      await waitFor(() => instance.connectionsFor('agent-a').length === 1)
+      expect(
+        instance.authorize({ credential: renewed.sessionCredential, generation: 3, capability: 'materialize' }).ok
+      ).toBe(true)
+      expect(
+        instance.authorize({ credential: first.sessionCredential, generation: 3, capability: 'materialize' }).ok
+      ).toBe(false)
+
+      // And a reconnect after the daemon drops the channel, also at generation 3.
+      instance.connectionsFor('agent-a')[0]?.close('simulated drop')
+      await waitFor(() => client.binding() === undefined)
+      clientClock.advance(60_000)
+      await waitFor(() => client.binding() !== undefined)
+      expect(client.binding()?.generation).toBe(3)
+      await waitFor(() => instance.connectionsFor('agent-a').length === 1)
+    } finally {
+      client.stop()
+    }
+  }, 20_000)
 })

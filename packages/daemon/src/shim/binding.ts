@@ -27,7 +27,7 @@ export type AuthorizeResult = { ok: true; binding: Binding } | { ok: false; fail
 export type BindResult =
   | { ok: true; credential: string; binding: Binding; superseded: Binding[] }
   /** A newer launch already holds this sandbox's channel; the caller must not bind. */
-  | { ok: false; reason: 'superseded_generation'; current: number }
+  | { ok: false; reason: 'superseded_generation' | 'generation_claimed_by_another_pod'; current: number }
 
 /** Constant-time compare that cannot throw on a length mismatch. */
 function sameSecret(a: string, b: string): boolean {
@@ -73,12 +73,20 @@ export class ShimBindingRegistry {
     const superseded: Binding[] = []
     for (const [credential, existing] of [...this.byCredential]) {
       if (existing.agentId !== record.agentId || existing.sandboxUid !== record.sandboxUid) continue
-      // Monotonic, and mutating nothing when it is not: an older incarnation can bind
-      // AFTER a newer one — a terminating pod reconnecting during overlap, or simply a
-      // slower TokenReview — and replacing the current binding would hand the channel back
-      // to the sandbox that is going away.
-      if (existing.generation >= record.generation) {
+      // Monotonic in the generation, mutating nothing when it is not: an older incarnation
+      // can bind AFTER a newer one — a terminating pod reconnecting during overlap, or
+      // simply a slower TokenReview — and replacing the current binding would hand the
+      // channel back to the sandbox that is going away.
+      if (existing.generation > record.generation) {
         return { ok: false, reason: 'superseded_generation', current: existing.generation }
+      }
+      // Equal generation is the ordinary case, not a duplicate: the generation counts pod
+      // launches, while a credential renewal at half TTL and a reconnect after a dropped
+      // socket both happen inside the SAME pod. Refusing it would strand a healthy pod
+      // permanently unbindable. Equal generation from a DIFFERENT pod is the ambiguous one
+      // — two pods claiming one launch — and stays refused.
+      if (existing.generation === record.generation && existing.podUid !== pod.uid) {
+        return { ok: false, reason: 'generation_claimed_by_another_pod', current: existing.generation }
       }
       superseded.push(existing)
       this.byCredential.delete(credential)

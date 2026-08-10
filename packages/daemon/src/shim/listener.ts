@@ -255,7 +255,13 @@ export class ShimListener {
     })
 
     ws.on('close', () => {
-      if (bound) this.connections.delete(bound)
+      if (bound) {
+        this.connections.delete(bound)
+        // Revoke the credential too, not just the connection entry: a credential whose
+        // channel is gone is useless, and leaving it behind is what let a stale binding
+        // outlive its socket.
+        this.registry.revokePod(bound.binding.podUid)
+      }
     })
   }
 
