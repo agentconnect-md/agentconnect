@@ -224,8 +224,14 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
       return true
     }
     if (event.key === 'Enter' || event.key === 'Tab') {
+      // Nothing reachable to land on (every match dimmed) — don't consume
+      // the key at all, so Tab still moves focus out of the composer and
+      // Enter still falls through to the composer's own send handling,
+      // instead of both being silently swallowed while `pick()` no-ops.
+      const candidate = matches[activeIndex]
+      if (!candidate || candidate.dimmed) return false
       event.preventDefault()
-      pick(matches[activeIndex]!)
+      pick(candidate)
       return true
     }
     if (event.key === 'Escape') {

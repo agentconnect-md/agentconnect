@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, useRef, useState } from 'react'
+import { act, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import { useMentionAutocomplete } from './useMentionAutocomplete'
@@ -7,6 +7,7 @@ import { useMentionAutocomplete } from './useMentionAutocomplete'
 interface Candidate {
   id: string
   name: string
+  dimmed?: boolean
 }
 
 let root: Root | null = null
@@ -19,7 +20,7 @@ afterEach(() => {
   container = null
 })
 
-function mountHarness(onPick: (c: Candidate) => Promise<boolean> | void) {
+function mountHarness(onPick: (c: Candidate) => Promise<boolean> | void, candidates: Candidate[] = []) {
   let api!: ReturnType<typeof useMentionAutocomplete<Candidate>>
   let setDraft!: (v: string) => void
   let getValue!: () => string
@@ -27,7 +28,7 @@ function mountHarness(onPick: (c: Candidate) => Promise<boolean> | void) {
   function Harness() {
     const [value, setValue] = useState('')
     const ref = useRef<HTMLTextAreaElement>(null)
-    api = useMentionAutocomplete<Candidate>({ ref, value, setValue, candidates: [], onPick })
+    api = useMentionAutocomplete<Candidate>({ ref, value, setValue, candidates, onPick })
     setDraft = setValue
     getValue = () => value
     return <textarea ref={ref} value={value} readOnly />
@@ -92,5 +93,48 @@ describe('useMentionAutocomplete — overlapping failed joins', () => {
       await new Promise((r) => setTimeout(r, 0))
     })
     expect(getValue()).toBe('')
+  })
+})
+
+function fakeKeyEvent(key: string): ReactKeyboardEvent<HTMLTextAreaElement> & { defaultPrevented: boolean } {
+  const event = {
+    key,
+    nativeEvent: { isComposing: false },
+    defaultPrevented: false,
+    preventDefault() {
+      event.defaultPrevented = true
+    }
+  }
+  return event as unknown as ReactKeyboardEvent<HTMLTextAreaElement> & { defaultPrevented: boolean }
+}
+
+// The regression: with every match dimmed, there is nothing `pick()` can
+// land on — but handleKeyDown was still swallowing Tab/Enter to try anyway,
+// which trapped keyboard focus inside the composer (Tab couldn't leave it)
+// while `pick()` silently no-opped.
+describe('useMentionAutocomplete — every match dimmed', () => {
+  it('lets Tab and Enter fall through instead of consuming them with nothing reachable', () => {
+    const { api, setDraft } = mountHarness(() => undefined, [{ id: 'x', name: 'offline-bot', dimmed: true }])
+    act(() => {
+      setDraft('@off')
+      api().sync('@off', 4)
+    })
+    expect(api().matches).toHaveLength(1)
+
+    const tab = fakeKeyEvent('Tab')
+    let consumedTab!: boolean
+    act(() => {
+      consumedTab = api().handleKeyDown(tab)
+    })
+    expect(consumedTab).toBe(false)
+    expect(tab.defaultPrevented).toBe(false)
+
+    const enter = fakeKeyEvent('Enter')
+    let consumedEnter!: boolean
+    act(() => {
+      consumedEnter = api().handleKeyDown(enter)
+    })
+    expect(consumedEnter).toBe(false)
+    expect(enter.defaultPrevented).toBe(false)
   })
 })

@@ -64,12 +64,15 @@ export function MentionMenu({
           key={option.id}
           type="button"
           role="option"
-          aria-selected={index === activeIndex}
+          // A dimmed option is never the "selected" one, ARIA-wise, even
+          // while it sits at activeIndex (the all-dimmed edge case, where
+          // there's nothing reachable to land on).
+          aria-selected={index === activeIndex && !option.dimmed}
           aria-disabled={option.dimmed}
           disabled={option.dimmed}
           title={option.description}
           className={`fopt min-h-8 w-full gap-2 rounded-md px-2 py-[5px] text-[12px] ${
-            index === activeIndex ? 'bg-(--surface-hover)' : ''
+            index === activeIndex && !option.dimmed ? 'bg-(--surface-hover)' : ''
           } ${option.dimmed ? 'cursor-not-allowed opacity-55' : ''}`}
           onMouseEnter={() => {
             if (!option.dimmed) onHover(index)
