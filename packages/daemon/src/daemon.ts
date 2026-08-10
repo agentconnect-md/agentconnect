@@ -262,6 +262,7 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
+import { cloudRuntimesPath, declaredRuntimeCatalog, loadCloudRuntimeTable } from './runtimes/cloud-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   probeAllRuntimes,
@@ -1953,6 +1954,12 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
+  // `--cloud`: this daemon supervises runtimes in sandbox pods instead of local
+  // subprocesses, so every "daemon and runtime share one machine" behavior is off.
+  private readonly cloud: boolean
+  // Model snapshot declared alongside the cloud runtime image; applied after the
+  // SQLite catalog hydrate so the image's list wins over a stale cached one.
+  private cloudDeclaredModels: Record<string, string[]> = {}
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -2173,13 +2180,21 @@ export class Daemon {
       installed?: typeof installedRuntimes
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
+      /** `--cloud`: runtimes live in sandbox pods, not on this host. Disables runtime
+       *  probing, host executable discovery (the image declares its runtimes instead),
+       *  the SRT mechanism, and the self-installing upgrade path. */
+      cloud?: boolean
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
       /** Optional, observer-only evaluation surface and add-on treatment. */
       evaluation?: DaemonEvaluationOptions
     } = {}
   ) {
-    this.sandboxMechanism = opts.sandboxMechanism === null ? undefined : (opts.sandboxMechanism ?? detectSandbox())
+    this.cloud = opts.cloud === true
+    // Cloud runtimes are isolated by their own pod, so the in-process SRT mechanism is
+    // not part of that shape — it stays off even if this host happens to support it.
+    this.sandboxMechanism =
+      opts.sandboxMechanism === null || this.cloud ? undefined : (opts.sandboxMechanism ?? detectSandbox())
     this.clock = opts.clock ?? systemClock
     if (opts.evaluation?.capabilityProfile && !opts.evaluation.observer) {
       throw new Error('evaluation capability profile requires an evaluation observer')
@@ -2541,7 +2556,9 @@ export class Daemon {
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
-        'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
+        this.cloud
+          ? 'daemon startup refused: security.requireSandbox is not supported with --cloud — a cloud runtime is isolated by its own pod, not by the in-process SRT mechanism'
+          : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
@@ -2684,7 +2701,9 @@ export class Daemon {
       mode: 'cache-first'
     })
     // Advertise (and launch) only runtimes actually installed on this host — the
-    // registry lists every known agent, but most aren't present here.
+    // registry lists every known agent, but most aren't present here. Under --cloud
+    // there is nothing to discover locally: the sandbox image declares what it ships
+    // (cloud-runtimes.ts), so presence is a declaration rather than a probe.
     const installedCatalog = this.opts.installed
       ? (() => {
           const runtimes = this.opts.installed!(resolvedCatalog.runtimes)
@@ -2695,7 +2714,9 @@ export class Daemon {
             )
           }
         })()
-      : installedRuntimeCatalog(resolvedCatalog)
+      : this.cloud
+        ? this.declaredCloudCatalog(root, resolvedCatalog)
+        : installedRuntimeCatalog(resolvedCatalog)
     const { runtimes: installed, entries: installedEntries } = installedCatalog
     this.runtimeCatalog = installedCatalog
     this.refreshAdmittedRuntimes()
@@ -2738,6 +2759,12 @@ export class Daemon {
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
     this.hydrateRuntimeCatalogCache()
+    // The image's declared models are the fresher truth than any cached row, and stay
+    // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
+    for (const [runtimeId, models] of Object.entries(this.cloudDeclaredModels)) {
+      this.runtimeModels.set(runtimeId, [...models])
+      this.runtimeModelsSource.set(runtimeId, 'cached')
+    }
     this.modelCatalogSvc = new ModelCatalogService({
       store: this.store,
       log: this.log,
@@ -19383,6 +19410,38 @@ export class Daemon {
     }
   }
 
+  /**
+   * `--cloud` runtime set: the runtimes the sandbox image declares it provides,
+   * projected onto the resolved catalog (which still supplies command/args, and is
+   * served cache-first from `<root>/acp_registry.json` in an image). Replaces host
+   * executable discovery, which can only ever answer "nothing" in a daemon pod.
+   */
+  private declaredCloudCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
+    const table = loadCloudRuntimeTable(root)
+    if (!table) {
+      this.log.warn(
+        `runtimes: --cloud requires a declared runtime table at ${cloudRuntimesPath(root)} — advertising none until it exists`
+      )
+      return { entries: {}, runtimes: {} }
+    }
+    const declared = declaredRuntimeCatalog(resolved, table)
+    if (declared.unresolved.length)
+      this.log.warn(`runtimes: declared but unknown to the catalog: ${declared.unresolved.join(', ')}`)
+    // Curated admission needs a live probe, which --cloud does not run, so a declared
+    // curated id could never launch — drop it loudly instead of advertising it.
+    if (declared.rejectedCurated.length)
+      this.log.warn(
+        `runtimes: declared curated runtimes cannot be admitted under --cloud: ${declared.rejectedCurated.join(', ')}`
+      )
+    // A package launcher fetches on first launch, which the pinned-image model rules out.
+    if (declared.packageLaunchers.length)
+      this.log.warn(
+        `runtimes: declared runtimes launch through a package manager and will fetch at run time: ${declared.packageLaunchers.join(', ')}`
+      )
+    this.cloudDeclaredModels = declared.models
+    return declared.catalog
+  }
+
   /** Synchronously pre-fill the in-memory runtime maps from the SQLite last-good
    *  catalog cache (design runtime-model-catalog.md §4): the register-time facts
    *  snapshot then carries cached models + matrix instead of an empty REPLACE
@@ -19489,6 +19548,17 @@ export class Daemon {
    * must not affect the CP connection.
    */
   private async probeRuntimesAndEmit(includeOrdinary = true): Promise<void> {
+    // --cloud has no runtime to launch on this host: profiles come from the image's
+    // declared table. Still emit them, because this is also the CP (re)connect path
+    // that (re)asserts the runtime list. Unconditional — unlike the fake-host guard
+    // below, an injected prober must not re-enable local spawning in this mode.
+    if (this.cloud) {
+      this.cpClient?.emitDaemonRuntimes?.(
+        this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
+        this.mcpServerFactsFromDefs()
+      )
+      return
+    }
     // With a hostFactory (unit tests use fake in-memory hosts) we don't spawn real
     // subprocesses unless a probe seam is injected.
     if (this.opts.hostFactory && !this.opts.probeRuntimes) return
