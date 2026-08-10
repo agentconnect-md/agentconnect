@@ -145,3 +145,14 @@ export const MAX_ENVIRONMENT_VALUE_LENGTH = 64 * 1024
  * whether to relaunch vs propagate the child's exit.
  */
 export const RESERVED_RESTART_CODE = 75
+
+/**
+ * `AGENTCONNECT_SUPERVISOR` value a cloud daemon runs under: Kubernetes, where the
+ * kubelet takes the place of launchd/systemd AND of the CLI's version store.
+ *
+ * It supervises restart — `restartPolicy: Always` brings the container back after
+ * {@link RESERVED_RESTART_CODE}, in place and in the same pod, which is the same
+ * shape as a systemd process restart — but not upgrade: the running version is the
+ * image, so only whoever owns the Deployment can change it.
+ */
+export const K8S_SUPERVISOR = 'k8s'

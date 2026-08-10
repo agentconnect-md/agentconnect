@@ -296,6 +296,7 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -2163,11 +2164,11 @@ export class Daemon {
       requestExit?: (code: number) => void
       /** Test seam for a blocked or failed CLI upgrade installation. */
       upgradeInstaller?: typeof runCliUpgrade
-      /** Who supervises this process — 'cli' (respawn shell) or 'service' (launchd/
-       *  systemd). Set by the launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown
-       *  means no supervisor (bare `node dist/index.js run`), so CP-commanded
-       *  restart/upgrade is refused: exiting would leave the daemon down
-       *  (cli-daemon-split.md §7.1). */
+      /** Who supervises this process — 'cli' (respawn shell), 'service' (launchd/systemd),
+       *  or 'k8s' (the kubelet: restart only, since the version is the image). Set by the
+       *  launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown means no supervisor (bare
+       *  `node dist/index.js run`), so CP-commanded restart/upgrade is refused: exiting
+       *  would leave the daemon down (cli-daemon-split.md §7.1). */
       supervisor?: string
       /** Seam for the post-connect runtime probe sweep (tests inject a fake to avoid
        *  spawning real agent subprocesses). Defaults to the real `probeAllRuntimes`. */
@@ -2559,6 +2560,17 @@ export class Daemon {
         this.cloud
           ? 'daemon startup refused: security.requireSandbox is not supported with --cloud — a cloud runtime is isolated by its own pod, not by the in-process SRT mechanism'
           : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
+      )
+    }
+    if (this.cloud) {
+      // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
+      // mid-drain and the graceful window is a promise the deployment cannot keep. The
+      // daemon cannot read its own grace period (it has no pod read), so it states the
+      // number it will actually use and leaves the alignment to the deployment.
+      this.log.info(
+        `cloud: shutdown drain deadline ${Math.round(cfg.limits.shutdownDrainMs / 1000)}s — ` +
+          `terminationGracePeriodSeconds must exceed it; supervisor=${this.opts.supervisor ?? 'unset'}` +
+          `${this.opts.supervisor === K8S_SUPERVISOR ? '' : ' (restart requires AGENTCONNECT_SUPERVISOR=k8s)'}`
       )
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
@@ -18108,7 +18120,17 @@ export class Daemon {
       return { accepted: false as const, reason }
     }
     const supervisor = this.opts.supervisor
-    if (supervisor !== 'cli' && supervisor !== 'service') {
+    const imageOwnsVersion = "the running version is this pod's image — roll the Deployment instead of self-installing"
+    // Refused on the MODE, not the marker: a live upgrade is delivered without consulting
+    // the advertised capability, so this is the last line of defence, and an inherited
+    // AGENTCONNECT_SUPERVISOR plus a stale cli-entry on the root volume must not reach the
+    // installer — the same invariant bootstrapUpgradeCapable() already holds.
+    if (kind === 'upgrade' && this.cloud) return refuse(imageOwnsVersion)
+    // The kubelet restarts the container in place after the reserved exit code, but never
+    // changes the image, so it supervises restart and not upgrade.
+    if (supervisor === K8S_SUPERVISOR) {
+      if (kind === 'upgrade') return refuse(imageOwnsVersion)
+    } else if (supervisor !== 'cli' && supervisor !== 'service') {
       const reason = `no supervisor (AGENTCONNECT_SUPERVISOR=${supervisor ?? 'unset'}) — a bare \`run\` cannot ${kind}; use the CLI or an installed service`
       return refuse(reason)
     }
