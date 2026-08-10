@@ -817,8 +817,17 @@ export class SessionManager {
     // reach humans, post at a channel root, or reply into a parent session. It has no
     // visible in-thread form: speaking in the current conversation is an ordinary reply.
     // `toAgent` without a `channel` is the postless, channel-invisible wake.
+    // The precedence bullet leads for a measured reason (issue #800): on the Claude
+    // Code runtime the session also carries the runtime's own built-in `SendMessage`
+    // (agent-teams messaging) — a literal name match for a report-back instruction —
+    // and a child that picks it loses its parent report silently. Costs ~80 standing
+    // tokens per session.
     const collabAppend =
       `# Collaborating with other agents\n` +
+      `- AgentConnect's tools (the \`agentconnect\` MCP server, e.g. \`mcp__agentconnect__sendMessage\`) are the ` +
+      `ONLY channel that reaches other agents and humans here. Your runtime may offer built-in tools with similar ` +
+      `names (e.g. a bare \`SendMessage\`) — those do NOT reach AgentConnect and anything sent through them is ` +
+      `lost. Never use them for messaging, reporting back, or collaboration.\n` +
       `- To reach a specific agent privately, call \`sendMessage\` with ` +
       `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
       `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
