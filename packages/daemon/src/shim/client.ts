@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
+import { AcpRunner, type ResolveCommand } from './acp-runner.js'
 import {
   SHIM_IDENTITY_TOKEN_PATH,
   SHIM_SUBPROTOCOL,
@@ -31,8 +32,11 @@ export interface ShimClientDeps {
   dial: (url: string, opts: { subprotocol: string; path: string }) => Promise<ShimTransport>
   /** Reads the projected token. Injected for tests; defaults to the mounted path. */
   readToken?: () => string
-  /** Handles an authorized request from the daemon. The channels land in #814 / #815. */
+  /** Handles an authorized non-ACP request from the daemon (materialize / exec / read /
+   *  tunnel). The ACP capability is served by the built-in runner instead. */
   handle?: (capability: ShimCapability, payload: unknown) => Promise<unknown>
+  /** Resolves executables in THIS filesystem for the ACP runner. */
+  resolveCommand?: ResolveCommand
   clock?: Clock
   backoff?: Backoff
   log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -48,6 +52,8 @@ export interface ShimClientDeps {
  * suspension, and eviction indistinguishable here: each new pod simply presents its own.
  */
 export class ShimClient {
+  /** ACP streams by the request id that opened them; each emits many events. */
+  private readonly acpStreams = new Map<string, AcpRunner>()
   private transport?: ShimTransport
   private bound?: ShimBound
   private stopped = false
@@ -220,6 +226,42 @@ export class ShimClient {
     })
   }
 
+  /**
+   * The ACP stream: one request opens it, then many events flow until the runtime exits.
+   *
+   * The opening request is still acknowledged with a single response so the caller knows the
+   * runtime started (or why it did not); the recurring traffic goes out as `shim/event`
+   * frames keyed by that request id, because one-shot correlation cannot express continuous
+   * stdout and a terminal exit.
+   */
+  private async serveAcp(
+    transport: ShimTransport,
+    request: Extract<ShimFrame, { type: 'shim/request' }>
+  ): Promise<void> {
+    const payload = request.payload as { op?: string; streamId?: string }
+    // A chunk or close names the stream it belongs to; only `open` creates one.
+    const streamId = payload?.op === 'open' ? request.id : (payload?.streamId ?? '')
+    if (payload?.op === 'open') {
+      const runner = new AcpRunner({
+        emit: (event) => transport.send(JSON.stringify({ type: 'shim/event', streamId, event })),
+        ...(this.deps.resolveCommand ? { resolveCommand: this.deps.resolveCommand } : {}),
+        ...(this.deps.log ? { log: this.deps.log } : {})
+      })
+      this.acpStreams.set(streamId, runner)
+      await runner.apply(request.payload)
+      transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload: { streamId } }))
+      return
+    }
+    const runner = this.acpStreams.get(streamId)
+    if (!runner) {
+      transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: false, error: 'unknown acp stream' }))
+      return
+    }
+    await runner.apply(request.payload)
+    if (payload.op === 'close') this.acpStreams.delete(streamId)
+    transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true }))
+  }
+
   private async serve(transport: ShimTransport, request: Extract<ShimFrame, { type: 'shim/request' }>): Promise<void> {
     const bound = this.bound
     // A request that does not match the credential and generation we were issued is not
@@ -234,6 +276,10 @@ export class ShimClient {
       return
     }
     try {
+      if (request.capability === 'acp') {
+        await this.serveAcp(transport, request)
+        return
+      }
       const payload = await (this.deps.handle ?? (async () => undefined))(request.capability, request.payload)
       transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload }))
     } catch (err) {

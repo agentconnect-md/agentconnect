@@ -2,7 +2,7 @@ import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/listener.js'
-import { ShimChannel } from '../shim/channels.js'
+import { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import { OperatingModeRejectedError, isSandboxReady, type OperatingMode, type SandboxApi } from './sandbox-api.js'
 import { K8sApiError } from './http.js'
@@ -16,7 +16,7 @@ export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 
 /** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
  *  what the channels it uses require, so a future capability is an explicit decision. */
-export const RUNTIME_GRANTS: ShimCapability[] = ['materialize', 'exec', 'read', 'tunnel']
+export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
 
 export interface ClusterDriverDeps {
   api: SandboxApi
@@ -56,6 +56,13 @@ export class ClusterSpawnDriver implements SpawnDriver {
   private readonly generations = new Map<string, number>()
   /** Agents whose Sandbox carries a drain request: hold off waking until it clears. */
   private readonly draining = new Set<string>()
+  /** Per-agent transition queue. A guarded write protects competing writes, but it cannot
+   *  protect a decision that performs NO write: a later wake could observe Running and
+   *  return while an earlier suspend patch was still in flight, and the older write would
+   *  then land last and reverse the newer decision. Serializing removes that entirely. */
+  private readonly modeQueue = new Map<string, Promise<void>>()
+  /** Logical channels per agent, which survive the shim's credential renewals. */
+  private readonly sessions = new Map<string, ShimSession>()
   private readonly clock: Clock
 
   constructor(private readonly deps: ClusterDriverDeps) {
@@ -88,6 +95,10 @@ export class ClusterSpawnDriver implements SpawnDriver {
         additionalPodMetadata: { labels: { [AC_LABEL_ORG]: this.deps.orgId, [AC_LABEL_AGENT]: agentId } }
       }
     })
+    // Resolve the bound Sandbox WITHOUT requiring readiness. A suspended claim still names
+    // its Sandbox and still has a uid, but suspension deleted the pod — so waiting for Ready
+    // here would block the only call that could bring it back. Resume is "patch Running,
+    // then wait", in that order.
     const sandboxName = await this.awaitBoundSandbox(name)
     const sandbox = await this.deps.api.getSandbox(sandboxName)
     const sandboxUid = sandbox.metadata?.uid
@@ -100,6 +111,18 @@ export class ClusterSpawnDriver implements SpawnDriver {
     // it, and an unpublished launch is indistinguishable from a pod we never started.
     this.deps.publishSpawnRecord({ agentId, sandboxUid, generation, grants: [...RUNTIME_GRANTS] })
     return launch
+  }
+
+  /** Wait for the Sandbox to report Ready, after something has asked it to run. */
+  private async awaitReady(sandboxName: string): Promise<void> {
+    const backoff = new Backoff({ baseMs: 250, capMs: 2_000, jitter: () => 0 })
+    const deadline = this.clock.now() + (this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS)
+    for (;;) {
+      const sandbox = await this.deps.api.getSandbox(sandboxName).catch(() => undefined)
+      if (sandbox && isSandboxReady(sandbox)) return
+      if (this.clock.now() >= deadline) throw new Error(`sandbox ${sandboxName} did not become ready in time`)
+      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, backoff.next()))
+    }
   }
 
   /** Wake a suspended Sandbox, or confirm it is already running. */
@@ -125,7 +148,18 @@ export class ClusterSpawnDriver implements SpawnDriver {
    * correct response is to look again — and the retry budget is finite because a permanently
    * invalid patch would otherwise loop forever.
    */
-  private async setMode(agentId: string, desired: OperatingMode): Promise<void> {
+  private setMode(agentId: string, desired: OperatingMode): Promise<void> {
+    const previous = this.modeQueue.get(agentId) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(() => this.applyMode(agentId, desired))
+    // Keep the chain even when a link rejects, so a failed transition cannot strand the queue.
+    this.modeQueue.set(
+      agentId,
+      next.catch(() => undefined)
+    )
+    return next
+  }
+
+  private async applyMode(agentId: string, desired: OperatingMode): Promise<void> {
     const launch = this.launches.get(agentId)
     if (!launch) throw new Error(`no sandbox launch recorded for agent ${agentId}`)
     for (let attempt = 1; attempt <= MAX_MODE_ATTEMPTS; attempt += 1) {
@@ -199,12 +233,10 @@ export class ClusterSpawnDriver implements SpawnDriver {
         throw err
       })
       const name = claim?.status?.sandbox?.name
-      if (name) {
-        const sandbox = await this.deps.api.getSandbox(name).catch(() => undefined)
-        if (sandbox && isSandboxReady(sandbox)) return name
-      }
+      // Bound is enough here; readiness is a separate wait that follows the resume.
+      if (name) return name
       if (this.clock.now() >= deadline) {
-        throw new Error(`claim ${claimName} did not bind a ready sandbox in time`)
+        throw new Error(`claim ${claimName} did not bind a sandbox in time`)
       }
       await new Promise<void>((resolve) => this.clock.setTimeout(resolve, backoff.next()))
     }
@@ -213,78 +245,125 @@ export class ClusterSpawnDriver implements SpawnDriver {
   /**
    * Start the runtime in the agent's Sandbox and hand `AcpHost` a stream pair.
    *
-   * Command resolution stays on this side of nothing: the request's command is passed
-   * through unresolved along with its hints, because the shim resolves them in the
-   * filesystem the runtime will actually read.
+   * Command resolution is deliberately NOT done here: the request's command and hints are
+   * passed through unresolved, because the shim resolves them in the filesystem the runtime
+   * will actually read.
    */
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
     const agentId = request.env.AC_AGENT_ID
     if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
+    if (this.draining.has(agentId)) {
+      // Launching now would wait out the readiness timeout against a sandbox we are
+      // deliberately holding down. Say so instead of timing out.
+      throw new Error(`agent ${agentId} is draining for an image rollout — retry once it clears`)
+    }
     const launch = await this.ensureSandbox(agentId)
+    // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
+    // something asks for Running.
     await this.wake(agentId)
+    await this.awaitReady(launch.sandboxName)
     const connection = await this.deps.awaitChannel(
       agentId,
       launch.generation,
       this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
     )
-    const channel = new ShimChannel(connection, connection.issuedCredential, {
+    const session = new ShimSession(agentId, launch.generation, {
       setTimeout: (fn, ms) => this.clock.setTimeout(fn, ms),
       clearTimeout: (handle) => this.clock.clearTimeout(handle as never)
     })
-    connection.onFrame((text) => channel.accept(text))
-    return createRemoteRuntime({ channel, connection, request, log: this.deps.log })
+    session.attach(connection)
+    this.sessions.set(agentId, session)
+    return createRemoteRuntime({ session, request, log: this.deps.log })
+  }
+
+  /** Re-attach a renewed or replacement connection to the launch it belongs to. */
+  onChannelBound(connection: ShimConnection): void {
+    this.sessions.get(connection.binding.agentId)?.attach(connection)
+  }
+
+  /** Report that an agent's channel is gone, so its runtime learns rather than hanging. */
+  onChannelLost(agentId: string, reason: string): void {
+    this.sessions.get(agentId)?.lose(reason)
   }
 }
 
-/** Bridge a shim ACP stream to the byte-stream pair `AcpHost` consumes. */
+/**
+ * Bridge a shim ACP stream to the byte-stream pair `AcpHost` consumes.
+ *
+ * The stream survives credential renewal because it talks to a {@link ShimSession} rather
+ * than to one socket: a renewal re-attaches underneath, and only a lost session ends the
+ * runtime. Writes await their acknowledgement, so a runtime that is not draining applies
+ * backpressure instead of letting the daemon queue without bound.
+ */
 function createRemoteRuntime(opts: {
-  channel: ShimChannel
-  connection: ShimConnection
+  session: ShimSession
   request: SpawnRequest
   log: { info: (m: string) => void; warn: (m: string) => void }
 }): SpawnedRuntime {
   const exitListeners: Array<() => void> = []
   let stopped = false
+  let streamId: string | undefined
   const inbound = new TransformStream<Uint8Array, Uint8Array>()
   const writer = inbound.writable.getWriter()
 
-  // The shim reports runtime stdout as chunk events and its exit as an exit event; both
-  // arrive as responses on the channel, so they are routed here rather than resolved.
-  opts.connection.onFrame((text) => {
-    try {
-      const frame = JSON.parse(text) as { type?: string; payload?: { event?: string; data?: string } }
-      if (frame.type !== 'shim/response' || !frame.payload?.event) return
-      if (frame.payload.event === 'chunk' && frame.payload.data) {
-        void writer.write(Buffer.from(frame.payload.data, 'base64'))
-        return
-      }
-      if (frame.payload.event === 'exit') {
-        void writer.close().catch(() => {})
-        for (const listener of exitListeners.splice(0)) listener()
-      }
-    } catch {
-      /* not ours */
+  const finish = (): void => {
+    void writer.close().catch(() => undefined)
+    for (const listener of exitListeners.splice(0)) listener()
+  }
+
+  const onEvent = (frame: { streamId: string; event: { kind: string; data?: string } }): void => {
+    if (streamId && frame.streamId !== streamId) return
+    if (frame.event.kind === 'chunk' && frame.event.data) {
+      void writer.write(Buffer.from(frame.event.data, 'base64'))
+      return
     }
+    if (frame.event.kind === 'exit') {
+      opts.session.offEvent(onEvent)
+      finish()
+    }
+  }
+  opts.session.onEvent(onEvent)
+  // A lost session is a dead runtime: report terminal exit rather than leaving AcpHost
+  // waiting on a stream that can never produce another byte.
+  opts.session.onLost((reason) => {
+    opts.log.warn(`cluster: shim channel lost for agent ${opts.session.agentId} (${reason})`)
+    opts.session.offEvent(onEvent)
+    finish()
   })
 
-  const toAgent = new WritableStream<Uint8Array>({
-    write: async (chunk) => {
-      await opts.channel.request('exec', { op: 'chunk', data: Buffer.from(chunk).toString('base64') })
-    }
-  })
-
-  void opts.channel
-    .request('exec', {
+  const opened = opts.session
+    .request('acp', {
       op: 'open',
       command: opts.request.command,
       args: opts.request.args,
       env: opts.request.env,
       ...(opts.request.hints ? { hints: opts.request.hints } : {})
     })
-    .catch((err: unknown) => {
-      opts.log.warn(`cluster: runtime failed to start in the sandbox (${(err as Error).message})`)
-      for (const listener of exitListeners.splice(0)) listener()
+    .then((payload) => {
+      streamId = (payload as { streamId?: string } | undefined)?.streamId
+      if (!streamId) throw new Error('shim did not report a stream id for the ACP runtime')
     })
+
+  const toAgent = new WritableStream<Uint8Array>({
+    write: async (chunk) => {
+      // AcpHost writes `initialize` the moment it has the stream, which can be before the
+      // open round trip returns. Awaiting it here queues the write instead of dropping it.
+      await opened
+      if (!streamId) throw new Error('acp stream is not open')
+      // Awaiting the ack is the backpressure: the shim only answers once the runtime's stdin
+      // accepted the bytes.
+      await opts.session.request('acp', {
+        op: 'chunk',
+        streamId,
+        data: Buffer.from(chunk).toString('base64')
+      })
+    }
+  })
+
+  void opened.catch((err: unknown) => {
+    opts.log.warn(`cluster: runtime failed to start in the sandbox (${(err as Error).message})`)
+    finish()
+  })
 
   return {
     toAgent,
@@ -293,8 +372,11 @@ function createRemoteRuntime(opts: {
     stop: async (deadlineMs) => {
       if (stopped) return
       stopped = true
-      await opts.channel.request('exec', { op: 'close', deadlineMs }).catch(() => undefined)
-      opts.channel.abort('runtime stopped')
+      await opened.catch(() => undefined)
+      if (streamId) {
+        await opts.session.request('acp', { op: 'close', streamId, deadlineMs }).catch(() => undefined)
+      }
+      opts.session.offEvent(onEvent)
     }
   }
 }

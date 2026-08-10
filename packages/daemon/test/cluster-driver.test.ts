@@ -97,7 +97,7 @@ describe('cluster spawn driver', () => {
         agentId: 'agent-a',
         sandboxUid: 'sandbox-uid-1',
         generation: 1,
-        grants: ['materialize', 'exec', 'read', 'tunnel']
+        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel']
       }
     ])
   })
@@ -165,6 +165,55 @@ describe('cluster spawn driver', () => {
     expect(instance.isDraining('agent-a')).toBe(false)
     await instance.wake('agent-a')
     expect(state.modeWrites).toEqual([{ desired: 'Running', observed: 'Suspended' }])
+  })
+
+  it('orders concurrent wake and suspend decisions so the newer one wins', async () => {
+    // A guarded write protects competing WRITES, but it cannot protect a decision that
+    // performs no write: a later wake reading Running would return while an earlier suspend
+    // patch was still in flight, and the older write would land last and reverse it.
+    const { api, state } = fakeApi({ mode: 'Running' })
+    let releaseFirst!: () => void
+    const gate = new Promise<void>((resolve) => (releaseFirst = resolve))
+    let calls = 0
+    const original = api.setOperatingMode
+    api.setOperatingMode = vi.fn(async (name: string, desired: never, observed: never) => {
+      calls += 1
+      if (calls === 1) await gate
+      return original(name, desired, observed)
+    }) as never
+    const { instance } = driver(api)
+    await instance.ensureSandbox('agent-a')
+
+    const suspending = instance.suspend('agent-a')
+    const waking = instance.wake('agent-a')
+    releaseFirst()
+    await Promise.all([suspending, waking])
+
+    // The wake was decided second, so it must be the state that survives.
+    expect(state.sandbox.spec?.operatingMode).toBe('Running')
+    expect(state.modeWrites.map((write) => write.desired)).toEqual(['Suspended', 'Running'])
+  })
+
+  it('refuses to launch while a drain request is pending, instead of waiting out a timeout', async () => {
+    const { api } = fakeApi({ mode: 'Suspended' })
+    const { instance } = driver(api)
+    await instance.ensureSandbox('agent-a')
+    instance.onSandboxObserved('agent-a', { [DRAIN_REQUESTED_ANNOTATION]: 'rollout-1/img' })
+    // wake() holds the sandbox down deliberately, so launching would block until the readiness
+    // deadline elapsed. Failing fast says what is actually happening.
+    await expect(instance.launch({ command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a' } })).rejects.toThrow(
+      /draining/
+    )
+  })
+
+  it('resolves a suspended claim without waiting for readiness first', async () => {
+    // After a daemon restart the claim still names its Sandbox, but suspension deleted the
+    // pod — so requiring Ready here would block the only call that could bring it back.
+    const { api } = fakeApi({ mode: 'Suspended', ready: false })
+    const { instance, records } = driver(api)
+    const launch = await instance.ensureSandbox('agent-a')
+    expect(launch.sandboxName).toBe('sb-1')
+    expect(records).toHaveLength(1)
   })
 
   it('deletes the claim when an agent goes away', async () => {
