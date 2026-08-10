@@ -83,6 +83,16 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
   // against a draft that no longer exists.
   const valueRef = useRef(value)
   valueRef.current = value
+  // Updates `valueRef` synchronously, not just on the next render — two
+  // pending joins failing in the SAME microtask batch (both promises settle
+  // before React commits either `setValue`) would otherwise both read the
+  // pre-batch `valueRef.current`: the second rollback's equality check would
+  // compare against a slice that's already stale by the time it runs, even
+  // though it's only a moment (not a render) behind the first.
+  const commitValue = (next: string) => {
+    valueRef.current = next
+    setValue(next)
+  }
   // Every pick with a join still pending, keyed by its CURRENT (self-adjusting)
   // insertion range — a plain per-pick closure over its pick-time offsets would
   // go stale the moment an EARLIER pending pick rolls back: removing that
@@ -165,7 +175,7 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
     const before = value.slice(0, anchor.start)
     const after = value.slice(end)
     const insertedText = `@${candidate.name} `
-    setValue(before + insertedText + after)
+    commitValue(before + insertedText + after)
     close()
     const pos = before.length + insertedText.length
     requestAnimationFrame(() => {
@@ -186,7 +196,7 @@ export function useMentionAutocomplete<T extends MentionCandidate>(params: {
           // the join was in flight.
           const cur = valueRef.current
           if (cur.slice(range.start, range.end) !== range.text) return
-          setValue(cur.slice(0, range.start) + cur.slice(range.end))
+          commitValue(cur.slice(0, range.start) + cur.slice(range.end))
           // This removal shifts every OTHER still-pending range that sits
           // after it — keep them pointed at their own token so THEIR
           // eventual rollback (if any) lands on the right slice too.

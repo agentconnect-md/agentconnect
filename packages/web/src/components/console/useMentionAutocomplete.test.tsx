@@ -94,6 +94,45 @@ describe('useMentionAutocomplete — overlapping failed joins', () => {
     })
     expect(getValue()).toBe('')
   })
+
+  it('rolls back both even when their joins settle in the same microtask batch', async () => {
+    let resolveA!: (v: boolean) => void
+    let resolveB!: (v: boolean) => void
+    const { api, setDraft, getValue } = mountHarness(
+      (c) =>
+        new Promise<boolean>((resolve) => {
+          if (c.id === 'a') resolveA = resolve
+          else resolveB = resolve
+        })
+    )
+
+    act(() => {
+      setDraft('@a')
+      api().sync('@a', 2)
+    })
+    act(() => {
+      api().pick({ id: 'a', name: 'alice' })
+    })
+    act(() => {
+      setDraft('@alice @b')
+      api().sync('@alice @b', 9)
+    })
+    act(() => {
+      api().pick({ id: 'b', name: 'bob' })
+    })
+    expect(getValue()).toBe('@alice @bob ')
+
+    // Both settle back-to-back with NO render (and no `valueRef` refresh
+    // from one) in between — a rollback that only learns `value` moved on
+    // via the next render, instead of writing its own ref synchronously,
+    // would have bob's rollback compare against the pre-removal string.
+    await act(async () => {
+      resolveA(false)
+      resolveB(false)
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(getValue()).toBe('')
+  })
 })
 
 function fakeKeyEvent(key: string): ReactKeyboardEvent<HTMLTextAreaElement> & { defaultPrevented: boolean } {
