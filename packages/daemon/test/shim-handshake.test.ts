@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import { ClientTransport } from '@agentconnect.md/connection'
+import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
 import { WebSocket } from 'ws'
 import { ShimBindingRegistry, type SpawnRecord } from '../src/shim/binding.js'
 import { ShimListener, type PodIdentityVerifier } from '../src/shim/listener.js'
