@@ -20,6 +20,9 @@ export interface DiscordAttachmentLike {
   contentType?: string | null
   size?: number
   url: string
+  /** Discord's CDN proxy URL; unlike `url`, it honors a `?width=` query param
+   *  for server-side resizing. */
+  proxyUrl?: string
 }
 
 export interface DiscordMessageLike {
@@ -46,12 +49,17 @@ export interface DiscordMessageLike {
 /** Map public Discord CDN metadata into the shared attachment contract. */
 export function toDiscordAttachment(attachment: DiscordAttachmentLike | null | undefined): PlatformAttachment | null {
   if (!attachment || typeof attachment !== 'object' || !attachment.id || !attachment.url) return null
+  // media.discordapp.net's proxy honors `?width=`, downscaling server-side — the
+  // console transcript needs a preview, not the original resolution.
+  const thumbnailUrl =
+    attachment.contentType?.startsWith('image/') && attachment.proxyUrl ? `${attachment.proxyUrl}?width=320` : undefined
   return {
     id: attachment.id,
     name: attachment.name ?? attachment.id,
     mimeType: attachment.contentType ?? 'application/octet-stream',
     ...(typeof attachment.size === 'number' ? { size: attachment.size } : {}),
-    sourceUrl: attachment.url
+    sourceUrl: attachment.url,
+    ...(thumbnailUrl ? { thumbnailUrl } : {})
   }
 }
 

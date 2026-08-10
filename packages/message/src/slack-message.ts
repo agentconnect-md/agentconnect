@@ -12,6 +12,11 @@ export interface SlackFile {
   url_private?: string
   url_private_download?: string
   mode?: string
+  /** Slack only sets these on image files; smallest-first is enough for a
+   *  console transcript preview. */
+  thumb_360?: string
+  thumb_720?: string
+  thumb_1024?: string
 }
 
 /**
@@ -127,12 +132,14 @@ export function toSlackAttachment(file: SlackFile | null | undefined): PlatformA
   if (!file || typeof file !== 'object') return null
   const sourceUrl = file.url_private_download ?? file.url_private
   if (!file.id || !sourceUrl) return null
+  const thumbnailUrl = file.thumb_360 ?? file.thumb_720 ?? file.thumb_1024
   return {
     id: file.id,
     name: file.name ?? file.title ?? file.id,
     mimeType: file.mimetype ?? 'application/octet-stream',
     ...(typeof file.size === 'number' ? { size: file.size } : {}),
-    sourceUrl
+    sourceUrl,
+    ...(thumbnailUrl ? { thumbnailUrl } : {})
   }
 }
 

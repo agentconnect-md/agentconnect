@@ -11,7 +11,12 @@ export const PlatformAttachmentSchema = z.object({
   name: z.string(),
   mimeType: z.string(),
   size: z.number().optional(),
-  sourceUrl: z.string()
+  sourceUrl: z.string(),
+  /** A smaller provider-rendered rendition (Slack thumb_*, a smaller Telegram
+   *  PhotoSize, a resized Discord proxy_url), when the provider offers one.
+   *  Console transcript rendering only — the agent's own prompt always gets
+   *  `sourceUrl`'s full-resolution bytes. */
+  thumbnailUrl: z.string().optional()
 })
 export type PlatformAttachment = z.infer<typeof PlatformAttachmentSchema>
 
