@@ -91,7 +91,13 @@ function gitStatus(overrides: Partial<WorkspaceGitStatusDto> = {}): WorkspaceGit
   }
 }
 
-const changed = (path: string, index: string, workingDir: string): WorkspaceGitFileDto => ({ path, index, workingDir })
+const changed = (path: string, index: string, workingDir: string): WorkspaceGitFileDto => ({
+  path,
+  index,
+  workingDir,
+  additions: null,
+  deletions: null
+})
 
 const dir = (name: string): Entry => ({ name, type: 'dir', size: null, mtime: null })
 const textFile = (name: string): Entry => ({ name, type: 'file', size: 120, mtime: '2026-08-10T11:00:00.000Z' })

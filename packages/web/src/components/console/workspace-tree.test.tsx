@@ -22,7 +22,13 @@ function status(files: WorkspaceGitFileDto[], agentDir: string | null = null): W
   }
 }
 
-const file = (path: string, index: string, workingDir: string): WorkspaceGitFileDto => ({ path, index, workingDir })
+const file = (path: string, index: string, workingDir: string): WorkspaceGitFileDto => ({
+  path,
+  index,
+  workingDir,
+  additions: null,
+  deletions: null
+})
 
 describe('workspaceDirtyMap', () => {
   it('has nothing to join without a status', () => {

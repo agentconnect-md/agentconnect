@@ -2299,6 +2299,7 @@ export interface WorkspaceListingDto {
 export interface WorkspaceFileDto {
   path: string
   exists: boolean
+  type: 'file' | 'dir' | null // what the path IS; 'dir' ⇒ no content to show (null from an older daemon)
   size: number | null
   mtime: string | null
   encoding: 'utf8' | 'none' | null
@@ -2821,6 +2822,11 @@ export interface WorkspaceGitFileDto {
   path: string
   index: string
   workingDir: string
+  // `git diff HEAD --numstat` — this file's change against HEAD, staged and unstaged
+  // together. null ⇒ untracked, a binary change, or a daemon too old to count: a
+  // count of 0 is a different fact (a file changed in the other direction only).
+  additions: number | null
+  deletions: number | null
 }
 
 // The HEAD commit of the workspace checkout.
@@ -2868,6 +2874,72 @@ export async function fetchWorkspaceGitStatus(agentId: string, sessionId?: strin
   if (sessionId) q.set('sessionId', sessionId)
   const query = q.size ? `?${q.toString()}` : ''
   return apiGet<WorkspaceGitStatusDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstatus${query}`)
+}
+
+// Which side of the index one diff read describes. A closed vocabulary rather than a
+// boolean, because the CP's querystring `staged=false` would coerce to `true`.
+export type WorkspaceDiffScope = 'unstaged' | 'staged'
+
+// One path's unified diff (GET /agents/:id/workspace/gitdiff). Every degraded answer
+// is data: `isRepo:false` a from-scratch workspace, `exists:false` a path this
+// checkout does not have, `diff:null` a path with no changes in this scope,
+// `binary:true` a change git has no text for, `truncated` a diff cut to the frame cap.
+export interface WorkspaceGitDiffDto {
+  path: string
+  isRepo: boolean
+  exists: boolean
+  diff: string | null // unified-diff text exactly as git emits it
+  binary: boolean
+  truncated: boolean
+}
+
+// One commit of the checked-out branch (GET /agents/:id/workspace/gitlog).
+export interface WorkspaceGitLogCommitDto {
+  sha: string
+  shortSha: string
+  subject: string
+  author: string
+  committedAt: string // RFC3339
+  pushed: boolean // true ⇒ the branch's upstream ref already contains it
+}
+
+// The newest commits of the workspace checkout, newest first. An empty repo is data
+// (`commits: []`); `tracking:null` means the branch tracks nothing, so every `pushed`
+// reads false and the console must not draw unpushed markers from it.
+export interface WorkspaceGitLogDto {
+  isRepo: boolean
+  commits: WorkspaceGitLogCommitDto[]
+  truncated: boolean // true ⇒ the branch has more commits than the requested limit
+  tracking: string | null
+}
+
+// One path's unified diff, proxied live from the owning daemon (no CP storage). 409
+// `DAEMON_FEATURE_MISSING` ⇒ that daemon is too old for git review reads; 400 with a
+// `WORKSPACE_*` code ⇒ the daemon rejected the path; 503 ⇒ offline or unplaced.
+export async function fetchWorkspaceGitDiff(
+  agentId: string,
+  opts: { path: string; scope?: WorkspaceDiffScope; sessionId?: string }
+): Promise<WorkspaceGitDiffDto> {
+  const q = new URLSearchParams({ path: opts.path })
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.scope) q.set('scope', opts.scope)
+  return apiGet<WorkspaceGitDiffDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitdiff?${q.toString()}`
+  )
+}
+
+// The newest commits of the checkout, proxied live from the owning daemon. Same
+// failure surface as the diff read above. `limit` is capped at 50 by the CP (the
+// wire's MAX_WORKSPACE_LOG_COMMITS); past that the request is a 400.
+export async function fetchWorkspaceGitLog(
+  agentId: string,
+  opts: { limit?: number; sessionId?: string } = {}
+): Promise<WorkspaceGitLogDto> {
+  const q = new URLSearchParams()
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  if (opts.limit) q.set('limit', String(opts.limit))
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiGet<WorkspaceGitLogDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitlog${query}`)
 }
 
 // Force the owning daemon to `git pull` (fast-forward only) the agent's workspace

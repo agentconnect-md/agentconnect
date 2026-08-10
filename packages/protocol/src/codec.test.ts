@@ -12,6 +12,10 @@ import {
   buildEnvelope,
   encode,
   MAX_FRAME_BYTES,
+  MAX_WORKSPACE_COMMIT_AUTHOR,
+  MAX_WORKSPACE_COMMIT_SUBJECT,
+  MAX_WORKSPACE_LOG_COMMITS,
+  WorkspaceErrorReason,
   FRAME_SCHEMAS,
   FRAME_TYPES
 } from './index.js'
@@ -1153,6 +1157,329 @@ describe('workspace file access frames (console live proxy)', () => {
     expect(rep.ok).toBe(true)
     if (!rep.ok || !isFrame('workspace/delete/ok')(rep.frame)) throw new Error('expected workspace/delete/ok')
     expect(rep.frame.corr).toBe(ID)
+  })
+
+  it('workspace/read/content REP carries a not-a-regular-file path as DATA (type, no content)', () => {
+    const dir = decodeEnvelope(
+      envelope(
+        'workspace/read/content',
+        { agentId: 'local-agent-1', path: 'src', exists: true, type: 'dir', mtime: '2026-06-24T00:00:00.000Z' },
+        { corr: ID }
+      )
+    )
+    expect(dir.ok).toBe(true)
+    if (!dir.ok || !isFrame('workspace/read/content')(dir.frame)) throw new Error('expected read content')
+    expect(dir.frame.corr).toBe(ID)
+    expect(dir.frame.payload.exists).toBe(true) // a directory is a fact about the path, not an error frame
+    expect(dir.frame.payload.type).toBe('dir')
+    expect(dir.frame.payload.encoding).toBeUndefined()
+    expect(dir.frame.payload.content).toBeUndefined()
+
+    // `type` is a closed vocabulary, and absent from an older daemon's slice.
+    const bogus = decodeEnvelope(
+      envelope('workspace/read/content', { agentId: 'local-agent-1', path: 'src', exists: true, type: 'symlink' })
+    )
+    expect(bogus.ok).toBe(false)
+    const legacy = decodeEnvelope(
+      envelope('workspace/read/content', {
+        agentId: 'local-agent-1',
+        path: 'README.md',
+        exists: true,
+        size: 12,
+        encoding: 'utf8',
+        content: '# hi',
+        offset: 0,
+        nextOffset: 4,
+        truncated: true
+      })
+    )
+    expect(legacy.ok).toBe(true)
+    if (!legacy.ok || !isFrame('workspace/read/content')(legacy.frame)) throw new Error('expected read content')
+    expect(legacy.frame.payload.type).toBeUndefined()
+  })
+})
+
+describe('workspace git review frames (status counts, diff, log)', () => {
+  it('workspace/gitstatus REQ/REP round-trip, and numstat counts are per-file OPTIONAL', () => {
+    const req = decodeEnvelope(
+      envelope('workspace/gitstatus', { agentId: 'local-agent-1', sessionId: 'session-a' }, { epoch: 3 })
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitstatus')(req.frame)) throw new Error('expected workspace/gitstatus')
+    expect(req.frame.payload.sessionId).toBe('session-a')
+    expect(req.ext).toEqual({ epoch: 3 }) // fenced epoch-only like the rest of the family
+
+    const rep = decodeEnvelope(
+      envelope(
+        'workspace/gitstatus/result',
+        {
+          agentId: 'local-agent-1',
+          isRepo: true,
+          clean: false,
+          branch: 'main',
+          tracking: 'origin/main',
+          ahead: 1,
+          behind: 0,
+          files: [
+            { path: 'src/a.ts', index: 'M', workingDir: ' ', additions: 128, deletions: 12 },
+            { path: 'new.txt', index: '?', workingDir: '?' }
+          ]
+        },
+        { corr: ID }
+      )
+    )
+    expect(rep.ok).toBe(true)
+    if (!rep.ok || !isFrame('workspace/gitstatus/result')(rep.frame)) throw new Error('expected gitstatus result')
+    expect(rep.frame.corr).toBe(ID)
+    expect(rep.frame.payload.files?.[0]).toEqual({
+      path: 'src/a.ts',
+      index: 'M',
+      workingDir: ' ',
+      additions: 128,
+      deletions: 12
+    })
+    // An older daemon (and an untracked file) send no counts — absent stays absent, never 0.
+    expect(rep.frame.payload.files?.[1]).toEqual({ path: 'new.txt', index: '?', workingDir: '?' })
+    expect(rep.frame.payload.files?.[1]?.additions).toBeUndefined()
+    expect(rep.frame.payload.files?.[1]?.deletions).toBeUndefined()
+
+    // Counts are line counts, never negative.
+    const negative = decodeEnvelope(
+      envelope('workspace/gitstatus/result', {
+        agentId: 'local-agent-1',
+        isRepo: true,
+        clean: false,
+        files: [{ path: 'src/a.ts', index: 'M', workingDir: ' ', additions: -1 }]
+      })
+    )
+    expect(negative.ok).toBe(false)
+  })
+
+  it('workspace/gitdiff REQ round-trips the scope, defaults staged:false, and bounds the path', () => {
+    const req = decodeEnvelope(
+      envelope(
+        'workspace/gitdiff',
+        { agentId: 'local-agent-1', sessionId: 'session-a', path: 'src/a.ts', staged: true },
+        { epoch: 3 }
+      )
+    )
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitdiff')(req.frame)) throw new Error('expected workspace/gitdiff')
+    expect(req.frame.payload.path).toBe('src/a.ts')
+    expect(req.frame.payload.staged).toBe(true)
+    expect(req.ext).toEqual({ epoch: 3 })
+
+    const bare = decodeEnvelope(envelope('workspace/gitdiff', { agentId: 'local-agent-1', path: 'src/a.ts' }))
+    expect(bare.ok).toBe(true)
+    if (!bare.ok || !isFrame('workspace/gitdiff')(bare.frame)) throw new Error('expected workspace/gitdiff')
+    expect(bare.frame.payload.staged).toBe(false) // zod default ⇒ worktree vs index
+    expect(bare.frame.payload.sessionId).toBeUndefined() // primary checkout
+
+    const over = decodeEnvelope(envelope('workspace/gitdiff', { agentId: 'local-agent-1', path: 'x'.repeat(4097) }))
+    expect(over.ok).toBe(false) // path cap is 4096, as on write/delete
+  })
+
+  it('workspace/gitdiff/result REP round-trips a diff, and binary / unchanged / non-repo as DATA', () => {
+    const text = decodeEnvelope(
+      envelope(
+        'workspace/gitdiff/result',
+        {
+          agentId: 'local-agent-1',
+          path: 'src/a.ts',
+          isRepo: true,
+          exists: true,
+          diff: '@@ -1,2 +1,2 @@\n-old\n+new\n',
+          truncated: true
+        },
+        { corr: ID }
+      )
+    )
+    expect(text.ok).toBe(true)
+    if (!text.ok || !isFrame('workspace/gitdiff/result')(text.frame)) throw new Error('expected gitdiff result')
+    expect(text.frame.corr).toBe(ID)
+    expect(text.frame.payload.diff).toBe('@@ -1,2 +1,2 @@\n-old\n+new\n')
+    expect(text.frame.payload.truncated).toBe(true)
+    expect(text.frame.payload.binary).toBeUndefined()
+
+    // binary change ⇒ no text to show, still a normal REP
+    const binary = decodeEnvelope(
+      envelope('workspace/gitdiff/result', {
+        agentId: 'local-agent-1',
+        path: 'logo.png',
+        isRepo: true,
+        exists: true,
+        binary: true
+      })
+    )
+    expect(binary.ok).toBe(true)
+    if (!binary.ok || !isFrame('workspace/gitdiff/result')(binary.frame)) throw new Error('expected gitdiff result')
+    expect(binary.frame.payload.binary).toBe(true)
+    expect(binary.frame.payload.diff).toBeUndefined()
+
+    // unchanged path: exists, no diff, not binary
+    const unchanged = decodeEnvelope(
+      envelope('workspace/gitdiff/result', {
+        agentId: 'local-agent-1',
+        path: 'src/a.ts',
+        isRepo: true,
+        exists: true
+      })
+    )
+    expect(unchanged.ok).toBe(true)
+    if (!unchanged.ok || !isFrame('workspace/gitdiff/result')(unchanged.frame)) {
+      throw new Error('expected gitdiff result')
+    }
+    expect(unchanged.frame.payload.diff).toBeUndefined()
+    expect(unchanged.frame.payload.exists).toBe(true)
+
+    // from-scratch workspace: isRepo:false is DATA, not an error frame
+    const scratch = decodeEnvelope(
+      envelope('workspace/gitdiff/result', {
+        agentId: 'local-agent-1',
+        path: 'src/a.ts',
+        isRepo: false,
+        exists: false
+      })
+    )
+    expect(scratch.ok).toBe(true)
+    if (!scratch.ok || !isFrame('workspace/gitdiff/result')(scratch.frame)) throw new Error('expected gitdiff result')
+    expect(scratch.frame.payload.isRepo).toBe(false)
+  })
+
+  it('workspace/gitlog REQ defaults its limit and rejects one over the 50-commit cap', () => {
+    const req = decodeEnvelope(envelope('workspace/gitlog', { agentId: 'local-agent-1', limit: 50 }, { epoch: 3 }))
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('workspace/gitlog')(req.frame)) throw new Error('expected workspace/gitlog')
+    expect(req.frame.payload.limit).toBe(50)
+    expect(req.ext).toEqual({ epoch: 3 })
+
+    const bare = decodeEnvelope(envelope('workspace/gitlog', { agentId: 'local-agent-1' }))
+    expect(bare.ok).toBe(true)
+    if (!bare.ok || !isFrame('workspace/gitlog')(bare.frame)) throw new Error('expected workspace/gitlog')
+    expect(bare.frame.payload.limit).toBe(20) // zod default
+
+    expect(decodeEnvelope(envelope('workspace/gitlog', { agentId: 'local-agent-1', limit: 51 })).ok).toBe(false)
+    expect(decodeEnvelope(envelope('workspace/gitlog', { agentId: 'local-agent-1', limit: 0 })).ok).toBe(false)
+  })
+
+  it('workspace/gitlog/result REP round-trips pushed markers, an untracked branch, and an empty repo', () => {
+    const rep = decodeEnvelope(
+      envelope(
+        'workspace/gitlog/result',
+        {
+          agentId: 'local-agent-1',
+          isRepo: true,
+          truncated: true,
+          tracking: 'origin/main',
+          commits: [
+            {
+              sha: 'a3f9c21deadbeef0000000000000000000000000',
+              shortSha: 'a3f9c21',
+              subject: 'Pin deploy image',
+              author: 'Ada Lovelace',
+              committedAt: '2026-07-02T07:00:00+00:00',
+              pushed: false
+            },
+            {
+              sha: 'b0b0b0b0deadbeef0000000000000000000000000',
+              shortSha: 'b0b0b0b',
+              subject: 'Add the dock',
+              author: 'Ada Lovelace',
+              committedAt: '2026-07-01T07:00:00+00:00',
+              pushed: true
+            }
+          ]
+        },
+        { corr: ID }
+      )
+    )
+    expect(rep.ok).toBe(true)
+    if (!rep.ok || !isFrame('workspace/gitlog/result')(rep.frame)) throw new Error('expected gitlog result')
+    expect(rep.frame.corr).toBe(ID)
+    expect(rep.frame.payload.commits.map((c) => c.pushed)).toEqual([false, true])
+    expect(rep.frame.payload.tracking).toBe('origin/main')
+    expect(rep.frame.payload.truncated).toBe(true)
+
+    // A branch that tracks nothing: no `tracking`, so `pushed:false` means "no upstream to be on".
+    const untracked = decodeEnvelope(
+      envelope('workspace/gitlog/result', {
+        agentId: 'local-agent-1',
+        isRepo: true,
+        truncated: false,
+        commits: [
+          {
+            sha: 'a3f9c21deadbeef0000000000000000000000000',
+            shortSha: 'a3f9c21',
+            subject: 'Initial import',
+            author: 'Ada Lovelace',
+            committedAt: '2026-07-02T07:00:00+00:00',
+            pushed: false
+          }
+        ]
+      })
+    )
+    expect(untracked.ok).toBe(true)
+    if (!untracked.ok || !isFrame('workspace/gitlog/result')(untracked.frame)) {
+      throw new Error('expected gitlog result')
+    }
+    expect(untracked.frame.payload.tracking).toBeUndefined()
+
+    // An empty repo (no commits yet) is DATA, and a page over the cap is not decodable.
+    const empty = decodeEnvelope(
+      envelope('workspace/gitlog/result', { agentId: 'local-agent-1', isRepo: true, commits: [], truncated: false })
+    )
+    expect(empty.ok).toBe(true)
+    const commit = {
+      sha: 'a3f9c21deadbeef0000000000000000000000000',
+      shortSha: 'a3f9c21',
+      subject: 's',
+      author: 'a',
+      committedAt: '2026-07-02T07:00:00+00:00',
+      pushed: true
+    }
+    const overCap = decodeEnvelope(
+      envelope('workspace/gitlog/result', {
+        agentId: 'local-agent-1',
+        isRepo: true,
+        truncated: true,
+        commits: Array.from({ length: 51 }, () => commit)
+      })
+    )
+    expect(overCap.ok).toBe(false)
+  })
+
+  it('keeps a worst-case escaped gitlog page below the wire cap', () => {
+    // NUL is the largest ordinary JSON string expansion (`\\u0000`, six wire bytes per
+    // input character), so filling every display cap with it covers the maxima.
+    const escaped = '\u0000'
+    const commit = {
+      sha: 'a3f9c21deadbeef0000000000000000000000000',
+      shortSha: 'a3f9c21',
+      subject: escaped.repeat(MAX_WORKSPACE_COMMIT_SUBJECT),
+      author: escaped.repeat(MAX_WORKSPACE_COMMIT_AUTHOR),
+      committedAt: '2026-07-02T07:00:00+00:00',
+      pushed: false
+    }
+    const encoded = encode(
+      buildEnvelope('workspace/gitlog/result', {
+        agentId: escaped.repeat(255),
+        isRepo: true,
+        truncated: true,
+        tracking: escaped.repeat(255),
+        commits: Array.from({ length: MAX_WORKSPACE_LOG_COMMITS }, () => commit)
+      })
+    )
+    expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+    const decoded = decodeEnvelope(encoded)
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('workspace/gitlog/result')(decoded.frame)) throw new Error('expected gitlog result')
+    expect(decoded.frame.payload.commits).toHaveLength(MAX_WORKSPACE_LOG_COMMITS)
+  })
+
+  it('the workspace error-reason vocabulary is closed', () => {
+    expect(WorkspaceErrorReason.options).toContain('path-escape')
+    expect(WorkspaceErrorReason.safeParse('not-a-file').success).toBe(true)
+    expect(WorkspaceErrorReason.safeParse('offline').success).toBe(false)
   })
 })
 

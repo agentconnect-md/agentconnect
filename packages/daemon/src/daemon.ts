@@ -304,6 +304,7 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveMemoryDreamingPolicy,
   effectiveManagedMemoryScope,
@@ -5099,6 +5100,7 @@ export class Daemon {
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
+      WORKSPACE_GIT_REVIEW_FEATURE,
       ...(this.sandboxMechanism ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
@@ -19343,6 +19345,9 @@ export class Daemon {
       workspaceRead: createWorkspaceReader(workspaceLocation, (id, write) => this.withWorkspaceFileWrite(id, write)),
       workspaceGit: {
         status: (id, sessionId) => workspaceGit.status(id, sessionId),
+        // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
+        diff: (req) => workspaceGit.diff(req),
+        log: (req) => workspaceGit.log(req),
         pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id))
       },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),

@@ -597,16 +597,18 @@ one JSX slot) — every expanded tool body, the composer's caret and any open
 
 Known M1 follow-ups, none of which change what the code does today:
 
-- A `?file=` naming a **directory** — or a path that escapes the workspace —
-  reads as "the daemon may be offline". The daemon raises
-  `WorkspaceViolationError`, the CP maps that to 503, and the viewer cannot tell
-  it from a real outage. Distinguishing it needs a daemon/CP error code, not a
-  web change, so it waits for the next milestone that touches those layers.
+- ~~A `?file=` naming a **directory** — or a path that escapes the workspace —
+  reads as "the daemon may be offline".~~ Closed in M2, which touched all three
+  layers: a directory read is now DATA (`type:'dir'`), every other bad request
+  carries a `WorkspaceErrorReason` the CP projects as a `WORKSPACE_*` code on a
+  400/404/409, and the viewer branches on it. A reasonless `BAD_PAYLOAD` from an
+  older daemon still reads as 503, deliberately.
 - The filter corpus is rebuilt and sorted on every folder expansion even while
   the box is empty. Harmless at today's tree sizes; gate the memo on the query.
-- Two app-wiring mutants still survive: dropping the Files tab when
-  `filesAgentId` is null, and the `dockTabKey` existence fallback. The primitives
-  under them are covered; only the wiring is not.
+- ~~Two app-wiring mutants still survive: dropping the Files tab when
+  `filesAgentId` is null, and the `dockTabKey` existence fallback.~~ Both pinned
+  in M2, by a session whose agent is absent and by dropping the open tab under
+  the reader (`SessionDetailView.viewer.test.tsx`).
 - Four review fixes are **unpinned by tests**, all for the same missing fixture —
   a multi-agent focus menu with a pending or rejected `extraHeaderDetail`, which
   this suite does not build: holding the Files surface while a related session's
@@ -645,7 +647,52 @@ parser feeding the existing `LineDiff` table, Diff/File toggle in the viewer.
 Panel renders branch/ahead-behind, staged/unstaged with counts, and the commit
 log with unpushed markers. **Stage toggles and the commit box are absent, not
 disabled** — the tab is explicitly a review surface at this point. _Exit:_ a
-reviewer can read exactly what the agent changed, file by file.
+reviewer can read exactly what the agent changed, file by file. **Landed.**
+
+Known M2 follow-ups, none of which change what the code does today:
+
+- An **untracked** file has no diff in either scope (`git diff` never shows one),
+  so its Git-panel row opens a Diff view that says so. Opening untracked rows in
+  File mode instead would read better, and costs nothing new on the wire.
+- The viewer's `+`/`−` are counted from the **rows on screen**, not from
+  `WorkspaceGitFile.additions/deletions`: those count both sides of the index
+  against HEAD, so beside a one-scope diff they would disagree with it. The
+  consequence is that a truncated diff undercounts, which is why the header says
+  `partial` beside the numbers.
+- Two wiring guards are unpinned for the Git panel for the same reason M1 left
+  them unpinned for Files — this suite cannot build a multi-agent focus menu with
+  a **pending or rejected** `extraHeaderDetail`: holding the panel until the
+  checkout is known, and the copy shown when that read is rejected outright.
+- The Git panel is mounted on every session page like Files, and the real read cost
+  is higher than "one more read": FilesPanel and GitPanel each call the uncached
+  status hook, which fires twice in session scope, so a session view now issues
+  FOUR `workspace/gitstatus` reads — each spawning a `git diff HEAD --numstat`
+  child — plus three children for the log. One shared cached hook would make it
+  one. Lazily mounting the panel is not the fix: its verdict is what keeps the
+  dock out of `vacant`, so a lazy panel makes the tab unreachable.
+- The commit log is the branch's own history, capped at 20. "vs base" — the
+  design's phrasing — needs a merge-base the daemon does not report yet.
+- A conflicted path yields TWO numstat rows for one path; the join takes the last,
+  so its `+/−` is an arbitrary one of the two. The diff itself is drawn unsided and
+  says so, so the counts are the only thing left guessing.
+- The 64 KiB ceiling on the numstat read is **unpinned**: constructing an overflow
+  needs thousands of dirty files, which is too slow for this suite. The bound is
+  the same `gitRead` every other metadata read goes through.
+- `--no-relative` on that read is defence, not a fix for a reachable bug: `isRepo`
+  requires `.git` directly under the workspace root, so the read always runs AT the
+  repo root and `diff.relative` cannot make its paths disagree with
+  `git status --porcelain`. A review round flagged it as a live defect and a test
+  written for it turned out to assert an unreachable state; the flag stays because
+  it costs nothing if that ever changes.
+- A diff that changes only line endings paints as identical-looking add/delete
+  pairs, because the parser strips a trailing `\r` from every line.
+- The Git tab's refresh re-reads status and log but not the open diff, so the
+  panel's counts and the viewer can disagree until the reader reopens the row.
+- `requireSessionWorkspaceRead` on the gitlog route and the `openStaged` wiring are
+  both unpinned. The daemon advertises session-read and git-review together, so the
+  first is defensive; the second is cosmetic.
+- `check-circle-2`, which §8's icon list names, does not exist in this lucide
+  version. M5 and M6 need a substitute before they use it.
 
 **M3 — Git write + AI commit message.** Stage / unstage / commit / push frames
 and routes, daemon handlers using the registered `gitCommitIdentity`, the

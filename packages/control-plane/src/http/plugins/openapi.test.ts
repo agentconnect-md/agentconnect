@@ -80,6 +80,38 @@ describe('openapi plane', () => {
     }
   })
 
+  it('names the git review reads and keeps every operationId unique', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/agents/{id}/workspace'
+      const diff = doc.paths?.[`${base}/gitdiff`]?.get
+      const log = doc.paths?.[`${base}/gitlog`]?.get
+      for (const op of [diff, log]) {
+        expect(op).toMatchObject({ tags: ['Agent workspace'] })
+        expect(op?.summary).toBeTruthy()
+        expect(op?.description).toBeTruthy()
+      }
+      expect(diff?.operationId).toBe('getAgentWorkspaceGitDiff')
+      expect(log?.operationId).toBe('listAgentWorkspaceGitLog')
+      // The diff scope is a closed vocabulary in the docs, not a free-form boolean.
+      const scope = (diff?.parameters ?? []).find((p: any) => p.name === 'scope')
+      expect(scope?.schema?.enum).toEqual(['unstaged', 'staged'])
+
+      // A duplicated operationId makes a docs UI render one route and silently drop
+      // the other, so uniqueness is asserted across the WHOLE spec, not just here.
+      const ids = Object.values<Record<string, any>>(doc.paths ?? {}).flatMap((item) =>
+        Object.values(item)
+          .map((op: any) => op?.operationId)
+          .filter((id: unknown): id is string => typeof id === 'string')
+      )
+      expect(ids.length).toBeGreaterThan(0)
+      expect([...new Set(ids)].sort()).toEqual([...ids].sort())
+    } finally {
+      await app.close()
+    }
+  })
+
   it('excludes non-public surfaces (/health) from the spec', async () => {
     const app = await buildReady()
     try {

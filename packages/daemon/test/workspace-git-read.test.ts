@@ -1,0 +1,320 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
+import { createWorkspaceGit } from '../src/cp/workspace-git.js'
+import { WorkspaceViolationError } from '../src/cp/workspace-reader.js'
+import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
+
+// The seam's git reads against a REAL repository: the mocked-simple-git suite
+// (workspace-git.test.ts) can prove the mapping, only actual `git` output can prove
+// the numstat / unified-diff / log formats the parsers were written against.
+const AGENT = 'bot-a'
+
+const env = {
+  ...workspaceGitLocalEnv(),
+  GIT_AUTHOR_NAME: 'Ada Lovelace',
+  GIT_AUTHOR_EMAIL: 'ada@example.invalid',
+  GIT_COMMITTER_NAME: 'Ada Lovelace',
+  GIT_COMMITTER_EMAIL: 'ada@example.invalid'
+}
+const git = (root: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], { env, stdio: 'ignore' })
+
+let base: string
+let repo: string // a real checkout with an upstream ref and one unpushed commit
+let scratch: string // a from-scratch (no .git) workspace
+let seam: ReturnType<typeof createWorkspaceGit>
+
+const lines = (count: number, tag: string) => Array.from({ length: count }, (_, i) => `${tag}-${i}\n`).join('')
+
+beforeAll(() => {
+  base = mkdtempSync(join(tmpdir(), 'ac-git-read-'))
+  repo = join(base, 'repo')
+  scratch = join(base, 'scratch')
+  mkdirSync(repo, { recursive: true })
+  mkdirSync(scratch, { recursive: true })
+
+  git(repo, 'init', '-b', 'main')
+  writeFileSync(join(repo, 'keep.txt'), lines(10, 'keep'))
+  writeFileSync(join(repo, 'rename-me.txt'), 'old\n')
+  writeFileSync(join(repo, "sp ace'q.txt"), 'space\n')
+  writeFileSync(join(repo, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]))
+  writeFileSync(join(repo, 'unchanged.txt'), 'still here\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-m', 'first commit')
+
+  // The upstream ref, without a network: the first commit is "pushed", the second is not.
+  // `@{upstream}` needs the remote to exist for its fetch refspec, so declare one — it is
+  // never contacted (the seam runs with GIT_ALLOW_PROTOCOL='').
+  git(repo, 'remote', 'add', 'origin', join(base, 'unreachable-remote'))
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(repo, 'config', 'branch.main.remote', 'origin')
+  git(repo, 'config', 'branch.main.merge', 'refs/heads/main')
+  writeFileSync(join(repo, 'keep.txt'), lines(10, 'keep') + 'committed line\n')
+  git(repo, 'commit', '-am', 'second commit: the unpushed one')
+
+  // The working tree the console reads: staged + unstaged + a rename + a binary + untracked.
+  writeFileSync(join(repo, 'keep.txt'), lines(9, 'keep') + 'committed line\nstaged addition\n')
+  git(repo, 'add', 'keep.txt')
+  writeFileSync(join(repo, 'keep.txt'), lines(9, 'keep') + 'committed line\nstaged addition\nunstaged addition\n')
+  git(repo, 'mv', 'rename-me.txt', 'renamed.txt')
+  writeFileSync(join(repo, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x09, 0x08, 0x07]))
+  git(repo, 'add', 'logo.png')
+  writeFileSync(join(repo, 'untracked.txt'), 'brand new\n')
+
+  seam = createWorkspaceGit((agentId) => (agentId === AGENT ? repo : agentId === 'scratch-agent' ? scratch : undefined))
+})
+
+afterAll(() => rmSync(base, { recursive: true, force: true }))
+
+describe('createWorkspaceGit.status against a real repo', () => {
+  it('joins per-file numstat counts vs HEAD (staged AND unstaged in one pair)', async () => {
+    const s = await seam.status(AGENT)
+    const byPath = new Map(s.files!.map((f) => [f.path, f]))
+    // keep.txt: one committed line kept, one line dropped, two added — counts are vs HEAD,
+    // so they cover the staged AND the unstaged edit rather than one of the two.
+    expect(byPath.get('keep.txt')).toEqual({
+      path: 'keep.txt',
+      index: 'M',
+      workingDir: 'M',
+      additions: 2,
+      deletions: 1
+    })
+  })
+
+  it('reports a rename under the path git status uses, with its counts', async () => {
+    const s = await seam.status(AGENT)
+    const renamed = s.files!.find((f) => f.path === 'renamed.txt')
+    expect(renamed).toMatchObject({ path: 'renamed.txt', additions: 0, deletions: 0 })
+    expect(s.files!.some((f) => f.path === 'rename-me.txt')).toBe(false)
+  })
+
+  it('omits counts for a binary change and for an untracked file', async () => {
+    const s = await seam.status(AGENT)
+    const byPath = new Map(s.files!.map((f) => [f.path, f]))
+    expect(byPath.get('logo.png')?.additions).toBeUndefined()
+    expect(byPath.get('logo.png')?.deletions).toBeUndefined()
+    expect(byPath.get('untracked.txt')).toEqual({ path: 'untracked.txt', index: '?', workingDir: '?' })
+  })
+})
+
+describe('createWorkspaceGit.diff against a real repo', () => {
+  it('returns unified-diff text for the unstaged change, with hunk headers intact', async () => {
+    const d = await seam.diff({ agentId: AGENT, path: 'keep.txt', staged: false })
+    expect(d).toMatchObject({ agentId: AGENT, path: 'keep.txt', isRepo: true, exists: true })
+    expect(d.diff).toContain('--- a/keep.txt')
+    expect(d.diff).toContain('+++ b/keep.txt')
+    expect(d.diff).toMatch(/^@@ -\d+,\d+ \+\d+,\d+ @@/m)
+    expect(d.diff).toContain('+unstaged addition')
+    expect(d.diff).not.toContain('+staged addition') // already in the index ⇒ not in this scope
+    expect(d.truncated).toBeUndefined()
+    expect(d.binary).toBeUndefined()
+  })
+
+  it('answers a different diff for the staged scope', async () => {
+    const d = await seam.diff({ agentId: AGENT, path: 'keep.txt', staged: true })
+    expect(d.diff).toContain('+staged addition')
+    expect(d.diff).not.toContain('+unstaged addition')
+  })
+
+  it('reports a binary change as binary:true with no diff text', async () => {
+    const d = await seam.diff({ agentId: AGENT, path: 'logo.png', staged: true })
+    expect(d).toEqual({ agentId: AGENT, path: 'logo.png', isRepo: true, exists: true, binary: true })
+  })
+
+  it('an unchanged path is DATA: exists, no diff, not binary', async () => {
+    const d = await seam.diff({ agentId: AGENT, path: 'unchanged.txt', staged: false })
+    expect(d).toEqual({ agentId: AGENT, path: 'unchanged.txt', isRepo: true, exists: true })
+  })
+
+  it('a path this checkout does not have is DATA: exists:false', async () => {
+    const d = await seam.diff({ agentId: AGENT, path: 'no/such/file.ts', staged: false })
+    expect(d).toEqual({ agentId: AGENT, path: 'no/such/file.ts', isRepo: true, exists: false })
+  })
+
+  it('a tracked file deleted from the worktree still has a diff (exists is about the CHANGE)', async () => {
+    // Its own repo: a commit in the shared fixture would move what the log tests read.
+    const doomed = join(base, 'doomed')
+    mkdirSync(doomed, { recursive: true })
+    git(doomed, 'init', '-b', 'main')
+    writeFileSync(join(doomed, 'doomed.txt'), 'here for now\n')
+    git(doomed, 'add', '-A')
+    git(doomed, 'commit', '-m', 'add doomed.txt')
+    rmSync(join(doomed, 'doomed.txt'))
+    const d = await createWorkspaceGit(() => doomed).diff({ agentId: AGENT, path: 'doomed.txt', staged: false })
+    expect(d.exists).toBe(true) // the path is gone from disk, but its CHANGE is what was asked for
+    expect(d.diff).toContain('-here for now')
+  })
+
+  it('an untracked file has no diff in either scope (the console opens it as a file)', async () => {
+    const d = await seam.diff({ agentId: AGENT, path: 'untracked.txt', staged: false })
+    expect(d).toEqual({ agentId: AGENT, path: 'untracked.txt', isRepo: true, exists: true })
+  })
+
+  it('a directory path diffs its subtree', async () => {
+    mkdirSync(join(repo, 'sub'), { recursive: true })
+    writeFileSync(join(repo, 'sub', 'one.txt'), 'one\n')
+    writeFileSync(join(repo, 'sub', 'two.txt'), 'two\n')
+    git(repo, 'add', 'sub')
+    const d = await seam.diff({ agentId: AGENT, path: 'sub', staged: true })
+    expect(d.exists).toBe(true)
+    expect(d.diff).toContain('+one')
+    expect(d.diff).toContain('+two')
+  })
+
+  it('a from-scratch workspace is DATA: isRepo:false', async () => {
+    const d = await seam.diff({ agentId: 'scratch-agent', path: 'notes.md', staged: false })
+    expect(d).toEqual({ agentId: 'scratch-agent', path: 'notes.md', isRepo: false, exists: false })
+  })
+
+  it('names a path containing a space and a quote exactly (no c-style requoting)', async () => {
+    writeFileSync(join(repo, "sp ace'q.txt"), 'space\nmore\n')
+    const d = await seam.diff({ agentId: AGENT, path: "sp ace'q.txt", staged: false })
+    expect(d.exists).toBe(true)
+    expect(d.diff).toContain('+more')
+  })
+
+  it('treats a pathspec-magic-looking path as a literal name, not a pattern', async () => {
+    // `:(literal)` is why a file literally called `*.ts` cannot widen the diff to
+    // every .ts file in the checkout.
+    writeFileSync(join(repo, '*.ts'), 'glob-named file\n')
+    writeFileSync(join(repo, 'real.ts'), 'a real typescript file\n')
+    git(repo, 'add', '--', ':(literal)*.ts', 'real.ts')
+    const d = await seam.diff({ agentId: AGENT, path: '*.ts', staged: true })
+    expect(d.exists).toBe(true)
+    expect(d.diff).toContain('+glob-named file')
+    expect(d.diff).not.toContain('real.ts') // the pattern would have swept this in
+  })
+
+  it('truncates a diff bigger than the frame budget and keeps the REP under the wire cap', async () => {
+    // ~2 MB of added lines: far past the 256 KiB frame, so the head slice is what ships.
+    writeFileSync(join(repo, 'huge.txt'), lines(80_000, 'a-line-of-text-that-adds-up'))
+    git(repo, 'add', 'huge.txt')
+    const d = await seam.diff({ agentId: AGENT, path: 'huge.txt', staged: true })
+    expect(d.truncated).toBe(true)
+    expect(d.diff!.length).toBeGreaterThan(1000) // a real head slice, not an empty answer
+    expect(Buffer.byteLength(JSON.stringify(d))).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+  })
+
+  it('refuses a path escaping the workspace, an absolute path, and git internals', async () => {
+    await expect(seam.diff({ agentId: AGENT, path: '../secret.env', staged: false })).rejects.toBeInstanceOf(
+      WorkspaceViolationError
+    )
+    await expect(seam.diff({ agentId: AGENT, path: '/etc/passwd', staged: false })).rejects.toBeInstanceOf(
+      WorkspaceViolationError
+    )
+    await expect(seam.diff({ agentId: AGENT, path: '.git/config', staged: false })).rejects.toMatchObject({
+      reason: 'git-internals'
+    })
+    await expect(seam.diff({ agentId: 'nope', path: 'keep.txt', staged: false })).rejects.toMatchObject({
+      reason: 'unknown-agent'
+    })
+  })
+
+  it('is not an existence oracle for host paths behind a symlinked directory', async () => {
+    // Lexical containment passes for `vendor/x` while the real path resolves out of the
+    // workspace, and `lstat` follows intermediate components — so answering `exists` off the
+    // filesystem turned this read into a true/false probe for arbitrary host paths. The
+    // canonical check is the same one `workspace/read` applies; the two seams must agree.
+    const outside = join(base, 'outside')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'HOST_SECRET.env'), 'token=abc\n')
+    symlinkSync(outside, join(repo, 'vendor'), 'dir')
+
+    await expect(seam.diff({ agentId: AGENT, path: 'vendor/HOST_SECRET.env', staged: false })).rejects.toMatchObject({
+      reason: 'path-escape'
+    })
+    // The absent sibling must not answer differently — that difference IS the oracle.
+    await expect(seam.diff({ agentId: AGENT, path: 'vendor/NOPE.env', staged: false })).rejects.toMatchObject({
+      reason: 'path-escape'
+    })
+  })
+})
+
+describe('createWorkspaceGit.log against a real repo', () => {
+  it('returns commits newest-first with the upstream ref it marked them against', async () => {
+    const l = await seam.log({ agentId: AGENT, limit: 20 })
+    expect(l.isRepo).toBe(true)
+    expect(l.tracking).toBe('origin/main')
+    expect(l.commits.map((c) => c.subject)).toEqual(['second commit: the unpushed one', 'first commit'])
+    expect(l.commits[0]!.author).toBe('Ada Lovelace')
+    expect(l.commits[0]!.sha).toMatch(/^[0-9a-f]{40}$/)
+    expect(l.commits[0]!.shortSha).toBe(l.commits[0]!.sha.slice(0, l.commits[0]!.shortSha.length))
+    expect(l.commits[0]!.committedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/)
+    expect(l.truncated).toBe(false)
+  })
+
+  it('marks the commit the upstream ref does not contain as unpushed', async () => {
+    const l = await seam.log({ agentId: AGENT, limit: 20 })
+    expect(l.commits.map((c) => c.pushed)).toEqual([false, true])
+  })
+
+  it('truncates at the requested limit', async () => {
+    const l = await seam.log({ agentId: AGENT, limit: 1 })
+    expect(l.commits).toHaveLength(1)
+    expect(l.commits[0]!.subject).toBe('second commit: the unpushed one')
+    expect(l.truncated).toBe(true)
+  })
+
+  it('a branch that tracks nothing reports no tracking ref and nothing pushed', async () => {
+    const orphan = join(base, 'orphan')
+    mkdirSync(orphan, { recursive: true })
+    git(orphan, 'init', '-b', 'main')
+    writeFileSync(join(orphan, 'a.txt'), 'a\n')
+    git(orphan, 'add', '-A')
+    git(orphan, 'commit', '-m', 'only commit')
+    const l = await createWorkspaceGit(() => orphan).log({ agentId: AGENT, limit: 20 })
+    expect(l.tracking).toBeUndefined()
+    expect(l.commits).toHaveLength(1)
+    expect(l.commits[0]!.pushed).toBe(false) // no upstream ⇒ not known to be on a remote
+  })
+
+  it('a repo with no HEAD yet omits counts instead of failing the whole status', async () => {
+    // `git diff HEAD --numstat` cannot run before the first commit. Counts are optional on
+    // the wire precisely so this is data: the changed files still have to come back.
+    const fresh = join(base, 'fresh')
+    mkdirSync(fresh, { recursive: true })
+    git(fresh, 'init', '-b', 'main')
+    writeFileSync(join(fresh, 'a.ts'), 'x\n')
+    git(fresh, 'add', 'a.ts')
+    const s = await createWorkspaceGit(() => fresh).status(AGENT)
+    expect(s.isRepo).toBe(true)
+    expect(s.files?.map((f) => f.path)).toEqual(['a.ts'])
+    expect(s.files?.[0]).not.toHaveProperty('additions')
+  })
+
+  it('an empty repo is DATA (no commits), and a from-scratch workspace is isRepo:false', async () => {
+    const empty = join(base, 'empty')
+    mkdirSync(empty, { recursive: true })
+    git(empty, 'init', '-b', 'main')
+    expect(await createWorkspaceGit(() => empty).log({ agentId: AGENT, limit: 20 })).toEqual({
+      agentId: AGENT,
+      isRepo: true,
+      commits: [],
+      truncated: false
+    })
+    expect(await seam.log({ agentId: 'scratch-agent', limit: 20 })).toEqual({
+      agentId: 'scratch-agent',
+      isRepo: false,
+      commits: [],
+      truncated: false
+    })
+  })
+
+  it('caps a repository-controlled subject at the wire maximum', async () => {
+    const shouty = join(base, 'shouty')
+    mkdirSync(shouty, { recursive: true })
+    git(shouty, 'init', '-b', 'main')
+    writeFileSync(join(shouty, 'a.txt'), 'a\n')
+    git(shouty, 'add', '-A')
+    git(shouty, 'commit', '-m', 'x'.repeat(5_000))
+    const l = await createWorkspaceGit(() => shouty).log({ agentId: AGENT, limit: 20 })
+    expect(l.commits[0]!.subject).toHaveLength(200)
+  })
+
+  it('refuses an unknown agent with the machine-readable reason', async () => {
+    await expect(seam.log({ agentId: 'nope', limit: 20 })).rejects.toMatchObject({ reason: 'unknown-agent' })
+  })
+})

@@ -54,6 +54,13 @@ export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
  * worktree named by `sessionId` instead of silently falling back to primary. */
 export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
 
+/** Daemon serves the console's git review reads — `workspace/gitdiff`,
+ * `workspace/gitlog`, and per-file `additions`/`deletions` on `workspace/gitstatus`.
+ * The CP must check this before sending either new frame: an older daemon ignores
+ * an unknown frame silently, so the REQ would burn its whole retransmit budget and
+ * then surface as an offline daemon. */
+export const WORKSPACE_GIT_REVIEW_FEATURE = 'workspace-git-review-v1'
+
 /**
  * CP accepts the `event/session-purged` retention-GC receipt (#485) and marks the
  * session's stored metadata content-purged. Advertised by the CP in

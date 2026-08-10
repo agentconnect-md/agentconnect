@@ -77,6 +77,8 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   }
   const workspaceGit = {
     status: vi.fn(async () => ({ agentId: 'a', isRepo: false, clean: true })),
+    diff: vi.fn(async () => ({ agentId: 'a', path: 'f', isRepo: false, exists: false })),
+    log: vi.fn(async () => ({ agentId: 'a', isRepo: false, commits: [], truncated: false })),
     pull: vi.fn(async () => ({ agentId: 'a', isRepo: false, ok: false })),
     ...((over.workspaceGit as any) ?? {})
   }
@@ -614,11 +616,92 @@ describe('CpClient dispatch', () => {
     expect(rep.payload.detail).toBe('pull timed out')
   })
 
+  it('replies workspace/gitdiff/result and forwards the whole scoped request', async () => {
+    const diff = vi.fn(async () => ({
+      agentId: 'a1',
+      path: 'src/x.ts',
+      isRepo: true,
+      exists: true,
+      diff: '@@ -1 +1 @@\n-a\n+b\n',
+      truncated: true
+    }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { diff } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1', path: 'src/x.ts', staged: true }
+    const f = JSON.parse(frame('workspace/gitdiff', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceGit.diff).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitdiff/result')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.diff).toContain('@@ -1 +1 @@')
+    expect(rep.payload.truncated).toBe(true)
+  })
+
+  it('replies workspace/gitdiff/result for a binary path (data, not an error)', async () => {
+    const diff = vi.fn(async () => ({ agentId: 'a1', path: 'logo.png', isRepo: true, exists: true, binary: true }))
+    const { t } = await readyClient({ workspaceGit: { diff } as any })
+    const f = JSON.parse(frame('workspace/gitdiff', { agentId: 'a1', path: 'logo.png', staged: false }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitdiff/result')
+    expect(rep.payload.binary).toBe(true)
+    expect(rep.payload.diff).toBeUndefined()
+  })
+
+  it('replies workspace/gitlog/result from the workspaceGit seam', async () => {
+    const log = vi.fn(async () => ({
+      agentId: 'a1',
+      isRepo: true,
+      tracking: 'origin/main',
+      truncated: false,
+      commits: [
+        {
+          sha: 'a'.repeat(40),
+          shortSha: 'aaaaaaa',
+          subject: 'Add the dock',
+          author: 'Ada Lovelace',
+          committedAt: '2026-07-02T07:00:00+00:00',
+          pushed: false
+        }
+      ]
+    }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { log } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1', limit: 20 }
+    const f = JSON.parse(frame('workspace/gitlog', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceGit.log).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitlog/result')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.commits[0].pushed).toBe(false)
+    expect(rep.payload.tracking).toBe('origin/main')
+  })
+
+  it('carries the violation REASON in the error frame details (400-able, not an opaque 503)', async () => {
+    const { t } = await readyClient({
+      workspaceRead: {
+        read: async () => {
+          throw new WorkspaceViolationError('path escapes the workspace root', 'path-escape')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('workspace/read', { agentId: 'a1', path: '../x', offset: 0, limit: 10 }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'path-escape' })
+  })
+
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {
     const { t } = await readyClient({
       workspaceGit: {
         status: async () => {
-          throw new WorkspaceViolationError('unknown agent "nope"')
+          throw new WorkspaceViolationError('unknown agent "nope"', 'unknown-agent')
         }
       } as any
     })
@@ -629,6 +712,7 @@ describe('CpClient dispatch', () => {
     expect(err.type).toBe('error')
     expect(err.corr).toBe(f.id)
     expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'unknown-agent' })
   })
 
   it('drains: enters DRAINING, emits drain/progress, replies drain/done, returns to READY', async () => {

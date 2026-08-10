@@ -1,18 +1,37 @@
 'use client'
 
-// The session page's viewer mode (§4): ONE workspace file, full height, in place of the transcript and the composer — line-numbered, syntax-coloured, and scrolling inside itself rather than growing the page.
-// M1 is File mode only. The Diff / File pill toggle needs a `workspace/gitdiff` frame that does not exist yet (M2), so this header leaves it a slot and stubs nothing.
-// Bytes come straight from the owning daemon through the CP (body-locality), so an offline daemon, a path this checkout does not have, a binary file and a file too large for one slice are all expected answers — each is drawn as data.
+// The session page's viewer mode (§4): ONE workspace path, full height, in place of the transcript and the composer — as line-numbered syntax-coloured source (File mode), or as the unified diff of what the agent changed (Diff mode).
+// Both halves are read live from the owning daemon through the CP (body-locality), so an offline daemon, a path this checkout does not have, a binary file, a file too large for one slice, a workspace that is not a git checkout and a path with no changes in the scope asked for are all expected answers — each is drawn as data, never as a failure of the pane.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { formatFileSize } from '@/components/console/FileBrowser'
+import { LineDiffTable } from '@/components/console/LineDiff'
+import { parseUnifiedDiff } from '@/components/console/viewer/unified-diff'
 import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs } from '@/lib/highlight'
-import { ApiError, fetchWorkspaceFile, type WorkspaceFileDto } from '@/lib/api'
+import {
+  ApiError,
+  fetchWorkspaceFile,
+  fetchWorkspaceGitDiff,
+  type WorkspaceDiffScope,
+  type WorkspaceFileDto,
+  type WorkspaceGitDiffDto
+} from '@/lib/api'
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const statusOf = (e: unknown) => (e instanceof ApiError ? e.status : null)
+const codeOf = (e: unknown) => (e instanceof ApiError && e.code ? e.code : null)
+
+/** What the pane is showing. `staged` is the diff of the index against HEAD, `diff` the worktree against the index — two different reads of one path, so the mode names the scope rather than carrying a second parameter. */
+export type ViewerMode = 'file' | 'diff' | 'staged'
+
+/** The `?mode=` param as a mode. Anything else — a stale link, a hand-typed value — reads as File mode: it is the one read that works on every workspace, so an unreadable mode degrades to the path itself rather than to an error. */
+export function viewerModeFromParam(value: string | null): ViewerMode {
+  return value === 'diff' || value === 'staged' ? value : 'file'
+}
+
+const SCOPE_OF: Record<ViewerMode, WorkspaceDiffScope> = { file: 'unstaged', diff: 'unstaged', staged: 'staged' }
 
 // One file read, accumulated slice by slice. `file` is the LATEST slice — it carries the authoritative `nextOffset`/`truncated`/`size`; `content` is every slice so far.
 interface Read {
@@ -21,6 +40,8 @@ interface Read {
   err: string | null
   /** That failure's HTTP status, when it had one — the CP tells an offline daemon apart from a version that cannot read a worktree. */
   errStatus: number | null
+  /** The CP's machine-readable reason, so a path that escapes the workspace or names git internals reads as itself rather than as the generic failure. */
+  errCode: string | null
   file: WorkspaceFileDto | null
   content: string
   loadingMore: boolean
@@ -34,6 +55,7 @@ const PENDING: Read = {
   loading: true,
   err: null,
   errStatus: null,
+  errCode: null,
   file: null,
   content: '',
   loadingMore: false,
@@ -41,23 +63,51 @@ const PENDING: Read = {
   stale: false
 }
 
-// The read failed outright. Only 409 (daemon too old for worktree reads) and 404 (a worktree scope this viewer may not read) are distinguishable; everything else — 503 for an offline daemon and for an unplaced agent, plus a daemon that rejected the path — is the offline story.
-function readNoticeText(status: number | null, scoped: boolean): string {
+/** One diff read, per scope. Kept even while the reader is in File mode, so the pill is a toggle and not a refetch. */
+interface DiffRead {
+  loading: boolean
+  err: string | null
+  errStatus: number | null
+  /** The CP's machine-readable reason, which is what tells a path the daemon refused from a daemon that is simply gone. */
+  errCode: string | null
+  diff: WorkspaceGitDiffDto | null
+}
+
+const DIFF_PENDING: DiffRead = { loading: true, err: null, errStatus: null, errCode: null, diff: null }
+
+// A workspace read failed outright. The CP's status and `code` are what make the distinguishable cases distinguishable; everything else — 503 for an offline daemon and for an unplaced agent alike, plus network failures — is the offline story.
+function readNoticeText(status: number | null, code: string | null, scoped: boolean): string {
   if (status === 409) {
-    return 'This agent runs a daemon version that cannot read a session worktree. Update the agent, or open the file from its workspace page.'
+    return code === 'DAEMON_FEATURE_MISSING'
+      ? 'This agent runs a daemon version that cannot read diffs. Update the agent to review its changes here; the file itself still opens.'
+      : 'This agent runs a daemon version that cannot read a session worktree. Update the agent, or open the file from its workspace page.'
   }
   if (status === 404) {
     return scoped
       ? "This session's worktree is not available to read — it may have been cleaned up, or this session may not have one of its own."
       : 'This workspace is not available to read.'
   }
+  if (status === 400 && code === 'WORKSPACE_GIT_INTERNALS') {
+    return 'That path reaches inside .git, which the console does not read.'
+  }
+  if (status === 400 && code === 'WORKSPACE_PATH_ESCAPE') {
+    return 'That path is not inside this workspace, so it was not read.'
+  }
+  if (status === 400) return 'The daemon could not read that path.'
   return "Couldn't read the file — the owning daemon may be offline. Workspace files live only on that machine and are read live from it, so they are unavailable while it is disconnected."
 }
+
+const PILL_BASE =
+  'flex-none rounded-xs border-0 px-[7px] py-px font-sans text-[11px] font-medium leading-normal transition-colors'
+const PILL_ON = `${PILL_BASE} bg-(--surface-card) text-(--text-primary) shadow-(--shadow-xs)`
+const PILL_OFF = `${PILL_BASE} bg-transparent text-(--text-secondary) hover:text-(--text-primary)`
 
 export function SessionViewer({
   agentId,
   sessionId,
   path,
+  mode = 'file',
+  onModeChange,
   onClose
 }: {
   agentId: string
@@ -65,6 +115,10 @@ export function SessionViewer({
   sessionId?: string
   /** Workspace-relative path of the file to read. Changing it starts a fresh read; an older slice can never land in the newer one. */
   path: string
+  /** Which read is on screen. It lives in the URL beside `file` (§4), so the caller owns it and this pane reports the pill instead of holding a second copy. */
+  mode?: ViewerMode
+  /** The pill was pressed. Omitted ⇒ no pill: a host with nowhere to keep the mode must not offer to change it. */
+  onModeChange?: (mode: ViewerMode) => void
   onClose: () => void
 }) {
   const [read, setRead] = useState<Read>(PENDING)
@@ -72,8 +126,20 @@ export function SessionViewer({
   const [reloadTick, setReloadTick] = useState(0)
   // A path check alone cannot tell an A → B → A read apart, so every read is sequenced and an answer that is not the current one is dropped.
   const requestRef = useRef(0)
+  // Whether the bytes have ever been asked for. A link straight into Diff mode must not spend a `workspace/read` on a pane that is not going to draw it — but once File mode has been visited the read stays, so the pill is a toggle rather than a round trip.
+  const [fileSeen, setFileSeen] = useState(mode === 'file')
+  useEffect(() => {
+    if (mode === 'file') setFileSeen(true)
+  }, [mode])
+  const fileWanted = fileSeen || mode === 'file'
+  // Which diff scope the pill goes back to: a reader who arrived from the Git panel's Staged section and looked at the file gets the STAGED diff back, not the other side of the index.
+  const [lastDiffMode, setLastDiffMode] = useState<ViewerMode>(mode === 'file' ? 'diff' : mode)
+  useEffect(() => {
+    if (mode !== 'file') setLastDiffMode(mode)
+  }, [mode])
 
   useEffect(() => {
+    if (!fileWanted) return
     const requestId = ++requestRef.current
     setRead(PENDING)
     fetchWorkspaceFile(agentId, { path, ...(sessionId ? { sessionId } : {}) }).then(
@@ -83,13 +149,45 @@ export function SessionViewer({
         ),
       (e) =>
         setRead((r) =>
-          requestId === requestRef.current ? { ...r, loading: false, err: msg(e), errStatus: statusOf(e) } : r
+          requestId === requestRef.current
+            ? { ...r, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) }
+            : r
         )
     )
     return () => {
       requestRef.current += 1
     }
-  }, [agentId, sessionId, path, reloadTick])
+  }, [agentId, sessionId, path, reloadTick, fileWanted])
+
+  // One entry per read, so switching Diff → File → Diff redraws instead of re-reading. Keyed by the WHOLE read — checkout, worktree, path, scope, retry — not by the scope alone: the caller remounts this pane on a path change today, and a cache that relied on that would paint one path's diff under another's heading the day it stops.
+  const [diffs, setDiffs] = useState<Record<string, DiffRead>>({})
+  const [diffTick, setDiffTick] = useState(0)
+  const diffScope = SCOPE_OF[mode]
+  const wantDiff = mode !== 'file'
+  // A newline joins the parts because a POSIX path may contain a space: two different reads must not collide on one key.
+  const diffKey = [agentId, sessionId ?? '', path, diffScope, diffTick].join('\n')
+  // Which reads this mount has already issued, so an effect firing again for an unrelated reason does not re-issue one that is already in flight.
+  const askedRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (!wantDiff) return
+    if (askedRef.current.has(diffKey)) return
+    askedRef.current.add(diffKey)
+    setDiffs((current) => ({ ...current, [diffKey]: DIFF_PENDING }))
+    // Deliberately NOT cancelled on cleanup. `diffKey` already names the read, so a late answer can only land on its own entry — while cancelling stranded it: leaving diff mode tore the read down, and coming back short-circuited on `askedRef`, so the pane span on a spinner with no Retry until the scope or the path changed.
+    fetchWorkspaceGitDiff(agentId, { path, scope: diffScope, ...(sessionId ? { sessionId } : {}) }).then(
+      (d) => setDiffs((current) => ({ ...current, [diffKey]: { ...DIFF_PENDING, loading: false, diff: d } })),
+      (e) =>
+        setDiffs((current) => ({
+          ...current,
+          [diffKey]: { ...DIFF_PENDING, loading: false, err: msg(e), errStatus: statusOf(e), errCode: codeOf(e) }
+        }))
+    )
+  }, [agentId, sessionId, path, diffScope, diffKey, wantDiff])
+  const retryDiff = () => setDiffTick((tick) => tick + 1)
+  const diffRead = diffs[diffKey]
+  const diff = diffRead?.diff ?? null
+  // Parsed from the diff TEXT, not recomputed from two blobs: git already did the matching, and its rename and whitespace handling is what a reviewer is reading.
+  const parsed = useMemo(() => (diff?.diff ? parseUnifiedDiff(diff.diff) : null), [diff?.diff])
 
   const file = read.file
   // The daemon's own byte offset, never recomputed from the decoded text: a slice can end mid-character, so the decoded length drifts from the byte count.
@@ -173,21 +271,218 @@ export function SessionViewer({
 
   // What the file IS, for a reader who arrived on a link: the language only when the mapping is confident, and a line count that says so when it describes a slice rather than the whole file.
   const lineCount = `${lines.length} line${lines.length === 1 ? '' : 's'}`
-  const meta = isText
+  const fileMeta = isText
     ? [languageLabel(name), file?.truncated ? `first ${lineCount}` : lineCount, formatFileSize(file?.size ?? null)]
         .filter(Boolean)
         .join(' · ')
     : ''
+  // In Diff mode the same slot carries what CHANGED, counted from the rows on screen rather than from the git-status row: that row counts both sides of the index against HEAD, while this pane shows one scope of one path, so its numbers would disagree with the diff under them.
+  const diffMeta =
+    parsed && (parsed.additions > 0 || parsed.deletions > 0) ? (
+      <>
+        <span className="text-(--status-online)">{`+${parsed.additions}`}</span>{' '}
+        <span className="text-(--status-error)">{`−${parsed.deletions}`}</span>
+        {diff?.truncated || parsed.rowsTruncated ? <span>{' · partial'}</span> : null}
+      </>
+    ) : null
+  const meta: ReactNode = mode === 'file' ? fileMeta || null : diffMeta
+
+  // Why a diff has nothing to draw. Each of these is an ANSWER — the read succeeded and this is what it said.
+  const diffNotice = (): { text: string; warn: boolean } | null => {
+    if (!diff) return null
+    if (!diff.isRepo) {
+      return {
+        text: 'This workspace is not a git checkout, so there is nothing to diff. Read the file instead.',
+        warn: false
+      }
+    }
+    if (!diff.exists) {
+      return {
+        text: 'This checkout has neither changes nor a file at that path. It may have been removed since the link was made, or the link may name another agent’s workspace.',
+        warn: false
+      }
+    }
+    if (diff.binary) {
+      return {
+        text: 'Binary file — git reports a change it has no text for, so there is nothing to show line by line.',
+        warn: false
+      }
+    }
+    if (!diff.diff) {
+      return {
+        text:
+          mode === 'staged'
+            ? 'Nothing staged for this file. Its unstaged edits, if any, are under Diff.'
+            : 'No unstaged changes to this file. Anything already staged is shown from the Git panel’s Staged section.',
+        warn: false
+      }
+    }
+    if (parsed && parsed.rows.length === 0) {
+      return {
+        text: 'git reported a change with no line content — a mode change, or a rename with no edits.',
+        warn: false
+      }
+    }
+    return null
+  }
+
+  const diffBody = (): ReactNode => {
+    if (!diffRead || diffRead.loading) {
+      return (
+        <div className="flex flex-1 items-center justify-center py-10">
+          <Spinner size={30} />
+        </div>
+      )
+    }
+    if (diffRead.err) {
+      return (
+        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
+          <span>
+            {readNoticeText(diffRead.errStatus, diffRead.errCode, Boolean(sessionId))}{' '}
+            <button className="lnk text-[12.5px]" onClick={retryDiff}>
+              Retry
+            </button>
+          </span>
+        </div>
+      )
+    }
+    const notice = diffNotice()
+    if (notice) {
+      return (
+        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          <Icon
+            name={notice.warn ? 'triangle-alert' : 'file-diff'}
+            size={15}
+            color={notice.warn ? 'var(--amber-500)' : 'var(--text-tertiary)'}
+            className="mt-[2px] flex-none"
+          />
+          <span>{notice.text}</span>
+        </div>
+      )
+    }
+    return (
+      // The same scroller File mode uses, for the same reason: a long diff must scroll here rather than grow `.content` and move the transcript's anchor.
+      <div className="min-h-0 flex-1 overflow-auto" data-viewer-diff="">
+        <LineDiffTable rows={parsed?.rows ?? []} label={`Diff of ${path}`} />
+      </div>
+    )
+  }
+
+  const fileBody = (): ReactNode => {
+    if (read.loading) {
+      return (
+        <div className="flex flex-1 items-center justify-center py-10">
+          <Spinner size={30} />
+        </div>
+      )
+    }
+    if (read.err) {
+      return (
+        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
+          <span>{readNoticeText(read.errStatus, read.errCode, Boolean(sessionId))}</span>
+        </div>
+      )
+    }
+    if (file && !file.exists) {
+      return (
+        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          <Icon name="file-question-mark" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+          <span>
+            Not found — this checkout has no file at that path. It may have been removed since the link was made, or the
+            link may name another agent&apos;s workspace.
+          </span>
+        </div>
+      )
+    }
+    // A directory is DATA, not the empty file it used to read as: the daemon answers `type:'dir'` with no bytes at all.
+    if (file?.type === 'dir') {
+      return (
+        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          <Icon name="folder-open" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
+          <span>That path is a folder, not a file. Open it in the Files tab to see what is inside it.</span>
+        </div>
+      )
+    }
+    if (file?.encoding === 'none') {
+      return (
+        <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          <Icon name="file-question-mark" size={15} />
+          Binary file — not displayed ({formatFileSize(file.size)})
+        </div>
+      )
+    }
+    if (lines.length === 0) {
+      return (
+        <div className="p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          This file is empty.
+        </div>
+      )
+    }
+    return (
+      // The viewer's OWN scroller: the page's `.content` is what the transcript's stick-to-bottom pins, so a file that grew the page would move the transcript's anchor instead of scrolling here.
+      <div className="min-h-0 flex-1 overflow-auto" data-viewer-code="">
+        <div className="flex min-w-max">
+          {/* One text node, not a row per line: the numbers then share the code's line boxes by construction, and `sticky` keeps them in place while a long line scrolls sideways. */}
+          <pre
+            aria-hidden="true"
+            data-viewer-gutter=""
+            className="mono sticky left-0 z-[1] m-0 flex-none select-none border-r border-(--border-subtle) bg-(--surface-card) px-3 py-[14px] text-right text-[12px] leading-[1.7] whitespace-pre text-(--text-disabled)"
+          >
+            {gutter}
+          </pre>
+          <pre className="hljs mono m-0 flex-none bg-transparent px-4 py-[14px] text-[12px] leading-[1.7] whitespace-pre text-(--text-primary)">
+            {codeHtml != null ? <code dangerouslySetInnerHTML={{ __html: codeHtml }} /> : <code>{text}</code>}
+          </pre>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <section className="card flex min-h-0 flex-1 flex-col overflow-hidden max-desktop:m-4">
       <div className="flex flex-none items-center gap-2 border-b border-(--border-subtle) px-4 py-[10px]">
-        <Icon name="file" size={15} color="var(--text-tertiary)" className="flex-none" />
+        <Icon
+          name={mode === 'file' ? 'file' : 'file-diff'}
+          size={15}
+          color="var(--text-tertiary)"
+          className="flex-none"
+        />
         <span className="mono flex min-w-0 flex-1 items-baseline text-[12px] leading-normal" title={path}>
           {dir ? <span className="min-w-0 truncate font-normal text-(--text-tertiary)">{`${dir}/`}</span> : null}
           <span className="flex-none font-medium text-(--text-primary)">{name}</span>
         </span>
-        {/* M2's Diff / File pill toggle slots in here, between the path and its meta — nothing else in this header moves for it. */}
+        {/* The Diff / File pill (§4). Diff returns to the scope this mount last showed, so a reader who came in from the Staged section does not silently land on the unstaged diff. */}
+        {onModeChange ? (
+          <div
+            data-viewer-modes=""
+            className="flex flex-none items-center gap-px rounded-sm bg-(--surface-sunken) p-px"
+            role="group"
+            aria-label="Viewer mode"
+          >
+            <button
+              type="button"
+              className={mode === 'file' ? PILL_OFF : PILL_ON}
+              data-viewer-mode="diff"
+              aria-pressed={mode !== 'file'}
+              title={lastDiffMode === 'staged' ? 'Staged changes to this file' : 'Unstaged changes to this file'}
+              onClick={() => onModeChange(lastDiffMode)}
+            >
+              Diff
+            </button>
+            <button
+              type="button"
+              className={mode === 'file' ? PILL_ON : PILL_OFF}
+              data-viewer-mode="file"
+              aria-pressed={mode === 'file'}
+              title="The file as it is on disk"
+              onClick={() => onModeChange('file')}
+            >
+              File
+            </button>
+          </div>
+        ) : null}
         {meta ? (
           <span className="mono flex-none text-[11px] font-normal text-(--text-tertiary) max-desktop:hidden">
             {meta}
@@ -204,59 +499,16 @@ export function SessionViewer({
           <Icon name="x" size={15} />
         </button>
       </div>
-      {/* Same string, second row: at ≤768px the header has no room for it beside a path, and the path is the half a reader cannot do without. */}
+      {/* Same content, second row: at ≤768px the header has no room for it beside a path, and the path is the half a reader cannot do without. */}
       {meta ? (
         <div className="mono flex-none border-b border-(--border-subtle) px-4 py-[5px] text-[11px] font-normal text-(--text-tertiary) desktop:hidden">
           {meta}
         </div>
       ) : null}
 
-      {read.loading ? (
-        <div className="flex flex-1 items-center justify-center py-10">
-          <Spinner size={30} />
-        </div>
-      ) : read.err ? (
-        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[2px] flex-none" />
-          <span>{readNoticeText(read.errStatus, Boolean(sessionId))}</span>
-        </div>
-      ) : file && !file.exists ? (
-        <div className="flex items-start gap-[10px] p-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          <Icon name="file-question-mark" size={15} color="var(--text-tertiary)" className="mt-[2px] flex-none" />
-          <span>
-            Not found — this checkout has no file at that path. It may have been removed since the link was made, or the
-            link may name another agent&apos;s workspace.
-          </span>
-        </div>
-      ) : file?.encoding === 'none' ? (
-        <div className="flex items-center gap-2 p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          <Icon name="file-question-mark" size={15} />
-          Binary file — not displayed ({formatFileSize(file.size)})
-        </div>
-      ) : lines.length === 0 ? (
-        <div className="p-4 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          This file is empty.
-        </div>
-      ) : (
-        // The viewer's OWN scroller: the page's `.content` is what the transcript's stick-to-bottom pins, so a file that grew the page would move the transcript's anchor instead of scrolling here.
-        <div className="min-h-0 flex-1 overflow-auto" data-viewer-code="">
-          <div className="flex min-w-max">
-            {/* One text node, not a row per line: the numbers then share the code's line boxes by construction, and `sticky` keeps them in place while a long line scrolls sideways. */}
-            <pre
-              aria-hidden="true"
-              data-viewer-gutter=""
-              className="mono sticky left-0 z-[1] m-0 flex-none select-none border-r border-(--border-subtle) bg-(--surface-card) px-3 py-[14px] text-right text-[12px] leading-[1.7] whitespace-pre text-(--text-disabled)"
-            >
-              {gutter}
-            </pre>
-            <pre className="hljs mono m-0 flex-none bg-transparent px-4 py-[14px] text-[12px] leading-[1.7] whitespace-pre text-(--text-primary)">
-              {codeHtml != null ? <code dangerouslySetInnerHTML={{ __html: codeHtml }} /> : <code>{text}</code>}
-            </pre>
-          </div>
-        </div>
-      )}
+      {mode === 'file' ? fileBody() : diffBody()}
 
-      {file?.truncated && isText ? (
+      {mode === 'file' && file?.truncated && isText ? (
         <div className="flex flex-none flex-wrap items-center gap-x-[10px] gap-y-1 border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
           {/* The slice's own end offset names how much is on screen; a truncated slice that named no offset it could continue from can still say the whole file is bigger. */}
           <span>
@@ -274,6 +526,30 @@ export function SessionViewer({
             </button>
           ) : null}
           {read.moreNote ? <span>{read.moreNote}</span> : null}
+        </div>
+      ) : null}
+
+      {/* Some hunk header in this diff could not be read, so its body is passed through verbatim rather than split into added and removed sides. A conflicted file is the common cause: git writes a COMBINED diff whose sign column has one slot per parent, and reading it as a single column would draw a real addition as an unchanged line. Say so rather than let the reader trust the gutter. */}
+      {mode !== 'file' && parsed && parsed.malformedHunks > 0 ? (
+        <div
+          data-viewer-diff-unsided=""
+          className="flex-none border-t border-(--border-subtle) bg-(--status-paused-soft) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
+        >
+          Part of this diff is shown exactly as git wrote it, without added/removed sides — its hunk header is not a
+          plain two-way one, which is what a file with merge conflicts produces. The counts above cover only the parts
+          that could be read.
+        </div>
+      ) : null}
+
+      {/* A cut diff says so where the file's own truncation footer says it: the wire stopped at the frame cap, the parser stopped at its row cap, or both. */}
+      {mode !== 'file' && parsed && (diff?.truncated || parsed.rowsTruncated) ? (
+        <div
+          data-viewer-diff-truncated=""
+          className="flex-none border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)"
+        >
+          {diff?.truncated
+            ? 'This diff is too large to send whole — only its first part is shown. Open the file to read the rest.'
+            : 'This diff has more lines than the viewer draws — only its first part is shown.'}
         </div>
       ) : null}
     </section>
