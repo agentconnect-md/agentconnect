@@ -54,8 +54,8 @@ const POLLUTED = {
   GIT_CONFIG_VALUE_0: 'vim'
 } as const
 
-// The safety audit now takes a runner, since it must read the config that the git it guards will
-// actually read — for a cluster workspace that is the sandbox's filesystem, not this one's.
+// The audit takes a runner: it must read the config the git it guards reads, which for a cluster
+// workspace is the sandbox's filesystem rather than this one.
 function localRunner(cwd: string): GitRunner {
   return new LocalGitRunner(gitFor(cwd))
 }
@@ -325,9 +325,9 @@ describe('gitEnvBase', () => {
   })
 
   it(`audits the config of the filesystem the RUNNER reaches, not this daemon's disk`, async () => {
-    // The whole point of the audit taking a runner: for a cluster workspace the config that the
-    // guarded git will read lives on the sandbox pod, and a check performed here would be a check
-    // performed on the wrong machine — passing while the real config is hostile.
+    // Why the audit takes a runner: a cluster workspace's config lives on the sandbox pod, so a
+    // check performed here is performed on the wrong machine — passing while the real config is
+    // hostile.
     const workspace = mkdtempSync(join(tmpdir(), 'git-audit-filesystem-'))
     const localEnv = workspaceGitLocalEnv()
     try {
@@ -335,8 +335,7 @@ describe('gitEnvBase', () => {
       execFileSync('git', ['init', workspace], { env: localEnv, stdio: 'ignore' })
       await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).resolves.toBeUndefined()
 
-      // ...while the runner's filesystem reports a hostile setting. The audit must follow the
-      // runner and refuse.
+      // ...while the runner's filesystem reports a hostile setting: the audit must follow it.
       const hostile: GitRunner = {
         withEnv: () => hostile,
         raw: async () => 'filter.generated.process\0',
@@ -347,8 +346,7 @@ describe('gitEnvBase', () => {
       }
       await expect(assertSafeWorkspaceGitConfig(hostile)).rejects.toThrow(/executable setting/)
 
-      // And the converse, which is what proves the local disk is not being consulted: an unsafe
-      // LOCAL config while the runner reports a clean one must pass.
+      // The converse proves the local disk is not consulted: unsafe LOCAL, clean runner, passes.
       execFileSync('git', ['-C', workspace, 'config', 'filter.generated.process', './evil'], { env: localEnv })
       await expect(assertSafeWorkspaceGitConfig(localRunner(workspace))).rejects.toThrow(/executable setting/)
       const clean: GitRunner = { ...hostile, withEnv: () => clean, raw: async () => '' }

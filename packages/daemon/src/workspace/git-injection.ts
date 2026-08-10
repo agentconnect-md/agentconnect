@@ -273,9 +273,8 @@ export function workspaceGitLocalEnv(): Record<string, string> {
  * audit `.git/config.worktree`, while later daemon Git operations still read it.
  */
 export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void> {
-  // Takes a runner, not a cwd: this audits the config that the git we are about to run will
-  // actually read, so it has to run on THAT filesystem. Auditing the daemon's disk for a
-  // cluster-backed workspace would pass a check nothing had performed.
+  // A runner, not a cwd: the audit must read the config the guarded git will read, which for a
+  // cluster workspace is the sandbox's — auditing this disk would pass a check nothing performed.
   const names = await git
     .withEnv(workspaceGitLocalEnv())
     .raw(['config', '--local', '--includes', '--name-only', '-z', '--list'])
