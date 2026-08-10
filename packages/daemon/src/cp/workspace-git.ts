@@ -14,7 +14,6 @@
  */
 import { existsSync, promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import type { SimpleGit } from 'simple-git'
 import {
   normalizeGithubRepoUrl,
   type WorkspaceGitStatus,
@@ -24,11 +23,12 @@ import {
 } from '@agentconnect.md/protocol'
 import {
   assertSafeWorkspaceGitConfig,
-  gitFor,
   pullWorkspaceRef,
   workspaceGitLocalEnv,
   workspaceGitPullTarget
 } from '../workspace/git-injection.js'
+import { gitFor } from '../workspace/git-injection.js'
+import { LocalGitRunner, type GitRunner } from '../workspace/git-runner.js'
 import { authorizeWorkspaceGitUrl } from '../workspace/git-origin-policy.js'
 import { WorkspaceViolationError } from './workspace-reader.js'
 
@@ -37,6 +37,12 @@ import { WorkspaceViolationError } from './workspace-reader.js'
 const PULL_TIMEOUT_MS = 20_000
 
 /** Cap the changed-file list so a huge working tree can't overflow the frame. */
+/** Where this surface gets its git. A cluster-backed workspace substitutes a shim-backed
+ *  runner here; the questions asked, and the answers' shape, do not change. */
+function runnerFor(cwd: string, abort?: AbortSignal): GitRunner {
+  return new LocalGitRunner(gitFor(cwd, abort))
+}
+
 const MAX_STATUS_FILES = 500
 
 export interface WorkspaceGit {
@@ -90,16 +96,22 @@ export function createWorkspaceGit(
       // Status is read-only and the daemon policy already disables hooks and
       // fsmonitor at command scope. Repository hook/include configuration must
       // not make an otherwise usable workspace disappear from the console.
-      const git = gitFor(root).env({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
+      // Through the runner, so a cluster-backed workspace answers the same question by running
+      // git in its own sandbox rather than on a disk this daemon cannot see.
+      const git = runnerFor(root).withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
       const s = await git.status()
       const files: WorkspaceGitFile[] = s.files
         .slice(0, MAX_STATUS_FILES)
-        .map((f) => ({ path: f.path, index: f.index, workingDir: f.working_dir }))
+        .map((f: { path: string; index: string; working_dir: string }) => ({
+          path: f.path,
+          index: f.index,
+          workingDir: f.working_dir
+        }))
       const [lastCommit, lastFetchAt] = await Promise.all([headCommit(git), fetchHeadMtime(root)])
       return {
         agentId,
         isRepo: true,
-        clean: s.isClean(),
+        clean: s.clean,
         ...(s.current ? { branch: s.current } : {}),
         ...(s.tracking ? { tracking: s.tracking } : {}),
         ahead: s.ahead,
@@ -121,7 +133,7 @@ export function createWorkspaceGit(
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
       try {
-        const git = gitFor(root, abort.signal).env(workspaceGitLocalEnv())
+        const git = runnerFor(root, abort.signal).withEnv(workspaceGitLocalEnv())
         const target = workspaceTargetByAgent(agentId)
         let currentOrigin: string | undefined
         let expectedOrigin: string
@@ -145,7 +157,8 @@ export function createWorkspaceGit(
         const pullTarget = workspaceGitPullTarget(expectedOrigin)
         timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
         const res = await pullWorkspaceRef(
-          git.env({
+          git.withEnv({
+            ...workspaceGitLocalEnv(),
             ...pullTarget.env,
             ...credentialEnvByAgent(agentId),
             GIT_TERMINAL_PROMPT: '0'
@@ -159,8 +172,8 @@ export function createWorkspaceGit(
           isRepo: true,
           ok: true,
           changed,
-          insertions: res.summary.insertions,
-          deletions: res.summary.deletions,
+          insertions: res.insertions,
+          deletions: res.deletions,
           detail:
             changed > 0 ? `Fast-forwarded — updated ${changed} file${changed === 1 ? '' : 's'}.` : 'Already up to date.'
         }
@@ -175,12 +188,16 @@ export function createWorkspaceGit(
 
 /** The HEAD commit (sha / short sha / subject / committer date), or null for an
  *  empty repo with no commits yet. `%cI` is git's strict-ISO committer date. */
-async function headCommit(git: SimpleGit): Promise<WorkspaceGitCommit | null> {
+async function headCommit(git: GitRunner): Promise<WorkspaceGitCommit | null> {
   try {
-    const log = await git.log({ maxCount: 1, format: { hash: '%H', date: '%cI', subject: '%s' } })
-    const c = log.latest
-    if (!c?.hash) return null
-    return { sha: c.hash, shortSha: c.hash.slice(0, 7), subject: c.subject ?? '', committedAt: c.date }
+    const [commit] = await git.log({ maxCount: 1 })
+    if (!commit?.hash) return null
+    return {
+      sha: commit.hash,
+      shortSha: commit.hash.slice(0, 7),
+      subject: commit.subject,
+      committedAt: commit.committedAt
+    }
   } catch {
     return null // freshly-init'd repo with no commits ⇒ `git log` errors
   }

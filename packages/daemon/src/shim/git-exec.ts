@@ -42,7 +42,7 @@ export type GitExecResult = z.infer<typeof GitExecResultSchema>
  * C-quotes unusual filenames, which would diverge from what the local runner reports.
  */
 export function parsePorcelainV2(stdout: string): GitStatusSummary {
-  const summary: GitStatusSummary = { current: null, tracking: null, ahead: 0, behind: 0, files: [] }
+  const summary: GitStatusSummary = { current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }
   const entries = stdout.split('\0')
   const push = (path: string, xy: string): void => {
     summary.files.push({
@@ -92,6 +92,7 @@ export function parsePorcelainV2(stdout: string): GitStatusSummary {
     }
     if (entry.startsWith('? ')) push(entry.slice(2), '??')
   }
+  summary.clean = summary.files.length === 0
   return summary
 }
 

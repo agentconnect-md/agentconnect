@@ -121,13 +121,14 @@ describe('createWorkspaceGit.status', () => {
     const fetchedAt = new Date('2026-07-02T09:00:00.000Z')
     utimesSync(join(dir, '.git', 'FETCH_HEAD'), fetchedAt, fetchedAt)
     statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files: [], isClean: () => true })
-    logImpl = vi.fn().mockResolvedValue({
-      latest: {
-        hash: 'a3f9c21deadbeef0000000000000000000000000',
-        date: '2026-07-02T07:00:00+00:00',
-        subject: 'Pin deploy image'
-      }
-    })
+    // simple-git populates BOTH `all` and `latest`; the runner reads `all`, so a mock
+    // supplying only `latest` describes a response simple-git never returns.
+    const commit = {
+      hash: 'a3f9c21deadbeef0000000000000000000000000',
+      date: '2026-07-02T07:00:00+00:00',
+      subject: 'Pin deploy image'
+    }
+    logImpl = vi.fn().mockResolvedValue({ all: [commit], latest: commit })
     const git = createWorkspaceGit(() => dir)
     const s = await git.status('a')
     expect(s.lastCommit).toEqual({

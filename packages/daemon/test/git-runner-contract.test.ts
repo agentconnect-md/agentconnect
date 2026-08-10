@@ -117,6 +117,50 @@ describe('git runner contract, local and shim-backed', () => {
     const paths = (summary: typeof fromLocal) => summary.files.map((file) => file.path).sort()
     expect(paths(fromRemote)).toEqual(paths(fromLocal))
     expect(paths(fromRemote)).toEqual(['staged.txt', 'untracked.txt'])
+    // `clean` comes from simple-git locally and is derived remotely; this is what establishes
+    // that the two agree rather than my assumption about isClean()'s semantics.
+    expect(fromRemote.clean).toBe(fromLocal.clean)
+    expect(fromRemote.clean).toBe(false)
+  })
+
+  it('agrees on cleanliness across clean, dirty and CONFLICTED trees', async () => {
+    // The console gates on `clean`, and unmerged records were once dropped entirely — so a
+    // conflicted tree reporting clean is the failure this pins.
+    const pristine = mkdtempSync(join(tmpdir(), 'ac-gitclean-'))
+    roots.push(pristine)
+    git(pristine, ['init', '--initial-branch=main'])
+    writeFileSync(join(pristine, 'a.txt'), 'a\n')
+    git(pristine, ['add', 'a.txt'])
+    git(pristine, ['commit', '-m', 'only'])
+    const cleanPair = runners(pristine)
+    const [cleanLocal, cleanRemote] = await Promise.all([cleanPair.local.status(), cleanPair.remote.status()])
+    expect(cleanRemote.clean).toBe(cleanLocal.clean)
+    expect(cleanRemote.clean).toBe(true)
+
+    const conflicted = mkdtempSync(join(tmpdir(), 'ac-gitclean-conflict-'))
+    roots.push(conflicted)
+    git(conflicted, ['init', '--initial-branch=main'])
+    writeFileSync(join(conflicted, 'shared.txt'), 'base\n')
+    git(conflicted, ['add', 'shared.txt'])
+    git(conflicted, ['commit', '-m', 'base'])
+    git(conflicted, ['checkout', '-b', 'other'])
+    writeFileSync(join(conflicted, 'shared.txt'), 'theirs\n')
+    git(conflicted, ['commit', '-am', 'theirs'])
+    git(conflicted, ['checkout', 'main'])
+    writeFileSync(join(conflicted, 'shared.txt'), 'ours\n')
+    git(conflicted, ['commit', '-am', 'ours'])
+    try {
+      git(conflicted, ['merge', 'other'])
+    } catch {
+      /* the conflict is the point */
+    }
+    const conflictPair = runners(conflicted)
+    const [conflictLocal, conflictRemote] = await Promise.all([
+      conflictPair.local.status(),
+      conflictPair.remote.status()
+    ])
+    expect(conflictRemote.clean).toBe(conflictLocal.clean)
+    expect(conflictRemote.clean).toBe(false)
   })
 
   it('reports the same commit log from both sides', async () => {

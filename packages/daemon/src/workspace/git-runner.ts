@@ -59,6 +59,10 @@ export interface GitStatusSummary {
   ahead: number
   behind: number
   files: Array<{ path: string; index: string; working_dir: string }>
+  /** Whether the tree has no changes. Taken from simple-git locally rather than re-derived,
+   *  so the local answer stays authoritative; the remote side derives it and the contract test
+   *  is what establishes the two agree, including on a conflicted tree. */
+  clean: boolean
 }
 
 /** Factory for a runner bound to one working directory. */
@@ -107,7 +111,8 @@ export class LocalGitRunner implements GitRunner {
         path: file.path,
         index: file.index,
         working_dir: file.working_dir
-      }))
+      })),
+      clean: summary.isClean()
     }
   }
 
