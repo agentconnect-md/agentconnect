@@ -135,6 +135,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--agent <name>`        | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
 | `--max-agents <n>`      | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`     | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
+| `--cloud`               | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for the behaviors this disables.                                     |
 | `--dry-run`             | n/a                            | Load and validate all configuration and print the reconcile plan without opening connections/processes.                                            |
 
 All environment equivalents use the `AGENTCONNECT_` prefix, such as `AGENTCONNECT_CP_URL`, `AGENTCONNECT_CP_KEY`, and `AGENTCONNECT_ROOT`, for containers and system services.
@@ -164,6 +165,23 @@ isInstalled()   Whether the unit file exists.
 - The `run` process handles `SIGTERM` / `SIGINT`: stop accepting new messages, drain active turns to a deadline, close platform connections, close ACP adapter children, then exit.
 
 > The service-install branch of `login` invokes this controller. After successful auth probing and persistence, yes -> `install()` + `up()` and exit; no -> start foreground `run` using the same Daemon construction and signal handling.
+
+### 2.6 Cloud Mode (`--cloud`)
+
+`run --cloud` is the same binary and the same Daemon, supervising runtimes in cluster sandbox pods rather than as local subprocesses. It is a mode switch rather than a separate build, and it exists so that every behavior assuming "daemon and runtime share one machine" is disabled in one place instead of being re-decided per call site.
+
+| Behavior under `--cloud`                                                                                                                                  | Why                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No runtime probe sweep and no probe refresh; profiles come from a declared table                                                                          | There is no runtime binary next to the daemon — runtimes ship in the sandbox image.                                                                                                                                                                   |
+| Host executable discovery is replaced by that table (`runtimes/cloud-runtimes.ts`)                                                                        | Discovery can only ever answer "nothing" in a daemon pod, which would advertise and launch no runtime at all.                                                                                                                                         |
+| Declared curated-source runtimes are dropped, loudly                                                                                                      | Curated admission requires a successful live probe, so a declared curated id could never launch.                                                                                                                                                      |
+| No SRT/bwrap mechanism detection; `runInSandbox` has no local effect                                                                                      | The pod is the isolation unit. `security.requireSandbox` therefore refuses startup with an explanation rather than silently meaning something else.                                                                                                   |
+| `sandbox` / `sandbox-required` are not advertised                                                                                                         | This shape runs with the cluster's default runtimeClass; advertising a sandbox that is not there is worse than advertising none.                                                                                                                      |
+| The bootstrap upgrade path is refused on the mode: startup skips it, and the daemon-side capability is off regardless of supervisor marker or `cli-entry` | A cloud daemon's version is its image, and self-installing would exit the pod for a version the cluster never asked for. Refusing on the mode means a stale pointer on the root volume or an inherited `AGENTCONNECT_SUPERVISOR` cannot re-enable it. |
+
+The declared table lives at `<root>/cloud-runtimes.json` (override with `AGENTCONNECT_CLOUD_RUNTIMES`, typically a mounted ConfigMap) and lists the runtime ids the image provides, optionally with the image's version pin and a model snapshot. Commands and arguments still come from the resolved catalog, which is served cache-first and can therefore be satisfied by an `acp_registry.json` baked into the image. A declared model snapshot is reported with `modelsSource: 'cached'`: no live probe confirmed it, so model capability gates stay permissive.
+
+`--cloud` selects an implementation; it must not change product semantics. A `cloud` branch inside business logic — rather than in the driver, reporting, or startup-assembly layers — means a seam is missing.
 
 ---
 

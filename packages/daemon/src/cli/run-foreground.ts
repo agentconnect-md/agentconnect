@@ -13,6 +13,8 @@ export interface ForegroundOpts {
   /** Supervisor marker (AGENTCONNECT_SUPERVISOR) forwarded to the Daemon so it
    *  can gate CP-commanded restart/upgrade (cli-daemon-split.md §7.1). */
   supervisor?: string
+  /** `--cloud`: runtimes run in cluster sandbox pods, not on this host. */
+  cloud?: boolean
 }
 
 export interface ForegroundDeps {

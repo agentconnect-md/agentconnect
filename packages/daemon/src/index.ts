@@ -58,6 +58,7 @@ program
   .option('--agents-dir <dir>', 'override agents directory')
   .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
   .option('--require-sandbox', 'require the Linux SRT sandbox for every agent or refuse daemon startup')
+  .option('--cloud', 'run runtimes in cluster sandbox pods instead of on this host (no probing, no local runtimes)')
   .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
   .option('--agent <name>', 'select a single agent by id (run/chat)')
 
@@ -88,21 +89,26 @@ program
       return exit(1)
     }
     try {
-      const bootstrap = await import('./bootstrap-upgrade.js')
-      const bootstrapOutcome = await bootstrap.runBootstrapUpgrade({
-        root: opts.root,
-        configPath: opts.config,
-        supervisor: process.env.AGENTCONNECT_SUPERVISOR,
-        overrides: {
-          apiUrl: opts.apiUrl,
-          apiKey: opts.apiKey,
-          noCp: opts.cp === false,
-          daemonId: opts.daemonId
+      // A cloud daemon's version IS its image: there is no CLI or version store to
+      // self-install from, so the bootstrap upgrade path is skipped outright rather
+      // than left to fail on a missing cli-entry pointer.
+      if (opts.cloud !== true) {
+        const bootstrap = await import('./bootstrap-upgrade.js')
+        const bootstrapOutcome = await bootstrap.runBootstrapUpgrade({
+          root: opts.root,
+          configPath: opts.config,
+          supervisor: process.env.AGENTCONNECT_SUPERVISOR,
+          overrides: {
+            apiUrl: opts.apiUrl,
+            apiKey: opts.apiKey,
+            noCp: opts.cp === false,
+            daemonId: opts.daemonId
+          }
+        })
+        if (bootstrapOutcome === 'restart') {
+          lock.release()
+          return exit(bootstrap.BOOTSTRAP_RESTART_CODE)
         }
-      })
-      if (bootstrapOutcome === 'restart') {
-        lock.release()
-        return exit(bootstrap.BOOTSTRAP_RESTART_CODE)
       }
       // Load the business graph only after auth-only recovery.
       const { runForeground } = await import('./cli/run-foreground.js')
@@ -114,6 +120,7 @@ program
         // this daemon is supervised; the daemon can no longer self-detect it now
         // that the service layer lives in the CLI (cli-daemon-split.md §7.1).
         supervisor: process.env.AGENTCONNECT_SUPERVISOR,
+        cloud: opts.cloud === true,
         overrides: {
           apiUrl: opts.apiUrl,
           apiKey: opts.apiKey,
