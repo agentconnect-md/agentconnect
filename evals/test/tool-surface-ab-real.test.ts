@@ -246,8 +246,11 @@ async function runTrial(scenario: AbScenario, arm: AbArm, trial: number): Promis
       if (!peerActivated) notes.push('the addressed agent was never activated')
       break
     case 'channel-bare':
-      effectsOk = deliveredInPlaza
+      // The scenario's whole point is "visible note, nobody woken": a delivered
+      // post that ALSO activated the peer is a failure, not a success.
+      effectsOk = deliveredInPlaza && !peerActivated
       if (!deliveredInPlaza) notes.push('no delivered post by the subject in the target channel')
+      if (peerActivated) notes.push('the bare post woke the peer — the scenario requires waking nobody')
       break
     case 'agent-postless':
       effectsOk = peerActivated && !instructionLeakedToPlaza

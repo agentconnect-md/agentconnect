@@ -123,18 +123,22 @@ never delegates is invalid — it conditioned on the caller, not the subject.
 
 Measured from the real descriptors and from the guidance text a real daemon
 injected into a session prompt (`evals/test/post-facade.test.ts`,
-`evals/test/tool-surface-ab-fixture.test.ts`, on `main` @ `70d58cd1` +
-this branch; token figures are a chars/4 approximation and labelled as such):
+`evals/test/tool-surface-ab-fixture.test.ts`; token figures are a chars/4
+approximation and labelled as such). Two revisions matter, because the #800
+tool-precedence bullet landed in BOTH arms' guidance after the behavioral
+runs (production via #801, arm B via this branch's parity commit) — prompt
+parity held at each revision:
 
-| Surface component                | Arm A (`sendMessage`) | Arm B (`post`) | Ratio    |
-| -------------------------------- | --------------------- | -------------- | -------- |
-| Tool description (chars)         | 2,617                 | 1,046          | 2.5×     |
-| Tool input schema (chars)        | 7,407                 | 1,025          | 7.2×     |
-| Descriptor total (chars)         | **10,024**            | **2,071**      | **4.8×** |
-| Descriptor (≈ tokens)            | ~2,506                | ~518           |          |
-| Standing guidance (chars)        | 2,718                 | 2,394          | 1.1×     |
-| **Combined per session (chars)** | **12,742**            | **4,465**      | **2.9×** |
-| Combined (≈ tokens)              | ~3,186                | ~1,116         |          |
+| Surface component                                            | Arm A (`sendMessage`) | Arm B (`post`) | Ratio    |
+| ------------------------------------------------------------ | --------------------- | -------------- | -------- |
+| Tool description (chars)                                     | 2,617                 | 1,046          | 2.5×     |
+| Tool input schema (chars)                                    | 7,407                 | 1,025          | 7.2×     |
+| Descriptor total (chars)                                     | **10,024**            | **2,071**      | **4.8×** |
+| Descriptor (≈ tokens)                                        | ~2,506                | ~518           |          |
+| Standing guidance, at the 24-run revision (chars)            | 2,718                 | 2,394          | 1.1×     |
+| Standing guidance, current head with the #800 bullet (chars) | 3,099                 | 2,771          | 1.1×     |
+| **Combined per session, current head (chars)**               | **13,123**            | **4,842**      | **2.7×** |
+| Combined, current head (≈ tokens)                            | ~3,281                | ~1,211         |          |
 
 The descriptor is carried by **every turn** of every session; the guidance is
 standing session context. On a cache-warm local run most of this cost lands
@@ -176,6 +180,16 @@ turn). Per-run artifacts:
 `.artifacts/evaluation/tool-surface-ab/<scenario>-<arm>-<trial>/`
 (events.jsonl, world-events.jsonl, trial.json) plus `summary-merged.json`;
 copies under `~/arena-runs/ab-2026-08-09/` on the measurement host.
+
+Revision notes. (a) These 24 runs predate the #800 tool-precedence bullet;
+NEITHER arm carried it, so prompt parity held. The bullet's effect was then
+measured separately (parent-session × 5 per arm, criteria pre-fixed):
+built-in `SendMessage` attempts 3/6 → 0/10, losses 2/6 → 0/10, success
+4/6 → 10/10 — recorded on issue #800 / PR #801, artifacts under
+`~/arena-runs/ab-2026-08-09/precedence-fix/`. (b) The channel-bare judge was
+later tightened to also require that nobody was woken; the six recorded
+channel-bare trials were re-verified under the stricter rule (the peer ran
+zero turns in all six) and their 6/6 stands.
 
 | Scenario       | Arm | Success | First-attempt | Invalid calls | Mean tool calls | Mean subject tokens (total / in+out) | Mean wall time |
 | -------------- | --- | ------- | ------------- | ------------- | --------------- | ------------------------------------ | -------------- |
