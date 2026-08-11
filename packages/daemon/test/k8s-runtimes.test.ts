@@ -80,6 +80,41 @@ describe('declaredRuntimeCatalog', () => {
     expect(result.unresolved).toEqual([])
   })
 
+  it('takes the command from the IMAGE, which is what makes an npx-distributed runtime usable', () => {
+    // The registry distributes both runtimes through `npx`, and --k8s refuses package launchers —
+    // so before the image published its executable, every deployment had to restate the mapping in
+    // daemon config: a claim about an image, made somewhere the image is not.
+    const npxCatalog = {
+      entries: {
+        claude: {
+          id: 'claude',
+          name: 'Claude',
+          version: '1.2.3',
+          source: 'registry' as const,
+          runtime: { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp'], env: [] }
+        }
+      },
+      runtimes: { claude: { command: 'npx', args: ['-y', '@agentclientprotocol/claude-agent-acp'], env: [] } }
+    }
+    const result = declaredRuntimeCatalog(npxCatalog as never, {
+      runtimes: [{ id: 'claude', version: '0.66.0', command: 'claude-agent-acp', args: [] }]
+    })
+    // Accepted, and launched as the image's own executable.
+    expect(result.rejectedPackageLaunchers).toEqual([])
+    expect(result.catalog.runtimes.claude?.command).toBe('claude-agent-acp')
+    expect(result.catalog.entries.claude?.runtime.command).toBe('claude-agent-acp')
+    expect(result.catalog.entries.claude?.version).toBe('0.66.0')
+  })
+
+  it('still refuses a package launcher when the image names one', () => {
+    // The check moved to the EFFECTIVE command rather than being dropped: an image that reported
+    // `npx` would fetch its artifact at launch, which the pin cannot describe and a restricted
+    // egress cannot reach.
+    const result = declaredRuntimeCatalog(catalog(), { runtimes: [{ id: 'claude', command: 'npx' }] })
+    expect(result.rejectedPackageLaunchers).toEqual(['claude'])
+    expect(Object.keys(result.catalog.entries)).toEqual([])
+  })
+
   it('carries the image ACP snapshot through, rather than dropping it on the floor', () => {
     // The table's whole point in --k8s is reporting what a probe would have found. A schema that
     // strips this field leaves the daemon publishing ids and versions and nothing else — and it

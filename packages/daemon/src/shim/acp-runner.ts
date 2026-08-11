@@ -17,6 +17,19 @@ export const SANDBOX_PROVIDER_ENV: Readonly<Record<'claude' | 'codex', Readonly<
   codex: { AC_CODEX_BASE_URL: 'OPENAI_BASE_URL', AC_CODEX_API_KEY: 'OPENAI_API_KEY' }
 }
 
+/** Filesystem and locale facts only the pod knows. HOME is the load-bearing one: the runtime
+ *  writes its state there, and the daemon cannot name a path on a machine it is not on. */
+const POD_BASE_ENV = ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ'] as const
+
+function podBaseEnv(podEnv: Record<string, string | undefined>): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const name of POD_BASE_ENV) {
+    const value = podEnv[name]
+    if (value) env[name] = value
+  }
+  return env
+}
+
 /** Provider env for the REQUESTED command (its registry identity, not the resolved path). */
 export function sandboxProviderEnv(
   command: string,
@@ -73,7 +86,13 @@ export class AcpRunner {
 
   private async open(payload: AcpOpen): Promise<void> {
     if (this.child) throw new Error('acp stream is already open')
-    const env = { ...payload.env }
+    // The POD's own filesystem and locale basics, under whatever the daemon sent. The daemon
+    // composes the agent's configuration but describes a different machine — it was sending its
+    // own HOME, and codex then tried to open its sqlite state under a path that exists only on
+    // the daemon. An allowlist rather than all of process.env: this env can carry provider
+    // credentials from the SandboxTemplate, and those are forwarded deliberately by
+    // sandboxProviderEnv, not in bulk.
+    const env = { ...podBaseEnv(this.deps.podEnv ?? {}), ...payload.env }
     for (const hint of payload.hints ?? []) {
       if (env[hint.envVar]) continue
       const resolved = this.deps.resolveCommand?.(hint.command, env)

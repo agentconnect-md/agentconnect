@@ -85,7 +85,11 @@ spec:
         resources:
           requests:
             storage: 10Gi
-        # storageClassName: <STORAGE_CLASS>   # uncomment if the cluster has no usable default
+        # A cluster-wide CSI rather than the cluster's default `local-path`: that provisioner has
+        # no path on every node, so a workspace pinned to it fails to bind wherever the scheduler
+        # happens to put the pod — observed as ProvisioningFailed on sea-admin. It also ties the
+        # sandbox to one node for the volume's life, which a resumable workspace should not be.
+        storageClassName: standard
 ---
 # `replicas: 0` is a cold pool: sandboxes are created on demand and pay a cold start. Raise it
 # once cold-start latency matters — that is what the D9 `cold` vs `resume` split measures.

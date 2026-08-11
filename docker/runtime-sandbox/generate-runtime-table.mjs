@@ -127,6 +127,11 @@ export async function buildTable() {
     runtimes.push({
       id: entry.id,
       version,
+      // The executable, published rather than merely used: the daemon cannot see this filesystem,
+      // and without it operators had to restate the mapping in daemon config — a claim about an
+      // image made somewhere the image is not.
+      command: entry.bin,
+      args: [...(entry.args ?? [])],
       // The ACP snapshot: what the daemon can state about this runtime without probing it, and
       // what CI compares a fresh probe against.
       acp: stable({
