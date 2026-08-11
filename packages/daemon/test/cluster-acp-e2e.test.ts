@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
 import { AcpHost } from '../src/acp/acp-host.js'
-import { ClusterSpawnDriver } from '../src/k8s/cluster-driver.js'
+import { K8sDriver } from '../src/k8s/driver.js'
 import { ShimListener, type ShimConnection } from '../src/shim/listener.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { K8sApiError } from '../src/k8s/http.js'
@@ -73,7 +73,7 @@ function fakeApi() {
 
 /** Wire a real listener, a real shim client, and a driver that connects them. */
 async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Promise<{
-  driver: ClusterSpawnDriver
+  driver: K8sDriver
   api: ReturnType<typeof fakeApi>
   connections: ShimConnection[]
   shimClock: FakeClock
@@ -95,7 +95,7 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
   listeners.push(listener)
   const port = await listener.start(0, '127.0.0.1')
 
-  const driver = new ClusterSpawnDriver({
+  const driver = new K8sDriver({
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',

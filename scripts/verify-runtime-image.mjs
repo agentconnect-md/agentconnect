@@ -46,7 +46,7 @@ function inspect(format) {
 }
 
 const SHIM_PATH = '/opt/agentconnect/shim/index.js'
-const TABLE_PATH = '/opt/agentconnect/runtime/cloud-runtimes.json'
+const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
 check('runs as a non-root user', () => {

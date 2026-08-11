@@ -10,6 +10,10 @@ export interface SpawnRecord {
   generation: number
   /** Capabilities this launch may exercise, decided by the daemon at spawn time. */
   grants: ShimCapability[]
+  /** The pod backing this launch, from the Sandbox's pod-name annotation. It is how a dialing
+   *  pod is resolved back to its launch — a TokenReview yields only a pod name and uid, and
+   *  nothing else the daemon holds connects those to an agent. */
+  podName: string
 }
 
 /** A bound shim connection: the pod that proved its identity plus what it may do. */

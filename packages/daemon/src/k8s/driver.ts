@@ -6,7 +6,13 @@ import type { ShimConnection } from '../shim/listener.js'
 import { ShimRequestTimeoutError } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
-import { OperatingModeRejectedError, isSandboxReady, type OperatingMode, type SandboxApi } from './sandbox-api.js'
+import {
+  OperatingModeRejectedError,
+  isSandboxReady,
+  type OperatingMode,
+  type Sandbox,
+  type SandboxApi
+} from './sandbox-api.js'
 import { K8sApiError } from './http.js'
 
 /** Label domain the claim controller must be configured to allow. */
@@ -16,11 +22,28 @@ export const AC_LABEL_AGENT = 'agentconnect.md/agent'
 /** Annotation an image rollout writes to ask a daemon to quiesce a Sandbox. */
 export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 
+/**
+ * Where agent-sandbox records the pod a Sandbox is currently backed by.
+ *
+ * This is the ONLY way the daemon can map a dialing pod back to the launch that started it: a
+ * TokenReview yields a pod name and uid, `SandboxStatus` carries no pod reference at all
+ * (v1beta1: serviceFQDN, service, conditions, selector, podIPs, nodeName), and reading the Pod
+ * API is deliberately outside this daemon's Role. Upstream's `resolvePodName` is exactly this
+ * annotation with the Sandbox's own name as the fallback, so mirroring it keeps the two in step.
+ */
+export const SANDBOX_POD_NAME_ANNOTATION = 'agents.x-k8s.io/pod-name'
+
+/** The pod backing this Sandbox: the adopted warm-pool pod, or the Sandbox's own name. */
+export function resolvePodName(sandbox: Sandbox): string | undefined {
+  const adopted = sandbox.metadata?.annotations?.[SANDBOX_POD_NAME_ANNOTATION]
+  return adopted && adopted.length > 0 ? adopted : sandbox.metadata?.name
+}
+
 /** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
  *  what the channels it uses require, so a future capability is an explicit decision. */
 export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
 
-export interface ClusterDriverDeps {
+export interface K8sDriverDeps {
   api: SandboxApi
   orgId: string
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
@@ -64,7 +87,7 @@ interface Launch {
  * wake and teardown are all local decisions, so a control-plane outage cannot stop an
  * existing agent from starting or stopping its runtime.
  */
-export class ClusterSpawnDriver implements SpawnDriver {
+export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
   private readonly launches = new Map<string, Launch>()
   private readonly generations = new Map<string, number>()
@@ -79,7 +102,7 @@ export class ClusterSpawnDriver implements SpawnDriver {
   private readonly sessions = new Map<string, ShimSession>()
   private readonly clock: Clock
 
-  constructor(private readonly deps: ClusterDriverDeps) {
+  constructor(private readonly deps: K8sDriverDeps) {
     this.clock = deps.clock ?? systemClock
     this.metrics = deps.metrics ?? noopClusterMetrics
   }
@@ -130,19 +153,32 @@ export class ClusterSpawnDriver implements SpawnDriver {
     this.generations.set(agentId, generation)
     const launch: Launch = { agentId, sandboxName, sandboxUid, generation }
     this.launches.set(agentId, launch)
-    // The record must exist before the shim can bind: the handshake resolves a pod against
-    // it, and an unpublished launch is indistinguishable from a pod we never started.
-    this.deps.publishSpawnRecord({ agentId, sandboxUid, generation, grants: [...RUNTIME_GRANTS] })
     return launch
   }
 
   /** Wait for the Sandbox to report Ready, after something has asked it to run. */
-  private async awaitReady(sandboxName: string): Promise<void> {
+  // Returns the pod backing the ready Sandbox. Resolved HERE rather than at claim time because
+  // warm-pool adoption writes the annotation as the pod is bound and suspension clears it, so a
+  // name read any earlier belongs to the previous incarnation — and binding the next launch
+  // against it would authorize the wrong pod.
+  private async awaitReady(sandboxName: string, onPodResolved: (podName: string) => void): Promise<string> {
     const backoff = new Backoff({ baseMs: 250, capMs: 2_000, jitter: () => 0 })
     const deadline = this.clock.now() + (this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS)
+    let resolved: string | undefined
     for (;;) {
       const sandbox = await this.deps.api.getSandbox(sandboxName).catch(() => undefined)
-      if (sandbox && isSandboxReady(sandbox)) return
+      // The pod is named as soon as it is bound, which is BEFORE it reports Ready — and the shim
+      // dials from a pod that is merely running. Publishing here rather than after readiness is
+      // what keeps that dial from arriving ahead of the record that authorizes it.
+      const podName = sandbox ? resolvePodName(sandbox) : undefined
+      if (podName && podName !== resolved) {
+        resolved = podName
+        onPodResolved(podName)
+      }
+      if (sandbox && isSandboxReady(sandbox)) {
+        if (!resolved) throw new Error(`sandbox ${sandboxName} is ready but names no pod`)
+        return resolved
+      }
       if (this.clock.now() >= deadline) {
         throw new LaunchTimeoutError(`sandbox ${sandboxName} did not become ready in time`)
       }
@@ -303,7 +339,19 @@ export class ClusterSpawnDriver implements SpawnDriver {
       // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
       if (modeBeforeWake) timer.observedPath(modeBeforeWake === 'Suspended' ? 'resume' : 'warm')
       timer.mark('mode_running')
-      await this.awaitReady(launch.sandboxName)
+      // Published the moment the Sandbox names its pod, which is before readiness — the record
+      // has to exist by the time the shim dials, and the pod it authorizes is not knowable any
+      // earlier. Publishing at claim time instead would name the PREVIOUS incarnation's pod,
+      // authorizing the wrong one for as long as the window lasted.
+      await this.awaitReady(launch.sandboxName, (podName) => {
+        this.deps.publishSpawnRecord({
+          agentId,
+          sandboxUid: launch.sandboxUid,
+          generation: launch.generation,
+          grants: [...RUNTIME_GRANTS],
+          podName
+        })
+      })
       timer.mark('pod_ready')
       const channelTimeoutMs = this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
       const waitingSince = this.clock.now()

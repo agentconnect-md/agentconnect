@@ -6,7 +6,7 @@ import { DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 
-/** The behavior matrix for `--cloud`: each assertion here is one row of the mode
+/** The behavior matrix for `--k8s`: each assertion here is one row of the mode
  *  contract, so cloud and self-hosted behavior cannot drift apart unnoticed. */
 
 function root(opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: boolean } = {}): string {
@@ -20,7 +20,7 @@ function root(opts: { declared?: unknown; requireSandbox?: boolean; cliEntry?: b
     })
   )
   if (opts.declared !== undefined) {
-    writeFileSync(join(path, 'cloud-runtimes.json'), JSON.stringify(opts.declared))
+    writeFileSync(join(path, 'k8s-runtimes.json'), JSON.stringify(opts.declared))
   }
   // A stale pointer left on the root volume is exactly the case that must NOT re-enable
   // the self-installing upgrade path in cloud mode. readCliEntry only accepts a pointer
@@ -47,10 +47,10 @@ function catalog(): ResolvedRuntimeCatalog {
   }
 }
 
-function daemon(opts: { root: string; cloud: boolean; probe?: ReturnType<typeof vi.fn>; supervisor?: string }): Daemon {
+function daemon(opts: { root: string; k8s: boolean; probe?: ReturnType<typeof vi.fn>; supervisor?: string }): Daemon {
   return new Daemon({
     root: opts.root,
-    cloud: opts.cloud,
+    cloud: opts.k8s,
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     resolveCatalog: async () => catalog(),
     ...(opts.probe ? { probeRuntimes: opts.probe as never } : {}),
@@ -58,7 +58,7 @@ function daemon(opts: { root: string; cloud: boolean; probe?: ReturnType<typeof 
   })
 }
 
-describe('daemon --cloud mode', () => {
+describe('daemon --k8s mode', () => {
   it('advertises the runtimes the image declares, not what is installed on the host', async () => {
     const probe = vi.fn(async () => [])
     const cloud = daemon({
@@ -80,7 +80,7 @@ describe('daemon --cloud mode', () => {
     }
   })
 
-  it('advertises nothing in the same tree without --cloud, where host discovery decides', async () => {
+  it('advertises nothing in the same tree without --k8s, where host discovery decides', async () => {
     const local = daemon({ root: root({ declared: { runtimes: [{ id: 'claude' }] } }), cloud: false })
     try {
       await local.start()
@@ -159,6 +159,6 @@ describe('daemon --cloud mode', () => {
       root: root({ declared: { runtimes: [{ id: 'claude' }] }, requireSandbox: true }),
       cloud: true
     })
-    await expect(cloud.start()).rejects.toThrow(/requireSandbox is not supported with --cloud/)
+    await expect(cloud.start()).rejects.toThrow(/requireSandbox is not supported with --k8s/)
   })
 })

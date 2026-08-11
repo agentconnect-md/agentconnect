@@ -262,12 +262,14 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
+import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { setWorkspaceGitRunnerResolver } from './workspace/workspace-manager.js'
 import {
-  cloudRuntimesPath,
+  k8sRuntimesPath,
   declaredRuntimeCatalog,
-  loadCloudRuntimeTable,
-  type CloudRuntimeAcpSnapshot
-} from './runtimes/cloud-runtimes.js'
+  loadK8sRuntimeTable,
+  type K8sRuntimeAcpSnapshot
+} from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   probeAllRuntimes,
@@ -1960,16 +1962,18 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
-  // `--cloud`: this daemon supervises runtimes in sandbox pods instead of local
+  // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
   // subprocesses, so every "daemon and runtime share one machine" behavior is off.
-  private readonly cloud: boolean
-  // Model snapshot declared alongside the cloud runtime image; applied after the
+  private readonly k8s: boolean
+  // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
+  private k8sPlane?: K8sRuntimePlane
+  // Model snapshot declared alongside the k8s runtime image; applied after the
   // SQLite catalog hydrate so the image's list wins over a stale cached one.
-  private cloudDeclaredModels: Record<string, string[]> = {}
-  // The image's `initialize` snapshot. --cloud runs no probe, so without this the fields
+  private k8sDeclaredModels: Record<string, string[]> = {}
+  // The image's `initialize` snapshot. --k8s runs no probe, so without this the fields
   // runtimeProfiles() reports — ACP protocol version, the adapter's own version, MCP transports —
   // stay empty and the published snapshot describes nothing.
-  private cloudDeclaredAcp: Record<string, CloudRuntimeAcpSnapshot> = {}
+  private k8sDeclaredAcp: Record<string, K8sRuntimeAcpSnapshot> = {}
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -2185,26 +2189,31 @@ export class Daemon {
         runtimes: Record<string, import('./config/config-schema.js').RuntimeDef>,
         opts: ProbeOptions
       ) => Promise<RuntimeProbeResult[]>
+      /** Seam for the k8s execution plane. `--k8s` builds it from the pod's own in-cluster
+       *  config and REFUSES to boot without one — running runtimes on the daemon's host is the
+       *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
+       *  to exercise k8s-mode policy without a cluster. */
+      startK8sPlane?: typeof startK8sRuntimePlane
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
-      /** `--cloud`: runtimes live in sandbox pods, not on this host. Disables runtime
+      /** `--k8s`: runtimes live in sandbox pods, not on this host. Disables runtime
        *  probing, host executable discovery (the image declares its runtimes instead),
        *  the SRT mechanism, and the self-installing upgrade path. */
-      cloud?: boolean
+      k8s?: boolean
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
       /** Optional, observer-only evaluation surface and add-on treatment. */
       evaluation?: DaemonEvaluationOptions
     } = {}
   ) {
-    this.cloud = opts.cloud === true
-    // Cloud runtimes are isolated by their own pod, so the in-process SRT mechanism is
+    this.k8s = opts.k8s === true
+    // A k8s runtime is isolated by its own pod, so the in-process SRT mechanism is
     // not part of that shape — it stays off even if this host happens to support it.
     this.sandboxMechanism =
-      opts.sandboxMechanism === null || this.cloud ? undefined : (opts.sandboxMechanism ?? detectSandbox())
+      opts.sandboxMechanism === null || this.k8s ? undefined : (opts.sandboxMechanism ?? detectSandbox())
     this.clock = opts.clock ?? systemClock
     if (opts.evaluation?.capabilityProfile && !opts.evaluation.observer) {
       throw new Error('evaluation capability profile requires an evaluation observer')
@@ -2566,21 +2575,37 @@ export class Daemon {
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
-        this.cloud
-          ? 'daemon startup refused: security.requireSandbox is not supported with --cloud — a cloud runtime is isolated by its own pod, not by the in-process SRT mechanism'
+        this.k8s
+          ? 'daemon startup refused: security.requireSandbox is not supported with --k8s — a k8s runtime is isolated by its own pod, not by the in-process SRT mechanism'
           : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
     }
-    if (this.cloud) {
+    if (this.k8s) {
       // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
       // mid-drain and the graceful window is a promise the deployment cannot keep. The
       // daemon cannot read its own grace period (it has no pod read), so it states the
       // number it will actually use and leaves the alignment to the deployment.
       this.log.info(
-        `cloud: shutdown drain deadline ${Math.round(cfg.limits.shutdownDrainMs / 1000)}s — ` +
+        `k8s: shutdown drain deadline ${Math.round(cfg.limits.shutdownDrainMs / 1000)}s — ` +
           `terminationGracePeriodSeconds must exceed it; supervisor=${this.opts.supervisor ?? 'unset'}` +
           `${this.opts.supervisor === K8S_SUPERVISOR ? '' : ' (restart requires AGENTCONNECT_SUPERVISOR=k8s)'}`
       )
+      // The execution plane itself. Without this `--k8s` only changes behaviour — no Sandbox is
+      // ever created and runtimes still spawn on this host, which is the one outcome the mode
+      // exists to prevent, so a failure here refuses the boot rather than degrading.
+      const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
+      this.k8sPlane = await startPlane({
+        log: {
+          info: (message) => this.log.info(message),
+          warn: (message) => this.log.warn(message),
+          debug: (message) => this.log.debug?.(message)
+        }
+      })
+      // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
+      // resolver answers undefined for any without a bound channel, so an agent this daemon has
+      // not launched into a sandbox keeps its local behaviour.
+      setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -2722,9 +2747,9 @@ export class Daemon {
       mode: 'cache-first'
     })
     // Advertise (and launch) only runtimes actually installed on this host — the
-    // registry lists every known agent, but most aren't present here. Under --cloud
+    // registry lists every known agent, but most aren't present here. Under --k8s
     // there is nothing to discover locally: the sandbox image declares what it ships
-    // (cloud-runtimes.ts), so presence is a declaration rather than a probe.
+    // (k8s-runtimes.ts), so presence is a declaration rather than a probe.
     const installedCatalog = this.opts.installed
       ? (() => {
           const runtimes = this.opts.installed!(resolvedCatalog.runtimes)
@@ -2735,7 +2760,7 @@ export class Daemon {
             )
           }
         })()
-      : this.cloud
+      : this.k8s
         ? this.declaredCloudCatalog(root, resolvedCatalog)
         : installedRuntimeCatalog(resolvedCatalog)
     const { runtimes: installed, entries: installedEntries } = installedCatalog
@@ -2782,13 +2807,13 @@ export class Daemon {
     this.hydrateRuntimeCatalogCache()
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
-    for (const [runtimeId, models] of Object.entries(this.cloudDeclaredModels)) {
+    for (const [runtimeId, models] of Object.entries(this.k8sDeclaredModels)) {
       this.runtimeModels.set(runtimeId, [...models])
       this.runtimeModelsSource.set(runtimeId, 'cached')
     }
     // The image probed these at build time, so they are the same facts a live probe would report —
     // and they populate the same maps runtimeProfiles() reads, rather than a parallel surface.
-    for (const [runtimeId, snapshot] of Object.entries(this.cloudDeclaredAcp)) {
+    for (const [runtimeId, snapshot] of Object.entries(this.k8sDeclaredAcp)) {
       if (snapshot.protocolVersion !== undefined) this.runtimeAcpVersions.set(runtimeId, snapshot.protocolVersion)
       const mcp = snapshot.capabilities?.mcpCapabilities
       if (mcp && typeof mcp === 'object') {
@@ -5071,6 +5096,9 @@ export class Daemon {
       throw new Error(`agent "${agentId}" runtime launch preparation failed: ${formatErr(err)}`, { cause: err })
     }
     const host = new AcpHost(launchRuntime, {
+      // In --k8s the runtime runs in the agent's own Sandbox pod; everywhere else AcpHost falls
+      // back to its LocalDriver, which is what a self-hosted daemon wants.
+      ...(this.k8sPlane ? { driver: this.k8sPlane.driver } : {}),
       onUpdate,
       onPermission: (sid, params) => this.onAcpPermission(agentId, sid, params),
       ...(this.evaluation.enabled
@@ -5145,11 +5173,11 @@ export class Daemon {
   }
 
   private bootstrapUpgradeCapable(): boolean {
-    // A cloud daemon's version is its image, and self-installing would exit the pod for
+    // A k8s daemon's version is its image, and self-installing would exit the pod for
     // a version the cluster never asked for. Refuse on the mode, not on the absence of a
     // supervisor marker or cli-entry pointer: a stale pointer on the root volume, or an
     // inherited AGENTCONNECT_SUPERVISOR, would otherwise re-enable the whole path.
-    if (this.cloud) return false
+    if (this.k8s) return false
     return (
       (this.opts.supervisor === 'cli' || this.opts.supervisor === 'service') && readCliEntry(this.root) !== undefined
     )
@@ -18144,7 +18172,7 @@ export class Daemon {
     // the advertised capability, so this is the last line of defence, and an inherited
     // AGENTCONNECT_SUPERVISOR plus a stale cli-entry on the root volume must not reach the
     // installer — the same invariant bootstrapUpgradeCapable() already holds.
-    if (kind === 'upgrade' && this.cloud) return refuse(imageOwnsVersion)
+    if (kind === 'upgrade' && this.k8s) return refuse(imageOwnsVersion)
     // The kubelet restarts the container in place after the reserved exit code, but never
     // changes the image, so it supervises restart and not upgrade.
     if (supervisor === K8S_SUPERVISOR) {
@@ -19457,27 +19485,27 @@ export class Daemon {
   }
 
   /**
-   * `--cloud` runtime set: the runtimes the sandbox image declares it provides,
+   * `--k8s` runtime set: the runtimes the sandbox image declares it provides,
    * projected onto the resolved catalog (which still supplies command/args, and is
    * served cache-first from `<root>/acp_registry.json` in an image). Replaces host
    * executable discovery, which can only ever answer "nothing" in a daemon pod.
    */
   private declaredCloudCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
-    const table = loadCloudRuntimeTable(root)
+    const table = loadK8sRuntimeTable(root)
     if (!table) {
       this.log.warn(
-        `runtimes: --cloud requires a declared runtime table at ${cloudRuntimesPath(root)} — advertising none until it exists`
+        `runtimes: --k8s requires a declared runtime table at ${k8sRuntimesPath(root)} — advertising none until it exists`
       )
       return { entries: {}, runtimes: {} }
     }
     const declared = declaredRuntimeCatalog(resolved, table)
     if (declared.unresolved.length)
       this.log.warn(`runtimes: declared but unknown to the catalog: ${declared.unresolved.join(', ')}`)
-    // Curated admission needs a live probe, which --cloud does not run, so a declared
+    // Curated admission needs a live probe, which --k8s does not run, so a declared
     // curated id could never launch — drop it loudly instead of advertising it.
     if (declared.rejectedCurated.length)
       this.log.warn(
-        `runtimes: declared curated runtimes cannot be admitted under --cloud: ${declared.rejectedCurated.join(', ')}`
+        `runtimes: declared curated runtimes cannot be admitted under --k8s: ${declared.rejectedCurated.join(', ')}`
       )
     // A package launcher fetches its artifact at launch: not the image's build, not what
     // the version pin names, and impossible on a restricted egress. Dropped, not warned.
@@ -19485,8 +19513,8 @@ export class Daemon {
       this.log.warn(
         `runtimes: declared runtimes launch through a package manager and cannot be pinned to this image: ${declared.rejectedPackageLaunchers.join(', ')} — resolve them to a local executable in the catalog`
       )
-    this.cloudDeclaredModels = declared.models
-    this.cloudDeclaredAcp = declared.acp
+    this.k8sDeclaredModels = declared.models
+    this.k8sDeclaredAcp = declared.acp
     return declared.catalog
   }
 
@@ -19596,11 +19624,11 @@ export class Daemon {
    * must not affect the CP connection.
    */
   private async probeRuntimesAndEmit(includeOrdinary = true): Promise<void> {
-    // --cloud has no runtime to launch on this host: profiles come from the image's
+    // --k8s has no runtime to launch on this host: profiles come from the image's
     // declared table. Still emit them, because this is also the CP (re)connect path
     // that (re)asserts the runtime list. Unconditional — unlike the fake-host guard
     // below, an injected prober must not re-enable local spawning in this mode.
-    if (this.cloud) {
+    if (this.k8s) {
       this.cpClient?.emitDaemonRuntimes?.(
         this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
         this.mcpServerFactsFromDefs()
@@ -19859,6 +19887,9 @@ export class Daemon {
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a
     // sweep firing during the awaits below can't leave a dangling timer behind.
     this.draining = true
+    // Stop accepting shim callbacks early: a pod binding while the daemon drains would be
+    // authorized against a launch that is going away.
+    await this.k8sPlane?.stop().catch(() => undefined)
     clearTimeout(this.debounceTimer)
     if (this.idleSweepTimer !== undefined) {
       this.clock.clearTimeout(this.idleSweepTimer)

@@ -3,19 +3,19 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  CLOUD_RUNTIMES_ENV,
-  cloudRuntimesPath,
-  CloudRuntimeTableSchema,
+  K8S_RUNTIMES_ENV,
+  k8sRuntimesPath,
+  K8sRuntimeTableSchema,
   declaredRuntimeCatalog,
-  loadCloudRuntimeTable
-} from '../src/runtimes/cloud-runtimes.js'
+  loadK8sRuntimeTable
+} from '../src/runtimes/k8s-runtimes.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 
 function root(): string {
-  return mkdtempSync(join(tmpdir(), 'ac-cloud-runtimes-'))
+  return mkdtempSync(join(tmpdir(), 'ac-k8s-runtimes-'))
 }
 
-function write(dir: string, contents: string, name = 'cloud-runtimes.json'): string {
+function write(dir: string, contents: string, name = 'k8s-runtimes.json'): string {
   const path = join(dir, name)
   writeFileSync(path, contents)
   return path
@@ -35,33 +35,33 @@ function catalog(): ResolvedRuntimeCatalog {
   }
 }
 
-describe('cloud runtime table', () => {
+describe('k8s runtime table', () => {
   it('defaults under the daemon root and honors the env override', () => {
     const dir = root()
-    expect(cloudRuntimesPath(dir, {})).toBe(join(dir, 'cloud-runtimes.json'))
-    expect(cloudRuntimesPath(dir, { [CLOUD_RUNTIMES_ENV]: '/etc/ac/runtimes.json' })).toBe('/etc/ac/runtimes.json')
+    expect(k8sRuntimesPath(dir, {})).toBe(join(dir, 'k8s-runtimes.json'))
+    expect(k8sRuntimesPath(dir, { [K8S_RUNTIMES_ENV]: '/etc/ac/runtimes.json' })).toBe('/etc/ac/runtimes.json')
     // A blank override is not a path — fall back rather than reading "".
-    expect(cloudRuntimesPath(dir, { [CLOUD_RUNTIMES_ENV]: '  ' })).toBe(join(dir, 'cloud-runtimes.json'))
+    expect(k8sRuntimesPath(dir, { [K8S_RUNTIMES_ENV]: '  ' })).toBe(join(dir, 'k8s-runtimes.json'))
   })
 
   it('returns undefined when no table is present', () => {
-    expect(loadCloudRuntimeTable(root(), {})).toBeUndefined()
+    expect(loadK8sRuntimeTable(root(), {})).toBeUndefined()
   })
 
   it('throws on malformed JSON and on a schema mismatch', () => {
     const dir = root()
     write(dir, '{ not json')
-    expect(() => loadCloudRuntimeTable(dir, {})).toThrow(/not valid JSON/)
+    expect(() => loadK8sRuntimeTable(dir, {})).toThrow(/not valid JSON/)
     write(dir, JSON.stringify({ runtimes: [] }))
-    expect(() => loadCloudRuntimeTable(dir, {})).toThrow(/invalid/)
+    expect(() => loadK8sRuntimeTable(dir, {})).toThrow(/invalid/)
     write(dir, JSON.stringify({ runtimes: [{ version: '1' }] }))
-    expect(() => loadCloudRuntimeTable(dir, {})).toThrow(/invalid/)
+    expect(() => loadK8sRuntimeTable(dir, {})).toThrow(/invalid/)
   })
 
   it('loads a valid table from the env-pointed path', () => {
     const dir = root()
     const path = write(dir, JSON.stringify({ runtimes: [{ id: 'claude', models: ['a'] }] }), 'pinned.json')
-    expect(loadCloudRuntimeTable(dir, { [CLOUD_RUNTIMES_ENV]: path })).toEqual({
+    expect(loadK8sRuntimeTable(dir, { [K8S_RUNTIMES_ENV]: path })).toEqual({
       runtimes: [{ id: 'claude', models: ['a'] }]
     })
   })
@@ -81,7 +81,7 @@ describe('declaredRuntimeCatalog', () => {
   })
 
   it('carries the image ACP snapshot through, rather than dropping it on the floor', () => {
-    // The table's whole point in --cloud is reporting what a probe would have found. A schema that
+    // The table's whole point in --k8s is reporting what a probe would have found. A schema that
     // strips this field leaves the daemon publishing ids and versions and nothing else — and it
     // fails silently, because the artifact is still internally consistent.
     const result = declaredRuntimeCatalog(catalog(), {
@@ -109,7 +109,7 @@ describe('declaredRuntimeCatalog', () => {
   it('parses a table whose entries carry an ACP snapshot, keeping the snapshot intact', () => {
     // Guards the schema itself: zod strips unknown keys, so an `acp` field that is not declared
     // vanishes between the file and the caller with no error anywhere.
-    const parsed = CloudRuntimeTableSchema.parse({
+    const parsed = K8sRuntimeTableSchema.parse({
       runtimes: [{ id: 'claude', version: '1.0.0', acp: { protocolVersion: 1, modes: ['default'] } }]
     })
     expect(parsed.runtimes[0]?.acp).toEqual({ protocolVersion: 1, modes: ['default'] })

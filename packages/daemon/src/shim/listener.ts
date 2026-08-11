@@ -39,6 +39,11 @@ export interface ShimListenerDeps {
   credentialTtlMs?: number
   /** Operability counters; omit to record nothing. */
   metrics?: ClusterMetrics
+  /** A channel bound — including a renewal, which is a NEW connection for the same launch, so
+   *  whoever owns the session must re-attach rather than assume the old socket still works. */
+  onConnection?: (connection: ShimConnection) => void
+  /** A bound channel went away, so a caller waiting on it learns instead of hanging. */
+  onConnectionLost?: (agentId: string, reason: string) => void
 }
 
 const DEFAULT_CREDENTIAL_TTL_MS = 10 * 60_000
@@ -141,6 +146,25 @@ export class ShimListener {
   }
 
   /** Bound connections for an agent — the channels a turn is delivered over. */
+  /**
+   * Wait for this launch's channel to bind.
+   *
+   * Keyed on the generation, not just the agent: a channel left over from a previous launch is
+   * the one case that must NOT satisfy this wait, since handing it back would run the new
+   * runtime's traffic down the old pod's socket.
+   */
+  async awaitConnection(agentId: string, generation: number, timeoutMs: number): Promise<ShimConnection> {
+    const deadline = this.deps.now() + timeoutMs
+    for (;;) {
+      const match = this.connectionsFor(agentId).find((connection) => connection.binding.generation === generation)
+      if (match) return match
+      if (this.deps.now() >= deadline) {
+        throw new Error(`no shim channel bound for agent ${agentId} generation ${generation} in time`)
+      }
+      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, 100))
+    }
+  }
+
   connectionsFor(agentId: string): ShimConnection[] {
     return [...this.connections].filter((connection) => connection.binding.agentId === agentId)
   }
@@ -228,6 +252,7 @@ export class ShimListener {
             }
             bound = connection
             this.connections.add(connection)
+            this.deps.onConnection?.(connection)
             const remainingMs = result.binding.expiresAtMs - this.deps.now()
             connection.send({
               type: 'shim/bound',
@@ -287,6 +312,7 @@ export class ShimListener {
     ws.on('close', () => {
       if (bound) {
         this.connections.delete(bound)
+        this.deps.onConnectionLost?.(bound.binding.agentId, 'shim channel closed')
         // Revoke this channel's OWN credential: a same-pod renewal may already hold the
         // pod's index, and revoking by pod here would delete the live replacement.
         this.registry.revokeIssued(bound.issuedCredential)

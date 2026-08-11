@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
-import { ClusterSpawnDriver, DRAIN_REQUESTED_ANNOTATION, AC_LABEL_AGENT } from '../src/k8s/cluster-driver.js'
+import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, AC_LABEL_AGENT } from '../src/k8s/driver.js'
 import { OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
 import { K8sApiError } from '../src/k8s/http.js'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -55,14 +55,28 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended' } = 
   return { api, state }
 }
 
+/** Enough of a bound channel for `launch()` to attach a session to. */
+function stubConnection(generation = 1): ShimConnection {
+  return {
+    binding: { agentId: 'agent-a', generation, grants: ['acp'], podName: 'p', podUid: 'u' },
+    issuedCredential: 'cred',
+    send: () => {},
+    onFrame: () => {},
+    close: () => {}
+  } as unknown as ShimConnection
+}
+
+const launchRequest = { command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a' }, cwd: '/agent' } as never
+
 function driver(api: ReturnType<typeof fakeApi>['api'], overrides: Record<string, unknown> = {}) {
   const records: SpawnRecord[] = []
   const clock = new FakeClock()
-  const instance = new ClusterSpawnDriver({
+  let generation = 0
+  const instance = new K8sDriver({
     api: api as never,
     orgId: 'org-1',
     warmPoolName: 'ac-runtime-standard-pool',
-    awaitChannel: async () => ({}) as ShimConnection,
+    awaitChannel: async () => stubConnection(++generation),
     publishSpawnRecord: (record) => records.push(record),
     clock,
     log: { info: () => {}, warn: () => {}, debug: () => {} },
@@ -87,27 +101,51 @@ describe('cluster spawn driver', () => {
     expect((claim.spec as Record<string, unknown>).volumeClaimTemplates).toBeUndefined()
   })
 
-  it('publishes a spawn record before a shim could bind, keyed on the Sandbox metadata uid', async () => {
+  it('publishes a spawn record naming the POD, as soon as the Sandbox names one', async () => {
+    // The record is how a dialing pod is resolved back to its launch, and a TokenReview yields
+    // only a pod name and uid — so a record that does not name the pod cannot be found at all.
+    // It is published when the pod is first named rather than at claim time, because at claim
+    // time the name still belongs to the previous incarnation.
     const { api } = fakeApi()
     const { instance, records } = driver(api)
-    await instance.ensureSandbox('agent-a')
+    expect(await instance.ensureSandbox('agent-a')).toMatchObject({ sandboxName: 'sb-1' })
+    // ensureSandbox alone publishes nothing: no pod is bound yet.
+    expect(records).toEqual([])
+
+    await instance.launch(launchRequest)
     // The uid comes from the Sandbox object; the claim status carries only a name.
     expect(records).toEqual([
       {
         agentId: 'agent-a',
         sandboxUid: 'sandbox-uid-1',
         generation: 1,
-        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel']
+        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel'],
+        podName: 'sb-1'
       }
     ])
+  })
+
+  it('names the ADOPTED warm-pool pod, not the Sandbox, when one was adopted', async () => {
+    // Our normal path is warm-pool adoption, and an adopted pod carries a pool-generated name
+    // that has nothing to do with the Sandbox's. Falling back to the Sandbox name there would
+    // publish a record no dialing pod could ever match.
+    const { api } = fakeApi()
+    api.getSandbox = async () => ({
+      metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-xyz-7' } },
+      spec: { operatingMode: 'Running' },
+      status: { conditions: [{ type: 'Ready', status: 'True' }] }
+    })
+    const { instance, records } = driver(api)
+    await instance.launch(launchRequest)
+    expect(records.at(-1)?.podName).toBe('pool-xyz-7')
   })
 
   it('increments the generation per launch so a departed incarnation cannot act', async () => {
     const { api } = fakeApi()
     const { instance, records } = driver(api)
-    await instance.ensureSandbox('agent-a')
+    await instance.launch(launchRequest)
     instance.forgetLaunch('agent-a')
-    await instance.ensureSandbox('agent-a')
+    await instance.launch(launchRequest)
     expect(records.map((record) => record.generation)).toEqual([1, 2])
   })
 
@@ -213,7 +251,8 @@ describe('cluster spawn driver', () => {
     const { instance, records } = driver(api)
     const launch = await instance.ensureSandbox('agent-a')
     expect(launch.sandboxName).toBe('sb-1')
-    expect(records).toHaveLength(1)
+    // And it did NOT publish: nothing may be authorized against a pod that does not exist yet.
+    expect(records).toEqual([])
   })
 
   it('deletes the claim when an agent goes away', async () => {
