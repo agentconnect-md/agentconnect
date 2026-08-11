@@ -19927,10 +19927,6 @@ export class Daemon {
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
     // tearing the hosts down — a hard kill mid-turn loses the reply + transcript.
     await this.drainForShutdown()
-    // AFTER the drain, never before: closing the shim endpoint drops every sandbox channel, so
-    // doing it first would kill the in-flight turns the drain deadline exists to finish.
-    await this.k8sPlane?.stop().catch(() => undefined)
-    setWorkspaceGitRunnerResolver(undefined)
     this.store.setTranscriptMutationListener()
     for (const { timer } of this.transcriptActivityTimers.values()) this.clock.clearTimeout(timer)
     this.transcriptActivityTimers.clear()
@@ -19978,6 +19974,11 @@ export class Daemon {
     const hostStarts = [...this.hostStarts.values()]
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
+    // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
+    // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
+    // unable to send its ACP close — a sandbox process still running, and reconnecting.
+    await this.k8sPlane?.stop().catch(() => undefined)
+    setWorkspaceGitRunnerResolver(undefined)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

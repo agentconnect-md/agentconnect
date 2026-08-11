@@ -35,6 +35,11 @@ export class ShimSession {
    */
   attach(connection: ShimConnection): void {
     if (this.closed) return
+    // Idempotent for the SAME connection. `onFrame` only ever appends, and its listeners are
+    // never removed, so re-attaching one would deliver every ACP chunk and event twice — and the
+    // path that does it is ordinary: preparing a workspace binds the channel, then launching
+    // binds it again and gets the same connection back.
+    if (this.connection === connection) return
     if (connection.binding.generation !== this.generation) {
       this.lose(`superseded by generation ${connection.binding.generation}`)
       return
