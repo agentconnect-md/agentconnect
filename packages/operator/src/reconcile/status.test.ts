@@ -5,7 +5,7 @@ import { loadConfig } from '../config.js'
 import { AgentConnectOrgApi } from '../crd/api.js'
 import type { AgentConnectOrg, Condition } from '../crd/types.js'
 import { newObservations, type Observations } from './context.js'
-import { buildStatus, setCondition, writeStatus } from './status.js'
+import { buildStatus, setCondition, writeStatus, CREDENTIAL_RECHECK_MS } from './status.js'
 
 afterEach(closeFakeApiServers)
 
@@ -80,6 +80,19 @@ describe('buildStatus', () => {
     expect(byType(third, 'Ready')?.lastTransitionTime).toBe(LATER)
   })
 
+  it('carries the credential message onto the CredentialReady condition', () => {
+    const obs = healthyObs()
+    obs.credential = {
+      status: 'False',
+      reason: 'CredentialSecretMissing',
+      message: 'daemon pod cannot mount credential secret ac-daemon-token'
+    }
+    const condition = byType(buildStatus(orgOf(), obs, NOW), 'CredentialReady')
+    expect(condition?.status).toBe('False')
+    expect(condition?.reason).toBe('CredentialSecretMissing')
+    expect(condition?.message).toContain('ac-daemon-token')
+  })
+
   it('marks Progressing during a runtime rollout and carries the rollout record', () => {
     const obs = healthyObs()
     obs.rollout = { rolloutId: 'abc123', targetImage: 'ghcr.io/example/runtime:v2', pending: ['sb-1'], failed: [] }
@@ -91,19 +104,36 @@ describe('buildStatus', () => {
 })
 
 describe('observeWorkloads', () => {
-  async function observe(deployment: unknown, extra: (path: string) => object | undefined = () => undefined) {
-    const { config: cluster } = await fakeApiServer(({ url }) => {
+  interface ObserveOptions {
+    pods?: unknown[]
+    events?: unknown[]
+    /** Non-2xx status for the events endpoint — an install whose RBAC predates the read. */
+    eventsStatus?: number
+    daemonSpec?: Record<string, unknown>
+    suspend?: boolean
+    /** Any other collection this case cares about, keyed off the request path. */
+    extra?: (path: string) => object | undefined
+  }
+
+  async function observe(deployment: unknown, options: ObserveOptions = {}) {
+    const { pods = [], events = [], eventsStatus, daemonSpec = {}, suspend = false } = options
+    const extra = options.extra ?? (() => undefined)
+    const { config: cluster, requests } = await fakeApiServer(({ url }) => {
       const path = url.pathname
       if (path.endsWith('/deployments/ac-daemon')) return { json: deployment as object }
+      if (path.endsWith('/pods')) return { json: { items: pods } }
+      if (path.endsWith('/events'))
+        return eventsStatus ? { status: eventsStatus, json: { message: 'forbidden' } } : { json: { items: events } }
       return { json: extra(path) ?? { items: [] } }
     })
     const http = new K8sHttp(cluster)
+    const warnings: string[] = []
     const ctx = {
       http,
       orgApi: new AgentConnectOrgApi(http, cluster.namespace),
       config: loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-', AC_TOKENREVIEW_CLUSTERROLE: 'x' }),
       controlNamespace: cluster.namespace,
-      log: {}
+      log: { warn: (message: string) => warnings.push(message) }
     }
     const obs = newObservations()
     const { AgentConnectOrgSpecSchema } = await import('../crd/types.js')
@@ -111,18 +141,43 @@ describe('observeWorkloads', () => {
       orgName: 'acme',
       spec: AgentConnectOrgSpecSchema.parse({
         targetNamespace: 'test-ac-org-acme',
-        daemon: { image: 'ghcr.io/example/daemon:v2', tier: 'small' },
+        suspend,
+        daemon: { image: 'ghcr.io/example/daemon:v2', tier: 'small', ...daemonSpec },
         runtime: { image: 'x', tiers: [] }
       })
     }
     const { observeWorkloads } = await import('./status.js')
     await observeWorkloads(ctx, input, obs)
-    return obs
+    return { obs, requests, warnings }
   }
+
+  /** The kubelet's own wording for a Secret-backed volume it cannot mount; re-emitted while it keeps failing. */
+  const failedMountEvent = (podName: string, message: string, agoMs = 30_000) => ({
+    reason: 'FailedMount',
+    involvedObject: { kind: 'Pod', name: podName },
+    message,
+    lastTimestamp: new Date(Date.now() - agoMs).toISOString()
+  })
+
+  const convergedDeployment = {
+    metadata: { generation: 2 },
+    spec: { replicas: 1, template: { spec: { containers: [{ image: 'ghcr.io/example/daemon:v2' }] } } },
+    status: { observedGeneration: 2, readyReplicas: 1, updatedReplicas: 1 }
+  }
+
+  /** A pod the kubelet has accepted but whose containers are still not up. */
+  const startingPod = (name = 'ac-daemon-0') => ({
+    metadata: { name },
+    status: {
+      phase: 'Pending',
+      conditions: [{ type: 'PodScheduled', status: 'True' }],
+      containerStatuses: [{ ready: false, state: { waiting: { reason: 'ContainerCreating' } } }]
+    }
+  })
 
   it('does not report the target image Ready off the old pod`s stale readyReplicas', async () => {
     // Image just swapped: generation advanced, but readyReplicas still counts the old pod.
-    const obs = await observe({
+    const { obs } = await observe({
       metadata: { generation: 2 },
       spec: { replicas: 1, template: { spec: { containers: [{ image: 'ghcr.io/example/daemon:v2' }] } } },
       status: { observedGeneration: 1, readyReplicas: 1, updatedReplicas: 0 }
@@ -132,7 +187,7 @@ describe('observeWorkloads', () => {
   })
 
   it('reports Ready once the updated pod itself is the ready one', async () => {
-    const obs = await observe({
+    const { obs } = await observe({
       metadata: { generation: 2 },
       spec: { replicas: 1, template: { spec: { containers: [{ image: 'ghcr.io/example/daemon:v2' }] } } },
       status: { observedGeneration: 2, readyReplicas: 1, updatedReplicas: 1 }
@@ -142,27 +197,32 @@ describe('observeWorkloads', () => {
   })
 
   it('summarizes warm pools from readyReplicas and counts bound claims per pool', async () => {
-    const obs = await observe({ spec: { replicas: 1 } }, (path) => {
-      if (path.endsWith('/sandboxwarmpools'))
-        return {
-          items: [
-            { metadata: { name: 'ac-runtime-small' }, status: { replicas: 3, readyReplicas: 2 } },
-            // A pool the vendor has not populated yet: status carries the selector only.
-            { metadata: { name: 'ac-runtime-large' }, status: { selector: 'warm-pool-sandbox=abc' } }
-          ]
+    const { obs } = await observe(
+      { spec: { replicas: 1 } },
+      {
+        extra: (path) => {
+          if (path.endsWith('/sandboxwarmpools'))
+            return {
+              items: [
+                { metadata: { name: 'ac-runtime-small' }, status: { replicas: 3, readyReplicas: 2 } },
+                // A pool the vendor has not populated yet: status carries the selector only.
+                { metadata: { name: 'ac-runtime-large' }, status: { selector: 'warm-pool-sandbox=abc' } }
+              ]
+            }
+          if (path.endsWith('/sandboxclaims'))
+            return {
+              items: [
+                { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: { sandbox: { name: 'sb-1' } } },
+                { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: { sandbox: { name: 'sb-2' } } },
+                // Not bound yet — it holds no Sandbox, so it is not claimed capacity.
+                { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: {} },
+                { spec: { warmPoolRef: { name: 'ac-runtime-large' } }, status: { sandbox: { name: 'sb-3' } } }
+              ]
+            }
+          return undefined
         }
-      if (path.endsWith('/sandboxclaims'))
-        return {
-          items: [
-            { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: { sandbox: { name: 'sb-1' } } },
-            { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: { sandbox: { name: 'sb-2' } } },
-            // Not bound yet — it holds no Sandbox, so it is not claimed capacity.
-            { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: {} },
-            { spec: { warmPoolRef: { name: 'ac-runtime-large' } }, status: { sandbox: { name: 'sb-3' } } }
-          ]
-        }
-      return undefined
-    })
+      }
+    )
     expect(obs.pools).toEqual([
       { name: 'ac-runtime-small', warmAvailable: 2, claimed: 2 },
       { name: 'ac-runtime-large', warmAvailable: 0, claimed: 1 }
@@ -170,13 +230,219 @@ describe('observeWorkloads', () => {
   })
 
   it('does not list claims when the namespace has no warm pools', async () => {
-    const seen: string[] = []
-    const obs = await observe({ spec: { replicas: 1 } }, (path) => {
-      seen.push(path)
-      return undefined
-    })
+    const { obs, requests } = await observe({ spec: { replicas: 1 } })
     expect(obs.pools).toEqual([])
-    expect(seen.some((path) => path.endsWith('/sandboxclaims'))).toBe(false)
+    expect(requests.some((url) => url.pathname.endsWith('/sandboxclaims'))).toBe(false)
+  })
+
+  it('reports CredentialReady Unknown when no daemon pod exists yet', async () => {
+    const { obs } = await observe(convergedDeployment)
+    expect(obs.credential).toEqual({ status: 'Unknown', reason: 'NoDaemonPod' })
+  })
+
+  it('reports CredentialReady True once every container of a pod is ready', async () => {
+    const pod = {
+      metadata: { name: 'ac-daemon-0' },
+      status: { phase: 'Running', containerStatuses: [{ ready: true }] }
+    }
+    const { obs } = await observe(convergedDeployment, { pods: [pod] })
+    expect(obs.credential).toEqual({ status: 'True', reason: 'DaemonRunning' })
+  })
+
+  it('names the credential secret when the kubelet cannot build the container config', async () => {
+    const pod = {
+      metadata: { name: 'ac-daemon-0' },
+      status: {
+        phase: 'Pending',
+        initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'CreateContainerConfigError' } } }]
+      }
+    }
+    const { obs } = await observe(convergedDeployment, {
+      pods: [pod],
+      daemonSpec: { credentialSecretName: 'org-daemon-credentials' }
+    })
+    expect(obs.credential?.status).toBe('False')
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+    expect(obs.credential?.message).toContain('org-daemon-credentials')
+  })
+
+  it('reads the pod`s FailedMount event as the missing credential secret, not a startup delay', async () => {
+    const { obs, requests } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found'
+        )
+      ]
+    })
+    expect(obs.credential?.status).toBe('False')
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+    expect(obs.credential?.message).toContain('ac-daemon-token')
+    // Scoped server-side to the one reason worth reading, so the pass never lists a namespace's whole event stream.
+    const eventQuery = requests.find((url) => url.pathname.endsWith('/events'))?.searchParams.get('fieldSelector')
+    expect(eventQuery).toBe('involvedObject.kind=Pod,reason=FailedMount')
+  })
+
+  it('does not blame the credential for another volume`s mount failure', async () => {
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "state" : timed out waiting for the condition'
+        )
+      ]
+    })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+  })
+
+  it('accepts the events.k8s.io series heartbeat as the occurrence time', async () => {
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [
+        {
+          reason: 'FailedMount',
+          involvedObject: { kind: 'Pod', name: 'ac-daemon-0' },
+          message: 'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found',
+          eventTime: new Date(Date.now() - 20 * 60_000).toISOString(),
+          series: { lastObservedTime: new Date(Date.now() - 30_000).toISOString() }
+        }
+      ]
+    })
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+  })
+
+  it('still believes a persistent failure whose events the recorder has throttled', async () => {
+    // Correlator burst drained: one admitted update per five minutes, so ~6 min between visible timestamps.
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found',
+          6 * 60_000
+        )
+      ]
+    })
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+  })
+
+  it('lets a retained event go stale instead of describing a mount that was fixed', async () => {
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found',
+          30 * 60_000
+        )
+      ]
+    })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+  })
+
+  it('drops the event once the pod is stuck on something other than creating its containers', async () => {
+    // Secret created, mount succeeded, image is the new blocker — the retained event must not keep the old reason.
+    const pulling = {
+      metadata: { name: 'ac-daemon-0' },
+      status: {
+        phase: 'Pending',
+        conditions: [{ type: 'PodScheduled', status: 'True' }],
+        initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'ImagePullBackOff' } } }]
+      }
+    }
+    const { obs } = await observe(convergedDeployment, {
+      pods: [pulling],
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found'
+        )
+      ]
+    })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+  })
+
+  it('does not blame a credential whose name merely appears in another object`s failure', async () => {
+    // A Secret named `state` shares its name with the daemon PVC's volume; only a Secret reference counts.
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      daemonSpec: { credentialSecretName: 'state' },
+      events: [
+        failedMountEvent(
+          'ac-daemon-0',
+          'MountVolume.SetUp failed for volume "state" : persistentvolumeclaim "ac-daemon-state" not found'
+        )
+      ]
+    })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+  })
+
+  it('accepts the namespaced wording the kubelet also uses for an unreadable secret', async () => {
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [failedMountEvent('ac-daemon-0', "Couldn't get secret test-ac-org-acme/ac-daemon-token: not found")]
+    })
+    expect(obs.credential?.reason).toBe('CredentialSecretMissing')
+  })
+
+  it('ignores a FailedMount event belonging to some other pod', async () => {
+    const { obs } = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [
+        failedMountEvent(
+          'ac-runtime-7',
+          'MountVolume.SetUp failed for volume "config" : secret "ac-daemon-token" not found'
+        )
+      ]
+    })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+  })
+
+  it('keeps the status pass alive when the events read is forbidden', async () => {
+    const { obs, warnings } = await observe(convergedDeployment, { pods: [startingPod()], eventsStatus: 403 })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+    expect(warnings.some((warning) => warning.includes('FailedMount'))).toBe(true)
+    // The rest of the pass still ran.
+    expect(obs.daemon?.ready).toBe(true)
+  })
+
+  it('reports an unscheduled pod as Unknown rather than blaming the credential', async () => {
+    const pod = {
+      metadata: { name: 'ac-daemon-0' },
+      status: { phase: 'Pending', conditions: [{ type: 'PodScheduled', status: 'False', reason: 'Unschedulable' }] }
+    }
+    const { obs, requests } = await observe(convergedDeployment, { pods: [pod] })
+    expect(obs.credential?.status).toBe('Unknown')
+    expect(obs.credential?.reason).toBe('DaemonPodUnschedulable')
+    // No kubelet ever saw the pod, so the events read is skipped entirely.
+    expect(requests.some((url) => url.pathname.endsWith('/events'))).toBe(false)
+  })
+
+  it('keeps an ordinary not-ready pod on DaemonPodNotReady and asks for one more look', async () => {
+    const { obs } = await observe(convergedDeployment, { pods: [startingPod()] })
+    expect(obs.credential).toEqual({ status: 'False', reason: 'DaemonPodNotReady' })
+    // The FailedMount event can be written after the pod's last update, which no watch would wake us for.
+    expect(obs.recheckAfterMs).toBe(CREDENTIAL_RECHECK_MS)
+  })
+
+  it('asks for no follow-up once the verdict is settled', async () => {
+    const ready = {
+      metadata: { name: 'ac-daemon-0' },
+      status: { phase: 'Running', containerStatuses: [{ ready: true }] }
+    }
+    expect((await observe(convergedDeployment, { pods: [ready] })).obs.recheckAfterMs).toBeUndefined()
+    const blocked = await observe(convergedDeployment, {
+      pods: [startingPod()],
+      events: [failedMountEvent('ac-daemon-0', 'secret "ac-daemon-token" not found')]
+    })
+    expect(blocked.obs.recheckAfterMs).toBeUndefined()
+  })
+
+  it('reports a suspended org as Unknown without inspecting pods', async () => {
+    const { obs } = await observe(convergedDeployment, { pods: [startingPod()], suspend: true })
+    expect(obs.credential).toEqual({ status: 'Unknown', reason: 'Suspended' })
   })
 })
 

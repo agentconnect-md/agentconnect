@@ -3,7 +3,7 @@ import { watchCollection, type K8sHttp, type K8sObject } from '@agentconnect.md/
 import type { OperatorConfig } from './config.js'
 import type { AgentConnectOrgApi } from './crd/api.js'
 import { ORG_LABEL } from './crd/types.js'
-import { WorkQueue } from './workqueue.js'
+import { WorkQueue, type WorkResult } from './workqueue.js'
 
 interface LabeledObject extends K8sObject {
   metadata?: K8sObject['metadata'] & { labels?: Record<string, string> }
@@ -13,7 +13,7 @@ export interface ControllerOptions {
   http: K8sHttp
   orgApi: AgentConnectOrgApi
   config: OperatorConfig
-  reconcile: (name: string) => Promise<void>
+  reconcile: (name: string) => Promise<WorkResult | void>
   clock?: Clock
   log?: { debug?: (message: string) => void; warn?: (message: string) => void }
 }
@@ -47,7 +47,8 @@ interface Term {
 /**
  * Leader-gated control loop: the primary CR watch in the control namespace,
  * secondary Deployment/Pod watches mapped back to the owning CR (status
- * timeliness — CredentialReady must not wait for resync), and the bounded
+ * timeliness — CredentialReady must not wait for resync), the short follow-up
+ * a pass can ask for when its own reading was provisional, and the bounded
  * full-resync ticker that converges everything else. All term-scoped: losing
  * the lease aborts every watch and drains the queue.
  */

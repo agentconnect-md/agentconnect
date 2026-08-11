@@ -70,7 +70,7 @@ only if CRD conversion webhooks become necessary.
 | `config.ts`                   | zod env, fail-fast: prefix + tokenreview ClusterRole (required), master template prefix, resync interval, lease name, watch timeout.                                                                                     | done          |
 | `crd/types.ts`                | Group/kind/finalizer/annotation/condition constants + zod spec/status schemas.                                                                                                                                           | done          |
 | `crd/api.ts`                  | Typed verbs over the thin client: get/list/own-namespace watch, merge-patch meta (finalizers), `/status` patch.                                                                                                          | done          |
-| `workqueue.ts`                | Per-key serialized, coalescing queue with per-key failure backoff.                                                                                                                                                       | done          |
+| `workqueue.ts`                | Per-key serialized, coalescing queue with per-key failure backoff, plus the delayed follow-up a pass asks for when its own reading was provisional.                                                                      | done          |
 | `controller.ts`               | Leader-gated term: CR watch + secondary Deployment/Pod watches (label `agentconnect.md/org`, mapped to the owning CR, filtered to known CRs) + bounded resync ticker.                                                    | done          |
 | `reconcile/reconcile.ts`      | Dispatch: deletion path vs ensure-finalizer → envelope → rollout → gateway policies → status.                                                                                                                            | done          |
 | `reconcile/resources.ts`      | Server-side-apply/get/delete primitives, path builders, and the envelope's fixed object names.                                                                                                                           | done          |
@@ -145,8 +145,20 @@ reconcile pass:
 8. `ensureDaemonPvc` — ReadWriteOncePod (the Recreate strategy assumes
    single-attach).
 9. `ensureDaemonDeployment` — strategy Recreate; required credential Secret
-   volume (kubelet gates startup; `CredentialReady` derives from pod state);
-   `credentialRevision` annotation forces rotation rollouts.
+   volume (kubelet gates startup); `credentialRevision` annotation forces
+   rotation rollouts. `CredentialReady` derives from pod state plus the pod's
+   `FailedMount` events, which is where the kubelet — and only the kubelet —
+   names a Secret it could not mount: a blocked mount reads
+   `False/CredentialSecretMissing`, an unplaced pod
+   `Unknown/DaemonPodUnschedulable`, any other stall `False/DaemonPodNotReady`.
+   An Event is only believed while it is still being re-emitted and the pod is
+   still awaiting container creation, so one retained past its fix cannot
+   describe a mount that now works. Reading Events keeps the no-Secret-verbs
+   boundary intact, and a forbidden events read only costs the nuance, never
+   the status pass. An Event can also be written after the pod's last update,
+   which no watch would wake the operator for, so the provisional verdict asks
+   the queue for one follow-up pass a minute later rather than waiting for the
+   full resync.
 10. `ensureDaemonService` — ClusterIP for relay ingress and shim dial-in.
 
 Deletion (finalizer `agentconnect.md/org-envelope`): quiesce → delete
