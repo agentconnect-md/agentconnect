@@ -208,7 +208,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Delete the organization',
           description:
-            'Delete the organization (owner only). Refused with 409 while it still has daemons. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
+            'Delete the organization (owner only). Refused with 409 while it still has daemons. A managed-execution envelope is recorded for teardown inside the delete transaction and its AgentConnectOrg resource is removed right afterwards — a cluster that is unreachable only delays that, it does not fail or skip the deletion. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
           operationId: 'deleteOrganization',
           response: { 204: z.null(), 403: ErrorDto, 409: ErrorDto }
         }
@@ -239,6 +239,17 @@ export function orgScopedRoutes(deps: HttpDeps) {
             statusCode: 409,
             message: 'GitHub Check cleanup is pending — retry organization deletion after cleanup converges'
           })
+        }
+        // The delete transaction recorded the envelope's namespace, so cleanup
+        // authority no longer depends on this request: retire it now for
+        // latency, and let the periodic drain cover an unreachable cluster or a
+        // process that had cluster execution switched off at delete time.
+        if (deps.clusterExecution) {
+          try {
+            await deps.clusterExecution.drainTeardowns()
+          } catch (err) {
+            req.log.warn({ err }, 'cluster-execution: envelope teardown deferred to the periodic drain')
+          }
         }
         return reply.code(204).send(null)
       }

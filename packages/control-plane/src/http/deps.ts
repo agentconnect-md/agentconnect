@@ -29,6 +29,7 @@ import type {
   McpProviderSecretStore,
   McpGrantRepo,
   SkillSourceRepo,
+  OrgClusterExecutionRepo,
   OrganizationEnvironmentRepo,
   OrganizationEnvironmentResolver,
   OrganizationEnvironmentSecretStore,
@@ -80,6 +81,7 @@ import type { SessionKey } from '../domain/sessionKey.js'
 import type { IconStore } from '../icons/icon-store.js'
 import type { ConnectorsClient } from '../connectors/client.js'
 import type { SessionAccessPlugin } from './session-access-plugin.js'
+import type { ClusterExecutionService } from '../cluster/index.js'
 import type { RuntimeConfigRouteDeps } from './routes/runtime-config.js'
 
 export interface HttpServerConfig extends HumanAuthConfig {
@@ -174,6 +176,9 @@ export interface HttpDeps {
     mcpGrant: McpGrantRepo
     /** Org-level shared-skills sources (metadata only; content stays daemon-side). */
     skillSource: SkillSourceRepo
+    /** The org's desired managed-execution envelope — the control plane's half of
+     *  the AgentConnectOrg spec. Envelope STATUS is never stored here. */
+    orgClusterExecution: OrgClusterExecutionRepo
     /** Accepted organization Knowledge, managed-skill revisions, and pending suggestion metadata. */
     organizationKnowledge?: OrganizationKnowledgeRepo
     /** Organization-owned variables/secrets + their per-agent bindings (metadata and
@@ -219,6 +224,10 @@ export interface HttpDeps {
     /** Embedded OAuth AS protocol state (agent-assistant.md §7): clients, codes, grants. */
     oauth: OAuthRepo
   }
+  /** The AgentConnectOrg writer + envelope status reader. Absent ⇒ cluster
+   *  execution is not configured (CLUSTER_EXECUTION_MODE=off) and its routes
+   *  are not mounted. */
+  clusterExecution?: ClusterExecutionService
   registry: DaemonRegistry
   /**
    * §9 platform-provider registry — the single platform-set authority, and the

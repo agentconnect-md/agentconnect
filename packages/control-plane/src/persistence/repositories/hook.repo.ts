@@ -3016,6 +3016,22 @@ export class PgHookRepo implements HookRepo {
           data: [{ orgId, mount: shredTarget.mount, keyName: shredTarget.keyName }],
           skipDuplicates: true
         })
+        // Same reasoning for a managed-execution envelope: deleting its
+        // AgentConnectOrg is a remote effect, and the cascade below drops the
+        // only record of the namespace that names it. Reading the row HERE is
+        // what makes the tombstone authoritative — an enable that committed
+        // first is visible, and one that has not is blocked by the org row's
+        // FOR UPDATE above and then fails its foreign key.
+        const envelope = await tx.orgClusterExecution.findUnique({
+          where: { orgId },
+          select: { targetNamespace: true }
+        })
+        if (envelope) {
+          await tx.pendingEnvelopeTeardown.createMany({
+            data: [{ orgId, targetNamespace: envelope.targetNamespace }],
+            skipDuplicates: true
+          })
+        }
         await tx.org.delete({ where: { id: orgId } })
         return { status: 'deleted' as const, removedHookIds: hookRows.map((row) => row.id) }
       },

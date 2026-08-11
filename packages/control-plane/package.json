@@ -76,6 +76,7 @@
   },
   "types": "dist/index.d.ts",
   "dependencies": {
+    "@agentconnect.md/k8s-client": "workspace:*",
     "@agentconnect.md/observability": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
     "@fastify/cors": "^11.3.0",

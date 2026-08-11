@@ -77,6 +77,8 @@ RUN pnpm --filter "@agentconnect.md/control-plane" prisma:generate
 RUN pnpm --config.enable-pre-post-scripts=false \
   --filter "@agentconnect.md/protocol" \
   --filter "@agentconnect.md/observability" \
+  --filter "@agentconnect.md/connection" \
+  --filter "@agentconnect.md/k8s-client" \
   --filter "@agentconnect.md/control-plane" \
   -r build
 

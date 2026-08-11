@@ -74,7 +74,8 @@ export const Tag = {
   Hooks: 'Hooks',
   Usage: 'Usage',
   Stream: 'Stream',
-  GitHub: 'GitHub'
+  GitHub: 'GitHub',
+  Cluster: 'Cluster execution'
 } as const
 
 /** Group order + blurbs for the docs sidebar (OpenAPI top-level `tags`). */
@@ -126,6 +127,11 @@ const TAG_DESCRIPTIONS: ReadonlyArray<{ name: string; description: string }> = [
   {
     name: Tag.GitHub,
     description: 'GitHub App installations powering github-app workspaces (repo picker + short-lived git credentials).'
+  },
+  {
+    name: Tag.Cluster,
+    description:
+      'Managed execution on Kubernetes — an organization’s envelope settings and the live status the cluster operator publishes. Present only when the deployment is configured for cluster execution.'
   }
 ]
 
