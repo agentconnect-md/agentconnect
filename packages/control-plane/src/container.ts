@@ -27,6 +27,7 @@ import { GithubInstallationDoorbell } from './github/installation-doorbell.servi
 import { GithubCommentAuthzService } from './github/comment-authz.service.js'
 import { GithubRerequestService } from './github/rerequest.service.js'
 import { GithubReviewBrokerService } from './github/review-broker.service.js'
+import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
 import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconciler.js'
@@ -708,6 +709,9 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
+  // The console PR panel's read projection. Long-lived because its whole point is the short TTL
+  // cache — building it per request would spend one GitHub call per panel mount.
+  const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({ hook: repos.hook, agent: repos.agent, github, clock })
     : undefined
@@ -945,6 +949,7 @@ export function buildContainer(
     readiness,
     searchSkillRegistry,
     ...(github ? { github } : {}),
+    ...(pullRequestView ? { pullRequestView } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
     ...(logtoIdentity ? { logtoIdentity } : {}),
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],

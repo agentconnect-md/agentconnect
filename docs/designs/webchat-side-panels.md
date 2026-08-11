@@ -346,15 +346,15 @@ All following the existing workspace-route shape in `agents.ts`: `getOrgAgent` �
 `toDto`. Every route needs `tags`, `summary`, `description`, and a unique
 `operationId` or it renders nameless in the OpenAPI docs.
 
-| Method | Path                                                                         | Backing                              |
-| ------ | ---------------------------------------------------------------------------- | ------------------------------------ |
-| GET    | `/agents/:id/workspace/gitdiff`                                              | `workspace/gitdiff`                  |
-| GET    | `/agents/:id/workspace/gitlog`                                               | `workspace/gitlog`                   |
-| POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                         |
-| POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`               |
-| GET    | `/agents/:id/tasks`                                                          | `task/list`                          |
-| GET    | `/sessions/:id/pull-request`                                                 | GitHub API via installation token    |
-| POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge` |
+| Method | Path                                                                         | Backing                                 |
+| ------ | ---------------------------------------------------------------------------- | --------------------------------------- |
+| GET    | `/agents/:id/workspace/gitdiff`                                              | `workspace/gitdiff`                     |
+| GET    | `/agents/:id/workspace/gitlog`                                               | `workspace/gitlog`                      |
+| POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                            |
+| POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`                  |
+| GET    | `/agents/:id/tasks`                                                          | `task/list`                             |
+| GET    | `/sessions/:id/pull-request`                                                 | Postgres identity + GitHub REST/GraphQL |
+| POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge`    |
 
 **`GET /agents/:id/tasks` does NOT use `canReadWorkspaceScope`**, and this
 paragraph's earlier claim that it would was wrong. That gate requires
@@ -860,6 +860,33 @@ Known M4 follow-ups, none of which change what the code does today:
 status and counts; panel with checks, reviews and threads **read-only** (no
 Auto-fix, no Merge-when-ready). Tab hidden when the session has no linked run.
 _Exit:_ PR state is visible beside the conversation that is reviewing it.
+
+Three things measured against the shipped CP before writing any of it, each of
+which changes what M5 has to build:
+
+- **There is no GraphQL client in the control plane.** `github/api.ts` exposes
+  `githubRequest`, which is REST-only. Review-thread _resolution state_ does not
+  exist in REST at all — `/pulls/:n/comments` returns review comments with no
+  `isResolved` — so the design's "unresolved threads" section and its badge are
+  unbackable without one. M5 therefore adds a minimal `githubGraphql` helper
+  beside `githubRequest` (same installation auth, same timeout, same error
+  mapping, POST to `/graphql`). M6 needs it regardless for
+  `resolveReviewThread` and `enablePullRequestAutoMerge`, so this is not
+  speculative plumbing — but it was missing from this plan's route table, which
+  named both mutations as though the capability already existed.
+- **`HookRun.sessionId` is not indexed.** The lookup this route is built on — a
+  session id to the run that created it — would be a sequential scan of every
+  run in the deployment. M5 adds a migration for it. Nothing else in the plan
+  needed that column as a search key, which is why no index exists yet.
+- **The PR association is already persisted, so identity needs no GitHub call.**
+  `HookReviewProjection` carries `repoId`, `repoFullName`, `headSha`,
+  `reportSha` and `lastResolvedInstallationId`, and `HookReviewSubject` carries
+  `pullNumber`, `headSha`, `baseSha` and `isOpen` per projection — maintained by
+  the review broker's own commit→PR association pass. The route reads the PR's
+  identity and open/closed state from Postgres and spends GitHub calls only on
+  what is genuinely live: check runs, reviews, and threads. That also means a
+  rate-limited or denied GitHub call degrades to a panel that still names the
+  PR, rather than an empty tab.
 
 **M6 — PR actions.** The single Auto-fix button over the webchat turn path
 (§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the

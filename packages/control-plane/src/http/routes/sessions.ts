@@ -981,5 +981,52 @@ export function sessionRoutes(deps: HttpDeps) {
         }
       }
     )
+
+    // The pull request this session's work belongs to (webchat-side-panels.md §3.4). Two sources by
+    // design: identity from the owning run in Postgres, live state from GitHub in one GraphQL call.
+    // A GitHub failure is therefore DATA (`degraded` + a reason) rather than an error — the panel
+    // still names its PR. 404 only when there is no pull-request run behind the session at all,
+    // which is what hides the tab.
+    r.get(
+      '/sessions/:id/pull-request',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Get the session’s pull request',
+          description:
+            'The pull request this session was dispatched for: identity (repo, number, url, head/base) from the owning hook run, and live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when the session has no pull-request run, when the deployment has no GitHub App configured, or when the run predates repo/installation capture; the console hides its PR tab on that. Review thread bodies are user content: proxied, never stored.',
+          operationId: 'getSessionPullRequest',
+          params: IdParam,
+          querystring: SessionPullRequestQueryDto,
+          response: { 200: SessionPullRequestDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const absent = () =>
+          reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'pull request not found' })
+        // The session's own audience first: a PR title and its review threads are content, and this
+        // route must not become the way to read them for a session the caller cannot open.
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) return absent()
+        const view = deps.pullRequestView
+        if (!view) return absent()
+        const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
+        // `repoId` and `sourceInstallationId` are nullable for legacy rows written before they were
+        // captured; without both there is nothing to mint a token against, so the session reads as
+        // having no PR rather than as an error the reader cannot act on.
+        if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) return absent()
+        return toSessionPullRequestDto(
+          await view.view(
+            {
+              installationId: run.sourceInstallationId,
+              repoId: run.repoId,
+              repoFullName: run.repoFullName,
+              pullNumber: run.pullNumber
+            },
+            req.query.refresh === true
+          )
+        )
+      }
+    )
   }
 }

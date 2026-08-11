@@ -145,6 +145,14 @@ export class InstallationTokenService {
     return this.mintPermissionLevels(installationId, repoFullName, { checks: 'write', pull_requests: 'read' }, repoId)
   }
 
+  /** CP-only READ token for the console's PR panel — PR metadata, reviews, review threads and the
+   * head commit's check rollup. There is no tier to clamp against here the way {@link mint} does:
+   * read is the permission floor, so a read-only workspace already gets exactly this. Neither
+   * permission enters a daemon grant or the agent environment. */
+  async mintPullRequestRead(installationId: bigint, repoFullName: string, repoId: bigint): Promise<MintedGitCred> {
+    return this.mintPermissionLevels(installationId, repoFullName, { checks: 'read', pull_requests: 'read' }, repoId)
+  }
+
   /** Drop every cached/in-flight token for one installation after a permission,
    * suspension, revoke, or reinstall fact changes. In-flight requests cannot be
    * cancelled, so the generation check below prevents stale repopulation. */

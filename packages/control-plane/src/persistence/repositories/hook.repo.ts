@@ -1026,6 +1026,23 @@ export class PgHookRepo implements HookRepo {
     return row ? toRunRecord(row) : null
   }
 
+  /**
+   * The pull-request run that owns one session — what the console's PR panel resolves a session
+   * into (webchat-side-panels.md §3.4). Org-fenced, so a foreign session simply reads absent.
+   *
+   * Narrowed to `subjectKind: 'pull_request'` with a `pullNumber`: an issue-comment run and a
+   * push run both carry a session and neither has a PR to show, and answering with one would make
+   * the caller re-check what the query could have. Newest first because a redelivery mints a new
+   * run against the same session, and the PR identity to display is the latest association.
+   */
+  async latestPullRequestRunForSession(orgId: OrgId, sessionId: string): Promise<HookRunRecord | null> {
+    const row = await this.db.hookRun.findFirst({
+      where: { orgId, sessionId, subjectKind: 'pull_request', pullNumber: { not: null } },
+      orderBy: { startedAt: 'desc' }
+    })
+    return row ? toRunRecord(row) : null
+  }
+
   async listRunsNeedingReviewProjection(limit = 100): Promise<HookRunRecord[]> {
     const take = Math.max(1, Math.min(limit, 500))
     // There is intentionally no FK from HookRun to HookReviewProjection (the

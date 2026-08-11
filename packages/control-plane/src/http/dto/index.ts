@@ -3097,6 +3097,73 @@ export const AgentTaskDto = z.object({
   detail: z.string().nullable() // the terminal status the runtime reported, when it named one
 })
 
+/** One check on the PR's head commit, over one vocabulary — GitHub spells the same outcome three
+ *  ways depending on whether a CheckRun, a StatusContext or a rollup reported it. */
+export const SessionPullRequestCheckDto = z.object({
+  name: z.string(),
+  state: z.enum(['success', 'failure', 'pending', 'skipped', 'neutral']),
+  detail: z.string().nullable(), // GitHub's own word for it, verbatim
+  startedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  url: z.string().nullable()
+})
+
+/** One reviewer's CURRENT review, not one review event. `isBot` is the identity split the console
+ *  draws as square-vs-circle: an agent reviewing as a GitHub App is not a person. */
+export const SessionPullRequestReviewDto = z.object({
+  author: z.string(),
+  state: z.enum(['approved', 'changes_requested', 'commented', 'dismissed', 'pending']),
+  isBot: z.boolean()
+})
+
+/** One UNRESOLVED review thread. Bodies are user content and are proxied, never persisted. */
+export const SessionPullRequestThreadDto = z.object({
+  location: z.string(), // `path:line`, the path alone, or a PR-level thread
+  body: z.string(),
+  author: z.string(),
+  isOutdated: z.boolean()
+})
+
+/** `GET /sessions/:id/pull-request` — the PR this session's work belongs to.
+ *
+ *  Identity (`repoFullName`, `pullNumber`, `url`) is read from the owning run in Postgres, so it is
+ *  present even when GitHub could not be reached; `degraded` then says why and every live list is
+ *  empty. That is deliberately not an error: a panel that still names its PR beats an empty tab.
+ *  404 when the session has no pull-request run, which is what hides the console's PR tab. */
+/** `?refresh=true` bypasses the projection's short TTL — the panel's own refresh action. It does
+ *  NOT bypass in-flight coalescing, so a double press is still one GitHub read.
+ *
+ *  `z.stringbool()`, NOT `z.coerce.boolean()`: the latter sends `refresh=false` down the refresh
+ *  path, because every non-empty string is truthy. That is the same trap `WorkspaceDiffQueryDto`
+ *  avoided by using a closed vocabulary instead of a boolean — here the string-aware parser is the
+ *  narrower fix, since there are only two states and no third one worth naming. */
+export const SessionPullRequestQueryDto = z.object({
+  refresh: z.stringbool().optional()
+})
+
+export const SessionPullRequestDto = z.object({
+  repoFullName: z.string(),
+  pullNumber: z.number().int(),
+  title: z.string(),
+  state: z.enum(['open', 'closed', 'merged']),
+  isDraft: z.boolean(),
+  url: z.string(),
+  headRef: z.string(),
+  baseRef: z.string(),
+  additions: z.number().int(),
+  deletions: z.number().int(),
+  reviewDecision: z.enum(['approved', 'changes_requested', 'review_required']).nullable(),
+  checks: z.array(SessionPullRequestCheckDto),
+  checksTruncated: z.boolean(),
+  reviews: z.array(SessionPullRequestReviewDto),
+  threads: z.array(SessionPullRequestThreadDto),
+  unresolvedCount: z.number().int(), // a floor when `threadsTruncated`
+  threadsTruncated: z.boolean(),
+  degraded: z.boolean(),
+  degradedReason: z.enum(['rate_limited', 'denied', 'unreachable']).nullable()
+})
+export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
+
 /** `GET /agents/:id/tasks` — live tasks first, then the daemon's bounded settled history.
  *  `tracked:false` means the owning daemon holds no lease for this session (a non-Claude
  *  runtime, an adapter without the lifecycle extension, or nothing emitted yet), which is a
