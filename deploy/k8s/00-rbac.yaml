@@ -1,0 +1,65 @@
+# Identity and authorization for the k8s daemon.
+#
+# The verb list is the daemon's Kubernetes surface exactly: SandboxApi has one method per granted
+# verb, so anything absent here could only fail at runtime. `pods` is deliberately NOT granted —
+# pods are the agent-sandbox controller's to materialize, and the daemon resolves a dialing pod
+# back to its launch through the Sandbox's own pod-name annotation instead.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agentconnect-daemon
+  namespace: agentconnect
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agentconnect-daemon
+  namespace: agentconnect
+rules:
+  # The claim is how a sandbox is asked for; the Sandbox is what it binds to. `patch` on
+  # sandboxes is the operating-mode write (suspend/resume), which is guarded and re-read.
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxclaims']
+    verbs: ['get', 'list', 'watch', 'create', 'delete']
+  - apiGroups: ['agents.x-k8s.io']
+    resources: ['sandboxes']
+    verbs: ['get', 'list', 'watch', 'patch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agentconnect-daemon
+  namespace: agentconnect
+subjects:
+  - kind: ServiceAccount
+    name: agentconnect-daemon
+    namespace: agentconnect
+roleRef:
+  kind: Role
+  name: agentconnect-daemon
+  apiGroup: rbac.authorization.k8s.io
+---
+# TokenReview is cluster-scoped: it is how the daemon verifies that a pod dialing its shim
+# endpoint really holds the audience-restricted token the pod template projected. Without it the
+# handshake could not tell a sandbox pod from anything else that can reach the port.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agentconnect-daemon-tokenreview
+rules:
+  - apiGroups: ['authentication.k8s.io']
+    resources: ['tokenreviews']
+    verbs: ['create']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agentconnect-daemon-tokenreview
+subjects:
+  - kind: ServiceAccount
+    name: agentconnect-daemon
+    namespace: agentconnect
+roleRef:
+  kind: ClusterRole
+  name: agentconnect-daemon-tokenreview
+  apiGroup: rbac.authorization.k8s.io

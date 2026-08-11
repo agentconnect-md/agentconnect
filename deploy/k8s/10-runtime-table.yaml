@@ -1,0 +1,19 @@
+# What the image declares it ships, which is what `--k8s` reports INSTEAD of probing a host.
+#
+# Not hand-maintained: it is generated inside the runtime-sandbox image by asking each runtime at
+# `initialize`, and lives at /opt/agentconnect/runtime/k8s-runtimes.json there. Regenerate this
+# ConfigMap from the image you actually pin — see deploy/k8s/README.md — because a table that
+# disagrees with the image makes the daemon advertise a runtime version nobody can run.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentconnect-k8s-runtimes
+  namespace: agentconnect
+data:
+  k8s-runtimes.json: |
+    {
+      "runtimes": [
+        { "id": "claude-acp", "version": "0.66.0" },
+        { "id": "codex-acp", "version": "1.1.14" }
+      ]
+    }
