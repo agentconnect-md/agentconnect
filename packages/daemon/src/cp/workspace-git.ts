@@ -31,7 +31,7 @@
  * own `filter.*.clean` program); and runtime quiescence is the CALLER's job — the
  * daemon wraps each of them in `Daemon.withWorkspaceIndexWrite`.
  */
-import { existsSync, promises as fs } from 'node:fs'
+import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { join } from 'node:path'
 import {
@@ -178,8 +178,18 @@ export function createWorkspaceGit(
   }
 
   /** A git-repo workspace has a `.git` at its root; from-scratch does not. */
-  function isRepo(root: string): boolean {
-    return existsSync(join(root, '.git'))
+  // Asked THROUGH the runner, never of the daemon's own filesystem. A cluster-backed agent's
+  // checkout lives on the sandbox pod's volume, so `existsSync` on the daemon path answers about a
+  // directory that legitimately has no `.git` — and a false here refused every read and, once M3
+  // landed, every write for those agents. `--is-inside-work-tree` is the question actually being
+  // asked, and the runner is what knows where to ask it.
+  async function isRepo(git: GitRunner): Promise<boolean> {
+    try {
+      const out = await git.readBounded(['rev-parse', '--is-inside-work-tree'], 4096)
+      return out.out.toString('utf8').trim() === 'true'
+    } catch {
+      return false
+    }
   }
 
   /** Strip the absolute workspace path out of git-provided text so no host path
@@ -224,7 +234,8 @@ export function createWorkspaceGit(
   /** Shared by `status` and by both index writes, which answer with the fresh status. */
   async function readStatus(agentId: string, sessionId?: string): Promise<WorkspaceGitStatus> {
     const root = rootFor(agentId, sessionId)
-    if (!isRepo(root)) return { agentId, isRepo: false, clean: true }
+    const preflight = runnerFor(agentId, root)
+    if (!(await isRepo(preflight))) return { agentId, isRepo: false, clean: true }
 
     // Status is read-only and the daemon policy already disables hooks and
     // fsmonitor at command scope. Repository hook/include configuration must
@@ -277,7 +288,8 @@ export function createWorkspaceGit(
    *  is data here. The fresh status is the whole answer either way. */
   async function writeIndex(kind: 'stage' | 'unstage', req: WorkspaceGitStageReq): Promise<WorkspaceGitStatus> {
     const root = rootFor(req.agentId, req.sessionId)
-    if (!isRepo(root)) return { agentId: req.agentId, isRepo: false, clean: true }
+    const preflight = runnerFor(req.agentId, root)
+    if (!(await isRepo(preflight))) return { agentId: req.agentId, isRepo: false, clean: true }
     const wanted = new Set(req.paths.map((requested) => relativeWorkspacePath(root, requested)))
     if (wanted.size > 0) {
       // `git add` runs the repository's own clean filter, so the audit gates a stage like a fetch.
@@ -332,7 +344,8 @@ export function createWorkspaceGit(
 
     async diff(req) {
       const root = rootFor(req.agentId, req.sessionId)
-      if (!isRepo(root)) return { agentId: req.agentId, path: req.path, isRepo: false, exists: false }
+      const preflight = runnerFor(req.agentId, root)
+      if (!(await isRepo(preflight))) return { agentId: req.agentId, path: req.path, isRepo: false, exists: false }
       // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
       const git = runnerFor(req.agentId, root).withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
 
@@ -379,7 +392,8 @@ export function createWorkspaceGit(
 
     async log(req) {
       const root = rootFor(req.agentId, req.sessionId)
-      if (!isRepo(root)) return { agentId: req.agentId, isRepo: false, commits: [], truncated: false }
+      const preflight = runnerFor(req.agentId, root)
+      if (!(await isRepo(preflight))) return { agentId: req.agentId, isRepo: false, commits: [], truncated: false }
       // Through the runner, so a cluster-backed workspace answers by running git in its own sandbox rather than on a disk this daemon cannot see.
       const git = runnerFor(req.agentId, root).withEnv({ ...workspaceGitLocalEnv(), GIT_OPTIONAL_LOCKS: '0' })
 
@@ -420,7 +434,9 @@ export function createWorkspaceGit(
 
     async pull(agentId) {
       const root = rootFor(agentId)
-      if (!isRepo(root)) return { agentId, isRepo: false, ok: false, detail: 'workspace is not a git checkout' }
+      const preflight = runnerFor(agentId, root)
+      if (!(await isRepo(preflight)))
+        return { agentId, isRepo: false, ok: false, detail: 'workspace is not a git checkout' }
 
       // ff-only: an on-demand pull must never rewrite or clobber the agent's
       // working tree — a diverged branch / local edits surface as ok:false, not a
@@ -468,7 +484,9 @@ export function createWorkspaceGit(
     async commit(req) {
       const { agentId } = req
       const root = rootFor(agentId, req.sessionId)
-      if (!isRepo(root)) return commitRefusal(agentId, false, 'not-a-repo', 'workspace is not a git checkout')
+      const preflight = runnerFor(agentId, root)
+      if (!(await isRepo(preflight)))
+        return commitRefusal(agentId, false, 'not-a-repo', 'workspace is not a git checkout')
       const message = req.message.trim()
       if (!message) return commitRefusal(agentId, true, 'empty-message', 'The commit message is empty.')
       const identity = commitIdentityByAgent(agentId)
@@ -524,7 +542,9 @@ export function createWorkspaceGit(
     async push(req) {
       const { agentId } = req
       const root = rootFor(agentId, req.sessionId)
-      if (!isRepo(root)) return pushRefusal(agentId, false, 'not-a-repo', 'workspace is not a git checkout')
+      const preflight = runnerFor(agentId, root)
+      if (!(await isRepo(preflight)))
+        return pushRefusal(agentId, false, 'not-a-repo', 'workspace is not a git checkout')
 
       let timer: ReturnType<typeof setTimeout> | undefined
       const abort = new AbortController()
@@ -572,9 +592,20 @@ export function createWorkspaceGit(
         }
         // Whether the upstream this branch tracks IS the authorized origin. Only then does an
         // `ahead` of zero mean "the remote we are allowed to push to already has these commits".
+        // The `ahead: 0` shortcut is only sound when the tracked ref IS the ref this push updates.
+        // Validating the remote URL alone was not enough: local `feature` tracking `origin/main` is
+        // on the authorized remote, so `ahead(origin/main)` could read zero while `origin/feature`
+        // does not exist at all — and the button reported success for a branch it never sent.
+        // Both halves must match, the remote AND the branch, or the shortcut is skipped and git
+        // itself answers (a push with nothing to send is cheap and honest).
         const upstreamRemote = upstream.includes('/') ? upstream.slice(0, upstream.indexOf('/')) : null
+        const upstreamBranch = upstreamRemote ? upstream.slice(upstreamRemote.length + 1) : null
         const upstreamOrigin = upstreamRemote ? await remoteUrl(git, upstreamRemote) : null
-        if (!upstreamOrigin || upstreamOrigin.toLowerCase() !== authorized.origin.toLowerCase()) {
+        const upstreamIsDestination =
+          upstreamOrigin !== null &&
+          upstreamOrigin.toLowerCase() === authorized.origin.toLowerCase() &&
+          upstreamBranch === branch
+        if (upstreamOrigin === null || upstreamOrigin.toLowerCase() !== authorized.origin.toLowerCase()) {
           return pushRefusal(
             agentId,
             true,
@@ -582,7 +613,7 @@ export function createWorkspaceGit(
             `Branch "${branch}" tracks "${upstream}", which is not the remote this workspace is authorized to push to.`
           )
         }
-        const ahead = await aheadCount(git, upstream)
+        const ahead = upstreamIsDestination ? await aheadCount(git, upstream) : null
         if (ahead === 0) {
           return { agentId, isRepo: true, ok: true, ahead: 0, detail: 'Everything is already pushed.' }
         }
@@ -620,7 +651,8 @@ export function createWorkspaceGit(
     async message(req) {
       const { agentId } = req
       const root = rootFor(agentId, req.sessionId)
-      if (!isRepo(root)) {
+      const preflight = runnerFor(agentId, root)
+      if (!(await isRepo(preflight))) {
         return { agentId, ok: false, detail: 'This workspace is not a git checkout, so there is no staged diff.' }
       }
       if (!commitMessagePass) {

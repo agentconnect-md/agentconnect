@@ -719,6 +719,11 @@ Known M3 follow-ups:
 - The write wiring in `SessionDetailView` was reconstructed after being lost to a stray
   `git checkout` during review; two of its three parts were caught by existing tests and the third
   (keeping header focus when the viewer closes) is still **unpinned**.
+- The `isUnbornHead` guard's remaining purpose — telling a read timeout or a spawn failure apart from
+  an empty history — has **no constructible fixture**. Measured: every filesystem corruption git can
+  be handed (a missing or unreadable `.git/objects`) makes git itself answer "not a git repository",
+  which the runner preflight now classifies correctly and earlier. The guard stays for the failures
+  that do reach it; its coverage is the classification, not the timeout.
 
 **M4 — Tasks.** `task/list` + `task/cancel` frames over the existing lease
 bookkeeping, `GET /agents/:id/tasks` + cancel route, panel with state, elapsed

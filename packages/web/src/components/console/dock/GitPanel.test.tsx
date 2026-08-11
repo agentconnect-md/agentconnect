@@ -590,6 +590,31 @@ describe('GitPanel — staging', () => {
     expect(rowPaths('staged')).toEqual(['fresh.ts'])
   })
 
+  it('keeps a commit draft across a checkout switch, through the panel that unmounts the box', async () => {
+    // Driven through the FULL panel on purpose: the panel returns null while a newly selected
+    // scope's status settles, so a draft store living inside CommitBox is rebuilt empty on the way
+    // back — losing the draft during the exact switch it exists to survive. Rerendering CommitBox
+    // directly cannot see that, which is why the first version of this fix passed a test and failed
+    // in the app.
+    await render({ canWrite: true })
+    const box = () => container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')
+    expect(box(), 'commit box on the first checkout').toBeDefined()
+    await act(async () => {
+      const node = box()!
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(node, 'fix: keep me')
+      node.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(box()?.value).toBe('fix: keep me')
+
+    // A different agent: the box must NOT carry the draft there.
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    expect(box()?.value ?? '').toBe('')
+
+    // Back again — the draft is still the reader's.
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    expect(box()?.value).toBe('fix: keep me')
+  })
+
   it('re-reads status and log after the commit box reports a commit', async () => {
     wire.git = dirty()
     await render({ canWrite: true })

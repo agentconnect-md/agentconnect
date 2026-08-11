@@ -7,6 +7,7 @@ import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { WorkspaceViolationError } from '../src/cp/workspace-reader.js'
 import { workspaceGitLocalEnv } from '../src/workspace/git-injection.js'
+import { setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
 
 // The seam's git reads against a REAL repository: the mocked-simple-git suite
 // (workspace-git.test.ts) can prove the mapping, only actual `git` output can prove
@@ -289,19 +290,57 @@ describe('createWorkspaceGit.log against a real repo', () => {
     expect(s.files?.[0]).not.toHaveProperty('additions')
   })
 
-  it('does not call an unreadable history an empty one', async () => {
-    // A read timeout, a permission failure or a corrupt object all made `git log` fail, and
-    // treating that as "no commits yet" is a confident lie. Only an unborn HEAD is data.
+  it('asks whether this is a checkout THROUGH the runner, not of the daemon own disk', async () => {
+    // A cluster-backed agent's checkout lives on the sandbox pod's volume, so an `existsSync` on the
+    // daemon path answers about a directory that legitimately has no `.git` — and a false there
+    // refused every read and every write for those agents. The probe travels with the runner.
+    const seen: string[][] = []
+    const answering = {
+      withEnv: () => answering,
+      raw: async () => '',
+      clone: async () => {},
+      pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
+      status: async () => ({ current: 'main', tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
+      log: async () => [],
+      readBounded: async (args: string[]) => {
+        seen.push(args)
+        return { out: Buffer.from(args[1] === '--is-inside-work-tree' ? 'true\n' : ''), overflow: false }
+      }
+    }
+    const nowhere = join(base, 'no-daemon-checkout')
+    mkdirSync(nowhere, { recursive: true })
+
+    setWorkspaceGitRunnerResolver(() => answering as never)
+    try {
+      const status = await createWorkspaceGit(() => nowhere).status(AGENT)
+      expect(status.isRepo).toBe(true)
+      expect(seen.some((args) => args.includes('--is-inside-work-tree'))).toBe(true)
+    } finally {
+      setWorkspaceGitRunnerResolver(undefined)
+    }
+  })
+
+  it('classifies a checkout git itself does not recognise as not-a-repo, not as an empty history', async () => {
+    // MEASURED, because the classification is git's and not ours: a repo whose `.git/objects` is
+    // missing OR unreadable answers `rev-parse --is-inside-work-tree` with the same
+    // "not a git repository" fatal a plain directory does. So this is not a corrupt repository the
+    // seam should report on — it is not a repository, and the preflight says so before `log` runs.
+    // The `isUnbornHead` guard still exists for the failures that DO reach it (a read timeout, a
+    // spawn failure), and those have no constructible fixture here — see the M3 follow-ups.
     const broken = join(base, 'broken')
     mkdirSync(broken, { recursive: true })
     git(broken, 'init', '-b', 'main')
     writeFileSync(join(broken, 'a.ts'), 'x\n')
     git(broken, 'add', 'a.ts')
     git(broken, 'commit', '-m', 'seed')
-    // HEAD exists, so this is not the unborn case — but its object store is gone.
     rmSync(join(broken, '.git', 'objects'), { recursive: true, force: true })
 
-    await expect(createWorkspaceGit(() => broken).log({ agentId: AGENT, limit: 20 })).rejects.toThrow()
+    expect(await createWorkspaceGit(() => broken).log({ agentId: AGENT, limit: 20 })).toEqual({
+      agentId: AGENT,
+      isRepo: false,
+      commits: [],
+      truncated: false
+    })
   })
 
   it('an empty repo is DATA (no commits), and a from-scratch workspace is isRepo:false', async () => {

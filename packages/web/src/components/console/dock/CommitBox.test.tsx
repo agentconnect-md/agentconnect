@@ -50,7 +50,7 @@ vi.mock('@/lib/api', () => {
   }
 })
 
-import { CommitBox } from './CommitBox'
+import { CommitBox, resetCommitDrafts } from './CommitBox'
 import type { WorkspaceGitCommitResultDto, WorkspaceGitMessageResultDto, WorkspaceGitPushResultDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -127,6 +127,7 @@ async function type(value: string) {
 }
 
 beforeEach(() => {
+  resetCommitDrafts()
   wire.commit = commitOk()
   wire.push = pushOk()
   wire.draft = draftOk()

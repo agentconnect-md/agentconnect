@@ -3,7 +3,7 @@
 // The Git panel's commit box (§3.3, §5.1): a message, a wand that drafts one from the staged diff on the AGENT's own runtime, "Commit N files", and commit-and-push beside it.
 // Every refusal here is DATA the reader can act on — nothing staged, a blank message, no registered commit identity, a diverged branch, a runtime that declines to write a message. The box reports them in place and keeps the draft, because a message a reader wrote (or paid a model for) must survive the answer.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { gitWriteFailureText, gitWriteRequestFailureText } from '@/components/console/dock/git-write'
@@ -31,6 +31,30 @@ interface Outcome {
   text: string
 }
 
+/** Drafts by checkout, kept ABOVE the panel's settle-time unmount so switching scope and coming
+ *  back does not silently discard a message the reader typed — or paid a model pass for. Bounded:
+ *  a reader who visits many checkouts should not grow this without limit, and the oldest draft is
+ *  the one least likely to still be wanted. */
+const COMMIT_DRAFTS = new Map<string, string>()
+const COMMIT_DRAFTS_MAX = 20
+
+/** Clear every remembered draft. Module state outlives a test's render, so a suite that does not
+ *  reset it would have cases reading each other's drafts. */
+export function resetCommitDrafts(): void {
+  COMMIT_DRAFTS.clear()
+}
+
+function rememberDraft(scope: string, text: string): void {
+  COMMIT_DRAFTS.delete(scope)
+  if (text.trim() === '') return
+  COMMIT_DRAFTS.set(scope, text)
+  while (COMMIT_DRAFTS.size > COMMIT_DRAFTS_MAX) {
+    const oldest = COMMIT_DRAFTS.keys().next().value
+    if (oldest === undefined) break
+    COMMIT_DRAFTS.delete(oldest)
+  }
+}
+
 export function CommitBox({
   agentId,
   sessionId,
@@ -51,14 +75,30 @@ export function CommitBox({
   // Drafts are kept PER SCOPE and restored on return. A draft belongs to one checkout, so it must
   // never follow the reader into another agent's workspace — but losing it outright means a reader
   // who glances at a sibling agent and comes back has silently paid for a model pass twice.
+  //
+  // The store is MODULE-level, not a ref: the panel above unmounts this component while a newly
+  // selected scope's status settles, so a ref would be reconstructed empty on the way back — losing
+  // the draft during the exact switch it exists to survive.
   const draftScope = `${agentId}\n${sessionId ?? ''}`
-  const draftsRef = useRef(new Map<string, string>())
+  const draftsRef = { current: COMMIT_DRAFTS }
   const [scopeSeen, setScopeSeen] = useState(draftScope)
   const [message, setMessage] = useState(() => draftsRef.current.get(draftScope) ?? '')
+  // Parked on UNMOUNT too, not only on the render that notices a new scope: the panel above returns
+  // null while a newly selected checkout's status settles, so the switch usually takes this box out
+  // of the tree BEFORE any render could see the new scope. Through refs, so the cleanup reads the
+  // draft as it was when it ran rather than as it was when the effect was installed.
+  const latest = useRef({ scope: draftScope, message: '' })
+  latest.current = { scope: draftScope, message }
+  useEffect(
+    () => () => {
+      rememberDraft(latest.current.scope, latest.current.message)
+    },
+    []
+  )
   if (scopeSeen !== draftScope) {
     // Render-time so the box never paints one scope's draft under another's heading, the way the
     // viewer's own stale-paint hazard works. The outgoing draft is parked before the swap.
-    draftsRef.current.set(scopeSeen, message)
+    rememberDraft(scopeSeen, message)
     setScopeSeen(draftScope)
     setMessage(draftsRef.current.get(draftScope) ?? '')
   }

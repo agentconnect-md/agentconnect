@@ -593,6 +593,34 @@ describe('workspace git push preconditions (data, not errors)', () => {
     })
   })
 
+  it('never reports success when the tracked branch is not the branch being pushed', async () => {
+    // Same-remote, DIFFERENT branch: `feature` tracking `origin/main` is on the authorized remote, so
+    // a URL-only check passes and `ahead(origin/main)` can be zero while `origin/feature` does not
+    // exist. The shortcut has to match the branch too, or the button reports success for a ref it
+    // never sent. Verified against real git.
+    const { dir, bare, origin } = repoWithRemote()
+    const calls: Call[] = []
+    setWorkspaceGitRunnerResolver((_agentId, cwd) => new SeamRunner(cwd ?? dir, calls, origin, bare))
+    // `feature` branches off main at the SAME commit and adds nothing, so `ahead(origin/main)` is
+    // zero — while `origin/feature` does not exist, which means there is very much something to
+    // send. A URL-only check reports "Everything is already pushed" here and creates nothing.
+    git(dir, ['checkout', '-q', '-b', 'feature'])
+    git(dir, ['branch', '--set-upstream-to=origin/main', 'feature'])
+    expect(git(dir, ['rev-list', '--count', 'origin/main..HEAD']).trim()).toBe('0')
+    expect(git(dir, ['ls-remote', '--heads', bare, 'feature']).trim()).toBe('')
+    const seam = createWorkspaceGit(
+      () => dir,
+      gitcredEnv,
+      () => githubTarget(),
+      () => IDENTITY
+    )
+
+    const result = await seam.push({ agentId: 'a' })
+    expect(result.ok).toBe(true)
+    // It actually pushed rather than short-circuiting: the destination branch now exists on the remote.
+    expect(git(dir, ['ls-remote', '--heads', bare, 'feature'])).toContain('refs/heads/feature')
+  })
+
   it('never reports success for a push the authorized remote did not receive', async () => {
     // `branch.<b>.remote` / `branch.<b>.merge` are checkout-owned and are NOT disallowed overrides,
     // so an upstream can point somewhere this daemon may not push. Counting against that ref and
