@@ -1,4 +1,5 @@
 **/dist
+charts/*/templates
 **/.next
 **/next-env.d.ts
 **/coverage

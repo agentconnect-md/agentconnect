@@ -1,5 +1,11 @@
-import { K8sApiError, type K8sHttp } from './http.js'
-import { watchCollection, type K8sObject, type ResourceEvent, type WatchOptions } from './watch.js'
+import {
+  K8sApiError,
+  watchCollection,
+  type K8sHttp,
+  type K8sObject,
+  type ResourceEvent,
+  type WatchOptions
+} from '@agentconnect.md/k8s-client'
 
 /** agent-sandbox API groups, pinned to v1beta1 — the compatibility layer is never touched. */
 export const SANDBOX_GROUP = 'agents.x-k8s.io/v1beta1'

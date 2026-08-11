@@ -35,7 +35,7 @@ variable "MEM0_BACKEND_VERSION" {
 }
 
 group "default" {
-  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "daemon", "runtime-sandbox"]
+  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "daemon", "runtime-sandbox", "operator"]
 }
 
 target "_release" {
@@ -79,6 +79,18 @@ target "daemon" {
   tags = concat(
     ["${REGISTRY}/${OWNER}/daemon:${VERSION}"],
     LATEST ? ["${REGISTRY}/${OWNER}/daemon:latest"] : []
+  )
+}
+
+target "operator" {
+  inherits = ["_release"]
+  target   = "operator"
+  args = {
+    OPERATOR_VERSION = VERSION
+  }
+  tags = concat(
+    ["${REGISTRY}/${OWNER}/operator:${VERSION}"],
+    LATEST ? ["${REGISTRY}/${OWNER}/operator:latest"] : []
   )
 }
 

@@ -1,5 +1,4 @@
-import { loadInClusterConfig } from './config.js'
-import { K8sHttp } from './http.js'
+import { K8sHttp, loadInClusterConfig } from '@agentconnect.md/k8s-client'
 import { K8sDriver, PROBE_GRANTS } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
 import { clusterMetrics } from './cluster-metrics.js'

@@ -1,0 +1,19 @@
+# Install the AgentConnectOrg CRD (and, later, vendored cluster-shared
+# dependencies) with this release. Set false when CRDs are managed
+# out-of-band — e.g. several environment releases sharing one cluster.
+installCRD: true
+
+# Install-time constant: every org namespace this install owns starts with
+# this prefix. Must be non-empty and must not overlap (either direction) with
+# any other install's prefix or control namespace on the same cluster.
+orgNamespacePrefix: ac-org-
+
+operator:
+  image:
+    repository: ghcr.io/agentconnect-md/operator
+    # Empty = the chart's appVersion (stamped by the release pipeline).
+    tag: ''
+  replicas: 2
+  resyncIntervalSeconds: 600
+  leaseName: agentconnect-operator
+  watchTimeoutSeconds: 300

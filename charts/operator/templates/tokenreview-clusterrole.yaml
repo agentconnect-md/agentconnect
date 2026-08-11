@@ -1,0 +1,15 @@
+# Per-install (release-prefixed) ClusterRole letting each org's daemon SA
+# create TokenReviews — the API is cluster-scoped, a namespaced Role cannot
+# grant it. The operator creates one ClusterRoleBinding per org against this
+# role; its `bind` permission is pinned to exactly this name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-ac-tokenreview
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  - apiGroups: ['authentication.k8s.io']
+    resources: ['tokenreviews']
+    verbs: ['create']

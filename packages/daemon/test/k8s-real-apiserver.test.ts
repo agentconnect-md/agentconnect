@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { K8sApiError, K8sHttp } from '../src/k8s/http.js'
+import { K8sApiError, K8sHttp, watchCollection, type InClusterConfig } from '@agentconnect.md/k8s-client'
 import { SandboxApi, OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
-import { watchCollection } from '../src/k8s/watch.js'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import type { InClusterConfig } from '../src/k8s/config.js'
 
 /**
  * The Kubernetes beliefs this client is built on, checked against a REAL API server rather

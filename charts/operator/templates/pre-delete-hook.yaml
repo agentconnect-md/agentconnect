@@ -1,0 +1,30 @@
+# Refuses uninstall while AgentConnectOrg CRs remain: deleting this release
+# would remove the only actor able to run their finalizers, deadlocking every
+# org teardown. Delete (and wait out) all CRs first.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-operator-pre-delete
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentconnect-operator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-operator
+      containers:
+        - name: guard
+          image: '{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}'
+          # TODO(chart): replace with a real check — list agentconnectorgs in this
+          # namespace and exit non-zero (failing the uninstall) when any remain.
+          command: ['node', '-e', 'console.log("TODO: fail when AgentConnectOrg resources remain"); process.exit(0)']

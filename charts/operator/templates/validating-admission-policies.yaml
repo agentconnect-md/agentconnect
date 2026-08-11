@@ -1,0 +1,12 @@
+# TODO(chart): the install's ValidatingAdmissionPolicies, rendered from the two
+# install-time constants (operator SA identity, org namespace prefix):
+#   1. Envelope write fence for the operator SA — target namespace must start
+#      with {{ .Values.orgNamespacePrefix }}, never a namespace carrying the
+#      control marker label; required envelope labels present.
+#   2. Secure-sandbox workload baseline for org namespaces (no privileged /
+#      host namespaces / hostPath / SA-token automount; pinned image sources
+#      and runtimeClass), with the audience-scoped projected-token volume as
+#      the single shape-exact exception.
+#   3. Daemon SA Sandbox patches restricted to spec.operatingMode field-wise;
+#      rollout image/annotation writes allowed only for the operator SA.
+# Objects are release-prefixed; each install owns its own copies.

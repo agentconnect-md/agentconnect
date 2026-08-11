@@ -5,7 +5,13 @@ import { stringify } from 'yaml'
 
 import { lockfileClosureChanged } from './lockfile-closure-changed.mjs'
 
-const DAEMON_IMPORTERS = ['packages/daemon', 'packages/message', 'packages/protocol', 'packages/connection']
+const DAEMON_IMPORTERS = [
+  'packages/daemon',
+  'packages/message',
+  'packages/protocol',
+  'packages/connection',
+  'packages/k8s-client'
+]
 const CLI_IMPORTERS = ['packages/cli', 'packages/protocol', 'packages/connection']
 
 // A miniature v9 lockfile shaped like the real one: root + web importers that
@@ -36,12 +42,21 @@ const baseLock = () => ({
     'packages/daemon': {
       dependencies: {
         '@agentconnect.md/connection': { specifier: 'workspace:*', version: 'link:../connection' },
+        '@agentconnect.md/k8s-client': { specifier: 'workspace:*', version: 'link:../k8s-client' },
         '@agentconnect.md/message': { specifier: 'workspace:*', version: 'link:../message' },
         '@agentconnect.md/protocol': { specifier: 'workspace:*', version: 'link:../protocol' },
         zod: { specifier: '^4.4.3', version: '4.4.3' }
       },
       devDependencies: {
         tsdown: { specifier: '^0.22.3', version: '0.22.3(typescript@6.0.3)' }
+      }
+    },
+    'packages/k8s-client': {
+      dependencies: {
+        '@agentconnect.md/connection': { specifier: 'workspace:*', version: 'link:../connection' }
+      },
+      devDependencies: {
+        typescript: { specifier: '^6.0.3', version: '6.0.3' }
       }
     },
     'packages/message': {
@@ -104,6 +119,22 @@ test('web-only dependency bump does not affect the daemon closure', () => {
       lock.snapshots['lucide-react@0.501.0(react@19.0.0)'] = { dependencies: { react: '19.0.0' } }
     }),
     false
+  )
+})
+
+test('a shared k8s-client dependency bump reaches the daemon closure', () => {
+  assert.equal(
+    changed((lock) => {
+      lock.importers['packages/k8s-client'].devDependencies.typescript = {
+        specifier: '^6.0.4',
+        version: '6.0.4'
+      }
+      delete lock.packages['typescript@6.0.3']
+      delete lock.snapshots['typescript@6.0.3']
+      lock.packages['typescript@6.0.4'] = { resolution: { integrity: 'sha512-ts2' } }
+      lock.snapshots['typescript@6.0.4'] = {}
+    }),
+    true
   )
 })
 
