@@ -234,10 +234,18 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   then re-reads that revision: two concurrent writers would otherwise be able to
   leave the row at one spec and the CR at an older one forever, since the
   operator reconciles the CR and nothing here re-reads on a timer.
-- Deleting an organization tears the CR down FIRST — the row holds the only copy
-  of the immutable `targetNamespace`, so a cascade that dropped it first would
-  strand a namespace and its workloads with nothing able to name them. A cluster
-  that refuses the delete refuses the whole organization deletion.
+- Deleting an organization records its envelope in `pending_envelope_teardown`
+  **inside the delete transaction**, because the cascade removes the only copy
+  of the immutable `targetNamespace` and after that nothing could name the
+  namespace and workloads the operator is still keeping alive. Reading the row
+  there is also what serializes the boundary: an enable that committed first is
+  visible, and one that has not is blocked by the org row's `FOR UPDATE` and
+  then fails its foreign key. The delete route retires the CR immediately, and a
+  five-minute drain covers an unreachable cluster or a process that had cluster
+  execution switched off at delete time. The one window the tombstone cannot
+  cover — a `PUT` whose apply is in flight while the delete commits — closes in
+  the convergence loop: a settings row that vanished between apply and re-read
+  means the org is gone, so the request deletes what it just created.
 
 The credential Secret named by `spec.daemon.credentialSecretName` — and the
 `credentialRevision` bump that rolls the daemon after a rotation — belong to

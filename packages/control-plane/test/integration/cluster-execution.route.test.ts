@@ -273,7 +273,7 @@ describe('GET /cluster-execution/status', () => {
 })
 
 describe('DELETE /orgs/:orgId', () => {
-  it('removes the resource before the cascade drops the row that names it', async () => {
+  it('records the envelope in the delete transaction and retires it right after', async () => {
     const { http, calls } = await clusterApp()
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
 
@@ -281,9 +281,10 @@ describe('DELETE /orgs/:orgId', () => {
     expect(res.statusCode).toBe(204)
     expect(calls).toContain(`DELETE ${RESOURCE_PATH}`)
     expect(await prisma.orgClusterExecution.count()).toBe(0)
+    expect(await prisma.pendingEnvelopeTeardown.count()).toBe(0)
   })
 
-  it('refuses the deletion when the cluster will not release the envelope', async () => {
+  it('keeps the tombstone — the only surviving record of the namespace — when the cluster refuses', async () => {
     const { http } = await clusterApp({
       route: (req) =>
         req.method === 'DELETE'
@@ -292,12 +293,33 @@ describe('DELETE /orgs/:orgId', () => {
     })
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
 
+    // The deletion still succeeds: cleanup authority no longer depends on this
+    // request, because the intent outlives the organization it names.
     const res = await http.app.inject({ method: 'DELETE', url: ORG })
-    expect(res.statusCode).toBe(502)
-    expect(res.json().code).toBe('CLUSTER_API_ERROR')
-    // The org — and with it the only record of the envelope's namespace — survives.
-    expect(await prisma.org.count({ where: { id: DEFAULT_ORG_ID } })).toBe(1)
-    expect(await prisma.orgClusterExecution.count()).toBe(1)
+    expect(res.statusCode).toBe(204)
+    const pending = await prisma.pendingEnvelopeTeardown.findMany()
+    expect(pending.map((row) => row.targetNamespace)).toEqual([TARGET_NAMESPACE])
+  })
+
+  it('records the envelope even when this process has no cluster credentials', async () => {
+    // The org enabled cluster execution under a configured process; this one has
+    // the module off, which used to skip teardown and orphan the envelope.
+    const configured = await clusterApp()
+    await configured.http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+
+    const offline = buildHttpApp(prisma)
+    opened.push(offline)
+    expect((await offline.app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(204)
+
+    const pending = await prisma.pendingEnvelopeTeardown.findMany()
+    expect(pending.map((row) => row.orgId)).toEqual([DEFAULT_ORG_ID])
+    expect(pending[0]?.targetNamespace).toBe(TARGET_NAMESPACE)
+  })
+
+  it('writes no tombstone for an org that never enabled cluster execution', async () => {
+    const { http } = await clusterApp()
+    expect((await http.app.inject({ method: 'DELETE', url: ORG })).statusCode).toBe(204)
+    expect(await prisma.pendingEnvelopeTeardown.count()).toBe(0)
   })
 })
 

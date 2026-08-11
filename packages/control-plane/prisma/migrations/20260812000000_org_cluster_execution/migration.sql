@@ -25,6 +25,15 @@ CREATE TABLE "org_cluster_execution" (
     CONSTRAINT "org_cluster_execution_pkey" PRIMARY KEY ("orgId")
 );
 
+-- CreateTable
+CREATE TABLE "pending_envelope_teardown" (
+    "orgId" TEXT NOT NULL,
+    "targetNamespace" TEXT NOT NULL,
+    "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "pending_envelope_teardown_pkey" PRIMARY KEY ("orgId")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "org_cluster_execution_targetNamespace_key" ON "org_cluster_execution"("targetNamespace");
 

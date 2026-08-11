@@ -33,6 +33,9 @@ import {
  *  has to outlast a burst, not an unbounded stream of edits. */
 const CONVERGE_ATTEMPTS = 5
 
+/** Tombstones retired per drain pass; a backlog is rare and drains over passes. */
+const TEARDOWN_BATCH = 50
+
 /** Deployment policy for an org's first enable; the stored row owns it after that. */
 export interface ClusterExecutionPolicy {
   /** Install-time constant shared with the operator's `AC_ORG_NAMESPACE_PREFIX`. */
@@ -92,7 +95,15 @@ export class ClusterExecutionService {
     for (let attempt = 0; attempt < CONVERGE_ATTEMPTS; attempt += 1) {
       await this.reconcile(current)
       const after = await this.repo.get(orgId)
-      if (!after || after.specRevision === current.specRevision) return current
+      // The row vanished between apply and re-read: the organization was deleted
+      // mid-flight, so this request has just created a resource whose owner no
+      // longer exists — and the deletion's tombstone was written before it. Undo
+      // it here rather than leave the operator holding an ownerless envelope.
+      if (!after) {
+        await this.api.delete(orgResourceName(current.targetNamespace))
+        return this.unconfigured(orgId)
+      }
+      if (after.specRevision === current.specRevision) return current
       current = after
     }
     return current
@@ -109,17 +120,25 @@ export class ClusterExecutionService {
   }
 
   /**
-   * Remove the org's resource, handing its envelope to the operator's deletion
-   * finalizer. Called BEFORE an organization is deleted: the settings row is the
-   * only place the immutable `targetNamespace` lives, so a cascade that dropped
-   * it first would strand a namespace, daemon, and sandboxes with nothing left
-   * that can name them. Idempotent — an org that never enabled cluster
-   * execution, or whose resource is already gone, is a no-op.
+   * Delete the resources of organizations that are already gone, then drop
+   * their tombstones. The tombstone is written inside the org's delete
+   * transaction because the cascade removes the only record of the immutable
+   * `targetNamespace` — after that, nothing else could name the namespace,
+   * daemon, and sandboxes the operator is still keeping alive.
+   *
+   * Best-effort per row and safe to run at any time: a resource that is already
+   * gone reads as deleted, and a row whose delete fails simply stays for the
+   * next pass. Returns how many envelopes it retired.
    */
-  async teardown(orgId: OrgId): Promise<void> {
-    const settings = await this.repo.get(orgId)
-    if (!settings) return
-    await this.api.delete(orgResourceName(settings.targetNamespace))
+  async drainTeardowns(limit = TEARDOWN_BATCH): Promise<number> {
+    const pending = await this.repo.listPendingTeardowns(limit)
+    let retired = 0
+    for (const entry of pending) {
+      await this.api.delete(orgResourceName(entry.targetNamespace))
+      await this.repo.clearPendingTeardown(entry.orgId)
+      retired += 1
+    }
+    return retired
   }
 
   /** Live envelope status from the resource; absent ⇒ `present: false`. */

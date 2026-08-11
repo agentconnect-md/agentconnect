@@ -15,7 +15,8 @@ import type {
   ClusterExecutionPatch,
   ClusterExecutionSettings,
   ClusterRuntimeTier,
-  OrgClusterExecutionRepo
+  OrgClusterExecutionRepo,
+  PendingEnvelopeTeardown
 } from '../ports.js'
 import type { OrgId } from '../../domain/ids.js'
 
@@ -60,6 +61,18 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
   async get(orgId: OrgId): Promise<ClusterExecutionSettings | null> {
     const row = await this.prisma.orgClusterExecution.findUnique({ where: { orgId } })
     return row ? toRecord(row) : null
+  }
+
+  async listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]> {
+    return this.prisma.pendingEnvelopeTeardown.findMany({
+      select: { orgId: true, targetNamespace: true },
+      orderBy: { createdAt: 'asc' },
+      take: limit
+    })
+  }
+
+  async clearPendingTeardown(orgId: string): Promise<void> {
+    await this.prisma.pendingEnvelopeTeardown.deleteMany({ where: { orgId } })
   }
 
   async upsert(

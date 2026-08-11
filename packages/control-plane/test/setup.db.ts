@@ -76,6 +76,9 @@ const TABLES = [
   // CASCADE never reaches it and a cutoff would otherwise outlive its test and
   // reject the next test that reuses the subject.
   'deleted_identity_cutoff',
+  // FK-less by design (it names an org that is GONE), so CASCADE never reaches
+  // it and a tombstone would otherwise outlive its test.
+  'pending_envelope_teardown',
   'membership',
   'app_user',
   'org'

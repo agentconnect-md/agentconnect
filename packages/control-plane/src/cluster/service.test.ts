@@ -13,7 +13,8 @@ import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
   ClusterExecutionSettings,
-  OrgClusterExecutionRepo
+  OrgClusterExecutionRepo,
+  PendingEnvelopeTeardown
 } from '../persistence/ports.js'
 
 const ORG = OrgId('acme')
@@ -28,9 +29,20 @@ const POLICY: ClusterExecutionPolicy = {
 /** In-memory settings row with the repo's revision-bump-on-every-write contract. */
 class FakeRepo implements OrgClusterExecutionRepo {
   row: ClusterExecutionSettings | null = null
+  tombstones: PendingEnvelopeTeardown[] = []
+  /** Simulates an upsert whose row is cascaded away before anything reads it. */
+  swallowUpsert = false
 
   async get(): Promise<ClusterExecutionSettings | null> {
     return this.row ? { ...this.row } : null
+  }
+
+  async listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]> {
+    return this.tombstones.slice(0, limit)
+  }
+
+  async clearPendingTeardown(orgId: string): Promise<void> {
+    this.tombstones = this.tombstones.filter((entry) => entry.orgId !== orgId)
   }
 
   async upsert(
@@ -47,14 +59,15 @@ class FakeRepo implements OrgClusterExecutionRepo {
       createdAt: new Date(0),
       updatedAt: new Date(0)
     }
-    this.row = {
+    const next: ClusterExecutionSettings = {
       ...base,
       specRevision: base.specRevision + 1,
       ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
       ...(patch.suspend !== undefined ? { suspend: patch.suspend } : {}),
       ...(patch.daemonImage !== undefined ? { daemonImage: patch.daemonImage } : {})
     }
-    return { ...this.row }
+    if (!this.swallowUpsert) this.row = next
+    return next
   }
 }
 
@@ -77,7 +90,10 @@ class FakeApi implements OrgResourceApi {
     return null
   }
 
+  failDelete = false
+
   async delete(name: string): Promise<void> {
+    if (this.failDelete) throw new Error('cluster unreachable')
     this.deleted.push(name)
   }
 }
@@ -131,17 +147,26 @@ describe('ClusterExecutionService.configure', () => {
     expect(api.applied).toHaveLength(1)
   })
 
-  it('tears the resource down before the org row that names it can be cascaded away', async () => {
-    const { service, api } = build()
-    await service.configure(ORG, { enabled: true })
-    await service.teardown(ORG)
+  it('removes the resource it just created when the org is deleted mid-flight', async () => {
+    const { service, repo, api } = build()
+    // The delete commits between this request's apply and its re-read, which is
+    // the one window the tombstone written by that delete cannot cover.
+    api.duringApply = async () => {
+      repo.row = null
+    }
+    const settings = await service.configure(ORG, { enabled: true })
+
+    expect(api.applied).toHaveLength(1)
     expect(api.deleted).toEqual(['ac-org-acme'])
+    expect(settings.enabled).toBe(false)
   })
 
-  it('treats teardown of an org that never enabled cluster execution as a no-op', async () => {
-    const { service, api } = build()
-    await service.teardown(ORG)
-    expect(api.deleted).toEqual([])
+  it('never applies at all when the org is already gone by the first read', async () => {
+    const { service, repo, api } = build()
+    repo.swallowUpsert = true
+    await service.configure(ORG, { enabled: true })
+    expect(api.applied).toHaveLength(0)
+    expect(api.deleted).toHaveLength(0)
   })
 
   it('reports the deployment defaults for an org that never configured anything', async () => {
@@ -155,5 +180,36 @@ describe('ClusterExecutionService.configure', () => {
       runtimeImage: POLICY.runtimeImage
     })
     expect(api.applied).toHaveLength(0)
+  })
+})
+
+describe('ClusterExecutionService.drainTeardowns', () => {
+  it('deletes each deleted org’s resource and drops its tombstone', async () => {
+    const { service, repo, api } = build()
+    repo.tombstones = [
+      { orgId: 'gone-1', targetNamespace: 'ac-org-gone-1' },
+      { orgId: 'gone-2', targetNamespace: 'ac-org-gone-2' }
+    ]
+    expect(await service.drainTeardowns()).toBe(2)
+    expect(api.deleted).toEqual(['ac-org-gone-1', 'ac-org-gone-2'])
+    expect(repo.tombstones).toEqual([])
+  })
+
+  it('keeps a tombstone whose resource could not be deleted, for the next pass', async () => {
+    const { service, repo, api } = build()
+    repo.tombstones = [{ orgId: 'gone', targetNamespace: 'ac-org-gone' }]
+    api.failDelete = true
+    await expect(service.drainTeardowns()).rejects.toThrow('cluster unreachable')
+    expect(repo.tombstones).toHaveLength(1)
+
+    api.failDelete = false
+    expect(await service.drainTeardowns()).toBe(1)
+    expect(repo.tombstones).toEqual([])
+  })
+
+  it('is a no-op when nothing is pending', async () => {
+    const { service, api } = build()
+    expect(await service.drainTeardowns()).toBe(0)
+    expect(api.deleted).toEqual([])
   })
 })

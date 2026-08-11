@@ -25,7 +25,6 @@ import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import type { OrgRecord } from '../../persistence/ports.js'
 import { denyNonOwner } from '../rbac.js'
-import { sendClusterFailure } from '../cluster-failure.js'
 import { Tag } from '../plugins/openapi.js'
 import { resolveOrgIconUrl, type IconUrlBases } from '../../agents/agent-icon.js'
 import { OrgDto, OrgListDto, CreateOrgBody, UpdateOrgBody, ErrorDto, type OrgDtoT } from '../dto/index.js'
@@ -209,9 +208,9 @@ export function orgScopedRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'Delete the organization',
           description:
-            'Delete the organization (owner only). Refused with 409 while it still has daemons. A managed-execution envelope is torn down first — its AgentConnectOrg resource is deleted before the cascade removes the only record of its namespace — and a cluster that refuses that call refuses the whole deletion with 502. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
+            'Delete the organization (owner only). Refused with 409 while it still has daemons. A managed-execution envelope is recorded for teardown inside the delete transaction and its AgentConnectOrg resource is removed right afterwards — a cluster that is unreachable only delays that, it does not fail or skip the deletion. If a GitHub Check may already exist, the first DELETE permanently tombstones and disables the current hook lifecycles, starts asynchronous non-passing cleanup, and returns 409; retry DELETE after cleanup converges to complete the metadata purge and cascade.',
           operationId: 'deleteOrganization',
-          response: { 204: z.null(), 403: ErrorDto, 409: ErrorDto, 502: ErrorDto }
+          response: { 204: z.null(), 403: ErrorDto, 409: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -223,18 +222,6 @@ export function orgScopedRoutes(deps: HttpDeps) {
             statusCode: 409,
             message: 'the organization still has daemons — remove them first'
           })
-        }
-        // Before the cascade, not after: `org_cluster_execution` holds the only
-        // copy of the envelope's immutable namespace, so dropping the row first
-        // would strand a namespace and its workloads with nothing able to name
-        // them. Idempotent, and a refusal aborts the deletion so the row (and
-        // the name) survives for the retry.
-        if (deps.clusterExecution) {
-          try {
-            await deps.clusterExecution.teardown(req.orgCtx!.orgId)
-          } catch (error) {
-            return sendClusterFailure(reply, error, 'the organization’s execution envelope could not be removed')
-          }
         }
         const deleted = await deps.repos.org.delete(req.orgCtx!.orgId)
         for (const hookId of deleted.removedHookIds) deps.hooks.remove(hookId)
@@ -252,6 +239,17 @@ export function orgScopedRoutes(deps: HttpDeps) {
             statusCode: 409,
             message: 'GitHub Check cleanup is pending — retry organization deletion after cleanup converges'
           })
+        }
+        // The delete transaction recorded the envelope's namespace, so cleanup
+        // authority no longer depends on this request: retire it now for
+        // latency, and let the periodic drain cover an unreachable cluster or a
+        // process that had cluster execution switched off at delete time.
+        if (deps.clusterExecution) {
+          try {
+            await deps.clusterExecution.drainTeardowns()
+          } catch (err) {
+            req.log.warn({ err }, 'cluster-execution: envelope teardown deferred to the periodic drain')
+          }
         }
         return reply.code(204).send(null)
       }

@@ -2791,3 +2791,26 @@ model OrgClusterExecution {
 
   @@map("org_cluster_execution")
 }
+
+/// One row per deleted organization that still owns an `AgentConnectOrg`.
+/// Deleting the CR is a remote effect that cannot join the delete transaction,
+/// and the cascade above removes the only record of the immutable
+/// `targetNamespace` — so without this tombstone the operator would keep a
+/// namespace, daemon, and sandboxes alive that nothing left could name.
+///
+/// Written inside the same transaction that deletes the organization, which is
+/// what makes it airtight: an enable that commits first is visible to that read,
+/// and one that has not committed is blocked by the org row's FOR UPDATE lock
+/// and then fails its foreign key. Drained by the cluster provisioner — kicked
+/// right after the deletion and swept periodically, so a deployment that had
+/// cluster execution switched off at delete time still cleans up once it is on.
+///
+/// Deliberately NO foreign key: the row's whole purpose is to outlive the
+/// organization it names.
+model PendingEnvelopeTeardown {
+  orgId           String   @id // the deleted org (identity + idempotency key)
+  targetNamespace String // the envelope namespace, which is also the CR name
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("pending_envelope_teardown")
+}

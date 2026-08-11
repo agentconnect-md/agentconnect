@@ -34,7 +34,15 @@ import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-ide
 import { GithubUserAuthzService } from './github/user-authz.js'
 import { type Clock, systemClock } from './domain/clock.js'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
-import { AgentConnectOrgApi, ClusterExecutionService, loadClusterAccess } from './cluster/index.js'
+import {
+  AgentConnectOrgApi,
+  ClusterExecutionService,
+  EnvelopeTeardownDrain,
+  loadClusterAccess
+} from './cluster/index.js'
+
+/** How often deleted organizations' envelopes are swept; the delete route also kicks it. */
+const ENVELOPE_TEARDOWN_DRAIN_MS = 5 * 60 * 1000
 
 import {
   PgDaemonRepo,
@@ -1004,6 +1012,17 @@ export function buildContainer(
     http.log
   )
 
+  // Retires the AgentConnectOrg of every deleted organization. The delete
+  // transaction records the intent, so this loop is the backstop that also
+  // covers a process which had cluster execution switched off at delete time;
+  // the delete route kicks it inline for latency. Inert when the module is off.
+  const envelopeTeardownDrain = new EnvelopeTeardownDrain(
+    clusterExecution ? () => clusterExecution.drainTeardowns() : undefined,
+    clock,
+    ENVELOPE_TEARDOWN_DRAIN_MS,
+    http.log
+  )
+
   // Durable one-time assertion recovery. Invocation rows are reaped before
   // expired delegations so a parent is never removed while cached/recoverable
   // invocation state still depends on it.
@@ -1560,6 +1579,7 @@ export function buildContainer(
     remoteGrantAuth,
     internalInvocationAuth,
     startBackground() {
+      envelopeTeardownDrain.start()
       cronRunReaper.start()
       hookRunReaper.start()
       webchatMcpOperationReaper.start()
@@ -1574,6 +1594,7 @@ export function buildContainer(
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
     },
     async shutdown() {
+      envelopeTeardownDrain.stop()
       cronRunReaper.stop()
       hookRunReaper.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()

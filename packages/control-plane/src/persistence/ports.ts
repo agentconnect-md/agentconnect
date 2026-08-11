@@ -4966,8 +4966,18 @@ export interface ClusterExecutionDefaults {
   egressPolicy: ClusterEgressPolicy
 }
 
+/** A deleted org's envelope, still waiting for its resource to be removed. */
+export interface PendingEnvelopeTeardown {
+  orgId: string
+  targetNamespace: string
+}
+
 export interface OrgClusterExecutionRepo {
   get(orgId: OrgId): Promise<ClusterExecutionSettings | null>
+  /** Oldest-first batch of envelopes whose organization is already gone. */
+  listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]>
+  /** Drop a tombstone once its resource is confirmed gone. Idempotent. */
+  clearPendingTeardown(orgId: string): Promise<void>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
    *  row, always bumping `specRevision`. `targetNamespace` and
    *  `credentialSecretName` are only ever written by the create branch — the CRD
