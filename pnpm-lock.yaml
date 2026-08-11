@@ -136,6 +136,9 @@ importers:
 
   packages/control-plane:
     dependencies:
+      '@agentconnect.md/k8s-client':
+        specifier: workspace:*
+        version: link:../k8s-client
       '@agentconnect.md/observability':
         specifier: workspace:*
         version: link:../observability

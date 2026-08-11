@@ -3162,6 +3162,88 @@ export const UsageDto = z.object({
   })
 })
 
+// ── managed cluster execution ──────────────────────────────────────────────
+// docs/designs/agentconnect-org-operator.md. Owner-only settings that project
+// into the org's AgentConnectOrg resource, plus the live envelope status the
+// operator publishes on it. Mounted only when the deployment configures cluster
+// credentials.
+
+export const ClusterEgressPolicyDto = z.enum(['locked', 'curated', 'open'])
+
+export const ClusterRuntimeTierDto = z.object({
+  /** Tier name; must match a master SandboxTemplate the operator install defines. */
+  name: z.string().min(1).max(63),
+  /** Warm pool size for the tier; 0 keeps a cold pool. */
+  warmReplicas: z.number().int().min(0).max(100)
+})
+
+/** Namespace ceilings as Kubernetes quantities; 0 / "0" means unlimited. */
+export const ClusterQuotaDto = z.object({
+  maxAgents: z.number().int().min(0),
+  cpu: z.string(),
+  memory: z.string(),
+  storage: z.string()
+})
+
+export const ClusterExecutionSettingsDto = z.object({
+  enabled: z.boolean(),
+  /** Derived once from the install prefix and the org id; immutable afterwards. */
+  targetNamespace: z.string(),
+  /** The operator install's control namespace, where the resource lives. */
+  controlNamespace: z.string(),
+  suspend: z.boolean(),
+  daemonImage: z.string(),
+  daemonTier: z.string(),
+  /** Name of the Secret the daemon's credential is published as. */
+  credentialSecretName: z.string(),
+  /** Present once a credential has been issued; opaque, bumped on rotation. */
+  credentialRevision: z.string().optional(),
+  runtimeImage: z.string(),
+  runtimeTiers: z.array(ClusterRuntimeTierDto),
+  quota: ClusterQuotaDto,
+  egressPolicy: ClusterEgressPolicyDto,
+  updatedAt: z.string()
+})
+
+export const UpdateClusterExecutionBody = z.object({
+  enabled: z.boolean().optional(),
+  suspend: z.boolean().optional(),
+  daemonImage: z.string().min(1).max(512).optional(),
+  daemonTier: z.string().min(1).max(63).optional(),
+  runtimeImage: z.string().min(1).max(512).optional(),
+  runtimeTiers: z.array(ClusterRuntimeTierDto).min(1).max(16).optional(),
+  quota: ClusterQuotaDto.partial().optional(),
+  egressPolicy: ClusterEgressPolicyDto.optional()
+})
+
+export const ClusterConditionDto = z.object({
+  type: z.string(),
+  status: z.enum(['True', 'False', 'Unknown']),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+  lastTransitionTime: z.string().optional()
+})
+
+export const ClusterEnvelopeStatusDto = z.object({
+  /** False ⇒ the org has no resource in the control namespace yet. */
+  present: z.boolean(),
+  /** The generation the operator last reconciled; behind ⇒ a write is in flight. */
+  observedGeneration: z.number().int().optional(),
+  namespace: z.string().optional(),
+  conditions: z.array(ClusterConditionDto),
+  daemon: z.object({ ready: z.boolean(), image: z.string().optional() }).optional(),
+  sandboxes: z.object({ total: z.number().int(), running: z.number().int(), suspended: z.number().int() }).optional(),
+  pools: z.array(z.object({ name: z.string(), warmAvailable: z.number().int(), claimed: z.number().int() })).optional(),
+  rollout: z
+    .object({
+      rolloutId: z.string(),
+      targetImage: z.string(),
+      pending: z.array(z.string()),
+      failed: z.array(z.string())
+    })
+    .optional()
+})
+
 // ── shared ────────────────────────────────────────────────────────────────
 export const IdParam = z.object({ id: z.string() })
 export const HealthDto = z.object({ status: z.literal('ok') })
@@ -3232,4 +3314,6 @@ export type WorkspaceGitCommitResultDtoT = z.infer<typeof WorkspaceGitCommitResu
 export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDto>
 export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
+export type ClusterExecutionSettingsDtoT = z.infer<typeof ClusterExecutionSettingsDto>
+export type ClusterEnvelopeStatusDtoT = z.infer<typeof ClusterEnvelopeStatusDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

@@ -104,6 +104,7 @@ model Org {
   externalScopes            ExternalScope[]
   sessionExternalAccess     SessionExternalAccessPolicy[]
   environmentEntries        OrganizationEnvironmentEntry[]
+  clusterExecution          OrgClusterExecution?
 
   @@map("org")
 }
@@ -2734,4 +2735,53 @@ model ExternalMemoryGrant {
 
   @@index([connectionId])
   @@map("external_memory_grant")
+}
+
+// ── managed cluster execution (docs/designs/agentconnect-org-operator.md) ──
+
+/// Sandbox egress tier projected into `AgentConnectOrg.spec.egressPolicy`.
+enum ClusterEgressPolicy {
+  locked
+  curated
+  open
+}
+
+/// The organization's desired managed-execution envelope — the control plane's
+/// half of the `AgentConnectOrg` CR (docs/designs/agentconnect-org-operator.md
+/// §2). One row per org, written only through the cluster-execution routes; the
+/// provisioner projects it into the CR and the operator owns everything from
+/// there. Status is never mirrored here: it is read live from the CR, so a row
+/// can never disagree with the cluster.
+///
+/// `targetNamespace` is derived once from the deployment's namespace prefix and
+/// the org id, and is IMMUTABLE afterwards — the CRD marks the field immutable
+/// too, so a rewrite here could never be applied.
+model OrgClusterExecution {
+  orgId String @id
+  /// False ⇒ the org has no CR in the control namespace. Flipping to false
+  /// deletes it, which hands the envelope to the operator's finalizer.
+  enabled              Boolean             @default(false)
+  targetNamespace      String              @unique
+  /// Quiesce without tearing down: daemon to zero, sandboxes drained.
+  suspend              Boolean             @default(false)
+  daemonImage          String
+  daemonTier           String              @default("small")
+  /// Name of the Secret the key authority writes; immutable per the CRD.
+  credentialSecretName String              @default("ac-daemon-token")
+  /// Bumped by the key authority after a credential rotation; forces a Recreate.
+  credentialRevision   String?
+  runtimeImage         String
+  /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
+  runtimeTiers         Json                @db.JsonB
+  quotaMaxAgents       Int                 @default(0) // 0 ⇒ unlimited, like the CRD
+  quotaCpu             String              @default("0")
+  quotaMemory          String              @default("0")
+  quotaStorage         String              @default("0")
+  egressPolicy         ClusterEgressPolicy @default(curated)
+  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("org_cluster_execution")
 }

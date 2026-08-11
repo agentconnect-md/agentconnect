@@ -33,6 +33,8 @@ import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconcile
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
 import { GithubUserAuthzService } from './github/user-authz.js'
 import { type Clock, systemClock } from './domain/clock.js'
+import { K8sHttp } from '@agentconnect.md/k8s-client'
+import { AgentConnectOrgApi, ClusterExecutionService, loadClusterAccess } from './cluster/index.js'
 
 import {
   PgDaemonRepo,
@@ -62,6 +64,7 @@ import {
   PgMcpProviderSecretStore,
   PgMcpGrantRepo,
   PgSkillSourceRepo,
+  PgOrgClusterExecutionRepo,
   PgOrganizationKnowledgeRepo,
   PgOrganizationEnvironmentRepo,
   PgOrganizationEnvironmentResolver,
@@ -323,6 +326,7 @@ export function buildContainer(
     mcpProviderSecret: new PgMcpProviderSecretStore(prisma, secretCipher),
     mcpGrant: new PgMcpGrantRepo(prisma, secretCipher),
     skillSource: new PgSkillSourceRepo(prisma),
+    orgClusterExecution: new PgOrgClusterExecutionRepo(prisma),
     organizationKnowledge: new PgOrganizationKnowledgeRepo(prisma),
     // Owns its transactions: every organization-environment write runs the design
     // §5 fence (org row → agent rows → re-read → validate → persist + bump
@@ -429,6 +433,25 @@ export function buildContainer(
           publicBaseUrl: config.S3_PUBLIC_BASE_URL
         })
       : undefined
+  // Managed cluster execution (docs/designs/agentconnect-org-operator.md):
+  // assembled ONLY when a credential source is configured. Unlike the forgiving
+  // S3 group above, the env schema already fail-fasts on a half-configured mode,
+  // so reaching here with a non-`off` mode means the credentials loaded.
+  const clusterAccess = loadClusterAccess(config)
+  const clusterExecution = clusterAccess
+    ? new ClusterExecutionService(
+        repos.orgClusterExecution,
+        new AgentConnectOrgApi(new K8sHttp(clusterAccess), clusterAccess.namespace),
+        repos.org,
+        {
+          namespacePrefix: config.CLUSTER_ORG_NAMESPACE_PREFIX,
+          daemonImage: config.CLUSTER_DAEMON_IMAGE!,
+          runtimeImage: config.CLUSTER_RUNTIME_IMAGE!,
+          daemonTier: config.CLUSTER_DEFAULT_TIER,
+          runtimeTiers: [{ name: config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }]
+        }
+      )
+    : undefined
   // Bases the reconcile roster + DTOs resolve avatar URLs against: `cp` for the
   // glyph/runtime PNG endpoint, `store` for uploaded `image` icons.
   const iconBases: IconUrlBases = {
@@ -891,6 +914,7 @@ export function buildContainer(
       mcpProviderSecret: repos.mcpProviderSecret,
       mcpGrant: repos.mcpGrant,
       skillSource: repos.skillSource,
+      orgClusterExecution: repos.orgClusterExecution,
       organizationKnowledge: repos.organizationKnowledge,
       organizationEnvironment: repos.organizationEnvironment,
       organizationEnvironmentSecret: repos.organizationEnvironmentSecret,
@@ -949,6 +973,7 @@ export function buildContainer(
     ...(logtoIdentity ? { logtoIdentity } : {}),
     sessionAccessPlugins: [slackSessionAccess, githubSessionAccess, feishuSessionAccess],
     ...(iconStore ? { iconStore } : {}),
+    ...(clusterExecution ? { clusterExecution } : {}),
     ...(connectors ? { connectors } : {}),
     config: httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs })
   }

@@ -1,7 +1,8 @@
 # AgentConnectOrg CRD + Operator
 
 **Status:** Envelope, status, deletion, and rollout reconcile logic implemented — including the
-drain handshake with the daemon and its timeout; gateway policy rendering waits on the gateway spike.
+drain handshake with the daemon and its timeout — plus the control-plane CR provisioner (§6);
+gateway policy rendering waits on the gateway spike, and the credential key authority is still TODO.
 
 The managed execution plane provisions one _org envelope_ per organization on a
 Kubernetes cluster: a namespace, RBAC, network policies, sandbox templates and
@@ -208,7 +209,34 @@ renders its own release-prefixed copies from its own constants (Kubernetes
   Pods are the enforcement point, so a sandbox created from an operator-copied
   template is covered without teaching the policy about its controller.
 
-## 6. Verification
+## 6. Control-plane provisioner
+
+The CR writer is control-plane code (`packages/control-plane/src/cluster/`),
+opt-in through `CLUSTER_EXECUTION_MODE` (`off` | `in-cluster` | `kubeconfig`);
+off is the default and mounts nothing. It is deliberately the SAME path for a
+self-hosted cluster install and a hosted deployment — only the policy inputs
+differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
+`AC_ORG_NAMESPACE_PREFIX`, plus the default images and tier).
+
+- `org_cluster_execution` (one row per org) holds only the spec fields the
+  control plane owns. Status is never mirrored there: the console reads it live
+  off the CR, so a row can never disagree with the cluster.
+- `targetNamespace` is derived once as `<prefix><org id folded to a DNS label>`
+  and stored, because the CRD marks the field immutable.
+- Writes are server-side apply under field manager
+  `agentconnect-control-plane`, so the operator's own manager is untouched;
+  the control plane never writes `/status`, finalizers, or envelope objects.
+- `PUT /orgs/:orgId/cluster-execution` (owner-only) persists then applies;
+  `enabled: false` deletes the CR and hands the envelope to the finalizer, while
+  `suspend` quiesces without tearing down. `GET …/cluster-execution/status`
+  projects the operator's conditions and summaries.
+
+The credential Secret named by `spec.daemon.credentialSecretName` — and the
+`credentialRevision` bump that rolls the daemon after a rotation — belong to
+this same module as the key authority, and are still TODO; the operator keeps
+zero Secret access either way.
+
+## 7. Verification
 
 Unit tests run against an in-process fake API server
 (`@agentconnect.md/k8s-client/testing`) — no cluster needed. The CRD parity

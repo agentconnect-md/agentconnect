@@ -4896,3 +4896,81 @@ export interface OrgInviteLinkRepo {
   /** Validate + grant collaborator + persist redemption and its audit atomically. */
   accept(tokenHash: string, userId: string, now: Date): Promise<OrgInviteAcceptResult>
 }
+
+// ── managed cluster execution (docs/designs/agentconnect-org-operator.md) ──
+
+/** Sandbox egress tier, mirroring `AgentConnectOrg.spec.egressPolicy`. */
+export type ClusterEgressPolicy = 'locked' | 'curated' | 'open'
+
+/** One sandbox tier and its warm-pool size; 0 keeps a cold pool. */
+export interface ClusterRuntimeTier {
+  name: string
+  warmReplicas: number
+}
+
+/** Namespace resource ceilings; 0 (or "0") means unlimited, exactly as the CRD reads them. */
+export interface ClusterQuota {
+  maxAgents: number
+  cpu: string
+  memory: string
+  storage: string
+}
+
+/**
+ * The organization's desired execution envelope — the control plane's half of
+ * the `AgentConnectOrg` spec. Status is deliberately absent: it is read live
+ * from the resource, never mirrored here.
+ */
+export interface ClusterExecutionSettings {
+  orgId: string
+  enabled: boolean
+  /** Derived once from the install prefix and the org id; immutable afterwards. */
+  targetNamespace: string
+  suspend: boolean
+  daemonImage: string
+  daemonTier: string
+  credentialSecretName: string
+  credentialRevision?: string
+  runtimeImage: string
+  runtimeTiers: ClusterRuntimeTier[]
+  quota: ClusterQuota
+  egressPolicy: ClusterEgressPolicy
+  createdAt: Date
+  updatedAt: Date
+}
+
+/** The mutable slice of the settings; every field is optional on update. */
+export interface ClusterExecutionPatch {
+  enabled?: boolean
+  suspend?: boolean
+  daemonImage?: string
+  daemonTier?: string
+  runtimeImage?: string
+  runtimeTiers?: ClusterRuntimeTier[]
+  quota?: Partial<ClusterQuota>
+  egressPolicy?: ClusterEgressPolicy
+}
+
+/** The values a first write fills in for anything the caller left unset. */
+export interface ClusterExecutionDefaults {
+  targetNamespace: string
+  daemonImage: string
+  daemonTier: string
+  credentialSecretName: string
+  runtimeImage: string
+  runtimeTiers: ClusterRuntimeTier[]
+  quota: ClusterQuota
+  egressPolicy: ClusterEgressPolicy
+}
+
+export interface OrgClusterExecutionRepo {
+  get(orgId: OrgId): Promise<ClusterExecutionSettings | null>
+  /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
+   *  row. `targetNamespace` and `credentialSecretName` are only ever written by
+   *  the create branch — the CRD marks both immutable. */
+  upsert(
+    orgId: OrgId,
+    defaults: ClusterExecutionDefaults,
+    patch: ClusterExecutionPatch
+  ): Promise<ClusterExecutionSettings>
+}

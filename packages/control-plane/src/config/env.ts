@@ -222,7 +222,38 @@ const CoreConfigShape = {
   // service ids that overlap AgentConnect's native integrations.
   OPEN_CONNECTOR_PROVIDER_BLOCKLIST: z
     .string()
-    .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot')
+    .default('github,slack,telegram,discord,discordbot,feishu,feishu_app_bot,feishu_custom_bot'),
+  // ── managed cluster execution (agentconnect-org-operator.md) — opt-in ──
+  // Where the provisioner gets its Kubernetes credentials, and the switch for the
+  // whole feature. `off` (default) ⇒ no cluster module, no routes, no behavior
+  // change for an existing deployment. `in-cluster` ⇒ the pod's projected
+  // ServiceAccount (the control plane runs in the cluster it provisions);
+  // `kubeconfig` ⇒ CLUSTER_KUBECONFIG_PATH, for an out-of-cluster process.
+  // An explicit mode rather than credential sniffing: a control plane that merely
+  // happens to run on Kubernetes must not start claiming an operator install.
+  CLUSTER_EXECUTION_MODE: z.enum(['off', 'in-cluster', 'kubeconfig']).default('off'),
+  // Kubeconfig file for CLUSTER_EXECUTION_MODE=kubeconfig. Its current-context user
+  // must carry a bearer token (`token` or `tokenFile`) — client-certificate and
+  // `exec` users are refused at boot.
+  CLUSTER_KUBECONFIG_PATH: z.string().optional(),
+  // The operator install's control namespace, where every AgentConnectOrg lives.
+  // Unset ⇒ the pod's own namespace (in-cluster) or the kubeconfig context's.
+  CLUSTER_CONTROL_NAMESPACE: z.string().optional(),
+  // Install-time constant shared with the operator's AC_ORG_NAMESPACE_PREFIX: every
+  // org namespace this install owns starts with it, and admission refuses the rest.
+  // A mismatch means the operator will not adopt what the control plane asks for.
+  CLUSTER_ORG_NAMESPACE_PREFIX: z
+    .string()
+    .regex(/^[a-z0-9]([a-z0-9-]{0,30})?$/, 'must be a lowercase alphanumeric/dash namespace prefix')
+    .default('ac-org-'),
+  // Images an org's envelope is created with; the stored per-org settings own them
+  // afterwards. Both are required when cluster execution is on — an install must
+  // name its own registry, and there is no safe default to guess.
+  CLUSTER_DAEMON_IMAGE: z.string().optional(),
+  CLUSTER_RUNTIME_IMAGE: z.string().optional(),
+  // Resource tier a new org's daemon and sandbox pool start on; must name a tier the
+  // operator install defines (its built-in table is small/medium/large).
+  CLUSTER_DEFAULT_TIER: z.string().default('small')
 } as const
 
 /**
@@ -299,9 +330,42 @@ function validateSessionAccess(
   }
 }
 
+// Cluster execution is opt-in and all-or-nothing: a deployment that switched it
+// on but left the credential source or the images unset would mount a surface
+// whose every write fails at the API server. Fail at boot instead.
+function validateClusterExecution(
+  config: {
+    CLUSTER_EXECUTION_MODE: 'off' | 'in-cluster' | 'kubeconfig'
+    CLUSTER_KUBECONFIG_PATH?: string
+    CLUSTER_DAEMON_IMAGE?: string
+    CLUSTER_RUNTIME_IMAGE?: string
+  },
+  ctx: z.RefinementCtx
+): void {
+  if (config.CLUSTER_EXECUTION_MODE === 'off') return
+  if (config.CLUSTER_EXECUTION_MODE === 'kubeconfig' && !config.CLUSTER_KUBECONFIG_PATH) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['CLUSTER_KUBECONFIG_PATH'],
+      message: 'CLUSTER_EXECUTION_MODE=kubeconfig requires CLUSTER_KUBECONFIG_PATH'
+    })
+  }
+  for (const key of ['CLUSTER_DAEMON_IMAGE', 'CLUSTER_RUNTIME_IMAGE'] as const) {
+    if (!config[key]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `cluster execution requires ${key}`
+      })
+    }
+  }
+}
+
 /** Cross-field checks the flat schema can't express — fail-fast at boot, before
  *  the first secret write could silently land plaintext next to sealed rows. */
-const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher).superRefine(validateSessionAccess)
+const AppConfigChecked = AppConfigSchema.superRefine(validateSecretCipher)
+  .superRefine(validateSessionAccess)
+  .superRefine(validateClusterExecution)
 
 const BootstrapConfigSchema = z
   .object({
