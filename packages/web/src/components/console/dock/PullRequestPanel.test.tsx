@@ -405,6 +405,16 @@ describe('PullRequestPanel body', () => {
     expect(wire.calls).toHaveLength(2)
   })
 
+  it('holds Auto-fix while ANY turn streams — a queued post would let that turn eat the wait', async () => {
+    // The composer QUEUES a send during a running turn; the running turn's falling edge would then
+    // consume `awaitingTurn` before the Auto-fix turn dispatched, and its real settle would refresh nothing.
+    await render({ onAutoFix: () => {}, turnActive: true })
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(true)
+
+    await rerender({ onAutoFix: () => {}, turnActive: false })
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
+  })
+
   it('arms auto-merge through the CP and re-reads the view it invalidated', async () => {
     await render()
     expect(wire.calls).toHaveLength(1)

@@ -569,3 +569,39 @@ describe('setAutoMerge (M6)', () => {
     expect((await degraded.service.view(IDENTITY)).autoMergeArmed).toBeNull()
   })
 })
+
+describe('write-side correctness (M6 review findings)', () => {
+  const TARGET = { repoId: IDENTITY.repoId, repoFullName: IDENTITY.repoFullName, pullNumber: IDENTITY.pullNumber }
+
+  it('treats a refused mutation as FAILURE even when GitHub wraps it in truthy partial data', async () => {
+    // GitHub rejects a mutation as `{ data: { enablePullRequestAutoMerge: null }, errors: [...] }` —
+    // reporting `{ armed: true }` off the truthy half would claim a write that never happened.
+    const { service } = build([
+      ok({ data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: null } } } }),
+      ok({
+        data: { enablePullRequestAutoMerge: null },
+        errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }]
+      })
+    ])
+
+    await expect(service.setAutoMerge(TARGET, 'ghs_write', true)).rejects.toMatchObject({
+      message: expect.stringContaining('clean status')
+    })
+  })
+
+  it('fences a read that started BEFORE invalidate() out of the cache — and out of later joins', async () => {
+    let release: ((value: Response) => void) | undefined
+    const { service, calls } = build([() => new Promise<Response>((resolve) => (release = resolve)), ok(fullAnswer())])
+
+    const before = service.view(IDENTITY)
+    while (!release) await new Promise((tick) => setTimeout(tick, 0))
+    // The write lands mid-read: everything this PR cached, joined or later stored is now pre-write state.
+    service.invalidate(IDENTITY.repoId, IDENTITY.pullNumber)
+    release(ok(fullAnswer())())
+    await before // its own awaiter still gets the answer it asked for…
+
+    // …but the next view must ask GitHub again: no cache hit off the fenced store, no join on the old read.
+    await service.view(IDENTITY)
+    expect(calls).toHaveLength(2)
+  })
+})

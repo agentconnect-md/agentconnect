@@ -1129,26 +1129,34 @@ export function sessionRoutes(deps: HttpDeps) {
             req.body.enabled
           )
         } catch (err) {
-          return autoMergeErrorReply(reply, err)
+          const failure = autoMergeFailureOf(err)
+          if (!failure) throw err
+          return reply.code(failure.statusCode).send(failure)
         }
       }
     )
   }
 }
 
-// GitHub/clamp failures onto HTTP: capability and installation denials are 403, rate limits 429, GitHub
-// down 502 — and GitHub declining the state change itself (clean status, closed PR) is a 409, not a 5xx.
-function autoMergeErrorReply(reply: { code: (c: number) => { send: (b: unknown) => unknown } }, err: unknown) {
-  const body = (statusCode: number, error: string, message: string) => ({ error, statusCode, message })
+// GitHub/clamp failures onto HTTP, as DATA: capability and installation denials are 403, rate limits
+// 429, GitHub down 502 — and GitHub declining the state change itself (clean status, closed PR) is a
+// 409, not a 5xx. Null means "not ours" and the caller rethrows.
+function autoMergeFailureOf(
+  err: unknown
+): { error: string; statusCode: 403 | 409 | 429 | 502; message: string } | null {
+  const failure = (statusCode: 403 | 409 | 429 | 502, error: string) => ({
+    error,
+    statusCode,
+    message: err instanceof Error ? err.message : String(err)
+  })
   if (err instanceof GitCredDeniedError) {
-    if (err.code === 'RATE_LIMITED') return reply.code(429).send(body(429, 'Too Many Requests', err.message))
-    return reply.code(403).send(body(403, 'Forbidden', err.message))
+    return err.code === 'RATE_LIMITED' ? failure(429, 'Too Many Requests') : failure(403, 'Forbidden')
   }
   if (err instanceof GithubApiError) {
-    if (err.code === 'RATE_LIMITED') return reply.code(429).send(body(429, 'Too Many Requests', err.message))
-    if (err.code === 'LEASE_DENIED') return reply.code(403).send(body(403, 'Forbidden', err.message))
-    if (err.status === 0 || err.status >= 500) return reply.code(502).send(body(502, 'Bad Gateway', err.message))
-    return reply.code(409).send(body(409, 'Conflict', err.message))
+    if (err.code === 'RATE_LIMITED') return failure(429, 'Too Many Requests')
+    if (err.code === 'LEASE_DENIED') return failure(403, 'Forbidden')
+    if (err.status === 0 || err.status >= 500) return failure(502, 'Bad Gateway')
+    return failure(409, 'Conflict')
   }
-  throw err
+  return null
 }

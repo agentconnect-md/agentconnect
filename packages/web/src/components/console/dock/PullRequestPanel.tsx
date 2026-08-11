@@ -532,8 +532,14 @@ export function PullRequestPanel({
                   type="button"
                   data-pr-autofix=""
                   className="dsbtn dsbtn-secondary sm flex-none disabled:pointer-events-none disabled:opacity-50"
-                  disabled={awaitingTurn}
-                  title="Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes"
+                  // Disabled while ANY turn streams: the composer would QUEUE the post, and the running
+                  // turn's falling edge would consume the wait before the Auto-fix turn even dispatched.
+                  disabled={awaitingTurn || turnActive}
+                  title={
+                    turnActive && !awaitingTurn
+                      ? 'A turn is already running — Auto-fix posts its own turn, so wait for this one to settle'
+                      : 'Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes'
+                  }
                   onClick={() => {
                     onAutoFix(autoFixInstruction(view))
                     setAwaitingTurn(true)
