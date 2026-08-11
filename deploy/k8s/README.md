@@ -23,12 +23,19 @@ public ACP registry for their identity, served cache-first from
 leaves the ids unresolved until a later start warms it. An operator `runtimes` entry
 still overrides everything, so it remains the escape hatch for an air-gapped cluster.
 
+One consequence of dropping it: the daemon still projects the probed ids onto the
+public ACP registry for their identity, served cache-first from
+`<root>/acp_registry.json`. A first boot with the registry unreachable and no cache
+leaves the ids unresolved until a later start warms it. An operator `runtimes` entry
+still overrides everything, so it remains the escape hatch for an air-gapped
+cluster.
+
 ## Pinning the images
 
 Both manifests carry `<IMAGE_TAG>`. The tag must be built from a commit that
-contains BOTH the live-probe protocol and the pod-environment fix — `v1.41.0-rc.47`
-has the first but not the second, so pinning it reproduces a Codex failure inside
-the sandbox. Use the same tag for both images: a daemon that probes paired with a
+contains all three of: the live-probe protocol, the pod-environment fix, and the
+image-published runtime command. `v1.41.0-rc.47` has only the first, so pinning it
+reproduces a Codex failure inside the sandbox and advertises no runtimes. Use the same tag for both images: a daemon that probes paired with a
 shim that cannot serve `probe` advertises nothing, and a shim that can paired with
 a daemon that reads a file finds no file.
 
@@ -60,15 +67,11 @@ kubectl -n agentconnect create secret generic agentconnect-daemon-config \
 shred -u /tmp/config.json
 
 # 2. Everything else.
-# The controller must accept our label domain before it will create any Sandbox,
-# and it reads that config only at startup. It lives in the CONTROLLER's namespace:
-NS=$(kubectl get deploy -A -o jsonpath='{range .items[?(@.metadata.name=="agent-sandbox-controller")]}{.metadata.namespace}{end}')
-
-# Merge, do not clobber: this key REPLACES the allowlist, so applying the file blind
-# would revoke any domain already in there (including the built-in fallback).
-kubectl -n "$NS" get cm agent-sandbox-config -o jsonpath='{.data.allowed-label-domains}' 2> /dev/null \
-  || kubectl -n "$NS" apply -f deploy/k8s/05-label-allowlist.yaml
-kubectl -n "$NS" rollout restart deploy/agent-sandbox-controller
+# The controller must accept our label domain before it will create any Sandbox.
+# This MERGES into whatever is already allowed and finds the controller's own
+# namespace; it prints the restart command rather than running it, because the
+# controller is shared and a restart interrupts reconciliation for every tenant.
+./deploy/k8s/allow-label-domain.sh
 
 kubectl apply -f deploy/k8s/00-rbac.yaml
 kubectl apply -f deploy/k8s/20-service.yaml
@@ -100,10 +103,13 @@ Consequences worth knowing:
 
 ## Two things the cluster decides, not this repo
 
-**The label allowlist** (`05-label-allowlist.yaml`). Without it the controller
-rejects our claim with `InvalidMetadata` and never creates a Sandbox. It is shared
-config read at controller startup — merge, do not overwrite, and check for running
-sandboxes before the restart.
+**The label allowlist** (`allow-label-domain.sh`). Without it the controller
+rejects our claims with `InvalidMetadata` and never creates a Sandbox. It is a
+script rather than a manifest for two reasons: the key REPLACES the allowlist, so
+an apply would revoke whatever is already there — including the controller's own
+`sandbox.users.io` fallback — and a manifest that names its own namespace cannot be
+relocated to the controller's with `-n`. Upstream installs the controller into
+`agent-sandbox-system`; this cluster runs it in `agentconnect`.
 
 **The storage class.** `40-sandbox-pool.yaml` pins `standard` (a cluster-wide
 CSI). The cluster default here is `local-path`, which failed with
@@ -122,10 +128,7 @@ kubectl -n agentconnect logs deploy/agentconnect-daemon | grep -E 'k8s:|runtimes
 Expect `k8s: execution plane ready — shim endpoint on :8085`, then
 `runtimes: probing a sandbox …` and `runtimes ready (probed): claude-acp@…`.
 
-An empty probed list means the `runtimes` mapping above is missing — the ids
-resolved through `npx` and were dropped. A probe that fails outright is usually
-the pool: check `kubectl -n agentconnect get sandboxclaims` for
-`agent-ac-runtime-probe`.
+An empty probed list means the image did not report a launchable runtime — most likely an image predating the command-publishing change, whose ids still resolve through `npx` and are dropped.
 
 Then assign an agent and send it a message. The daemon creates a
 `SandboxClaim` named `agent-<agentId>`:
