@@ -1,3 +1,4 @@
+import type { Clock } from '@agentconnect.md/connection'
 import type { K8sHttp } from '@agentconnect.md/k8s-client'
 import type { OperatorConfig } from '../config.js'
 import type { AgentConnectOrgApi } from '../crd/api.js'
@@ -10,6 +11,8 @@ export interface ReconcileContext {
   config: OperatorConfig
   /** The install's control namespace — master templates live here, CRs are watched here. */
   controlNamespace: string
+  /** Time source for deadlines a pass measures (drain timeouts); system clock when omitted. */
+  clock?: Clock
   log: { debug?: (message: string) => void; warn?: (message: string) => void }
 }
 

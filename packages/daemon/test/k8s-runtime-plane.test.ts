@@ -27,6 +27,11 @@ afterEach(async () => {
   delete process.env.AC_K8S_SHIM_PORT
 })
 
+/** A sandbox watch that reports nothing and ends when the plane aborts it. */
+async function* idleSandboxWatch(signal?: AbortSignal): AsyncGenerator<never> {
+  await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
+}
+
 /** A Sandbox that binds, adopts a pool pod, and reports Ready. */
 function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
   const podName = options.podName ?? 'pool-pod-9'
@@ -56,7 +61,8 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
       getSandbox: async () => sandbox,
       setOperatingMode: async () => sandbox,
       watchClaims: vi.fn(),
-      watchSandboxes: vi.fn(),
+      // The plane follows Sandboxes for a rollout's drain requests; this one reports none.
+      watchSandboxes: ({ signal }: { signal?: AbortSignal }) => idleSandboxWatch(signal),
       // The listener verifies through this, so the handshake exercises the real path.
       reviewToken: async (token: string) =>
         token === 'projected-token'

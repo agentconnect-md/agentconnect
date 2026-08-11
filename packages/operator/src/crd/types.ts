@@ -11,6 +11,9 @@ export const FINALIZER = 'agentconnect.md/org-envelope'
 
 /** Rollout drain handshake annotation on runtime Sandboxes (value: `<rolloutId>/<image>`). */
 export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
+/** When the request above was written (RFC 3339). The drain deadline is measured from it, on the
+ *  object rather than in the operator, so a leader change does not restart every drain's clock. */
+export const DRAIN_REQUESTED_AT_ANNOTATION = 'agentconnect.md/drain-requested-at'
 /** Pod-template annotation the operator bumps to force a Recreate on credential rotation. */
 export const CREDENTIAL_REVISION_ANNOTATION = 'agentconnect.md/credential-revision'
 /** Label mapping envelope workloads (Deployments/Pods) back to their owning org CR. */

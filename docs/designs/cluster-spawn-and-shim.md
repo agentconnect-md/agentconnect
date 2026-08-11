@@ -166,3 +166,34 @@ The helper git runs in the pod is the runtime image's own executable, root-owned
 unwritable by the runtime — one it could rewrite is one it could replace with a helper that
 asks the daemon for credentials in its name. It shares its implementation with the daemon's
 CLI helper and differs only in which socket it dials.
+
+## 7. Draining for a runtime-image rollout
+
+The daemon owns when an agent's pod runs, so an image rollout cannot simply replace it — a
+forced suspend would kill whatever turn is in flight. Instead the operator _asks_, by writing
+`agentconnect.md/drain-requested` on the Sandbox
+([`agentconnect-org-operator.md`](agentconnect-org-operator.md)), and the daemon answers with
+the one action that is its to take: it stops placing new work on that instance and suspends it
+once the work already there ends — immediately when there is none. The operator's conditioned
+image patch then applies, because the instance is Suspended.
+
+The consumer is a list-then-watch over the namespace's Sandboxes, started with the runtime
+plane rather than by a launch: the instance a rollout waits on is usually the idle one nobody
+is about to launch, and a request nothing reads would stall the rollout until its deadline.
+Three properties this shape buys:
+
+- **Snapshots converge.** Each re-LIST replaces the whole drain set, so a watch gap that swallowed
+  a request's removal cannot hold an instance down forever.
+- **No launch record required.** Requests are keyed by Sandbox name, not by agent, so an instance
+  this daemon has not bound in this process — after a restart, or for an agent that has been quiet
+  — is still drained. Keying by agent would have made exactly the idle case unreachable.
+- **In-flight work is held, not raced.** Work leases its Sandbox: the bind, the cold workspace
+  preparation that runs in the pod after it (clone, pull, skill materialization — one lease around
+  the whole of it, not around the bind alone), and the runtime until it exits. A request that
+  arrives while a lease is held waits for it instead of pulling the pod out from under it.
+  Taking a lease on an already-draining instance is refused instead, by type
+  (`SandboxDrainingError` → the `draining` launch outcome): nothing has started yet, so the
+  rollout wins that decision and the caller retries once the request clears.
+
+A drain the daemon never completes is the rollout's to give up on, not the daemon's to force:
+the operator marks the instance `failed` after its own deadline, and the pod keeps serving.

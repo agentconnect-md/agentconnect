@@ -104,6 +104,9 @@ export interface K8sRuntimePlane {
   /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
    *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
   ensureChannel: (agentId: string) => Promise<void>
+  /** Run `work` holding the agent's Sandbox, so a rollout's drain request waits for it rather
+   *  than suspending the pod while work this daemon already admitted runs inside it. */
+  withSandbox: <T>(agentId: string, work: () => Promise<T>) => Promise<T>
   /** Ask a sandbox which runtimes the image actually provides, and tear it down again. */
   probeRuntimes: () => Promise<K8sRuntimeTable>
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
@@ -221,6 +224,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // in between would hit an uninitialized binding.
   await listener.start(settings.shimPort, settings.shimHost ?? '0.0.0.0')
 
+  // Follows this namespace's Sandboxes for the rollout's drain requests. Part of starting the
+  // plane rather than of the first launch: an instance whose agent is idle is exactly the one a
+  // rollout is waiting on, and nothing else would ever look at it.
+  driver.startSandboxWatch()
+
   // A renewal re-dials immediately (the client resets its backoff for a planned rebind), so a
   // replacement that has not arrived well inside the request deadline is a pod that is gone.
   const REBIND_GRACE_MS = 20_000
@@ -245,6 +253,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     ensureChannel: async (agentId) => {
       await driver.ensureBoundChannel(agentId)
     },
+    withSandbox: (agentId, work) => driver.withSandbox(agentId, work),
     probeRuntimes: async () => {
       // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
       // agent's instance — and is torn down afterwards rather than left holding a pod.
@@ -277,6 +286,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     stop: async () => {
+      driver.stopSandboxWatch()
       for (const timer of lossTimers.values()) clearTimeout(timer)
       lossTimers.clear()
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
