@@ -87,10 +87,10 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
   }
 
   /**
-   * The claim is one conditional statement plus, on takeover, the adoption of
-   * whatever the dead holder left staged. Both live in one transaction: a
-   * takeover that forgot the staged key would strand a live, non-expiring
-   * credential with nothing naming it.
+   * The claim is one conditional statement. A key a dead holder left STAGED is
+   * deliberately left alone here: it may already be published, so it stays the
+   * pod's working credential until the successor's own publish has definitely
+   * replaced it — `commitCredential` is what retires it, atomically with that.
    */
   async beginCredentialRotation(
     orgId: OrgId,
@@ -112,13 +112,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       })
       if (claimed.count === 0) return null
       const row = await tx.orgClusterExecution.findUnique({ where: { orgId } })
-      if (!row) return null
-      if (row.credentialStagedApiKeyId) {
-        await enqueueRevocation(tx, orgId, row.credentialStagedApiKeyId, 'cluster credential rotation abandoned')
-        await tx.orgClusterExecution.update({ where: { orgId }, data: { credentialStagedApiKeyId: null } })
-        return toRecord({ ...row, credentialStagedApiKeyId: null })
-      }
-      return toRecord(row)
+      return row ? toRecord(row) : null
     })
   }
 
@@ -139,11 +133,21 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
   }
 
   async stageCredentialKey(orgId: OrgId, token: string, apiKeyId: string): Promise<boolean> {
-    const held = await this.prisma.orgClusterExecution.updateMany({
-      where: { orgId, credentialRotationToken: token },
-      data: { credentialStagedApiKeyId: apiKeyId }
+    return withTx(this.prisma, async (tx) => {
+      const displaced = (await tx.orgClusterExecution.findUnique({ where: { orgId } }))?.credentialStagedApiKeyId
+      const held = await tx.orgClusterExecution.updateMany({
+        where: { orgId, credentialRotationToken: token },
+        data: { credentialStagedApiKeyId: apiKeyId }
+      })
+      if (held.count === 0) return false
+      // The slot holds one key, so a key it displaces would otherwise lose its
+      // only handle. Queue it in the same transaction; the drain runs after a
+      // publish has superseded it.
+      if (displaced && displaced !== apiKeyId) {
+        await enqueueRevocation(tx, orgId, displaced, 'cluster credential rotation abandoned')
+      }
+      return true
     })
-    return held.count > 0
   }
 
   async commitCredential(
@@ -158,7 +162,7 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       // claim over, and Prisma's default isolation would let the stale write
       // land anyway. `enabled` is part of it too — a rotation must never commit
       // a live key onto an envelope that disable has already retired.
-      const superseded = (await tx.orgClusterExecution.findUnique({ where: { orgId } }))?.credentialApiKeyId
+      const before = await tx.orgClusterExecution.findUnique({ where: { orgId } })
       const won = await tx.orgClusterExecution.updateMany({
         where: { orgId, credentialRotationToken: token, enabled: true },
         data: {
@@ -173,9 +177,14 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       })
       if (won.count === 0) return false
       // Same transaction as the overwrite: queueing the predecessor separately
-      // would lose it whenever the process stopped in between.
-      if (superseded && superseded !== credential.apiKeyId) {
-        await enqueueRevocation(tx, orgId, superseded, reason)
+      // would lose it whenever the process stopped in between. A key a previous
+      // rotation left STAGED is retired here too, not at claim time — it may
+      // already have been published, so it stays the pod's working credential
+      // until this publish has definitely replaced it.
+      for (const superseded of [before?.credentialApiKeyId, before?.credentialStagedApiKeyId]) {
+        if (superseded && superseded !== credential.apiKeyId) {
+          await enqueueRevocation(tx, orgId, superseded, reason)
+        }
       }
       return true
     })

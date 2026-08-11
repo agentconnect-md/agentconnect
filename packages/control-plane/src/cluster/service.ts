@@ -150,7 +150,14 @@ export class ClusterExecutionService {
    * `enabled: true` row with no envelope and nothing to notice.
    */
   private async enable(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
-    await this.repo.upsert(orgId, this.defaults(orgId), patch)
+    // The claim comes FIRST, before `enabled` moves: a row flipped outside the
+    // claim is a state change a concurrent disable or drain never saw.
+    // `beginCredentialRotation` needs a row to claim, so an org that has never
+    // configured anything is created disabled and only then enabled under the
+    // claim — which is also the create path's own first write.
+    if (!(await this.repo.get(orgId))) {
+      await this.repo.upsert(orgId, this.defaults(orgId), { ...patch, enabled: false })
+    }
     const token = randomUUID()
     const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
     if (!claimed) {
@@ -160,6 +167,7 @@ export class ClusterExecutionService {
       throw new ClusterRotationInProgressError()
     }
     try {
+      await this.repo.upsert(orgId, this.defaults(orgId), patch)
       await this.repo.clearPendingTeardown(orgId)
       return await this.converge(orgId)
     } finally {
@@ -298,10 +306,23 @@ export class ClusterExecutionService {
     }
   }
 
-  /** Delete the resource and drop its tombstone. The caller owns the claim. */
+  /**
+   * Delete the resource and drop its tombstone. The caller owns the claim — but
+   * a claim cannot fence a request already in flight, so the delete carries the
+   * read object's `uid`/`resourceVersion`: a re-enable that applied a new
+   * generation in the meantime makes the API server reject it rather than
+   * removing what the re-enable just created.
+   */
   private async deleteEnvelopeResource(orgId: OrgId, targetNamespace: string): Promise<boolean> {
+    const name = orgResourceName(targetNamespace)
     try {
-      await this.api.delete(orgResourceName(targetNamespace))
+      const existing = await this.api.get(name)
+      if (existing) {
+        await this.api.delete(name, {
+          ...(existing.metadata?.uid ? { uid: existing.metadata.uid } : {}),
+          ...(existing.metadata?.resourceVersion ? { resourceVersion: existing.metadata.resourceVersion } : {})
+        })
+      }
     } catch {
       return false // still owed; the maintenance loop retries
     }

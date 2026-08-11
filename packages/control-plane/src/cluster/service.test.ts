@@ -72,11 +72,6 @@ class FakeRepo implements OrgClusterExecutionRepo {
     this.rotationToken = token
     this.rotationSeq += 1
     this.row = { ...this.row, credentialRotationSeq: this.rotationSeq }
-    const staged = this.row.credentialStagedApiKeyId
-    if (staged) {
-      await this.enqueueKeyRevocation(this.row.orgId, staged, 'cluster credential rotation abandoned')
-      this.row = { ...this.row, credentialStagedApiKeyId: undefined }
-    }
     return { ...this.row }
   }
 
@@ -94,7 +89,11 @@ class FakeRepo implements OrgClusterExecutionRepo {
 
   async stageCredentialKey(_orgId: OrgId, token: string, apiKeyId: string): Promise<boolean> {
     if (this.rotationToken !== token || !this.row) return false
+    const displaced = this.row.credentialStagedApiKeyId
     this.row = { ...this.row, credentialStagedApiKeyId: apiKeyId }
+    if (displaced && displaced !== apiKeyId) {
+      await this.enqueueKeyRevocation(this.row.orgId, displaced, 'cluster credential rotation abandoned')
+    }
     return true
   }
 
@@ -106,6 +105,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
   ): Promise<boolean> {
     if (this.rotationToken !== token || !this.row?.enabled) return false
     const superseded = this.row.credentialApiKeyId
+    const stagedBefore = this.row.credentialStagedApiKeyId
     this.row = {
       ...this.row,
       specRevision: this.row.specRevision + 1,
@@ -114,8 +114,8 @@ class FakeRepo implements OrgClusterExecutionRepo {
       credentialRevision: credential.revision,
       credentialStagedApiKeyId: undefined
     }
-    if (superseded && superseded !== credential.apiKeyId) {
-      await this.enqueueKeyRevocation(this.row.orgId, superseded, reason)
+    for (const key of [superseded, stagedBefore]) {
+      if (key && key !== credential.apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, key, reason)
     }
     return true
   }
@@ -200,7 +200,7 @@ class FakeApi implements OrgResourceApi {
   }
 
   async get(): Promise<AgentConnectOrg | null> {
-    return null
+    return this.present ? { metadata: { uid: 'uid-1', resourceVersion: '1' } } : null
   }
 
   failDelete = false
@@ -209,6 +209,9 @@ class FakeApi implements OrgResourceApi {
     if (this.failDelete) throw new Error('cluster unreachable')
     this.deleted.push(name)
   }
+
+  /** The drain reads before it deletes, so a resource must exist to be deleted. */
+  present = true
 }
 
 /** Records what the key authority published, so ordering can be asserted. */
@@ -440,14 +443,17 @@ describe('ClusterExecutionService.issueCredential', () => {
     await expect(service.issueCredential(ORG)).resolves.toMatchObject({ rotated: false })
   })
 
-  it('adopts the key a crashed rotation left staged, instead of stranding it', async () => {
+  it('never loses the handle to a key a crashed rotation left staged', async () => {
     const { service, repo, keys } = build()
     await service.configure(ORG, { enabled: true })
-    // A holder that died after staging its key and before committing it.
+    // A holder that died after staging its key — which may already have been
+    // published, so the pod could be running on it right now.
     repo.row = { ...repo.row!, credentialStagedApiKeyId: 'orphan-key' }
     repo.rotationAt = new Date(Date.now() - 60 * 60 * 1000)
     repo.rotationToken = 'dead-holder'
 
+    // Taking the claim alone must not retire it — only a pass that reaches the
+    // staging write, which is what makes the orphan unreachable, hands it over.
     await service.issueCredential(ORG)
     expect(keys.revoked).toContain('orphan-key')
     expect((await repo.get())?.credentialStagedApiKeyId).toBeUndefined()
