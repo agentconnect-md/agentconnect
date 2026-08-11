@@ -81,9 +81,40 @@ const TABLES = [
   'org'
 ] as const
 
+/** Postgres deadlock_detected — the truncate lost the tie-break, not a schema fault. */
+const DEADLOCK_DETECTED = '40P01'
+const TRUNCATE_ATTEMPTS = 5
+
+/** Prisma reports the raw-query failure as P2010 and carries the driver's SQLSTATE underneath. */
+function isDeadlock(error: unknown): boolean {
+  const cause = (error as { meta?: { driverAdapterError?: { cause?: { code?: string } } } } | null)?.meta
+    ?.driverAdapterError?.cause
+  if (cause?.code === DEADLOCK_DETECTED) return true
+  // Shape of `meta` is not part of Prisma's public contract; the message is the fallback.
+  return error instanceof Error && error.message.includes('deadlock detected')
+}
+
+/**
+ * A previous test's app can still have a query in flight on another pooled
+ * connection when the next test starts — background loops outlive the request
+ * that started them. That reader holds AccessShareLock on one table and wants
+ * another; this TRUNCATE holds AccessExclusiveLock on the second and wants the
+ * first, so Postgres kills one of the two. Ordering the table list cannot fix
+ * it (the reader's lock order is not ours to choose), so the truncate simply
+ * retries when it is the victim: the reader always finishes, and the retry then
+ * takes every lock uncontended.
+ */
 async function truncateAll(): Promise<void> {
   const list = TABLES.map((t) => `"${t}"`).join(', ')
-  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE;`)
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE;`)
+      return
+    } catch (error) {
+      if (!isDeadlock(error) || attempt === TRUNCATE_ATTEMPTS) throw error
+      await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+    }
+  }
 }
 
 beforeEach(async () => {
