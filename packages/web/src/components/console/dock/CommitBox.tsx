@@ -3,7 +3,7 @@
 // The Git panel's commit box (§3.3, §5.1): a message, a wand that drafts one from the staged diff on the AGENT's own runtime, "Commit N files", and commit-and-push beside it.
 // Every refusal here is DATA the reader can act on — nothing staged, a blank message, no registered commit identity, a diverged branch, a runtime that declines to write a message. The box reports them in place and keeps the draft, because a message a reader wrote (or paid a model for) must survive the answer.
 
-import { useRef, useState, useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { gitWriteFailureText, gitWriteRequestFailureText } from '@/components/console/dock/git-write'
@@ -42,6 +42,7 @@ const COMMIT_DRAFTS_MAX = 20
  *  reset it would have cases reading each other's drafts. */
 export function resetCommitDrafts(): void {
   COMMIT_DRAFTS.clear()
+  COMMIT_BUSY.clear()
   for (const listener of draftListeners) listener()
 }
 
@@ -51,6 +52,19 @@ export function resetCommitDrafts(): void {
  *  resolved wrote the map and then called the setter of an already-unmounted instance), so there is
  *  no second copy to fall out of step any more. */
 const draftListeners = new Set<() => void>()
+
+/** What is in flight FOR EACH checkout, module-level for the same reason the draft is: the panel
+ *  unmounts the box while a newly selected scope settles, so a fresh instance would start idle while
+ *  the previous one's request is still running — with the wand and the commit button enabled, so a
+ *  second click bills another model pass or attempts a second commit. Written synchronously before
+ *  any await, which is also what makes it the re-entry guard for two clicks in one task. */
+const COMMIT_BUSY = new Map<string, Busy>()
+
+function setBusyFor(scope: string, busy: Busy): void {
+  if (busy === null) COMMIT_BUSY.delete(scope)
+  else COMMIT_BUSY.set(scope, busy)
+  for (const listener of draftListeners) listener()
+}
 
 function subscribeToDrafts(listener: () => void): () => void {
   draftListeners.add(listener)
@@ -104,9 +118,15 @@ export function CommitBox({
   )
   const setMessage = (text: string) => rememberDraft(draftScope, text)
 
-  const [busy, setBusy] = useState<Busy>(null)
-  // The re-entry latch is a REF, not the `busy` state: two clicks dispatched in one task both read the same pre-update `busy` and the same not-yet-disabled button, so a double-click would bill two model passes and send two commits. Measured, not assumed.
-  const running = useRef(false)
+  // Read from the same store as the draft, so a box that remounts mid-request comes back BUSY rather
+  // than idle-with-enabled-controls. It is also the re-entry latch a ref used to be: `setBusyFor`
+  // writes synchronously before any await, so two clicks dispatched in one task see it.
+  const busy = useSyncExternalStore(
+    subscribeToDrafts,
+    () => COMMIT_BUSY.get(draftScope) ?? null,
+    () => null
+  )
+  const setBusy = (next: Busy) => setBusyFor(draftScope, next)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const scope = sessionId ? { sessionId } : {}
 
@@ -115,8 +135,7 @@ export function CommitBox({
 
   // The wand (§5.1). Explicit, never automatic: the pass runs on the agent's runtime and costs its tokens, so nothing here prefetches a draft.
   const draft = async () => {
-    if (running.current || nothingStaged) return
-    running.current = true
+    if (COMMIT_BUSY.get(draftScope) || nothingStaged) return
     setBusy('draft')
     // The checkout this request is FOR. A completion must never land on whichever scope happens to be current when it returns.
     const asked = draftScope
@@ -134,8 +153,8 @@ export function CommitBox({
     } catch (e) {
       setOutcome({ ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) })
     } finally {
-      running.current = false
-      setBusy(null)
+      // Cleared for the scope the request was ISSUED for, which may no longer be the one on screen.
+      setBusyFor(asked, null)
     }
   }
 
@@ -150,8 +169,7 @@ export function CommitBox({
       : { ok: false, text: gitWriteFailureText(rep.reason, rep.detail) }
 
   const commit = async (thenPush: boolean) => {
-    if (running.current || nothingStaged || blank) return
-    running.current = true
+    if (COMMIT_BUSY.get(draftScope) || nothingStaged || blank) return
     setBusy(thenPush ? 'push' : 'commit')
     // The checkout this request is FOR. A completion must never land on whichever scope happens to be current when it returns.
     const asked = draftScope
@@ -184,8 +202,8 @@ export function CommitBox({
     } catch (e) {
       setOutcome({ ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) })
     } finally {
-      running.current = false
-      setBusy(null)
+      // Cleared for the scope the request was ISSUED for, which may no longer be the one on screen.
+      setBusyFor(asked, null)
     }
   }
 

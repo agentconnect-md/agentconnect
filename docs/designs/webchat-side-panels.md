@@ -719,8 +719,10 @@ Known M3 follow-ups:
 - The write wiring in `SessionDetailView` was reconstructed after being lost to a stray
   `git checkout` during review; two of its three parts were caught by existing tests and the third
   (keeping header focus when the viewer closes) is still **unpinned**.
-- The commit draft has ONE source of truth: a module-level store the box reads through
-  `useSyncExternalStore`, with no copy in component state. Three earlier attempts coordinated the two
+- The commit draft AND its in-flight latch both have ONE source of truth: module-level stores the box
+  reads through `useSyncExternalStore`, with no copy in component state. The latch matters for the
+  same reason the draft does — a box the panel remounts mid-request would otherwise come back idle
+  with its controls enabled, and a second click bills another model pass. Three earlier attempts coordinated the two
   and each left a window open, the last being `A → B → A → resolve` — the remounted box read the store
   before the answer landed and the completion then called an unmounted instance's setter. If a future
   change reintroduces component state here, that class of bug comes back with it.

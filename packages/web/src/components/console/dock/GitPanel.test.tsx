@@ -590,6 +590,36 @@ describe('GitPanel — staging', () => {
     expect(rowPaths('staged')).toEqual(['fresh.ts'])
   })
 
+  it('comes back BUSY after a remount, so a second click cannot bill a second model pass', async () => {
+    // `busy` used to be component state, so the box the panel remounts for the same checkout started
+    // idle while the previous instance's pass was still running — with the wand enabled.
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    let release: (() => void) | undefined
+    vi.mocked(draftWorkspaceCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, message: 'fix: only once', detail: null })
+        }) as ReturnType<typeof draftWorkspaceCommitMessage>
+    )
+    await render({ canWrite: true })
+    const wand = () => container?.querySelector<HTMLButtonElement>('[data-commit-draft]') ?? undefined
+    await click(wand(), 'wand')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+
+    // Still running, so the control must refuse — pressed here BEFORE the release.
+    expect(wand()?.disabled).toBe(true)
+    await act(async () => wand()?.click())
+    expect(vi.mocked(draftWorkspaceCommitMessage)).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+    expect(vi.mocked(draftWorkspaceCommitMessage)).toHaveBeenCalledTimes(1)
+    expect(container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')?.value).toBe('fix: only once')
+  })
+
   it('keeps a drafted message the reader paid for, even if they switched checkout while it ran', async () => {
     // The pass costs a model call. If the reader looks at a sibling agent while it is running, the box
     // is unmounted before the answer arrives, so writing only to component state drops it — and the
