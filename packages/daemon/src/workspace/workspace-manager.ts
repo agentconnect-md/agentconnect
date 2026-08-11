@@ -223,6 +223,51 @@ async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path)
 }
 
 /**
+ * Whether a stored marker already attests that the volume's tree came from the configured
+ * REPOSITORY.
+ *
+ * Durable on purpose. The obvious proxy — "did convergence just rewrite the origin?" — is per call,
+ * while `remote set-url` persists: a second attempt after a failed pull finds the origin already
+ * correct, concludes nothing was rewritten, and would record a marker for a repository no pull has
+ * ever reached. Only something written down survives that, and the marker is the thing written down.
+ *
+ * Branch is deliberately not compared here; HEAD answers that directly. Absent or unparseable counts
+ * as no attestation, so a pull has to prove it.
+ */
+function markerAttestsRepository(previous: string | undefined, target: string): boolean {
+  if (previous === undefined) return false
+  const repoOf = (raw: string): string | undefined => {
+    try {
+      const parsed = JSON.parse(raw) as { repo?: unknown }
+      return typeof parsed.repo === 'string' ? parsed.repo.replace(/\.git$/i, '').toLowerCase() : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const left = repoOf(previous)
+  const right = repoOf(target)
+  return left !== undefined && right !== undefined && left === right
+}
+
+/**
+ * Which branch the pod's checkout is actually on.
+ *
+ * `pullWorkspaceRef` pulls INTO the current branch rather than switching to the configured one, so
+ * this is the only thing that can tell a volume holding the requested branch from one that merely
+ * fetched it. Empty when it cannot be established, which counts as "cannot prove it".
+ */
+async function clusterCheckoutBranch(agentId: string, checkout: string): Promise<string> {
+  try {
+    const head = await runnerFor(agentId, checkout)
+      .withEnv(workspaceGitLocalEnv())
+      .raw(['rev-parse', '--abbrev-ref', 'HEAD'])
+    return head.trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
  * The convergence itself, for a checkout the caller has already established exists.
  *
  * Split out because establishing that is where the two filesystems differ: locally it is a file
@@ -783,8 +828,14 @@ export async function prepareClusterWorkspace(
   const checkout = join(root, SANDBOX_CHECKOUT_DIR)
   const githubApp = usesGithubApp(agent)
 
+  // Whether the volume can be PROVEN to hold what the marker would claim. A fresh clone can, by
+  // construction (`--branch` at clone time). An existing one has to be interrogated.
+  let volumeMatchesConfig = false
+  const targetMarker = materializationKey(agent)
+  const repositoryAttested = markerAttestsRepository(readMaterialization(agent), targetMarker)
   if (!(await clusterCheckoutExists(agent.id, checkout))) {
     await cloneRepoInSandbox(agent, root, repository)
+    volumeMatchesConfig = true
   } else {
     // A resumed volume carries the PREVIOUS launch's checkout, so the same two things the local
     // path does to one: follow a repository rename onto the canonical URL (and refuse an origin
@@ -796,6 +847,7 @@ export async function prepareClusterWorkspace(
     }
   }
 
+  let pulled = false
   if (agent.workspace.pullOnNewSession) {
     if (githubApp) await preWarmGitCred(agent.id, 'pull').catch(() => undefined)
     const abort = new AbortController()
@@ -810,6 +862,7 @@ export async function prepareClusterWorkspace(
         GIT_TERMINAL_PROMPT: '0'
       })
       await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
+      pulled = true
     } catch {
       // offline / timed out / non-fast-forward: proceed with the checkout on the volume, which is
       // the same degradation the local path accepts.
@@ -817,15 +870,35 @@ export async function prepareClusterWorkspace(
       clearTimeout(timer)
     }
   }
-  // The marker records what the VOLUME now holds, and this is the only place that knows.
+  // The marker records what the VOLUME holds, and this is the only place that knows — but ONLY when
+  // that can be proven, because a marker that overstates is worse than one that lags.
   //
-  // Ordinary placement activation does not ask for reconciliation, so nothing else refreshes it on
-  // this daemon: an agent that moves away, has its repository renamed elsewhere, and moves back
-  // would leave a marker naming the old URL while preparation had already converged the volume to
-  // the new one. A later repair reads that stale marker as a materialization CHANGE and is refused
-  // — staging an agent whose checkout was already correct.
+  // The case that made this precise: a volume on branch A, a configuration that now says a divergent
+  // branch B. `pullWorkspaceRef` pulls INTO the current branch rather than switching, so its ff-only
+  // pull fails, the failure is swallowed as ordinary offline degradation, and the volume stays on A.
+  // Recording B there tells every later activation that nothing changed, and the agent runs the
+  // wrong branch indefinitely — silently, which is the property that makes it expensive.
   //
-  // Best-effort: the volume is prepared either way, and failing a session over bookkeeping would
+  // Provable means: a fresh clone (its `--branch` decided HEAD), or an existing checkout whose HEAD
+  // IS the configured branch AND whose tree is attributable to the configured repository — either
+  // because a stored marker already attests it, or because a pull from it just succeeded. A rewritten
+  // origin says nothing about the tree that was already there, and a branch name can match in both
+  // repositories, so without one of those two the volume is simply unproven.
+  //
+  // Anything else leaves the marker alone, so a later activation still sees the change and refuses it
+  // with a message naming what to do.
+  if (!volumeMatchesConfig) {
+    const head = await clusterCheckoutBranch(agent.id, checkout)
+    volumeMatchesConfig = head === agent.workspace.gitBranch && (repositoryAttested || pulled)
+  }
+  if (!volumeMatchesConfig) {
+    workspaceLog.warn(
+      `workspace: the volume for agent "${agent.id}" does not provably hold ${repository} @ ` +
+        `${agent.workspace.gitBranch} — leaving its materialization marker unchanged`
+    )
+    return acpCwd
+  }
+  // Best-effort from here: the volume IS prepared, and failing a session over bookkeeping would
   // trade a stale marker for no session at all.
   try {
     recordWorkspaceMaterialization(agent)
@@ -1030,7 +1103,10 @@ export async function prepareWorkspaceForActivation(
           `recreate the agent to provision a fresh volume`
       )
     }
-    if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
+    // Deliberately does NOT record. For a cluster agent the marker means "the volume held this", and
+    // writing the TARGET here would say it about a volume nothing has inspected — which cluster
+    // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
+    // different thing and stays: it names the definition the agent has been RUNNING on.
     return restoreMarker
   }
   mkdirSync(cwd, { recursive: true })
