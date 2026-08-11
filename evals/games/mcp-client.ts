@@ -37,6 +37,60 @@ export interface DaemonToolCallResult {
   error?: string
 }
 
+/** One `listTools` round-trip: the descriptor names THIS session actually
+ *  carries — how a test proves a surface was presented (or withheld). */
+export async function listDaemonTools(binding: DaemonMcpBinding, timeoutMs = 30_000): Promise<string[]> {
+  const response = await ipcRequest(binding, { op: 'listTools' }, timeoutMs)
+  if (!response.ok) throw new Error(response.error ?? 'listTools failed')
+  const tools = (response.result as { tools?: { name?: unknown }[] } | undefined)?.tools ?? []
+  return tools.map((tool) => String(tool.name))
+}
+
+function ipcRequest(
+  binding: DaemonMcpBinding,
+  request: Record<string, unknown>,
+  timeoutMs: number
+): Promise<DaemonToolCallResult> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(binding.endpoint)
+    let buffer = ''
+    let settled = false
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`daemon ipc request timed out after ${timeoutMs}ms`)))
+    }, timeoutMs)
+    const finish = (settle: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.destroy()
+      settle()
+    }
+    socket.setEncoding('utf8')
+    socket.on('connect', () => {
+      socket.write(`${JSON.stringify({ id: 1, token: binding.token, ...request })}\n`)
+    })
+    socket.on('data', (chunk: string) => {
+      buffer += chunk
+      const newline = buffer.indexOf('\n')
+      if (newline === -1) return
+      const line = buffer.slice(0, newline)
+      try {
+        const response = JSON.parse(line) as { ok?: boolean; result?: unknown; error?: string }
+        finish(() =>
+          resolve({
+            ok: response.ok === true,
+            ...(response.result !== undefined ? { result: response.result } : {}),
+            ...(typeof response.error === 'string' ? { error: response.error } : {})
+          })
+        )
+      } catch (error) {
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))))
+      }
+    })
+    socket.on('error', (error) => finish(() => reject(error)))
+  })
+}
+
 /** One `callTool` round-trip over the daemon's MCP control socket. */
 export function callDaemonTool(
   binding: DaemonMcpBinding,

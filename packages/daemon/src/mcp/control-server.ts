@@ -92,6 +92,23 @@ export class McpControlServer {
     socket.on('close', () => this.conns.delete(socket))
   }
 
+  /**
+   * Run a PRODUCT tool on behalf of an evaluation-registry tool
+   * (collaboration-arena.md §6). This exists for one purpose: an evaluation
+   * façade that presents a different SCHEMA for an existing capability has to
+   * compile down to that capability's real implementation, not re-implement it,
+   * or an A/B of the two surfaces would not be comparing like with like.
+   *
+   * It is evaluation-only plumbing and changes no routing, activation or policy:
+   * the tool it runs is the same one the model could have called directly, on
+   * the same trusted token-bound `SessionContext`. Re-entry is safe because the
+   * evaluation registry is consulted by exact name and a product tool never
+   * matches it.
+   */
+  async executeProductTool(ctx: SessionContext, name: string, args: Record<string, unknown>): Promise<unknown> {
+    return executeTool(ctx, name, args, this.deps)
+  }
+
   private async handle(req: IpcRequest, socket: net.Socket): Promise<void> {
     const reply = (res: IpcResponse) => {
       if (!socket.destroyed) socket.write(encodeFrame(res))

@@ -64,6 +64,12 @@ export interface EvaluationToolDefinition {
     agentId: string
     sessionContext: SessionContext
     input: Record<string, unknown>
+    /** Run a PRODUCT tool on the same trusted SessionContext. This is what lets
+     *  an evaluation FAÇADE — a different schema over an existing capability —
+     *  compile down to the real implementation instead of re-implementing it,
+     *  which is the only way an A/B of two tool surfaces compares like with
+     *  like. It grants no capability the caller did not already have. */
+    callProductTool(name: string, args: Record<string, unknown>): Promise<unknown>
   }): Promise<unknown>
 }
 
@@ -77,6 +83,25 @@ export interface DaemonEvaluationEnvironment {
   collaborationRoutes: CollabRoutesSnapshot
   /** §6 evaluation tool registry — game-owned structured action tools. */
   tools?: readonly EvaluationToolDefinition[]
+  /** Product tool names to WITHHOLD from the session tool set for this run.
+   *  Evaluation-only, and it exists for one reason: an A/B of two tool surfaces
+   *  for the same capability is only a comparison if each arm presents one of
+   *  them. Withholding a descriptor changes nothing about what the daemon will
+   *  execute — a hidden tool remains fully functional if something calls it,
+   *  which is exactly how a façade compiles down to it. */
+  hideProductTools?: readonly string[]
+  /** EVALUATION-ONLY surface-fidelity seam, the prompt-side complement of
+   *  `hideProductTools`: the standing collaboration guidance and the
+   *  parent-report append teach `sendMessage` call shapes by name, so an arm
+   *  that withholds `sendMessage` would otherwise carry a system prompt
+   *  describing a tool it does not have — priming it with the OTHER arm's
+   *  vocabulary and sabotaging the comparison. An arm supplies texts that teach
+   *  exactly the surface it presents; everything else in the prompt stays
+   *  byte-identical. */
+  collaborationGuidance?: {
+    collabAppend?: string
+    parentReplyAppend?: (parentSessionId: string) => string
+  }
 }
 
 // ─── §4 ingress payloads ────────────────────────────────────────────────────

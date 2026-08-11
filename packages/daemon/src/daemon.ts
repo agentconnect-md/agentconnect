@@ -640,6 +640,18 @@ export function isBuiltinSystemTool(
   return ids.some((id) => typeof id === 'string' && containsBuiltinToolFqn(id))
 }
 
+/** Does a permission request name one of the given adapter-flattened MCP tool
+ *  identities? The §6 evaluation-registry grant uses this with the FQNs minted
+ *  at environment install — same rungs as {@link isBuiltinSystemTool}
+ *  (title / kind / toolCallId, id-suffixed variants included), same
+ *  fail-safe: no match ⇒ the interactive policy still applies. */
+export function matchesToolPermissionFqns(params: RequestPermissionRequest, fqns: ReadonlySet<string>): boolean {
+  if (fqns.size === 0) return false
+  const tc = params.toolCall
+  const ids = [tc?.title, tc?.kind, tc?.toolCallId]
+  return ids.some((id) => typeof id === 'string' && (fqns.has(id) || [...fqns].some((fqn) => id.includes(fqn))))
+}
+
 /** Codex ACP carries MCP approval through form elicitation when the client supports it. */
 export function isBuiltinSystemToolElicitation(
   params: CreateElicitationRequest,
@@ -1987,6 +1999,10 @@ export class Daemon {
    *  integration, but are EXCLUDED from physical platform reconcile so the daemon
    *  never opens (or evicts) a real connection for a virtual transport. */
   private evaluationIntegrationIds = new Set<string>()
+  /** ACP identities (`mcp__agentconnect__<name>` / `mcp.agentconnect.<name>`) of
+   *  the §6 evaluation-registry tools — populated at environment install and
+   *  granted the same auto-allow as the daemon's own system tools. */
+  private readonly evaluationToolPermissionFqns = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -2375,6 +2391,16 @@ export class Daemon {
         if (productNames.has(name)) throw new Error(`evaluation tool "${name}" shadows a product tool`)
         if (seen.has(name)) throw new Error(`duplicate evaluation tool "${name}"`)
         seen.add(name)
+        // §6 game tools carry the same system-tool permission grant as the
+        // product tools they sit beside: they are served by the same trusted
+        // daemon MCP server, and a real ACP subject must be able to CALL a
+        // game action without a human approver in the loop — the arena has no
+        // one to tap a card, so an interactive prompt is a guaranteed hang
+        // (measured: the tool-surface A/B's arm-B calls burned their whole
+        // trial budget on an unanswerable approval while arm A's product tool
+        // was auto-allowed — a fairness bug, not just a stall).
+        this.evaluationToolPermissionFqns.add(`mcp__${RESERVED_MCP_SERVER_NAME}__${name}`)
+        this.evaluationToolPermissionFqns.add(`mcp.${RESERVED_MCP_SERVER_NAME}.${name}`)
       }
     }
     this.log.info(
@@ -3034,7 +3060,10 @@ export class Daemon {
           runId: this.opts.evaluation?.runId ?? 'evaluation',
           agentId: ctx.agentId,
           sessionContext: ctx,
-          input: args
+          input: args,
+          // A façade tool compiles down to the real product tool on the SAME
+          // trusted context; it can reach nothing the caller could not.
+          callProductTool: (productName, productArgs) => this.mcp.executeProductTool(ctx, productName, productArgs)
         })
         return { result }
       },
@@ -3223,6 +3252,12 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
+      // Evaluation-only surface-fidelity seam (see DaemonEvaluationEnvironment):
+      // an A/B arm that swaps the messaging tool surface swaps the matching
+      // guidance text with it. Absent everywhere outside evaluation runs.
+      ...(this.opts.evaluation?.environment?.collaborationGuidance
+        ? { collaborationGuidance: this.opts.evaluation.environment.collaborationGuidance }
+        : {}),
       // No runtime is whitelisted for the model-authored `setSessionTitle` fallback
       // anymore: codex-acp >= 1.1.3 emits native session_info_update titles itself
       // (issue #659), so every runtime now relies on its native ACP title path. The
@@ -3254,6 +3289,14 @@ export class Daemon {
         // Collaboration Arena §6: game-owned structured action tools, appended
         // AFTER the product tools (collision-checked at startup) and filtered
         // by per-agent visibility (e.g. only living players see `vote`).
+        // Evaluation-only surface selection: withhold named product descriptors
+        // so an A/B arm presents exactly one surface for a capability. The tool
+        // itself stays executable (a façade compiles down to it).
+        const hidden = this.opts.evaluation?.environment?.hideProductTools
+        if (hidden?.length) {
+          const withheld = new Set(hidden)
+          tools = tools.filter((tool) => !withheld.has(tool.name))
+        }
         const evaluationTools = this.opts.evaluation?.environment?.tools
         if (evaluationTools?.length) {
           tools.push(...evaluationTools.filter((definition) => definition.visibleTo(agent.id)).map((d) => d.descriptor))
@@ -15497,16 +15540,24 @@ export class Daemon {
     // have to approve them per call. Auto-allow without rendering a card. Non-system tools
     // (incl. the runtime's dangerous built-ins) fall through to the interactive policy below.
     const p = this.pending.get(pendingTurnKey(agentId, sessionId))
-    if (isBuiltinSystemTool(params, p?.builtinSystemToolCallIds)) {
+    // §6 evaluation-registry tools share the grant: same trusted MCP server, and
+    // the arena has no human to answer an interactive card (see the FQN-set
+    // population in installEvaluationEnvironment). Empty outside evaluation runs.
+    const grantReason = isBuiltinSystemTool(params, p?.builtinSystemToolCallIds)
+      ? 'agentconnect_system_tool'
+      : matchesToolPermissionFqns(params, this.evaluationToolPermissionFqns)
+        ? 'evaluation_game_tool'
+        : undefined
+    if (grantReason) {
       const allow = params.options.find((o) => o.kind === 'allow_always' || o.kind === 'allow_once')
       if (allow) {
-        this.permissionEvaluationDetails.set(evaluationParams, { reason: 'agentconnect_system_tool' })
+        this.permissionEvaluationDetails.set(evaluationParams, { reason: grantReason })
         this.emitEvaluation({
           type: 'permission.auto_allowed',
           agentId,
           sessionId,
           ...(p?.evaluationTurnId ? { turnId: p.evaluationTurnId } : {}),
-          data: { reason: 'agentconnect_system_tool', optionId: allow.optionId }
+          data: { reason: grantReason, optionId: allow.optionId }
         })
         return { outcome: { outcome: 'selected', optionId: allow.optionId } }
       }

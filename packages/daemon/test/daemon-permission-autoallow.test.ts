@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { CreateElicitationRequest, RequestPermissionRequest } from '@agentclientprotocol/sdk'
-import { Daemon, noneSuppressedApprovalSurface, isBuiltinSystemTool, isBuiltinSystemToolCall } from '../src/daemon.js'
+import {
+  Daemon,
+  noneSuppressedApprovalSurface,
+  isBuiltinSystemTool,
+  isBuiltinSystemToolCall,
+  matchesToolPermissionFqns
+} from '../src/daemon.js'
 import { ALL_TOOL_NAMES } from '../src/mcp/tools.js'
 
 /**
@@ -298,5 +304,29 @@ describe('built-in MCP approvals use one policy on both ACP paths', () => {
     await expect(
       (daemon as any).onAcpElicit('agent-1', 's1', elicitation('uncorrelated', { mode: 'url' }))
     ).resolves.toBeUndefined()
+  })
+})
+
+describe('matchesToolPermissionFqns — the §6 evaluation-registry grant predicate', () => {
+  // Why this grant exists: a real ACP subject must be able to CALL a game
+  // action tool without a human approver — the arena has no one to tap a
+  // card, so an interactive prompt is a guaranteed hang. Measured in the
+  // tool-surface A/B: arm B's `post` calls burned their whole trial budget
+  // on an unanswerable approval while arm A's product tool was auto-allowed,
+  // which is a fairness bug on top of a stall.
+  const fqns = new Set(['mcp__agentconnect__post', 'mcp.agentconnect.post'])
+
+  it('matches the evaluation tool FQN wherever the runtime puts it', () => {
+    expect(matchesToolPermissionFqns(req({ title: 'mcp__agentconnect__post' }), fqns)).toBe(true)
+    expect(matchesToolPermissionFqns(req({ kind: 'mcp__agentconnect__post' }), fqns)).toBe(true)
+    expect(matchesToolPermissionFqns(req({ toolCallId: 'mcp__agentconnect__post-7' }), fqns)).toBe(true)
+    expect(matchesToolPermissionFqns(req({ title: 'mcp.agentconnect.post' }), fqns)).toBe(true)
+  })
+
+  it('fail-safe: unknown identities and empty registries still card', () => {
+    expect(matchesToolPermissionFqns(req({ title: 'mcp__agentconnect__vote' }), fqns)).toBe(false)
+    expect(matchesToolPermissionFqns(req({ title: 'mcp__othersrv__post' }), fqns)).toBe(false)
+    expect(matchesToolPermissionFqns(req({ title: 'Bash' }), fqns)).toBe(false)
+    expect(matchesToolPermissionFqns(req({ title: 'mcp__agentconnect__post' }), new Set())).toBe(false)
   })
 })
