@@ -43,11 +43,13 @@ interface SandboxList {
   items?: Array<{ spec?: { operatingMode?: string } }>
 }
 
+// SandboxWarmPool status is exactly {replicas, readyReplicas, selector} — there is no claimed count on the pool.
 interface WarmPoolList {
-  items?: Array<{
-    metadata?: { name?: string }
-    status?: { availableReplicas?: number; readyReplicas?: number; claimedReplicas?: number }
-  }>
+  items?: Array<{ metadata?: { name?: string }; status?: { readyReplicas?: number } }>
+}
+
+interface ClaimList {
+  items?: Array<{ spec?: { warmPoolRef?: { name?: string } }; status?: { sandbox?: { name?: string } } }>
 }
 
 /** Read the live workload state the status summaries derive from. */
@@ -87,12 +89,26 @@ export async function observeWorkloads(ctx: ReconcileContext, input: EnvelopeInp
   const suspended = items.filter((sandbox) => sandbox.spec?.operatingMode === 'Suspended').length
   obs.sandboxes = { total: items.length, running: items.length - suspended, suspended }
   const pools = await getOrNull<WarmPoolList>(ctx.http, groupPath(SANDBOX_EXTENSIONS_GROUP, ns, 'sandboxwarmpools'))
+  const poolItems = pools?.items ?? []
+  // Adoption strips the warm-pool label, so readyReplicas counts only unclaimed members — claimed comes from the claims.
+  const claimed = poolItems.length > 0 ? await countBoundClaims(ctx, ns) : new Map<string, number>()
   // Observation record only: absent vendor status fields read as 0, never as a guess.
-  obs.pools = (pools?.items ?? []).map((pool) => ({
-    name: pool.metadata?.name ?? '',
-    warmAvailable: pool.status?.availableReplicas ?? pool.status?.readyReplicas ?? 0,
-    claimed: pool.status?.claimedReplicas ?? 0
-  }))
+  obs.pools = poolItems.map((pool) => {
+    const name = pool.metadata?.name ?? ''
+    return { name, warmAvailable: pool.status?.readyReplicas ?? 0, claimed: claimed.get(name) ?? 0 }
+  })
+}
+
+/** Bound SandboxClaims per warm pool — a claim counts only once it actually holds a Sandbox. */
+async function countBoundClaims(ctx: ReconcileContext, ns: string): Promise<Map<string, number>> {
+  const claims = await getOrNull<ClaimList>(ctx.http, groupPath(SANDBOX_EXTENSIONS_GROUP, ns, 'sandboxclaims'))
+  const counts = new Map<string, number>()
+  for (const claim of claims?.items ?? []) {
+    const pool = claim.spec?.warmPoolRef?.name
+    if (!pool || !claim.status?.sandbox?.name) continue
+    counts.set(pool, (counts.get(pool) ?? 0) + 1)
+  }
+  return counts
 }
 
 /** Build the full status from this pass's observations; the operator is the only status writer. */
