@@ -59,6 +59,9 @@ interface PrRead {
 
 const PENDING: PrRead = { loading: true, err: null, errStatus: null, data: null }
 
+// How long a 404 stays provisional: five CP-local retries over ~2.5 minutes, then the absence is believed.
+export const PR_LINK_RETRY_LADDER_MS = [2_000, 5_000, 15_000, 45_000, 90_000]
+
 /** One probe per (session, tick). The answer is held PER SCOPE and the pending state DERIVED from it (the M4 shape): a new session reads as pending on the very render that changes it, a re-read of the SAME session replaces the answer in place, and a settled 404 simply stays held — nothing bumps the tick for a hidden tab. */
 function useSessionPullRequest(sessionId: string, reads: { tick: number; force: boolean }) {
   const [answered, setAnswered] = useState<{ scope: string; tick: number; read: PrRead } | null>(null)
@@ -153,7 +156,7 @@ export function PullRequestPanel({
   sessionId: string
   /** Whether this tab is the visible one; the panel re-reads on the edge where it becomes so, because PR state read when the page opened is not an answer about now. It does not poll — GitHub rate limits are this milestone's one external budget (§9). */
   active?: boolean
-  /** The open session's live status, feeding the ONE bounded re-probe edge a hidden tab has: the run's sessionId can be written as late as the terminal hook/report, which is also what flips this value — so a 404 held while the session was still running is re-asked when its status changes, and never on a timer. */
+  /** The open session's live status: a transition re-asks a held 404 immediately and refills the bounded retry ladder — a hint that the session→run link may just have committed, though the frames race, which is why the ladder exists at all. */
   sessionStatus?: string
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
@@ -170,16 +173,32 @@ export function PullRequestPanel({
     wasActive.current = active
   }, [active])
 
-  // A hidden tab's only way back: the session-to-run link can be persisted as late as the terminal
-  // hook/report, which also flips the session's status — so a held 404 is re-asked once per status
-  // TRANSITION, never per render and never on a timer. Any other answer keeps the edge silent.
+  // A held 404 is PROVISIONAL: `hook/report` (which writes the session→run link) and the terminal `event/session` snapshot are separate concurrently-dispatched frames, so the link can commit after the status flip — or with no flip at all, when a reconnect restores an already-terminal session.
   const was404 = read.errStatus === 404 && !read.loading
+  const attempt = useRef(0)
+  // A status transition re-asks immediately and refills the ladder below — it is a strong hint, not proof of ordering.
   const lastStatus = useRef(sessionStatus)
   useEffect(() => {
     const changed = sessionStatus !== lastStatus.current
     lastStatus.current = sessionStatus
-    if (changed && was404) setReads((r) => ({ tick: r.tick + 1, force: false }))
+    if (!changed) return
+    attempt.current = 0
+    if (was404) setReads((r) => ({ tick: r.tick + 1, force: false }))
   }, [sessionStatus, was404])
+  // The bounded ladder that survives the unfavorable orderings: a 404 never reaches GitHub — the CP answers it from its own tables — so these retries spend none of §9's rate-limit budget, and the bound is what lets a session with no PR go quiet.
+  useEffect(() => {
+    if (!was404) {
+      attempt.current = 0
+      return
+    }
+    const delay = PR_LINK_RETRY_LADDER_MS[attempt.current]
+    if (delay === undefined) return
+    const timer = setTimeout(() => {
+      attempt.current += 1
+      setReads((r) => ({ tick: r.tick + 1, force: false }))
+    }, delay)
+    return () => clearTimeout(timer)
+  }, [was404, reads])
 
   const answer: PullRequestPanelAnswer = read.loading
     ? 'pending'

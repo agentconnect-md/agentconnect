@@ -331,6 +331,19 @@ describe('degraded shapes', () => {
     expect(b.agentReview).toBe('approved')
   })
 
+  it('keys the cache by repoFullName too — runs across a repository rename never share a projection', async () => {
+    // Historical runs keep pre-rename names, and the name drives the GraphQL query and the cached URL:
+    // sharing on numeric identity alone would serve one name's denied/stale answer to the other.
+    const { service, calls } = build([ok(fullAnswer()), ok(fullAnswer())])
+    const oldName: PullRequestIdentity = { ...IDENTITY, repoFullName: 'acme/repo-old' }
+
+    await service.view(IDENTITY)
+    await service.view(oldName)
+
+    expect(calls).toHaveLength(2)
+    expect((calls[1]?.body as { variables: { owner: string; name: string } }).variables.name).toBe('repo-old')
+  })
+
   it('maps a GitHub 5xx to unreachable, not to denied', async () => {
     // 'denied' points the operator at a nonexistent installation problem for the length of an outage;
     // a server error is GitHub being down, which is the 'unreachable' story.

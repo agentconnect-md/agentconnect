@@ -209,8 +209,10 @@ export class PullRequestViewService {
 
   // Org+installation in the key: two orgs pointing at one repo/PR must never share cached thread
   // bodies or ride each other's token validation (the session-access snapshotKey rule).
+  // repoFullName too: historical runs keep pre-rename names, the name drives the GraphQL query and the
+  // cached URL, and rename repair does not rewrite them — so name variants must not share a projection.
   private keyOf(identity: PullRequestIdentity): string {
-    return `${identity.orgId}#${identity.installationId}#${identity.repoId}#${identity.pullNumber}`
+    return `${identity.orgId}#${identity.installationId}#${identity.repoFullName}#${identity.repoId}#${identity.pullNumber}`
   }
 
   // One PR's projection. `force` skips the TTL (the panel's refresh) but still shares an in-flight read.

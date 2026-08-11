@@ -905,6 +905,19 @@ finishing the inherited wip:
   deployment knows without GitHub. A GitHub 5xx reads as `unreachable`, not
   `denied` — an outage must not point operators at a nonexistent installation
   problem.
+- **A 404 probe is provisional, on a bounded ladder.** `hook/report` (which
+  writes `HookRun.sessionId`) and the terminal `event/session` snapshot are
+  separate concurrently-dispatched frames, so the session→run link can commit
+  after the status flip — or with no flip at all, when a reconnect restores an
+  already-terminal session. The panel therefore retries a held 404 on a bounded
+  backoff ladder (~2.5 min, then the absence is believed); a status transition
+  re-asks immediately and refills the ladder. These retries never reach GitHub —
+  the 404 arm is answered from the CP's own tables — so §9's rate-limit budget
+  is untouched, and an answered probe schedules nothing. The view service's
+  cache keys by `repoFullName` too (the name drives the query and URL, and
+  historical runs keep pre-rename names), and caches only the shared GitHub
+  projection: each caller's run facts (`knownIsOpen`/`knownIsDraft`/
+  `knownAgentReview`) are overlaid per return path, in-flight merges included.
 
 **M6 — PR actions.** The single Auto-fix button over the webchat turn path
 (§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the

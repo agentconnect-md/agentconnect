@@ -36,6 +36,7 @@ vi.mock('@/lib/api', () => {
 })
 
 import {
+  PR_LINK_RETRY_LADDER_MS,
   PullRequestPanel,
   formatCheckDuration,
   pullRequestPillKey,
@@ -156,6 +157,7 @@ afterEach(async () => {
   container = undefined
   root = undefined
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('pullRequestTabStatus', () => {
@@ -421,30 +423,91 @@ describe('PullRequestPanel degraded answers', () => {
     await render()
     expect(container?.querySelector('[data-pr-agent-review]')).toBeNull()
   })
-  it('re-asks a held 404 when the session status changes, and only then', async () => {
-    // The run's sessionId can be persisted as late as the terminal hook/report — which also flips the
-    // session's status. That transition is the hidden tab's ONE way back; nothing else may re-probe.
+  it('survives the status flip landing BEFORE the link commits — a ladder retry still finds it', async () => {
+    // The unfavorable ordering: `event/session` and `hook/report` are separate concurrently-dispatched
+    // frames, so the transition can arrive, spend its immediate re-ask on a second 404, and never fire
+    // again. The bounded ladder is what discovers the link that commits after that.
+    vi.useFakeTimers()
     wire.failure = { status: 404 }
     await render({ sessionStatus: 'online' })
     expect(wire.calls).toHaveLength(1)
 
-    // Renders without a transition change nothing.
-    await rerender({ sessionStatus: 'online' })
-    expect(wire.calls).toHaveLength(1)
-
-    // The report landed, the link now exists: the transition re-asks and the tab can come back.
-    wire.failure = null
-    wire.data = pr()
+    // The terminal snapshot lands first: the transition re-asks immediately — and gets 404 AGAIN.
     await rerender({ sessionStatus: 'idle' })
     expect(wire.calls).toHaveLength(2)
+    expect(verdicts.at(-1)?.answer).toBe('none')
+
+    // hook/report finally commits the link; no further transition ever comes. The ladder finds it.
+    wire.failure = null
+    wire.data = pr()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PR_LINK_RETRY_LADDER_MS[0]!)
+    })
+    expect(wire.calls).toHaveLength(3)
     expect(verdicts.at(-1)?.answer).toBe('linked')
   })
 
-  it('keeps a LINKED answer still across status changes — the edge is for the missing link only', async () => {
+  it('recovers a link with NO status transition at all — the reconnect-to-terminal-session ordering', async () => {
+    // A reconnect can restore an already-terminal session before the hook-report outbox drains: the
+    // first probe 404s and the status will never change. The ladder is the only way back here.
+    vi.useFakeTimers()
+    wire.failure = { status: 404 }
+    await render({ sessionStatus: 'idle' })
+    expect(wire.calls).toHaveLength(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PR_LINK_RETRY_LADDER_MS[0]!)
+    })
+    expect(wire.calls).toHaveLength(2)
+
+    wire.failure = null
+    wire.data = pr()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PR_LINK_RETRY_LADDER_MS[1]!)
+    })
+    expect(wire.calls).toHaveLength(3)
+    expect(verdicts.at(-1)?.answer).toBe('linked')
+  })
+
+  it('goes quiet once the ladder drains, and a status transition refills it', async () => {
+    // Bounded: a session that genuinely has no PR must stop asking — but a later transition is a fresh
+    // hint that the link may just have committed, so it re-asks immediately and re-arms the ladder.
+    vi.useFakeTimers()
+    wire.failure = { status: 404 }
+    await render({ sessionStatus: 'online' })
+
+    // Rung by rung: each retry schedules the next only after its answer settles, so the clock advances per step.
+    for (const step of PR_LINK_RETRY_LADDER_MS) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(step)
+      })
+    }
+    const drained = 1 + PR_LINK_RETRY_LADDER_MS.length
+    expect(wire.calls).toHaveLength(drained)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600_000)
+    })
+    expect(wire.calls).toHaveLength(drained)
+
+    await rerender({ sessionStatus: 'idle' })
+    expect(wire.calls).toHaveLength(drained + 1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PR_LINK_RETRY_LADDER_MS[0]!)
+    })
+    expect(wire.calls).toHaveLength(drained + 2)
+  })
+
+  it('keeps a LINKED answer still — no timers, no reaction to status changes', async () => {
+    // The provisional treatment is for the missing link ONLY: an answered probe schedules nothing, so
+    // the panel never polls GitHub (§9's budget) and never re-asks on status churn.
+    vi.useFakeTimers()
     wire.data = pr()
     await render({ sessionStatus: 'online' })
     expect(wire.calls).toHaveLength(1)
     await rerender({ sessionStatus: 'idle' })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600_000)
+    })
     expect(wire.calls).toHaveLength(1)
   })
 })
