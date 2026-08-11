@@ -231,6 +231,9 @@ describe('messaging-tool name matcher', () => {
     expect(isMessagingToolName('SendMessage')).toBe(true) // Claude Code built-in
     expect(isMessagingToolName('post')).toBe(true)
     expect(isMessagingToolName('mcp__agentconnect__post')).toBe(true)
+    // The daemon supports the dotted ACP identity too (daemon.ts FQN matching):
+    // a call under that spelling must not slip past the hard rule.
+    expect(isMessagingToolName('mcp.agentconnect.post')).toBe(true)
     expect(isMessagingToolName('listAgents')).toBe(false)
     expect(isMessagingToolName('setSessionTitle')).toBe(false)
     expect(isMessagingToolName('compost')).toBe(false)
@@ -374,6 +377,37 @@ describe('in-thread turn-taking judge — hard rules', () => {
     expect(verdict.pass).toBe(false)
     expect(verdict.reached).toBe(4)
     expect(verdict.failures[0]).toContain('reached 4 of 6')
+  })
+
+  it('fails on the dotted ACP identity of the façade too', () => {
+    const verdict = judgeThreadCount({
+      target: 6,
+      participants: [RUNNER, PEER],
+      channel: CHANNEL,
+      thread: THREAD,
+      effects: cleanReplies(6),
+      events: [...messagingCall(PEER, 't8', 'mcp.agentconnect.post'), ...turns(RUNNER, 3), ...turns(PEER, 3)]
+    })
+    expect(verdict.pass).toBe(false)
+    expect(verdict.messagingToolCalls[0]!.tool).toBe('mcp.agentconnect.post')
+  })
+
+  it('does not count numbers posted OUTSIDE the game thread toward the count', () => {
+    // A reply effect with no `thread` (or a different one) is a channel-root
+    // post opening a different conversation — exactly where a messaging-tool
+    // detour would land the numbers. The count must not be satisfiable there.
+    const offThread = cleanReplies(6).map((effect, index) => (index >= 3 ? { ...effect, thread: undefined } : effect))
+    const verdict = judgeThreadCount({
+      target: 6,
+      participants: [RUNNER, PEER],
+      channel: CHANNEL,
+      thread: THREAD,
+      effects: offThread,
+      events: [...turns(RUNNER, 3), ...turns(PEER, 3)]
+    })
+    expect(verdict.pass).toBe(false)
+    expect(verdict.reached).toBe(3)
+    expect(verdict.numbersPosted).toEqual([1, 2, 3])
   })
 
   it('fails when a participant reply was rejected (a lost message)', () => {

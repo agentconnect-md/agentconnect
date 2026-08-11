@@ -247,13 +247,21 @@ export const THREAD_COUNT_SCENARIO = {
 
 /** Is this tool name a messaging tool, on ANY surface the session might carry?
  *  Covers the product `sendMessage` (`mcp__agentconnect__sendMessage`), the
- *  arm-B façade `post` (`mcp__agentconnect__post`), and the Claude Code
- *  runtime's own built-in `SendMessage` (the #800 name-collision hazard).
- *  During the in-thread game every one of them is the #801 failure mode. */
+ *  arm-B façade `post` under EVERY runtime-assigned ACP identity — bare
+ *  `post`, underscore-flattened `mcp__agentconnect__post`, and the dotted
+ *  `mcp.agentconnect.post` the daemon equally supports (daemon.ts FQN
+ *  matching) — and the Claude Code runtime's own built-in `SendMessage` (the
+ *  #800 name-collision hazard). During the in-thread game every one of them
+ *  is the #801 failure mode. Matching is by name SEGMENT, so `compost` or
+ *  `postpone` never match while any separator spelling of `post` does. */
 export function isMessagingToolName(name: string): boolean {
   const normalized = name.toLowerCase()
   if (normalized.includes('sendmessage')) return true
-  return normalized === 'post' || normalized.endsWith('__post')
+  const lastSegment = normalized
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .at(-1)
+  return lastSegment === 'post'
 }
 
 export interface ThreadCountEffect {
@@ -372,13 +380,16 @@ export function judgeThreadCount(options: ThreadCountJudgeOptions): ThreadCountV
   const messagingToolCalls = callOrder.map((id) => callById.get(id)!)
 
   // ── the visible thread: delivered participant replies, in order ──
+  // STRICT thread match: a reply effect with no `thread` (or another thread)
+  // is a channel-root post opening a DIFFERENT conversation — counting it
+  // would let numbers posted outside the game thread pass the count.
   const participantThreadEffects = options.effects.filter(
     (effect) =>
       effect.kind === 'reply' &&
       effect.agentId !== undefined &&
       participants.has(effect.agentId) &&
       effect.channel === options.channel &&
-      (effect.thread === undefined || effect.thread === options.thread)
+      effect.thread === options.thread
   )
   const delivered = participantThreadEffects.filter((effect) => effect.status === 'delivered')
   const lostMessages = participantThreadEffects.filter((effect) => effect.status === 'rejected').length
