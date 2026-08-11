@@ -48,6 +48,10 @@ let checkoutExists = false
 let cloneFails = false
 /** What the pod's checkout reports as its origin — a resumed volume carries the previous launch's. */
 let originUrl = 'https://github.com/acme/private.git'
+/** The branch the pod's checkout is ON. `pull` does not switch branches, so this can differ from
+ *  the configured one — which is exactly the case a marker must not paper over. */
+let headBranch = 'main'
+let pullFails = false
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
   const run = async (args: string[]): Promise<string> => {
@@ -57,6 +61,7 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       return '.git'
     }
     if (args[0] === 'remote' && args[1] === 'get-url') return originUrl
+    if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return headBranch
     return ''
   }
   const runner: GitRunner = {
@@ -68,6 +73,8 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
     },
     pull: async (remote, branch, options = []) => {
       calls.push({ cwd, args: ['pull', remote, branch, ...options], env })
+      // What git does on divergent history with --ff-only: refuses, leaving the branch as it was.
+      if (pullFails) throw new Error('Not possible to fast-forward, aborting.')
       return { files: [], insertions: 0, deletions: 0 }
     },
     status: async () => ({ current: 'main', tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
@@ -109,6 +116,8 @@ beforeEach(() => {
   checkoutExists = false
   cloneFails = false
   originUrl = 'https://github.com/acme/private.git'
+  headBranch = 'main'
+  pullFails = false
   // Every agent here runs in a pod, so both seams resolve to the sandbox.
   setWorkspaceGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   setWorkspacePathClearer(async (_agentId, root) => {
@@ -302,6 +311,60 @@ describe('replacing a cluster workspace in place', () => {
     // The repair that used to be refused: same workspace as the volume now holds.
     await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).resolves.toBeTypeOf(
       'function'
+    )
+  })
+
+  it('leaves the marker alone when a divergent branch keeps the volume on the old one', async () => {
+    // `pullWorkspaceRef` pulls INTO the current branch rather than switching, so a configured branch
+    // that has diverged fails ff-only and the volume stays where it was. Recording the new branch
+    // there would tell every later activation that nothing changed, and the agent would run the
+    // wrong branch indefinitely — silently, which is what makes it expensive.
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+    const moved = { ...agent, workspace: { ...agent.workspace, gitBranch: 'release' } } as Agent
+    checkoutExists = true
+    headBranch = 'main' // the volume never left `main`
+    pullFails = true
+    await prepareClusterWorkspace(moved, POD_ROOT)
+
+    // The marker still describes `main`, so the change is still visible — and refused, with a
+    // message naming what to do, rather than silently running the wrong branch.
+    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).rejects.toThrow(
+      /cannot be converted in place with --k8s yet/
+    )
+  })
+
+  it('records the marker once the volume is provably on the configured branch', async () => {
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+    const moved = { ...agent, workspace: { ...agent.workspace, gitBranch: 'release' } } as Agent
+    checkoutExists = true
+    headBranch = 'release' // the volume IS on it, and the pull succeeded
+    await prepareClusterWorkspace(moved, POD_ROOT)
+    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
+    )
+  })
+
+  it('will not trust a rewritten origin that no successful pull backs up', async () => {
+    // A rewritten URL says nothing about the tree that was already there: the branch name can match
+    // in both repositories while the content is the old one. Only a pull that succeeded against the
+    // new origin shows otherwise.
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+    const renamed = {
+      ...agent,
+      workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/renamed.git' }
+    } as Agent
+    checkoutExists = true
+    originUrl = 'https://github.com/acme/private.git' // convergence has to rewrite it
+    pullFails = true
+    await prepareClusterWorkspace(renamed, POD_ROOT)
+    await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).rejects.toThrow(
+      /cannot be converted in place with --k8s yet/
     )
   })
 

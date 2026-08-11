@@ -223,13 +223,31 @@ async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path)
 }
 
 /**
+ * Which branch the pod's checkout is actually on.
+ *
+ * `pullWorkspaceRef` pulls INTO the current branch rather than switching to the configured one, so
+ * this is the only thing that can tell a volume holding the requested branch from one that merely
+ * fetched it. Empty when it cannot be established, which counts as "cannot prove it".
+ */
+async function clusterCheckoutBranch(agentId: string, checkout: string): Promise<string> {
+  try {
+    const head = await runnerFor(agentId, checkout)
+      .withEnv(workspaceGitLocalEnv())
+      .raw(['rev-parse', '--abbrev-ref', 'HEAD'])
+    return head.trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
  * The convergence itself, for a checkout the caller has already established exists.
  *
  * Split out because establishing that is where the two filesystems differ: locally it is a file
  * test, and for a pod it is a question asked over the channel. What follows is identical, and has to
  * be — this is where a repository rename is followed and where an untrusted origin is refused.
  */
-async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<void> {
+async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<{ rewritten: boolean }> {
   const expected = gitRepoOf(agent)
   const git = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
   let current: string
@@ -237,7 +255,9 @@ async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<void> {
     current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
   } catch (cause) {
     if (usesGithubApp(agent)) throw new UntrustedGithubWorkspaceOriginError({ cause })
-    return
+    // An anonymous checkout with no readable origin: nothing was rewritten, and nothing more can be
+    // established about it here.
+    return { rewritten: false }
   }
   if (usesGithubApp(agent) && !isTrustedGithubOrigin(current)) {
     throw new UntrustedGithubWorkspaceOriginError()
@@ -251,10 +271,11 @@ async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<void> {
     unsafeCurrent = true
   }
   const mismatched = normalizedCurrent.toLowerCase() !== expected.toLowerCase()
-  if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !usesGithubApp(agent))) return
+  if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !usesGithubApp(agent))) return { rewritten: false }
   // App-backed mismatches and unsafe anonymous origins must converge before
   // daemon-managed Git can proceed. A failed rewrite is fail-closed.
   await git.raw(['remote', 'set-url', 'origin', expected])
+  return { rewritten: true }
 }
 
 function materializationKey(agent: Agent): string {
@@ -783,19 +804,25 @@ export async function prepareClusterWorkspace(
   const checkout = join(root, SANDBOX_CHECKOUT_DIR)
   const githubApp = usesGithubApp(agent)
 
+  // Whether the volume can be PROVEN to hold what the marker would claim. A fresh clone can, by
+  // construction (`--branch` at clone time). An existing one has to be interrogated.
+  let volumeMatchesConfig = false
+  let originRewritten = false
   if (!(await clusterCheckoutExists(agent.id, checkout))) {
     await cloneRepoInSandbox(agent, root, repository)
+    volumeMatchesConfig = true
   } else {
     // A resumed volume carries the PREVIOUS launch's checkout, so the same two things the local
     // path does to one: follow a repository rename onto the canonical URL (and refuse an origin
     // that is not a trusted GitHub remote, which is fail-closed), and re-pin the helper line in
     // `.git/config`, whose agent id goes stale when an agent is recreated over a surviving volume.
-    await convergeOriginInPlace(agent, checkout)
+    originRewritten = (await convergeOriginInPlace(agent, checkout)).rewritten
     if (githubApp) {
       await writeRepoHelperConfig(runnerFor(agent.id, checkout), agent.id).catch(() => undefined)
     }
   }
 
+  let pulled = false
   if (agent.workspace.pullOnNewSession) {
     if (githubApp) await preWarmGitCred(agent.id, 'pull').catch(() => undefined)
     const abort = new AbortController()
@@ -810,6 +837,7 @@ export async function prepareClusterWorkspace(
         GIT_TERMINAL_PROMPT: '0'
       })
       await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
+      pulled = true
     } catch {
       // offline / timed out / non-fast-forward: proceed with the checkout on the volume, which is
       // the same degradation the local path accepts.
@@ -817,15 +845,32 @@ export async function prepareClusterWorkspace(
       clearTimeout(timer)
     }
   }
-  // The marker records what the VOLUME now holds, and this is the only place that knows.
+  // The marker records what the VOLUME holds, and this is the only place that knows — but ONLY when
+  // that can be proven, because a marker that overstates is worse than one that lags.
   //
-  // Ordinary placement activation does not ask for reconciliation, so nothing else refreshes it on
-  // this daemon: an agent that moves away, has its repository renamed elsewhere, and moves back
-  // would leave a marker naming the old URL while preparation had already converged the volume to
-  // the new one. A later repair reads that stale marker as a materialization CHANGE and is refused
-  // — staging an agent whose checkout was already correct.
+  // The case that made this precise: a volume on branch A, a configuration that now says a divergent
+  // branch B. `pullWorkspaceRef` pulls INTO the current branch rather than switching, so its ff-only
+  // pull fails, the failure is swallowed as ordinary offline degradation, and the volume stays on A.
+  // Recording B there tells every later activation that nothing changed, and the agent runs the
+  // wrong branch indefinitely — silently, which is the property that makes it expensive.
   //
-  // Best-effort: the volume is prepared either way, and failing a session over bookkeeping would
+  // Provable means: a fresh clone (its `--branch` decided HEAD), or an existing checkout whose HEAD
+  // IS the configured branch — plus, when convergence had to rewrite the origin, a pull that
+  // succeeded against it, since a rewritten URL says nothing about the tree that was already there.
+  // Anything else leaves the marker alone, so a later activation still sees the change and refuses
+  // it with a message naming what to do.
+  if (!volumeMatchesConfig) {
+    const head = await clusterCheckoutBranch(agent.id, checkout)
+    volumeMatchesConfig = head === agent.workspace.gitBranch && (!originRewritten || pulled)
+  }
+  if (!volumeMatchesConfig) {
+    workspaceLog.warn(
+      `workspace: the volume for agent "${agent.id}" does not provably hold ${repository} @ ` +
+        `${agent.workspace.gitBranch} — leaving its materialization marker unchanged`
+    )
+    return acpCwd
+  }
+  // Best-effort from here: the volume IS prepared, and failing a session over bookkeeping would
   // trade a stale marker for no session at all.
   try {
     recordWorkspaceMaterialization(agent)
