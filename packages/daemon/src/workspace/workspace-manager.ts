@@ -985,26 +985,38 @@ export async function prepareWorkspaceForActivation(
   }: { allowExistingCheckout?: boolean; reconcileMaterialization?: boolean } = {}
 ): Promise<() => void> {
   const cwd = agent.workspace.path
-  // Activation REPLACES a workspace, and its whole contract is local-filesystem: a staged clone
-  // beside the target, `renameSync` for an atomic swap, `readdirSync` to prove the destination is
-  // still empty at the boundary, and a rollback that restores the previous tree. A pod offers none
-  // of those — the shim can write and clear, not rename, list or stat — so there is no way to keep
-  // the rollback guarantee across the channel yet. Refused loudly, in the same spirit as session
-  // isolation: the alternative is a staged clone at a daemon-absolute path, which the shim's target
-  // fence rejects with an error about containment that explains nothing about what was attempted.
-  if (workspacesLiveInSandboxes && agent.workspace.mode === 'git-repo') {
-    throw new Error(
-      `a git-repo workspace cannot be converted or repaired in place with --k8s yet (agent "${agent.id}") — ` +
-        `recreate the agent to provision a fresh volume`
-    )
-  }
-  mkdirSync(cwd, { recursive: true })
   const previousMaterialization = reconcileMaterialization ? readMaterialization(agent) : undefined
   const targetMaterialization = materializationKey(agent)
   let replace = reconcileMaterialization && !sameMaterialization(agent, previousMaterialization, targetMaterialization)
   const restoreMarker = () => {
     if (reconcileMaterialization) restoreWorkspaceMaterialization(agent, previousMaterialization)
   }
+
+  // A cluster agent's checkout is on its pod volume, so this function has nothing local to do —
+  // and, for the one case that would need to do something, no way to do it safely.
+  //
+  // The distinction is REPLACING AN EXISTING CHECKOUT versus everything else, because only the
+  // former needs the contract a pod cannot offer: a staged clone beside the target, `renameSync`
+  // for an atomic swap, `readdirSync` to prove the destination is still empty at the boundary, and
+  // a rollback that restores the previous tree. The shim can write and clear — not rename, list or
+  // stat — so that is refused, and pointedly not the rest: activation is ALSO how a rejected edit
+  // is rolled back, how a staged agent is recovered, and how a same-workspace repair runs, each
+  // arriving here with `reconcileWorkspace` set. Refusing those left an agent staged and offline,
+  // because the rollback's own restoration hit the refusal too.
+  //
+  // Everything else is a no-op that keeps the marker honest. Session preparation is what converges
+  // the volume — origin, helper pin, pull — and it runs before the runtime sees the workspace.
+  if (workspacesLiveInSandboxes && agent.workspace.mode === 'git-repo') {
+    if (replace && previousMaterialization !== undefined) {
+      throw new Error(
+        `a git-repo workspace cannot be converted in place with --k8s yet (agent "${agent.id}") — ` +
+          `recreate the agent to provision a fresh volume`
+      )
+    }
+    if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
+    return restoreMarker
+  }
+  mkdirSync(cwd, { recursive: true })
 
   if (agent.workspace.mode === 'from-scratch') {
     if (replace) {

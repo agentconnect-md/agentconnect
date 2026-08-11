@@ -248,20 +248,51 @@ describe('preparing a cluster git-repo workspace', () => {
 })
 
 describe('replacing a cluster workspace in place', () => {
-  it('refuses a git-repo conversion or repair, instead of staging a clone at a daemon path', async () => {
-    // `prepareWorkspaceForActivation` is reached by every workspace edit and by staged/reconnect
-    // repair, and it bypasses the preparation above entirely. Its contract is local-filesystem —
-    // a staged clone beside the target, `renameSync` to swap, `readdirSync` to prove the destination
-    // is still empty at the boundary, and a rollback that restores the previous tree — and the shim
-    // can write and clear, not rename, list or stat. Unrefused, it stages a clone at a
-    // daemon-absolute path, which the target fence rejects with an error about containment that says
-    // nothing about what was attempted.
-    await expect(prepareWorkspaceForActivation(clusterAgent())).rejects.toThrow(
-      /cannot be converted or repaired in place with --k8s yet/
+  /** Activation reads and writes its materialization marker beside the daemon-side bookkeeping
+   *  path, so these need a real one — it is the only local state this function keeps. */
+  function bookkeepingAgent(overrides: Partial<Agent['workspace']> = {}): Agent {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-cluster-act-')), 'workspace')
+    return clusterAgent({ path, ...overrides })
+  }
+
+  it('is a no-op for a first activation, leaving the clone to session preparation', async () => {
+    // No marker means nothing to replace: the volume either has no checkout, which preparation
+    // clones, or has one that convergence fixes. Refusing here would make a git-repo cluster agent
+    // impossible to create at all, since `replace` is true whenever there is no previous marker.
+    const agent = bookkeepingAgent()
+    await expect(prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
     )
-    // Nothing was staged on either filesystem before the refusal.
+    // And it staged nothing on either filesystem.
     expect(calls).toEqual([])
-    expect(cleared).toEqual([])
+    expect(existsSync(`${agent.workspace.path}.clone-`)).toBe(false)
+  })
+
+  it('lets a rollback and a same-workspace repair through, which a blanket refusal stranded', async () => {
+    // The sequence that matters: a rejected git→git edit restores the original row and re-activates
+    // it with `reconcileWorkspace`. When that restoration was refused too, the agent stayed staged
+    // and offline — the failure the refusal was supposed to prevent, made permanent.
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+    // Same workspace, marker already recorded: repair and restoration both look like this.
+    await expect(prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
+    )
+    await expect(prepareWorkspaceForActivation(agent)).resolves.toBeTypeOf('function')
+  })
+
+  it('refuses only a conversion of an EXISTING checkout, which has no rollback in a pod', async () => {
+    // The one case that needs the contract a pod cannot offer: a staged clone, an atomic swap, and a
+    // rollback that restores the previous tree. Unrefused, it stages a clone at a daemon-absolute
+    // path, which the shim's target fence rejects with an error about containment that says nothing
+    // about what was attempted.
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).rejects.toThrow(
+      /cannot be converted in place with --k8s yet/
+    )
+    expect(calls).toEqual([])
   })
 
   it('leaves a from-scratch cluster workspace alone, whose activation touches only bookkeeping', async () => {
