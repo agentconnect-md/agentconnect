@@ -16,10 +16,11 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-/** Runtime ids this image provides and the executable each is launched as. */
+/** Runtime ids this image provides and the executable (plus args) each is launched as. */
 const PROVIDED = [
   { id: 'claude-acp', bin: 'claude-agent-acp' },
-  { id: 'codex-acp', bin: 'codex-acp' }
+  { id: 'codex-acp', bin: 'codex-acp' },
+  { id: 'opencode', bin: 'opencode', args: ['acp'] }
 ]
 
 const PROBE_TIMEOUT_MS = 60_000
@@ -37,11 +38,11 @@ export function isAuthRequired(error) {
 const PROBE_CWD = process.env.AC_PROBE_CWD ?? process.cwd()
 
 /** Drive one runtime over stdio far enough to learn what it is: initialize, then a session. */
-async function probe(bin) {
+async function probe(bin, args = []) {
   // Ambient HOME and cwd, NOT a pinned /agent: a runtime writes state into both, so whoever runs
   // this decides where that lands. Pinning the workspace meant the build-time probe left
   // root-owned .claude/.codex state in /agent that the runtime user could not then write.
-  const child = spawn(bin, [], { stdio: ['pipe', 'pipe', 'ignore'], env: process.env, cwd: PROBE_CWD })
+  const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'ignore'], env: process.env, cwd: PROBE_CWD })
   const replies = new Map()
   let buffered = ''
   child.stdout.on('data', (chunk) => {
@@ -118,7 +119,7 @@ function stable(value) {
 export async function buildTable() {
   const runtimes = []
   for (const entry of PROVIDED) {
-    const { initialized, session, sessionProbe } = await probe(entry.bin)
+    const { initialized, session, sessionProbe } = await probe(entry.bin, entry.args ?? [])
     const version = initialized?.agentInfo?.version
     if (typeof version !== 'string' || version.length === 0) {
       throw new Error(`${entry.bin} reported no agentInfo.version at initialize`)

@@ -64,6 +64,7 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 # names these versions, and a floating tag would make the table a claim about the past.
 ARG CLAUDE_ACP_VERSION=0.66.0
 ARG CODEX_ACP_VERSION=1.1.14
+ARG OPENCODE_VERSION=1.18.16
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1. Nothing else: every
@@ -76,9 +77,13 @@ RUN apt-get update \
 # refuses package-launcher (npx/uvx) entries: fetching a runtime at spawn time would mean the
 # image pin says nothing about what actually runs, and would need registry egress from a
 # sandbox that should have none.
+# opencode-ai NEEDS its postinstall (it copies the platform binary over a failing placeholder),
+# so no --ignore-scripts here; claude/codex resolve their binaries from optionalDeps instead.
 RUN npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
   "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
+  "opencode-ai@${OPENCODE_VERSION}" \
+  && opencode --version \
   && npm cache clean --force
 
 # Root-owned and read-only: the runtime is the untrusted party in this image, and a shim it can
