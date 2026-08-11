@@ -5,16 +5,17 @@ Applies to the `agentconnect` namespace. The agent-sandbox CRDs
 
 ## Why the `runtimes` block in the config is not optional
 
-`--k8s` refuses package launchers. The public ACP registry distributes both
-runtimes as `npx` packages, and a runtime fetched at spawn time would mean the
-image pin says nothing about what actually runs — and would need registry egress
-from a sandbox that should have none. So the ids have to be mapped to the
-executables the runtime image really ships:
+`--k8s` refuses package launchers. The public ACP registry distributes the
+runtimes as `npx` packages or downloaded archives, and a runtime fetched at
+spawn time would mean the image pin says nothing about what actually runs — and
+would need registry egress from a sandbox that should have none. So the ids
+have to be mapped to the executables the runtime image really ships:
 
 ```json
 "runtimes": {
   "claude-acp": { "command": "claude-agent-acp", "args": [], "env": [] },
-  "codex-acp":  { "command": "codex-acp",        "args": [], "env": [] }
+  "codex-acp":  { "command": "codex-acp",        "args": [], "env": [] },
+  "opencode":   { "command": "opencode",         "args": ["acp"], "env": [] }
 }
 ```
 
