@@ -1,6 +1,7 @@
-# Install the AgentConnectOrg CRD (and, later, vendored cluster-shared
-# dependencies) with this release. Set false when CRDs are managed
-# out-of-band — e.g. several environment releases sharing one cluster.
+# Install the cluster-shared pieces with this release: the AgentConnectOrg CRD
+# and the vendored agent-sandbox stack (CRDs + controller). Set false when they
+# are managed out-of-band — several environment releases sharing one cluster,
+# or a cluster that already runs agent-sandbox.
 installCRD: true
 
 # Install-time constant: every org namespace this install owns starts with

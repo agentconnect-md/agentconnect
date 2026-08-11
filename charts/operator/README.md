@@ -17,15 +17,18 @@ control namespace.
 Kubernetes 1.30 or newer is required (`kubeVersion` in `Chart.yaml`): the
 isolation fences below are `ValidatingAdmissionPolicy` objects, GA since 1.30.
 
-`installCRD` gates the cluster-shared pieces (the `AgentConnectOrg` CRD today;
-vendored agent-sandbox CRDs/controllers later):
+`installCRD` gates the cluster-shared pieces: the `AgentConnectOrg` CRD and the
+vendored agent-sandbox stack.
 
-- **Single-environment clusters** keep the default `installCRD: true`.
+- **Single-environment clusters** keep the default `installCRD: true` — a fresh
+  cluster needs nothing installed by hand.
 - **Multi-environment clusters** set `installCRD: false` on every release and
-  manage the CRD out-of-band, so no environment's lifecycle owns it.
+  manage the shared pieces out-of-band, so no environment's lifecycle owns
+  them. Same setting for a cluster that already runs agent-sandbox: Helm
+  refuses to adopt objects it did not create.
 
-The CRD template carries `helm.sh/resource-policy: keep`: uninstalling the
-release that installed it leaves the CRD (and every org) in place.
+Every CRD carries `helm.sh/resource-policy: keep`: uninstalling the release that
+installed them leaves them — and every org and Sandbox — in place.
 
 ## Admission policies
 
@@ -60,11 +63,40 @@ The fence only tests for the key, so the value is free. Prefixes must still not
 overlap a control namespace name — the label is the second line of defense, not
 the first.
 
-## Dependencies
+## The vendored agent-sandbox stack
 
-The agent-sandbox CRDs and controllers (`agents.x-k8s.io`) must be installed
-separately for now — see `deploy/k8s/README.md` in the repository. Vendoring
-them behind `installCRD` is planned.
+Envelopes are built on [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
+(`agents.x-k8s.io`, `extensions.agents.x-k8s.io`). Under `installCRD: true` the
+chart installs it: **v0.5.4**, vendored at `vendor/agent-sandbox.yaml` — the
+namespace `agent-sandbox-system`, the four CRDs, the controller with its RBAC
+and Services, plus one ConfigMap of ours.
+
+Vendored rather than depended on: upstream publishes release manifests but no
+chart to any registry ([issue #483](https://github.com/kubernetes-sigs/agent-sandbox/issues/483)),
+so there is nothing for `Chart.yaml` to point at. The vendored file is the
+release asset `sandbox-with-extensions.yaml` with exactly one edit —
+`helm.sh/resource-policy: keep` on each CRD — and its header records the source
+URL and the upstream digest.
+
+The ConfigMap (`agent-sandbox-config`) sets the controller's label allowlist to
+`sandbox.users.io,agentconnect.md`. That key _replaces_ the controller's default
+rather than extending it, which is why both are named; without ours the
+controller rejects every SandboxClaim the daemon makes with `InvalidMetadata`.
+
+### Upgrading the pin
+
+```bash
+node scripts/vendor-agent-sandbox.mjs vX.Y.Z # rewrites vendor/agent-sandbox.yaml
+```
+
+Read the diff before committing — CRD schema changes are upstream API changes —
+then update the version named above. The script is deterministic, so re-running
+it on the same tag produces no diff.
+
+The CRDs are templated, not in a `crds/` directory, so `helm upgrade` does roll
+them forward (`keep` only holds them back from an uninstall). A release that
+moves the stored API version is the exception: upstream ships a storage
+migration for it, and skipping that is how CRs become unreadable.
 
 ## Install
 

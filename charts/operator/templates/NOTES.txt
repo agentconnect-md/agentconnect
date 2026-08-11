@@ -5,15 +5,17 @@ Install-time constants for this environment:
   org namespace prefix:  {{ .Values.orgNamespacePrefix }}
   CRD installed here:    {{ .Values.installCRD }}
 
-{{- if not .Values.installCRD }}
+{{- if .Values.installCRD }}
 
-NOTE: installCRD=false — the AgentConnectOrg CRD (and vendored cluster-shared
-dependencies) must be managed out-of-band before creating any AgentConnectOrg.
+This release also installs the cluster-shared pieces: the AgentConnectOrg CRD
+and the vendored agent-sandbox stack (CRDs + controller in agent-sandbox-system).
+Every CRD is annotated helm.sh/resource-policy: keep, so an uninstall leaves
+them, and every org and Sandbox, in place.
+{{- else }}
+
+NOTE: installCRD=false — the AgentConnectOrg CRD and the agent-sandbox stack
+must be managed out-of-band before creating any AgentConnectOrg.
 {{- end }}
-
-The agent-sandbox CRDs and controllers (agents.x-k8s.io) are a required
-dependency that is not yet vendored by this chart — see deploy/k8s/README.md
-in the repository for the current manual installation steps.
 
 Sharing this cluster with another install? Mark every control namespace so no
 install's operator can write into another's:

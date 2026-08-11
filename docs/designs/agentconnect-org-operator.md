@@ -156,10 +156,14 @@ remove finalizer. Steps must be idempotent.
 ## 5. Chart (`charts/operator`, name `agentconnect-operator`)
 
 One chart, one release per environment. `installCRD` gates the cluster-shared
-pieces (the CRD today, vendored agent-sandbox CRDs/controllers later); the CRD
-is a _templated_ resource (conditional + upgradable) carrying
-`helm.sh/resource-policy: keep` so no release uninstall can cascade-delete
-every org. Everything else is per-install: operator Deployment (2 replicas) +
+pieces — the CRD plus the vendored agent-sandbox stack (`vendor/agent-sandbox.yaml`,
+pinned to an upstream release manifest because upstream publishes no chart to a
+registry). Every CRD is a _templated_ resource (conditional + upgradable)
+carrying `helm.sh/resource-policy: keep` so no release uninstall can
+cascade-delete every org or every live Sandbox. The one thing the chart adds to
+the vendored stack is the controller's label-domain allowlist, which replaces
+rather than extends its default and without which every SandboxClaim is
+rejected. Everything else is per-install: operator Deployment (2 replicas) +
 SA/RBAC, the release-prefixed tokenreview ClusterRole, two
 ValidatingAdmissionPolicies, and a pre-delete hook that refuses uninstall while
 CRs remain — removing the operator would strand every finalizer. That hook is a
