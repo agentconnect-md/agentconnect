@@ -93,6 +93,10 @@ const MAX_RESPONSE_BYTES = MAX_FRAME_BYTES - FRAME_ENVELOPE_HEADROOM_BYTES
 const SIGNAL_EXIT_BASE = 128
 const SIGNAL_NUMBERS: Record<string, number> = { SIGTERM: 15, SIGKILL: 9, SIGINT: 2, SIGHUP: 1 }
 
+/** The image's own table generator. It drives each runtime through `initialize` (and a session),
+ *  so the answer is what the runtimes SAY they are, not what a manifest claims. */
+const RUNTIME_TABLE_GENERATOR = '/opt/agentconnect/bin/generate-runtime-table.mjs'
+
 export interface ExecHandlerDeps {
   /** Root the sandbox permits work inside; a cwd outside it is refused. */
   workspaceRoot: string
@@ -151,8 +155,43 @@ export function createExecHandler(
       return null
     }
     if (capability === 'exec') return runGit(payload, deps, abort)
+    if (capability === 'probe') return probeRuntimes(deps, abort)
     throw new ExecRefusedError(`capability ${capability} is not served by this handler`)
   }
+}
+
+/**
+ * Ask this image which runtimes it provides.
+ *
+ * Runs the generator rather than reading the table it wrote at build time: the two agree by
+ * construction, but a live answer cannot go stale against the image the way a copy in a ConfigMap
+ * can — and that staleness is silent, because a daemon advertising a version nobody can run looks
+ * exactly like a healthy one.
+ */
+async function probeRuntimes(deps: ExecHandlerDeps, abort?: AbortSignal): Promise<unknown> {
+  return await new Promise((resolvePromise, reject) => {
+    execFile(
+      process.execPath,
+      [RUNTIME_TABLE_GENERATOR, '-'],
+      {
+        cwd: resolveCwd(deps.workspaceRoot, undefined),
+        timeout: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        ...(abort ? { signal: abort } : {}),
+        maxBuffer: MAX_STREAM_BYTES
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(new ExecRefusedError(`runtime probe failed: ${(error as Error).message}`))
+          return
+        }
+        try {
+          resolvePromise(JSON.parse(String(stdout)))
+        } catch (err) {
+          reject(new ExecRefusedError(`runtime probe produced invalid JSON: ${(err as Error).message}`))
+        }
+      }
+    )
+  })
 }
 
 async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSignal): Promise<GitExecResult> {

@@ -6,9 +6,16 @@ import { clusterMetrics } from './cluster-metrics.js'
 import { ShimListener } from '../shim/listener.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import type { SpawnRecord } from '../shim/binding.js'
+import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
+
+/** Reserved agent id for the runtime probe. Not a real agent, and never assigned one: its claim is
+ *  `agent-<this>`, so the name must not collide with an id the Control Plane could hand out. */
+export const PROBE_AGENT_ID = 'ac-runtime-probe'
+/** A probe drives every runtime through `initialize` plus a session, on a possibly cold pod. */
+const PROBE_TIMEOUT_MS = 180_000
 
 /**
  * Assembles the k8s execution plane: the shim endpoint, the driver, and the seams that make an
@@ -82,6 +89,8 @@ export interface K8sRuntimePlane {
   /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
    *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
   ensureChannel: (agentId: string) => Promise<void>
+  /** Ask a sandbox which runtimes the image actually provides, and tear it down again. */
+  probeRuntimes: () => Promise<K8sRuntimeTable>
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
    *  daemon has no channel for it — the caller then keeps its local behaviour. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
@@ -171,6 +180,23 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     listener,
     ensureChannel: async (agentId) => {
       await driver.ensureBoundChannel(agentId)
+    },
+    probeRuntimes: async () => {
+      // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
+      // agent's instance — and is torn down afterwards rather than left holding a pod.
+      try {
+        await driver.ensureBoundChannel(PROBE_AGENT_ID)
+        const session = driver.sessionFor(PROBE_AGENT_ID)
+        if (!session) throw new Error('probe sandbox bound no session')
+        const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
+        return K8sRuntimeTableSchema.parse(raw)
+      } finally {
+        await driver.removeAgent(PROBE_AGENT_ID).catch((err: unknown) => {
+          // A leaked probe sandbox costs a pod and a volume, so say so loudly rather than
+          // letting it accumulate one per daemon restart.
+          options.log?.warn(`k8s: probe sandbox teardown failed: ${(err as Error).message}`)
+        })
+      }
     },
     gitRunnerFor: (agentId, cwd, abort) => {
       const session = driver.sessionFor(agentId)

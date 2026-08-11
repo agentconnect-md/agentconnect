@@ -41,7 +41,7 @@ export function resolvePodName(sandbox: Sandbox): string | undefined {
 
 /** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
  *  what the channels it uses require, so a future capability is an explicit decision. */
-export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
+export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel', 'probe']
 
 export interface K8sDriverDeps {
   api: SandboxApi

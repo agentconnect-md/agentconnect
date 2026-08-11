@@ -34,26 +34,32 @@ shred -u /tmp/config.json
 
 # 2. Everything else.
 kubectl apply -f deploy/k8s/00-rbac.yaml
-kubectl apply -f deploy/k8s/10-runtime-table.yaml
 kubectl apply -f deploy/k8s/20-service.yaml
 kubectl apply -f deploy/k8s/40-sandbox-pool.yaml
 kubectl apply -f deploy/k8s/30-deployment.yaml
 ```
 
-## Keeping the runtime table honest
+## Where the runtime list comes from
 
-`10-runtime-table.yaml` must describe the image `40-sandbox-pool.yaml` pins. The
-table is generated inside that image, so regenerate it from the image itself
-rather than editing by hand:
+Nowhere in these manifests. On startup the daemon brings up one sandbox under a
+reserved id, asks it over the shim which runtimes it provides — the pod runs the
+image's own generator, which drives each runtime through ACP `initialize` — then
+tears that sandbox down and advertises the answer.
 
-```bash
-docker run --rm --entrypoint cat \
-  ghcr.io/agentconnect-md/runtime-sandbox: < TAG > \
-  /opt/agentconnect/runtime/k8s-runtimes.json
-```
+That is deliberate. A list compiled into the daemon would tie a runtime version
+bump to a daemon release and describe an image the daemon never opened. A list in
+a ConfigMap is a copy, and a copy left behind when the image tag moves is silent:
+the daemon advertises a version nobody can run and looks perfectly healthy. The
+only source that cannot drift is the running pod.
 
-A table that disagrees with the image makes the daemon advertise a runtime
-version nobody can run.
+Consequences worth knowing:
+
+- Between boot and the probe returning, the daemon advertises **no runtimes**, so
+  the Control Plane assigns it nothing. On a cold pool that wait is a pod start.
+- If the probe fails, the daemon keeps advertising nothing and says so, rather
+  than accepting agents it cannot launch.
+- Changing the runtime image is a `40-sandbox-pool.yaml` edit plus a daemon
+  restart. There is nothing else to keep in sync.
 
 ## Checking it works
 
@@ -61,9 +67,13 @@ version nobody can run.
 kubectl -n agentconnect logs deploy/agentconnect-daemon | grep -E 'k8s:|runtimes ready'
 ```
 
-Expect `k8s: execution plane ready — shim endpoint on :8085` and a non-empty
-`runtimes ready:`. An empty one means the table or the `runtimes` mapping is
-missing — see above.
+Expect `k8s: execution plane ready — shim endpoint on :8085`, then
+`runtimes: probing a sandbox …` and `runtimes ready (probed): claude-acp@…`.
+
+An empty probed list means the `runtimes` mapping above is missing — the ids
+resolved through `npx` and were dropped. A probe that fails outright is usually
+the pool: check `kubectl -n agentconnect get sandboxclaims` for
+`agent-ac-runtime-probe`.
 
 Then assign an agent and send it a message. The daemon creates a
 `SandboxClaim` named `agent-<agentId>`:

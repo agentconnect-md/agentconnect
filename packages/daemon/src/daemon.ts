@@ -264,12 +264,7 @@ import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/r
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
 import { setWorkspaceGitRunnerResolver } from './workspace/workspace-manager.js'
-import {
-  k8sRuntimesPath,
-  declaredRuntimeCatalog,
-  loadK8sRuntimeTable,
-  type K8sRuntimeAcpSnapshot
-} from './runtimes/k8s-runtimes.js'
+import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   probeAllRuntimes,
@@ -1968,6 +1963,9 @@ export class Daemon {
   private readonly k8s: boolean
   // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
   private k8sPlane?: K8sRuntimePlane
+  // The resolved catalog the probed table is projected onto; it supplies command/args, which the
+  // table never does — the table only says which ids this image provides.
+  private k8sResolvedCatalog?: ResolvedRuntimeCatalog
   // Model snapshot declared alongside the k8s runtime image; applied after the
   // SQLite catalog hydrate so the image's list wins over a stale cached one.
   private k8sDeclaredModels: Record<string, string[]> = {}
@@ -2607,6 +2605,9 @@ export class Daemon {
       // not launched into a sandbox keeps its local behaviour.
       setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
       this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
+      // Background: a probe needs a pod, and blocking boot on one would make a slow cluster look
+      // like a hung daemon. The result supersedes what was advertised at register.
+      void this.probeK8sRuntimes()
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -2808,20 +2809,7 @@ export class Daemon {
     this.hydrateRuntimeCatalogCache()
     // The image's declared models are the fresher truth than any cached row, and stay
     // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
-    for (const [runtimeId, models] of Object.entries(this.k8sDeclaredModels)) {
-      this.runtimeModels.set(runtimeId, [...models])
-      this.runtimeModelsSource.set(runtimeId, 'cached')
-    }
-    // The image probed these at build time, so they are the same facts a live probe would report —
-    // and they populate the same maps runtimeProfiles() reads, rather than a parallel surface.
-    for (const [runtimeId, snapshot] of Object.entries(this.k8sDeclaredAcp)) {
-      if (snapshot.protocolVersion !== undefined) this.runtimeAcpVersions.set(runtimeId, snapshot.protocolVersion)
-      const mcp = snapshot.capabilities?.mcpCapabilities
-      if (mcp && typeof mcp === 'object') {
-        const caps = mcp as { http?: unknown; sse?: unknown }
-        this.runtimeMcpCaps.set(runtimeId, { http: caps.http === true, sse: caps.sse === true })
-      }
-    }
+    this.applyK8sDeclaredFacts()
     this.modelCatalogSvc = new ModelCatalogService({
       store: this.store,
       log: this.log,
@@ -19499,14 +19487,75 @@ export class Daemon {
    * served cache-first from `<root>/acp_registry.json` in an image). Replaces host
    * executable discovery, which can only ever answer "nothing" in a daemon pod.
    */
+  /** Fold the declared/probed snapshot into the SAME maps runtimeProfiles() reads, so a probed
+   *  fact and a locally probed one are indistinguishable downstream. */
+  private applyK8sDeclaredFacts(): void {
+    for (const [runtimeId, models] of Object.entries(this.k8sDeclaredModels)) {
+      this.runtimeModels.set(runtimeId, [...models])
+      this.runtimeModelsSource.set(runtimeId, 'cached')
+    }
+    for (const [runtimeId, snapshot] of Object.entries(this.k8sDeclaredAcp)) {
+      if (snapshot.protocolVersion !== undefined) this.runtimeAcpVersions.set(runtimeId, snapshot.protocolVersion)
+      const mcp = snapshot.capabilities?.mcpCapabilities
+      if (mcp && typeof mcp === 'object') {
+        const caps = mcp as { http?: unknown; sse?: unknown }
+        this.runtimeMcpCaps.set(runtimeId, { http: caps.http === true, sse: caps.sse === true })
+      }
+    }
+  }
+
   private declaredCloudCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
+    // Kept for a file-supplied table (an override, or a daemon started before its first probe
+    // returns). The authoritative answer comes from the sandbox itself — see probeK8sRuntimes.
+    this.k8sResolvedCatalog = resolved
     const table = loadK8sRuntimeTable(root)
     if (!table) {
-      this.log.warn(
-        `runtimes: --k8s requires a declared runtime table at ${k8sRuntimesPath(root)} — advertising none until it exists`
-      )
+      this.log.info('runtimes: --k8s advertises none until the sandbox probe reports what the image provides')
       return { entries: {}, runtimes: {} }
     }
+    return this.projectDeclaredRuntimes(resolved, table)
+  }
+
+  /**
+   * Ask a sandbox which runtimes the image provides, and advertise THAT.
+   *
+   * The alternative shapes are both worse in the same way. Compiling the list into the daemon
+   * couples a runtime version bump to a daemon release and states something about an image the
+   * daemon never opened. Projecting it from a ConfigMap is a copy, and a copy left behind when the
+   * image tag moves is silent: the daemon advertises a version nobody can run and looks healthy.
+   *
+   * Runs in the background because it needs a pod: the daemon must register and advertise
+   * something first, and `facts/daemon-runtimes` has replace semantics, so the probed set simply
+   * supersedes whatever was advertised at boot.
+   */
+  private async probeK8sRuntimes(): Promise<void> {
+    const plane = this.k8sPlane
+    const resolved = this.k8sResolvedCatalog
+    if (!plane || !resolved) return
+    try {
+      this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
+      const table = await plane.probeRuntimes()
+      const catalog = this.projectDeclaredRuntimes(resolved, table)
+      this.runtimeCatalog = catalog
+      this.applyK8sDeclaredFacts()
+      this.log.info(
+        `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
+      )
+      this.cpClient?.emitDaemonRuntimes?.(
+        this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
+        this.mcpServerFactsFromDefs()
+      )
+    } catch (err) {
+      // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
+      // is better than assigning one to a daemon that cannot launch it.
+      this.log.warn(`runtimes: sandbox probe failed — advertising none (${(err as Error).message})`)
+    }
+  }
+
+  private projectDeclaredRuntimes(
+    resolved: ResolvedRuntimeCatalog,
+    table: import('./runtimes/k8s-runtimes.js').K8sRuntimeTable
+  ): ResolvedRuntimeCatalog {
     const declared = declaredRuntimeCatalog(resolved, table)
     if (declared.unresolved.length)
       this.log.warn(`runtimes: declared but unknown to the catalog: ${declared.unresolved.join(', ')}`)

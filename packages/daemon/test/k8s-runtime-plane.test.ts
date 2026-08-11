@@ -81,9 +81,17 @@ async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRunti
   return plane
 }
 
-/** A real shim client dialling the plane's endpoint. */
-function shimAgainst(port: number): ShimClient {
+/** A real shim client dialling the plane's endpoint, optionally serving capabilities. */
+function shimAgainst(port: number, handlers: { probe?: unknown } = {}): ShimClient {
   const client = new ShimClient({
+    ...(handlers.probe === undefined
+      ? {}
+      : {
+          handle: async (capability: string) => {
+            if (capability === 'probe') return handlers.probe
+            throw new Error(`unexpected capability ${capability}`)
+          }
+        }),
     endpoint: `ws://127.0.0.1:${port}`,
     dial: (url, opts) =>
       ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
@@ -124,6 +132,31 @@ describe('k8s plane settings', () => {
 })
 
 describe('k8s runtime plane assembly', () => {
+  it('probes a sandbox for the runtimes the image provides, then tears it down', async () => {
+    // The whole point of dropping the ConfigMap: the only source that cannot drift from the image
+    // is the running pod. A list compiled into the daemon, or copied into a ConfigMap, can be
+    // wrong about the image and nothing notices — the daemon just advertises a version nobody can
+    // run and looks healthy.
+    const api = fakeApi()
+    const deleted: string[] = []
+    api.api.deleteClaim = async (name: string) => {
+      deleted.push(name)
+    }
+    const plane = await planeUnderTest(api)
+    const port = plane.listener.listeningPort()!
+
+    // A shim that answers `probe` the way the image's generator does.
+    const probing = plane.probeRuntimes()
+    shimAgainst(port, {
+      probe: { runtimes: [{ id: 'claude-acp', version: '0.66.0', acp: { protocolVersion: 1 } }] }
+    })
+    const table = await probing
+    expect(table.runtimes.map((entry) => `${entry.id}@${entry.version}`)).toEqual(['claude-acp@0.66.0'])
+    // And the probe sandbox is gone: one leaked pod per daemon restart would be a slow leak that
+    // nothing else cleans up.
+    expect(deleted).toContain('agent-ac-runtime-probe')
+  })
+
   it('brings the sandbox up and binds without starting a runtime, for workspace preparation', async () => {
     // The workspace has to be prepared before the runtime starts, and for a cluster agent that
     // means cloning onto the pod's volume — so the channel must exist first. Preparing before the
