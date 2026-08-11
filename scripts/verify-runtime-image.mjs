@@ -46,6 +46,9 @@ function inspect(format) {
 }
 
 const SHIM_PATH = '/opt/agentconnect/shim/index.js'
+/** Must match SANDBOX_GIT_CREDENTIAL_HELPER in packages/daemon/src/shim/sandbox-paths.ts: the
+ *  daemon writes this path into git config, so a rename here is a silent auth failure there. */
+const CREDENTIAL_HELPER_PATH = '/opt/agentconnect/bin/git-credential'
 const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
@@ -77,6 +80,37 @@ check('the shim is root-owned and not writable by the runtime user', () => {
   const refused = inImage(`(echo x >> ${SHIM_PATH} && echo WRITABLE) || echo refused`)
   if (refused !== 'refused') throw new Error('the runtime user can modify the shim')
   return owner
+})
+
+// Git spawns a credential helper per invocation, so the pod needs one as an executable — and it
+// inherits the shim's threat model exactly: one the runtime can rewrite is one it can replace with
+// a helper that asks the daemon for credentials in its name.
+check('the git credential helper is present, executable and root-owned', () => {
+  const owner = inImage(`stat -c '%U:%G %a' ${CREDENTIAL_HELPER_PATH}`)
+  if (!owner.startsWith('root:root')) throw new Error(`credential helper is not root-owned (${owner})`)
+  const mode = owner.split(' ')[1]
+  if (/[2367]$/.test(mode) || /^.[2367]/.test(mode)) {
+    throw new Error(`credential helper is group/other writable (${mode})`)
+  }
+  const refused = inImage(`(echo x >> ${CREDENTIAL_HELPER_PATH} && echo WRITABLE) || echo refused`)
+  if (refused !== 'refused') throw new Error('the runtime user can modify the credential helper')
+  if (inImage(`test -x ${CREDENTIAL_HELPER_PATH} && echo yes || echo no`) !== 'yes') {
+    throw new Error('credential helper is not executable, so git cannot run it')
+  }
+  return owner
+})
+
+// A helper that cannot reach a socket must SAY so and fail, because the alternative is git
+// interpreting an empty answer as "no credentials configured" and reporting a puzzling 403.
+check('the credential helper runs and fails loudly with no daemon socket', () => {
+  const out = inImage(
+    `AC_GITCRED_SOCKET=/nonexistent/gitcred.sock ` +
+      `sh -c 'echo "protocol=https\nhost=github.com" | ${CREDENTIAL_HELPER_PATH} agent-x get; echo "exit=$?"' 2>&1`
+  )
+  if (!out.includes('exit=1')) throw new Error(`helper did not exit 1 without a socket: ${out}`)
+  if (!/agentconnect: no git credentials/.test(out)) throw new Error(`helper printed no actionable reason: ${out}`)
+  if (/password=/.test(out)) throw new Error('helper answered git despite having no credential')
+  return 'exits 1 with an actionable message'
 })
 
 // The shim is built with everything inlined so this image installs no node_modules for it. A

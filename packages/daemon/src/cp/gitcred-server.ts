@@ -34,17 +34,11 @@ import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { GitCredentialCache, GitCredUnavailableError, type CredPlane } from './git-credential.js'
 
-export const GITCRED_CAPABILITY_ENV = 'AC_GITCRED_CAPABILITY'
-/** The agent identity minted TOGETHER with the capability (git-injection
- *  gitCredentialEnv). Helpers prefer this pair over the agentId baked into a
- *  `.git/config` helper line, which goes stale when an agent is deleted and
- *  recreated under the same name over a surviving checkout. */
-export const GITCRED_AGENT_ENV = 'AC_GITCRED_AGENT'
-/** Where a helper finds the socket, when that is not under this daemon's own root. A helper
- *  running in a sandbox pod reaches the daemon through the shim's tunnel instead, and the pod's
- *  filesystem has no daemon root to derive a path from. Non-secret: it is a path, and the
- *  capability above is what authorizes the request that travels over it. */
-export const GITCRED_SOCKET_ENV = 'AC_GITCRED_SOCKET'
+// Declared in `gitcred/env.ts` and re-exported here, where every daemon-side caller already looks
+// for them: the helper that also runs inside a sandbox cannot import this module (it would pull the
+// credential cache into an image whose bundle may import only node builtins).
+export { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../gitcred/env.js'
+import { GITCRED_SOCKET_ENV } from '../gitcred/env.js'
 
 /** The socket a helper should dial: an explicit override, else this daemon's own. */
 export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string {

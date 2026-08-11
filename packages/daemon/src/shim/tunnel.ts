@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SANDBOX_TUNNEL_PATHS as SANDBOX_TUNNEL_PATH_SOURCE } from './sandbox-paths.js'
 
 /**
  * Unix sockets the daemon exposes into a sandbox. Each is a daemon-side server the runtime
@@ -57,9 +58,12 @@ export type TunnelPayload = z.infer<typeof TunnelPayloadSchema>
 /** What a `listen` reports back, so the daemon logs the path the pod actually serves. */
 export const TunnelListeningSchema = z.object({ socketPath: z.string().min(1) })
 
-/** Which in-pod path each tunnel is served at. Fixed by the runtime image, not by the
- *  daemon's own root, because the daemon's paths mean nothing inside the sandbox. */
-export const SANDBOX_TUNNEL_PATHS: Readonly<Record<TunnelName, string>> = Object.freeze({
-  gitcred: '/run/agentconnect/gitcred.sock',
-  mcp: '/run/agentconnect/mcp.sock'
-})
+/**
+ * Which in-pod path each tunnel is served at. Fixed by the runtime image, not by the daemon's own
+ * root, because the daemon's paths mean nothing inside the sandbox.
+ *
+ * Declared in `sandbox-paths.ts` — the credential helper needs the gitcred path and must not pull
+ * this module's zod schemas into its own bundle — and re-exported here, typed against the enum
+ * above so a name without a path (or a path without a name) fails to compile.
+ */
+export const SANDBOX_TUNNEL_PATHS: Readonly<Record<TunnelName, string>> = SANDBOX_TUNNEL_PATH_SOURCE
