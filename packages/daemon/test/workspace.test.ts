@@ -53,7 +53,12 @@ const {
   sessionWorktreePath,
   sessionWorktreeRoot
 } = await import('../src/workspace/workspace-manager.js')
-const { initGitInjection } = await import('../src/workspace/git-injection.js')
+const { daemonGitCredentialTarget, initGitInjection } = await import('../src/workspace/git-injection.js')
+
+// Made once and reused: `targetFor` is called on every pointer build, so minting a directory
+// inside it would leave one behind per resolution.
+let gitcredRunDirPath: string | undefined
+const gitcredRunDir = (): string => (gitcredRunDirPath ??= mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')))
 
 function fromScratchAgent(path: string): Agent {
   return {
@@ -634,8 +639,7 @@ describe('prepareWorkspaceForActivation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
     const current = githubAppAgent(path)
     initGitInjection({
-      shimPath: '/run/helper.sh',
-      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }),
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })
@@ -673,8 +677,7 @@ describe('prepareWorkspaceForActivation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
     const agent = githubAppAgent(path)
     initGitInjection({
-      shimPath: '/run/helper.sh',
-      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }),
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })
@@ -771,8 +774,7 @@ describe('prepareWorkspaceForActivation', () => {
 describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
   beforeEach(() => {
     initGitInjection({
-      shimPath: '/run/helper.sh',
-      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }),
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })

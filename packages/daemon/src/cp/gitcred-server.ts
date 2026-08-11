@@ -40,6 +40,17 @@ export const GITCRED_CAPABILITY_ENV = 'AC_GITCRED_CAPABILITY'
  *  `.git/config` helper line, which goes stale when an agent is deleted and
  *  recreated under the same name over a surviving checkout. */
 export const GITCRED_AGENT_ENV = 'AC_GITCRED_AGENT'
+/** Where a helper finds the socket, when that is not under this daemon's own root. A helper
+ *  running in a sandbox pod reaches the daemon through the shim's tunnel instead, and the pod's
+ *  filesystem has no daemon root to derive a path from. Non-secret: it is a path, and the
+ *  capability above is what authorizes the request that travels over it. */
+export const GITCRED_SOCKET_ENV = 'AC_GITCRED_SOCKET'
+
+/** The socket a helper should dial: an explicit override, else this daemon's own. */
+export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string {
+  const override = env[GITCRED_SOCKET_ENV]?.trim()
+  return override && override.length > 0 ? override : gitcredSocketPath(root)
+}
 
 export function gitcredSocketPath(root: string): string {
   return join(root, 'run', 'gitcred.sock')

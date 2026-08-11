@@ -88,9 +88,11 @@ import {
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
+  daemonGitCredentialTarget,
   gitCredentialEnv,
   initGitInjection,
   probeGitVersion,
+  sandboxGitCredentialTarget,
   sessionGitEnv,
   sessionGitPolicyEnv
 } from './workspace/git-injection.js'
@@ -2708,9 +2710,16 @@ export class Daemon {
         return gitRepoLabel(ws.gitRepo) ?? undefined
       }
     })
-    initGitInjection({
+    const daemonCredentialTarget = daemonGitCredentialTarget({
       shimPath: writeGitcredShim(root, daemonEntryForShims(root)),
-      runDir: join(root, 'run'),
+      runDir: join(root, 'run')
+    })
+    initGitInjection({
+      // Off the SAME predicate the workspace git runner uses, so the pointers always describe the
+      // filesystem the git that reads them will run in. Derived per call rather than fixed at boot:
+      // a cluster agent's channel comes and goes, and both resolvers follow it together.
+      targetFor: (agentId) =>
+        this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       preWarm: async (agentId, reason) => {
         await this.gitCreds.get(agentId, reason)
