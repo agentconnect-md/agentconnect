@@ -15,6 +15,11 @@ The agent-sandbox CRDs and controllers (agents.x-k8s.io) are a required
 dependency that is not yet vendored by this chart — see deploy/k8s/README.md
 in the repository for the current manual installation steps.
 
+Sharing this cluster with another install? Mark every control namespace so no
+install's operator can write into another's:
+
+  kubectl label namespace {{ .Release.Namespace }} agentconnect.md/control-namespace=''
+
 Onboard an org by applying an AgentConnectOrg into {{ .Release.Namespace }}
 together with its daemon credential Secret in the target namespace.
 

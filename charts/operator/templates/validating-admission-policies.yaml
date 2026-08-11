@@ -1,12 +1,173 @@
-# TODO(chart): the install's ValidatingAdmissionPolicies, rendered from the two
-# install-time constants (operator SA identity, org namespace prefix):
-#   1. Envelope write fence for the operator SA — target namespace must start
-#      with {{ .Values.orgNamespacePrefix }}, never a namespace carrying the
-#      control marker label; required envelope labels present.
-#   2. Secure-sandbox workload baseline for org namespaces (no privileged /
-#      host namespaces / hostPath / SA-token automount; pinned image sources
-#      and runtimeClass), with the audience-scoped projected-token volume as
-#      the single shape-exact exception.
-#   3. Daemon SA Sandbox patches restricted to spec.operatingMode field-wise;
-#      rollout image/annotation writes allowed only for the operator SA.
-# Objects are release-prefixed; each install owns its own copies.
+{{- $operatorSa := printf "system:serviceaccount:%s:%s-operator" .Release.Namespace .Release.Name -}}
+{{- $prefix := .Values.orgNamespacePrefix -}}
+# Both policies are rendered from this install's two constants (operator SA identity,
+# org namespace prefix) and are release-prefixed: every install owns its own copies.
+# TODO(chart): a third fence — daemon SA Sandbox patches restricted to spec.operatingMode,
+# plus pinned image sources / runtimeClass — needs the vendored agent-sandbox schema.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Release.Name }}-ac-envelope-fence
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  # A fence that fails open is not a fence: an unevaluable request is denied.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      # `*/*` covers subresources too, so a status write cannot slip past the prefix check.
+      - apiGroups: ['*']
+        apiVersions: ['*']
+        operations: ['CREATE', 'UPDATE', 'DELETE']
+        resources: ['*/*']
+        scope: '*'
+  matchConditions:
+    # Only this install's operator identity; every other writer is out of scope.
+    - name: operator-identity
+      expression: request.userInfo.username == '{{ $operatorSa }}'
+    # Its own control-namespace objects: the CRs it reconciles and its election Lease.
+    - name: exclude-own-control-objects
+      expression: >-
+        !(request.namespace == '{{ .Release.Namespace }}' && ((request.resource.group == 'agentconnect.md' &&
+        request.resource.resource == 'agentconnectorgs') || (request.resource.group == 'coordination.k8s.io' &&
+        request.resource.resource == 'leases')))
+  variables:
+    - name: isNamespace
+      expression: request.resource.group == '' && request.resource.resource == 'namespaces'
+    # DELETE carries the object in oldObject; CREATE/UPDATE in object.
+    - name: target
+      expression: 'object == null ? oldObject : object'
+    - name: labels
+      expression: 'has(variables.target.metadata.labels) ? variables.target.metadata.labels : {}'
+  validations:
+    - expression: request.namespace == '' || request.namespace.startsWith('{{ $prefix }}')
+      message: this install's operator may only write into namespaces carrying its org namespace prefix
+      reason: Forbidden
+    # Cross-install guard: another environment's control namespace is never a write target,
+    # even if a misconfigured prefix would otherwise match it. Namespace objects are checked
+    # by their own labels below, where namespaceObject is not populated.
+    - expression: >-
+        request.namespace == '' || variables.isNamespace ||
+        !('agentconnect.md/control-namespace' in (has(namespaceObject.metadata.labels) ?
+        namespaceObject.metadata.labels : {}))
+      message: this install's operator may not write into a namespace marked as a control namespace
+      reason: Forbidden
+    - expression: '!variables.isNamespace || variables.target.metadata.name.startsWith(''{{ $prefix }}'')'
+      message: this install's operator may only create, change or delete namespaces carrying its org namespace prefix
+      reason: Forbidden
+    # Envelope labels on the namespaces it stamps — the claim label the operator adopts by,
+    # the org label its list/watch selectors use, and Pod Security enforcement.
+    - expression: >-
+        !variables.isNamespace || object == null || ('agentconnect.md/org' in variables.labels &&
+        'agentconnect.md/org-namespace' in variables.labels &&
+        !('agentconnect.md/control-namespace' in variables.labels) &&
+        ('pod-security.kubernetes.io/enforce' in variables.labels) &&
+        variables.labels['pod-security.kubernetes.io/enforce'] in ['baseline', 'restricted'])
+      message: an org namespace must carry the envelope org labels and a baseline-or-stricter Pod Security level
+      reason: Forbidden
+    # The only cluster-scoped object the envelope owns besides the namespace is the per-org
+    # TokenReview binding (`ac-tokenreview-<targetNamespace>`, packages/operator/src/reconcile/resources.ts).
+    - expression: >-
+        request.namespace != '' || variables.isNamespace || (request.resource.group == 'rbac.authorization.k8s.io' &&
+        request.resource.resource == 'clusterrolebindings' &&
+        variables.target.metadata.name.startsWith('ac-tokenreview-{{ $prefix }}'))
+      message: the only cluster-scoped objects this install's operator may write are its org namespaces and their TokenReview bindings
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Release.Name }}-ac-envelope-fence
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  policyName: {{ .Release.Name }}-ac-envelope-fence
+  validationActions: ['Deny']
+---
+# The workload baseline every pod in one of this install's org namespaces must meet.
+# Pods are the enforcement point rather than their controllers: agent-sandbox creates
+# sandbox pods from a template the operator copied, so a controller-level rule would
+# have to be written once per creating kind and would still miss a direct pod create.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ .Release.Name }}-ac-sandbox-baseline
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      # The ephemeralcontainers subresource carries a full pod object, so the same
+      # validations cover the one path that can add a container after creation.
+      - apiGroups: ['']
+        apiVersions: ['v1']
+        operations: ['CREATE', 'UPDATE']
+        resources: ['pods', 'pods/ephemeralcontainers']
+        scope: Namespaced
+  matchConditions:
+    # The binding selects org namespaces by claim label; this keeps each install to its own.
+    - name: this-installs-org-namespaces
+      expression: request.namespace.startsWith('{{ $prefix }}')
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : []) +
+        (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : [])
+    - name: volumes
+      expression: 'has(object.spec.volumes) ? object.spec.volumes : []'
+    # The daemon supervisor is the one pod in the envelope with a real API identity: it
+    # creates SandboxClaims and reviews shim tokens. Keying on "not the daemon" rather than
+    # on the runtime SA name is deliberate — a pod naming no SA falls back to `default`,
+    # which automounts, and that pod must be caught too. Names: reconcile/resources.ts.
+    - name: isDaemonPod
+      expression: has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'ac-daemon'
+  validations:
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) ||
+        c.securityContext.privileged == false)
+      message: privileged containers are not allowed in an AgentConnect org namespace
+      reason: Forbidden
+    - expression: >-
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: host namespaces are not allowed in an AgentConnect org namespace
+      reason: Forbidden
+    - expression: variables.volumes.all(v, !has(v.hostPath))
+      message: hostPath volumes are not allowed in an AgentConnect org namespace
+      reason: Forbidden
+    - expression: >-
+        variables.isDaemonPod || (has(object.spec.automountServiceAccountToken) &&
+        object.spec.automountServiceAccountToken == false)
+      message: a sandbox pod must set automountServiceAccountToken false
+      reason: Forbidden
+    # The exception the shim handshake depends on, shape-exact: a projected token restricted
+    # to the daemon's audience (SHIM_TOKEN_AUDIENCE, packages/daemon/src/shim/protocol.ts) is
+    # useless anywhere else, so it is the only service-account token a sandbox may carry.
+    - expression: >-
+        variables.isDaemonPod || variables.volumes.all(v, !has(v.projected) || !has(v.projected.sources) ||
+        v.projected.sources.all(s, !has(s.serviceAccountToken) ||
+        s.serviceAccountToken.audience == 'ac-daemon-callback'))
+      message: a sandbox pod may only project a service-account token restricted to the daemon callback audience
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ .Release.Name }}-ac-sandbox-baseline
+  labels:
+    app.kubernetes.io/name: agentconnect-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  policyName: {{ .Release.Name }}-ac-sandbox-baseline
+  validationActions: ['Deny']
+  matchResources:
+    # Org namespaces identify themselves by the claim label the operator stamps.
+    namespaceSelector:
+      matchExpressions:
+        - key: agentconnect.md/org-namespace
+          operator: Exists
