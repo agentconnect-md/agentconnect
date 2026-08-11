@@ -57,6 +57,11 @@ kubectl -n agentconnect create secret generic agentconnect-daemon-config \
 shred -u /tmp/config.json
 
 # 2. Everything else.
+# The controller must accept our label domain before it will create any Sandbox,
+# and it reads that config only at startup.
+kubectl apply -f deploy/k8s/05-label-allowlist.yaml
+kubectl -n agentconnect rollout restart deploy/agent-sandbox-controller
+
 kubectl apply -f deploy/k8s/00-rbac.yaml
 kubectl apply -f deploy/k8s/20-service.yaml
 kubectl apply -f deploy/k8s/40-sandbox-pool.yaml
@@ -84,6 +89,21 @@ Consequences worth knowing:
   than accepting agents it cannot launch.
 - Changing the runtime image is a `40-sandbox-pool.yaml` edit plus a daemon
   restart. There is nothing else to keep in sync.
+
+## Two things the cluster decides, not this repo
+
+**The label allowlist** (`05-label-allowlist.yaml`). Without it the controller
+rejects our claim with `InvalidMetadata` and never creates a Sandbox. It is shared
+config read at controller startup — merge, do not overwrite, and check for running
+sandboxes before the restart.
+
+**The storage class.** `40-sandbox-pool.yaml` pins `standard` (a cluster-wide
+CSI). The cluster default here is `local-path`, which failed with
+`no local path available on node sea-admin` — a local provisioner has no path on
+every node, so the workspace fails to bind wherever the scheduler happens to put
+the pod. Pick a class that provisions cluster-wide; a node-local one also ties the
+sandbox to one node for the volume's life, which a resumable workspace should not
+be.
 
 ## Checking it works
 

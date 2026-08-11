@@ -1,0 +1,20 @@
+# Lets the agent-sandbox controller accept our claim labels.
+#
+# The controller validates `additionalPodMetadata.labels` against an allowlist of label DOMAINS
+# and falls back to `sandbox.users.io` alone when this ConfigMap is absent — so a claim carrying
+# `agentconnect.md/agent` is rejected with `InvalidMetadata` and the Sandbox is never created.
+# Observed exactly that on first apply.
+#
+# The controller reads this file once at STARTUP, so it needs a restart after this is created:
+#
+#   kubectl -n agentconnect rollout restart deploy/agent-sandbox-controller
+#
+# It is shared infrastructure. Check for running sandboxes before restarting it, and merge rather
+# than overwrite if the ConfigMap already exists — another tenant's domain may be in there.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-sandbox-config
+  namespace: agentconnect
+data:
+  allowed-label-domains: agentconnect.md
