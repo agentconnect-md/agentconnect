@@ -2,7 +2,7 @@ import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { AgentConnectOrgSpecSchema, FINALIZER, type AgentConnectOrg } from '../crd/types.js'
 import { newObservations, type ReconcileContext } from './context.js'
 import { reconcileEnvelope, type EnvelopeInputs } from './envelope.js'
-import { reconcileDeletion } from './finalizer.js'
+import { reconcileDeletion, suspendAllSandboxes } from './finalizer.js'
 import { renderGatewayPolicies } from './gateway-limits.js'
 import { reconcileRollout } from './rollout.js'
 import { observeWorkloads, writeStatus } from './status.js'
@@ -33,6 +33,8 @@ export async function reconcile(ctx: ReconcileContext, name: string): Promise<vo
   }
   const input: EnvelopeInputs = { orgName: name, spec: parsed.data }
   await reconcileEnvelope(ctx, input, obs)
+  // suspend also quiesces already-bound Sandboxes, not just the deployment and pools.
+  if (input.spec.suspend && obs.namespaceReady) await suspendAllSandboxes(ctx, input.spec.targetNamespace)
   await reconcileRollout(ctx, input, obs)
   await renderGatewayPolicies(ctx, input, obs)
   if (obs.namespaceReady) await observeWorkloads(ctx, input, obs)

@@ -1,7 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
+import { K8sHttp } from '@agentconnect.md/k8s-client'
+import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/testing'
+import { loadConfig } from '../config.js'
+import { AgentConnectOrgApi } from '../crd/api.js'
 import type { AgentConnectOrg, Condition } from '../crd/types.js'
 import { newObservations, type Observations } from './context.js'
-import { buildStatus, setCondition } from './status.js'
+import { buildStatus, setCondition, writeStatus } from './status.js'
+
+afterEach(closeFakeApiServers)
 
 const NOW = '2026-01-01T00:00:00.000Z'
 const LATER = '2026-01-02T00:00:00.000Z'
@@ -81,6 +87,54 @@ describe('buildStatus', () => {
     expect(byType(status, 'Progressing')?.status).toBe('True')
     expect(byType(status, 'Progressing')?.reason).toBe('RuntimeRollout')
     expect(status.rollout?.pending).toEqual(['sb-1'])
+  })
+})
+
+describe('writeStatus', () => {
+  it('nulls every managed field this pass did not observe so merge-patch cannot go stale', async () => {
+    let patched: { status?: Record<string, unknown> } | undefined
+    const { config: cluster } = await fakeApiServer(({ method, body }) => {
+      if (method === 'PATCH') patched = JSON.parse(body) as typeof patched
+      return { json: {} }
+    })
+    const http = new K8sHttp(cluster)
+    const ctx = {
+      http,
+      orgApi: new AgentConnectOrgApi(http, cluster.namespace),
+      config: loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-', AC_TOKENREVIEW_CLUSTERROLE: 'x' }),
+      controlNamespace: cluster.namespace,
+      log: {}
+    }
+    // A pass that lost the namespace claim: previous status carried namespace + summaries.
+    const org = orgOf({ status: { namespace: 'test-ac-org-acme', daemon: { ready: true } } })
+    const obs = newObservations()
+    obs.degraded = { reason: 'NamespaceClaimConflict', message: 'refusing to adopt' }
+    await writeStatus(ctx, org, obs, NOW)
+    expect(patched?.status?.namespace).toBeNull()
+    expect(patched?.status?.daemon).toBeNull()
+    expect(patched?.status?.sandboxes).toBeNull()
+    expect(patched?.status?.rollout).toBeNull()
+    expect(patched?.status?.conditions).toBeDefined()
+  })
+
+  it('keeps observed fields as values, not nulls', async () => {
+    let patched: { status?: Record<string, unknown> } | undefined
+    const { config: cluster } = await fakeApiServer(({ method, body }) => {
+      if (method === 'PATCH') patched = JSON.parse(body) as typeof patched
+      return { json: {} }
+    })
+    const http = new K8sHttp(cluster)
+    const ctx = {
+      http,
+      orgApi: new AgentConnectOrgApi(http, cluster.namespace),
+      config: loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-', AC_TOKENREVIEW_CLUSTERROLE: 'x' }),
+      controlNamespace: cluster.namespace,
+      log: {}
+    }
+    await writeStatus(ctx, orgOf(), healthyObs(), NOW)
+    expect(patched?.status?.namespace).toBe('test-ac-org-acme')
+    expect(patched?.status?.daemon).toEqual({ ready: true, image: 'ghcr.io/example/daemon:v1' })
+    expect(patched?.status?.pools).toBeNull()
   })
 })
 

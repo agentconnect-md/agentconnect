@@ -142,7 +142,10 @@ export function buildStatus(org: AgentConnectOrg, obs: Observations, nowIso: str
   }
 }
 
-/** Publish status; a finished rollout is cleared with an explicit merge-patch null. */
+/** The operator-owned optional fields; whatever this pass did not observe is nulled, not left stale. */
+const MANAGED_STATUS_FIELDS = ['namespace', 'daemon', 'sandboxes', 'pools', 'rollout'] as const
+
+/** Publish status with replacement semantics: merge-patch plus explicit nulls for absent fields. */
 export async function writeStatus(
   ctx: ReconcileContext,
   org: AgentConnectOrg,
@@ -151,7 +154,9 @@ export async function writeStatus(
 ): Promise<void> {
   const name = org.metadata?.name
   if (!name) return
-  const status: Omit<AgentConnectOrgStatus, 'rollout'> & { rollout?: unknown } = buildStatus(org, obs, nowIso)
-  if (!obs.rollout && org.status?.rollout) status.rollout = null
+  const status: Record<string, unknown> = { ...buildStatus(org, obs, nowIso) }
+  for (const field of MANAGED_STATUS_FIELDS) {
+    if (status[field] === undefined) status[field] = null
+  }
   await ctx.orgApi.patchStatus(name, status as AgentConnectOrgStatus)
 }

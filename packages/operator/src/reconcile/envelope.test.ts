@@ -223,6 +223,27 @@ describe('reconcileEnvelope', () => {
     expect(byPath(writes, '/deployments/ac-daemon')).toBeDefined()
   })
 
+  it('prunes operator-named tier objects that left the desired state', async () => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route)
+    gets.set(masterPath(ctx.controlNamespace), MASTER_TEMPLATE)
+    const leftovers = {
+      items: [
+        { metadata: { name: 'ac-runtime-old' } },
+        { metadata: { name: 'ac-runtime-std' } },
+        // Not operator-named: never a prune candidate even when labeled.
+        { metadata: { name: 'custom-thing' } }
+      ]
+    }
+    gets.set(groupPath(SANDBOX_EXTENSIONS_GROUP, NS, 'sandboxwarmpools'), leftovers)
+    gets.set(groupPath(SANDBOX_EXTENSIONS_GROUP, NS, 'sandboxtemplates'), leftovers)
+    await reconcileEnvelope(ctx, inputOf(), newObservations())
+    const deletes = writes.filter((write) => write.method === 'DELETE').map((write) => write.path)
+    expect(deletes).toContain(groupPath(SANDBOX_EXTENSIONS_GROUP, NS, 'sandboxwarmpools', 'ac-runtime-old'))
+    expect(deletes).toContain(groupPath(SANDBOX_EXTENSIONS_GROUP, NS, 'sandboxtemplates', 'ac-runtime-old'))
+    expect(deletes.some((path) => path.endsWith('/ac-runtime-std') || path.endsWith('/custom-thing'))).toBe(false)
+  })
+
   it('locked egress restricts the sandbox template to daemon and DNS', async () => {
     const { gets, writes, route } = recorder()
     const ctx = await contextFor(route)

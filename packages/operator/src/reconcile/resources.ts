@@ -72,9 +72,13 @@ export async function applyObject<T = K8sResource>(http: K8sHttp, path: string, 
 }
 
 /** GET that reads 404 as null — the reconcile "does it exist" primitive. */
-export async function getOrNull<T>(http: K8sHttp, path: string): Promise<T | null> {
+export async function getOrNull<T>(
+  http: K8sHttp,
+  path: string,
+  query?: Record<string, string | number | boolean | undefined>
+): Promise<T | null> {
   try {
-    return await http.json<T>({ method: 'GET', path })
+    return await http.json<T>({ method: 'GET', path, query })
   } catch (error) {
     if (error instanceof K8sApiError && error.isNotFound) return null
     throw error

@@ -16,34 +16,15 @@ import {
   type K8sResource
 } from './resources.js'
 
-/** The deletion path only touches namespaces this install owns; anything else is skipped, not fixed. */
-function ownedNamespace(ctx: ReconcileContext, org: AgentConnectOrg): string | undefined {
-  const ns = org.spec?.targetNamespace
-  if (!ns || !ns.startsWith(ctx.config.orgNamespacePrefix)) return undefined
-  return ns
-}
-
-/** Suspend the daemon and runtime Sandboxes so nothing is mid-turn when teardown starts. */
-export async function quiesceDaemon(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
-  const ns = ownedNamespace(ctx, org)
-  if (!ns) return
-  try {
-    await ctx.http.json({
-      method: 'PATCH',
-      path: groupPath('apps/v1', ns, 'deployments', DAEMON_NAME),
-      contentType: 'application/merge-patch+json',
-      body: { spec: { replicas: 0 } }
-    })
-  } catch {
-    // Already gone or never created — teardown continues either way.
-  }
+/** Suspend every Sandbox in the namespace; shared by teardown and spec.suspend. */
+export async function suspendAllSandboxes(ctx: ReconcileContext, ns: string): Promise<void> {
   const sandboxes = await getOrNull<{ items?: Array<{ metadata?: { name?: string } }> }>(
     ctx.http,
     groupPath(SANDBOX_GROUP, ns, 'sandboxes')
   )
   for (const sandbox of sandboxes?.items ?? []) {
     if (!sandbox.metadata?.name) continue
-    // Unguarded on purpose: during org deletion there is no wake-up worth losing the race to.
+    // Unguarded on purpose: a quiesce outranks any concurrent wake-up.
     try {
       await ctx.http.json({
         method: 'PATCH',
@@ -57,10 +38,23 @@ export async function quiesceDaemon(ctx: ReconcileContext, org: AgentConnectOrg)
   }
 }
 
+/** Suspend the daemon and runtime Sandboxes so nothing is mid-turn when teardown starts. */
+export async function quiesceDaemon(ctx: ReconcileContext, ns: string): Promise<void> {
+  try {
+    await ctx.http.json({
+      method: 'PATCH',
+      path: groupPath('apps/v1', ns, 'deployments', DAEMON_NAME),
+      contentType: 'application/merge-patch+json',
+      body: { spec: { replicas: 0 } }
+    })
+  } catch {
+    // Already gone or never created — teardown continues either way.
+  }
+  await suspendAllSandboxes(ctx, ns)
+}
+
 /** Delete the org's workloads (Deployment, Service, PVC, sandbox stack) ahead of the namespace. */
-export async function deleteWorkloads(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
-  const ns = ownedNamespace(ctx, org)
-  if (!ns) return
+export async function deleteWorkloads(ctx: ReconcileContext, ns: string): Promise<void> {
   await deleteIgnoreMissing(ctx.http, groupPath('apps/v1', ns, 'deployments', DAEMON_NAME))
   await deleteIgnoreMissing(ctx.http, corePath(ns, 'services', SHIM_SERVICE_NAME))
   await deleteIgnoreMissing(ctx.http, corePath(ns, 'persistentvolumeclaims', DAEMON_PVC_NAME))
@@ -78,17 +72,8 @@ export async function archiveOrg(ctx: ReconcileContext, org: AgentConnectOrg): P
 }
 
 /** Delete the org namespace and the cluster-scoped bindings no ownerReference covers. */
-export async function deleteNamespaceAndClusterBindings(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
-  const ns = ownedNamespace(ctx, org)
-  if (!ns) return
+export async function deleteNamespaceAndClusterBindings(ctx: ReconcileContext, ns: string): Promise<void> {
   await deleteIgnoreMissing(ctx.http, clusterRoleBindingPath(tokenReviewBindingName(ns)))
-  const namespace = await getOrNull<K8sResource>(ctx.http, namespacePath(ns))
-  if (!namespace) return
-  // Only a namespace carrying this org's claim label is ours to delete.
-  if (namespace.metadata.labels?.[NAMESPACE_CLAIM_LABEL] !== org.metadata?.name) {
-    ctx.log.warn?.(`namespace ${ns} is not claimed by ${org.metadata?.name ?? 'unknown'}; leaving it in place`)
-    return
-  }
   await deleteIgnoreMissing(ctx.http, namespacePath(ns))
 }
 
@@ -100,11 +85,35 @@ export async function removeFinalizer(ctx: ReconcileContext, org: AgentConnectOr
   await ctx.orgApi.updateFinalizer(name, FINALIZER, 'remove')
 }
 
+/**
+ * Prove the namespace is ours BEFORE any teardown write: prefix-owned AND
+ * either absent (leftover cleanup) or carrying this org's claim label. A CR
+ * that degraded on NamespaceClaimConflict must not damage the claimant's
+ * envelope on its way out.
+ */
+async function teardownScope(
+  ctx: ReconcileContext,
+  org: AgentConnectOrg
+): Promise<{ ns: string; namespaceExists: boolean } | undefined> {
+  const ns = org.spec?.targetNamespace
+  if (!ns || !ns.startsWith(ctx.config.orgNamespacePrefix)) return undefined
+  const namespace = await getOrNull<K8sResource>(ctx.http, namespacePath(ns))
+  if (!namespace) return { ns, namespaceExists: false }
+  if (namespace.metadata.labels?.[NAMESPACE_CLAIM_LABEL] !== org.metadata?.name) {
+    ctx.log.warn?.(`namespace ${ns} is not claimed by ${org.metadata?.name ?? 'unknown'}; skipping teardown`)
+    return undefined
+  }
+  return { ns, namespaceExists: true }
+}
+
 /** The envelope deletion order; steps must be idempotent — deletion reconciles can repeat. */
 export async function reconcileDeletion(ctx: ReconcileContext, org: AgentConnectOrg): Promise<void> {
-  await quiesceDaemon(ctx, org)
-  await deleteWorkloads(ctx, org)
-  await archiveOrg(ctx, org)
-  await deleteNamespaceAndClusterBindings(ctx, org)
+  const scope = await teardownScope(ctx, org)
+  if (scope?.namespaceExists) {
+    await quiesceDaemon(ctx, scope.ns)
+    await deleteWorkloads(ctx, scope.ns)
+    await archiveOrg(ctx, org)
+  }
+  if (scope) await deleteNamespaceAndClusterBindings(ctx, scope.ns)
   await removeFinalizer(ctx, org)
 }

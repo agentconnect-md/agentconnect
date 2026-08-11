@@ -98,11 +98,15 @@ describe('reconcileDeletion', () => {
     expect((last.body as { metadata: { finalizers: string[] } }).metadata.finalizers).toEqual([])
   })
 
-  it('leaves a namespace claimed by another org in place', async () => {
-    const recorded = await run({ org: orgOf(), namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'someone-else' } })
-    const deletes = recorded.filter((entry) => entry.method === 'DELETE').map((entry) => entry.path)
-    expect(deletes).not.toContain(namespacePath(NS))
-    expect(recorded.some((entry) => entry.path.includes('/agentconnectorgs/'))).toBe(true)
+  it('writes nothing into a namespace claimed by another org, not even quiesce', async () => {
+    const recorded = await run({
+      org: orgOf(),
+      namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'someone-else' },
+      sandboxes: ['their-sandbox']
+    })
+    // The claimant's envelope survives untouched: the only write is our own finalizer removal.
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].path.includes('/agentconnectorgs/')).toBe(true)
   })
 
   it('touches nothing outside the install prefix except the finalizer', async () => {

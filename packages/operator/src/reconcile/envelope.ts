@@ -7,6 +7,7 @@ import {
 import type { Observations, ReconcileContext } from './context.js'
 import {
   APP_LABEL_KEY,
+  RUNTIME_TIER_PREFIX,
   DAEMON_EGRESS_POLICY_NAME,
   DAEMON_INGRESS_POLICY_NAME,
   DAEMON_NAME,
@@ -329,6 +330,26 @@ export async function ensureSandboxTemplates(
         sandboxTemplateRef: { name }
       }
     })
+  }
+  await pruneRemovedTiers(ctx, input)
+}
+
+/** The CR is the sole desired-state carrier: tiers removed from spec lose their pool and template. */
+async function pruneRemovedTiers(ctx: ReconcileContext, input: EnvelopeInputs): Promise<void> {
+  const ns = input.spec.targetNamespace
+  const desired = new Set(input.spec.runtime.tiers.map((tier) => runtimeTierName(tier.name)))
+  for (const plural of ['sandboxwarmpools', 'sandboxtemplates']) {
+    const list = await getOrNull<{ items?: Array<{ metadata?: { name?: string } }> }>(
+      ctx.http,
+      groupPath(SANDBOX_EXTENSIONS_GROUP, ns, plural),
+      { labelSelector: `${ORG_LABEL}=${input.orgName}` }
+    )
+    for (const item of list?.items ?? []) {
+      const name = item.metadata?.name
+      // Only operator-named tier objects are candidates; anything else is not ours to prune.
+      if (!name || !name.startsWith(RUNTIME_TIER_PREFIX) || desired.has(name)) continue
+      await deleteIgnoreMissing(ctx.http, groupPath(SANDBOX_EXTENSIONS_GROUP, ns, plural, name))
+    }
   }
 }
 
