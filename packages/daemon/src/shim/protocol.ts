@@ -35,7 +35,11 @@ export const ShimCapabilitySchema = z.enum([
   'tunnel',
   /** Run the ACP runtime and relay its stdio as a stream (its own channel: ACP is already
    *  a complete protocol, and reinterpreting it here would add a second place to break). */
-  'acp'
+  'acp',
+  /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
+   *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
+   *  configuration is a claim about an image it never opened. */
+  'probe'
 ])
 export type ShimCapability = z.infer<typeof ShimCapabilitySchema>
 
