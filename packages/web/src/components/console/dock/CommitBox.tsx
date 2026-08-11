@@ -3,7 +3,7 @@
 // The Git panel's commit box (§3.3, §5.1): a message, a wand that drafts one from the staged diff on the AGENT's own runtime, "Commit N files", and commit-and-push beside it.
 // Every refusal here is DATA the reader can act on — nothing staged, a blank message, no registered commit identity, a diverged branch, a runtime that declines to write a message. The box reports them in place and keeps the draft, because a message a reader wrote (or paid a model for) must survive the answer.
 
-import { useState, useSyncExternalStore } from 'react'
+import { useSyncExternalStore } from 'react'
 import { Spinner } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { gitWriteFailureText, gitWriteRequestFailureText } from '@/components/console/dock/git-write'
@@ -31,57 +31,63 @@ interface Outcome {
   text: string
 }
 
-/** Drafts by checkout, kept ABOVE the panel's settle-time unmount so switching scope and coming
- *  back does not silently discard a message the reader typed — or paid a model pass for. Bounded:
- *  a reader who visits many checkouts should not grow this without limit, and the oldest draft is
- *  the one least likely to still be wanted. */
-const COMMIT_DRAFTS = new Map<string, string>()
-const COMMIT_DRAFTS_MAX = 20
-
-/** Clear every remembered draft. Module state outlives a test's render, so a suite that does not
- *  reset it would have cases reading each other's drafts. */
-export function resetCommitDrafts(): void {
-  COMMIT_DRAFTS.clear()
-  COMMIT_BUSY.clear()
-  for (const listener of draftListeners) listener()
+/**
+ * Everything about one checkout that has to outlive this component: the draft, what is in flight,
+ * and the last outcome. All three live HERE and nowhere else.
+ *
+ * The panel above unmounts the box while a newly selected scope's status settles, so any of these
+ * held in component state is lost across `A → B → A` — and a request that resolves after the switch
+ * calls the setter of an instance that no longer exists. Four review rounds found the same class of
+ * bug three times, once per value, each time in a mechanism written to keep component state and a
+ * module store in step. There is no second copy now, and the record's SHAPE is what keeps the next
+ * per-checkout value from being added to the wrong place.
+ *
+ * Bounded, because a reader who visits many checkouts should not grow this without limit — but never
+ * evicting a scope with a request in flight, whose outcome nothing else is holding.
+ */
+interface CommitScopeState {
+  draft: string
+  busy: Busy
+  outcome: Outcome | null
 }
 
-/** Boxes currently watching the store. The store is the SINGLE source of truth for a draft, and
- *  this is what lets a late answer reach a box that has since remounted: three attempts at keeping
- *  component state and the store in step each left a window open (a switch back before the request
- *  resolved wrote the map and then called the setter of an already-unmounted instance), so there is
- *  no second copy to fall out of step any more. */
-const draftListeners = new Set<() => void>()
+const EMPTY_SCOPE: CommitScopeState = { draft: '', busy: null, outcome: null }
+const COMMIT_SCOPES = new Map<string, CommitScopeState>()
+const COMMIT_SCOPES_MAX = 20
+const scopeListeners = new Set<() => void>()
 
-/** What is in flight FOR EACH checkout, module-level for the same reason the draft is: the panel
- *  unmounts the box while a newly selected scope settles, so a fresh instance would start idle while
- *  the previous one's request is still running — with the wand and the commit button enabled, so a
- *  second click bills another model pass or attempts a second commit. Written synchronously before
- *  any await, which is also what makes it the re-entry guard for two clicks in one task. */
-const COMMIT_BUSY = new Map<string, Busy>()
-
-function setBusyFor(scope: string, busy: Busy): void {
-  if (busy === null) COMMIT_BUSY.delete(scope)
-  else COMMIT_BUSY.set(scope, busy)
-  for (const listener of draftListeners) listener()
+function subscribeToScopes(listener: () => void): () => void {
+  scopeListeners.add(listener)
+  return () => scopeListeners.delete(listener)
 }
 
-function subscribeToDrafts(listener: () => void): () => void {
-  draftListeners.add(listener)
-  return () => draftListeners.delete(listener)
+/** One checkout's state. The same object identity while nothing about it changes, which is what
+ *  `useSyncExternalStore` requires of a snapshot. */
+function readScope(scope: string): CommitScopeState {
+  return COMMIT_SCOPES.get(scope) ?? EMPTY_SCOPE
 }
 
-function rememberDraft(scope: string, text: string): void {
-  COMMIT_DRAFTS.delete(scope)
-  if (text.trim() !== '') {
-    COMMIT_DRAFTS.set(scope, text)
-    while (COMMIT_DRAFTS.size > COMMIT_DRAFTS_MAX) {
-      const oldest = COMMIT_DRAFTS.keys().next().value
-      if (oldest === undefined) break
-      COMMIT_DRAFTS.delete(oldest)
+function writeScope(scope: string, patch: Partial<CommitScopeState>): void {
+  const next = { ...readScope(scope), ...patch }
+  if (next.draft === '' && next.busy === null && next.outcome === null) COMMIT_SCOPES.delete(scope)
+  else {
+    // Re-inserted so the map's own order is least-recently-written first.
+    COMMIT_SCOPES.delete(scope)
+    COMMIT_SCOPES.set(scope, next)
+    for (const key of [...COMMIT_SCOPES.keys()]) {
+      if (COMMIT_SCOPES.size <= COMMIT_SCOPES_MAX) break
+      if (COMMIT_SCOPES.get(key)?.busy !== null) continue
+      COMMIT_SCOPES.delete(key)
     }
   }
-  for (const listener of draftListeners) listener()
+  for (const listener of scopeListeners) listener()
+}
+
+/** Forget every checkout. Module state outlives a test's render, so a suite that does not reset it
+ *  would have cases reading each other's drafts. */
+export function resetCommitDrafts(): void {
+  COMMIT_SCOPES.clear()
+  for (const listener of scopeListeners) listener()
 }
 
 export function CommitBox({
@@ -111,23 +117,13 @@ export function CommitBox({
   // the map before the answer landed, and the completion then wrote the map and called the setter of
   // an instance that no longer existed. With one source of truth there is nothing to fall out of step.
   const draftScope = `${agentId}\n${sessionId ?? ''}`
-  const message = useSyncExternalStore(
-    subscribeToDrafts,
-    () => COMMIT_DRAFTS.get(draftScope) ?? '',
-    () => ''
+  const state = useSyncExternalStore(
+    subscribeToScopes,
+    () => readScope(draftScope),
+    () => EMPTY_SCOPE
   )
-  const setMessage = (text: string) => rememberDraft(draftScope, text)
-
-  // Read from the same store as the draft, so a box that remounts mid-request comes back BUSY rather
-  // than idle-with-enabled-controls. It is also the re-entry latch a ref used to be: `setBusyFor`
-  // writes synchronously before any await, so two clicks dispatched in one task see it.
-  const busy = useSyncExternalStore(
-    subscribeToDrafts,
-    () => COMMIT_BUSY.get(draftScope) ?? null,
-    () => null
-  )
-  const setBusy = (next: Busy) => setBusyFor(draftScope, next)
-  const [outcome, setOutcome] = useState<Outcome | null>(null)
+  const { draft: message, busy, outcome } = state
+  const setMessage = (text: string) => writeScope(draftScope, { draft: text })
   const scope = sessionId ? { sessionId } : {}
 
   const nothingStaged = stagedCount === 0
@@ -135,26 +131,25 @@ export function CommitBox({
 
   // The wand (§5.1). Explicit, never automatic: the pass runs on the agent's runtime and costs its tokens, so nothing here prefetches a draft.
   const draft = async () => {
-    if (COMMIT_BUSY.get(draftScope) || nothingStaged) return
-    setBusy('draft')
-    // The checkout this request is FOR. A completion must never land on whichever scope happens to be current when it returns.
+    if (readScope(draftScope).busy || nothingStaged) return
+    // The checkout this request is FOR. A completion must never land on whichever scope happens to be
+    // current when it returns, and the previous outcome is cleared SYNCHRONOUSLY so a stale refusal
+    // cannot sit under a running spinner.
     const asked = draftScope
-    setOutcome(null)
+    writeScope(asked, { busy: 'draft', outcome: null })
     try {
       const rep = await draftWorkspaceCommitMessage(agentId, scope)
       // `ok:false` is the runtime's own answer — a prose reply, a decline, a budget it ran out of — so its `detail` is what the reader needs, not a generic failure.
       if (rep.ok && rep.message) {
-        // Written to the durable store for the scope it was ASKED for, not only into state: a reader
-        // who switched checkout while the pass was running has unmounted this box, so a `setMessage`
-        // alone is dropped by React and the paid answer is gone. The store is what they come back to.
-        rememberDraft(asked, rep.message)
-        setMessage(rep.message)
-      } else setOutcome({ ok: false, text: gitWriteFailureText(null, rep.detail) })
+        // Written for the scope it was ASKED for: the reader may have switched checkout while the
+        // pass ran, and this box may be a different instance — or none.
+        writeScope(asked, { draft: rep.message })
+      } else writeScope(asked, { outcome: { ok: false, text: gitWriteFailureText(null, rep.detail) } })
     } catch (e) {
-      setOutcome({ ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) })
+      writeScope(asked, { outcome: { ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) } })
     } finally {
       // Cleared for the scope the request was ISSUED for, which may no longer be the one on screen.
-      setBusyFor(asked, null)
+      writeScope(asked, { busy: null })
     }
   }
 
@@ -169,41 +164,40 @@ export function CommitBox({
       : { ok: false, text: gitWriteFailureText(rep.reason, rep.detail) }
 
   const commit = async (thenPush: boolean) => {
-    if (COMMIT_BUSY.get(draftScope) || nothingStaged || blank) return
-    setBusy(thenPush ? 'push' : 'commit')
-    // The checkout this request is FOR. A completion must never land on whichever scope happens to be current when it returns.
+    if (readScope(draftScope).busy || nothingStaged || blank) return
     const asked = draftScope
-    setOutcome(null)
+    writeScope(asked, { busy: thenPush ? 'push' : 'commit', outcome: null })
+    writeScope(asked, { outcome: null })
     try {
       const rep = await commitWorkspace(agentId, { message, ...scope })
       if (!rep.ok) {
-        setOutcome(commitOutcome(rep))
+        writeScope(asked, { outcome: commitOutcome(rep) })
         return
       }
       // The draft is spent the moment it becomes a commit; keeping it would offer to commit the same
-      // message twice. Cleared in the durable store too, and for the scope the commit was made
-      // against: if the reader switched away while it was in flight, the unmount parked the OLD text
-      // and returning would hand back a message that is already a commit.
-      rememberDraft(asked, '')
-      setMessage('')
+      // message twice — and for the scope the commit was made against, since the reader may have
+      // switched away while it was in flight.
+      writeScope(asked, { draft: '' })
       onWrote()
       if (!thenPush) {
-        setOutcome(commitOutcome(rep))
+        writeScope(asked, { outcome: commitOutcome(rep) })
         return
       }
       const pushed = await pushWorkspace(agentId, scope)
       // Both halves, because the commit LANDED even when the push did not — a bare "diverged" would read as "nothing happened".
-      setOutcome({
-        ok: pushed.ok,
-        text: `${commitOutcome(rep).text} ${pushOutcome(pushed).text}`
+      writeScope(asked, {
+        outcome: {
+          ok: pushed.ok,
+          text: `${commitOutcome(rep).text} ${pushOutcome(pushed).text}`
+        }
       })
       // Only a push that LANDED moved anything the caller reads (the pushed markers, the ahead count); a rejected one changed nothing, and re-reading for it would be a round trip that reports the same tree.
       if (pushed.ok) onWrote()
     } catch (e) {
-      setOutcome({ ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) })
+      writeScope(asked, { outcome: { ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) } })
     } finally {
       // Cleared for the scope the request was ISSUED for, which may no longer be the one on screen.
-      setBusyFor(asked, null)
+      writeScope(asked, { busy: null })
     }
   }
 

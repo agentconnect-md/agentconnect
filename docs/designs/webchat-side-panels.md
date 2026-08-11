@@ -719,10 +719,13 @@ Known M3 follow-ups:
 - The write wiring in `SessionDetailView` was reconstructed after being lost to a stray
   `git checkout` during review; two of its three parts were caught by existing tests and the third
   (keeping header focus when the viewer closes) is still **unpinned**.
-- The commit draft AND its in-flight latch both have ONE source of truth: module-level stores the box
-  reads through `useSyncExternalStore`, with no copy in component state. The latch matters for the
-  same reason the draft does — a box the panel remounts mid-request would otherwise come back idle
-  with its controls enabled, and a second click bills another model pass. Three earlier attempts coordinated the two
+- `CommitBox` holds **no component state at all**. Everything per checkout — the draft, what is in
+  flight, and the last outcome — lives in one module-level record read through `useSyncExternalStore`.
+  The panel above unmounts the box while a newly selected scope settles, so any of the three held in
+  component state is lost across `A → B → A`, and a request resolving after the switch calls the
+  setter of an instance that no longer exists. Review found that same bug once per value across four
+  rounds, every time inside a mechanism written to keep component state and a store in step. The
+  record's SHAPE is the guard: a new per-checkout value goes in it, not beside it. Three earlier attempts coordinated the two
   and each left a window open, the last being `A → B → A → resolve` — the remounted box read the store
   before the answer landed and the completion then called an unmounted instance's setter. If a future
   change reintroduces component state here, that class of bug comes back with it.

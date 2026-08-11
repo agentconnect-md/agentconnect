@@ -590,6 +590,32 @@ describe('GitPanel — staging', () => {
     expect(rowPaths('staged')).toEqual(['fresh.ts'])
   })
 
+  it('shows a refusal to the box that is mounted when it lands, not to the one that asked', async () => {
+    // The dangerous shape: the spinner is shared so it clears, but a refusal held in component state
+    // reaches an unmounted instance — so the live box says nothing, and the reader retries a paid pass
+    // without knowing the first one already declined.
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    let release: (() => void) | undefined
+    vi.mocked(draftWorkspaceCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: false, message: null, detail: 'The runtime ran out of budget.' })
+        }) as ReturnType<typeof draftWorkspaceCommitMessage>
+    )
+    await render({ canWrite: true })
+    await click(container?.querySelector<HTMLElement>('[data-commit-draft]') ?? undefined, 'wand')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+
+    expect(container?.querySelector('[data-commit-outcome]')?.textContent ?? '').toContain('ran out of budget')
+    // And the wand is pressable again, so the reader can retry KNOWING the first pass failed.
+    expect(container?.querySelector<HTMLButtonElement>('[data-commit-draft]')?.disabled).toBe(false)
+  })
+
   it('comes back BUSY after a remount, so a second click cannot bill a second model pass', async () => {
     // `busy` used to be component state, so the box the panel remounts for the same checkout started
     // idle while the previous instance's pass was still running — with the wand enabled.
