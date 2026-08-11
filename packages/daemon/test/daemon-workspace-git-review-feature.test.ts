@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WORKSPACE_GIT_REVIEW_FEATURE } from '@agentconnect.md/protocol'
+import {
+  WORKSPACE_GIT_MESSAGE_FEATURE,
+  WORKSPACE_GIT_REVIEW_FEATURE,
+  WORKSPACE_GIT_WRITE_FEATURE
+} from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 
 // The CP refuses to send `workspace/gitdiff` / `workspace/gitlog` to a daemon that
@@ -39,8 +43,8 @@ function scaffold(): string {
   return root
 }
 
-describe('registrationFeatures — workspace-git-review-v1', () => {
-  it('advertises the git review reads unconditionally (they are daemon code, not a runtime probe)', async () => {
+describe('registrationFeatures — workspace git review + write + AI message', () => {
+  it('advertises the git reads, writes AND the message pass unconditionally (daemon code, not a runtime probe)', async () => {
     const daemon = new Daemon({
       root: scaffold(),
       hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never
@@ -49,5 +53,11 @@ describe('registrationFeatures — workspace-git-review-v1', () => {
     const features = (daemon as never as Record<string, any>).registrationFeatures() as string[]
     await daemon.stop().catch(() => {})
     expect(features).toContain(WORKSPACE_GIT_REVIEW_FEATURE)
+    // Same reasoning for the writes: without the marker the CP must refuse to send the frame, and
+    // the console renders the stage/commit controls as absent rather than inert.
+    expect(features).toContain(WORKSPACE_GIT_WRITE_FEATURE)
+    // The wand is gated separately: it is not a write, and whether the agent's RUNTIME can actually
+    // draft a message is data the pass reports — not something a register-time flag can promise.
+    expect(features).toContain(WORKSPACE_GIT_MESSAGE_FEATURE)
   }, 20_000)
 })

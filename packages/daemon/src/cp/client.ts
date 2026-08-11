@@ -41,6 +41,11 @@ import type {
   WorkspaceGitDiffReq,
   WorkspaceGitLogReq,
   WorkspaceGitPullReq,
+  WorkspaceGitStageReq,
+  WorkspaceGitCommitReq,
+  WorkspaceGitPushReq,
+  WorkspaceGitMessageReq,
+  WorkspaceGitMessageResult,
   GitCredRequest,
   GitCredGrant,
   ChannelAgentsReq,
@@ -246,6 +251,9 @@ export class CpClient {
   // register value, refreshed by `capabilities/update`). Serialized for the
   // change check in updateCapabilities(); reset on each register.
   private lastSentCapabilities?: string
+  /** In-flight commit-message passes by REQ id, so a retransmit of the same REQ joins the pass it
+   *  already started instead of running a second model turn (see the `workspace/gitmessage` case). */
+  private gitMessageInflight = new Map<string, Promise<WorkspaceGitMessageResult>>()
 
   constructor(private readonly deps: CpClientDeps) {
     this.correlator = new ReqRep<AnyFrame>(deps.clock, ACK_TIMEOUT_MS)
@@ -1342,6 +1350,56 @@ export class CpClient {
           .pull((frame.payload as WorkspaceGitPullReq).agentId)
           .then((result) => this.reply(frame, 'workspace/gitpull/result', result))
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitpull', err))
+        return
+      }
+      case 'workspace/gitstage': {
+        // Console staging — the REP is the FRESH status, so the panel never re-polls its own action.
+        this.deps.workspaceGit
+          .stage(frame.payload as WorkspaceGitStageReq)
+          .then((status) => this.reply(frame, 'workspace/gitstage/result', status))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitstage', err))
+        return
+      }
+      case 'workspace/gitunstage': {
+        this.deps.workspaceGit
+          .unstage(frame.payload as WorkspaceGitStageReq)
+          .then((status) => this.reply(frame, 'workspace/gitunstage/result', status))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitunstage', err))
+        return
+      }
+      case 'workspace/gitcommit': {
+        // Nothing staged / no registered identity / a git refusal are all results, not errors.
+        this.deps.workspaceGit
+          .commit(frame.payload as WorkspaceGitCommitReq)
+          .then((result) => this.reply(frame, 'workspace/gitcommit/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitcommit', err))
+        return
+      }
+      case 'workspace/gitpush': {
+        // A diverged branch, no upstream, a detached HEAD and a remote rejection are all results.
+        this.deps.workspaceGit
+          .push(frame.payload as WorkspaceGitPushReq)
+          .then((result) => this.reply(frame, 'workspace/gitpush/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitpush', err))
+        return
+      }
+      case 'workspace/gitmessage': {
+        // The AI commit-message draft: a bounded model turn on THIS daemon's runtime. Nothing staged,
+        // a runtime that declines and a timeout are all results, not errors.
+        //
+        // Retransmit-joined, and this is the only frame that needs it: the correlator re-sends the
+        // IDENTICAL bytes (same id) when a REP is slow, and a model pass is always slower than one
+        // ack window. Without this, one press could run — and bill — several passes.
+        const inflight = this.gitMessageInflight.get(frame.id)
+        const pass =
+          inflight ??
+          this.deps.workspaceGit
+            .message(frame.payload as WorkspaceGitMessageReq)
+            .finally(() => this.gitMessageInflight.delete(frame.id))
+        if (!inflight) this.gitMessageInflight.set(frame.id, pass)
+        pass
+          .then((result) => this.reply(frame, 'workspace/gitmessage/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitmessage', err))
         return
       }
       case 'memory/channels': {

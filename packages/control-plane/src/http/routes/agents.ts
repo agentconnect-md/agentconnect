@@ -14,6 +14,9 @@ import type {
   WorkspaceGitDiffResult,
   WorkspaceGitLog,
   WorkspaceGitPullResult,
+  WorkspaceGitCommitResult,
+  WorkspaceGitPushResult,
+  WorkspaceGitMessageResult,
   MemoryReadContent,
   MemoryListPage,
   MemoryHistoryPage,
@@ -35,7 +38,9 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
+  WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
+  WORKSPACE_GIT_WRITE_FEATURE,
   WorkspaceErrorReason,
   gitRepoLabel,
   normalizeGitUrl
@@ -108,6 +113,11 @@ import {
   WorkspaceGitLogQueryDto,
   WorkspaceGitLogDto,
   WorkspaceGitPullDto,
+  WorkspaceGitStageBody,
+  WorkspaceGitCommitBody,
+  WorkspaceGitCommitResultDto,
+  WorkspaceGitPushResultDto,
+  WorkspaceGitMessageResultDto,
   AgentMemoryDto,
   MemoryFilesDto,
   MemoryFilesQueryDto,
@@ -148,6 +158,9 @@ import {
   type WorkspaceGitDiffDtoT,
   type WorkspaceGitLogDtoT,
   type WorkspaceGitPullDtoT,
+  type WorkspaceGitCommitResultDtoT,
+  type WorkspaceGitPushResultDtoT,
+  type WorkspaceGitMessageResultDtoT,
   type AgentMemoryDtoT,
   type MemoryFilesDtoT,
   type MemoryHistoryPageDtoT,
@@ -481,6 +494,14 @@ export function toWorkspaceGitStatusDto(
   }
 }
 
+/** The config half of a git-status body: the daemon reports only live checkout facts, so
+ *  the configured repo/subdir are folded in from the agent. Shared by every route that
+ *  answers with a `WorkspaceGitStatusDto` (the status read and both stage writes). */
+export function workspaceGitConfigOf(agent: AgentRecord): { repo?: string; agentDir?: string } {
+  const ws = agent.workspace
+  return ws.mode === 'github' ? { repo: ws.gitRepo, ...(ws.agentDir ? { agentDir: ws.agentDir } : {}) } : {}
+}
+
 /** Wire REP → HTTP body for one path's unified diff. Every "no diff" reason stays
  *  data: a non-repo workspace, an absent path, a binary change, no changes at all. */
 export function toWorkspaceGitDiffDto(rep: WorkspaceGitDiffResult): WorkspaceGitDiffDtoT {
@@ -515,6 +536,37 @@ export function toWorkspaceGitPullDto(rep: WorkspaceGitPullResult): WorkspaceGit
     insertions: rep.insertions ?? null,
     deletions: rep.deletions ?? null
   }
+}
+
+/** Wire REP → HTTP body for a console commit. Every refusal stays data, carrying the
+ *  daemon's closed `reason` so the console can offer the right next action (stage
+ *  something, commit from the agent, register an identity) instead of parsing prose. */
+export function toWorkspaceGitCommitDto(rep: WorkspaceGitCommitResult): WorkspaceGitCommitResultDtoT {
+  return {
+    isRepo: rep.isRepo,
+    ok: rep.ok,
+    sha: rep.sha ?? null,
+    detail: rep.detail ?? null,
+    reason: rep.reason ?? null
+  }
+}
+
+/** Wire REP → HTTP body for a console push. `ahead` is what is STILL unpushed, so a
+ *  successful push reports 0 and a refusal reports the commits that did not land. */
+export function toWorkspaceGitPushDto(rep: WorkspaceGitPushResult): WorkspaceGitPushResultDtoT {
+  return {
+    isRepo: rep.isRepo,
+    ok: rep.ok,
+    detail: rep.detail ?? null,
+    ahead: rep.ahead ?? null,
+    reason: rep.reason ?? null
+  }
+}
+
+/** Wire REP → HTTP body for a drafted commit message. The CP proxies the text and
+ *  stores none of it (body-locality, §1/§12); a runtime that declines is `ok:false`. */
+export function toWorkspaceGitMessageDto(rep: WorkspaceGitMessageResult): WorkspaceGitMessageResultDtoT {
+  return { ok: rep.ok, message: rep.message ?? null, detail: rep.detail ?? null }
 }
 
 /** Map a daemon-edge failure to a 503 message, or null to rethrow. Covers: no
@@ -567,6 +619,30 @@ function sendWorkspaceFailure(reply: FastifyReply, err: unknown): boolean {
     ...(failure.code ? { code: failure.code } : {})
   })
   return true
+}
+
+/** A workspace MUTATION's failure mapping, which differs from a read's on purpose: the
+ *  status is the mutation's (409 for a conflict, 400 for a refused payload) whatever the
+ *  daemon names, and a reason only rides along as the machine `code` — a write that was
+ *  not performed must never read as a resource that is absent. false ⇒ rethrow. */
+function sendWorkspaceMutationFailure(reply: FastifyReply, err: unknown): boolean {
+  const code = err instanceof ProtocolError ? workspaceErrorCode(err) : null
+  if (err instanceof ProtocolError && err.code === 'CONFLICT') {
+    void reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message, ...(code ? { code } : {}) })
+    return true
+  }
+  if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
+    void reply
+      .code(400)
+      .send({ error: 'Bad Request', statusCode: 400, message: err.message, ...(code ? { code } : {}) })
+    return true
+  }
+  const unavailable = daemonEdgeFailure(err)
+  if (unavailable !== null) {
+    void reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
+    return true
+  }
+  return false
 }
 
 function memoryAdminFailure(
@@ -636,17 +712,47 @@ export function agentRoutes(deps: HttpDeps) {
 
     // Version skew: an older daemon drops an unknown frame silently, so the REQ would
     // burn its whole retransmit budget and then read as an offline daemon. Refuse first.
-    const requireGitReview = async (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> => {
+    const requireDaemonFeature = async (
+      reply: FastifyReply,
+      orgId: OrgId,
+      daemonId: DaemonId,
+      feature: string,
+      message: string
+    ): Promise<boolean> => {
       const daemon = await deps.registry.get(orgId, daemonId)
-      if (daemon?.capabilities.features.includes(WORKSPACE_GIT_REVIEW_FEATURE)) return true
-      reply.code(409).send({
-        error: 'Conflict',
-        statusCode: 409,
-        message: 'this agent version does not support git review reads; upgrade its daemon',
-        code: 'DAEMON_FEATURE_MISSING'
-      })
+      if (daemon?.capabilities.features.includes(feature)) return true
+      reply.code(409).send({ error: 'Conflict', statusCode: 409, message, code: 'DAEMON_FEATURE_MISSING' })
       return false
     }
+
+    const requireGitReview = (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> =>
+      requireDaemonFeature(
+        reply,
+        orgId,
+        daemonId,
+        WORKSPACE_GIT_REVIEW_FEATURE,
+        'this agent version does not support git review reads; upgrade its daemon'
+      )
+
+    // The write gate is separate from the review gate, and the wand's from both: the
+    // console hides exactly the controls a given daemon cannot serve.
+    const requireGitWrite = (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> =>
+      requireDaemonFeature(
+        reply,
+        orgId,
+        daemonId,
+        WORKSPACE_GIT_WRITE_FEATURE,
+        'this agent version does not support git writes from the console; upgrade its daemon'
+      )
+
+    const requireGitMessage = (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> =>
+      requireDaemonFeature(
+        reply,
+        orgId,
+        daemonId,
+        WORKSPACE_GIT_MESSAGE_FEATURE,
+        'this agent version cannot draft commit messages; upgrade its daemon'
+      )
 
     const resolvePolicyAgentIds = async (
       req: FastifyRequest,
@@ -2656,23 +2762,7 @@ export function agentRoutes(deps: HttpDeps) {
           const ok = await deps.control.workspaceWrite(agent.daemonId, writeReq)
           return { path: ok.path, size: ok.size, mtime: ok.mtime }
         } catch (err) {
-          // A mutation keeps its 400/409 whatever the daemon says; a named reason only
-          // rides along as the machine `code`.
-          const code = err instanceof ProtocolError ? workspaceErrorCode(err) : null
-          if (err instanceof ProtocolError && err.code === 'CONFLICT') {
-            return reply
-              .code(409)
-              .send({ error: 'Conflict', statusCode: 409, message: err.message, ...(code ? { code } : {}) })
-          }
-          if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
-            return reply
-              .code(400)
-              .send({ error: 'Bad Request', statusCode: 400, message: err.message, ...(code ? { code } : {}) })
-          }
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendWorkspaceMutationFailure(reply, err)) return
           throw err
         }
       }
@@ -2738,22 +2828,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return { path: ok.path }
         } catch (err) {
-          // As on the write: the status is the mutation's, the `code` is the daemon's.
-          const code = err instanceof ProtocolError ? workspaceErrorCode(err) : null
-          if (err instanceof ProtocolError && err.code === 'CONFLICT') {
-            return reply
-              .code(409)
-              .send({ error: 'Conflict', statusCode: 409, message: err.message, ...(code ? { code } : {}) })
-          }
-          if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
-            return reply
-              .code(400)
-              .send({ error: 'Bad Request', statusCode: 400, message: err.message, ...(code ? { code } : {}) })
-          }
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendWorkspaceMutationFailure(reply, err)) return
           throw err
         }
       }
@@ -3928,10 +4003,7 @@ export function agentRoutes(deps: HttpDeps) {
             agentId: agent.id,
             ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {})
           })
-          const ws = agent.workspace
-          const cfg =
-            ws.mode === 'github' ? { repo: ws.gitRepo, ...(ws.agentDir ? { agentDir: ws.agentDir } : {}) } : {}
-          return toWorkspaceGitStatusDto(rep, cfg)
+          return toWorkspaceGitStatusDto(rep, workspaceGitConfigOf(agent))
         } catch (err) {
           if (sendWorkspaceFailure(reply, err)) return
           throw err
@@ -4067,6 +4139,250 @@ export function agentRoutes(deps: HttpDeps) {
           if (unavailable !== null) {
             return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
           }
+          throw err
+        }
+      }
+    )
+
+    /** The chain every console git write shares: the READ chain plus the generic write gates,
+     *  because no git- or workspace-scoped action exists — "may mutate this agent's workspace" is
+     *  spelled `denyViewerWrite` + `canEdit`, as for the file editor. Deliberately NOT `gitpull`'s
+     *  shape, which gates a mutation on `canView` alone. null ⇒ replied; nothing reached the daemon. */
+    const gitWriteTarget = async (
+      req: FastifyRequest,
+      reply: FastifyReply,
+      agentId: string,
+      sessionId: string | undefined,
+      requireFeature: (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId) => Promise<boolean>
+    ): Promise<{ agent: AgentRecord; daemonId: DaemonId } | null> => {
+      if (denyViewerWrite(req, reply)) return null
+      const agent = await getOrgAgent(req, agentId)
+      if (!agent) {
+        void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        return null
+      }
+      if (!canEdit(agent, ctxOf(req))) {
+        void reply.code(403).send({ error: 'Forbidden', statusCode: 403, message: 'cannot edit this agent' })
+        return null
+      }
+      // A session worktree is that session's protected body surface on the write side too:
+      // editing the agent does not authorize touching a worktree its owner keeps private.
+      if (!(await canReadWorkspaceScope(req, agent.id, sessionId))) {
+        void reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        return null
+      }
+      if (!agent.daemonId) {
+        void reply
+          .code(503)
+          .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        return null
+      }
+      if (!(await requireFeature(reply, agent.orgId, agent.daemonId))) return null
+      if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, sessionId))) return null
+      return { agent, daemonId: agent.daemonId }
+    }
+
+    // Stage the named paths in the owning daemon's checkout. The REP is the FRESH status,
+    // so the console renders the result of its own action without a second read.
+    r.post(
+      '/agents/:id/workspace/gitstage',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Stage workspace paths',
+          description:
+            'Stage the named paths in the owning daemon’s checkout, or in an authorized isolated session worktree when sessionId is given. Requires edit access to the agent. Answers with the FRESH git status, so the console never re-polls for the result of its own action. An empty list, a path the checkout does not currently report as changed and a from-scratch workspace (isRepo:false) are all data, not errors; 409 when the agent is busy in its workspace, 503 when unplaced or the daemon is offline. The control plane executes no git and stores no workspace state.',
+          operationId: 'stageAgentWorkspacePaths',
+          params: IdParam,
+          querystring: WorkspaceScopeQueryDto,
+          body: WorkspaceGitStageBody,
+          response: {
+            200: WorkspaceGitStatusDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const target = await gitWriteTarget(req, reply, req.params.id, req.query.sessionId, requireGitWrite)
+        if (!target) return
+
+        try {
+          const rep = await deps.control.workspaceGitStage(target.daemonId, {
+            agentId: target.agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
+            paths: req.body.paths
+          })
+          return toWorkspaceGitStatusDto(rep, workspaceGitConfigOf(target.agent))
+        } catch (err) {
+          if (sendWorkspaceMutationFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Unstage the named paths — the same chain, the same fresh-status answer.
+    r.post(
+      '/agents/:id/workspace/gitunstage',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Unstage workspace paths',
+          description:
+            'Remove the named paths from the index of the owning daemon’s checkout, or of an authorized isolated session worktree when sessionId is given. Requires edit access to the agent. Answers with the FRESH git status. The working tree is never touched, so nothing the agent wrote is lost; an empty list, a path that is not staged and a from-scratch workspace (isRepo:false) are all data. 409 when the agent is busy in its workspace, 503 when unplaced or the daemon is offline.',
+          operationId: 'unstageAgentWorkspacePaths',
+          params: IdParam,
+          querystring: WorkspaceScopeQueryDto,
+          body: WorkspaceGitStageBody,
+          response: {
+            200: WorkspaceGitStatusDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const target = await gitWriteTarget(req, reply, req.params.id, req.query.sessionId, requireGitWrite)
+        if (!target) return
+
+        try {
+          const rep = await deps.control.workspaceGitUnstage(target.daemonId, {
+            agentId: target.agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
+            paths: req.body.paths
+          })
+          return toWorkspaceGitStatusDto(rep, workspaceGitConfigOf(target.agent))
+        } catch (err) {
+          if (sendWorkspaceMutationFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Commit the staged changes on the owning daemon, attributed to the daemon's
+    // registered `gitCommitIdentity`. Every refusal is data carrying a closed `reason`.
+    r.post(
+      '/agents/:id/workspace/gitcommit',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Commit the staged workspace changes',
+          description:
+            'Commit whatever is staged in the owning daemon’s checkout, or in an authorized isolated session worktree when sessionId is given. Requires edit access to the agent. The commit is attributed to the identity the daemon registered at handshake, never to the console user. Nothing staged, a blank message, a daemon with no registered identity and a git refusal all come back as ok:false with a machine `reason`, not an HTTP error; 409 when the agent is busy in its workspace, 503 when unplaced or the daemon is offline. The control plane forwards the message and stores neither it nor the diff.',
+          operationId: 'commitAgentWorkspace',
+          params: IdParam,
+          querystring: WorkspaceScopeQueryDto,
+          body: WorkspaceGitCommitBody,
+          response: {
+            200: WorkspaceGitCommitResultDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const target = await gitWriteTarget(req, reply, req.params.id, req.query.sessionId, requireGitWrite)
+        if (!target) return
+
+        try {
+          const rep = await deps.control.workspaceGitCommit(target.daemonId, {
+            agentId: target.agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
+            message: req.body.message
+          })
+          return toWorkspaceGitCommitDto(rep)
+        } catch (err) {
+          if (sendWorkspaceMutationFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Push the checked-out branch to the daemon-authorized remote. The daemon derives
+    // the refspec and never forces, so every rejection comes back as data.
+    r.post(
+      '/agents/:id/workspace/gitpush',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Push the workspace branch',
+          description:
+            'Push the branch checked out in the owning daemon’s workspace, or in an authorized isolated session worktree when sessionId is given, to the remote that daemon authorizes. Requires edit access to the agent. The daemon derives the refspec and never forces: a diverged branch (reason diverged), a detached HEAD (detached-head), a branch tracking nothing (no-upstream) and a remote rejection (rejected) are all ok:false data, and a push with nothing to send is ok:true with ahead:0. 409 when the agent is busy in its workspace, 503 when unplaced or the daemon is offline.',
+          operationId: 'pushAgentWorkspace',
+          params: IdParam,
+          querystring: WorkspaceScopeQueryDto,
+          response: {
+            200: WorkspaceGitPushResultDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const target = await gitWriteTarget(req, reply, req.params.id, req.query.sessionId, requireGitWrite)
+        if (!target) return
+
+        try {
+          const rep = await deps.control.workspaceGitPush(target.daemonId, {
+            agentId: target.agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {})
+          })
+          return toWorkspaceGitPushDto(rep)
+        } catch (err) {
+          if (sendWorkspaceMutationFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Draft a commit message from the staged diff on the AGENT's own runtime. The CP is
+    // never on the inference path (webchat-side-panels.md §2) — it authorizes a press,
+    // forwards it, and proxies the answer without storing the diff or the message.
+    r.post(
+      '/agents/:id/workspace/gitmessage',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Draft a commit message from the staged diff',
+          description:
+            'Ask the owning daemon to draft a conventional-commit message from the staged diff of its checkout, or of an authorized isolated session worktree when sessionId is given. The model pass runs on the daemon against the agent’s own runtime — the control plane never calls a model provider, and stores neither the diff nor the message. Requires edit access to the agent, because it spends the agent’s model budget. Nothing staged, a runtime that declines or answers with prose, and a timeout are all ok:false with a detail to render; 503 when unplaced or the daemon is offline. This writes nothing: the reader edits the draft and commits it separately.',
+          operationId: 'draftAgentWorkspaceCommitMessage',
+          params: IdParam,
+          querystring: WorkspaceScopeQueryDto,
+          response: {
+            200: WorkspaceGitMessageResultDto,
+            400: ErrorDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        const target = await gitWriteTarget(req, reply, req.params.id, req.query.sessionId, requireGitMessage)
+        if (!target) return
+
+        try {
+          const rep = await deps.control.workspaceGitMessage(target.daemonId, {
+            agentId: target.agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {})
+          })
+          return toWorkspaceGitMessageDto(rep)
+        } catch (err) {
+          if (sendWorkspaceMutationFailure(reply, err)) return
           throw err
         }
       }

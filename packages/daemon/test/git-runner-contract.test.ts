@@ -89,7 +89,11 @@ function runners(root: string): {
   requester: ReturnType<typeof sandboxRequester>
 } {
   const requester = sandboxRequester(root)
-  return { local: new LocalGitRunner(gitFor(root), root), remote: new ShimGitRunner(requester, root), requester }
+  return {
+    local: new LocalGitRunner(gitFor(root), root, (env) => gitFor(root).env(env)),
+    remote: new ShimGitRunner(requester, root),
+    requester
+  }
 }
 
 describe('git runner contract, local and shim-backed', () => {
@@ -265,6 +269,48 @@ describe('git runner contract, local and shim-backed', () => {
     expect(payload.env).toMatchObject({ GIT_CONFIG_GLOBAL: globalConfig })
   })
 
+  it('keeps two runners derived from ONE base independent (local: simple-git mutates its handle)', async () => {
+    // Only the local runner can have this bug: simple-git's `.env()` mutates its instance and returns
+    // it, so a `withEnv` that applied the env at derivation made siblings share one handle and the
+    // LAST derivation silently win. Not academic — resolving the runner once per request and deriving
+    // both an identity-carrying runner and a config-audit runner from it made a commit land as the
+    // host's OS user. The shim carries the environment with each request, so it cannot alias.
+    const root = repository()
+    const { local } = runners(root)
+    const shared = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' }
+    const first = local.withEnv({
+      ...shared,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'ac.who',
+      GIT_CONFIG_VALUE_0: 'first'
+    })
+    const second = local.withEnv({
+      ...shared,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'ac.who',
+      GIT_CONFIG_VALUE_0: 'second'
+    })
+
+    // `second` was derived AFTER `first`; asking `first` must still answer with its OWN environment.
+    expect((await first.raw(['config', '--get', 'ac.who'])).trim()).toBe('first')
+    expect((await second.raw(['config', '--get', 'ac.who'])).trim()).toBe('second')
+    expect((await first.raw(['config', '--get', 'ac.who'])).trim()).toBe('first')
+
+    // CONCURRENTLY, which is what a shared executor cannot survive: both chains would read whichever
+    // environment was mutated in last. A sequential assertion above passes even then.
+    const [a, b] = await Promise.all([
+      first.raw(['config', '--get', 'ac.who']),
+      second.raw(['config', '--get', 'ac.who'])
+    ])
+    expect([a.trim(), b.trim()]).toEqual(['first', 'second'])
+
+    // And the BASE must not have inherited a child's environment — with a shared root executor the
+    // empty-env branch never resets it, so the base silently keeps the last child's value. Asserted
+    // on the VALUE rather than on whether git exits non-zero for a missing key, which varies.
+    const fromBase = await local.raw(['config', '--get', 'ac.who']).catch(() => '')
+    expect(['first', 'second']).not.toContain(fromBase.trim())
+  })
+
   it('replaces rather than extends a chained environment, as simple-git does', async () => {
     // remote.withEnv(A).withEnv(B) must behave like two .env() calls: B alone. Merging would
     // keep a variable A had and B deliberately dropped — and the omission IS the sanitization.
@@ -369,7 +415,10 @@ describe('git runner contract, local and shim-backed', () => {
     git(seed, ['commit', '-m', 'upstream change'])
     git(seed, ['push', 'origin', 'main'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal).pull('origin', 'main')
+    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal, (env) => gitFor(forLocal).env(env)).pull(
+      'origin',
+      'main'
+    )
     const fromRemote = await new ShimGitRunner(sandboxRequester(forRemote), forRemote).pull('origin', 'main')
 
     expect([...fromRemote.files].sort()).toEqual([...fromLocal.files].sort())
@@ -394,7 +443,10 @@ describe('git runner contract, local and shim-backed', () => {
     roots.push(clone)
     git(clone, ['clone', upstream, '.'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(clone), clone).pull('origin', 'main')
+    const fromLocal = await new LocalGitRunner(gitFor(clone), clone, (env) => gitFor(clone).env(env)).pull(
+      'origin',
+      'main'
+    )
     const fromRemote = await new ShimGitRunner(sandboxRequester(clone), clone).pull('origin', 'main')
     expect(fromRemote).toEqual({ files: [], insertions: 0, deletions: 0 })
     expect(fromLocal.files).toEqual([])

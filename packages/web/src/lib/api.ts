@@ -2948,6 +2948,132 @@ export async function workspaceGitPull(agentId: string): Promise<WorkspaceGitPul
   return apiPost<WorkspaceGitPullDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitpull`, {})
 }
 
+// ── workspace git writes (executed only on the owning daemon; the CP stores nothing) ──
+// Why a git write did not do what was asked, as a closed vocabulary: the console offers a
+// different next action for each (stage something, pull before pushing, commit from the
+// agent instead). Mirrors the wire's `WorkspaceGitWriteReason`; `null` when `ok`.
+export type WorkspaceGitWriteReason =
+  | 'not-a-repo'
+  | 'nothing-staged'
+  | 'empty-message'
+  | 'no-identity'
+  | 'detached-head'
+  | 'no-upstream'
+  | 'unsafe-origin'
+  | 'unsafe-config'
+  | 'diverged'
+  | 'rejected'
+  | 'failed'
+
+// Outcome of one commit (POST /agents/:id/workspace/gitcommit). Nothing staged, a blank
+// message, a daemon with no registered commit identity and a git refusal are all
+// `ok:false` + `reason` (data), never HTTP errors.
+export interface WorkspaceGitCommitResultDto {
+  isRepo: boolean
+  ok: boolean
+  sha: string | null // full hash of the new commit; null unless ok
+  detail: string | null // daemon-written summary or refusal (host paths stripped)
+  reason: WorkspaceGitWriteReason | null
+}
+
+// Outcome of one push (POST /agents/:id/workspace/gitpush). A diverged branch, a detached
+// HEAD, a branch with no upstream and a remote rejection are all `ok:false` + `reason`;
+// a push with nothing to send is `ok:true` with `ahead:0`.
+export interface WorkspaceGitPushResultDto {
+  isRepo: boolean
+  ok: boolean
+  detail: string | null
+  ahead: number | null // commits STILL ahead of the upstream (0 once pushed)
+  reason: WorkspaceGitWriteReason | null
+}
+
+// A commit message drafted on the AGENT's own runtime (POST /agents/:id/workspace/gitmessage).
+// The CP never calls a model provider (§2), so every way the draft can fail to appear is data:
+// nothing staged, a runtime that declines or answers prose, a timeout.
+export interface WorkspaceGitMessageResultDto {
+  ok: boolean
+  message: string | null // conventional-commit subject + optional body
+  detail: string | null
+}
+
+// Move the named paths INTO the index of the agent's checkout (or of an authorized session
+// worktree). Answers with the FRESH git status, so the caller draws the result of its own
+// action without a second read. 409 ⇒ the agent is busy in that workspace, or the daemon is
+// too old (`DAEMON_FEATURE_MISSING`); 403 ⇒ no edit access; 503 ⇒ offline or unplaced.
+export async function stageWorkspacePaths(
+  agentId: string,
+  opts: { paths: string[]; sessionId?: string }
+): Promise<WorkspaceGitStatusDto> {
+  const q = new URLSearchParams()
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiPost<WorkspaceGitStatusDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitstage${query}`,
+    { paths: opts.paths }
+  )
+}
+
+// The same, out of the index. The working tree is never touched, so nothing the agent wrote
+// is lost. Same fresh-status answer and same failure surface as staging.
+export async function unstageWorkspacePaths(
+  agentId: string,
+  opts: { paths: string[]; sessionId?: string }
+): Promise<WorkspaceGitStatusDto> {
+  const q = new URLSearchParams()
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiPost<WorkspaceGitStatusDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitunstage${query}`,
+    { paths: opts.paths }
+  )
+}
+
+// Commit whatever is staged, attributed to the identity the daemon registered at handshake —
+// never to the console user. A refusal is `ok:false` + `reason`, not an HTTP error.
+export async function commitWorkspace(
+  agentId: string,
+  opts: { message: string; sessionId?: string }
+): Promise<WorkspaceGitCommitResultDto> {
+  const q = new URLSearchParams()
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiPost<WorkspaceGitCommitResultDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitcommit${query}`,
+    { message: opts.message }
+  )
+}
+
+// Push the checked-out branch to the remote the owning daemon authorizes. The daemon derives
+// the refspec and never forces, so every rejection comes back as data.
+export async function pushWorkspace(
+  agentId: string,
+  opts: { sessionId?: string } = {}
+): Promise<WorkspaceGitPushResultDto> {
+  const q = new URLSearchParams()
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiPost<WorkspaceGitPushResultDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitpush${query}`,
+    {}
+  )
+}
+
+// Ask the owning daemon to draft a commit message from the staged diff, on the agent's own
+// runtime. It spends model tokens, so it is only ever sent for an explicit press (§5.1) and
+// writes nothing — the reader edits the draft and commits it separately.
+export async function draftWorkspaceCommitMessage(
+  agentId: string,
+  opts: { sessionId?: string } = {}
+): Promise<WorkspaceGitMessageResultDto> {
+  const q = new URLSearchParams()
+  if (opts.sessionId) q.set('sessionId', opts.sessionId)
+  const query = q.size ? `?${q.toString()}` : ''
+  return apiPost<WorkspaceGitMessageResultDto>(
+    `${orgBase()}/agents/${encodeURIComponent(agentId)}/workspace/gitmessage${query}`,
+    {}
+  )
+}
+
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's
 // persisted per-session usage store, summed over the selected range. ──
 export type UsageRange = 'd1' | 'd7' | 'd30' | 'd90'

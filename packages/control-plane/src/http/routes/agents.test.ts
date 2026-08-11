@@ -4,7 +4,14 @@
  * come out as explicit `null`s so the zod response schema passes serialization.
  */
 import { describe, it, expect } from 'vitest'
+import {
+  MAX_WORKSPACE_COMMIT_MESSAGE,
+  MAX_WORKSPACE_STAGE_PATHS,
+  MAX_WORKSPACE_STAGE_PATH_BYTES
+} from '@agentconnect.md/protocol'
 import { ProtocolError } from '../../domain/errors.js'
+import type { AgentRecord, AgentWorkspace } from '../../persistence/ports.js'
+import { WorkspaceGitCommitBody, WorkspaceGitStageBody } from '../dto/index.js'
 import {
   toWorkspaceFilesDto,
   toWorkspaceFileDto,
@@ -12,6 +19,10 @@ import {
   toWorkspaceGitDiffDto,
   toWorkspaceGitLogDto,
   toWorkspaceGitPullDto,
+  toWorkspaceGitCommitDto,
+  toWorkspaceGitPushDto,
+  toWorkspaceGitMessageDto,
+  workspaceGitConfigOf,
   workspaceErrorCode,
   workspaceFailure,
   toDreamDto,
@@ -371,6 +382,175 @@ describe('toWorkspaceGitPullDto', () => {
       insertions: null,
       deletions: null
     })
+  })
+})
+
+describe('toWorkspaceGitCommitDto', () => {
+  it('carries the new commit sha through', () => {
+    expect(
+      toWorkspaceGitCommitDto({
+        agentId: 'a1',
+        isRepo: true,
+        ok: true,
+        sha: 'c0ffee1234567890abcdef1234567890abcdef12',
+        detail: 'Committed 3 files.'
+      })
+    ).toEqual({
+      isRepo: true,
+      ok: true,
+      sha: 'c0ffee1234567890abcdef1234567890abcdef12',
+      detail: 'Committed 3 files.',
+      reason: null
+    })
+  })
+
+  it('keeps a refusal as data, preserving the machine reason the console branches on', () => {
+    expect(
+      toWorkspaceGitCommitDto({
+        agentId: 'a1',
+        isRepo: true,
+        ok: false,
+        detail: 'Nothing is staged, so there is nothing to commit.',
+        reason: 'nothing-staged'
+      })
+    ).toEqual({
+      isRepo: true,
+      ok: false,
+      sha: null,
+      detail: 'Nothing is staged, so there is nothing to commit.',
+      reason: 'nothing-staged'
+    })
+  })
+
+  it('nulls every optional field for a from-scratch workspace', () => {
+    expect(toWorkspaceGitCommitDto({ agentId: 'a1', isRepo: false, ok: false })).toEqual({
+      isRepo: false,
+      ok: false,
+      sha: null,
+      detail: null,
+      reason: null
+    })
+  })
+})
+
+describe('toWorkspaceGitPushDto', () => {
+  it('reports nothing still ahead after a successful push', () => {
+    expect(
+      toWorkspaceGitPushDto({ agentId: 'a1', isRepo: true, ok: true, detail: 'Pushed 2 commits.', ahead: 0 })
+    ).toEqual({ isRepo: true, ok: true, detail: 'Pushed 2 commits.', ahead: 0, reason: null })
+  })
+
+  it('keeps the commits that did NOT land beside a rejection reason', () => {
+    expect(
+      toWorkspaceGitPushDto({
+        agentId: 'a1',
+        isRepo: true,
+        ok: false,
+        detail: 'Rejected — the remote has commits this branch does not. Pull, then push.',
+        ahead: 3,
+        reason: 'diverged'
+      })
+    ).toEqual({
+      isRepo: true,
+      ok: false,
+      detail: 'Rejected — the remote has commits this branch does not. Pull, then push.',
+      ahead: 3,
+      reason: 'diverged'
+    })
+  })
+
+  it('nulls ahead when the daemon could not compute it (detached HEAD)', () => {
+    expect(
+      toWorkspaceGitPushDto({ agentId: 'a1', isRepo: true, ok: false, detail: 'no branch', reason: 'detached-head' })
+    ).toEqual({ isRepo: true, ok: false, detail: 'no branch', ahead: null, reason: 'detached-head' })
+  })
+})
+
+describe('toWorkspaceGitMessageDto', () => {
+  it('passes the drafted message through with no detail', () => {
+    expect(
+      toWorkspaceGitMessageDto({ agentId: 'a1', ok: true, message: 'feat(dock): stage files from the git panel' })
+    ).toEqual({ ok: true, message: 'feat(dock): stage files from the git panel', detail: null })
+  })
+
+  it('nulls the message when the runtime declined, keeping the detail to render', () => {
+    expect(
+      toWorkspaceGitMessageDto({
+        agentId: 'a1',
+        ok: false,
+        detail: 'Nothing is staged, so there is nothing to describe.'
+      })
+    ).toEqual({ ok: false, message: null, detail: 'Nothing is staged, so there is nothing to describe.' })
+  })
+})
+
+describe('workspaceGitConfigOf', () => {
+  // Only `agent.workspace` is read, so the cast keeps the fixture to the field under test.
+  const withWorkspace = (workspace: AgentWorkspace): AgentRecord => ({ workspace }) as AgentRecord
+
+  it('folds a github workspace’s repo and subdir into the status body', () => {
+    expect(
+      workspaceGitConfigOf(withWorkspace({ mode: 'github', gitRepo: 'https://github.com/acme/infra', agentDir: 'api' }))
+    ).toEqual({ repo: 'https://github.com/acme/infra', agentDir: 'api' })
+  })
+
+  it('omits an absent subdir rather than sending an empty one', () => {
+    expect(workspaceGitConfigOf(withWorkspace({ mode: 'github', gitRepo: 'https://github.com/acme/infra' }))).toEqual({
+      repo: 'https://github.com/acme/infra'
+    })
+  })
+
+  it('reports no config at all for a from-scratch workspace', () => {
+    expect(workspaceGitConfigOf(withWorkspace({ mode: 'scratch' }))).toEqual({})
+  })
+})
+
+describe('WorkspaceGitStageBody', () => {
+  const paths = (count: number, length = 8): string[] =>
+    Array.from({ length: count }, (_, i) => String(i).padStart(length, 'p'))
+
+  it('accepts an empty selection — staging nothing is data, not a bad request', () => {
+    expect(WorkspaceGitStageBody.safeParse({ paths: [] }).success).toBe(true)
+  })
+
+  it('accepts a full status page and refuses one path past the wire cap', () => {
+    expect(WorkspaceGitStageBody.safeParse({ paths: paths(MAX_WORKSPACE_STAGE_PATHS) }).success).toBe(true)
+    expect(WorkspaceGitStageBody.safeParse({ paths: paths(MAX_WORKSPACE_STAGE_PATHS + 1) }).success).toBe(false)
+  })
+
+  it('refuses a selection that is inside the count cap but over the wire byte total', () => {
+    // 16 × 4096-char paths = 64 KiB, twice the byte ceiling, at 3% of the count cap.
+    const wide = Array.from({ length: 16 }, (_, i) => String(i).padStart(4096, 'q'))
+    expect(wide.length).toBeLessThan(MAX_WORKSPACE_STAGE_PATHS)
+    const refused = WorkspaceGitStageBody.safeParse({ paths: wide })
+    expect(refused.success).toBe(false)
+    expect(refused.error?.issues[0]?.message).toContain(`${MAX_WORKSPACE_STAGE_PATH_BYTES} bytes`)
+  })
+
+  it('counts ENCODED bytes, not characters, so multi-byte paths cannot slip past the cap', () => {
+    // Each ✓ is 3 UTF-8 bytes: 12k characters is under the cap, 36k bytes is not.
+    const multibyte = Array.from({ length: 3 }, () => '✓'.repeat(4000))
+    expect(multibyte.join('').length).toBeLessThan(MAX_WORKSPACE_STAGE_PATH_BYTES)
+    expect(WorkspaceGitStageBody.safeParse({ paths: multibyte }).success).toBe(false)
+  })
+
+  it('refuses an unknown field, so a stray option is never silently dropped', () => {
+    expect(WorkspaceGitStageBody.safeParse({ paths: ['a.ts'], force: true }).success).toBe(false)
+  })
+})
+
+describe('WorkspaceGitCommitBody', () => {
+  it('requires a message and bounds it at the wire cap', () => {
+    expect(WorkspaceGitCommitBody.safeParse({ message: 'fix: typo' }).success).toBe(true)
+    expect(WorkspaceGitCommitBody.safeParse({ message: '' }).success).toBe(false)
+    expect(WorkspaceGitCommitBody.safeParse({ message: 'x'.repeat(MAX_WORKSPACE_COMMIT_MESSAGE) }).success).toBe(true)
+    expect(WorkspaceGitCommitBody.safeParse({ message: 'x'.repeat(MAX_WORKSPACE_COMMIT_MESSAGE + 1) }).success).toBe(
+      false
+    )
+  })
+
+  it('leaves a whitespace-only message to the daemon, which answers empty-message as data', () => {
+    expect(WorkspaceGitCommitBody.safeParse({ message: '   \n ' }).success).toBe(true)
   })
 })
 

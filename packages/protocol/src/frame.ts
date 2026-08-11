@@ -71,7 +71,14 @@ import {
   WorkspaceGitLogReq,
   WorkspaceGitLog,
   WorkspaceGitPullReq,
-  WorkspaceGitPullResult
+  WorkspaceGitPullResult,
+  WorkspaceGitStageReq,
+  WorkspaceGitCommitReq,
+  WorkspaceGitCommitResult,
+  WorkspaceGitPushReq,
+  WorkspaceGitPushResult,
+  WorkspaceGitMessageReq,
+  WorkspaceGitMessageResult
 } from './frames/workspace.js'
 import {
   MemoryChannelsReq,
@@ -301,6 +308,19 @@ export const FRAME_SCHEMAS = {
   'workspace/gitlog/result': WorkspaceGitLog,
   'workspace/gitpull': WorkspaceGitPullReq,
   'workspace/gitpull/result': WorkspaceGitPullResult,
+  // ── workspace git writes: stage/unstage answer with the FRESH status; commit/push
+  // report a refusal as DATA (`ok:false` + `reason`), never as an error frame.
+  'workspace/gitstage': WorkspaceGitStageReq,
+  'workspace/gitstage/result': WorkspaceGitStatus,
+  'workspace/gitunstage': WorkspaceGitStageReq,
+  'workspace/gitunstage/result': WorkspaceGitStatus,
+  'workspace/gitcommit': WorkspaceGitCommitReq,
+  'workspace/gitcommit/result': WorkspaceGitCommitResult,
+  'workspace/gitpush': WorkspaceGitPushReq,
+  'workspace/gitpush/result': WorkspaceGitPushResult,
+  // ── AI commit message: a bounded model pass on the DAEMON's runtime, no write of any kind.
+  'workspace/gitmessage': WorkspaceGitMessageReq,
+  'workspace/gitmessage/result': WorkspaceGitMessageResult,
   'memory/channels': MemoryChannelsReq,
   'memory/channels/page': MemoryChannelsPage,
   'memory/list': MemoryListReq,
@@ -514,6 +534,16 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/gitlog/result', FRAME_SCHEMAS['workspace/gitlog/result']),
   frame('workspace/gitpull', FRAME_SCHEMAS['workspace/gitpull']),
   frame('workspace/gitpull/result', FRAME_SCHEMAS['workspace/gitpull/result']),
+  frame('workspace/gitstage', FRAME_SCHEMAS['workspace/gitstage']),
+  frame('workspace/gitstage/result', FRAME_SCHEMAS['workspace/gitstage/result']),
+  frame('workspace/gitunstage', FRAME_SCHEMAS['workspace/gitunstage']),
+  frame('workspace/gitunstage/result', FRAME_SCHEMAS['workspace/gitunstage/result']),
+  frame('workspace/gitcommit', FRAME_SCHEMAS['workspace/gitcommit']),
+  frame('workspace/gitcommit/result', FRAME_SCHEMAS['workspace/gitcommit/result']),
+  frame('workspace/gitpush', FRAME_SCHEMAS['workspace/gitpush']),
+  frame('workspace/gitpush/result', FRAME_SCHEMAS['workspace/gitpush/result']),
+  frame('workspace/gitmessage', FRAME_SCHEMAS['workspace/gitmessage']),
+  frame('workspace/gitmessage/result', FRAME_SCHEMAS['workspace/gitmessage/result']),
   frame('memory/channels', FRAME_SCHEMAS['memory/channels']),
   frame('memory/channels/page', FRAME_SCHEMAS['memory/channels/page']),
   frame('memory/list', FRAME_SCHEMAS['memory/list']),

@@ -18,7 +18,8 @@ import {
   sessionGitPolicyEnv,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
-  workspaceGitPullTarget
+  workspaceGitPullTarget,
+  workspaceGitPushTarget
 } from '../src/workspace/git-injection.js'
 
 // simple-git ≥3.36 refuses a NAME blocklist of env vars (presence-based, value
@@ -57,7 +58,7 @@ const POLLUTED = {
 // The audit takes a runner: it must read the config the git it guards reads, which for a cluster
 // workspace is the sandbox's filesystem rather than this one.
 function localRunner(cwd: string): GitRunner {
-  return new LocalGitRunner(gitFor(cwd), cwd)
+  return new LocalGitRunner(gitFor(cwd), cwd, (env) => gitFor(cwd).env(env))
 }
 
 function configPairs(env: Record<string, string>): Array<[string | undefined, string | undefined]> {
@@ -581,6 +582,52 @@ describe('cloneGitEnv', () => {
       'core.sshCommand',
       'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
     ])
+  })
+})
+
+describe('workspaceGitPushTarget', () => {
+  it('binds the authorized URL to an unguessable remote name, like the pull target', () => {
+    const target = workspaceGitPushTarget('https://github.com/acme/repo.git', 'agent-1')
+    expect(target.remote).toMatch(/^agentconnect-[0-9a-f-]{36}$/)
+    const pairs = configPairs(target.env)
+    expect(pairs).toContainEqual([`remote.${target.remote}.url`, 'https://github.com/acme/repo.git'])
+    expect(pairs).toContainEqual([`remote.${target.remote}.proxy`, ''])
+    expect(target.env.GIT_ALLOW_PROTOCOL).toBe('https:ssh')
+    expect(target.env.GIT_TERMINAL_PROMPT).toBe('0')
+  })
+
+  it('re-adds the credential helper AFTER the command-scope reset that would wipe it', () => {
+    // The reset is `credential.helper=''` at command scope, which clears the WHOLE accumulated
+    // helper list — including the URL-scoped repo-local pin written post-clone. Verified on git
+    // 2.43: a helper listed before it never runs. So the push's own pointer has to come after it.
+    const target = workspaceGitPushTarget('https://github.com/acme/repo.git', 'agent-1')
+    const pairs = configPairs(target.env)
+    const reset = pairs.findIndex(([key, value]) => key === 'credential.helper' && value === '')
+    const helper = pairs.findIndex(
+      ([key, value]) => key === 'credential.https://github.com.helper' && (value ?? '').startsWith('!')
+    )
+    expect(reset).toBeGreaterThanOrEqual(0)
+    expect(helper).toBeGreaterThan(reset)
+    expect(pairs).toContainEqual(['credential.https://github.com.useHttpPath', 'true'])
+    expect(target.env[GITCRED_CAPABILITY_ENV]).toBe('cap-agent-1')
+    expect(target.env[GITCRED_AGENT_ENV]).toBe('agent-1')
+  })
+
+  it('omits the helper entirely for a workspace the daemon issues no credentials for', () => {
+    const target = workspaceGitPushTarget('ssh://git@github.com/acme/repo.git')
+    const pairs = configPairs(target.env)
+    expect(pairs.some(([key]) => key === 'credential.https://github.com.helper')).toBe(false)
+    expect(target.env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+    // Still the full hardening set — an ssh target keeps its pinned command and no user routing.
+    expect(pairs).toContainEqual(['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'])
+    expect(pairs).toContainEqual(['ssh.variant', 'ssh'])
+  })
+
+  it('passes the simple-git unsafe checker for the push argv it produces', async () => {
+    // Same guarantee the clone env gets: the credential-helper pairs and the GIT_CONFIG_COUNT
+    // channel each need an opt-in, and only handles built by `gitFor` carry it.
+    const target = workspaceGitPushTarget('https://github.com/acme/repo.git', 'agent-1')
+    await expect(gitFor().env(target.env).raw(['version'])).resolves.toContain('git version')
   })
 })
 

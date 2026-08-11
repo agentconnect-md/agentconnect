@@ -72,6 +72,40 @@ export function numstatByPath(entries: NumstatEntry[]): Map<string, NumstatEntry
   return new Map(entries.map((e) => [e.path, e]))
 }
 
+/** One `--name-status` row: the status letter git printed and the path it applies to. */
+export interface NameStatusEntry {
+  status: string
+  path: string
+  from?: string // rename/copy source, when git detected one
+}
+
+/**
+ * Parse `git diff --name-status -z`: `<status>NUL<path>NUL` per entry, except a rename or copy,
+ * which git writes as `R100NUL<old>NUL<new>NUL` (verified against git 2.43). A status token is
+ * always `[A-Z]` plus an optional similarity score, so an unrecognised token is skipped rather
+ * than mistaken for a path — a repository must not be able to shift the record boundary.
+ */
+export function parseNameStatusZ(out: string): NameStatusEntry[] {
+  const tokens = out.split('\0')
+  const entries: NameStatusEntry[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const status = tokens[i]!
+    if (!/^[A-Z]\d*$/.test(status)) continue
+    const first = tokens[i + 1]
+    if (!first) break // truncated record — a path is never empty
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const to = tokens[i + 2]
+      if (!to) break
+      i += 2
+      entries.push({ status, path: to, from: first })
+      continue
+    }
+    i += 1
+    entries.push({ status, path: first })
+  }
+  return entries
+}
+
 /** Parse `git log -z --format=LOG_FORMAT` — a flat run of 5 NUL-separated fields
  *  per commit. A NUL cannot occur inside any of them, so the record boundary is
  *  the field count, not a guess. A trailing partial record is dropped. */

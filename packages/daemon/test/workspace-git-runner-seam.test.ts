@@ -118,7 +118,7 @@ function recording(): {
   const argv: string[][] = []
   const resolver: WorkspaceGitRunnerResolver = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
-    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd)
+    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
     const wrap = (runner: GitRunner): GitRunner => ({
       withEnv: (env) => wrap(runner.withEnv(env)),
       raw: async (args) => {
@@ -247,6 +247,18 @@ describe('workspace-manager git runner seam', () => {
       // runner also carries `cwd` so its bounded read can spawn in the same directory, and
       // pinning the literal made that addition look like a new escape.
       .filter(({ line }) => !/new LocalGitRunner\(gitFor\(cwd, abort\)/.test(line))
+    expect(offenders.map((entry) => `${entry.number}: ${entry.line.trim()}`)).toEqual([])
+  })
+
+  it('has no git call site left outside the seam in the console git surface either', () => {
+    // The same failure mode one file over, and it matters more there since M3: a stage/commit/push
+    // resolved locally for a cluster agent mutates this daemon's disk instead of the sandbox's. No
+    // permitted site at all here — the whole file goes through `workspaceGitRunnerFor`.
+    const source = readFileSync(new URL('../src/cp/workspace-git.ts', import.meta.url), 'utf8')
+    const offenders = source
+      .split('\n')
+      .map((line, index) => ({ line, number: index + 1 }))
+      .filter(({ line }) => /\bgitFor\(|new LocalGitRunner\(/.test(line))
     expect(offenders.map((entry) => `${entry.number}: ${entry.line.trim()}`)).toEqual([])
   })
 })

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,7 +35,10 @@ const { WorkspaceViolationError } = await import('../src/cp/workspace-reader.js'
 function ws(repo: boolean): string {
   const dir = join(mkdtempSync(join(tmpdir(), 'ac-git-')), 'co')
   mkdirSync(dir, { recursive: true })
-  if (repo) mkdirSync(join(dir, '.git'), { recursive: true })
+  // A REAL `git init`, not a bare `.git` directory: the seam asks whether this is a checkout
+  // through the runner (`rev-parse --is-inside-work-tree`) rather than by looking for a `.git` on
+  // the daemon's own disk, because a cluster-backed agent's checkout is not on that disk at all.
+  if (repo) execFileSync('git', ['init', '-q', '-b', 'main', dir], { stdio: 'ignore' })
   return dir
 }
 

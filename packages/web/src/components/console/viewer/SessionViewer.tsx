@@ -9,11 +9,14 @@ import { Icon } from '@/components/ui'
 import { formatFileSize } from '@/components/console/FileBrowser'
 import { LineDiffTable } from '@/components/console/LineDiff'
 import { parseUnifiedDiff } from '@/components/console/viewer/unified-diff'
+import { gitWriteRequestFailureText } from '@/components/console/dock/git-write'
 import { escapeHtml, highlight, languageLabel, linkifyHtml, loadHljs } from '@/lib/highlight'
 import {
   ApiError,
   fetchWorkspaceFile,
   fetchWorkspaceGitDiff,
+  stageWorkspacePaths,
+  unstageWorkspacePaths,
   type WorkspaceDiffScope,
   type WorkspaceFileDto,
   type WorkspaceGitDiffDto
@@ -107,7 +110,9 @@ export function SessionViewer({
   sessionId,
   path,
   mode = 'file',
+  diffRefreshTick = 0,
   onModeChange,
+  onIndexChanged,
   onClose
 }: {
   agentId: string
@@ -117,8 +122,12 @@ export function SessionViewer({
   path: string
   /** Which read is on screen. It lives in the URL beside `file` (§4), so the caller owns it and this pane reports the pill instead of holding a second copy. */
   mode?: ViewerMode
+  /** Bumped by the caller when something ELSE moved the index — the Git panel's own toggles — so the diff on screen is re-read instead of describing a tree that has moved. The file bytes are untouched by an index write, so it does not invalidate the File read. */
+  diffRefreshTick?: number
   /** The pill was pressed. Omitted ⇒ no pill: a host with nowhere to keep the mode must not offer to change it. */
   onModeChange?: (mode: ViewerMode) => void
+  /** This pane staged or unstaged the open path. Omitted ⇒ no Stage/Unstage action at all, which is how a reader whose role cannot write, and a host with nothing to re-read, both get a pane that does not offer one. */
+  onIndexChanged?: () => void
   onClose: () => void
 }) {
   const [read, setRead] = useState<Read>(PENDING)
@@ -164,8 +173,8 @@ export function SessionViewer({
   const [diffTick, setDiffTick] = useState(0)
   const diffScope = SCOPE_OF[mode]
   const wantDiff = mode !== 'file'
-  // A newline joins the parts because a POSIX path may contain a space: two different reads must not collide on one key.
-  const diffKey = [agentId, sessionId ?? '', path, diffScope, diffTick].join('\n')
+  // A newline joins the parts because a POSIX path may contain a space: two different reads must not collide on one key. Both ticks ride the key — the pane's own Retry and its own writes, and the caller's "the index moved under you" — so an invalidated diff is a NEW read rather than a mutated entry.
+  const diffKey = [agentId, sessionId ?? '', path, diffScope, diffTick, diffRefreshTick].join('\n')
   // Which reads this mount has already issued, so an effect firing again for an unrelated reason does not re-issue one that is already in flight.
   const askedRef = useRef(new Set<string>())
   useEffect(() => {
@@ -184,10 +193,32 @@ export function SessionViewer({
     )
   }, [agentId, sessionId, path, diffScope, diffKey, wantDiff])
   const retryDiff = () => setDiffTick((tick) => tick + 1)
+  // The header's Stage file / Unstage file (§4). One in flight at a time, and its failure is a footer line rather than a lost press.
+  const [moving, setMoving] = useState(false)
+  const [moveErr, setMoveErr] = useState<string | null>(null)
   const diffRead = diffs[diffKey]
   const diff = diffRead?.diff ?? null
   // Parsed from the diff TEXT, not recomputed from two blobs: git already did the matching, and its rename and whitespace handling is what a reviewer is reading.
   const parsed = useMemo(() => (diff?.diff ? parseUnifiedDiff(diff.diff) : null), [diff?.diff])
+
+  // Whether this path has something to move in the scope on screen. The pane never learns the file's XY status letters, so the SCOPE is what names the direction: the staged diff's content is what unstaging takes out, the unstaged diff's is what staging puts in. A binary change counts — git reports it with no text, and it is still stageable.
+  const movable = mode !== 'file' && diff !== null && diff.isRepo && diff.exists && (diff.diff !== null || diff.binary)
+  const moveIndex = async () => {
+    if (moving || !movable) return
+    setMoving(true)
+    setMoveErr(null)
+    try {
+      const write = mode === 'staged' ? unstageWorkspacePaths : stageWorkspacePaths
+      await write(agentId, { paths: [path], ...(sessionId ? { sessionId } : {}) })
+      // The reply's fresh status has no home in this pane, so the panel that owns the lists is told instead; the diff under the reader is re-read because it just changed by definition.
+      setDiffTick((tick) => tick + 1)
+      onIndexChanged?.()
+    } catch (e) {
+      setMoveErr(gitWriteRequestFailureText(statusOf(e), codeOf(e)))
+    } finally {
+      setMoving(false)
+    }
+  }
 
   const file = read.file
   // The daemon's own byte offset, never recomputed from the decoded text: a slice can end mid-character, so the decoded length drifts from the byte count.
@@ -483,6 +514,24 @@ export function SessionViewer({
             </button>
           </div>
         ) : null}
+        {/* Stage file / Unstage file (§4). Withheld until the diff has answered with something to move: an action over a path with no changes in this scope would be a no-op dressed as a control. */}
+        {onIndexChanged && movable ? (
+          <button
+            type="button"
+            data-viewer-stage={mode === 'staged' ? 'unstage' : 'stage'}
+            className="dsbtn dsbtn-secondary xs flex-none disabled:pointer-events-none disabled:opacity-50"
+            disabled={moving}
+            title={
+              mode === 'staged'
+                ? 'Take this file out of the index; the working tree is untouched'
+                : 'Add this file’s changes to the index'
+            }
+            onClick={() => void moveIndex()}
+          >
+            {moving ? <Spinner size={12} /> : <Icon name={mode === 'staged' ? 'minus' : 'plus'} size={13} />}
+            <span className="max-desktop:hidden">{mode === 'staged' ? 'Unstage file' : 'Stage file'}</span>
+          </button>
+        ) : null}
         {meta ? (
           <span className="mono flex-none text-[11px] font-normal text-(--text-tertiary) max-desktop:hidden">
             {meta}
@@ -507,6 +556,17 @@ export function SessionViewer({
       ) : null}
 
       {mode === 'file' ? fileBody() : diffBody()}
+
+      {/* A stage that never reached an answer. Below the header rather than inside it, because the header has one line's worth of room and this is a sentence. */}
+      {moveErr ? (
+        <div
+          data-viewer-stage-error=""
+          className="flex flex-none items-start gap-[6px] border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--red-600)"
+        >
+          <Icon name="triangle-alert" size={14} color="var(--red-600)" className="mt-[2px] flex-none" />
+          <span>{moveErr}</span>
+        </div>
+      ) : null}
 
       {mode === 'file' && file?.truncated && isText ? (
         <div className="flex flex-none flex-wrap items-center gap-x-[10px] gap-y-1 border-t border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">

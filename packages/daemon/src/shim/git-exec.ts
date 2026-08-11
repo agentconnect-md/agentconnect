@@ -108,7 +108,7 @@ export function parseShortstat(stdout: string): { insertions: number; deletions:
 }
 
 /** Subcommands whose duration is set by a remote rather than by local work. */
-const NETWORK_SUBCOMMANDS = new Set(['clone', 'fetch', 'pull'])
+const NETWORK_SUBCOMMANDS = new Set(['clone', 'fetch', 'pull', 'push'])
 const NETWORK_DEADLINE_MS = 10 * 60_000
 const LOCAL_DEADLINE_MS = 120_000
 /** The requester outwaits the child so a terminated result is delivered rather than raced. */

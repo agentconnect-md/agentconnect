@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-// The dock's Git panel: what it reports to its tab, which side of the index each row opens, and what it draws for every degraded answer the git wire can give — an offline daemon, a from-scratch workspace, a clean tree, a capped status, a daemon too old to list commits, and a branch that tracks nothing.
-// It is a REVIEW surface in M2, so the absence of stage toggles and of a commit box is asserted here: a control that cannot work must not be drawn disabled either.
+// The dock's Git panel: what it reports to its tab, which side of the index each row opens, and what it draws for every degraded answer the git wire can give — an offline daemon, a from-scratch workspace, a clean tree, a capped status, a daemon too old to list commits, and a branch that tracks nothing. Since M3 it also writes: the per-row toggles, Stage all / Unstage all, and what the panel does with the fresh status a write answers with.
+// PREMISE CHANGED IN M3: M2 asserted that NO stage/commit control exists anywhere in this panel. That is no longer true and the assertion was not weakened but re-aimed — the absence is now asserted for `canWrite:false` (a viewer-role reader, whom the CP would 403), and the presence for `canWrite:true`. The rule it was protecting is intact: a control that cannot work is withheld, never drawn disabled.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -13,7 +13,15 @@ const wire = vi.hoisted(() => ({
   gitFails: false,
   log: null as unknown,
   logFailure: null as null | { status: number; code?: string },
-  logCalls: [] as Array<{ limit?: number; sessionId?: string }>
+  logCalls: [] as Array<{ limit?: number; sessionId?: string }>,
+  statusCalls: 0,
+  // The fresh status a stage/unstage answers with, and the write calls the panel actually made.
+  writeResult: null as unknown,
+  writeFailure: null as null | { status: number; code?: string },
+  writeCalls: [] as Array<{ kind: 'stage' | 'unstage'; paths: string[]; sessionId?: string }>,
+  // Held open so a test can observe the panel WHILE a write is in flight, then released by hand.
+  holdWrite: false,
+  releaseWrite: null as null | (() => void)
 }))
 
 vi.mock('@/lib/api', () => {
@@ -30,7 +38,10 @@ vi.mock('@/lib/api', () => {
   return {
     ApiError,
     fetchWorkspaceGitStatus: vi.fn((_agentId: string, sessionId?: string) => {
-      if (sessionId) return wire.gitFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.git)
+      if (sessionId) {
+        wire.statusCalls += 1
+        return wire.gitFails ? Promise.reject(new Error('offline')) : Promise.resolve(wire.git)
+      }
       return Promise.resolve(wire.primary)
     }),
     fetchWorkspaceGitLog: vi.fn((_agentId: string, opts: { limit?: number; sessionId?: string } = {}) => {
@@ -39,12 +50,36 @@ vi.mock('@/lib/api', () => {
         return Promise.reject(new ApiError('nope', wire.logFailure.status, wire.logFailure.code))
       }
       return Promise.resolve(wire.log)
+    }),
+    stageWorkspacePaths: vi.fn((_agentId: string, opts: { paths: string[]; sessionId?: string }) => {
+      wire.writeCalls.push({ kind: 'stage', ...opts })
+      return writeAnswer()
+    }),
+    unstageWorkspacePaths: vi.fn((_agentId: string, opts: { paths: string[]; sessionId?: string }) => {
+      wire.writeCalls.push({ kind: 'unstage', ...opts })
+      return writeAnswer()
+    }),
+    // Pressed only through the commit box, which has its own suite; here they exist so the panel's import graph resolves.
+    commitWorkspace: vi.fn(() =>
+      Promise.resolve({ isRepo: true, ok: true, sha: 'a'.repeat(40), detail: null, reason: null })
+    ),
+    pushWorkspace: vi.fn(() => Promise.resolve({ isRepo: true, ok: true, detail: null, ahead: 0, reason: null })),
+    draftWorkspaceCommitMessage: vi.fn(() => Promise.resolve({ ok: false, message: null, detail: 'no' }))
+  }
+
+  function writeAnswer(): Promise<unknown> {
+    if (wire.writeFailure) {
+      return Promise.reject(new ApiError('nope', wire.writeFailure.status, wire.writeFailure.code))
+    }
+    if (!wire.holdWrite) return Promise.resolve(wire.writeResult)
+    return new Promise((resolve) => {
+      wire.releaseWrite = () => resolve(wire.writeResult)
     })
   }
 })
 
 import { GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
-import { fetchWorkspaceGitLog } from '@/lib/api'
+import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitLogDto, WorkspaceGitStatusDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -53,6 +88,8 @@ let container: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot> | undefined
 let opened: Array<{ path: string; staged: boolean; untracked: boolean }> = []
 let verdicts: GitPanelVerdict[] = []
+// How many times the panel told its caller the checkout changed — what invalidates the Files tree's badges and the open diff.
+let wrote = 0
 
 function gitStatus(overrides: Partial<WorkspaceGitStatusDto> = {}): WorkspaceGitStatusDto {
   return {
@@ -110,6 +147,7 @@ function panel(props: Partial<PanelProps> = {}) {
       sessionId="session-1"
       onOpenDiff={(path, staged, untracked) => opened.push({ path, staged, untracked })}
       onVerdictChange={(verdict) => verdicts.push(verdict)}
+      onWrote={() => (wrote += 1)}
       {...props}
     />
   )
@@ -136,11 +174,25 @@ const text = () => container?.textContent ?? ''
 const rows = (section: 'staged' | 'changes') =>
   Array.from(container?.querySelectorAll<HTMLElement>(`[data-git-section="${section}"] [data-git-row]`) ?? [])
 const rowPaths = (section: 'staged' | 'changes') => rows(section).map((row) => row.dataset.gitRow ?? '')
+const toggles = (section: 'staged' | 'changes') =>
+  Array.from(container?.querySelectorAll<HTMLButtonElement>(`[data-git-section="${section}"] [data-git-toggle]`) ?? [])
+const stageAll = (section: 'staged' | 'changes') =>
+  container?.querySelector<HTMLButtonElement>(`[data-git-stage-all="${section}"]`) ?? undefined
 const commitRows = () => Array.from(container?.querySelectorAll<HTMLElement>('[data-git-commit]') ?? [])
 
 async function click(element: Element | undefined, what: string) {
   expect(element, what).toBeDefined()
   await act(async () => (element as HTMLElement | undefined)?.click())
+}
+
+// Through the PROTOTYPE setter: React 19 overrides the node's own `value` setter to track it, so assigning directly makes React believe nothing changed and no onChange fires.
+async function type(element: Element | undefined, value: string) {
+  expect(element, 'field').toBeDefined()
+  await act(async () => {
+    const field = element as HTMLTextAreaElement
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(field, value)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  })
 }
 
 beforeEach(() => {
@@ -150,8 +202,15 @@ beforeEach(() => {
   wire.log = gitLog()
   wire.logFailure = null
   wire.logCalls = []
+  wire.statusCalls = 0
+  wire.writeResult = gitStatus()
+  wire.writeFailure = null
+  wire.writeCalls = []
+  wire.holdWrite = false
+  wire.releaseWrite = null
   opened = []
   verdicts = []
+  wrote = 0
   vi.clearAllMocks()
 })
 
@@ -270,8 +329,9 @@ describe('GitPanel', () => {
     wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', 'M')] })
     await render({ openPath: 'src/a.ts', openStaged: true })
 
+    // The marker lives on the row WRAPPER since M3 split the row into an open-diff target and a stage toggle; the assertion is unchanged, only where the class hangs.
     const selected = (section: 'staged' | 'changes') =>
-      rows(section).filter((row) => row.className.includes('border-r-(--brand)')).length
+      rows(section).filter((row) => row.parentElement?.className.includes('border-r-(--brand)')).length
     expect(selected('staged')).toBe(1)
     // The same path is in both sections; only the scope on screen is marked.
     expect(selected('changes')).toBe(0)
@@ -301,16 +361,19 @@ describe('GitPanel', () => {
     expect(text()).toContain('tracks no remote branch')
   })
 
-  it('has no stage toggle, no Stage all and no commit box — M2 is a review surface', async () => {
+  it('withholds every write control from a reader whose role cannot write, and says why', async () => {
     wire.git = gitStatus({ clean: false, files: [file('a.ts', 'M', 'M')] })
-    await render()
+    await render({ canWrite: false })
 
-    const labels = Array.from(container?.querySelectorAll('button') ?? []).map((b) => b.textContent?.trim() ?? '')
-    // Every button in the panel is a file row; nothing offers to stage, unstage or commit — not even disabled.
-    expect(labels.some((label) => /stage|commit|push|generate/i.test(label))).toBe(false)
+    // Withheld, not disabled: the CP would 403 each of these, and a control that cannot work is worse than a surface that does not claim one.
+    expect(toggles('staged')).toHaveLength(0)
+    expect(toggles('changes')).toHaveLength(0)
+    expect(stageAll('staged')).toBeUndefined()
+    expect(stageAll('changes')).toBeUndefined()
+    expect(container?.querySelector('[data-commit-box]')).toBeNull()
     expect(container?.querySelector('textarea')).toBeNull()
-    expect(container?.querySelector('input')).toBeNull()
     expect(text()).toContain('Review only')
+    expect(text()).toContain('cannot change this checkout')
   })
 
   it('draws a from-scratch workspace as data, with no sections and no log', async () => {
@@ -381,5 +444,345 @@ describe('GitPanel', () => {
       { settled: true, changed: 0 },
       { settled: true, changed: 1 }
     ])
+  })
+})
+
+// M3's write half. Every case here is DATA: a write the daemon accepted answers with the fresh status, and one it refused answers with a status code the panel turns into copy.
+describe('GitPanel — staging', () => {
+  const dirty = () =>
+    gitStatus({ clean: false, files: [file('src/staged.ts', 'A', ' '), file('src/edited.ts', ' ', 'M')] })
+
+  it('stages one path from its row and draws the reply instead of re-reading', async () => {
+    wire.git = dirty()
+    // The daemon's answer: the edited file is now staged too.
+    wire.writeResult = gitStatus({
+      clean: false,
+      files: [file('src/staged.ts', 'A', ' '), file('src/edited.ts', 'M', ' ')]
+    })
+    await render({ canWrite: true })
+    const statusReads = wire.statusCalls
+
+    await click(toggles('changes')[0], 'stage toggle')
+
+    expect(wire.writeCalls).toEqual([{ kind: 'stage', paths: ['src/edited.ts'], sessionId: 'session-1' }])
+    // The reply IS the fresh status, so nothing was re-read — that is the whole point of the REP shape (§6).
+    expect(wire.statusCalls).toBe(statusReads)
+    expect(fetchWorkspaceGitLog).toHaveBeenCalledTimes(1)
+    expect(rowPaths('staged')).toEqual(['src/staged.ts', 'src/edited.ts'])
+    expect(rowPaths('changes')).toEqual([])
+    // The badge follows the applied status, and the caller is told so it can re-read what it owns.
+    expect(verdicts.at(-1)).toEqual({ settled: true, changed: 2 })
+    expect(wrote).toBe(1)
+  })
+
+  it('unstages from the staged section, naming the other direction', async () => {
+    wire.git = dirty()
+    wire.writeResult = gitStatus({ clean: false, files: [file('src/staged.ts', ' ', 'A')] })
+    await render({ canWrite: true })
+
+    await click(toggles('staged')[0], 'unstage toggle')
+
+    expect(wire.writeCalls).toEqual([{ kind: 'unstage', paths: ['src/staged.ts'], sessionId: 'session-1' }])
+    expect(rowPaths('staged')).toEqual([])
+  })
+
+  it('sends the whole section in one request for Stage all and Unstage all', async () => {
+    wire.git = gitStatus({
+      clean: false,
+      files: [file('a.ts', 'A', ' '), file('b.ts', ' ', 'M'), file('c.ts', '?', '?')]
+    })
+    // The reply repeats the same tree, so both sections stay on screen and the second press has a control to press.
+    wire.writeResult = wire.git
+    await render({ canWrite: true })
+
+    await click(stageAll('changes'), 'Stage all')
+    // Untracked files are in Changes and are stageable, so they ride the same request.
+    expect(wire.writeCalls.at(-1)).toEqual({ kind: 'stage', paths: ['b.ts', 'c.ts'], sessionId: 'session-1' })
+
+    await click(stageAll('staged'), 'Unstage all')
+    expect(wire.writeCalls.at(-1)).toEqual({ kind: 'unstage', paths: ['a.ts'], sessionId: 'session-1' })
+  })
+
+  it('omits sessionId for the agent’s primary checkout', async () => {
+    wire.primary = dirty()
+    await render({ canWrite: true, sessionId: undefined })
+
+    await click(toggles('changes')[0], 'stage toggle')
+    expect(wire.writeCalls).toEqual([{ kind: 'stage', paths: ['src/edited.ts'] }])
+  })
+
+  it('spins only the pressed control and refuses a second press while one is in flight', async () => {
+    wire.git = dirty()
+    wire.writeResult = dirty()
+    wire.holdWrite = true
+    await render({ canWrite: true })
+
+    await click(toggles('changes')[0], 'stage toggle')
+    expect(wire.writeCalls).toHaveLength(1)
+    expect(toggles('changes')[0]?.disabled).toBe(true)
+    expect(toggles('staged')[0]?.disabled).toBe(true)
+    expect(stageAll('changes')?.disabled).toBe(true)
+    // Only the pressed row shows the spinner; the other row still shows its glyph.
+    expect(toggles('changes')[0]?.querySelector('[aria-label="Loading"]')).not.toBeNull()
+    expect(toggles('staged')[0]?.querySelector('[aria-label="Loading"]')).toBeNull()
+
+    await click(toggles('staged')[0], 'unstage toggle')
+    expect(wire.writeCalls).toHaveLength(1)
+
+    await act(async () => {
+      wire.releaseWrite?.()
+      await Promise.resolve()
+    })
+    expect(toggles('changes')[0]?.disabled).toBe(false)
+  })
+
+  it('sends ONE write for a double-click, before any re-render can disable the toggle', async () => {
+    wire.git = dirty()
+    wire.writeResult = dirty()
+    wire.holdWrite = true
+    await render({ canWrite: true })
+    const toggle = toggles('changes')[0]
+
+    // Both presses land in the SAME task, so neither sees the other's state update and the toggle is still enabled for both.
+    await act(async () => {
+      toggle?.click()
+      toggle?.click()
+    })
+    expect(wire.writeCalls).toHaveLength(1)
+  })
+
+  it('tells a busy agent apart from a daemon too old to write, and from an offline one', async () => {
+    wire.git = dirty()
+    wire.writeFailure = { status: 409, code: 'WORKSPACE_STALE' }
+    await render({ canWrite: true })
+
+    await click(toggles('changes')[0], 'stage toggle')
+    expect(text()).toContain('working in this workspace right now')
+    // The lists are untouched: nothing moved, so nothing is redrawn as if it had.
+    expect(rowPaths('changes')).toEqual(['src/edited.ts'])
+    expect(wrote).toBe(0)
+
+    wire.writeFailure = { status: 409, code: 'DAEMON_FEATURE_MISSING' }
+    await click(toggles('changes')[0], 'stage toggle')
+    expect(text()).toContain('cannot stage or commit from the console')
+
+    wire.writeFailure = { status: 503 }
+    await click(toggles('changes')[0], 'stage toggle')
+    expect(text()).toContain('daemon may be offline')
+  })
+
+  it('ignores a write reply whose read has since been replaced by a refresh', async () => {
+    wire.git = dirty()
+    wire.holdWrite = true
+    wire.writeResult = gitStatus({ clean: false, files: [file('stale.ts', 'A', ' ')] })
+    await render({ canWrite: true })
+
+    await click(toggles('changes')[0], 'stage toggle')
+    // The tab's refresh lands first and answers with a different tree.
+    wire.git = gitStatus({ clean: false, files: [file('fresh.ts', 'A', ' ')] })
+    await rerender({ canWrite: true, refreshTick: 1 })
+    await act(async () => {
+      wire.releaseWrite?.()
+      await Promise.resolve()
+    })
+
+    // The in-flight reply describes the tree BEFORE that refresh, so it is dropped rather than painted over a newer read.
+    expect(rowPaths('staged')).toEqual(['fresh.ts'])
+  })
+
+  it('shows a refusal to the box that is mounted when it lands, not to the one that asked', async () => {
+    // The dangerous shape: the spinner is shared so it clears, but a refusal held in component state
+    // reaches an unmounted instance — so the live box says nothing, and the reader retries a paid pass
+    // without knowing the first one already declined.
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    let release: (() => void) | undefined
+    vi.mocked(draftWorkspaceCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: false, message: null, detail: 'The runtime ran out of budget.' })
+        }) as ReturnType<typeof draftWorkspaceCommitMessage>
+    )
+    await render({ canWrite: true })
+    await click(container?.querySelector<HTMLElement>('[data-commit-draft]') ?? undefined, 'wand')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+
+    expect(container?.querySelector('[data-commit-outcome]')?.textContent ?? '').toContain('ran out of budget')
+    // And the wand is pressable again, so the reader can retry KNOWING the first pass failed.
+    expect(container?.querySelector<HTMLButtonElement>('[data-commit-draft]')?.disabled).toBe(false)
+  })
+
+  it('comes back BUSY after a remount, so a second click cannot bill a second model pass', async () => {
+    // `busy` used to be component state, so the box the panel remounts for the same checkout started
+    // idle while the previous instance's pass was still running — with the wand enabled.
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    let release: (() => void) | undefined
+    vi.mocked(draftWorkspaceCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, message: 'fix: only once', detail: null })
+        }) as ReturnType<typeof draftWorkspaceCommitMessage>
+    )
+    await render({ canWrite: true })
+    const wand = () => container?.querySelector<HTMLButtonElement>('[data-commit-draft]') ?? undefined
+    await click(wand(), 'wand')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+
+    // Still running, so the control must refuse — pressed here BEFORE the release.
+    expect(wand()?.disabled).toBe(true)
+    await act(async () => wand()?.click())
+    expect(vi.mocked(draftWorkspaceCommitMessage)).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+    expect(vi.mocked(draftWorkspaceCommitMessage)).toHaveBeenCalledTimes(1)
+    expect(container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')?.value).toBe('fix: only once')
+  })
+
+  it('keeps a drafted message the reader paid for, even if they switched checkout while it ran', async () => {
+    // The pass costs a model call. If the reader looks at a sibling agent while it is running, the box
+    // is unmounted before the answer arrives, so writing only to component state drops it — and the
+    // reader has paid for nothing. Held promise, switched through the FULL panel, then resolved.
+    let release: (() => void) | undefined
+    vi.mocked(draftWorkspaceCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, message: 'fix: the paid answer', detail: null })
+        }) as ReturnType<typeof draftWorkspaceCommitMessage>
+    )
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    await render({ canWrite: true })
+    await click(container?.querySelector<HTMLElement>('[data-commit-draft]') ?? undefined, 'wand')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    // BACK to A before the answer lands: the remounted box has already read the store, so a
+    // completion that only writes the map and calls the old instance's setter never reaches it.
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+
+    expect(container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')?.value).toBe('fix: the paid answer')
+  })
+
+  it('does not hand back a message that has already become a commit', async () => {
+    // The inverse: a commit in flight while the reader switches away. The unmount parks the OLD text,
+    // and the successful clear lands on an unmounted component — so returning would offer to commit
+    // the very message that is already in the history.
+    let release: (() => void) | undefined
+    vi.mocked(commitWorkspace).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ isRepo: true, ok: true, sha: 'abc1234', detail: null, reason: null })
+        }) as ReturnType<typeof commitWorkspace>
+    )
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    await render({ canWrite: true })
+    const box = () => container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')
+    await act(async () => {
+      const node = box()!
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(node, 'feat: already landed')
+      node.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await click(container?.querySelector<HTMLElement>('[data-commit-submit]') ?? undefined, 'commit')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    // BACK to A before the commit lands, so the live box is the one that has to stop offering a
+    // message which is by then already in the history.
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+
+    expect(box()?.value ?? '').toBe('')
+  })
+
+  it('keeps a commit draft across a checkout switch, through the panel that unmounts the box', async () => {
+    // Driven through the FULL panel on purpose: the panel returns null while a newly selected
+    // scope's status settles, so a draft store living inside CommitBox is rebuilt empty on the way
+    // back — losing the draft during the exact switch it exists to survive. Rerendering CommitBox
+    // directly cannot see that, which is why the first version of this fix passed a test and failed
+    // in the app.
+    await render({ canWrite: true })
+    const box = () => container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')
+    expect(box(), 'commit box on the first checkout').toBeDefined()
+    await act(async () => {
+      const node = box()!
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(node, 'fix: keep me')
+      node.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(box()?.value).toBe('fix: keep me')
+
+    // A different agent: the box must NOT carry the draft there.
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    expect(box()?.value ?? '').toBe('')
+
+    // Back again — the draft is still the reader's.
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    expect(box()?.value).toBe('fix: keep me')
+  })
+
+  it('re-reads status and log after the commit box reports a commit', async () => {
+    wire.git = dirty()
+    await render({ canWrite: true })
+    expect(fetchWorkspaceGitLog).toHaveBeenCalledTimes(1)
+    const statusReads = wire.statusCalls
+
+    // The commit REP carries no status, so the panel has to ask again — both halves moved.
+    wire.git = gitStatus({ clean: false, files: [file('src/edited.ts', ' ', 'M')] })
+    wire.log = gitLog({ commits: [commit({ subject: 'feat: staged work' })] })
+    await type(container?.querySelector('[data-commit-message]') ?? undefined, 'feat: staged work')
+    await click(container?.querySelector('[data-commit-submit]') ?? undefined, 'commit')
+
+    expect(wire.statusCalls).toBeGreaterThan(statusReads)
+    expect(fetchWorkspaceGitLog).toHaveBeenCalledTimes(2)
+    expect(rowPaths('staged')).toEqual([])
+    expect(text()).toContain('feat: staged work')
+    expect(wrote).toBe(1)
+  })
+
+  it('keeps a typed commit message across a refresh, which puts the status read back to pending', async () => {
+    wire.git = dirty()
+    await render({ canWrite: true })
+    await type(container?.querySelector('[data-commit-message]') ?? undefined, 'feat: half-written')
+
+    await rerender({ canWrite: true, refreshTick: 1 })
+    // A message the reader typed — or paid a model to write — must not be thrown away by a read the panel started.
+    expect(container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')?.value).toBe('feat: half-written')
+  })
+
+  it('withholds the push control when the status already says the branch cannot be pushed', async () => {
+    // A detached HEAD, which is what every session worktree is: `branch:null` is exactly the daemon's `detached-head` refusal, so pressing would only be told what is already on screen.
+    wire.git = gitStatus({ clean: false, branch: null, tracking: null, files: [file('a.ts', 'A', ' ')] })
+    await render({ canWrite: true })
+    expect(container?.querySelector('[data-commit-push]')).toBeNull()
+    expect(text()).toContain('no branch checked out')
+    // A commit still works in a detached worktree — only the push has nowhere to go.
+    expect(container?.querySelector('[data-commit-submit]')).not.toBeNull()
+
+    // A branch with no upstream: same rule, its own sentence.
+    wire.git = gitStatus({ clean: false, branch: 'work', tracking: null, files: [file('a.ts', 'A', ' ')] })
+    await rerender({ canWrite: true, refreshTick: 1 })
+    expect(container?.querySelector('[data-commit-push]')).toBeNull()
+    expect(text()).toContain('tracks no remote branch, so the daemon has no ref')
+
+    wire.git = gitStatus({ clean: false, branch: 'work', tracking: 'origin/work', files: [file('a.ts', 'A', ' ')] })
+    await rerender({ canWrite: true, refreshTick: 2 })
+    expect(container?.querySelector('[data-commit-push]')).not.toBeNull()
+  })
+
+  it('draws no commit box over a workspace that is not a checkout', async () => {
+    wire.git = gitStatus({ isRepo: false })
+    await render({ canWrite: true })
+
+    expect(container?.querySelector('[data-commit-box]')).toBeNull()
+    expect(text()).toContain('not a git checkout')
   })
 })

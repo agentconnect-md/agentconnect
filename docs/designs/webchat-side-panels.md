@@ -701,6 +701,40 @@ the commit box with the wand button, and the viewer's Stage file / Unstage file
 action. _Exit:_ an operator can stage, commit and push an agent's work from the
 console.
 
+Known M3 follow-ups:
+
+- The **busy predicate is unpinned**: dropping both turn terms of `workspaceMutationBusy` leaves 162
+  tests green, so the half of serialisation that stops a console commit landing mid-turn has no
+  coverage for either coordinator. This predates M3 but M3 is what made it load-bearing.
+- `git add` / `git commit` hold the turn-admission fence without a ceiling, and a push holds it for
+  60s while cold-host turns fail hard.
+- A staged RENAME cannot be partially unstaged — it needs a `from` field on `GitStatusSummary` and
+  `WorkspaceGitFile` first.
+- The subject truncation can split a surrogate pair.
+- No concurrency cap on the wand across tabs or users, and each press rewrites the warm host's
+  selector caches (harmless today: only the prober and the extraction passes read them).
+- No audit record for a surface that commits and pushes as the agent.
+- The commit identity is GitHub-App-only, so M3's exit criterion is unmet for a deployment without
+  one. The refusal is correct and says so, but the capability is missing rather than degraded.
+- The write wiring in `SessionDetailView` was reconstructed after being lost to a stray
+  `git checkout` during review; two of its three parts were caught by existing tests and the third
+  (keeping header focus when the viewer closes) is still **unpinned**.
+- `CommitBox` holds **no component state at all**. Everything per checkout — the draft, what is in
+  flight, and the last outcome — lives in one module-level record read through `useSyncExternalStore`.
+  The panel above unmounts the box while a newly selected scope settles, so any of the three held in
+  component state is lost across `A → B → A`, and a request resolving after the switch calls the
+  setter of an instance that no longer exists. Review found that same bug once per value across four
+  rounds, every time inside a mechanism written to keep component state and a store in step. The
+  record's SHAPE is the guard: a new per-checkout value goes in it, not beside it. Three earlier attempts coordinated the two
+  and each left a window open, the last being `A → B → A → resolve` — the remounted box read the store
+  before the answer landed and the completion then called an unmounted instance's setter. If a future
+  change reintroduces component state here, that class of bug comes back with it.
+- The `isUnbornHead` guard's remaining purpose — telling a read timeout or a spawn failure apart from
+  an empty history — has **no constructible fixture**. Measured: every filesystem corruption git can
+  be handed (a missing or unreadable `.git/objects`) makes git itself answer "not a git repository",
+  which the runner preflight now classifies correctly and earlier. The guard stays for the failures
+  that do reach it; its coverage is the classification, not the timeout.
+
 **M4 — Tasks.** `task/list` + `task/cancel` frames over the existing lease
 bookkeeping, `GET /agents/:id/tasks` + cancel route, panel with state, elapsed
 and step. _Exit:_ background tasks are visible and cancellable.

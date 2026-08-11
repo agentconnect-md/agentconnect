@@ -1227,7 +1227,7 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
 
 export default function SessionDetailView() {
   const acpRegistry = useAcpRegistry()
-  const { activeOrg, orgPath } = useOrgs()
+  const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -1865,6 +1865,20 @@ export default function SessionDetailView() {
   const [filesRootSettled, setFilesRootSettled] = useState(false)
   // The Git tab's own `refresh-cw`, and the verdict it reports — its settle state feeds the tab status, its changed count the tab's badge.
   const [gitRefreshTick, setGitRefreshTick] = useState(0)
+  // The ORG role, which is what the CP gates these writes on (`denyViewerWrite`): a viewer gets the
+  // read surface M2 shipped and is told so, rather than offered a control the route will refuse.
+  // The demo tour has no daemon to write to at all.
+  const canWriteWorkspace = !MOCK_MODE && myRole !== 'viewer'
+  // The viewer's own stage/unstage moved the index, so the panel's status and its log are stale.
+  const onViewerIndexChanged = useCallback(() => setGitRefreshTick((tick) => tick + 1), [])
+  // A write from the PANEL moves the index the other way: the open diff now describes a tree that
+  // moved, and the Files tree's status tags with it. The panel applies the fresh status its own
+  // reply carried, so it is the only reader here that does NOT need a re-read.
+  const [viewerDiffTick, setViewerDiffTick] = useState(0)
+  const onPanelWrote = useCallback(() => {
+    setViewerDiffTick((tick) => tick + 1)
+    setFilesRefreshTick((tick) => tick + 1)
+  }, [])
   const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({ settled: false, changed: null })
   // A seed narrowed to the conversation already on screen hides the list AND the picker that could widen it, so re-ask it unfiltered.
   const railSeedKeyNow = railSeedKey(railFilter)
@@ -3646,7 +3660,16 @@ export default function SessionDetailView() {
             // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
             mode={viewerMode}
             onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode)}
-            onClose={() => setViewerFile(null)}
+            diffRefreshTick={viewerDiffTick}
+            {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
+            onClose={() => {
+              // Keep the reader ON the workspace they were reading before dropping `agent=`. The
+              // param outranks the stored selection, so clearing it alone snaps focus back to the
+              // default — a scope change with no user action behind it, which would discard whatever
+              // is in the commit box, including a message the reader just paid a model pass for.
+              if (filesAgentId) setHeaderFocusSelection({ scope: headerFocusScope, agentId: filesAgentId })
+              setViewerFile(null)
+            }}
           />
         ) : null}
 
@@ -4524,6 +4547,8 @@ export default function SessionDetailView() {
               refreshTick={gitRefreshTick}
               openPath={viewerOpen && viewerMode !== 'file' ? viewerPath : null}
               openStaged={viewerMode === 'staged'}
+              canWrite={canWriteWorkspace}
+              onWrote={onPanelWrote}
               onOpenDiff={(path, staged, untracked) =>
                 setViewerFile(path, filesAgentId, untracked ? 'file' : staged ? 'staged' : 'diff')
               }

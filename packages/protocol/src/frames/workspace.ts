@@ -168,6 +168,13 @@ export type WorkspaceDeleteOk = z.infer<typeof WorkspaceDeleteOk>
  *   no changes and a non-repo workspace are all DATA.
  * - `workspace/gitlog`: the newest commits of the checked-out branch, each marked
  *   `pushed` when the branch's upstream ref already contains it.
+ *
+ * The write half (`workspace/gitstage` / `gitunstage` / `gitcommit` / `gitpush`) is
+ * DATA-oriented in the same way, and more strictly: nothing to stage, a commit with
+ * an empty index, a daemon with no registered commit identity, a push with no
+ * upstream, from a detached HEAD, or one the remote rejects are all normal REPs the
+ * console renders. Stage/unstage answer with the FRESH `WorkspaceGitStatus` so the
+ * panel never re-polls for the result of its own action.
  */
 
 /** C→D REQ: report `git status` of the agent's workspace (is it clean?). */
@@ -293,3 +300,123 @@ export const WorkspaceGitPullResult = z.object({
   deletions: z.number().int().nonnegative().optional()
 })
 export type WorkspaceGitPullResult = z.infer<typeof WorkspaceGitPullResult>
+
+/** How many paths one stage/unstage REQ may carry. 500 matches the daemon's own cap on
+ * `WorkspaceGitStatus.files`, so a console "Stage all" over a full status page is one REQ. */
+export const MAX_WORKSPACE_STAGE_PATHS = 500
+
+/** Total UTF-8 bytes across those paths — the bound that actually keeps the REQ inside the
+ * 256 KiB frame cap, which 500 × 4096 could not. A path may legally contain control bytes and
+ * JSON escapes each to `\uXXXX` (6 wire bytes), so 32 KiB of paths is the worst-case ceiling
+ * (pinned by a codec test). Ample for 500 ordinary paths; a bigger selection is chunked. */
+export const MAX_WORKSPACE_STAGE_PATH_BYTES = 32 * 1024
+
+/** Ceiling on one console commit message (subject + body), generated or hand-written. */
+export const MAX_WORKSPACE_COMMIT_MESSAGE = 8_000
+
+function stagePathBytes(paths: string[]): number {
+  const encoder = new TextEncoder()
+  return paths.reduce((total, path) => total + encoder.encode(path).byteLength, 0)
+}
+
+/** C→D REQ: stage (`gitstage`) or unstage (`gitunstage`) exactly these paths. An EMPTY list is
+ * a no-op that still answers with the fresh status — staging nothing is data, not a bad
+ * request. Paths the checkout does not currently report as changed are skipped the same way. */
+export const WorkspaceGitStageReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional(),
+  paths: z
+    .array(z.string().min(1).max(4096)) // workspace-relative POSIX paths, bounded like write/delete
+    .max(MAX_WORKSPACE_STAGE_PATHS)
+    .refine((paths) => stagePathBytes(paths) <= MAX_WORKSPACE_STAGE_PATH_BYTES, {
+      message: `paths exceed ${MAX_WORKSPACE_STAGE_PATH_BYTES} bytes in total`
+    })
+})
+export type WorkspaceGitStageReq = z.infer<typeof WorkspaceGitStageReq>
+
+/** Why a git write did not do what was asked. Present only when `ok:false`, and a closed
+ * vocabulary because the console offers a different next action for each: pull before pushing,
+ * stage something first, commit from the agent instead. The `detail` beside it is hand-written
+ * or scrubbed of host paths, never raw git output with the workspace path in it. */
+export const WorkspaceGitWriteReason = z.enum([
+  'not-a-repo', // from-scratch workspace (no .git) — git writes are N/A
+  'nothing-staged', // commit with an empty index diff
+  'empty-message', // commit message is blank once trimmed
+  'no-identity', // no `gitCommitIdentity` was registered, so the commit would take the host operator's
+  'detached-head', // push from a worktree with no branch (every session worktree is detached)
+  'no-upstream', // the branch tracks nothing, so there is no ref to push to
+  'unsafe-origin', // the checkout's `origin` is not the daemon-authorized remote
+  'unsafe-config', // the checkout's local config carries a disallowed override (audit refused)
+  'diverged', // push rejected as non-fast-forward — the remote has commits this branch lacks
+  'rejected', // the remote refused the push (protected branch, hook, credentials, permissions)
+  'failed' // anything else git reported; `detail` carries the scrubbed message
+])
+export type WorkspaceGitWriteReason = z.infer<typeof WorkspaceGitWriteReason>
+
+/** C→D REQ: commit the staged changes of the workspace (or session worktree). */
+export const WorkspaceGitCommitReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional(),
+  message: z.string().min(1).max(MAX_WORKSPACE_COMMIT_MESSAGE) // subject + optional body, as git receives it
+})
+export type WorkspaceGitCommitReq = z.infer<typeof WorkspaceGitCommitReq>
+
+/** D→C REP (corr = the req id): the commit outcome. A refusal is DATA (`ok:false` + `reason` +
+ *  `detail`), not an error frame. */
+export const WorkspaceGitCommitResult = z.object({
+  agentId: z.string(),
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git) — nothing to commit
+  ok: z.boolean(), // true ⇒ a commit was created
+  sha: z.string().optional(), // full 40-hex hash of the new commit (present iff ok)
+  detail: z.string().optional(), // human summary or refusal reason (host paths stripped)
+  reason: WorkspaceGitWriteReason.optional() // machine reason, present only when ok:false
+})
+export type WorkspaceGitCommitResult = z.infer<typeof WorkspaceGitCommitResult>
+
+/** C→D REQ: push the checked-out branch to the daemon-authorized remote. No refspec and no
+ *  force option on the wire: the daemon derives both, and a console push never forces. */
+export const WorkspaceGitPushReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional()
+})
+export type WorkspaceGitPushReq = z.infer<typeof WorkspaceGitPushReq>
+
+/** D→C REP (corr = the req id): the push outcome. A rejection is DATA (`ok:false` + `reason` +
+ *  `detail`), not an error frame. A push with nothing to send is `ok:true` with `ahead:0` — the
+ *  requested state already holds. */
+export const WorkspaceGitPushResult = z.object({
+  agentId: z.string(),
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git) — nothing to push
+  ok: z.boolean(), // true ⇒ the remote now has every local commit on this branch
+  detail: z.string().optional(), // human summary or refusal reason (host paths stripped)
+  ahead: z.number().int().nonnegative().optional(), // commits STILL ahead of the upstream (0 once pushed)
+  reason: WorkspaceGitWriteReason.optional() // machine reason, present only when ok:false
+})
+export type WorkspaceGitPushResult = z.infer<typeof WorkspaceGitPushResult>
+
+/** C→D REQ: draft a commit message from the workspace's STAGED diff, on the agent's OWN runtime
+ *  (the CP never calls a model provider — webchat-side-panels.md §2). A bounded utility call, not
+ *  an agent turn: no tools, no transcript entry, no session state change. Writes nothing — the
+ *  reader edits the draft and commits it with `workspace/gitcommit`. It costs model tokens, so it
+ *  is only ever sent for an explicit press (§5.1), never prefetched. */
+export const WorkspaceGitMessageReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional()
+})
+export type WorkspaceGitMessageReq = z.infer<typeof WorkspaceGitMessageReq>
+
+/** D→C REP (corr = the req id): the drafted message. EVERY way this can fail to produce one is
+ *  DATA (`ok:false` + `detail`) — nothing staged, a runtime with no read-only mode, a runtime that
+ *  answers with prose, a timeout, a cancel. `message` is a validated conventional-commit subject
+ *  plus optional body, ready to put straight in the commit box. */
+export const WorkspaceGitMessageResult = z.object({
+  agentId: z.string(),
+  ok: z.boolean(), // true ⇒ `message` is present and usable
+  message: z.string().max(MAX_WORKSPACE_COMMIT_MESSAGE).optional(),
+  detail: z.string().optional() // human explanation of a refusal (host paths stripped)
+})
+export type WorkspaceGitMessageResult = z.infer<typeof WorkspaceGitMessageResult>

@@ -306,7 +306,9 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
+  WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveMemoryDreamingPolicy,
   effectiveManagedMemoryScope,
@@ -736,11 +738,11 @@ const MAX_QUEUED_PER_SESSION = 10
 const MAX_TURN_CONTEXT_REGENERATIONS = 3
 const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
 
-/** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
- *  how long after the abort the daemon stops awaiting `host.prompt` and discards
- *  the isolated ACP session, rather than wedging forever. The runner's own grace
- *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
-const DREAM_CANCEL_FORCE_MS = 15_000
+/** Bounded hard-stop for an isolated model pass (a dream extraction, a commit-message draft) whose
+ *  runtime ignores `session/cancel`: how long after the abort the daemon stops awaiting
+ *  `host.prompt` and discards the isolated ACP session, rather than wedging forever. The dream
+ *  runner's own grace window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
+const CANCEL_FORCE_MS = 15_000
 
 /** How often the idle sweep also reclaims abandoned probe temp roots. One disposable
  *  probe can materialize gigabytes of package caches, so PID-tagged roots whose owner
@@ -1736,6 +1738,10 @@ export class Daemon {
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
+  /** Throwaway empty cwd per agent for the console's commit-message pass (never written to). */
+  private commitMessageDirs = new Map<string, string>()
+  /** The quarantine key of an agent's LAST commit-message pass, so presses don't accumulate one. */
+  private commitMessageTombstones = new Map<string, string>()
   /** Host instances that failed the trusted/read-only preflight; retry only after host replacement. */
   private memoryExtractionUnavailable = new WeakSet<AcpHost>()
   /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
@@ -5150,7 +5156,9 @@ export class Daemon {
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
+      WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
+      WORKSPACE_GIT_WRITE_FEATURE,
       ...(this.sandboxMechanism ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
@@ -5412,6 +5420,114 @@ export class Daemon {
       this.memoryExtractionQuarantines.set(key, agentId)
       this.memoryExtractionCollectors.delete(key)
     }
+  }
+
+  /**
+   * One bounded commit-message pass for the console's wand (webchat-side-panels.md §5.1): a FRESH
+   * isolated ACP session on the agent's own runtime, prompted once, then discarded.
+   *
+   * What is copied from the two extraction passes and what is not:
+   * - The **fresh, discarded session** is the dream's shape (daemon.ts `runDreamExtractionOnHost`):
+   *   nothing about one press may linger in a cached context, and the LIVE chat session is never
+   *   prompted — the design requires no transcript entry, and the live session also carries tools
+   *   and history this call must not get.
+   * - The **warm host** is distillation's shape (`runMemoryExtraction`). A dedicated one-off host is
+   *   the dream's credential isolation, and it costs an adapter spawn per press; the reader is
+   *   watching a spinner. The diff is the agent's own staged work, not a mined third-party
+   *   transcript, so the residual accepted here is the one #658 already tracks for distillation:
+   *   an injected diff runs against a host that holds tool credentials, and read-only blocks writes,
+   *   not reads.
+   * - **Silence** is distillation's shape: a collector with no `sessionKey` and no `transcript`, so
+   *   this produces zero store rows, zero telemetry, and no platform delivery — the collector's
+   *   presence in `onAcpUpdate` is what keeps the whole turn out of every consumer at once.
+   * - **No MCP tools at all** (`newSession(cwd, [])`), and the collector's blanket permission cancel
+   *   denies anything the runtime asks to do. Its BUILT-IN tools cannot be removed over ACP, so the
+   *   read-only/plan mode below is the hard gate that neuters them, exactly as the dream documents.
+   *
+   * cwd is a throwaway empty dir, not the checkout: the runtime would otherwise load the repository's
+   * own agent instructions into a utility call that must only read the diff it was handed.
+   *
+   * Every failure here is DATA at the caller (`cp/workspace-git.ts` turns it into `ok:false`), so
+   * this method may throw freely — including on the `signal`, which the caller arms as its budget.
+   */
+  private async runCommitMessagePass(
+    agentId: string,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal
+  ): Promise<{ output: string; stopReason: string }> {
+    if (!this.agents.get(agentId)) throw new Error(`unknown agent ${agentId}`)
+    if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
+    const host = await this.ensureHostAsync(agentId)
+    // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
+    // runtime has that channel and is prepended inline where it does not. The output contract lives
+    // in the prompt either way, so a runtime that drops the key still answers in the right shape.
+    const trusted = host.usesMetaSystemPrompt()
+    // HARD GATE, fail closed: a staged diff can carry injected text, and this pass must not be the
+    // thing that gives it a write. No verified non-mutating mode ⇒ no draft.
+    const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions()?.modes ?? [])
+    if (!readOnlyMode) throw new Error('runtime lacks a verified read-only/plan mode')
+    let cwd = this.commitMessageDirs.get(agentId)
+    if (!cwd) {
+      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-commit-message-'))
+      this.commitMessageDirs.set(agentId, cwd)
+    }
+    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    const key = pendingTurnKey(agentId, sessionId)
+    try {
+      if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+        throw new Error('runtime rejected the read-only/plan mode')
+      }
+      if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
+      const onAbort = () => void host.cancel(sessionId).catch(() => {})
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+      const chunks: string[] = []
+      this.memoryExtractionQuarantines.delete(key)
+      this.memoryExtractionCollectors.set(key, { chunks })
+      try {
+        // Keep the invariant every host.prompt in this file holds: config files exist for the turn.
+        this.rematerializeConfigFiles(agentId)
+        const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+        const result = await this.promptWithCancelBackstop(
+          host,
+          sessionId,
+          text,
+          signal,
+          (detached) => {
+            // Release the chunks but keep a key-only tombstone: a detached adapter can still emit.
+            this.memoryExtractionCollectors.delete(key)
+            this.retainCommitMessageTombstone(agentId, key)
+            void detached.catch(() => {})
+          },
+          'commit-message pass'
+        )
+        // Token counts only, never content: this pass owns no session row to bill, so the operator's
+        // only view of what a wand press cost is this line.
+        this.log.debug(
+          `commit-message: agent "${agentId}" answered (${result.stopReason}, ${result.usage?.totalTokens ?? 0} tokens)`
+        )
+        return { output: chunks.join(''), stopReason: String(result.stopReason) }
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+        this.retainCommitMessageTombstone(agentId, key)
+        this.memoryExtractionCollectors.delete(key)
+      }
+    } finally {
+      // The warm host stays; only THIS session goes. Its quarantine tombstone is reclaimed by
+      // stopHost's per-agent sweep, which a warm-host session (unlike a dream's) always reaches.
+      host.discardSession(sessionId)
+    }
+  }
+
+  /** Keep the terminal fence for THIS pass and drop the one before it. Every press opens a fresh ACP
+   *  session, so without the replacement a long-lived warm host would accumulate one tombstone per
+   *  press until it stopped — and the previous session's stragglers have long since arrived. */
+  private retainCommitMessageTombstone(agentId: string, key: string): void {
+    const prior = this.commitMessageTombstones.get(agentId)
+    if (prior && prior !== key) this.memoryExtractionQuarantines.delete(prior)
+    this.commitMessageTombstones.set(agentId, key)
+    this.memoryExtractionQuarantines.set(key, agentId)
   }
 
   /**
@@ -5746,7 +5862,7 @@ export class Daemon {
           text
         })
         // Bounded backstop: if the runtime ignores `session/cancel` and never
-        // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
+        // yields, stop awaiting after CANCEL_FORCE_MS from the abort so the
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
         const result = await this.promptWithCancelBackstop(host, sessionId, text, signal, (prompt) => {
@@ -5835,7 +5951,7 @@ export class Daemon {
     }
   }
 
-  /** Await `host.prompt`, but stop waiting `DREAM_CANCEL_FORCE_MS` after an abort
+  /** Await `host.prompt`, but stop waiting `CANCEL_FORCE_MS` after an abort
    *  if the runtime never yields — so a runtime that ignores `session/cancel`
    *  can't wedge this call (and its ACP session) forever. */
   private async promptWithCancelBackstop(
@@ -5843,7 +5959,9 @@ export class Daemon {
     sessionId: string,
     text: string,
     signal: AbortSignal,
-    onDetached?: (prompt: ReturnType<AcpHost['prompt']>) => void
+    onDetached?: (prompt: ReturnType<AcpHost['prompt']>) => void,
+    /** Names the pass in the detach error — every caller here is an isolated, off-transcript turn. */
+    label = 'dream extraction'
   ): Promise<Awaited<ReturnType<AcpHost['prompt']>>> {
     const done = host.prompt(sessionId, [{ type: 'text', text }])
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -5851,8 +5969,8 @@ export class Daemon {
       const arm = () =>
         (timer = setTimeout(() => {
           onDetached?.(done)
-          reject(new Error('dream extraction ignored session/cancel; detached after backstop'))
-        }, DREAM_CANCEL_FORCE_MS))
+          reject(new Error(`${label} ignored session/cancel; detached after backstop`))
+        }, CANCEL_FORCE_MS))
       if (signal.aborted) arm()
       else signal.addEventListener('abort', arm, { once: true })
     })
@@ -12301,21 +12419,51 @@ export class Daemon {
     return run
   }
 
+  /** Whether a console-initiated workspace mutation must be refused because the agent itself could
+   *  be writing. Shared by both coordinators so the two can never drift apart on what "busy" is;
+   *  the SDK-lease half is the load-bearing one — background/followup work edits the tree with no
+   *  `pending` entry at all. */
+  private workspaceMutationBusy(agentId: string): boolean {
+    return (
+      this.draining ||
+      this.drainingAgents.has(agentId) ||
+      this.safetyDrainingAgents.has(agentId) ||
+      (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
+      this.agentHasLiveSdkWork(agentId)
+    )
+  }
+
   private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
     // Admission into the shared mutation tail is synchronous: a preparation or
     // second publication accepted in the next call stack can only run after this
     // complete stop+write operation, and vice versa.
     return this.withWorkspaceAdmissionFence(agentId, async () => {
-      if (
-        this.draining ||
-        this.drainingAgents.has(agentId) ||
-        this.safetyDrainingAgents.has(agentId) ||
-        (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
-        this.agentHasLiveSdkWork(agentId)
-      ) {
+      if (this.workspaceMutationBusy(agentId)) {
         throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
       }
       await this.stopHost(agentId)
+      return await write()
+    })
+  }
+
+  /**
+   * The same coordination as {@link withWorkspaceFileWrite} for a console git write — one admission
+   * fence published synchronously, the same refuse-if-busy rule, the same per-agent serial tail —
+   * MINUS the host stop.
+   *
+   * Stopping the adapter is what a file write, a delete and a pull pay for: each rewrites
+   * working-tree FILES under a runtime that may hold them open, or (the pull) under a session that
+   * is reading them. `add` / `reset` / `commit` / `push` touch only `.git`, never the working tree,
+   * and `.git/index.lock` is git's own mutual exclusion for that — so the residual risk of not
+   * killing the child is a git command that FAILS and reports it as data, not a corrupted checkout.
+   * Paying a host stop per stage toggle would instead discard the open session's warm ACP context
+   * on every click, which is a worse trade for a per-row control.
+   */
+  private withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
+    return this.withWorkspaceAdmissionFence(agentId, async () => {
+      if (this.workspaceMutationBusy(agentId)) {
+        throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
+      }
       return await write()
     })
   }
@@ -19330,7 +19478,12 @@ export class Daemon {
               githubApp: workspace.gitCredential === 'github-app'
             }
           : undefined
-      }
+      },
+      // Registered on `register/ok` only, and reset by every reconnect — a console commit is
+      // refused as data whenever it is absent (workspace-git.ts explains why).
+      () => this.gitCommitIdentity,
+      // The model pass runs HERE, on the agent's own runtime: the CP is never on the inference path.
+      (id, systemPrompt, prompt, signal) => this.runCommitMessagePass(id, systemPrompt, prompt, signal)
     )
 
     this.cpClient = new CpClient({
@@ -19432,7 +19585,17 @@ export class Daemon {
         // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
         diff: (req) => workspaceGit.diff(req),
         log: (req) => workspaceGit.log(req),
-        pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id))
+        pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id)),
+        // The four console git writes serialize against agent turns without evicting the warm host
+        // — they touch `.git`, never the working tree (see withWorkspaceIndexWrite).
+        stage: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.stage(req)),
+        unstage: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.unstage(req)),
+        commit: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.commit(req)),
+        push: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.push(req)),
+        // The wand writes nothing, so it skips both coordinators like the other reads. It does start
+        // the agent's host, which the admission fence blocks while a mutation holds it — reported as
+        // data, not an error, because a workspace write is exactly when the answer would be stale.
+        message: (req) => workspaceGit.message(req)
       },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),

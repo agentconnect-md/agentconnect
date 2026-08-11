@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-// The left-pane file viewer: what it draws for every answer `workspace/read` can give, and the two things a sliced read must never get wrong — trusting its own byte arithmetic over the daemon's, or splicing two revisions of one file together.
+// The left-pane file viewer: what it draws for every answer `workspace/read` can give, and the two things a sliced read must never get wrong — trusting its own byte arithmetic over the daemon's, or splicing two revisions of one file together. Since M3 it also stages: which direction the open scope names, when the action is withheld, and how the diff on screen stays in step with a write made anywhere.
 
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -31,7 +31,10 @@ const wire = vi.hoisted(() => ({
     Partial<{ isRepo: boolean; exists: boolean; diff: string | null; binary: boolean; truncated: boolean }>
   >,
   diffFailure: null as null | { status: number; code?: string },
-  diffCalls: [] as Array<{ path: string; scope?: string; sessionId?: string }>
+  diffCalls: [] as Array<{ path: string; scope?: string; sessionId?: string }>,
+  /** Index writes: the calls the pane made, and the answer it gets. */
+  stageCalls: [] as Array<{ kind: 'stage' | 'unstage'; paths: string[]; sessionId?: string }>,
+  stageFailure: null as null | { status: number; code?: string }
 }))
 
 vi.mock('@/lib/api', () => {
@@ -61,6 +64,16 @@ vi.mock('@/lib/api', () => {
         }
       }
     ),
+    stageWorkspacePaths: vi.fn(async (_agentId: string, opts: { paths: string[]; sessionId?: string }) => {
+      wire.stageCalls.push({ kind: 'stage', ...opts })
+      if (wire.stageFailure) throw new ApiError(wire.stageFailure.status, 'nope', wire.stageFailure.code)
+      return { isRepo: true }
+    }),
+    unstageWorkspacePaths: vi.fn(async (_agentId: string, opts: { paths: string[]; sessionId?: string }) => {
+      wire.stageCalls.push({ kind: 'unstage', ...opts })
+      if (wire.stageFailure) throw new ApiError(wire.stageFailure.status, 'nope', wire.stageFailure.code)
+      return { isRepo: true }
+    }),
     fetchWorkspaceFile: vi.fn(async (_agentId: string, opts: { path: string; offset?: number; sessionId?: string }) => {
       wire.calls.push(opts)
       if (wire.hold) await new Promise((resolve) => wire.hold?.push(resolve))
@@ -109,6 +122,8 @@ let container: HTMLDivElement | undefined
 let root: ReturnType<typeof createRoot> | undefined
 let closed = 0
 let modeChanges: string[] = []
+// How many times the pane told its host the index moved — what makes the Git panel re-read its lists.
+let indexChanges = 0
 
 type ViewerProps = Parameters<typeof SessionViewer>[0]
 
@@ -178,7 +193,10 @@ beforeEach(() => {
   wire.diffs = {}
   wire.diffFailure = null
   wire.diffCalls = []
+  wire.stageCalls = []
+  wire.stageFailure = null
   modeChanges = []
+  indexChanges = 0
   hl.fail = false
   closed = 0
   vi.mocked(fetchWorkspaceFile).mockClear()
@@ -542,5 +560,103 @@ describe('SessionViewer mode', () => {
     await render()
     expect(text()).toContain('a folder, not a file')
     expect(text()).not.toContain('This file is empty')
+  })
+})
+
+// M3's Stage file / Unstage file (§4). The pane never learns the file's XY status letters, so the SCOPE on screen is what names the direction — and that is exactly what these pin.
+describe('SessionViewer staging', () => {
+  const HUNK = '@@ -1,1 +1,1 @@\n-old\n+new\n'
+  const stageButton = () => container?.querySelector<HTMLButtonElement>('[data-viewer-stage]') ?? undefined
+
+  it('stages the open path from the unstaged diff and re-reads it', async () => {
+    wire.diffs.unstaged = { diff: HUNK }
+    await render({ mode: 'diff', onIndexChanged: () => (indexChanges += 1) })
+    expect(wire.diffCalls).toHaveLength(1)
+    expect(stageButton()?.dataset.viewerStage).toBe('stage')
+    expect(text()).toContain('Stage file')
+
+    await click('[data-viewer-stage]')
+
+    expect(wire.stageCalls).toEqual([{ kind: 'stage', paths: ['src/app/page.tsx'], sessionId: 'session-1' }])
+    // The diff under the reader changed by definition, so it is re-read rather than left describing the tree before the write.
+    expect(wire.diffCalls).toHaveLength(2)
+    // The fresh status the reply carries has no home in this pane, so the panel that owns the lists is told.
+    expect(indexChanges).toBe(1)
+  })
+
+  it('unstages when the staged scope is the one on screen', async () => {
+    wire.diffs.staged = { diff: HUNK }
+    await render({ mode: 'staged', onIndexChanged: () => (indexChanges += 1) })
+
+    expect(stageButton()?.dataset.viewerStage).toBe('unstage')
+    expect(text()).toContain('Unstage file')
+    await click('[data-viewer-stage]')
+    expect(wire.stageCalls).toEqual([{ kind: 'unstage', paths: ['src/app/page.tsx'], sessionId: 'session-1' }])
+  })
+
+  it('omits sessionId for the agent’s primary checkout', async () => {
+    wire.diffs.unstaged = { diff: HUNK }
+    await render({ mode: 'diff', sessionId: undefined, onIndexChanged: () => (indexChanges += 1) })
+    await click('[data-viewer-stage]')
+    expect(wire.stageCalls).toEqual([{ kind: 'stage', paths: ['src/app/page.tsx'] }])
+  })
+
+  it('offers the action for a binary change, which git reports with no text', async () => {
+    wire.diffs.unstaged = { diff: null, binary: true }
+    await render({ mode: 'diff', onIndexChanged: () => (indexChanges += 1) })
+    expect(stageButton()).toBeDefined()
+  })
+
+  it('withholds the action where there is nothing to move, or nobody to tell', async () => {
+    // File mode: the pane is not showing a side of the index, so it has no direction to name.
+    wire.slices[0] = { content: 'const a = 1\n' }
+    await render({ mode: 'file', onIndexChanged: () => (indexChanges += 1) })
+    expect(stageButton()).toBeUndefined()
+
+    // A path with no changes in this scope: staging it would be a no-op dressed as a control.
+    await rerender({ mode: 'diff', onIndexChanged: () => (indexChanges += 1) })
+    await settle()
+    expect(stageButton()).toBeUndefined()
+
+    // A path this checkout does not have, even though git printed something for it.
+    wire.diffs.staged = { diff: HUNK, exists: false }
+    await rerender({ mode: 'staged', onIndexChanged: () => (indexChanges += 1) })
+    await settle()
+    expect(stageButton()).toBeUndefined()
+  })
+
+  it('withholds the action from a host that passed no callback — a reader whose role cannot write', async () => {
+    wire.diffs.unstaged = { diff: HUNK }
+    await render({ mode: 'diff' })
+    expect(text()).toContain('new')
+    expect(stageButton()).toBeUndefined()
+  })
+
+  it('reports a refused write in place and tells its host nothing', async () => {
+    wire.diffs.unstaged = { diff: HUNK }
+    wire.stageFailure = { status: 409, code: 'WORKSPACE_STALE' }
+    await render({ mode: 'diff', onIndexChanged: () => (indexChanges += 1) })
+
+    await click('[data-viewer-stage]')
+    expect(container?.querySelector('[data-viewer-stage-error]')?.textContent).toContain(
+      'working in this workspace right now'
+    )
+    // Nothing moved, so nothing downstream is stale and the diff is not re-read.
+    expect(indexChanges).toBe(0)
+    expect(wire.diffCalls).toHaveLength(1)
+  })
+
+  it('re-reads the open diff when the HOST reports a write made elsewhere', async () => {
+    wire.diffs.unstaged = { diff: HUNK }
+    await render({ mode: 'diff' })
+    expect(wire.diffCalls).toHaveLength(1)
+
+    // The Git panel's own toggle moved this path; M2's follow-up recorded that a refresh did NOT reach the viewer, so the write says so explicitly.
+    wire.diffs.unstaged = { diff: null }
+    await rerender({ mode: 'diff', diffRefreshTick: 1 })
+    await settle()
+
+    expect(wire.diffCalls).toHaveLength(2)
+    expect(text()).toContain('No unstaged changes to this file')
   })
 })
