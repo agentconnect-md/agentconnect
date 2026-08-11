@@ -134,10 +134,33 @@ pieces (the CRD today, vendored agent-sandbox CRDs/controllers later); the CRD
 is a _templated_ resource (conditional + upgradable) carrying
 `helm.sh/resource-policy: keep` so no release uninstall can cascade-delete
 every org. Everything else is per-install: operator Deployment (2 replicas) +
-SA/RBAC, the release-prefixed tokenreview ClusterRole, admission policies
-(TODO), and a pre-delete hook that refuses uninstall while CRs remain —
-removing the operator would strand every finalizer. Publishing to the OCI
-registry rides the release pipeline (not yet wired).
+SA/RBAC, the release-prefixed tokenreview ClusterRole, two
+ValidatingAdmissionPolicies, and a pre-delete hook that refuses uninstall while
+CRs remain — removing the operator would strand every finalizer. Publishing to
+the OCI registry rides the release pipeline (not yet wired).
+
+The policies are the static half of the isolation story RBAC cannot express —
+RBAC grants verbs, admission bounds where they may be used — and each install
+renders its own release-prefixed copies from its own constants (Kubernetes
+≥ 1.30, both `failurePolicy: Fail`):
+
+- **envelope fence** — every write by the install's operator SA must target a
+  namespace carrying its prefix, its own control-namespace CRs and Lease being
+  the only exceptions; namespaces it stamps must carry the org/claim labels and
+  a `baseline`-or-stricter Pod Security level; the per-org TokenReview binding
+  is the only other cluster-scoped object it may write. A control namespace
+  marked `agentconnect.md/control-namespace` is never a write target, and the
+  marked namespace object itself can be neither deleted nor unmarked — that pair
+  is what protects a _neighbouring_ install from a prefix misconfigured to
+  overlap it. The Namespace object needs its own check because it is
+  cluster-scoped: no `namespaceObject`, and an empty `request.namespace`.
+- **sandbox baseline** — pods in an org namespace (claim label, narrowed to the
+  install's prefix) may not be privileged, share host namespaces, or mount
+  `hostPath`; every pod but the daemon supervisor must set
+  `automountServiceAccountToken: false`, and the audience-scoped projected token
+  the shim handshake needs is the only service-account token it may carry.
+  Pods are the enforcement point, so a sandbox created from an operator-copied
+  template is covered without teaching the policy about its controller.
 
 ## 6. Verification
 

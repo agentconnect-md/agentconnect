@@ -2,6 +2,8 @@ apiVersion: v2
 name: agentconnect-operator
 description: AgentConnect cluster operator — reconciles AgentConnectOrg resources into per-org execution envelopes. One release per environment; multiple releases share one cluster via install-time constants.
 type: application
+# ValidatingAdmissionPolicy went GA in 1.30; the install's isolation fences are built on it.
+kubeVersion: '>=1.30.0-0'
 version: 0.1.0
 appVersion: 1.0.0-dev
 keywords:

@@ -38,9 +38,10 @@ subjects:
     namespace: {{ .Release.Namespace }}
 ---
 # Cluster-scoped permissions for the org envelopes this install owns. Every
-# write is admission-fenced to the install's namespace prefix (TODO: VAPs);
-# no Secret verbs, ever. Server-side apply needs create+patch on everything
-# the operator stamps; delete covers the finalizer teardown.
+# write is admission-fenced to the install's namespace prefix by the envelope
+# fence in validating-admission-policies.yaml; no Secret verbs, ever. Server-side
+# apply needs create+patch on everything the operator stamps; delete covers the
+# finalizer teardown.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
