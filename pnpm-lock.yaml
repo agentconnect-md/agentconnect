@@ -493,6 +493,9 @@ importers:
       '@agentconnect.md/k8s-client':
         specifier: workspace:*
         version: link:../k8s-client
+      '@agentconnect.md/observability':
+        specifier: workspace:*
+        version: link:../observability
       zod:
         specifier: ^4.4.3
         version: 4.4.3
