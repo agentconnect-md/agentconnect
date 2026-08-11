@@ -136,8 +136,12 @@ is a _templated_ resource (conditional + upgradable) carrying
 every org. Everything else is per-install: operator Deployment (2 replicas) +
 SA/RBAC, the release-prefixed tokenreview ClusterRole, two
 ValidatingAdmissionPolicies, and a pre-delete hook that refuses uninstall while
-CRs remain — removing the operator would strand every finalizer. Publishing to
-the OCI registry rides the release pipeline (not yet wired).
+CRs remain — removing the operator would strand every finalizer. That hook is a
+Job running the operator image's hidden `preflight-uninstall` subcommand under
+the operator's own SA: it lists the CRs in the release namespace and exits
+non-zero naming them, so the check runs the same client the controller does
+instead of a second, drifting copy in shell. Publishing to the OCI registry
+rides the release pipeline (not yet wired).
 
 The policies are the static half of the isolation story RBAC cannot express —
 RBAC grants verbs, admission bounds where they may be used — and each install
