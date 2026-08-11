@@ -18,6 +18,11 @@ import {
   MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_STAGE_PATHS,
   MAX_WORKSPACE_STAGE_PATH_BYTES,
+  MAX_TASK_DESCRIPTION,
+  MAX_TASK_DETAIL,
+  MAX_TASK_LIST_TASKS,
+  TaskErrorReason,
+  TaskState,
   WorkspaceErrorReason,
   WorkspaceGitWriteReason,
   FRAME_SCHEMAS,
@@ -1742,6 +1747,136 @@ describe('workspace git review frames (status counts, diff, log)', () => {
     expect(WorkspaceErrorReason.options).toContain('path-escape')
     expect(WorkspaceErrorReason.safeParse('not-a-file').success).toBe(true)
     expect(WorkspaceErrorReason.safeParse('offline').success).toBe(false)
+  })
+})
+
+describe('background-task frames (console Tasks panel)', () => {
+  it('task/list REQ requires the ACP session id — the lease is per (agent, ACP session)', () => {
+    const req = decodeEnvelope(envelope('task/list', { agentId: 'local-agent-1', sessionId: 'acp-1' }, { epoch: 3 }))
+    expect(req.ok).toBe(true)
+    if (!req.ok || !isFrame('task/list')(req.frame)) throw new Error('expected task/list')
+    expect(req.frame.payload.sessionId).toBe('acp-1')
+    expect(req.ext).toEqual({ epoch: 3 })
+
+    // Unlike the workspace reads, `sessionId` is not optional: there is no per-agent lease to fall
+    // back to, only a boolean rollup, so an agent-wide task list would be a different question.
+    expect(decodeEnvelope(envelope('task/list', { agentId: 'local-agent-1' })).ok).toBe(false)
+    expect(decodeEnvelope(envelope('task/list', { agentId: 'local-agent-1', sessionId: '' })).ok).toBe(false)
+  })
+
+  it('task/list/result round-trips running / done / failed, a subagent row, and an untracked session', () => {
+    const rep = decodeEnvelope(
+      envelope(
+        'task/list/result',
+        {
+          agentId: 'local-agent-1',
+          sessionId: 'acp-1',
+          tracked: true,
+          truncated: true,
+          tasks: [
+            { id: 't1', description: 'Sleep for 15 seconds', state: 'running', subagent: false, startedAt: TS },
+            { id: 't2', state: 'done', subagent: false, startedAt: TS, endedAt: TS },
+            { id: 't3', state: 'failed', subagent: false, startedAt: TS, endedAt: TS, detail: 'killed' },
+            { id: 't4', description: 'general', state: 'running', subagent: true, startedAt: TS }
+          ]
+        },
+        { corr: ID }
+      )
+    )
+    expect(rep.ok).toBe(true)
+    if (!rep.ok || !isFrame('task/list/result')(rep.frame)) throw new Error('expected task/list/result')
+    expect(rep.frame.corr).toBe(ID)
+    expect(rep.frame.payload.tasks.map((t) => t.state)).toEqual(['running', 'done', 'failed', 'running'])
+    expect(rep.frame.payload.tasks[0]!.endedAt).toBeUndefined() // a live task has not ended
+    expect(rep.frame.payload.tasks[1]!.description).toBeUndefined() // the runtime omitted it
+    expect(rep.frame.payload.tasks[3]!.subagent).toBe(true) // carried, not filtered at the source
+    expect(rep.frame.payload.truncated).toBe(true)
+
+    // No lease for the session is DATA and is NOT the same statement as "no tasks".
+    const untracked = decodeEnvelope(
+      envelope('task/list/result', {
+        agentId: 'local-agent-1',
+        sessionId: 'acp-1',
+        tracked: false,
+        tasks: [],
+        truncated: false
+      })
+    )
+    expect(untracked.ok).toBe(true)
+    if (!untracked.ok || !isFrame('task/list/result')(untracked.frame)) throw new Error('expected result')
+    expect(untracked.frame.payload.tracked).toBe(false)
+  })
+
+  it('bounds the task page, the description and the detail', () => {
+    const task = { id: 't', state: 'done' as const, subagent: false, startedAt: TS, endedAt: TS }
+    const base = { agentId: 'local-agent-1', sessionId: 'acp-1', tracked: true, truncated: true }
+    expect(
+      decodeEnvelope(
+        envelope('task/list/result', { ...base, tasks: Array.from({ length: MAX_TASK_LIST_TASKS }, () => task) })
+      ).ok
+    ).toBe(true)
+    expect(
+      decodeEnvelope(
+        envelope('task/list/result', { ...base, tasks: Array.from({ length: MAX_TASK_LIST_TASKS + 1 }, () => task) })
+      ).ok
+    ).toBe(false)
+    expect(
+      decodeEnvelope(
+        envelope('task/list/result', {
+          ...base,
+          tasks: [{ ...task, description: 'x'.repeat(MAX_TASK_DESCRIPTION + 1) }]
+        })
+      ).ok
+    ).toBe(false)
+    expect(
+      decodeEnvelope(
+        envelope('task/list/result', { ...base, tasks: [{ ...task, detail: 'x'.repeat(MAX_TASK_DETAIL + 1) }] })
+      ).ok
+    ).toBe(false)
+  })
+
+  it('the task state vocabulary is closed and carries NO `queued`', () => {
+    expect(TaskState.options).toEqual(['running', 'done', 'failed'])
+    // `task_started` is the feed's only start edge, so nothing upstream can report a queued task.
+    expect(TaskState.safeParse('queued').success).toBe(false)
+    expect(TaskErrorReason.options).toEqual(['unknown-agent'])
+  })
+
+  it('registers no task/cancel — no ACP primitive can address one background task', () => {
+    // `session/cancel` carries only `{ sessionId }` and the only hard stop is killing the agent's
+    // shared adapter, so a per-task cancel could only cancel unrelated work or lie about having
+    // acted. The absence is the design decision, and this is where it is pinned.
+    expect(FRAME_TYPES.some((t) => t.startsWith('task/'))).toBe(true)
+    expect(FRAME_TYPES.filter((t) => t.startsWith('task/'))).toEqual(['task/list', 'task/list/result'])
+  })
+
+  it('keeps a worst-case escaped task page below the wire cap', () => {
+    // NUL is the largest ordinary JSON string expansion (six wire bytes per input character), so
+    // filling every display cap with it covers the maxima of a full page.
+    const escaped = '\u0000'
+    const task = {
+      id: escaped.repeat(64),
+      description: escaped.repeat(MAX_TASK_DESCRIPTION),
+      state: 'failed' as const,
+      subagent: false,
+      startedAt: TS,
+      endedAt: TS,
+      detail: escaped.repeat(MAX_TASK_DETAIL)
+    }
+    const encoded = encode(
+      buildEnvelope('task/list/result', {
+        agentId: escaped.repeat(255),
+        sessionId: escaped.repeat(255),
+        tracked: true,
+        truncated: true,
+        tasks: Array.from({ length: MAX_TASK_LIST_TASKS }, () => task)
+      })
+    )
+    expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(MAX_FRAME_BYTES)
+    const decoded = decodeEnvelope(encoded)
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('task/list/result')(decoded.frame)) throw new Error('expected task/list/result')
+    expect(decoded.frame.payload.tasks).toHaveLength(MAX_TASK_LIST_TASKS)
   })
 })
 

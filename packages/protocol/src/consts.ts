@@ -75,6 +75,12 @@ export const WORKSPACE_GIT_WRITE_FEATURE = 'workspace-git-write-v1'
  * retransmit budget before reading as an offline daemon. */
 export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
 
+/** Daemon serves `task/list` — the console Tasks panel's read of one ACP session's background-task
+ * lease. Checked before sending, like every other new frame: an older daemon ignores it silently, so
+ * the REQ would burn its whole retransmit budget and then read as an offline daemon. The console
+ * hides the Tasks tab on a daemon without it rather than showing a tab that can never answer. */
+export const TASK_LIST_FEATURE = 'task-list-v1'
+
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
  * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon

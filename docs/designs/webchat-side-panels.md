@@ -24,7 +24,7 @@ Today the session detail page is `[nav · body · rail]`, where the rail is a fi
 | Files    | `folder-tree`           | —                  | `refresh-cw`    | workspace tree with git status tags, path search, branch + workdir header                                                       |
 | Git      | `git-commit-horizontal` | changed count      | `refresh-cw`    | branch + ahead/behind, staged / unstaged with `+/−` and per-row stage toggle, commit box with AI message generation, commit log |
 | PR       | `git-pull-request`      | unresolved threads | `external-link` | PR state, head→base, checks, reviews, unresolved threads with a single Auto-fix action, merge box with auto-merge               |
-| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state, elapsed, step, cancel/rerun                                                                        |
+| Tasks    | `list-checks`           | running count      | `refresh-cw`    | background tasks with state and elapsed, read-only (§3.5 — no per-task cancel exists to wire)                                   |
 
 Dock geometry: width **380–760px, default 480px**, drag handle on the left edge
 (brand-colored while dragging), tab strip with zero gap between tabs. Tab labels
@@ -163,9 +163,36 @@ completion announce, deferred wake with a re-arm budget
 it is exposed — there is no `task/*` frame, no CP route, no console surface.
 
 Revision 2 **removed the progress bar** that revision 1 drew, which settles the
-question revision 1 left open: the panel renders state, elapsed, and a step line,
-and does not invent a percentage the daemon cannot supply. The "Logs" link still
-maps to nothing today and stays deferred.
+question revision 1 left open: the panel renders state and elapsed, and does not
+invent a percentage the daemon cannot supply. The "Logs" link still maps to
+nothing today and stays deferred.
+
+**The step line is unbacked too, and the panel is read-only.** Measured against
+the shipped daemon and `@agentclientprotocol/sdk@1.3.0` while building M4:
+
+- The lease's per-task record was `{ description?, isSubagent }` — no start time,
+  no step, no history of a finished task (`settle()` deleted the entry). M4 adds
+  a `startedAt` and a bounded settled-task history; there is still no step text
+  anywhere in the `_claude/sdkMessage` feed, so the panel renders the
+  `description` and nothing beside it.
+- There is no `queued` state to render. The feed's only start edge is
+  `task_started`, so a task is either live in the lease or gone.
+- **`task/cancel` is not implementable and is not built.** `CancelNotification`
+  carries only `{ sessionId }` (`session/cancel` cancels a whole prompt turn),
+  `AcpHost` has no ext-request sender so no `_claude/*` kill-by-id can be sent,
+  and the daemon advertises no terminal capability so the agent owns its own
+  shells. The only hard stop is `AcpHost.stop()`, which kills the agent's shared
+  adapter and every session on it. Worse, `interruptTurn` is a no-op exactly when
+  the panel matters: a background task outlives its turn, so there is no
+  `pending` entry and no cancel is sent at all. A per-row control could therefore
+  only cancel unrelated work or report a cancellation it did not perform. It
+  becomes possible with upstream work (a task-addressed ACP cancel, or a Claude
+  adapter `_claude/*` kill-by-id request) — see §12.8.
+- An absent lease is a real answer, not an empty one: a non-Claude runtime, an
+  adapter without the lifecycle extension, and a session that has emitted no
+  accepted lifecycle event all have none. `task/list` reports it as
+  `tracked:false` so the panel can say "not reported for this session" instead of
+  "no background tasks".
 
 ## 4. Gap analysis — the inline viewer
 
@@ -294,11 +321,20 @@ detail? }`. Failure is data, not an error frame.
 
 **`task.ts` — new file**
 
-- `task/list` REQ → `task/list/result`: `{ agentId, sessionId }` → `{ tasks: [{
-id, description, state: 'queued'|'running'|'done'|'failed', startedAt,
-endedAt?, detail? }], truncated }`.
-- `task/cancel` REQ → `task/cancel/result`: `{ agentId, sessionId, taskId }` →
-  `{ ok, detail? }`.
+- `task/list` REQ → `task/list/result`: `{ agentId, sessionId }` → `{ agentId,
+sessionId, tracked, tasks: [{ id, description?, state:
+'running'|'done'|'failed', subagent, startedAt, endedAt?, detail? }], truncated
+}`. `sessionId` is REQUIRED (the lease is per (agent, ACP session) and there is
+  no per-agent aggregate but a boolean). No `queued` — nothing upstream reports
+  one. `done` means "settled with no reported failure", because most settle edges
+  carry no status at all; `detail` carries the reported status when there was
+  one, and a later status-bearing terminal edge refines a retained row without
+  re-announcing. `subagent` rows are CARRIED, not filtered at the source: the
+  same records fence host reclaim, so a panel that dropped them here would show
+  "no tasks" beside a host refusing to be reclaimed. Filter at render.
+- **No `task/cancel`.** §3.5 records why no ACP primitive can address one
+  background task. The panel's escape hatch is the composer's existing
+  turn-scoped stop.
 
 All of them follow the workspace convention: unknown agent → `BAD_PAYLOAD`,
 unexpected failure → `INTERNAL`, everything else is data.
@@ -317,9 +353,26 @@ All following the existing workspace-route shape in `agents.ts`: `getOrgAgent` �
 | POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                         |
 | POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`               |
 | GET    | `/agents/:id/tasks`                                                          | `task/list`                          |
-| POST   | `/agents/:id/tasks/:taskId/cancel`                                           | `task/cancel`                        |
 | GET    | `/sessions/:id/pull-request`                                                 | GitHub API via installation token    |
 | POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge` |
+
+**`GET /agents/:id/tasks` does NOT use `canReadWorkspaceScope`**, and this
+paragraph's earlier claim that it would was wrong. That gate requires
+`workspaceIsolation === 'session'`, because a shared checkout has no per-session
+worktree and the daemon answers `BAD_PAYLOAD` for one. Background tasks are not a
+checkout: a session on a shared workspace runs them exactly the same, so reusing
+the worktree gate would have 404'd the Tasks panel for most sessions. M4 split the
+session half of that gate out as `visibleAgentSession` — the row must be this
+agent's, un-purged, and pass the session's own private/external visibility rule —
+and `canReadWorkspaceScope` is now that plus the isolation check. The tasks route
+uses `getOrgAgent` → `visibleAgentSession` (404 `session not found`) →
+`agent.daemonId` (503) → `requireTasks` (409 `DAEMON_FEATURE_MISSING`, on the new
+`task-list-v1` marker) → `deps.control.taskList` → `toAgentTasksDto`. `sessionId`
+is a REQUIRED querystring parameter, so an unscoped list is a 400 rather than a
+guess, and `requireSessionWorkspaceRead` does not appear at all — it gates
+worktree browsing, which this read is not. A daemon-named `unknown-agent` maps to
+404 under its own `TASK_` code prefix; there is no 409 arm, because the read
+mutates nothing.
 
 The two `/sessions/:id/pull-request*` routes are the odd ones out — they are not
 daemon proxies. Each resolves the session's `HookRun`, checks the viewer can see
@@ -343,7 +396,7 @@ SessionsPanel.tsx      the ex-SessionRail row / pin / filter body, re-hosted
 FilesPanel.tsx         narrow single-column tree over WorkspaceFiles' read model
 GitPanel.tsx           status + numstat + staging + commit box + log
 PullRequestPanel.tsx   the /sessions/:id/pull-request projection + Auto-fix / auto-merge actions
-TasksPanel.tsx         task list + cancel
+TasksPanel.tsx         task list (read-only — §3.5); polls while visible, backed off when idle
 ```
 
 and `packages/web/src/components/console/viewer/`:
@@ -735,9 +788,72 @@ Known M3 follow-ups:
   which the runner preflight now classifies correctly and earlier. The guard stays for the failures
   that do reach it; its coverage is the classification, not the timeout.
 
-**M4 — Tasks.** `task/list` + `task/cancel` frames over the existing lease
-bookkeeping, `GET /agents/:id/tasks` + cancel route, panel with state, elapsed
-and step. _Exit:_ background tasks are visible and cancellable.
+**M4 — Tasks.** `task/list` over the lease, which M4 first extends with a
+`startedAt` and a bounded settled-task history (kept in a `settled` array, never
+in `lease.tasks`, so no reclaim decision can see it —
+[`background-task-aware-reclaim.md`](background-task-aware-reclaim.md) and §3.5),
+plus `GET /agents/:id/tasks` and a panel with state and elapsed. No cancel frame,
+route or control: §3.5 records that none can be built honestly. _Exit:_ background
+tasks are visible, and a settled one is showable without holding a session,
+a host, or a workspace mutation open.
+
+Two scope choices the panel makes that the other tabs do not, both because a lease
+is not a checkout:
+
+- **No isolation gate.** Files and Git withhold their read until the focused
+  session's `workspaceIsolation` has answered, because reading early reads the
+  wrong worktree. Tasks needs neither that round trip nor the `hasSessionWorktree`
+  gate `filesSessionId` applies — a session's background tasks exist whatever it
+  is checked out into, which is what the CP route says too. What it does need is
+  the CANONICAL session id the lease is keyed by, so a playground session the
+  daemon has not created yet gets no tab rather than a 404 notice.
+- **Polling is gated on VISIBILITY alone, backed off when idle, plus one read on
+  the tab's own activation edge.** Visibility is the whole gate because a hidden
+  panel is a request nobody is looking at, while a visible one always has
+  something left to discover. The first version also required a running task, on
+  the reasoning that a settled list has no transition left to reveal — that was
+  wrong about what the panel watches. It watches a **session**, not the rows on
+  screen, and a session starts new background tasks: most directly when the reader
+  leaves this tab open and sends another prompt from the composer beside it.
+  Nothing in that path bumps the panel's revision, so an idle panel that stopped
+  polling never observed the `0 → running` edge and the new task stayed invisible
+  until a manual refresh. Found in review of #854. The idle cadence is backed off
+  (20s vs 5s) rather than equal, because an idle session usually stays idle. The
+  activation read stays for a different reason: the panel is mounted from the
+  moment the session page opens, so a tab opened ten minutes later would otherwise
+  draw a ten-minute-old list until the next interval. Elapsed ticks client-side
+  from `startedAt`, so the 1s redraw costs no request. The consequence, accepted:
+  the tab's running badge is only as fresh as the last read while the tab is
+  closed — exactly what the Git tab's changed-count badge already is.
+
+Known M4 follow-ups, none of which change what the code does today:
+
+- The panel counts its own rows for the header census rather than trusting a
+  separate total, so a `truncated` history makes the census describe what is on
+  screen instead of what the daemon holds. That is the honest reading of a bounded
+  list, but it does mean "3 done" can undercount a long-running session.
+- `subagent` rows are shown and marked rather than filtered, because the same
+  records fence host reclaim and hiding them would show "no tasks" beside a host
+  refusing to be reclaimed. If they turn out to be noise in practice, the filter
+  belongs behind a toggle, not in the default render.
+- The panel's read is one effect keyed by `(agentId, sessionId, revision)` whose
+  answer is HELD PER SCOPE and whose pending state is derived from it, not reset
+  from a second effect. That shape is not cosmetic: the first version kept the
+  poll count in its own state and zeroed it whenever the scope or the refresh tick
+  moved, and zeroing it re-triggered the read effect it was there to describe — so
+  past the first poll, every session switch and every press of the tab's refresh
+  action issued TWO reads of the lease. Measured with a probe, then pinned by
+  "re-reads ONCE for a scope switch and ONCE for a refresh, even after a poll has
+  fired". Any future per-scope value here belongs inside that record, not beside it
+  — the same rule M3 wrote down for `CommitBox`.
+- The 1s elapsed redraw is **unpinned**: the tests pin `formatTaskElapsed` and the
+  read cadence, not the interval that re-renders the row. Breaking the tick leaves
+  a frozen elapsed and a green suite.
+- All three of the route's 404s — agent invisible, session invisible, and the
+  daemon's own `TASK_UNKNOWN_AGENT` — fold into one sentence in the panel. They are
+  three ways for the scope to be unreadable and the reader's next action is the
+  same for each, but a future need to tell them apart has to start at the code, not
+  at the status.
 
 **M5 — PR read.** Session DTO exposes its GitHub subject; `GET
 /sessions/:id/pull-request` projection with a short in-memory TTL cache for
@@ -766,8 +882,10 @@ mutation.
   `additions`/`deletions` absent case (old daemon).
 - **daemon** — numstat, unified-diff and log parsing against a fixture repo;
   stage/unstage/commit/push against a scratch worktree including the dirty and
-  diverged paths; task list over a lease with queued/running/done/failed
-  members; cancel of an already-settled task is a no-op, not an error.
+  diverged paths; task list over a lease with running/done/failed members; and
+  the reclaim-safety pair that the retention exists to keep true — a settled task
+  retained for the panel neither keeps its session open nor spends the
+  background-task wake budget.
 - **web** — the unified-diff parser is the highest-value unit test in the whole
   plan (hunk-header line-number arithmetic, no-newline-at-EOF, renames, binary);
   dock width clamp and persistence; tab-label collapse threshold; the
@@ -817,12 +935,21 @@ location, body, and the review state that already comes from `HookRun.verdict`.
 4. **Path search.** A client-side filter over the loaded tree is a visibly
    partial answer at 1,284 files. Does Files need a `workspace/search` frame in
    M1, or can it wait?
-5. **Tasks scope.** Per _agent_ or per open _session_? The design implies
-   session and the daemon's leases are per ACP session, so session is the cheap
-   answer — confirm it is the useful one.
+5. ~~**Tasks scope.**~~ Settled: per ACP session. `sdkLease` is keyed by
+   `sdkLeaseKey(agentId, acpSessionId)` and the only per-agent aggregate is the
+   `agentHasLiveSdkWork` boolean, so `task/list` requires a `sessionId`.
 6. **PR tab visibility.** Hide entirely for non-PR sessions, or show an empty
    state? Hiding keeps the dock honest but makes the tab strip change shape
    between sessions.
 7. **Write authorization.** Committing as the agent and resolving GitHub threads
    from the console are new classes of action. Does workspace-write access plus
    the existing token clamp cover them, or do they need their own permission?
+8. **Per-task cancel.** Blocked upstream, not by this plan (§3.5). It needs either
+   a task-addressed cancel in ACP or a Claude adapter `_claude/*` kill-by-id
+   request; until one exists, the honest control is the composer's turn-scoped
+   stop. Revisit when the adapter grows one.
+9. **Task history depth.** Settled tasks are retained per lease, capped at 20, and
+   are erased with the lease on TTL-close, host reclaim and retention GC — so the
+   panel cannot show what a reclaimed host was doing. Durable task history would
+   mean persisting model-authored strings, which body-locality puts on the daemon,
+   not the CP. Worth revisiting only if operators actually ask for it.

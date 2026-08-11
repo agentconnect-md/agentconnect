@@ -26,7 +26,12 @@ const wire = vi.hoisted(() => ({
   stageCalls: [] as Array<{ kind: 'stage' | 'unstage'; paths: string[]; sessionId?: string }>,
   /** A session with no agent behind it at all — there is no checkout to offer a workspace tab for. */
   agentless: false,
-  rail: [] as unknown[]
+  rail: [] as unknown[],
+  /** The Tasks tab's read. Scoped by SESSION rather than by worktree, so its calls are recorded with the scope they asked for. */
+  tasks: { sessionId: 'session-1', tracked: true, tasks: [] as unknown[], truncated: false } as unknown,
+  taskCalls: [] as Array<{ agentId: string; sessionId: string }>,
+  /** A synthetic playground session the daemon has not created yet — its route id names no canonical session the lease could be keyed by. */
+  playground: false
 }))
 
 // The reader's role in the org. `viewer` is what the CP 403s on every git-write route, so the console withholds those controls.
@@ -117,6 +122,10 @@ vi.mock('@/lib/api', async (importOriginal) => {
         truncated: false
       })
     }),
+    fetchAgentTasks: vi.fn((agentId: string, sessionId: string) => {
+      wire.taskCalls.push({ agentId, sessionId })
+      return Promise.resolve(wire.tasks)
+    }),
     fetchSessionMessages: vi.fn(() => Promise.resolve({ messages: [], nextCursor: null })),
     fetchSessionDetail: vi.fn(() => Promise.reject(new Error('no detail'))),
     fetchMySessionIdentity: vi.fn(() => Promise.reject(new Error('no identity'))),
@@ -162,7 +171,12 @@ vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     agents: [agent],
     allSessions: [
-      { ...session, workspaceIsolation: wire.isolation, ...(wire.agentless ? { agentId: '', agentName: '' } : {}) }
+      {
+        ...session,
+        workspaceIsolation: wire.isolation,
+        ...(wire.agentless ? { agentId: '', agentName: '' } : {}),
+        ...(wire.playground ? { platform: 'playground' } : {})
+      }
     ],
     getSessions: () => [session],
     sessionsLoading: false,
@@ -287,7 +301,10 @@ beforeEach(() => {
   wire.stageCalls = []
   org.role = 'collaborator'
   wire.agentless = false
+  wire.playground = false
   wire.rail = []
+  wire.tasks = { sessionId: 'session-1', tracked: true, tasks: [], truncated: false }
+  wire.taskCalls = []
   window.localStorage.clear()
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -747,6 +764,98 @@ describe('the Git tab', () => {
   })
 })
 
+describe('the Tasks tab', () => {
+  const openTab = async (key: string) => {
+    await act(async () => {
+      container?.querySelector<HTMLElement>(`[data-dock-tab="${key}"]`)?.click()
+      await Promise.resolve()
+    })
+    await render()
+  }
+  const runningTask = (id: string) => ({
+    id,
+    description: `background ${id}`,
+    state: 'running',
+    subagent: false,
+    startedAt: '2026-08-10T10:59:00.000Z',
+    endedAt: null,
+    detail: null
+  })
+
+  it('sits beside Files and Git with its own refresh action, and mounts its panel with them', async () => {
+    await render()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')).not.toBeNull()
+    // Mounted rather than lazily created on first visit: like the others, its verdict is what keeps its own tab reachable.
+    expect(container?.querySelector('[data-tasks-panel]')).not.toBeNull()
+
+    await openTab('tasks')
+    expect(container?.querySelector('[data-dock-action="tasks"]')?.getAttribute('aria-label')).toBe(
+      'Refresh background tasks'
+    )
+    expect(container?.querySelector('[data-dock-empty]')).toBeNull()
+  })
+
+  it('reads the FOCUSED SESSION’s lease even on a shared workspace, where the worktree scope is empty', async () => {
+    // The divergence M4 rewrote the CP gate for: a background task is not a checkout, so a session that shares its agent's workspace still runs them and still has a lease keyed by (agent, session). Files and Git must pass no sessionId here — the daemon rejects one for a shared workspace — and Tasks must pass one anyway, or the panel reads a scope the daemon has nothing to answer with.
+    wire.isolation = 'shared'
+    wire.tasks = { sessionId: 'session-1', tracked: true, tasks: [runningTask('t1')], truncated: false }
+    await render()
+    expect(wire.listCalls.every((call) => call.sessionId === undefined)).toBe(true)
+    expect(wire.taskCalls).toEqual([{ agentId: 'agent-1', sessionId: 'session-1' }])
+    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('background t1')
+  })
+
+  it('badges the tab with the running count, and drops the badge when its refresh finds them finished', async () => {
+    wire.tasks = {
+      sessionId: 'session-1',
+      tracked: true,
+      tasks: [runningTask('t1'), runningTask('t2')],
+      truncated: false
+    }
+    await render()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toContain('2')
+
+    // Opened FIRST, so the panel's own on-activation read is already spent and cannot be what makes the badge move below. The tab's refresh action is then the only thing left that can.
+    await openTab('tasks')
+    expect(wire.taskCalls).toHaveLength(2)
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toContain('2')
+
+    wire.tasks = {
+      sessionId: 'session-1',
+      tracked: true,
+      tasks: [{ ...runningTask('t1'), state: 'done', endedAt: '2026-08-10T11:00:00.000Z' }],
+      truncated: false
+    }
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-dock-action="tasks"]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).not.toContain('2')
+    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('1 done')
+  })
+
+  it('offers no Tasks tab for a synthetic playground session, whose canonical id does not exist yet', async () => {
+    // The lease is keyed by the daemon's OWN session id. A playground session it has not created yet has no such id and no tasks either, so asking with the synthetic route id would only manufacture a 404 notice; Files and Git keep their tabs — the checkout is real even while the session is not.
+    wire.playground = true
+    await render()
+    expect(container?.querySelector('[data-dock-tab="files"]')).not.toBeNull()
+    expect(container?.querySelector('[data-dock-tab="tasks"]')).toBeNull()
+    expect(container?.querySelector('[data-tasks-panel]')).toBeNull()
+    expect(wire.taskCalls).toEqual([])
+  })
+
+  it('draws an untracked session as data, with no badge and no error', async () => {
+    // A runtime that publishes no task lifecycle holds no lease at all. That is an answer, not a failure, and it is a different sentence from "nothing is running".
+    wire.tasks = { sessionId: 'session-1', tracked: false, tasks: [], truncated: false }
+    await render()
+    await openTab('tasks')
+    expect(container?.querySelector('[data-tasks-panel]')?.textContent).toContain('doesn’t report background tasks')
+    expect(container?.querySelector('[data-dock-tab="tasks"]')?.textContent).toBe('Tasks')
+    expect(container?.querySelector('[data-dock-empty]')).toBeNull()
+  })
+})
+
 describe('a session with no agent behind it', () => {
   it('offers neither workspace tab, because a tab that can never answer is not a tab', async () => {
     wire.agentless = true
@@ -757,9 +866,13 @@ describe('a session with no agent behind it', () => {
     expect(container?.querySelector('[data-dock-tab="sessions"]')).not.toBeNull()
     expect(container?.querySelector('[data-dock-tab="files"]')).toBeNull()
     expect(container?.querySelector('[data-dock-tab="git"]')).toBeNull()
+    // Tasks goes with them: with no agent there is no daemon to ask for a lease either.
+    expect(container?.querySelector('[data-dock-tab="tasks"]')).toBeNull()
     // And no panel was mounted to read a checkout that does not exist.
     expect(container?.querySelector('[data-git-panel]')).toBeNull()
     expect(container?.querySelector('[data-files-panel]')).toBeNull()
+    expect(container?.querySelector('[data-tasks-panel]')).toBeNull()
+    expect(wire.taskCalls).toEqual([])
   })
 
   it('falls back to a tab that exists when the open one is dropped under the reader', async () => {

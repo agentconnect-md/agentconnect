@@ -17,6 +17,7 @@ import type {
   WorkspaceGitCommitResult,
   WorkspaceGitPushResult,
   WorkspaceGitMessageResult,
+  TaskList,
   MemoryReadContent,
   MemoryListPage,
   MemoryHistoryPage,
@@ -41,7 +42,9 @@ import {
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
+  TASK_LIST_FEATURE,
   WorkspaceErrorReason,
+  TaskErrorReason,
   gitRepoLabel,
   normalizeGitUrl
 } from '@agentconnect.md/protocol'
@@ -118,6 +121,8 @@ import {
   WorkspaceGitCommitResultDto,
   WorkspaceGitPushResultDto,
   WorkspaceGitMessageResultDto,
+  AgentTasksQueryDto,
+  AgentTasksDto,
   AgentMemoryDto,
   MemoryFilesDto,
   MemoryFilesQueryDto,
@@ -161,6 +166,7 @@ import {
   type WorkspaceGitCommitResultDtoT,
   type WorkspaceGitPushResultDtoT,
   type WorkspaceGitMessageResultDtoT,
+  type AgentTasksDtoT,
   type AgentMemoryDtoT,
   type MemoryFilesDtoT,
   type MemoryHistoryPageDtoT,
@@ -569,6 +575,27 @@ export function toWorkspaceGitMessageDto(rep: WorkspaceGitMessageResult): Worksp
   return { ok: rep.ok, message: rep.message ?? null, detail: rep.detail ?? null }
 }
 
+/** Wire REP → HTTP body for one ACP session's background tasks. The CP proxies the daemon's
+ *  order (live first, then its bounded settled history) and stores nothing; `tracked:false`
+ *  stays data so the console can say "this runtime reports no tasks" rather than "none are
+ *  running". Absent optionals become explicit nulls for the response schema. */
+export function toAgentTasksDto(rep: TaskList): AgentTasksDtoT {
+  return {
+    sessionId: rep.sessionId,
+    tracked: rep.tracked,
+    tasks: rep.tasks.map((task) => ({
+      id: task.id,
+      description: task.description ?? null,
+      state: task.state,
+      subagent: task.subagent,
+      startedAt: task.startedAt,
+      endedAt: task.endedAt ?? null,
+      detail: task.detail ?? null
+    })),
+    truncated: rep.truncated
+  }
+}
+
 /** Map a daemon-edge failure to a 503 message, or null to rethrow. Covers: no
  *  live connection, the socket dropping mid-flight ('connection closed'), and a
  *  daemon-side `error` frame (ProtocolError — e.g. path containment
@@ -645,6 +672,42 @@ function sendWorkspaceMutationFailure(reply: FastifyReply, err: unknown): boolea
   return false
 }
 
+/** The daemon's task `reason` as the HTTP `code` the console branches on; null when it named
+ *  none (older daemon), so the caller keeps its generic answer. Kept separate from
+ *  {@link workspaceErrorCode} because the two enums are independent — a reason added to one
+ *  must not silently start being emitted under the other's prefix. */
+export function taskErrorCode(err: ProtocolError): string | null {
+  const reason = TaskErrorReason.safeParse(err.details?.reason)
+  return reason.success ? `TASK_${reason.data.toUpperCase().replaceAll('-', '_')}` : null
+}
+
+/** Status a console can act on instead of the 503 that reads as an offline daemon: an agent the
+ *  daemon does not hold is 404 (stale placement), and there is no 409 arm because the read
+ *  mutates nothing. Reasonless ⇒ {@link daemonEdgeFailure}; null ⇒ rethrow. */
+export function taskFailure(err: unknown): { status: 404 | 503; error: string; message: string; code?: string } | null {
+  if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
+    const code = taskErrorCode(err)
+    if (code === 'TASK_UNKNOWN_AGENT') {
+      return { status: 404, error: 'Not Found', message: 'agent not found on its daemon', code }
+    }
+  }
+  const unavailable = daemonEdgeFailure(err)
+  return unavailable === null ? null : { status: 503, error: 'Service Unavailable', message: unavailable }
+}
+
+/** Send {@link taskFailure}'s answer; false ⇒ not a daemon-edge failure, rethrow. */
+function sendTaskFailure(reply: FastifyReply, err: unknown): boolean {
+  const failure = taskFailure(err)
+  if (!failure) return false
+  void reply.code(failure.status).send({
+    error: failure.error,
+    statusCode: failure.status,
+    message: failure.message,
+    ...(failure.code ? { code: failure.code } : {})
+  })
+  return true
+}
+
 function memoryAdminFailure(
   err: unknown
 ): { status: 400 | 409 | 503; error: 'Bad Request' | 'Conflict' | 'Service Unavailable'; message: string } | null {
@@ -675,22 +738,25 @@ export function agentRoutes(deps: HttpDeps) {
     // caller must pass both the owning-agent gate above and the session's own
     // private/external visibility rule before its daemon-local files are read.
     const sessionAccess = makeSessionAccessResolver(deps)
+    // The session half of that gate, shared with the tasks read: the row must be THIS agent's,
+    // still hold its content, and pass the session's own private/external visibility rule.
+    // Isolation is deliberately not part of it — that is a worktree question, and a session's
+    // background tasks exist whatever checkout it runs in. null ⇒ refuse as absent.
+    const visibleAgentSession = async (req: FastifyRequest, agentId: string, sessionId: string) => {
+      const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
+      if (!session || session.agentId !== agentId || session.contentPurgedAt) return null
+      const access = await sessionAccess.forSessions(req, [session])
+      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess) ? session : null
+    }
     const canReadWorkspaceScope = async (
       req: FastifyRequest,
       agentId: string,
       sessionId: string | undefined
     ): Promise<boolean> => {
       if (!sessionId) return true
-      const session = await deps.repos.session.get(orgOf(req), SessionId(sessionId))
-      if (
-        !session ||
-        session.agentId !== agentId ||
-        session.workspaceIsolation !== 'session' ||
-        session.contentPurgedAt
-      )
-        return false
-      const access = await sessionAccess.forSessions(req, [session])
-      return canViewSession(session, ctxOf(req), access.identitySet, access.externalAccess)
+      const session = await visibleAgentSession(req, agentId, sessionId)
+      // A shared checkout has no per-session worktree, so the daemon would answer BAD_PAYLOAD.
+      return session?.workspaceIsolation === 'session'
     }
 
     const requireSessionWorkspaceRead = async (
@@ -752,6 +818,17 @@ export function agentRoutes(deps: HttpDeps) {
         daemonId,
         WORKSPACE_GIT_MESSAGE_FEATURE,
         'this agent version cannot draft commit messages; upgrade its daemon'
+      )
+
+    // Separate from every git gate: a daemon can serve the Tasks panel without serving git
+    // review, and the console hides exactly the tabs a given daemon cannot answer.
+    const requireTasks = (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> =>
+      requireDaemonFeature(
+        reply,
+        orgId,
+        daemonId,
+        TASK_LIST_FEATURE,
+        'this agent version does not report background tasks; upgrade its daemon'
       )
 
     const resolvePolicyAgentIds = async (
@@ -4383,6 +4460,51 @@ export function agentRoutes(deps: HttpDeps) {
           return toWorkspaceGitMessageDto(rep)
         } catch (err) {
           if (sendWorkspaceMutationFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // One ACP session's background tasks, projected live from the owning daemon's in-memory
+    // lease. A READ: there is no cancel counterpart, because no ACP primitive can address one
+    // background task (webchat-side-panels.md §3.5). The CP stores nothing.
+    r.get(
+      '/agents/:id/tasks',
+      {
+        schema: {
+          tags: [Tag.Agents],
+          summary: 'List a session’s background tasks',
+          description:
+            'Proxy the background tasks of ONE of the agent’s ACP sessions live from the owning daemon, live ones first and then the daemon’s bounded settled history. sessionId is REQUIRED, unlike the workspace reads: the daemon tracks tasks per (agent, ACP session) and has no per-agent aggregate to answer with. Both the session’s own visibility rule and the agent’s apply, so a session the caller cannot see reads as absent (404) — but the session’s workspace isolation does not, because tasks are not a checkout. tracked:false means the daemon holds no tracking for that session (a runtime that reports no task lifecycle, or one that has not yet), which is data and different from an empty list; a settled task stays listed for a bounded while with its outcome. There is no cancel counterpart: no agent-protocol primitive can address a single background task, so the escape hatch is cancelling the turn. 409 when the daemon is too old to report tasks, 503 when the agent is unplaced or its daemon is offline. The control plane persists none of this.',
+          operationId: 'listAgentSessionTasks',
+          params: IdParam,
+          querystring: AgentTasksQueryDto,
+          response: { 200: AgentTasksDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        // Route through getOrgAgent (org boundary + canView) — a bare repo.get here would leak
+        // a restricted / cross-org agent's work, and task descriptions are model-authored text.
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!(await visibleAgentSession(req, agent.id, req.query.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'session not found' })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        if (!(await requireTasks(reply, agent.orgId, agent.daemonId))) return
+
+        try {
+          const rep = await deps.control.taskList(agent.daemonId, {
+            agentId: agent.id,
+            sessionId: req.query.sessionId
+          })
+          return toAgentTasksDto(rep)
+        } catch (err) {
+          if (sendTaskFailure(reply, err)) return
           throw err
         }
       }
