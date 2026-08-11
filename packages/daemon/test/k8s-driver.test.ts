@@ -280,6 +280,21 @@ describe('cluster spawn driver', () => {
     expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
   })
 
+  it('forgets a custom root when the replacement pod reports none, rather than keeping a stale mount', async () => {
+    // An image rollback puts a shim that reports nothing on the agent's next pod. Retaining the
+    // previous incarnation's root would send it a path only the OLD image mounted, which is the
+    // failure this reporting exists to remove — the fallback has to become reachable again.
+    const { api } = fakeApi()
+    let generation = 0
+    const { instance } = driver(api, {
+      awaitChannel: async () => stubConnection(++generation, '/mnt/agent')
+    })
+    await instance.launch(launchRequest)
+    expect(instance.workspaceRootFor('agent-a')).toBe('/mnt/agent')
+    instance.onChannelBound(stubConnection(generation))
+    expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
+  })
+
   it('deletes the claim when an agent goes away', async () => {
     const { api, state } = fakeApi()
     const { instance } = driver(api)

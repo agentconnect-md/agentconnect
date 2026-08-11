@@ -410,8 +410,12 @@ export class K8sDriver implements SpawnDriver {
     return this.workspaceRoots.get(agentId)
   }
 
+  // Mirrors the CURRENT pod, absence included: a root kept from a previous incarnation (an image
+  // rollback to a shim that reports none) names a mount this pod may not have — the exact failure
+  // this seam exists to remove. Unset ⇒ callers fall back to the historical mount.
   private recordWorkspaceRoot(agentId: string, connection: ShimConnection): void {
     if (connection.workspaceRoot) this.workspaceRoots.set(agentId, connection.workspaceRoot)
+    else this.workspaceRoots.delete(agentId)
   }
 
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
