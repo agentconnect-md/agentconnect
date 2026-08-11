@@ -160,6 +160,7 @@ data/*
 
 # Local agent instructions and settings
 AGENTS.override.md
+.codex/
 .claude/settings.local.json
 .claude/worktrees/
 CLAUDE.local.md
