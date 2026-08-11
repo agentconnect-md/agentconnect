@@ -131,6 +131,19 @@ describe('ClusterExecutionService.configure', () => {
     expect(api.applied).toHaveLength(1)
   })
 
+  it('tears the resource down before the org row that names it can be cascaded away', async () => {
+    const { service, api } = build()
+    await service.configure(ORG, { enabled: true })
+    await service.teardown(ORG)
+    expect(api.deleted).toEqual(['ac-org-acme'])
+  })
+
+  it('treats teardown of an org that never enabled cluster execution as a no-op', async () => {
+    const { service, api } = build()
+    await service.teardown(ORG)
+    expect(api.deleted).toEqual([])
+  })
+
   it('reports the deployment defaults for an org that never configured anything', async () => {
     const { service, api } = build()
     const settings = await service.settings(ORG)

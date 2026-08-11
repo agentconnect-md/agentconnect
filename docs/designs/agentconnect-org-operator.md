@@ -230,6 +230,14 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   `enabled: false` deletes the CR and hands the envelope to the finalizer, while
   `suspend` quiesces without tearing down. `GET …/cluster-execution/status`
   projects the operator's conditions and summaries.
+- Every write bumps `specRevision`, and a write applies the CURRENT row and
+  then re-reads that revision: two concurrent writers would otherwise be able to
+  leave the row at one spec and the CR at an older one forever, since the
+  operator reconciles the CR and nothing here re-reads on a timer.
+- Deleting an organization tears the CR down FIRST — the row holds the only copy
+  of the immutable `targetNamespace`, so a cascade that dropped it first would
+  strand a namespace and its workloads with nothing able to name them. A cluster
+  that refuses the delete refuses the whole organization deletion.
 
 The credential Secret named by `spec.daemon.credentialSecretName` — and the
 `credentialRevision` bump that rolls the daemon after a rotation — belong to

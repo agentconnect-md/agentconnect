@@ -272,6 +272,35 @@ describe('GET /cluster-execution/status', () => {
   })
 })
 
+describe('DELETE /orgs/:orgId', () => {
+  it('removes the resource before the cascade drops the row that names it', async () => {
+    const { http, calls } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+
+    const res = await http.app.inject({ method: 'DELETE', url: ORG })
+    expect(res.statusCode).toBe(204)
+    expect(calls).toContain(`DELETE ${RESOURCE_PATH}`)
+    expect(await prisma.orgClusterExecution.count()).toBe(0)
+  })
+
+  it('refuses the deletion when the cluster will not release the envelope', async () => {
+    const { http } = await clusterApp({
+      route: (req) =>
+        req.method === 'DELETE'
+          ? { status: 403, json: { kind: 'Status', reason: 'Forbidden', message: 'cannot delete agentconnectorgs' } }
+          : undefined
+    })
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+
+    const res = await http.app.inject({ method: 'DELETE', url: ORG })
+    expect(res.statusCode).toBe(502)
+    expect(res.json().code).toBe('CLUSTER_API_ERROR')
+    // The org — and with it the only record of the envelope's namespace — survives.
+    expect(await prisma.org.count({ where: { id: DEFAULT_ORG_ID } })).toBe(1)
+    expect(await prisma.orgClusterExecution.count()).toBe(1)
+  })
+})
+
 describe('without cluster credentials', () => {
   it('does not mount the surface at all', async () => {
     const http = buildHttpApp(prisma)

@@ -108,6 +108,20 @@ export class ClusterExecutionService {
     await this.api.apply(name, buildSpec(settings, slug ?? undefined))
   }
 
+  /**
+   * Remove the org's resource, handing its envelope to the operator's deletion
+   * finalizer. Called BEFORE an organization is deleted: the settings row is the
+   * only place the immutable `targetNamespace` lives, so a cascade that dropped
+   * it first would strand a namespace, daemon, and sandboxes with nothing left
+   * that can name them. Idempotent — an org that never enabled cluster
+   * execution, or whose resource is already gone, is a no-op.
+   */
+  async teardown(orgId: OrgId): Promise<void> {
+    const settings = await this.repo.get(orgId)
+    if (!settings) return
+    await this.api.delete(orgResourceName(settings.targetNamespace))
+  }
+
   /** Live envelope status from the resource; absent ⇒ `present: false`. */
   async status(orgId: OrgId): Promise<ClusterEnvelopeStatus> {
     const settings = await this.repo.get(orgId)

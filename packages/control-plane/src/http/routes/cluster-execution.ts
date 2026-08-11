@@ -10,12 +10,12 @@
  * database for anything the operator owns. Absent cluster configuration ⇒ the
  * plugin registers nothing and the whole surface 404s.
  */
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance } from 'fastify'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { Tag } from '../plugins/openapi.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
-import { K8sApiError } from '@agentconnect.md/k8s-client'
+import { sendClusterFailure } from '../cluster-failure.js'
 import type { ClusterExecutionService } from '../../cluster/index.js'
 import type { ClusterExecutionSettings } from '../../persistence/ports.js'
 import {
@@ -42,18 +42,6 @@ function settingsDto(settings: ClusterExecutionSettings, controlNamespace: strin
     egressPolicy: settings.egressPolicy,
     updatedAt: settings.updatedAt.toISOString()
   }
-}
-
-/** A cluster API rejection is an upstream failure, not the caller's fault: 502,
- *  carrying the API server's own message so an operator can act on it. */
-function sendUpstreamFailure(reply: FastifyReply, error: unknown): FastifyReply {
-  if (!(error instanceof K8sApiError)) throw error
-  return reply.code(502).send({
-    error: 'Bad Gateway',
-    statusCode: 502,
-    message: `cluster API rejected the request: ${error.message}`,
-    code: 'CLUSTER_API_ERROR'
-  })
 }
 
 export function clusterExecutionRoutes(deps: HttpDeps) {
@@ -96,7 +84,7 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
           const settings = await cluster.configure(orgOf(req), req.body)
           return settingsDto(settings, cluster.controlNamespace)
         } catch (error) {
-          return sendUpstreamFailure(reply, error)
+          return sendClusterFailure(reply, error, 'cluster API rejected the request')
         }
       }
     )
@@ -117,7 +105,7 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
         try {
           return await cluster.status(orgOf(req))
         } catch (error) {
-          return sendUpstreamFailure(reply, error)
+          return sendClusterFailure(reply, error, 'cluster API rejected the request')
         }
       }
     )
