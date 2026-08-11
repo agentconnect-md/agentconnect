@@ -99,33 +99,31 @@ export type GitRunnerFor = (cwd?: string, abort?: AbortSignal) => GitRunner
 export class LocalGitRunner implements GitRunner {
   // `cwd` and `env` are carried alongside the handle because `readBounded` spawns its own
   // child and cannot ask simple-git what it was configured with.
-  // `cwd` is REQUIRED, not optional: `readBounded` spawns its own child and cannot ask
-  // simple-git where it was pointed, and a site that forgets runs git in the daemon's own
-  // directory instead of the workspace — which happened twice while this was optional and
-  // read as a passing test. Required makes the compiler find every site.
+  // Both extra parameters are REQUIRED, not optional, because a site that forgets either one
+  // fails in a way that reads as a passing test. `cwd`: `readBounded` spawns its own child and
+  // cannot ask simple-git where it was pointed, so a missing one runs git in the daemon's own
+  // directory (this happened twice while it was optional). `make`: see `withEnv`.
   constructor(
     private readonly git: SimpleGit,
     private readonly cwd: string | undefined,
+    private readonly make: (env: Record<string, string>) => SimpleGit,
     private readonly env: Record<string, string> = {}
   ) {}
 
   withEnv(env: Record<string, string>): GitRunner {
-    // The env is STORED, not applied to the handle here. simple-git's `.env()` mutates the instance
-    // and returns it, so two runners derived from one base would share a handle and the last
-    // `withEnv` would silently win — which is exactly what happened when a caller resolved once and
-    // derived both an identity-carrying runner and a config-audit runner from it: the audit's env
-    // replaced the commit identity and the commit landed as the host's OS user. Applying it per
-    // invocation instead also matches the shim, where the environment travels with each request.
-    return new LocalGitRunner(this.git, this.cwd, env)
-  }
-
-  /** The handle with THIS runner's environment applied, immediately before it is used. */
-  private get scoped(): SimpleGit {
-    return Object.keys(this.env).length > 0 ? this.git.env(this.env) : this.git
+    // A derived runner gets its OWN executor, built by `make`. simple-git's `.env()` mutates the
+    // ROOT executor and returns the same instance, so sharing a handle across siblings is wrong in
+    // three ways that a sequential test cannot see: two derivations leave the last env in place,
+    // concurrent calls (`Promise.all`) both run under whichever env was set last, and the BASE
+    // inherits a child's env because nothing ever resets it. That is not academic — deriving an
+    // identity-carrying runner and a config-audit runner from one base made a commit land as the
+    // host's OS user. Independent executors make the env a property of the runner, as the shim's
+    // per-request environment already is.
+    return new LocalGitRunner(this.make(env), this.cwd, this.make, env)
   }
 
   async raw(args: string[]): Promise<string> {
-    return this.scoped.raw(args)
+    return this.git.raw(args)
   }
 
   readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }> {
@@ -158,11 +156,11 @@ export class LocalGitRunner implements GitRunner {
   }
 
   async clone(repo: string, target: string, options: string[] = []): Promise<void> {
-    await this.scoped.clone(repo, target, options)
+    await this.git.clone(repo, target, options)
   }
 
   async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {
-    const result = await this.scoped.pull(remote, branch, options)
+    const result = await this.git.pull(remote, branch, options)
     return {
       files: [...result.files],
       insertions: result.summary.insertions,
@@ -171,7 +169,7 @@ export class LocalGitRunner implements GitRunner {
   }
 
   async status(): Promise<GitStatusSummary> {
-    const summary = await this.scoped.status()
+    const summary = await this.git.status()
     return {
       current: summary.current ?? null,
       tracking: summary.tracking ?? null,
@@ -187,7 +185,7 @@ export class LocalGitRunner implements GitRunner {
   }
 
   async log(options: { maxCount: number }): Promise<GitLogEntry[]> {
-    const result = await this.scoped.log({
+    const result = await this.git.log({
       maxCount: options.maxCount,
       format: { hash: '%H', date: '%cI', subject: '%s' }
     })

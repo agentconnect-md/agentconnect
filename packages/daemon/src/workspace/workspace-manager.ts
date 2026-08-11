@@ -162,7 +162,10 @@ export function setWorkspaceGitRunnerResolver(resolver: WorkspaceGitRunnerResolv
 // Every git operation here routes through this: a direct gitFor still passes locally and then runs
 // a cluster agent's git on the wrong filesystem.
 function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
-  return resolveWorkspaceGitRunner?.(agentId, cwd, abort) ?? new LocalGitRunner(gitFor(cwd, abort), cwd)
+  return (
+    resolveWorkspaceGitRunner?.(agentId, cwd, abort) ??
+    new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+  )
 }
 
 /** The same resolution for git run OUTSIDE this module — the console's workspace git seam. Exported

@@ -238,13 +238,21 @@ export function createWorkspaceGit(
   }
 
   /** Shared by `status` and by both index writes, which answer with the fresh status. */
-  async function readStatus(agentId: string, sessionId?: string): Promise<WorkspaceGitStatus> {
-    const root = rootFor(agentId, sessionId)
+  // `bound` is the runner the CALLER already resolved, when there is one. An index write must answer
+  // with the status of the checkout it just mutated: resolving again here means a shim that detached
+  // between the write and the reply reads a daemon-local checkout, or answers `isRepo:false`, for a
+  // mutation that landed in the sandbox.
+  async function readStatus(
+    agentId: string,
+    sessionId?: string,
+    bound?: { base: GitRunner; root: string }
+  ): Promise<WorkspaceGitStatus> {
+    const root = bound?.root ?? rootFor(agentId, sessionId)
     // Resolved ONCE per request. `workspaceGitRunnerFor` falls back to a daemon-local runner when
     // the sandbox session is not attached, so re-resolving after the preflight means a channel that
     // drops in between proves the sandbox checkout and then mutates the daemon's own disk — the exact
     // cross-filesystem write this seam exists to prevent. Every runner below derives from this one.
-    const base = runnerFor(agentId, root)
+    const base = bound?.base ?? runnerFor(agentId, root)
     if (!(await isRepo(base))) return { agentId, isRepo: false, clean: true }
 
     // Status is read-only and the daemon policy already disables hooks and
@@ -320,7 +328,7 @@ export function createWorkspaceGit(
         await git.raw([...(kind === 'stage' ? ['add', '--'] : ['reset', '-q', '--']), ...chunk])
       }
     }
-    return readStatus(req.agentId, req.sessionId)
+    return readStatus(req.agentId, req.sessionId, { base, root })
   }
 
   /** Refusals are DATA, so every early return of a write goes through one of these two shapes. */

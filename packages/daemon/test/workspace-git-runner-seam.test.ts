@@ -118,7 +118,7 @@ function recording(): {
   const argv: string[][] = []
   const resolver: WorkspaceGitRunnerResolver = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
-    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd)
+    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
     const wrap = (runner: GitRunner): GitRunner => ({
       withEnv: (env) => wrap(runner.withEnv(env)),
       raw: async (args) => {

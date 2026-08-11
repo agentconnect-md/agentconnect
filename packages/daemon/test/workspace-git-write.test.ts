@@ -9,6 +9,8 @@ import { initGitInjection, workspaceGitLocalEnv } from '../src/workspace/git-inj
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import { parsePorcelainV2 } from '../src/shim/git-exec.js'
 import { setWorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { LocalGitRunner } from '../src/workspace/git-runner.js'
+import { gitFor } from '../src/workspace/git-injection.js'
 
 // Real git against real checkouts, no simple-git mock: the write half is a set of claims about what
 // `git add` / `reset` / `commit` / `push` actually do to an index and a remote, and a mocked runner
@@ -643,6 +645,28 @@ describe('workspace git push preconditions (data, not errors)', () => {
     // The authorized remote really did not receive the new commit.
     const head = git(dir, ['rev-parse', 'HEAD']).trim()
     expect(git(dir, ['ls-remote', '--heads', bare])).not.toContain(head)
+  })
+
+  it('answers a stage through the runner it mutated, not one resolved again afterwards', async () => {
+    // A resolver that works ONCE and then goes away is what a detaching sandbox session looks like.
+    // Resolving again for the reply would read a daemon-local checkout — or answer isRepo:false — for
+    // a mutation that landed in the sandbox.
+    const { dir } = repoWithRemote()
+    writeFileSync(join(dir, 'tracked.txt'), 'two\n')
+    let resolutions = 0
+    setWorkspaceGitRunnerResolver((_agentId, cwd) => {
+      resolutions += 1
+      if (resolutions > 1) return undefined
+      return new LocalGitRunner(gitFor(cwd ?? dir), cwd ?? dir, (env) => gitFor(cwd ?? dir).env(env))
+    })
+    try {
+      const status = await seamFor(dir).stage({ agentId: 'a', paths: ['tracked.txt'] })
+      expect(resolutions).toBe(1)
+      expect(status.isRepo).toBe(true)
+      expect(status.files?.map((f) => f.path)).toEqual(['tracked.txt'])
+    } finally {
+      setWorkspaceGitRunnerResolver(undefined)
+    }
   })
 
   it('refuses a from-scratch workspace that merely SITS INSIDE another repository', async () => {
