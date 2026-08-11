@@ -1,0 +1,20 @@
+# TLS termination for LAN deployments (compose.https.yaml). One HTTPS port per
+# service so no route knowledge leaks into the proxy; certificates come from
+# Caddy's internal CA (trust root.crt once per device — see compose.https.yaml).
+{
+	local_certs
+	admin off
+	auto_https disable_redirects
+}
+
+https://{$AGENTCONNECT_HTTPS_HOST}:3443 {
+	reverse_proxy web:8080
+}
+
+https://{$AGENTCONNECT_HTTPS_HOST}:8443 {
+	reverse_proxy control-plane:8080
+}
+
+https://{$AGENTCONNECT_HTTPS_HOST}:9443 {
+	reverse_proxy relay:8080
+}

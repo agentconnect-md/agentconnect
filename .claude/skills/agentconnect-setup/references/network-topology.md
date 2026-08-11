@@ -19,6 +19,10 @@ Ask for the following without requesting credentials:
 
 Record the answers as a small table before changing `compose.env`. Do not assume the four AgentConnect addresses share a hostname. Prefer separate origin-level hostnames because the configured values are origins without trailing slashes; use path-based routing only after verifying the current release and proxy preserve every callback and WebSocket path.
 
+## LAN-only browser access
+
+Browsers grant secure-context APIs (`crypto.randomUUID`, `crypto.subtle`, clipboard) only over HTTPS or localhost, so a console opened from another LAN device by plain HTTP degrades. For LAN-only deployments without a tunnel, use the `compose.https.yaml` overlay: set `AGENTCONNECT_HTTPS_HOST` to the LAN IP or hostname, add `-f compose.https.yaml` to the Compose invocation, open `https://<host>:3443`, and have each device trust the exported Caddy root certificate (or accept the warning once per HTTPS origin: `:3443`, `:8443`, `:9443`). Daemons keep using the plain HTTP/WS ports.
+
 ## Typical tunnel mapping
 
 A tunnel agent on the Compose host can connect to loopback-bound ports, so external access usually does not require changing `AGENTCONNECT_BIND_ADDRESS`:

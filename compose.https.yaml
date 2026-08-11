@@ -1,0 +1,64 @@
+# HTTPS overlay for LAN deployments (e.g. a NAS reached by IP or intranet name).
+# Browsers expose crypto.randomUUID, crypto.subtle, and navigator.clipboard only
+# in secure contexts (HTTPS or localhost), so a console served over plain HTTP
+# from a non-localhost host degrades. This overlay puts Caddy in front of web,
+# control-plane, and relay with certificates from Caddy's internal CA:
+#
+#   AGENTCONNECT_HTTPS_HOST=<LAN IP or hostname> \
+#     docker compose -f compose.yaml -f compose.https.yaml up -d
+#
+# Then open https://<host>:3443. Trust the generated CA once per device
+# (recommended; otherwise visit each of the three HTTPS origins once and accept
+# the certificate warning):
+#
+#   docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt agentconnect-root-ca.crt
+#
+# Daemons are unaffected by secure contexts and keep dialing the plain HTTP/WS
+# ports, so AGENTCONNECT_BIND_ADDRESS / AGENTCONNECT_RELAY_DAEMON_URL work as in
+# the base file. Do not expose a no-auth stack beyond your trusted network.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      web:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    environment:
+      AGENTCONNECT_HTTPS_HOST: ${AGENTCONNECT_HTTPS_HOST:?set AGENTCONNECT_HTTPS_HOST to the LAN hostname or IP browsers will use}
+    ports:
+      - ${AGENTCONNECT_TLS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_WEB_TLS_PORT:-3443}:3443
+      - ${AGENTCONNECT_TLS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_CP_TLS_PORT:-8443}:8443
+      - ${AGENTCONNECT_TLS_BIND_ADDRESS:-0.0.0.0}:${AGENTCONNECT_RELAY_TLS_PORT:-9443}:9443
+    restart: unless-stopped
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persists the internal CA so trusted roots survive container recreation.
+      - caddy-data:/data
+      - caddy-config:/config
+
+  setup-server:
+    environment:
+      - AGENTCONNECT_PUBLIC_CP_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_CP_TLS_PORT:-8443}
+      - AGENTCONNECT_PUBLIC_WEB_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_WEB_TLS_PORT:-3443}
+      - AGENTCONNECT_PUBLIC_RELAY_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_RELAY_TLS_PORT:-9443}
+
+  control-plane:
+    environment:
+      - PUBLIC_CP_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_CP_TLS_PORT:-8443}
+      - PUBLIC_WEB_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_WEB_TLS_PORT:-3443}
+      - PUBLIC_RELAY_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_RELAY_TLS_PORT:-9443}
+      - CORS_ORIGIN=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_WEB_TLS_PORT:-3443}
+
+  web:
+    environment:
+      - PUBLIC_WEB_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_WEB_TLS_PORT:-3443}
+      - CP_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_CP_TLS_PORT:-8443}/api/v1
+      - RELAY_URL=https://${AGENTCONNECT_HTTPS_HOST}:${AGENTCONNECT_RELAY_TLS_PORT:-9443}
+
+volumes:
+  caddy-data:
+  caddy-config:

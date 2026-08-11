@@ -10,14 +10,14 @@ Guide the user one checkpoint at a time. Select one deployment mode, load only i
 ## Establish the session
 
 1. Determine the AgentConnect checkout or deployment directory. Prefer the current directory when it contains `compose.yaml`; otherwise ask for or locate the checkout.
-2. Ask whether access is loopback-only, LAN-only, or through stable public domains using Cloudflare Tunnel or another reverse proxy. Never assume `localhost`. If anything is externally reachable, read [references/network-topology.md](references/network-topology.md) and collect the final topology before continuing.
+2. Ask whether access is loopback-only, LAN-only, or through stable public domains using Cloudflare Tunnel or another reverse proxy. Never assume `localhost`. If anything is reachable beyond loopback (LAN included), read [references/network-topology.md](references/network-topology.md) and collect the final topology before continuing.
 3. Determine the target mode:
    - `no-auth`: loopback-only local evaluation;
    - `local-logto`: local evaluation with the bundled Logto OSS overlay;
    - `cloud-logto`: a locally or single-hosted Compose stack using Logto Cloud.
 4. Determine whether the user wants only the core stack or also Google, GitHub, Slack, a daemon, and production hardening.
 5. Read [references/deployment-modes.md](references/deployment-modes.md) plus [references/local-logto.md](references/local-logto.md) or [references/cloud-logto.md](references/cloud-logto.md) only when that mode is selected. Read [references/integrations.md](references/integrations.md) only for requested providers. Read [references/operations.md](references/operations.md) for upgrades, reset, remote-daemon networking, or troubleshooting.
-6. Inspect the checkout's `compose.yaml`, optional `compose.logto.yaml`, and available environment template before issuing commands. If the checkout differs from the bundled references, follow the checkout and current official documentation, and explain the difference.
+6. Inspect the checkout's `compose.yaml`, optional `compose.logto.yaml` and `compose.https.yaml` overlays, and available environment template before issuing commands. If the checkout differs from the bundled references, follow the checkout and current official documentation, and explain the difference.
 
 For an external topology, obtain these values before starting authentication or provider setup:
 

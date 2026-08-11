@@ -135,6 +135,23 @@ Continue with the browser-based local-auth bootstrap in the
 [`@agentconnect.md/setup` walkthrough](packages/setup/README.md). The
 default no-auth Compose command above is unchanged.
 
+To reach the console from **other devices on your LAN** (for example a stack on
+a NAS opened by IP), use the HTTPS overlay. Browsers grant `crypto.randomUUID`,
+`crypto.subtle`, and clipboard access only to secure contexts — HTTPS or
+localhost — so a console served over plain HTTP from a non-localhost address
+degrades. The overlay fronts the stack with Caddy and an internal CA:
+
+```bash
+AGENTCONNECT_HTTPS_HOST='your LAN IP or hostname' docker compose -f compose.yaml -f compose.https.yaml up -d
+```
+
+Open `https://<host>:3443` and trust the generated root certificate once per
+device (export it with `docker compose -f compose.yaml -f compose.https.yaml cp
+caddy:/data/caddy/pki/authorities/local/root.crt agentconnect-root-ca.crt`), or
+visit each of the three HTTPS origins (`:3443`, `:8443`, `:9443`) once and
+accept the warning. Daemons keep dialing the plain HTTP/WS ports and are
+unaffected. Do not expose a no-auth stack beyond your trusted network.
+
 For image pinning, production networking, sign-in, secrets, GitHub App setup,
 and optional Mem0 configuration, see the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
