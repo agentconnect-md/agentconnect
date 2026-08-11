@@ -87,9 +87,12 @@ const TRUNCATE_ATTEMPTS = 5
 
 /** Prisma reports the raw-query failure as P2010 and carries the driver's SQLSTATE underneath. */
 function isDeadlock(error: unknown): boolean {
-  const cause = (error as { meta?: { driverAdapterError?: { cause?: { code?: string } } } } | null)?.meta
-    ?.driverAdapterError?.cause
-  if (cause?.code === DEADLOCK_DETECTED) return true
+  const cause = (
+    error as { meta?: { driverAdapterError?: { cause?: { originalCode?: string; code?: string } } } } | null
+  )?.meta?.driverAdapterError?.cause
+  // `originalCode` is set for every driver error; `code` only when the adapter leaves the
+  // SQLSTATE unmapped, which is today's path for 40P01 but not a promise.
+  if (cause?.originalCode === DEADLOCK_DETECTED || cause?.code === DEADLOCK_DETECTED) return true
   // Shape of `meta` is not part of Prisma's public contract; the message is the fallback.
   return error instanceof Error && error.message.includes('deadlock detected')
 }
