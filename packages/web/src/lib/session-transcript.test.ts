@@ -71,6 +71,19 @@ describe('reconcilePersistedLiveSteps', () => {
     )
   })
 
+  it('does not confirm a failed prompt from a matching peer-agent row', () => {
+    const at = 1_785_000_000_000
+    const live = [
+      prompt('yes', at),
+      { kind: 'done', text: '⚠️ Could not reach the agent.', observedAtMs: at + 100 }
+    ] satisfies SessionStep[]
+    const peerRows = [
+      { seq: 1, ts: String(at + 50), text: 'yes', sender: 'bot-b', kind: 'text' }
+    ] satisfies SessionMessageDto[]
+
+    expect(reconcilePersistedLiveSteps(live, peerRows, agentId, [])).toEqual(live)
+  })
+
   function persistedReply(seq: number, sender: string, text: string, ts: number, postId: string): SessionMessageDto {
     return { seq, ts: String(ts), text, sender, kind: 'text', postId }
   }

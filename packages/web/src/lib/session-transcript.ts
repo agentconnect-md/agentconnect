@@ -38,20 +38,12 @@ function promptKey(text: string, image?: SessionImage): string {
   return JSON.stringify([text, image?.name ?? null, image?.mimeType ?? null, image?.data ?? null])
 }
 
-/**
- * Drop live steps a persisted refresh has superseded: an adopted-WebChat turn
- * whose optimistic user prompt has a matching, newly persisted transcript row
- * (fuzzy text+time match — a prompt carries no canonical id), and a standalone
- * agent-initiated post step (#753) whose canonical `postId` now appears on ANY
- * persisted row — an exact match, since that id is unique per post and shared
- * verbatim across every participant's copy of it. Failed pre-admission turns
- * have no persisted row at all and therefore retain both the attempted prompt
- * and its error feedback.
- */
+/** Drop exact post duplicates from all rows and fuzzy prompt duplicates from prompt rows. */
 export function reconcilePersistedLiveSteps(
   live: SessionStep[],
   persisted: SessionMessageDto[],
-  agentId: string
+  agentId: string,
+  promptRows: SessionMessageDto[] = persisted
 ): SessionStep[] {
   if (live.length === 0 || persisted.length === 0) return live
 
@@ -82,7 +74,7 @@ export function reconcilePersistedLiveSteps(
   if (turns.length === 0) return withoutConfirmedPosts
 
   const confirmed = new Set<number>()
-  for (const message of persisted) {
+  for (const message of promptRows) {
     if (message.kind.toLowerCase() !== 'text' || message.sender === agentId) continue
     const persistedAtMs = transcriptRowTimeMs(message)
     if (persistedAtMs == null) continue

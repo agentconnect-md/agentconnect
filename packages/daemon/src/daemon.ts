@@ -11498,23 +11498,13 @@ export class Daemon {
     })
   }
 
-  /**
-   * §6.9 #353 durable inbox: persist an ADMITTED entry BEFORE its admission ACK/return, so a
-   * hard kill / agent move can't lose a message the caller was already told delivered:true.
-   * Called ONLY on the two genuine admission branches in dispatch() (claim + enqueue), never
-   * on a rejected/gate-dropped admission — a queue-full or paused/draining drop persists
-   * nothing. WEBCHAT turns are skipped (§6.9 #367): their `sink` is a live in-memory transport
-   * that can't be restored across a restart and a dead browser socket can't be resumed, so a
-   * durable row would be un-replayable. Sets `entry.inboxId` so every terminal path can delete
-   * the row. Its id is the stable deliveryId or bot-scoped platform message id (§6.3), making
-   * same-bot re-appends idempotent without colliding across physical bots.
-   */
+  /** Persist an admitted replayable entry before its admission settles (§6.9 #353). */
   private persistInbox(
     entry: QueueEntry,
     key: string,
     options: { required?: boolean; adoptExisting?: boolean; existingId?: string } = {}
   ): 'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed' {
-    if (entry.webchat) return 'skipped' // non-persistable live sink — see §6.9 #367
+    if (entry.webchat && entry.webchat.initiator !== 'agent') return 'skipped' // Browser-owned live sinks cannot replay.
     const id = options.existingId ?? entry.callMeta?.deliveryId ?? stableMessageId(entry.msg)
     try {
       const inserted = this.store.appendInbox({

@@ -1180,4 +1180,39 @@ describe('daemon durable inbox', () => {
     // Still no webchat row after the head drained.
     expect(inbox(root).some((r) => r.id === 'slack:C1:200')).toBe(false)
   }, 15_000)
+
+  it('durably persists an agent-initiated post-only webchat wake', async () => {
+    const g = gatedHost()
+    const root = scaffold()
+    const daemon = await boot(root, g.host)
+    const conversationId = '88888888-8888-4888-8888-888888888888'
+    const deliveryId = 'agent-post-only'
+    const wake = {
+      msgId: `agentcall:${conversationId}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent' as const,
+      platform: 'webchat' as const,
+      channel: conversationId,
+      thread: `webchat:${conversationId}`,
+      sender: { id: 'bot-b', isBot: true },
+      text: 'reply into the browser conversation',
+      mentionedBots: [] as string[],
+      isDm: false
+    }
+    const turn = (daemon as any).dispatch(
+      'bot-a',
+      wake,
+      undefined,
+      (daemon as any).webchatWakeContext('webchat', conversationId),
+      { callFrom: 'bot-b', hopCount: 1, deliveryId }
+    )
+
+    await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+    expect(inbox(root).map((row) => row.id)).toEqual([deliveryId])
+
+    g.releaseOne()
+    await expect(turn).resolves.toBe('acp-1')
+    expect(inbox(root)).toHaveLength(0)
+    await daemon.stop()
+  }, 15_000)
 })

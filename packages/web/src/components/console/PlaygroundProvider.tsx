@@ -128,8 +128,13 @@ interface PlaygroundData {
    *  superseded regeneration keeps its author's lane open, so the indicator
    *  names the agent actually working, not the primary). */
   getBusyLaneAgentIds: (id: string) => string[]
-  /** Retire only optimistic turns confirmed by authoritative transcript rows. */
-  reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
+  /** Retire only live steps confirmed by authoritative transcript rows. */
+  reconcileLiveSteps: (
+    id: string,
+    persisted: SessionMessageDto[],
+    agentId: string,
+    promptRows?: SessionMessageDto[]
+  ) => void
 }
 
 /** One message waiting behind the in-flight turn. Send args are captured at
@@ -1357,18 +1362,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
-  const reconcileLiveSteps = useCallback((id: string, persisted: SessionMessageDto[], agentId: string): void => {
-    setWcSteps((cur) => {
-      const live = cur[id]
-      if (!live) return cur
-      const reconciled = reconcilePersistedLiveSteps(live, persisted, agentId)
-      if (reconciled === live) return cur
-      const next = { ...cur }
-      if (reconciled.length === 0) delete next[id]
-      else next[id] = reconciled
-      return next
-    })
-  }, [])
+  const reconcileLiveSteps = useCallback(
+    (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
+      setWcSteps((cur) => {
+        const live = cur[id]
+        if (!live) return cur
+        const reconciled = reconcilePersistedLiveSteps(live, persisted, agentId, promptRows)
+        if (reconciled === live) return cur
+        const next = { ...cur }
+        if (reconciled.length === 0) delete next[id]
+        else next[id] = reconciled
+        return next
+      })
+    },
+    []
+  )
   const pgSessionList = useMemo(() => Object.values(pgSessions), [pgSessions])
 
   const value = useMemo<PlaygroundData>(

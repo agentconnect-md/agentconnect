@@ -2041,10 +2041,7 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        // #753: a peer participant's agent-initiated post lives only in ITS OWN
-        // session's rows, never the representative session's — reconcile against
-        // every source merged together, not just `sid`'s, or a peer's live post
-        // step never sees its own persisted confirmation.
+        // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
         const merged = mergeConversationRows(
           sources,
           rowsBySession,
@@ -2059,7 +2056,8 @@ export default function SessionDetailView() {
         liveCursorRef.current = cursors.get(sid) ?? null
         tailReadyRef.current = true
         setTailReady(true)
-        if (merged.length > 0 && !sessionBusyRef.current) reconcileLiveSteps(sid, merged, aid)
+        if (merged.length > 0 && !sessionBusyRef.current)
+          reconcileLiveSteps(sid, merged, aid, rowsBySession.get(sid) ?? [])
       })().catch((e) => {
         if (!active) return
         setMsgErr(e instanceof Error ? e.message : String(e))
@@ -2161,10 +2159,7 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        // #753: reconcile against every source merged together — a peer
-        // participant's agent-initiated post lives only in ITS OWN session's
-        // rows, never the representative session's (see the initial-load fan-out
-        // above for the full rationale).
+        // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
         const merged = mergeConversationRows(
           sources,
           state.rows,
@@ -2175,7 +2170,7 @@ export default function SessionDetailView() {
         )
         setMsgs(merged)
         if (tailSessionRef.current === sid && !sessionBusyRef.current && fetchedAny)
-          reconcileLiveSteps(sid, merged, aid)
+          reconcileLiveSteps(sid, merged, aid, state.rows.get(sid) ?? [])
       })()
         .catch(() => {
           // Keep the last good transcript; the next signal retries.
