@@ -337,6 +337,8 @@ export async function ensureSandboxTemplates(
 /** The CR is the sole desired-state carrier: tiers removed from spec lose their pool and template. */
 async function pruneRemovedTiers(ctx: ReconcileContext, input: EnvelopeInputs): Promise<void> {
   const ns = input.spec.targetNamespace
+  // A still-desired tier keeps its objects even when its master vanished: they are the
+  // last-known-good render, and a control-namespace hiccup must not tear down a live pool.
   const desired = new Set(input.spec.runtime.tiers.map((tier) => runtimeTierName(tier.name)))
   for (const plural of ['sandboxwarmpools', 'sandboxtemplates']) {
     const list = await getOrNull<{ items?: Array<{ metadata?: { name?: string } }> }>(

@@ -244,6 +244,19 @@ describe('reconcileEnvelope', () => {
     expect(deletes.some((path) => path.endsWith('/ac-runtime-std') || path.endsWith('/custom-thing'))).toBe(false)
   })
 
+  it('keeps the last-known-good objects of a still-desired tier whose master vanished', async () => {
+    const { gets, writes, route } = recorder()
+    const ctx = await contextFor(route)
+    // No master template registered: tier std degrades, but its existing render survives.
+    const existing = { items: [{ metadata: { name: 'ac-runtime-std' } }] }
+    gets.set(groupPath(SANDBOX_EXTENSIONS_GROUP, NS, 'sandboxwarmpools'), existing)
+    gets.set(groupPath(SANDBOX_EXTENSIONS_GROUP, NS, 'sandboxtemplates'), existing)
+    const obs = newObservations()
+    await reconcileEnvelope(ctx, inputOf(), obs)
+    expect(obs.warnings.some((warning) => warning.includes('ac-runtime-std'))).toBe(true)
+    expect(writes.filter((write) => write.method === 'DELETE' && write.path.includes('ac-runtime-std'))).toEqual([])
+  })
+
   it('locked egress restricts the sandbox template to daemon and DNS', async () => {
     const { gets, writes, route } = recorder()
     const ctx = await contextFor(route)
