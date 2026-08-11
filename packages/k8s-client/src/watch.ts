@@ -1,6 +1,10 @@
 import { Backoff, systemClock, type Clock } from '@agentconnect.md/connection'
-import type { ClusterMetrics } from './cluster-metrics.js'
 import { K8sApiError, type K8sHttp } from './http.js'
+
+/** The one operability hook the watch loop needs; daemon's ClusterMetrics satisfies it structurally. */
+export interface WatchMetrics {
+  watchRelist(source: 'status' | 'in_band'): void
+}
 
 export interface K8sObject {
   metadata?: { name?: string; uid?: string; resourceVersion?: string; annotations?: Record<string, string> }
@@ -36,7 +40,7 @@ export interface WatchOptions {
   backoff?: Backoff
   log?: { debug?: (message: string) => void; warn?: (message: string) => void }
   /** Operability counters; a re-list is invisible in logs alone at any real volume. */
-  metrics?: ClusterMetrics
+  metrics?: WatchMetrics
 }
 
 /** Clock-driven delay that leaves no listener behind — a long outage retries often

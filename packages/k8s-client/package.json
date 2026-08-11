@@ -1,0 +1,59 @@
+{
+  "name": "@agentconnect.md/k8s-client",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect thin bare-REST Kubernetes client — in-cluster config, typed HTTP verbs, list-then-watch with resume, and Lease leader election, shared by the daemon and the operator",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "development": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "default": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "pnpm --filter '{.}^...' build && tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "sideEffects": false,
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@agentconnect.md/connection": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "keywords": [
+    "agentconnect",
+    "client",
+    "kubernetes",
+    "lease",
+    "watch"
+  ],
+  "engines": {
+    "node": ">=24.12.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

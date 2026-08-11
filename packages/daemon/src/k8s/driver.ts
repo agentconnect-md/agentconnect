@@ -13,7 +13,7 @@ import {
   type Sandbox,
   type SandboxApi
 } from './sandbox-api.js'
-import { K8sApiError } from './http.js'
+import { K8sApiError } from '@agentconnect.md/k8s-client'
 
 /** Label domain the claim controller must be configured to allow. */
 export const AC_LABEL_ORG = 'agentconnect.md/org'

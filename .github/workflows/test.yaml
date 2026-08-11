@@ -213,7 +213,9 @@ jobs:
             'relay=@agentconnect.md/relay' \
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli' \
-            'setup=@agentconnect.md/setup'
+            'setup=@agentconnect.md/setup' \
+            'k8s-client=@agentconnect.md/k8s-client' \
+            'operator=@agentconnect.md/operator'
       - name: Publish unit test summary
         if: ${{ !cancelled() && !inputs.defer_summaries }}
         env:

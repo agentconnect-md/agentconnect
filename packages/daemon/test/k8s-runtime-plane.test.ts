@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
 import { startK8sRuntimePlane, k8sPlaneSettings, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
-import { K8sApiError } from '../src/k8s/http.js'
+import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 
 /**

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, type ClusterDriverDeps } from '../src/k8s/driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
-import { K8sApiError } from '../src/k8s/http.js'
+import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 
 // The acceptance criterion for D9 is a dashboard that settles "resume p95 ≤ 15s, cold start

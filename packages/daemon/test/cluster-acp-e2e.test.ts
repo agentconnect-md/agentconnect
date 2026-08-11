@@ -6,7 +6,7 @@ import { AcpHost } from '../src/acp/acp-host.js'
 import { K8sDriver } from '../src/k8s/driver.js'
 import { ShimListener, type ShimConnection } from '../src/shim/listener.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
-import { K8sApiError } from '../src/k8s/http.js'
+import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 
