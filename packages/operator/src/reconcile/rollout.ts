@@ -23,12 +23,14 @@ function imageOf(sandbox: SandboxRead): string | undefined {
   return sandbox.spec?.podTemplate?.spec?.containers?.[0]?.image
 }
 
+// A PATCH must name its patch type — the API server answers `application/json` with 415 — so the
+// annotation writes take the merge-patch default and the conditioned image swap names JSON Patch.
 async function patchSandbox(
   ctx: ReconcileContext,
   ns: string,
   name: string,
   body: unknown,
-  contentType?: string
+  contentType = 'application/merge-patch+json'
 ): Promise<boolean> {
   try {
     await ctx.http.json({ method: 'PATCH', path: groupPath(SANDBOX_GROUP, ns, 'sandboxes', name), body, contentType })

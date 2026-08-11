@@ -91,6 +91,8 @@ describe('reconcileRollout', () => {
   it('asks a Running sandbox to drain via the annotation handshake, never a forced suspend', async () => {
     const { patches, obs } = await run([sandbox('sb-1', 'ghcr.io/example/runtime:v1', 'Running')])
     expect(patches).toHaveLength(1)
+    // A PATCH that does not name its patch type is a 415 from a real API server.
+    expect(patches[0].contentType).toBe('application/merge-patch+json')
     const annotations = requestedAnnotations(patches[0])
     expect(annotations[DRAIN_REQUESTED_ANNOTATION]?.endsWith(`/${TARGET}`)).toBe(true)
     // The deadline is measured from a time on the OBJECT, so a leader change does not restart it.
@@ -167,6 +169,7 @@ describe('reconcileRollout', () => {
       })
     ])
     expect(patches).toHaveLength(1)
+    expect(patches[0].contentType).toBe('application/merge-patch+json')
     // Both halves go: a left-over request would keep the daemon refusing to wake the instance.
     expect(requestedAnnotations(patches[0])).toEqual({
       [DRAIN_REQUESTED_ANNOTATION]: null,
