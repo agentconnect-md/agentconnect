@@ -24,10 +24,12 @@ Control Plane never assigns it an agent, and nothing looks broken.
 
 ## Pinning the images
 
-Both manifests pin `v1.41.0-rc.47`, the first tag whose daemon and runtime-sandbox
-images both carry the live-probe protocol. Use the same tag for both: a daemon
-that probes paired with a shim that cannot serve `probe` advertises nothing, and a
-shim that can paired with a daemon that reads a file finds no file.
+Both manifests carry `<IMAGE_TAG>`. The tag must be built from a commit that
+contains BOTH the live-probe protocol and the pod-environment fix — `v1.41.0-rc.47`
+has the first but not the second, so pinning it reproduces a Codex failure inside
+the sandbox. Use the same tag for both images: a daemon that probes paired with a
+shim that cannot serve `probe` advertises nothing, and a shim that can paired with
+a daemon that reads a file finds no file.
 
 If you move the tag, check the shim actually serves the capability first:
 
@@ -58,9 +60,14 @@ shred -u /tmp/config.json
 
 # 2. Everything else.
 # The controller must accept our label domain before it will create any Sandbox,
-# and it reads that config only at startup.
-kubectl apply -f deploy/k8s/05-label-allowlist.yaml
-kubectl -n agentconnect rollout restart deploy/agent-sandbox-controller
+# and it reads that config only at startup. It lives in the CONTROLLER's namespace:
+NS=$(kubectl get deploy -A -o jsonpath='{range .items[?(@.metadata.name=="agent-sandbox-controller")]}{.metadata.namespace}{end}')
+
+# Merge, do not clobber: this key REPLACES the allowlist, so applying the file blind
+# would revoke any domain already in there (including the built-in fallback).
+kubectl -n "$NS" get cm agent-sandbox-config -o jsonpath='{.data.allowed-label-domains}' 2> /dev/null \
+  || kubectl -n "$NS" apply -f deploy/k8s/05-label-allowlist.yaml
+kubectl -n "$NS" rollout restart deploy/agent-sandbox-controller
 
 kubectl apply -f deploy/k8s/00-rbac.yaml
 kubectl apply -f deploy/k8s/20-service.yaml

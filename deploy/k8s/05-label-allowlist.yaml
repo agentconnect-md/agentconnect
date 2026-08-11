@@ -9,12 +9,23 @@
 #
 #   kubectl -n agentconnect rollout restart deploy/agent-sandbox-controller
 #
-# It is shared infrastructure. Check for running sandboxes before restarting it, and merge rather
-# than overwrite if the ConfigMap already exists — another tenant's domain may be in there.
+# TWO things this file cannot know for you:
+#
+#   * Which namespace. It must live in the CONTROLLER's namespace, not necessarily this one —
+#     upstream installs into `agent-sandbox-system`, while this cluster runs the controller in
+#     `agentconnect`. Find it with:
+#       kubectl get deploy -A | grep agent-sandbox-controller
+#
+#   * Whether it already exists. This value REPLACES the allowlist, including the built-in
+#     `sandbox.users.io` fallback — which is why that domain is kept below. If the ConfigMap is
+#     already there, merge your domain into the existing value instead of applying this file, or
+#     you will silently revoke someone else's.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: agent-sandbox-config
   namespace: agentconnect
 data:
-  allowed-label-domains: agentconnect.md
+  # sandbox.users.io is the controller's built-in fallback, and setting this key
+  # replaces it — dropping it would revoke any claim already relying on it.
+  allowed-label-domains: sandbox.users.io,agentconnect.md

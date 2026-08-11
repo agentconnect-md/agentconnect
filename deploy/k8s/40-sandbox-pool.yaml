@@ -46,7 +46,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: runtime
-          image: ghcr.io/agentconnect-md/runtime-sandbox:v1.41.0-rc.47
+          image: ghcr.io/agentconnect-md/runtime-sandbox:<IMAGE_TAG>
           env:
             # Where the shim dials back. The daemon never dials in, so this is the only direction
             # that has to work — and it is why the sandbox needs no inbound rules at all.
