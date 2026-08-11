@@ -1180,4 +1180,111 @@ describe('daemon durable inbox', () => {
     // Still no webchat row after the head drained.
     expect(inbox(root).some((r) => r.id === 'slack:C1:200')).toBe(false)
   }, 15_000)
+
+  it('durably persists an agent-initiated post-only webchat wake', async () => {
+    const g = gatedHost()
+    const root = scaffold()
+    const daemon = await boot(root, g.host)
+    const conversationId = '88888888-8888-4888-8888-888888888888'
+    const deliveryId = 'agent-post-only'
+    const wake = {
+      msgId: `agentcall:${conversationId}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent' as const,
+      platform: 'webchat' as const,
+      channel: conversationId,
+      thread: `webchat:${conversationId}`,
+      sender: { id: 'bot-b', isBot: true },
+      text: 'reply into the browser conversation',
+      mentionedBots: [] as string[],
+      isDm: false
+    }
+    const turn = (daemon as any).dispatch(
+      'bot-a',
+      wake,
+      undefined,
+      (daemon as any).webchatWakeContext('webchat', conversationId),
+      { callFrom: 'bot-b', hopCount: 1, deliveryId }
+    )
+
+    await vi.waitFor(() => expect(g.started).toHaveLength(1), WAIT)
+    expect(inbox(root).map((row) => row.id)).toEqual([deliveryId])
+
+    g.releaseOne()
+    await expect(turn).resolves.toBe('acp-1')
+    expect(inbox(root)).toHaveLength(0)
+    await daemon.stop()
+  }, 15_000)
+
+  it('replays an agent-initiated webchat wake with its canonical live post sink', async () => {
+    const root = scaffold()
+    const conversationId = '99999999-9999-4999-8999-999999999999'
+    const deliveryId = 'replayed-agent-post'
+    const wake = {
+      msgId: `agentcall:${conversationId}:${deliveryId}`,
+      traceId: deliveryId,
+      source: 'agent' as const,
+      platform: 'webchat' as const,
+      channel: conversationId,
+      thread: `webchat:${conversationId}`,
+      sender: { id: 'bot-b', isBot: true },
+      text: 'recover this reply into the browser conversation',
+      mentionedBots: [] as string[],
+      isDm: false
+    }
+    const persisted = new LocalStore(statePath(root))
+    persisted.appendInbox({
+      id: deliveryId,
+      sessionKey: sessionKey('webchat', conversationId, `webchat:${conversationId}`, 'bot-a'),
+      agentId: 'bot-a',
+      msg: JSON.stringify(wake),
+      integrationId: null,
+      callMeta: JSON.stringify({ callFrom: 'bot-b', hopCount: 1, deliveryId }),
+      isQueueCmd: null,
+      enqueuedAt: '100'
+    })
+    persisted.close()
+
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-replayed-webchat'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        onUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'recovered browser reply' }
+        })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root,
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { sendWebchatPost, stop: vi.fn(async () => {}) }
+
+    await daemon.start()
+    await vi.waitFor(() => expect(sendWebchatPost).toHaveBeenCalledTimes(1), WAIT)
+    expect(sendWebchatPost).toHaveBeenCalledWith({
+      conversationId,
+      agentId: 'bot-a',
+      post: expect.objectContaining({
+        postId: expect.any(String),
+        conversationId,
+        author: { kind: 'agent', agentId: 'bot-a' },
+        text: 'recovered browser reply',
+        at: expect.any(Number)
+      }),
+      initiator: 'agent'
+    })
+    expect(inbox(root)).toHaveLength(0)
+    await daemon.stop()
+  }, 15_000)
 })

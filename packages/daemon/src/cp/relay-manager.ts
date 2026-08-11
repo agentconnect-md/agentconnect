@@ -9,7 +9,7 @@
  * daemon only does set-convergence — it never assumes the roster is the full relay
  * fleet — so future CP-side sharding is a CP-only change (§17 invariant).
  */
-import type { RelayRosterEntry, RdAgentMsg, RdAgentMsgAck } from '@agentconnect.md/protocol'
+import type { RelayRosterEntry, RdAgentMsg, RdAgentMsgAck, RdWebchatPost } from '@agentconnect.md/protocol'
 import { RelayClient, type RelayClientDeps } from './relay-client.js'
 
 export class RelayManager {
@@ -62,5 +62,18 @@ export class RelayManager {
       if (client.isReady()) return client.sendAgentMsg(payload)
     }
     throw new Error('no READY relay to route agent-call')
+  }
+
+  /**
+   * Fan a completed conversation post out to EVERY relay this daemon holds (#753) —
+   * unlike `sendAgentMsg`, there is no "the" relay for it: the browser socket for the
+   * conversation, and the roster cache used for peer-daemon context fan-out, may live
+   * on any one of them, and only that one will do anything with it. The rest no-op
+   * (`WebchatRouter.deliverPost` drops an unrecognized conversationId). Fire-and-forget.
+   */
+  sendWebchatPost(post: RdWebchatPost): void {
+    for (const client of this.clients.values()) {
+      if (client.isReady()) client.sendWebchatPost(post)
+    }
   }
 }

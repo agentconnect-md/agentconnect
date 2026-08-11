@@ -696,7 +696,13 @@ export type RdChat = z.infer<typeof RdChat>
 export const RdWebchatPost = z.object({
   conversationId: z.string().uuid(),
   agentId: z.string().uuid(), // authoring participant (== post.author.agentId)
-  post: WebchatPost
+  post: WebchatPost,
+  // Set only when this turn had NO live rd/chat stream of its own — an agent
+  // waking another agent (or its own lineage reply) inside a webchat
+  // conversation (#753). The browser renders a post carrying this marker as a
+  // fresh transcript step; every other post is the canonical record of a
+  // reply it already rendered live and is dropped to avoid double-rendering.
+  initiator: z.literal('agent').optional()
 })
 export type RdWebchatPost = z.infer<typeof RdWebchatPost>
 

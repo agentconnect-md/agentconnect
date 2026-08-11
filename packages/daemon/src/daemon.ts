@@ -833,6 +833,9 @@ const WEBCHAT_REPLAY_MAX_EVENTS = 256
 const WEBCHAT_REPLAY_MAX_BYTES = 1024 * 1024
 const WEBCHAT_REPLAY_MAX_STREAMS = 64
 const WEBCHAT_REPLAY_TTL_MS = 5 * 60_000
+/** A genuine webchat conversationId, as opposed to a synthetic `a2a:<agentId>` channel
+ *  (see `webchatWakeContext`). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Split `text` into pieces whose UTF-8 byte length each stays under WEBCHAT_CHUNK_BYTES
  *  so no single relay `rd/chat` payload exceeds the 256 KiB cap. Splits on byte budget
@@ -1592,6 +1595,11 @@ interface WebchatTurnContext {
    * relay can fan it to the other participants' daemons as context
    * (webchat-multi-agents.md §5.2). Absent on an older relay / synthetic turn. */
   postSink?: (post: RdWebchatPost) => void
+  /** Set only for a post-only wake context built by {@link webchatWakeContext}: an
+   *  agent-initiated turn inside a webchat conversation, with no browser turn of its
+   *  own to stream to (#753). Carried onto the completed `RdWebchatPost` so the
+   *  browser knows this reply never streamed live and needs rendering from the post. */
+  initiator?: 'agent'
   runtime?: WebchatRuntimeConfig
   worktree?: boolean
   /** Authority captured only from the relay's validated rd/msg envelope. It is
@@ -6966,6 +6974,37 @@ export class Daemon {
     return stream
   }
 
+  /**
+   * A post-only `WebchatTurnContext` for a turn that wakes an agent INSIDE a webchat
+   * conversation from another agent — `sendMessage`/lineage-reply, same-daemon or
+   * cross-daemon (#753). Such a wake has no browser turn of its own (no turnId, no
+   * `rd/chat` socket) to stream through, so `sink` is a no-op; only the
+   * completed-reply boundary needs a live transport, and `postSink` fans that out to
+   * every relay this daemon holds via {@link RelayManager.sendWebchatPost} (any relay
+   * without this conversation's browser connection or roster cache just drops it).
+   *
+   * `conversationId` must be the browser's real UUID chatId, not just any webchat-
+   * platform channel: `CpCollabRoutes.coordsDecision` never finds a webchat conversation
+   * "known" (the CP's collab snapshot has no notion of one), so a fresh `toAgent`+
+   * `channel` wake ALWAYS substitutes the synthetic, caller-derived `a2a:<callerId>`
+   * channel (`a2aCoordChannel`) regardless of what channel was asserted — that private
+   * pairwise session has no browser watching it at all. Only a REPLY routed back into an
+   * existing origin session (`origin.channel`/`local.channel`, read from the session row
+   * directly rather than re-derived through `coordsDecision`) can carry the genuine
+   * conversationId. `RdWebchatPost.conversationId` is schema-validated `.uuid()` too —
+   * this guard is what keeps a synthetic channel from ever reaching the wire.
+   */
+  private webchatWakeContext(platform: string, conversationId: string): WebchatTurnContext | undefined {
+    if (platform !== 'webchat' || !UUID_RE.test(conversationId)) return undefined
+    return {
+      conversationId,
+      turnId: randomUUID(),
+      sink: { output: () => undefined, done: () => undefined },
+      initiator: 'agent',
+      postSink: (post) => this.relays?.sendWebchatPost(post)
+    }
+  }
+
   /** Buffer before sending so a transport gap is recoverable even when the live
    * write is lost. The terminal frame carries the final output index for browser
    * gap detection. */
@@ -7984,7 +8023,13 @@ export class Daemon {
         // can answer in its own thread. A parent living on another daemon must not differ
         // from a local one, so neither branch stamps `headless` any more.
       }
-      void this.dispatch(msg.toAgentId, reply, replyIntegrationId, undefined, callMeta).catch((err) =>
+      void this.dispatch(
+        msg.toAgentId,
+        reply,
+        replyIntegrationId,
+        this.webchatWakeContext(origin.platform, origin.channel),
+        callMeta
+      ).catch((err) =>
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
       )
       this.log.info(
@@ -8103,9 +8148,14 @@ export class Daemon {
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
     // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
     // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
-    void this.dispatch(msg.toAgentId, normalized, integrationId, undefined, callMeta, {
-      ...(pairingKey !== undefined ? { requireDurable: true } : {})
-    }).catch((err) => {
+    void this.dispatch(
+      msg.toAgentId,
+      normalized,
+      integrationId,
+      this.webchatWakeContext(platform, sessionChannel),
+      callMeta,
+      { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
+    ).catch((err) => {
       if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`relay agentmsg dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
     })
@@ -8562,9 +8612,14 @@ export class Daemon {
       pairingKey = key
       callMeta.activationKey = key
     }
-    void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta, {
-      ...(pairingKey !== undefined ? { requireDurable: true } : {})
-    }).catch((err) => {
+    void this.dispatch(
+      req.toAgentId,
+      normalized,
+      integrationId,
+      this.webchatWakeContext(platform, coordChannel),
+      callMeta,
+      { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
+    ).catch((err) => {
       if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
     })
@@ -8723,11 +8778,18 @@ export class Daemon {
         isDm: false
       }
       let admission: { accepted: boolean; reason?: string } | undefined
-      const turn = this.dispatch(originOwner, normalized, integrationId, undefined, callMeta, {
-        onAdmission: (result) => {
-          admission = result
+      const turn = this.dispatch(
+        originOwner,
+        normalized,
+        integrationId,
+        this.webchatWakeContext(originPlatform, local.channel),
+        callMeta,
+        {
+          onAdmission: (result) => {
+            admission = result
+          }
         }
-      })
+      )
       void turn.catch((err) =>
         this.log.error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
       )
@@ -11524,23 +11586,13 @@ export class Daemon {
     })
   }
 
-  /**
-   * §6.9 #353 durable inbox: persist an ADMITTED entry BEFORE its admission ACK/return, so a
-   * hard kill / agent move can't lose a message the caller was already told delivered:true.
-   * Called ONLY on the two genuine admission branches in dispatch() (claim + enqueue), never
-   * on a rejected/gate-dropped admission — a queue-full or paused/draining drop persists
-   * nothing. WEBCHAT turns are skipped (§6.9 #367): their `sink` is a live in-memory transport
-   * that can't be restored across a restart and a dead browser socket can't be resumed, so a
-   * durable row would be un-replayable. Sets `entry.inboxId` so every terminal path can delete
-   * the row. Its id is the stable deliveryId or bot-scoped platform message id (§6.3), making
-   * same-bot re-appends idempotent without colliding across physical bots.
-   */
+  /** Persist an admitted replayable entry before its admission settles (§6.9 #353). */
   private persistInbox(
     entry: QueueEntry,
     key: string,
     options: { required?: boolean; adoptExisting?: boolean; existingId?: string } = {}
   ): 'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed' {
-    if (entry.webchat) return 'skipped' // non-persistable live sink — see §6.9 #367
+    if (entry.webchat && entry.webchat.initiator !== 'agent') return 'skipped' // Browser-owned live sinks cannot replay.
     const id = options.existingId ?? entry.callMeta?.deliveryId ?? stableMessageId(entry.msg)
     try {
       const inserted = this.store.appendInbox({
@@ -13351,7 +13403,8 @@ export class Daemon {
               author: { kind: 'agent', agentId },
               text: p.webchat.replyText,
               at: Number(replyTs)
-            }
+            },
+            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
           })
         }
         if (!p.webchat.doneSent) {
@@ -13495,7 +13548,8 @@ export class Daemon {
               author: { kind: 'agent', agentId },
               text: p.webchat.replyText,
               at: Number(replyTs)
-            }
+            },
+            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
           })
         }
       } else {
@@ -17979,19 +18033,7 @@ export class Daemon {
     this.serialQueue.clear()
   }
 
-  /**
-   * §6.9 #353 startup replay: re-admit durably-persisted admitted-but-not-completed inbox rows
-   * through the SAME serial gate (`dispatch`), FIFO-by-sessionKey (rows come back ordered by
-   * (sessionKey, enqueuedAt), so order within a sessionKey is preserved and the gate keeps them
-   * serial). Runs once on start() after the store is open, agents are loaded into `this.agents`,
-   * and platform connections/crons are up (so a re-admitted turn has its reply transport), as
-   * normal inbound begins. Idempotency: a row whose id is already live in the gate (`liveInboxIds`)
-   * is skipped — dispatch re-appends the same id with INSERT OR IGNORE so no double row is written,
-   * and the re-admitted entry adopts the existing row for later removal. Rows for an agent that no
-   * longer exists on this daemon are SKIPPED + logged (the simplest choice — another owner/daemon
-   * may hold that agent; we neither drop the row nor block on it). Webchat turns were never
-   * persisted, so none appear here.
-   */
+  /** Re-admit durable inbox rows through the serial gate at startup while preserving replay ownership and FIFO. */
   private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
@@ -18093,7 +18135,7 @@ export class Daemon {
         row.agentId,
         msg,
         row.integrationId ?? undefined,
-        undefined,
+        msg.source === 'agent' ? this.webchatWakeContext(msg.platform, msg.channel) : undefined,
         callMeta,
         {
           ...(row.isQueueCmd ? { isQueueCmd: true } : {}),

@@ -2108,23 +2108,23 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        setMsgs(
-          mergeConversationRows(
-            sources,
-            rowsBySession,
-            conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current,
-            conversationSourceAgentByMessageRef.current
-          )
+        // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
+        const merged = mergeConversationRows(
+          sources,
+          rowsBySession,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
+        setMsgs(merged)
         setMsgLoading(false)
         setMsgPaging(false)
         liveCursorRef.current = cursors.get(sid) ?? null
         tailReadyRef.current = true
         setTailReady(true)
-        const repRows = rowsBySession.get(sid)
-        if (repRows && !sessionBusyRef.current) reconcileLiveSteps(sid, repRows, aid)
+        if (merged.length > 0 && !sessionBusyRef.current)
+          reconcileLiveSteps(sid, merged, aid, rowsBySession.get(sid) ?? [])
       })().catch((e) => {
         if (!active) return
         setMsgErr(e instanceof Error ? e.message : String(e))
@@ -2194,11 +2194,11 @@ export default function SessionDetailView() {
       const sources = conversationMembersRef.current ?? []
       const run = (async () => {
         const state = conversationSourcesRef.current
-        const repRows: SessionMessageDto[] = []
         // Per-source isolation, mirroring the initial fan-out: one member's
         // daemon going offline mid-conversation must degrade THAT source to
         // the partial-merge notice, never stall the whole tail round.
         let failed = 0
+        let fetchedAny = false
         for (const src of sources) {
           try {
             let cursor = state.cursors.get(src.sessionId) ?? null
@@ -2213,7 +2213,7 @@ export default function SessionDetailView() {
                 src.sessionId,
                 mergeSessionMessages(current, page.messages, platformTranscriptOrdering(src.platform))
               )
-              if (src.sessionId === sid) repRows.push(...page.messages)
+              if (page.messages.length > 0) fetchedAny = true
               if (page.liveCursor !== null) {
                 cursor = page.liveCursor
                 state.cursors.set(src.sessionId, cursor)
@@ -2226,18 +2226,18 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        setMsgs(
-          mergeConversationRows(
-            sources,
-            state.rows,
-            conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current,
-            conversationSourceAgentByMessageRef.current
-          )
+        // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
+        const merged = mergeConversationRows(
+          sources,
+          state.rows,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
-        if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
-          reconcileLiveSteps(sid, repRows, aid)
+        setMsgs(merged)
+        if (tailSessionRef.current === sid && !sessionBusyRef.current && fetchedAny)
+          reconcileLiveSteps(sid, merged, aid, state.rows.get(sid) ?? [])
       })()
         .catch(() => {
           // Keep the last good transcript; the next signal retries.
