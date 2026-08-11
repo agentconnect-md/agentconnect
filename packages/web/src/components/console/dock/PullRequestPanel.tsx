@@ -146,12 +146,15 @@ function degradedNoticeText(reason: SessionPullRequestDto['degradedReason']): st
 export function PullRequestPanel({
   sessionId,
   active = true,
+  sessionStatus,
   onVerdictChange
 }: {
   /** The OPEN SESSION's id, the scope the CP resolves to its hook run. Deliberately no agentId: the PR belongs to the session, so a merged conversation's header-focus change must not re-key this read — the prop shape makes that unbuildable rather than merely avoided. */
   sessionId: string
   /** Whether this tab is the visible one; the panel re-reads on the edge where it becomes so, because PR state read when the page opened is not an answer about now. It does not poll — GitHub rate limits are this milestone's one external budget (§9). */
   active?: boolean
+  /** The open session's live status, feeding the ONE bounded re-probe edge a hidden tab has: the run's sessionId can be written as late as the terminal hook/report, which is also what flips this value — so a 404 held while the session was still running is re-asked when its status changes, and never on a timer. */
+  sessionStatus?: string
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
 }) {
@@ -166,6 +169,17 @@ export function PullRequestPanel({
     if (active && !wasActive.current) setReads((r) => ({ tick: r.tick + 1, force: false }))
     wasActive.current = active
   }, [active])
+
+  // A hidden tab's only way back: the session-to-run link can be persisted as late as the terminal
+  // hook/report, which also flips the session's status — so a held 404 is re-asked once per status
+  // TRANSITION, never per render and never on a timer. Any other answer keeps the edge silent.
+  const was404 = read.errStatus === 404 && !read.loading
+  const lastStatus = useRef(sessionStatus)
+  useEffect(() => {
+    const changed = sessionStatus !== lastStatus.current
+    lastStatus.current = sessionStatus
+    if (changed && was404) setReads((r) => ({ tick: r.tick + 1, force: false }))
+  }, [sessionStatus, was404])
 
   const answer: PullRequestPanelAnswer = read.loading
     ? 'pending'

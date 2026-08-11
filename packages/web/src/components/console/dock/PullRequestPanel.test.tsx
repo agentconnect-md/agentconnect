@@ -421,4 +421,30 @@ describe('PullRequestPanel degraded answers', () => {
     await render()
     expect(container?.querySelector('[data-pr-agent-review]')).toBeNull()
   })
+  it('re-asks a held 404 when the session status changes, and only then', async () => {
+    // The run's sessionId can be persisted as late as the terminal hook/report — which also flips the
+    // session's status. That transition is the hidden tab's ONE way back; nothing else may re-probe.
+    wire.failure = { status: 404 }
+    await render({ sessionStatus: 'online' })
+    expect(wire.calls).toHaveLength(1)
+
+    // Renders without a transition change nothing.
+    await rerender({ sessionStatus: 'online' })
+    expect(wire.calls).toHaveLength(1)
+
+    // The report landed, the link now exists: the transition re-asks and the tab can come back.
+    wire.failure = null
+    wire.data = pr()
+    await rerender({ sessionStatus: 'idle' })
+    expect(wire.calls).toHaveLength(2)
+    expect(verdicts.at(-1)?.answer).toBe('linked')
+  })
+
+  it('keeps a LINKED answer still across status changes — the edge is for the missing link only', async () => {
+    wire.data = pr()
+    await render({ sessionStatus: 'online' })
+    expect(wire.calls).toHaveLength(1)
+    await rerender({ sessionStatus: 'idle' })
+    expect(wire.calls).toHaveLength(1)
+  })
 })

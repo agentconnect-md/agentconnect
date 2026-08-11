@@ -4636,7 +4636,12 @@ export default function SessionDetailView() {
         {/* SESSION-keyed, not focus-keyed: the run belongs to the open session, so the header focus menu must not re-key this panel — its props carry no agent at all. Mounted whenever a probe-able id exists, because its verdict is what puts its own tab in the strip: a panel mounted only for a visible tab could never reveal the tab. */}
         <DockPanel active={dockTabKey === 'pr'}>
           {prSessionId ? (
-            <PullRequestPanel sessionId={prSessionId} active={dockTabKey === 'pr'} onVerdictChange={setPrVerdict} />
+            <PullRequestPanel
+              sessionId={prSessionId}
+              active={dockTabKey === 'pr'}
+              {...(session?.status ? { sessionStatus: session.status } : {})}
+              onVerdictChange={setPrVerdict}
+            />
           ) : null}
         </DockPanel>
         {/* No isolation gate and no withheld state: the lease is keyed by the session, not by a checkout, so there is nothing to resolve first. `active` is what keeps a hidden panel from polling. */}

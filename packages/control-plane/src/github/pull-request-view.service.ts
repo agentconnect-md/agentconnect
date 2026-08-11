@@ -165,6 +165,19 @@ function degradedReasonOf(err: unknown): PullRequestView['degradedReason'] {
   return err.status === 0 || err.status >= 500 ? 'unreachable' : 'denied'
 }
 
+/** The caller's run-specific facts, applied over the SHARED projection after the cache. Only a
+ *  degraded view takes them: when GitHub answered, its own state/draft/reviews are authoritative and
+ *  already include this agent's review. The cached object is never mutated. */
+function overlay(view: PullRequestView, identity: PullRequestIdentity): PullRequestView {
+  if (!view.degraded) return view
+  return {
+    ...view,
+    state: identity.knownIsOpen === undefined ? view.state : identity.knownIsOpen ? 'open' : 'closed',
+    isDraft: identity.knownIsDraft ?? view.isDraft,
+    agentReview: identity.knownAgentReview ?? null
+  }
+}
+
 // The durable half, resolved by the caller from the owning run (plus the subject's open/draft facts).
 export interface PullRequestIdentity {
   orgId: OrgId
@@ -206,10 +219,14 @@ export class PullRequestViewService {
     const now = this.clock.now()
     const hit = this.cache.get(key)
     if (hit && now - hit.at >= PR_VIEW_TTL_MS) this.cache.delete(key)
-    if (!force && hit && now - hit.at < PR_VIEW_TTL_MS) return hit.view
+    // Every return path overlays the CALLER's durable facts onto the shared cached projection: the
+    // key is the PR while knownIsOpen/knownIsDraft/knownAgentReview belong to the caller's RUN, so a
+    // cached degraded answer built for session A must not hand session B another run's recorded
+    // review — the overlay is what keeps run-specific facts out of shared storage entirely.
+    if (!force && hit && now - hit.at < PR_VIEW_TTL_MS) return overlay(hit.view, identity)
 
     const running = this.inFlight.get(key)
-    if (running) return running
+    if (running) return running.then((view) => overlay(view, identity))
 
     const read = this.read(identity)
       .then((view) => {
@@ -219,7 +236,7 @@ export class PullRequestViewService {
       })
       .finally(() => this.inFlight.delete(key))
     this.inFlight.set(key, read)
-    return read
+    return read.then((view) => overlay(view, identity))
   }
 
   // Bounded insert: sweep expired entries, then evict oldest-inserted past the cap (20s TTL ⇒ LRU-ish).
@@ -255,9 +272,11 @@ export class PullRequestViewService {
       repoFullName: identity.repoFullName,
       pullNumber: identity.pullNumber,
       title: '',
-      // Postgres's own knowledge or null — never a fabricated 'open'/'not draft' claim.
-      state: identity.knownIsOpen === undefined ? null : identity.knownIsOpen ? 'open' : 'closed',
-      isDraft: identity.knownIsDraft ?? null,
+      // Null here, NOT the caller's known facts: this object is CACHED and the cache key is the PR,
+      // not the run — two sessions on one PR have different runs, so any run-specific fact baked in
+      // here would be served to the other session. The per-caller overlay in view() fills these.
+      state: null,
+      isDraft: null,
       url: `https://github.com/${identity.repoFullName}/pull/${identity.pullNumber}`,
       headRef: '',
       baseRef: '',
@@ -274,10 +293,7 @@ export class PullRequestViewService {
       degradedReason: null,
       agentReview: null
     }
-    // Every degraded return carries the run's recorded review, so a panel that cannot reach GitHub
-    // still shows the one review state this deployment KNOWS — its own agent's.
-    const fallback = { agentReview: identity.knownAgentReview ?? null }
-    if (!owner || !name) return { ...base, ...fallback, degraded: true, degradedReason: 'denied' }
+    if (!owner || !name) return { ...base, degraded: true, degradedReason: 'denied' }
 
     let answer: GqlAnswer
     try {
@@ -303,12 +319,12 @@ export class PullRequestViewService {
         }
       )
     } catch (err) {
-      return { ...base, ...fallback, degraded: true, degradedReason: degradedReasonOf(err) }
+      return { ...base, degraded: true, degradedReason: degradedReasonOf(err) }
     }
 
     const pr = answer.repository?.pullRequest
     // A PR the installation cannot see reads as denied, not as an empty PR — "0 checks" would be a claim.
-    if (!pr) return { ...base, ...fallback, degraded: true, degradedReason: 'denied' }
+    if (!pr) return { ...base, degraded: true, degradedReason: 'denied' }
 
     const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup
     const contexts = rollup?.contexts?.nodes ?? []

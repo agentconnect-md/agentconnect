@@ -294,6 +294,43 @@ describe('degraded shapes', () => {
     expect((await bare.service.view(IDENTITY)).agentReview).toBeNull()
   })
 
+  it('never hands one run degraded fallback to another session on the same PR', async () => {
+    // The cache key is the PR; knownIsOpen/knownIsDraft/knownAgentReview belong to the caller's RUN.
+    // One shared cached answer, two different overlays — session B must not see A's recorded review.
+    const { service } = build([ok({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'limit' }] })])
+    const runA: PullRequestIdentity = { ...IDENTITY, knownIsOpen: false, knownAgentReview: 'changes_requested' }
+    const runB: PullRequestIdentity = { ...IDENTITY, knownIsOpen: true, knownAgentReview: 'approved' }
+
+    const a = await service.view(runA)
+    const b = await service.view(runB) // cache hit — ONE GraphQL call for both
+    expect(a).toMatchObject({ degraded: true, state: 'closed', agentReview: 'changes_requested' })
+    expect(b).toMatchObject({ degraded: true, state: 'open', agentReview: 'approved' })
+
+    // And a caller with NO recorded review gets none, not the cached caller's.
+    const bare = await service.view(IDENTITY)
+    expect(bare.agentReview).toBeNull()
+    expect(bare.state).toBeNull()
+  })
+
+  it('overlays each caller of a SHARED in-flight read separately', async () => {
+    // Single-flight merges the request, not the answer: two runs awaiting one read still get their
+    // own facts, or the race would reintroduce exactly the leak the overlay removes.
+    let release: ((value: Response) => void) | undefined
+    const { service } = build([() => new Promise<Response>((resolve) => (release = resolve))])
+    const runA: PullRequestIdentity = { ...IDENTITY, knownAgentReview: 'changes_requested' }
+    const runB: PullRequestIdentity = { ...IDENTITY, knownAgentReview: 'approved' }
+
+    const pendingA = service.view(runA)
+    const pendingB = service.view(runB)
+    // The read awaits the token mint before it fetches, so the held fetch is not in hand yet.
+    while (!release) await new Promise((tick) => setTimeout(tick, 0))
+    release(ok({ data: null, errors: [{ type: 'RATE_LIMITED', message: 'limit' }] })())
+    const [a, b] = await Promise.all([pendingA, pendingB])
+
+    expect(a.agentReview).toBe('changes_requested')
+    expect(b.agentReview).toBe('approved')
+  })
+
   it('maps a GitHub 5xx to unreachable, not to denied', async () => {
     // 'denied' points the operator at a nonexistent installation problem for the length of an outage;
     // a server error is GitHub being down, which is the 'unreachable' story.
