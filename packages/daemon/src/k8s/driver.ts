@@ -131,6 +131,10 @@ export class K8sDriver implements SpawnDriver {
    *  return while an earlier suspend patch was still in flight, and the older write would
    *  then land last and reverse the newer decision. Serializing removes that entirely. */
   private readonly modeQueue = new Map<string, Promise<void>>()
+  /** Idle suspensions in flight, per agent. `busy` COUNTS work but does not exclude it, so a
+   *  dispatch admitted while the suspend was mid-write would otherwise lose its pod. Acquisition
+   *  waits this out and then re-claims, which is the ordinary resume path. */
+  private readonly suspending = new Map<string, Promise<void>>()
   /** Term of the sandbox watch, so the plane can stop following on shutdown. */
   private watch?: AbortController
   /** Logical channels per agent, which survive the shim's credential renewals. */
@@ -157,6 +161,11 @@ export class K8sDriver implements SpawnDriver {
    * identity travels over the shim handshake instead.
    */
   async ensureSandbox(agentId: string, timer?: LaunchTimer): Promise<Launch> {
+    // An idle suspension mid-write is the one state a cached launch must not be read through: its
+    // pod is being deleted. Waiting lets it finish and forget the launch, so the line below claims
+    // a new one — the same resume this call would have done a moment later anyway.
+    const suspending = this.suspending.get(agentId)
+    if (suspending) await suspending
     const existing = this.launches.get(agentId)
     if (existing) return existing
     const name = this.claimName(agentId)
@@ -244,9 +253,16 @@ export class K8sDriver implements SpawnDriver {
    * Suspend the Sandbox of an agent that has gone quiet: the pod goes, the object and the
    * workspace volume stay, and the next message resumes onto the same checkout.
    *
-   * Declines rather than waits when work still holds the sandbox — the caller is a periodic
+   * Declines rather than waits when work already holds the sandbox — the caller is a periodic
    * sweep, so the next pass finds it quiet, whereas waiting here would hold a suspend decision
    * open across a turn that has already made it stale.
+   *
+   * Work admitted AFTER that check is a different problem, and `busy` cannot solve it: it counts
+   * holders, it does not exclude them, so a dispatch arriving during the Kubernetes write would
+   * lose the pod underneath itself and then find its launch forgotten. The decision is therefore
+   * published before the first await, and acquisition waits it out (`ensureSandbox`) instead of
+   * racing it. Publication is synchronous with the `busy` read, which is what makes the pair
+   * atomic: a holder either shows up in that read, or arrives to a gate that is already closed.
    *
    * The launch is forgotten on success, deliberately: the pod it names is being deleted, and the
    * replacement must be bound at a new generation. Leaving it to the channel-loss path instead
@@ -255,9 +271,10 @@ export class K8sDriver implements SpawnDriver {
   async suspendIfIdle(agentId: string): Promise<'suspended' | 'busy' | 'absent'> {
     const launch = this.launches.get(agentId)
     if (!launch) return 'absent'
-    // Checked and held with no await in between, so a launch cannot slip past the check and lose
-    // its pod to the write below.
+    if (this.suspending.has(agentId)) return 'busy'
     if ((this.busy.get(launch.sandboxName) ?? 0) > 0) return 'busy'
+    let opened: () => void = () => {}
+    this.suspending.set(agentId, new Promise<void>((resolve) => (opened = resolve)))
     this.retain(launch.sandboxName)
     try {
       await this.queueMode(launch.sandboxName, 'Suspended')
@@ -268,6 +285,10 @@ export class K8sDriver implements SpawnDriver {
       return 'suspended'
     } finally {
       this.release(launch.sandboxName)
+      // Dropped BEFORE the gate opens, so a waiter that resumes cannot observe a suspension that
+      // is still registered and refuse itself in `suspendIfIdle`'s place.
+      this.suspending.delete(agentId)
+      opened()
     }
   }
 

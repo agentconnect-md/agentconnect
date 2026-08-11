@@ -270,6 +270,41 @@ describe('cluster spawn driver', () => {
     expect(await instance.suspendIfIdle('agent-never-launched')).toBe('absent')
   })
 
+  it('makes work admitted DURING a suspend wait for it, then resume, instead of losing its pod', async () => {
+    // `busy` counts holders; it does not exclude them. A dispatch that arrives while the suspend
+    // is mid-write would otherwise acquire the same launch, have its pod deleted underneath it,
+    // and then find the launch forgotten by the suspend's own success path.
+    const { api, state } = fakeApi()
+    let releaseWrite: () => void = () => {}
+    const held = new Promise<void>((resolve) => (releaseWrite = resolve))
+    const setOperatingMode = api.setOperatingMode
+    api.setOperatingMode = (async (name: string, desired: string, observed: string) => {
+      if (desired === 'Suspended') await held
+      return setOperatingMode(name as never, desired as never, observed as never)
+    }) as never
+    const { instance, records } = driver(api, {
+      awaitChannel: async (_a: string, generation: number) => stubConnection(generation)
+    })
+    await instance.ensureBoundChannel('agent-a')
+
+    const suspending = instance.suspendIfIdle('agent-a')
+    let bound = false
+    const binding = instance.ensureBoundChannel('agent-a').then(() => (bound = true))
+    await Promise.resolve()
+    // The gate is closed before the first await, so the arriving work is waiting rather than
+    // holding a sandbox whose pod is about to go.
+    expect(bound).toBe(false)
+
+    releaseWrite()
+    expect(await suspending).toBe('suspended')
+    await binding
+    // It resumed the instance it waited for, at a fresh generation — the pod that comes back is a
+    // new one, and binding it against the old generation is what this ordering prevents.
+    expect(state.modeWrites.map((write) => write.desired)).toEqual(['Suspended', 'Running'])
+    expect(records.map((record) => record.generation)).toEqual([1, 2])
+    expect(instance.sessionFor('agent-a')?.isAttached()).toBe(true)
+  })
+
   it('does not wake an instance while a drain request is pending', async () => {
     const { api, state } = fakeApi({ mode: 'Suspended' })
     const { instance } = driver(api)

@@ -211,6 +211,14 @@ any agent it holds a launch for that no longer has a host. Suspension deletes th
 nothing else: the Sandbox object and the workspace volume survive, so the next message resumes
 onto the same checkout and the same runtime history rather than paying a clone.
 
+Suspension and acquisition exclude each other, and the lease counter is not what does it: `busy`
+counts holders, it does not keep new ones out, so a dispatch arriving during the Kubernetes write
+would lose its pod and then find its launch forgotten by the suspend's own success path. The
+decision is published before the first await and `ensureSandbox` waits it out — publication is
+synchronous with the `busy` read, so a holder either appears in that read or arrives to a gate
+that is already closed. A waiter resumes into the ordinary path: no cached launch, so it claims a
+new one, which is the resume it would have performed a moment later anyway.
+
 The sweep reads the driver's launches rather than chaining onto host reclaim, for two reasons —
 a launch outlives the host it was made for (a bind for workspace preparation makes one before
 any runtime exists), and a rule evaluated from state each tick cannot be stranded by a teardown
