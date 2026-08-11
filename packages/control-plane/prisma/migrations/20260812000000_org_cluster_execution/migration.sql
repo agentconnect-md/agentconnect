@@ -5,6 +5,7 @@ CREATE TYPE "ClusterEgressPolicy" AS ENUM ('locked', 'curated', 'open');
 CREATE TABLE "org_cluster_execution" (
     "orgId" TEXT NOT NULL,
     "enabled" BOOLEAN NOT NULL DEFAULT false,
+    "specRevision" INTEGER NOT NULL DEFAULT 1,
     "targetNamespace" TEXT NOT NULL,
     "suspend" BOOLEAN NOT NULL DEFAULT false,
     "daemonImage" TEXT NOT NULL,

@@ -4924,6 +4924,9 @@ export interface ClusterQuota {
 export interface ClusterExecutionSettings {
   orgId: string
   enabled: boolean
+  /** Bumped on every write; the provisioner's fence against a concurrent writer
+   *  reverting the resource to an older spec. */
+  specRevision: number
   /** Derived once from the install prefix and the org id; immutable afterwards. */
   targetNamespace: string
   suspend: boolean
@@ -4966,8 +4969,9 @@ export interface ClusterExecutionDefaults {
 export interface OrgClusterExecutionRepo {
   get(orgId: OrgId): Promise<ClusterExecutionSettings | null>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
-   *  row. `targetNamespace` and `credentialSecretName` are only ever written by
-   *  the create branch — the CRD marks both immutable. */
+   *  row, always bumping `specRevision`. `targetNamespace` and
+   *  `credentialSecretName` are only ever written by the create branch — the CRD
+   *  marks both immutable. */
   upsert(
     orgId: OrgId,
     defaults: ClusterExecutionDefaults,

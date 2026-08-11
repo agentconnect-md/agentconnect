@@ -18,7 +18,15 @@ import {
   type AgentConnectOrgSpec
 } from './crd.js'
 
-export class AgentConnectOrgApi {
+/** The three verbs the provisioner uses; a seam so its convergence logic is testable without a socket. */
+export interface OrgResourceApi {
+  readonly namespace: string
+  apply(name: string, spec: AgentConnectOrgSpec): Promise<AgentConnectOrg>
+  get(name: string): Promise<AgentConnectOrg | null>
+  delete(name: string): Promise<void>
+}
+
+export class AgentConnectOrgApi implements OrgResourceApi {
   constructor(
     private readonly http: K8sHttp,
     /** The install's control namespace — where every org's CR lives. */

@@ -19,7 +19,7 @@ import type {
   OrgRepo
 } from '../persistence/ports.js'
 import { DEFAULT_CREDENTIAL_SECRET_NAME } from './crd.js'
-import type { AgentConnectOrgApi } from './org-api.js'
+import type { OrgResourceApi } from './org-api.js'
 import {
   ABSENT_ENVELOPE,
   buildSpec,
@@ -28,6 +28,10 @@ import {
   projectStatus,
   type ClusterEnvelopeStatus
 } from './spec.js'
+
+/** Bounded re-apply passes; each concurrent writer runs its own, so this only
+ *  has to outlast a burst, not an unbounded stream of edits. */
+const CONVERGE_ATTEMPTS = 5
 
 /** Deployment policy for an org's first enable; the stored row owns it after that. */
 export interface ClusterExecutionPolicy {
@@ -42,8 +46,9 @@ export interface ClusterExecutionPolicy {
 export class ClusterExecutionService {
   constructor(
     private readonly repo: OrgClusterExecutionRepo,
-    private readonly api: AgentConnectOrgApi,
-    private readonly orgs: OrgRepo,
+    private readonly api: OrgResourceApi,
+    /** Only the slug is read — the CR's `displayName` is display-only. */
+    private readonly orgs: Pick<OrgRepo, 'slugById'>,
     private readonly policy: ClusterExecutionPolicy
   ) {}
 
@@ -58,18 +63,42 @@ export class ClusterExecutionService {
   }
 
   /**
-   * Persist the patch, then make the cluster match: enabled ⇒ apply the spec,
-   * disabled ⇒ delete the resource and let the operator's finalizer drain the
-   * envelope. The database write lands first so a cluster that is briefly
-   * unreachable leaves a retryable intent rather than a lost edit.
+   * Persist the patch, then make the cluster match the LATEST durable row:
+   * enabled ⇒ apply the spec, disabled ⇒ delete the resource and let the
+   * operator's finalizer drain the envelope. The database write lands first so
+   * a cluster that is briefly unreachable leaves a retryable intent rather than
+   * a lost edit; the returned settings are the ones actually applied, which
+   * under concurrency may include a peer's newer edit.
    */
   async configure(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
-    const settings = await this.repo.upsert(orgId, this.defaults(orgId), patch)
-    await this.reconcile(settings)
-    return settings
+    await this.repo.upsert(orgId, this.defaults(orgId), patch)
+    return this.converge(orgId)
   }
 
-  /** Apply the org's current settings to the cluster; a no-op when never configured. */
+  /**
+   * Apply the current row, then confirm it is still current — the fence against
+   * two concurrent writers reverting each other. Without it, A-upsert →
+   * B-upsert → B-apply → A-apply leaves the row at B and the resource
+   * permanently at A: the operator reconciles the CR, not the row, and nothing
+   * here re-reads on a timer, so that divergence would never heal.
+   *
+   * Every writer runs this loop, so a request that gives up at the attempt
+   * ceiling is one whose value was superseded — and the writer that superseded
+   * it is itself converging on the newer row.
+   */
+  private async converge(orgId: OrgId): Promise<ClusterExecutionSettings> {
+    let current = await this.repo.get(orgId)
+    if (!current) return this.unconfigured(orgId) // the org was deleted under us
+    for (let attempt = 0; attempt < CONVERGE_ATTEMPTS; attempt += 1) {
+      await this.reconcile(current)
+      const after = await this.repo.get(orgId)
+      if (!after || after.specRevision === current.specRevision) return current
+      current = after
+    }
+    return current
+  }
+
+  /** Apply one snapshot of the org's settings to the cluster. */
   async reconcile(settings: ClusterExecutionSettings): Promise<void> {
     const name = orgResourceName(settings.targetNamespace)
     if (!settings.enabled) return this.api.delete(name)
@@ -104,6 +133,6 @@ export class ClusterExecutionService {
   private unconfigured(orgId: OrgId): ClusterExecutionSettings {
     const defaults = this.defaults(orgId)
     const epoch = new Date(0)
-    return { orgId, enabled: false, suspend: false, ...defaults, createdAt: epoch, updatedAt: epoch }
+    return { orgId, enabled: false, specRevision: 0, suspend: false, ...defaults, createdAt: epoch, updatedAt: epoch }
   }
 }

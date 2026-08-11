@@ -30,8 +30,8 @@ esac
 # component-versions.sh. The image embeds this package, so whenever those bits
 # rebuild, npm receives the same version that the image reports.
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
-SETUP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability $COMMON"
-SETUP_IMPORTERS="packages/setup packages/control-plane packages/protocol packages/observability"
+SETUP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability packages/k8s-client packages/connection $COMMON"
+SETUP_IMPORTERS="packages/setup packages/control-plane packages/protocol packages/observability packages/k8s-client packages/connection"
 
 if [ -n "$LAST_TAG" ] && git rev-parse -q --verify "${LAST_TAG}^{commit}" > /dev/null; then
   # shellcheck disable=SC2086

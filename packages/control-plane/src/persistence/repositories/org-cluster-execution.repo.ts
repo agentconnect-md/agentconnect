@@ -33,6 +33,7 @@ function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
   return {
     orgId: row.orgId,
     enabled: row.enabled,
+    specRevision: row.specRevision,
     targetNamespace: row.targetNamespace,
     suspend: row.suspend,
     daemonImage: row.daemonImage,
@@ -87,6 +88,10 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
         egressPolicy: patch.egressPolicy ?? defaults.egressPolicy
       },
       update: {
+        // Unconditional, and NOT `@updatedAt`: Prisma skips the timestamp when
+        // a patch changes nothing, and the provisioner's fence needs every write
+        // to be observable by the writer that raced it.
+        specRevision: { increment: 1 },
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
         ...(patch.suspend !== undefined ? { suspend: patch.suspend } : {}),
         ...(patch.daemonImage !== undefined ? { daemonImage: patch.daemonImage } : {}),

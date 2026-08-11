@@ -48,7 +48,7 @@ esac
 # .npmrc), the build-context filter (.dockerignore), and the shared tsconfig
 # every package build extends.
 COMMON="docker/Dockerfile docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
-CP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability $COMMON"
+CP_PATHS="packages/control-plane packages/setup packages/protocol packages/observability packages/k8s-client packages/connection $COMMON"
 SETUP_PATHS="$CP_PATHS"
 WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/message packages/protocol packages/connection packages/observability $COMMON"
