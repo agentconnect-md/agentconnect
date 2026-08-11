@@ -3,8 +3,7 @@ import { K8sHttp } from './http.js'
 import { K8sDriver } from './driver.js'
 import { SandboxApi } from './sandbox-api.js'
 import { clusterMetrics } from './cluster-metrics.js'
-import { ShimListener, type ShimConnection } from '../shim/listener.js'
-import { ShimSession } from '../shim/session.js'
+import { ShimListener } from '../shim/listener.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import type { GitRunner } from '../workspace/git-runner.js'
@@ -80,6 +79,9 @@ export function k8sPlaneSettings(env: NodeJS.ProcessEnv): K8sPlaneSettings {
 export interface K8sRuntimePlane {
   driver: K8sDriver
   listener: ShimListener
+  /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
+   *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
+  ensureChannel: (agentId: string) => Promise<void>
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
    *  daemon has no channel for it — the caller then keeps its local behaviour. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
@@ -105,7 +107,6 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // Records keyed by the pod they authorize. A TokenReview yields a pod name and uid and nothing
   // else, so this map is the whole of how a dialing pod is resolved back to its launch.
   const recordsByPod = new Map<string, SpawnRecord>()
-  const sessions = new Map<string, ShimSession>()
 
   const listener = new ShimListener({
     verifier: { reviewToken: (token, audiences) => api.reviewToken(token, audiences) },
@@ -113,10 +114,16 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     now: () => Date.now(),
     metrics: clusterMetrics,
     onConnection: (connection) => {
+      // A rebind cancels any pending loss check: this IS the replacement it was waiting for.
+      clearTimeout(lossTimers.get(connection.binding.agentId))
+      lossTimers.delete(connection.binding.agentId)
       driver.onChannelBound(connection)
-      attachSession(connection)
     },
-    onConnectionLost: (agentId, reason) => driver.onChannelLost(agentId, reason),
+    // A closed socket is NOT a lost launch. The shim closes and re-dials at half the credential
+    // TTL, and `ShimSession.lose()` is terminal — reporting loss here killed the runtime on every
+    // routine renewal, which is the exact failure ShimSession exists to prevent. Loss is reported
+    // only if no replacement binds for the same launch within the grace window.
+    onConnectionLost: (agentId, reason) => scheduleLossCheck(agentId, reason),
     log: options.log ?? SILENT
   })
   const driver = new K8sDriver({
@@ -141,29 +148,32 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // in between would hit an uninitialized binding.
   await listener.start(settings.shimPort, settings.shimHost ?? '0.0.0.0')
 
-  // A session per agent, re-attached on every rebind. The workspace seam reaches the sandbox
-  // through this rather than through one socket, so a credential renewal does not break a git
-  // operation that spans it.
-  function attachSession(connection: ShimConnection): void {
-    const agentId = connection.binding.agentId
-    const existing = sessions.get(agentId)
-    if (existing && existing.generation === connection.binding.generation) {
-      existing.attach(connection)
-      return
-    }
-    const session = new ShimSession(agentId, connection.binding.generation, {
-      setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout)
-    })
-    session.attach(connection)
-    sessions.set(agentId, session)
+  // A renewal re-dials immediately (the client resets its backoff for a planned rebind), so a
+  // replacement that has not arrived well inside the request deadline is a pod that is gone.
+  const REBIND_GRACE_MS = 20_000
+  const lossTimers = new Map<string, NodeJS.Timeout>()
+
+  function scheduleLossCheck(agentId: string, reason: string): void {
+    clearTimeout(lossTimers.get(agentId))
+    lossTimers.set(
+      agentId,
+      setTimeout(() => {
+        lossTimers.delete(agentId)
+        if (listener.connectionsFor(agentId).length > 0) return
+        options.log?.warn(`k8s: no shim channel for agent ${agentId} after ${REBIND_GRACE_MS}ms — reporting loss`)
+        driver.onChannelLost(agentId, reason)
+      }, REBIND_GRACE_MS).unref?.() as NodeJS.Timeout
+    )
   }
 
   return {
     driver,
     listener,
+    ensureChannel: async (agentId) => {
+      await driver.ensureBoundChannel(agentId)
+    },
     gitRunnerFor: (agentId, cwd, abort) => {
-      const session = sessions.get(agentId)
+      const session = driver.sessionFor(agentId)
       // No channel means this agent has no sandbox to run git in. Returning undefined keeps the
       // caller on its local runner rather than failing the operation — which is what a
       // self-hosted agent beside a cluster-backed one needs anyway.
@@ -171,6 +181,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return new ShimGitRunner(session, cwd, undefined, abort)
     },
     stop: async () => {
+      for (const timer of lossTimers.values()) clearTimeout(timer)
+      lossTimers.clear()
       await listener.stop()
     }
   }

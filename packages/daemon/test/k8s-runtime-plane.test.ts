@@ -124,6 +124,21 @@ describe('k8s plane settings', () => {
 })
 
 describe('k8s runtime plane assembly', () => {
+  it('brings the sandbox up and binds without starting a runtime, for workspace preparation', async () => {
+    // The workspace has to be prepared before the runtime starts, and for a cluster agent that
+    // means cloning onto the pod's volume — so the channel must exist first. Preparing before the
+    // sandbox existed would clone on the daemon's disk and hand the runtime an empty workspace.
+    const api = fakeApi()
+    const plane = await planeUnderTest(api)
+    const port = plane.listener.listeningPort()!
+    const ensuring = plane.ensureChannel('agent-a')
+    shimAgainst(port)
+    await ensuring
+    // A channel, a session behind the workspace seam, and NO runtime started.
+    expect(plane.listener.connectionsFor('agent-a')).toHaveLength(1)
+    expect(plane.gitRunnerFor('agent-a', '/agent')).toBeDefined()
+  })
+
   it('resolves a dialing pod back to its launch, through the ADOPTED pod name', async () => {
     // The whole mapping: a TokenReview yields a pod name, the record is keyed by the pod the
     // Sandbox named, and warm-pool adoption means that name is the pool's, not the sandbox's.
@@ -146,6 +161,32 @@ describe('k8s runtime plane assembly', () => {
     ])
     expect(connection).toBeDefined()
     expect(plane.listener.connectionsFor('agent-a')[0]?.binding.podName).toBe(api.podName)
+  })
+
+  it('survives a shim reconnect: a closed socket is not a lost launch', async () => {
+    // The shim closes and re-dials at half the credential TTL, and `ShimSession.lose()` is
+    // terminal — so reporting loss on every socket close killed the runtime on each routine
+    // renewal, which is the exact failure ShimSession was built to prevent.
+    const api = fakeApi()
+    const plane = await planeUnderTest(api)
+    const port = plane.listener.listeningPort()!
+    const launching = plane.driver.launch({
+      command: 'x',
+      args: [],
+      env: { AC_AGENT_ID: 'agent-a' },
+      cwd: '/agent'
+    } as never)
+    const first = shimAgainst(port)
+    await launching
+    expect(await until(() => plane.gitRunnerFor('agent-a') !== undefined)).toBe(true)
+
+    // Drop the socket the way a renewal does, then let a replacement bind.
+    first.stop()
+    expect(await until(() => plane.listener.connectionsFor('agent-a').length === 0)).toBe(true)
+    shimAgainst(port)
+    expect(await until(() => plane.listener.connectionsFor('agent-a').length > 0)).toBe(true)
+    // The seam still works, which it would not if the session had been closed on the drop.
+    expect(await until(() => plane.gitRunnerFor('agent-a') !== undefined)).toBe(true)
   })
 
   it('hands the workspace seam a shim runner only for an agent with a bound channel', async () => {

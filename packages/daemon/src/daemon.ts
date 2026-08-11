@@ -4762,6 +4762,10 @@ export class Daemon {
 
   private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
+    // In --k8s the workspace lives on the sandbox pod's volume, so the sandbox has to exist
+    // BEFORE preparation: the resolver has no session until a channel binds, and preparing first
+    // would clone onto this daemon's disk and hand the runtime an empty workspace.
+    if (this.k8sPlane) await this.k8sPlane.ensureChannel(agent.id)
     const opts = {
       managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
       skillsStateDir: join(this.root, 'skill-installs'),
@@ -19887,9 +19891,6 @@ export class Daemon {
     // from re-arming itself (its callback re-arms only `if (!this.draining)`), so a
     // sweep firing during the awaits below can't leave a dangling timer behind.
     this.draining = true
-    // Stop accepting shim callbacks early: a pod binding while the daemon drains would be
-    // authorized against a launch that is going away.
-    await this.k8sPlane?.stop().catch(() => undefined)
     clearTimeout(this.debounceTimer)
     if (this.idleSweepTimer !== undefined) {
       this.clock.clearTimeout(this.idleSweepTimer)
@@ -19926,6 +19927,10 @@ export class Daemon {
     // §2.5: gate new turns and let in-flight ones finish (deadline-bounded) BEFORE
     // tearing the hosts down — a hard kill mid-turn loses the reply + transcript.
     await this.drainForShutdown()
+    // AFTER the drain, never before: closing the shim endpoint drops every sandbox channel, so
+    // doing it first would kill the in-flight turns the drain deadline exists to finish.
+    await this.k8sPlane?.stop().catch(() => undefined)
+    setWorkspaceGitRunnerResolver(undefined)
     this.store.setTranscriptMutationListener()
     for (const { timer } of this.transcriptActivityTimers.values()) this.clock.clearTimeout(timer)
     this.transcriptActivityTimers.clear()
