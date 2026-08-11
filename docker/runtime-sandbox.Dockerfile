@@ -115,6 +115,10 @@ RUN mkdir -p /opt/agentconnect/runtime \
   && rm -rf /tmp/ac-probe \
   && chown -R root:root /opt/agentconnect/runtime \
   && chmod -R a-w /opt/agentconnect/runtime
+# Provider config accepted from the pod env (interim until the managed egress proxy): the shim
+# maps AC_CLAUDE_BASE_URL/AC_CLAUDE_API_KEY → ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY and
+# AC_CODEX_BASE_URL/AC_CODEX_API_KEY → OPENAI_BASE_URL/OPENAI_API_KEY onto the matching runtime
+# only, and a value the daemon already sent for that runtime wins (src/shim/acp-runner.ts).
 ENV HOME=/agent \
   AC_SHIM_WORKSPACE_ROOT=/agent \
   npm_config_update_notifier=false \

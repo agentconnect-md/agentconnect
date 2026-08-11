@@ -8,6 +8,31 @@ export type EmitEvent = (event: ShimEvent['event']) => void
 /** Resolve an executable in THIS filesystem — the sandbox's, which is the whole point. */
 export type ResolveCommand = (command: string, env: Record<string, string>) => string | undefined
 
+/** Pod-env names the runtime image accepts, mapped onto the matching runtime's own provider
+ *  variables. Interim until the managed egress proxy lands: the key stays deployment-owned
+ *  (SandboxTemplate env) instead of traveling from the daemon, and only the runtime whose
+ *  vendor the variable names ever sees it. */
+export const SANDBOX_PROVIDER_ENV: Readonly<Record<'claude' | 'codex', Readonly<Record<string, string>>>> = {
+  claude: { AC_CLAUDE_BASE_URL: 'ANTHROPIC_BASE_URL', AC_CLAUDE_API_KEY: 'ANTHROPIC_API_KEY' },
+  codex: { AC_CODEX_BASE_URL: 'OPENAI_BASE_URL', AC_CODEX_API_KEY: 'OPENAI_API_KEY' }
+}
+
+/** Provider env for the REQUESTED command (its registry identity, not the resolved path). */
+export function sandboxProviderEnv(
+  command: string,
+  podEnv: Record<string, string | undefined>
+): Record<string, string> {
+  const base = command.split(/[\\/]/).pop() ?? ''
+  const profile = /^claude(?:$|[-.@])/i.test(base) ? 'claude' : /^codex(?:$|[-.@])/i.test(base) ? 'codex' : undefined
+  if (!profile) return {}
+  const env: Record<string, string> = {}
+  for (const [source, target] of Object.entries(SANDBOX_PROVIDER_ENV[profile])) {
+    const value = podEnv[source]?.trim()
+    if (value) env[target] = value
+  }
+  return env
+}
+
 /**
  * Runs the ACP runtime inside the sandbox and relays its stdio.
  *
@@ -23,6 +48,8 @@ export class AcpRunner {
     private readonly deps: {
       emit: EmitEvent
       resolveCommand?: ResolveCommand
+      /** Pod environment consulted for SANDBOX_PROVIDER_ENV fill-ins; absent means none. */
+      podEnv?: Record<string, string | undefined>
       log?: { info: (m: string) => void; warn: (m: string) => void }
     }
   ) {}
@@ -51,6 +78,10 @@ export class AcpRunner {
       if (env[hint.envVar]) continue
       const resolved = this.deps.resolveCommand?.(hint.command, env)
       if (resolved) env[hint.envVar] = resolved
+    }
+    // Fill-in only, like hints: an env the daemon decided (per-agent key/gateway) stays authoritative.
+    for (const [name, value] of Object.entries(sandboxProviderEnv(payload.command, this.deps.podEnv ?? {}))) {
+      if (!env[name]) env[name] = value
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     const child = spawn(command, payload.args, {

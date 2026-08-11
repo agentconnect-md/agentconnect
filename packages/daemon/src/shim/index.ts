@@ -25,6 +25,8 @@ async function main(): Promise<number> {
     // Without this the runner skips executable hints entirely, so CLAUDE_CODE_EXECUTABLE and
     // path-qualified registry commands would never resolve in the sandbox.
     resolveCommand: resolveCommandInPath,
+    // Image-accepted provider config (AC_CLAUDE_*/AC_CODEX_* → the runtime's BASE_URL/API_KEY).
+    podEnv: process.env,
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands.
     handle: createExecHandler({ workspaceRoot: process.env[SHIM_WORKSPACE_ROOT_ENV] ?? '/agent', log }),
