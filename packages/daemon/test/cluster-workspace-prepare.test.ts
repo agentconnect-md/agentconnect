@@ -281,6 +281,30 @@ describe('replacing a cluster workspace in place', () => {
     await expect(prepareWorkspaceForActivation(agent)).resolves.toBeTypeOf('function')
   })
 
+  it('refreshes the marker after preparation, so a rename elsewhere does not strand a repair', async () => {
+    // move away → repository renamed while the agent is on another daemon → move back. Ordinary
+    // placement activation asks for no reconciliation, so nothing else refreshes this daemon's
+    // marker; preparation converges the shared volume to the new URL and has to record that, or a
+    // later repair reads the old marker as a CHANGE and refuses an agent whose checkout is correct.
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+    // Renamed elsewhere. Preparation converges the volume — and now the marker too.
+    const renamed = {
+      ...agent,
+      workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/renamed.git' }
+    } as Agent
+    checkoutExists = true
+    originUrl = 'https://github.com/acme/private.git'
+    await prepareClusterWorkspace(renamed, POD_ROOT)
+    expect(calls.some((call) => call.args[0] === 'remote' && call.args[1] === 'set-url')).toBe(true)
+
+    // The repair that used to be refused: same workspace as the volume now holds.
+    await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
+    )
+  })
+
   it('refuses only a conversion of an EXISTING checkout, which has no rollback in a pod', async () => {
     // The one case that needs the contract a pod cannot offer: a staged clone, an atomic swap, and a
     // rollback that restores the previous tree. Unrefused, it stages a clone at a daemon-absolute

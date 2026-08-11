@@ -817,6 +817,23 @@ export async function prepareClusterWorkspace(
       clearTimeout(timer)
     }
   }
+  // The marker records what the VOLUME now holds, and this is the only place that knows.
+  //
+  // Ordinary placement activation does not ask for reconciliation, so nothing else refreshes it on
+  // this daemon: an agent that moves away, has its repository renamed elsewhere, and moves back
+  // would leave a marker naming the old URL while preparation had already converged the volume to
+  // the new one. A later repair reads that stale marker as a materialization CHANGE and is refused
+  // — staging an agent whose checkout was already correct.
+  //
+  // Best-effort: the volume is prepared either way, and failing a session over bookkeeping would
+  // trade a stale marker for no session at all.
+  try {
+    recordWorkspaceMaterialization(agent)
+  } catch (err) {
+    workspaceLog.warn(
+      `workspace: could not record the materialization marker for agent "${agent.id}" (${(err as Error).message})`
+    )
+  }
   return acpCwd
 }
 
