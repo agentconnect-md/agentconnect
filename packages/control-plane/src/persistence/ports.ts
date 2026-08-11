@@ -4934,6 +4934,11 @@ export interface ClusterExecutionSettings {
   daemonTier: string
   credentialSecretName: string
   credentialRevision?: string
+  /** The daemon identity the org's supervisor pod authenticates as; created with
+   *  the first credential and reused by every rotation. */
+  credentialDaemonId?: string
+  /** The `api_key` row currently published in the Secret. */
+  credentialApiKeyId?: string
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTier[]
   quota: ClusterQuota
@@ -4978,6 +4983,13 @@ export interface OrgClusterExecutionRepo {
   listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]>
   /** Drop a tombstone once its resource is confirmed gone. Idempotent. */
   clearPendingTeardown(orgId: string): Promise<void>
+  /** Record the credential now published in the org's Secret, bumping
+   *  `specRevision` like any other write so the provisioner re-applies the CR
+   *  with the new `credentialRevision`. Null clears the credential (on disable). */
+  setCredential(
+    orgId: OrgId,
+    credential: { daemonId: string; apiKeyId: string; revision: string } | null
+  ): Promise<ClusterExecutionSettings>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
    *  row, always bumping `specRevision`. `targetNamespace` and
    *  `credentialSecretName` are only ever written by the create branch — the CRD

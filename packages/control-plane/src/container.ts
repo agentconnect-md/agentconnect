@@ -37,9 +37,11 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import {
   AgentConnectOrgApi,
   ClusterExecutionService,
+  ClusterSecretApi,
   EnvelopeTeardownDrain,
   loadClusterAccess
 } from './cluster/index.js'
+import { daemonWsUrl } from './http/onboarding.js'
 
 /** How often deleted organizations' envelopes are swept; the delete route also kicks it. */
 const ENVELOPE_TEARDOWN_DRAIN_MS = 5 * 60 * 1000
@@ -456,8 +458,13 @@ export function buildContainer(
           daemonImage: config.CLUSTER_DAEMON_IMAGE!,
           runtimeImage: config.CLUSTER_RUNTIME_IMAGE!,
           daemonTier: config.CLUSTER_DEFAULT_TIER,
-          runtimeTiers: [{ name: config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }]
-        }
+          runtimeTiers: [{ name: config.CLUSTER_DEFAULT_TIER, warmReplicas: 0 }],
+          // The same URL onboarding renders into the `npx … run` command, so an
+          // envelope daemon and a hand-run one dial exactly the same endpoint.
+          controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
+        },
+        new ClusterSecretApi(new K8sHttp(clusterAccess)),
+        apiKeys
       )
     : undefined
   // Bases the reconcile roster + DTOs resolve avatar URLs against: `cp` for the

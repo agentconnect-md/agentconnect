@@ -10,7 +10,9 @@
  * re-reads the CR on its own resync, so the control plane only has to make the
  * spec true at the moment it changes.
  */
-import type { OrgId } from '../domain/ids.js'
+import { DaemonId, type OrgId } from '../domain/ids.js'
+import { buildDaemonConfigJson } from './credential.js'
+import type { OrgSecretApi } from './secret-api.js'
 import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
@@ -44,6 +46,40 @@ export interface ClusterExecutionPolicy {
   runtimeImage: string
   daemonTier: string
   runtimeTiers: { name: string; warmReplicas: number }[]
+  /** The daemon WebSocket URL written into every envelope's `config.json`. */
+  controlPlaneUrl: string
+}
+
+/** What a caller learns about a credential — never the key itself. */
+export interface ClusterCredentialView {
+  daemonId: string
+  secretName: string
+  revision: string
+  /** True when this call replaced an earlier credential (and revoked its key). */
+  rotated: boolean
+}
+
+/** The `ApiKeyAdmin` slice the key authority uses. */
+export interface ClusterKeyAuthority {
+  provisionDaemon(opts: { orgId: string; createdByUserId?: string }): Promise<{
+    daemonId: string
+    apiKeyId: string
+    token: string
+  }>
+  mintForDaemon(
+    orgId: OrgId,
+    daemonId: DaemonId,
+    opts?: { createdByUserId?: string }
+  ): Promise<{ apiKeyId: string; token: string }>
+  revoke(apiKeyId: string, reason: string): Promise<unknown>
+}
+
+/** Raised when the envelope has no settings row to attach a credential to. */
+export class ClusterNotEnabledError extends Error {
+  constructor() {
+    super('cluster execution is not enabled for this organization')
+    this.name = 'ClusterNotEnabledError'
+  }
 }
 
 export class ClusterExecutionService {
@@ -52,7 +88,9 @@ export class ClusterExecutionService {
     private readonly api: OrgResourceApi,
     /** Only the slug is read — the CR's `displayName` is display-only. */
     private readonly orgs: Pick<OrgRepo, 'slugById'>,
-    private readonly policy: ClusterExecutionPolicy
+    private readonly policy: ClusterExecutionPolicy,
+    private readonly secrets: OrgSecretApi,
+    private readonly keys: ClusterKeyAuthority
   ) {}
 
   /** The control namespace this deployment provisions into — surfaced for operators. */
@@ -75,7 +113,18 @@ export class ClusterExecutionService {
    */
   async configure(orgId: OrgId, patch: ClusterExecutionPatch): Promise<ClusterExecutionSettings> {
     await this.repo.upsert(orgId, this.defaults(orgId), patch)
-    return this.converge(orgId)
+    const settings = await this.converge(orgId)
+    // Switching cluster execution off deletes the envelope, so the credential it
+    // published stops being a credential and becomes a live key with nothing
+    // watching it. Retire it here rather than leave it valid indefinitely; the
+    // daemon row stays, since removing one is the Daemons page's job (it unplaces
+    // agents and repoints collaboration routes) and this is not that.
+    if (patch.enabled === false && settings.credentialApiKeyId) {
+      await this.repo.setCredential(orgId, null)
+      await this.keys.revoke(settings.credentialApiKeyId, 'cluster execution disabled')
+      return this.settings(orgId)
+    }
+    return settings
   }
 
   /**
@@ -139,6 +188,64 @@ export class ClusterExecutionService {
       retired += 1
     }
     return retired
+  }
+
+  /**
+   * Issue — or rotate — the org's daemon credential. The control plane is the
+   * key authority for the whole envelope: it mints the key, publishes it as the
+   * Secret the CRD names, and bumps `credentialRevision` so the operator
+   * projects a new pod-template annotation and forces a Recreate. The operator
+   * itself has no Secret verbs anywhere and never sees any of this.
+   *
+   * Order matters and is deliberate. The Secret is written BEFORE the revision
+   * bump, so a failure leaves the running pod on its old, still-valid key rather
+   * than rolling it onto a credential that was never published. The previous key
+   * is revoked LAST, after the rollout has been asked for, so the window where
+   * no valid key exists is empty.
+   *
+   * The daemon identity is created once and reused, so a rotation does not
+   * orphan the org's sessions, agents, and history under a new daemon row.
+   */
+  async issueCredential(orgId: OrgId, actorUserId?: string): Promise<ClusterCredentialView> {
+    const settings = await this.repo.get(orgId)
+    if (!settings) throw new ClusterNotEnabledError()
+
+    const previousApiKeyId = settings.credentialApiKeyId
+    const minted = settings.credentialDaemonId
+      ? {
+          daemonId: settings.credentialDaemonId,
+          ...(await this.keys.mintForDaemon(orgId, DaemonId(settings.credentialDaemonId), {
+            ...(actorUserId ? { createdByUserId: actorUserId } : {})
+          }))
+        }
+      : await this.keys.provisionDaemon({ orgId, ...(actorUserId ? { createdByUserId: actorUserId } : {}) })
+
+    await this.secrets.applyCredential(
+      settings.targetNamespace,
+      settings.credentialSecretName,
+      buildDaemonConfigJson({
+        controlPlaneUrl: this.policy.controlPlaneUrl,
+        apiKey: minted.token,
+        daemonId: minted.daemonId
+      })
+    )
+
+    // The api-key id is already a unique, opaque, traceable handle for exactly
+    // this credential — which is what `credentialRevision` is defined to be.
+    await this.repo.setCredential(orgId, {
+      daemonId: minted.daemonId,
+      apiKeyId: minted.apiKeyId,
+      revision: minted.apiKeyId
+    })
+    await this.converge(orgId)
+
+    if (previousApiKeyId) await this.keys.revoke(previousApiKeyId, 'cluster credential rotated')
+    return {
+      daemonId: minted.daemonId,
+      secretName: settings.credentialSecretName,
+      revision: minted.apiKeyId,
+      rotated: previousApiKeyId !== undefined
+    }
   }
 
   /** Live envelope status from the resource; absent ⇒ `present: false`. */

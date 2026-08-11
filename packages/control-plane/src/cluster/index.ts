@@ -8,6 +8,14 @@ export {
   type ConditionType
 } from './crd.js'
 export { AgentConnectOrgApi, type OrgResourceApi } from './org-api.js'
+export { ClusterSecretApi, CREDENTIAL_SECRET_KEY, NamespaceNotReadyError, type OrgSecretApi } from './secret-api.js'
+export { buildDaemonConfigJson, type DaemonCredentialInput } from './credential.js'
 export { EnvelopeTeardownDrain } from './teardown-drain.js'
 export { ClusterNamingError, orgNamespace, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'
-export { ClusterExecutionService, type ClusterExecutionPolicy } from './service.js'
+export {
+  ClusterExecutionService,
+  ClusterNotEnabledError,
+  type ClusterCredentialView,
+  type ClusterExecutionPolicy,
+  type ClusterKeyAuthority
+} from './service.js'

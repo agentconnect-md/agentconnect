@@ -41,6 +41,8 @@ function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
     daemonTier: row.daemonTier,
     credentialSecretName: row.credentialSecretName,
     ...(row.credentialRevision ? { credentialRevision: row.credentialRevision } : {}),
+    ...(row.credentialDaemonId ? { credentialDaemonId: row.credentialDaemonId } : {}),
+    ...(row.credentialApiKeyId ? { credentialApiKeyId: row.credentialApiKeyId } : {}),
     runtimeImage: row.runtimeImage,
     runtimeTiers: toTiers(row.runtimeTiers),
     quota: {
@@ -73,6 +75,24 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
 
   async clearPendingTeardown(orgId: string): Promise<void> {
     await this.prisma.pendingEnvelopeTeardown.deleteMany({ where: { orgId } })
+  }
+
+  async setCredential(
+    orgId: OrgId,
+    credential: { daemonId: string; apiKeyId: string; revision: string } | null
+  ): Promise<ClusterExecutionSettings> {
+    const row = await this.prisma.orgClusterExecution.update({
+      where: { orgId },
+      data: {
+        // A credential change IS a spec change (`credentialRevision` is what
+        // forces the pod Recreate), so it rides the same fence as every other write.
+        specRevision: { increment: 1 },
+        credentialDaemonId: credential?.daemonId ?? null,
+        credentialApiKeyId: credential?.apiKeyId ?? null,
+        credentialRevision: credential?.revision ?? null
+      }
+    })
+    return toRecord(row)
   }
 
   async upsert(

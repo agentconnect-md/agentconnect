@@ -2,7 +2,7 @@
 
 **Status:** Envelope, status, deletion, and rollout reconcile logic implemented — including the
 drain handshake with the daemon and its timeout — plus the control-plane CR provisioner (§6);
-gateway policy rendering waits on the gateway spike, and the credential key authority is still TODO.
+gateway policy rendering waits on the gateway spike.
 
 The managed execution plane provisions one _org envelope_ per organization on a
 Kubernetes cluster: a namespace, RBAC, network policies, sandbox templates and
@@ -247,10 +247,39 @@ differ (`CLUSTER_ORG_NAMESPACE_PREFIX`, which must equal the operator install's
   the convergence loop: a settings row that vanished between apply and re-read
   means the org is gone, so the request deletes what it just created.
 
-The credential Secret named by `spec.daemon.credentialSecretName` — and the
-`credentialRevision` bump that rolls the daemon after a rotation — belong to
-this same module as the key authority, and are still TODO; the operator keeps
-zero Secret access either way.
+### The key authority
+
+The same module writes the credential Secret, which is what makes "the operator
+has zero Secret verbs" workable: the operator only NAMES the Secret in
+`spec.daemon.credentialSecretName` and mounts it required, so the kubelet gates
+the daemon pod's startup on a credential the operator can never read.
+
+`POST /orgs/:orgId/cluster-execution/credential` (owner-only) mints the org's
+daemon API key, publishes it as the Secret's `config.json` entry — the same
+`{version, daemonId, controlPlane:{enabled,url,key}}` document a hand-run daemon
+reads, pointed at the same WebSocket URL onboarding renders — and bumps
+`credentialRevision`, which the operator projects into a pod-template annotation
+to force a Recreate. **The key is never returned**; it exists only inside the
+cluster Secret, and the response carries the daemon id, Secret name, and
+revision.
+
+Three orderings carry the whole design:
+
+- **Secret before revision.** A failed write leaves the running pod on its old,
+  still-valid key instead of rolling it onto a credential that was never
+  published. The namespace not existing yet is the ordinary "just enabled" state
+  and answers 409 rather than recording anything.
+- **Revoke last.** The superseded key dies only after the rollout has been asked
+  for, so there is no window in which no valid key exists.
+- **One daemon identity.** The row pins `credentialDaemonId`, so a rotation
+  re-keys the org rather than orphaning its sessions, agents, and history under a
+  new daemon row. Switching cluster execution off revokes the key and clears the
+  credential; the daemon row itself stays, since removing one is the Daemons
+  page's job (it unplaces agents and repoints collaboration routes).
+
+The control plane's ServiceAccount therefore needs `create`/`patch` on
+`secrets` in the org namespaces this install owns — a deployment-side grant, and
+the only Secret permission anywhere in this system.
 
 ## 7. Verification
 

@@ -3216,6 +3216,18 @@ export const UpdateClusterExecutionBody = z.object({
   egressPolicy: ClusterEgressPolicyDto.optional()
 })
 
+/** The result of issuing or rotating a credential — never the key itself. */
+export const ClusterCredentialDto = z.object({
+  /** The daemon identity the envelope's supervisor authenticates as. */
+  daemonId: z.string(),
+  /** The Secret the credential was published into, in the envelope namespace. */
+  secretName: z.string(),
+  /** Opaque handle for this credential; the operator forces a pod Recreate on change. */
+  revision: z.string(),
+  /** True when this replaced an earlier credential, whose key was revoked. */
+  rotated: z.boolean()
+})
+
 export const ClusterConditionDto = z.object({
   type: z.string(),
   status: z.enum(['True', 'False', 'Unknown']),
@@ -3316,4 +3328,5 @@ export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageRe
 export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
 export type ClusterExecutionSettingsDtoT = z.infer<typeof ClusterExecutionSettingsDto>
 export type ClusterEnvelopeStatusDtoT = z.infer<typeof ClusterEnvelopeStatusDto>
+export type ClusterCredentialDtoT = z.infer<typeof ClusterCredentialDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

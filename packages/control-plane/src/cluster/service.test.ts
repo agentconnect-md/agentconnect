@@ -5,7 +5,13 @@
  * tests drive exactly that interleaving.
  */
 import { describe, expect, it } from 'vitest'
-import { ClusterExecutionService, type ClusterExecutionPolicy } from './service.js'
+import {
+  ClusterExecutionService,
+  ClusterNotEnabledError,
+  type ClusterExecutionPolicy,
+  type ClusterKeyAuthority
+} from './service.js'
+import { NamespaceNotReadyError, type OrgSecretApi } from './secret-api.js'
 import type { OrgResourceApi } from './org-api.js'
 import type { AgentConnectOrg, AgentConnectOrgSpec } from './crd.js'
 import { OrgId } from '../domain/ids.js'
@@ -23,7 +29,8 @@ const POLICY: ClusterExecutionPolicy = {
   daemonImage: 'registry.example.test/daemon:1',
   runtimeImage: 'registry.example.test/runtime:1',
   daemonTier: 'small',
-  runtimeTiers: [{ name: 'small', warmReplicas: 0 }]
+  runtimeTiers: [{ name: 'small', warmReplicas: 0 }],
+  controlPlaneUrl: 'wss://api.example.test/daemon/ws'
 }
 
 /** In-memory settings row with the repo's revision-bump-on-every-write contract. */
@@ -43,6 +50,25 @@ class FakeRepo implements OrgClusterExecutionRepo {
 
   async clearPendingTeardown(orgId: string): Promise<void> {
     this.tombstones = this.tombstones.filter((entry) => entry.orgId !== orgId)
+  }
+
+  async setCredential(
+    _orgId: OrgId,
+    credential: { daemonId: string; apiKeyId: string; revision: string } | null
+  ): Promise<ClusterExecutionSettings> {
+    if (!this.row) throw new Error('no row')
+    this.row = {
+      ...this.row,
+      specRevision: this.row.specRevision + 1,
+      ...(credential
+        ? {
+            credentialDaemonId: credential.daemonId,
+            credentialApiKeyId: credential.apiKeyId,
+            credentialRevision: credential.revision
+          }
+        : { credentialDaemonId: undefined, credentialApiKeyId: undefined, credentialRevision: undefined })
+    }
+    return { ...this.row }
   }
 
   async upsert(
@@ -98,11 +124,54 @@ class FakeApi implements OrgResourceApi {
   }
 }
 
-function build(): { service: ClusterExecutionService; repo: FakeRepo; api: FakeApi } {
+/** Records what the key authority published, so ordering can be asserted. */
+class FakeSecrets implements OrgSecretApi {
+  written: { namespace: string; name: string; configJson: string }[] = []
+  namespaceMissing = false
+
+  async applyCredential(namespace: string, name: string, configJson: string): Promise<void> {
+    if (this.namespaceMissing) throw new NamespaceNotReadyError(namespace)
+    this.written.push({ namespace, name, configJson })
+  }
+
+  async delete(): Promise<void> {}
+}
+
+class FakeKeys implements ClusterKeyAuthority {
+  minted = 0
+  revoked: string[] = []
+
+  async provisionDaemon(): Promise<{ daemonId: string; apiKeyId: string; token: string }> {
+    this.minted += 1
+    return { daemonId: 'daemon-1', apiKeyId: `key-${this.minted}`, token: `token-${this.minted}` }
+  }
+
+  async mintForDaemon(): Promise<{ apiKeyId: string; token: string }> {
+    this.minted += 1
+    return { apiKeyId: `key-${this.minted}`, token: `token-${this.minted}` }
+  }
+
+  async revoke(apiKeyId: string): Promise<unknown> {
+    this.revoked.push(apiKeyId)
+    return undefined
+  }
+}
+
+interface Harness {
+  service: ClusterExecutionService
+  repo: FakeRepo
+  api: FakeApi
+  secrets: FakeSecrets
+  keys: FakeKeys
+}
+
+function build(): Harness {
   const repo = new FakeRepo()
   const api = new FakeApi()
-  const service = new ClusterExecutionService(repo, api, { slugById: async () => 'acme' }, POLICY)
-  return { service, repo, api }
+  const secrets = new FakeSecrets()
+  const keys = new FakeKeys()
+  const service = new ClusterExecutionService(repo, api, { slugById: async () => 'acme' }, POLICY, secrets, keys)
+  return { service, repo, api, secrets, keys }
 }
 
 describe('ClusterExecutionService.configure', () => {
@@ -180,6 +249,66 @@ describe('ClusterExecutionService.configure', () => {
       runtimeImage: POLICY.runtimeImage
     })
     expect(api.applied).toHaveLength(0)
+  })
+})
+
+describe('ClusterExecutionService.issueCredential', () => {
+  it('publishes the Secret before bumping the revision that rolls the pod', async () => {
+    const { service, api, secrets } = build()
+    await service.configure(ORG, { enabled: true })
+    api.applied.length = 0
+
+    const view = await service.issueCredential(ORG)
+    expect(secrets.written).toHaveLength(1)
+    expect(secrets.written[0]).toMatchObject({ namespace: 'ac-org-acme', name: 'ac-daemon-token' })
+    expect(JSON.parse(secrets.written[0]!.configJson)).toEqual({
+      version: 1,
+      daemonId: 'daemon-1',
+      controlPlane: { enabled: true, url: POLICY.controlPlaneUrl, key: 'token-1' }
+    })
+    expect(api.applied.at(-1)?.daemon.credentialRevision).toBe(view.revision)
+    expect(view.rotated).toBe(false)
+  })
+
+  it('leaves the running pod on its old key when the Secret cannot be written', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    await service.issueCredential(ORG)
+    const settled = await repo.get()
+
+    secrets.namespaceMissing = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
+    // No revision bump and no revoke: the published credential is untouched.
+    expect((await repo.get())?.credentialRevision).toBe(settled?.credentialRevision)
+    expect(keys.revoked).toEqual([])
+  })
+
+  it('reuses the daemon identity and revokes the superseded key last', async () => {
+    const { service, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    const first = await service.issueCredential(ORG)
+    const second = await service.issueCredential(ORG)
+
+    expect(second.daemonId).toBe(first.daemonId)
+    expect(keys.minted).toBe(2)
+    expect(keys.revoked).toEqual([first.revision])
+  })
+
+  it('refuses when the org has no envelope to attach a credential to', async () => {
+    const { service } = build()
+    await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterNotEnabledError)
+  })
+
+  it('retires the credential when cluster execution is switched off', async () => {
+    const { service, repo, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    const issued = await service.issueCredential(ORG)
+
+    await service.configure(ORG, { enabled: false })
+    const row = await repo.get()
+    expect(row?.credentialRevision).toBeUndefined()
+    expect(row?.credentialApiKeyId).toBeUndefined()
+    expect(keys.revoked).toEqual([issued.revision])
   })
 })
 

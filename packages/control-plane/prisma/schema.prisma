@@ -2776,6 +2776,13 @@ model OrgClusterExecution {
   credentialSecretName String              @default("ac-daemon-token")
   /// Bumped by the key authority after a credential rotation; forces a Recreate.
   credentialRevision   String?
+  /// The daemon identity the org's supervisor pod authenticates as. Created with
+  /// the first credential and reused by every rotation, so the pod keeps one
+  /// identity — its sessions, agents, and history — across key changes.
+  credentialDaemonId   String?             @db.Uuid
+  /// The api_key row currently published in the Secret; revoked when the next
+  /// rotation lands, so exactly one live key exists per envelope.
+  credentialApiKeyId   String?
   runtimeImage         String
   /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
   runtimeTiers         Json                @db.JsonB
