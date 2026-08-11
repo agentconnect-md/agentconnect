@@ -53,7 +53,7 @@ interface ClusterHarness {
   /** Bodies of the apply PATCHes, newest last. */
   applied: { spec?: Record<string, unknown> }[]
   /** Credential Secrets written, newest last. */
-  secrets: { path: string; configJson: string }[]
+  secrets: { path: string; seq: number; configJson: string }[]
 }
 
 /**
@@ -66,7 +66,7 @@ async function clusterApp(
 ): Promise<ClusterHarness> {
   const calls: string[] = []
   const applied: { spec?: Record<string, unknown> }[] = []
-  const secrets: { path: string; configJson: string }[] = []
+  const secrets: { path: string; seq: number; configJson: string }[] = []
   let stored: unknown = null
   let storedSecret: { metadata: { resourceVersion: string; annotations: Record<string, string> } } | null = null
   const server = await fakeApiServer((req) => {
@@ -89,7 +89,11 @@ async function clusterApp(
             annotations: body.metadata?.annotations ?? {}
           }
         }
-        secrets.push({ path: req.url.pathname, configJson: body.stringData?.['config.json'] ?? '' })
+        secrets.push({
+          path: req.url.pathname,
+          seq: Number(body.metadata?.annotations?.['agentconnect.md/credential-seq'] ?? 0),
+          configJson: body.stringData?.['config.json'] ?? ''
+        })
         return { json: storedSecret }
       }
     }
@@ -428,8 +432,11 @@ describe('POST /cluster-execution/credential', () => {
     expect(calls.filter((call) => call.startsWith('GET /api/v1/namespaces')).length).toBeGreaterThanOrEqual(2)
     expect(calls.filter((call) => call === `POST /api/v1/namespaces/${TARGET_NAMESPACE}/secrets`)).toHaveLength(1)
     expect(secrets).toHaveLength(2)
+    // Monotonic is the whole requirement — every claim advances it, so the
+    // second publish can never carry a sequence the first already used.
+    expect(secrets[1]!.seq).toBeGreaterThan(secrets[0]!.seq)
     const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
-    expect(row?.credentialRotationSeq).toBe(2)
+    expect(row?.credentialRotationSeq).toBe(secrets[1]!.seq)
   })
 
   it('adopts the key a crashed rotation left staged, rather than stranding it', async () => {

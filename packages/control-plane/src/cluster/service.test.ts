@@ -215,7 +215,8 @@ class FakeApi implements OrgResourceApi {
 class FakeSecrets implements OrgSecretApi {
   written: { namespace: string; name: string; seq: number; configJson: string }[] = []
   namespaceMissing = false
-  publishedSeq = 0
+  /** Fails the publish AFTER it has committed, like a dropped response would. */
+  failAfterPublish = false
   /** Runs inside the publish, so a test can steal the claim mid-flight. */
   duringApply?: () => void
 
@@ -223,10 +224,19 @@ class FakeSecrets implements OrgSecretApi {
     if (this.namespaceMissing) throw new NamespaceNotReadyError(namespace)
     this.duringApply?.()
     // Same cluster-side ordering guard the real client enforces.
-    if (seq < this.publishedSeq) throw new StaleCredentialWriteError(seq, this.publishedSeq)
-    this.publishedSeq = seq
+    if (seq < this.publishedSeq_) throw new StaleCredentialWriteError(seq, this.publishedSeq_)
+    this.publishedSeq_ = seq
     this.written.push({ namespace, name, seq, configJson })
+    if (this.failAfterPublish) throw new Error('connection reset')
   }
+
+  async publishedSeq(): Promise<number> {
+    if (this.readFails) throw new Error('cluster unreachable')
+    return this.publishedSeq_
+  }
+
+  readFails = false
+  publishedSeq_ = 0
 
   async delete(): Promise<void> {}
 }
@@ -478,7 +488,7 @@ describe('ClusterExecutionService.issueCredential', () => {
     // higher sequence, and only then does the stalled publish reach the cluster.
     secrets.duringApply = () => {
       repo.rotationToken = 'successor'
-      secrets.publishedSeq = repo.rotationSeq + 10
+      secrets.publishedSeq_ = repo.rotationSeq + 10
     }
 
     await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
@@ -497,6 +507,29 @@ describe('ClusterExecutionService.issueCredential', () => {
     await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
     expect((await repo.get())?.credentialRevision).toBeUndefined()
     expect(keys.revoked).toEqual(['key-1'])
+  })
+
+  it('does NOT revoke a key whose publish committed before the response was lost', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    // The write lands and the connection then drops — indistinguishable from a
+    // rejection at the call site, and revoking here would leave the pod holding
+    // a credential the cluster considers current.
+    secrets.failAfterPublish = true
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow('connection reset')
+    expect(keys.revoked).toEqual([])
+    expect((await repo.get())?.credentialStagedApiKeyId).toBe('key-1')
+  })
+
+  it('treats an unverifiable publish as possibly landed rather than revoking', async () => {
+    const { service, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    secrets.failAfterPublish = true
+    secrets.readFails = true // cannot ask the cluster what happened
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow('connection reset')
+    expect(keys.revoked).toEqual([])
   })
 
   it('refuses on a disabled envelope, which disable has already retired', async () => {
@@ -623,5 +656,35 @@ describe('ClusterExecutionService.drainTeardowns', () => {
     const { service, api } = build()
     expect(await service.drainTeardowns()).toBe(0)
     expect(api.deleted).toEqual([])
+  })
+
+  it('never deletes the resource a re-enable created, even from a stale listing', async () => {
+    const { service, repo, api } = build()
+    await service.configure(ORG, { enabled: true })
+    api.failDelete = true
+    await service.configure(ORG, { enabled: false })
+    api.failDelete = false
+    // The tombstone is still listed when the org comes back.
+    await service.configure(ORG, { enabled: true })
+    api.deleted.length = 0
+
+    // A drain that had already listed the entry must not act on it now.
+    repo.tombstones = [{ orgId: ORG, targetNamespace: 'ac-org-acme' }]
+    expect(await service.drainTeardowns()).toBe(0)
+    expect(api.deleted).toEqual([])
+  })
+
+  it('skips an org whose transition someone else owns, and settles it next pass', async () => {
+    const { service, repo, api } = build()
+    await service.configure(ORG, { enabled: true })
+    await service.configure(ORG, { enabled: false })
+    api.deleted.length = 0
+    repo.tombstones = [{ orgId: ORG, targetNamespace: 'ac-org-acme' }]
+    await repo.beginCredentialRotation(ORG, 'peer-token', new Date(), 60_000)
+
+    expect(await service.drainTeardowns()).toBe(0)
+    await repo.endCredentialRotation(ORG, 'peer-token')
+    expect(await service.drainTeardowns()).toBe(1)
+    expect(api.deleted).toEqual(['ac-org-acme'])
   })
 })

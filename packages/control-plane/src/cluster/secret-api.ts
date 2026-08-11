@@ -33,6 +33,11 @@ export interface OrgSecretApi {
    *  namespace, and {@link StaleCredentialWriteError} when a later rotation has
    *  already published. */
   publishCredential(namespace: string, name: string, seq: number, configJson: string): Promise<void>
+  /** The rotation sequence the Secret currently carries; 0 when it does not
+   *  exist. Used to settle an AMBIGUOUS publish — a write whose response was
+   *  lost may still have committed, and revoking that key would leave the pod
+   *  holding a dead credential. */
+  publishedSeq(namespace: string, name: string): Promise<number>
   delete(namespace: string, name: string): Promise<void>
 }
 
@@ -110,6 +115,11 @@ export class ClusterSecretApi implements OrgSecretApi {
       }
     }
     throw new Error(`publishing the credential Secret ${namespace}/${name} lost ${PUBLISH_ATTEMPTS} races`)
+  }
+
+  async publishedSeq(namespace: string, name: string): Promise<number> {
+    const existing = await this.read(namespace, name)
+    return Number(existing?.metadata?.annotations?.[CREDENTIAL_SEQ_ANNOTATION] ?? 0)
   }
 
   private async read(namespace: string, name: string): Promise<SecretResource | null> {

@@ -301,8 +301,10 @@ clears `enabled` is the same transaction that drops the credential, queues both
 its keys, and records the resource for teardown — so there is no moment where
 the row reads disabled but its credential was never retired, and a delete that
 fails leaves state that converges rather than an `enabled: false` row beside a
-live pod holding a live key. Re-enabling cancels a pending teardown, or the
-drain would delete the resource the re-enable just created.
+live pod holding a live key. Re-enabling takes the same claim while it cancels
+the tombstone AND applies the resource, and the teardown drain takes it per org
+before deleting — otherwise a drain that had already listed that tombstone could
+delete the resource the re-enable just created.
 
 Four orderings carry the rest:
 
@@ -314,17 +316,25 @@ Four orderings carry the rest:
   `credentialDaemonId` before anything can fail, and revokes its own key if
   publication does — so a retry re-keys that daemon instead of provisioning
   another one and leaking the first key.
-- **Revoke last.** The superseded key dies only after the rollout has been asked
-  for, so there is no window in which no valid key exists.
+- **Revoke last, and only when definitely unpublished.** The superseded key dies
+  only after the rollout has been asked for, so there is no window in which no
+  valid key exists. And a publish that THREW is settled by re-reading the
+  Secret's sequence before anything is revoked: a write whose response was lost
+  to a dropped connection still landed, and revoking that key would leave the
+  pod mounting a dead credential. An unverifiable failure is treated as "may
+  have landed" — keeping a key alive one rotation too long is far cheaper than
+  killing a live one.
 - **One daemon identity.** The row pins `credentialDaemonId`, so a rotation
   re-keys the org rather than orphaning its sessions, agents, and history under a
   new daemon row. Switching cluster execution off revokes the key and clears the
   credential; the daemon row itself stays, since removing one is the Daemons
   page's job (it unplaces agents and repoints collaboration routes).
 
-The control plane's ServiceAccount therefore needs `create`/`patch` on
-`secrets` in the org namespaces this install owns — a deployment-side grant, and
-the only Secret permission anywhere in this system.
+The control plane's ServiceAccount therefore needs `get`, `create`, `update`,
+and `delete` on `secrets` in the org namespaces this install owns — `get` and
+`update` because publishing is a `resourceVersion`-guarded read-modify-write,
+not a blind apply. That is a deployment-side grant, and the only Secret
+permission anywhere in this system.
 
 ## 7. Verification
 
