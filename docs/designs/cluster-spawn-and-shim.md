@@ -187,9 +187,13 @@ Three properties this shape buys:
 - **No launch record required.** Requests are keyed by Sandbox name, not by agent, so an instance
   this daemon has not bound in this process — after a restart, or for an agent that has been quiet
   — is still drained. Keying by agent would have made exactly the idle case unreachable.
-- **In-flight work is held, not raced.** A bind and the runtime it starts hold the Sandbox from
-  before the resume until the runtime exits, so a request arriving mid-launch waits its turn
-  instead of pulling the pod out from under it.
+- **In-flight work is held, not raced.** Work leases its Sandbox: the bind, the cold workspace
+  preparation that runs in the pod after it (clone, pull, skill materialization — one lease around
+  the whole of it, not around the bind alone), and the runtime until it exits. A request that
+  arrives while a lease is held waits for it instead of pulling the pod out from under it.
+  Taking a lease on an already-draining instance is refused instead, by type
+  (`SandboxDrainingError` → the `draining` launch outcome): nothing has started yet, so the
+  rollout wins that decision and the caller retries once the request clears.
 
 A drain the daemon never completes is the rollout's to give up on, not the daemon's to force:
 the operator marks the instance `failed` after its own deadline, and the pod keeps serving.

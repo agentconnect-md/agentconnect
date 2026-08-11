@@ -239,7 +239,7 @@ describe('cluster spawn driver', () => {
   it('suspends an idle sandbox as soon as a drain is requested, launch or no launch', async () => {
     // Nothing bound it in this process — the daemon restarted, or the agent has been quiet — and
     // that instance is exactly the one a rollout is waiting on. Suspension is what lets it swap
-    // the image, so it happens on the observation itself rather than on the next launch.
+    // the image, so it comes off the observation itself rather than off the next launch.
     const { api, state } = fakeApi({ mode: 'Running' })
     const { instance } = driver(api)
     instance.onSandboxObserved(observed('Running', 'rollout-7/image:v2'))
@@ -259,6 +259,37 @@ describe('cluster spawn driver', () => {
     // The runtime is gone, so the sandbox is idle — which is when the pending drain lands.
     instance.onChannelLost('agent-a', 'shim channel gone')
     await vi.waitFor(() => expect(state.modeWrites).toEqual([{ desired: 'Suspended', observed: 'Running' }]))
+  })
+
+  it('holds the sandbox across workspace preparation, not merely across the bind', async () => {
+    // Cold preparation clones, pulls and materializes IN the pod, over the shim, between the bind
+    // and the launch it is preparing for. A hold that ended with the bind would leave that whole
+    // stretch drainable, and the suspend would pull the pod out from under an admitted turn.
+    const { api, state } = fakeApi({ mode: 'Running' })
+    const { instance } = driver(api)
+    let finishPreparing!: () => void
+    const preparing = new Promise<void>((resolve) => (finishPreparing = resolve))
+    const held = instance.withSandbox('agent-a', async () => {
+      await instance.ensureBoundChannel('agent-a')
+      await preparing
+    })
+    await vi.waitFor(() => expect(instance.currentLaunch('agent-a')).toBeDefined())
+    instance.onSandboxObserved(observed('Running', 'rollout-7/image:v2'))
+    await Promise.resolve()
+    expect(state.modeWrites).toEqual([])
+
+    finishPreparing()
+    await held
+    await vi.waitFor(() => expect(state.modeWrites).toEqual([{ desired: 'Suspended', observed: 'Running' }]))
+  })
+
+  it('refuses to take a lease on a sandbox that is already draining', async () => {
+    // The preparation has not started yet, so the drain wins the decision — fast, and by type.
+    const { api } = fakeApi({ mode: 'Running' })
+    const { instance } = driver(api)
+    await instance.ensureSandbox('agent-a')
+    instance.onSandboxObserved(observed('Suspended', 'rollout-7/image:v2'))
+    await expect(instance.withSandbox('agent-a', async () => 'prepared')).rejects.toThrow(/draining/)
   })
 
   it('takes drain requests off the watch and converges on each snapshot', async () => {

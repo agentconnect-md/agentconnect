@@ -104,6 +104,9 @@ export interface K8sRuntimePlane {
   /** Bring an agent's Sandbox up and bind its channel WITHOUT starting a runtime, so the
    *  workspace can be prepared on the pod's own volume before the runtime looks at it. */
   ensureChannel: (agentId: string) => Promise<void>
+  /** Run `work` holding the agent's Sandbox, so a rollout's drain request waits for it rather
+   *  than suspending the pod while work this daemon already admitted runs inside it. */
+  withSandbox: <T>(agentId: string, work: () => Promise<T>) => Promise<T>
   /** Ask a sandbox which runtimes the image actually provides, and tear it down again. */
   probeRuntimes: () => Promise<K8sRuntimeTable>
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
@@ -250,6 +253,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     ensureChannel: async (agentId) => {
       await driver.ensureBoundChannel(agentId)
     },
+    withSandbox: (agentId, work) => driver.withSandbox(agentId, work),
     probeRuntimes: async () => {
       // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
       // agent's instance — and is torn down afterwards rather than left holding a pod.

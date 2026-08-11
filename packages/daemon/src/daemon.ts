@@ -4850,11 +4850,17 @@ export class Daemon {
     // land on this daemon's disk, describing a filesystem the runtime never sees. Skills and
     // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
     if (this.k8sPlane) {
-      await this.k8sPlane.ensureChannel(agent.id)
-      // The pod's own preparation: clone and pull happen on its volume through the runner, and none
-      // of the local work below runs — its mkdir, `existsSync(.git)` and skills installation all
-      // land on this daemon's disk, describing a filesystem the runtime never reads.
-      return await prepareClusterWorkspace(agent, this.k8sPlane.workspaceRootFor(agent.id), request)
+      const plane = this.k8sPlane
+      // One Sandbox lease around the WHOLE preparation, not just the bind: everything below runs
+      // in the pod, so a rollout's drain request landing mid-clone would otherwise suspend the pod
+      // underneath a turn this daemon already admitted.
+      return await plane.withSandbox(agent.id, async () => {
+        await plane.ensureChannel(agent.id)
+        // The pod's own preparation: clone and pull happen on its volume through the runner, and
+        // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
+        // all land on this daemon's disk, describing a filesystem the runtime never reads.
+        return await prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
+      })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {

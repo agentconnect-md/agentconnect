@@ -122,8 +122,9 @@ export class K8sDriver implements SpawnDriver {
   /** Sandboxes carrying a drain request, by name → the value that requested it. New work stays
    *  off them, and each is suspended as soon as the work already on it ends. */
   private readonly draining = new Map<string, string>()
-  /** Live work per Sandbox: binds in flight plus runtimes that have not exited. A drain waits
-   *  for this to reach zero, which is what keeps a rollout from pulling a pod out mid-turn. */
+  /** Live work per Sandbox: binds in flight, workspace preparation, and runtimes that have not
+   *  exited. A drain waits for this to reach zero — that is what keeps a rollout from pulling a
+   *  pod out mid-turn. */
   private readonly busy = new Map<string, number>()
   /** Per-SANDBOX transition queue. A guarded write protects competing writes, but it cannot
    *  protect a decision that performs NO write: a later wake could observe Running and
@@ -418,6 +419,25 @@ export class K8sDriver implements SpawnDriver {
       this.deps.log.warn(
         `cluster: sandbox ${sandboxName} did not suspend for its drain request — ${(err as Error).message}`
       )
+    }
+  }
+
+  /**
+   * Hold the agent's Sandbox for the duration of `work` — it is bound first, and a drain request
+   * then waits for the work instead of suspending the pod underneath it.
+   *
+   * The daemon's cold workspace preparation is exactly this case: the clone, pull and skill
+   * materialization all run IN the pod over the shim, between the bind and the launch they are
+   * preparing for, and a bind-scoped hold would leave that whole stretch drainable.
+   */
+  async withSandbox<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+    const launch = await this.ensureSandbox(agentId)
+    this.refuseWhenDraining(agentId, launch.sandboxName)
+    this.retain(launch.sandboxName)
+    try {
+      return await work()
+    } finally {
+      this.release(launch.sandboxName)
     }
   }
 
