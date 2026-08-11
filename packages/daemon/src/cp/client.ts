@@ -45,6 +45,7 @@ import type {
   WorkspaceGitCommitReq,
   WorkspaceGitPushReq,
   WorkspaceGitMessageReq,
+  TaskListReq,
   WorkspaceGitMessageResult,
   GitCredRequest,
   GitCredGrant,
@@ -120,6 +121,8 @@ import {
   type MemoryReader
 } from './memory-reader.js'
 import type { WorkspaceGit } from './workspace-git.js'
+import type { TaskReader } from './task-reader.js'
+import { TaskViolationError } from './task-reader.js'
 import type { DreamReader } from './dream-reader.js'
 import type { LocalSkillsReader } from './local-skills-reader.js'
 import { DreamViolationError, DreamStateError } from '../agents/dream-runner.js'
@@ -184,6 +187,8 @@ export interface CpClientDeps {
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
   workspaceGit: WorkspaceGit
+  /** Read-only projection of the in-memory background-task lease (§3.5 of webchat-side-panels.md). */
+  taskReader: TaskReader
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
   memoryReader: MemoryReader
   /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
@@ -1402,6 +1407,15 @@ export class CpClient {
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitmessage', err))
         return
       }
+      case 'task/list': {
+        // Background tasks of ONE ACP session, projected live from the lease. A session with no
+        // lease and a session with no tasks are both results (`tracked` tells them apart).
+        this.deps.taskReader
+          .list(frame.payload as TaskListReq)
+          .then((result) => this.reply(frame, 'task/list/result', result))
+          .catch((err) => this.taskError(frame.id, 'task/list', err))
+        return
+      }
       case 'memory/channels': {
         this.deps.memoryReader
           .channels(frame.payload as MemoryChannelsReq)
@@ -1620,6 +1634,18 @@ export class CpClient {
       return
     }
     if (err instanceof WorkspaceViolationError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
+      return
+    }
+    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
+    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
+  }
+
+  /** Unknown agent → BAD_PAYLOAD with the machine reason; anything else → INTERNAL with a generic
+   *  message. There is no CONFLICT arm because `task/list` reads in-memory state and mutates
+   *  nothing, so no lifecycle state can make it a legal-but-refused request. */
+  private taskError(corr: string, op: string, err: unknown): void {
+    if (err instanceof TaskViolationError) {
       this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }

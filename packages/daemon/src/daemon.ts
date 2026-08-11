@@ -306,6 +306,10 @@ import {
   SESSION_METADATA_ACK_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  MAX_TASK_DESCRIPTION,
+  MAX_TASK_DETAIL,
+  MAX_TASK_LIST_TASKS,
+  TASK_LIST_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
@@ -327,6 +331,7 @@ import {
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
 import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
+import { TaskViolationError } from './cp/task-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
   createMemoryProvider,
@@ -468,7 +473,9 @@ import type {
   WebchatRemoteMcpEntitlement,
   ExternalSessionAudience,
   ExternalSessionOrigin,
-  ChannelAgentsOk
+  ChannelAgentsOk,
+  TaskList,
+  TaskListReq
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -883,6 +890,23 @@ function sdkLeaseKey(agentId: string, acpSessionId: string): string {
   return pendingTurnKey(agentId, acpSessionId)
 }
 
+/** One LIVE background task — a member of the lease's liveness set. `startedAt` is when the
+ *  `task_started` edge arrived, which is the only start time the feed offers. */
+interface LiveSdkTask {
+  description?: string
+  isSubagent: boolean
+  startedAt: number
+}
+
+/** One SETTLED background task, retained for the console's `task/list` read. Display history and
+ *  nothing else: it lives in the lease's `settled` array, never in `tasks`, so no reclaim
+ *  decision can see it. `status` is the terminal status a runtime edge reported, when any. */
+interface SettledSdkTask extends LiveSdkTask {
+  id: string
+  endedAt: number
+  status?: string
+}
+
 // Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` whose
 // outgoing hopCount reaches this boundary, so an A↔B wake loop can't run away.
 // send-message-routing-rework.md §4.1 puts a platform `@mention` delivery on this SAME
@@ -943,6 +967,13 @@ const MAX_BG_TASK_WAKE_REARMS = 15
  *  budget is the only backstop against a self-feeding wake loop. Counted over the
  *  lease's life (i.e. until the host is reclaimed), not per turn. */
 const MAX_BG_TASK_WAKES_PER_SESSION = 20
+
+/** How many SETTLED background tasks one lease retains for the console's `task/list` read. The
+ *  daemon keeps no task history anywhere else, so without this a finished task is unshowable;
+ *  with it, a `done`/`failed` row survives until the 21st task settles, the session TTL-closes
+ *  or the host is reclaimed. 20 is a display depth, not a durability promise — the panel is a
+ *  live view, and the retained records are strictly outside the liveness set (see `settled`). */
+const MAX_SETTLED_TASKS_PER_SESSION = 20
 
 /**
  * DAEMON-PRIVATE trusted metadata for an agent-originated delivery. Authoritative
@@ -1793,7 +1824,18 @@ export class Daemon {
     string,
     {
       agentId: string
-      tasks: Map<string, { description?: string; isSubagent: boolean }>
+      /** The LIVENESS set. Membership means "still owed a terminal edge" and is what every
+       *  reclaim decision reads (see the 7 consumers of `tasks.size`/`get`/`delete`). A settled
+       *  task is deleted from here BEFORE any notification, which is also the dedup against the
+       *  three overlapping terminal edges the runtime really sends. */
+      tasks: Map<string, LiveSdkTask>
+      /** Settled tasks retained for the console's `task/list` read — DISPLAY history, never
+       *  liveness. Deliberately a separate array rather than entries left in `tasks`: nothing
+       *  that gates reclaim, the wake budget, session TTL-close, retention GC, secret-file
+       *  cleanup or workspace mutations reads this field, so a retained record cannot be
+       *  mistaken for live work by construction rather than by remembering to filter. Oldest
+       *  first, capped at {@link MAX_SETTLED_TASKS_PER_SESSION}. */
+      settled: SettledSdkTask[]
       sdkState: 'idle' | 'running'
       /** Background-task wakes already spent on this session — see
        *  {@link MAX_BG_TASK_WAKES_PER_SESSION}. */
@@ -5159,6 +5201,7 @@ export class Daemon {
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
+      TASK_LIST_FEATURE,
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
@@ -17001,7 +17044,8 @@ export class Daemon {
     const leaseKey = sdkLeaseKey(agentId, acpSessionId)
     const lease = this.sdkLease.get(leaseKey) ?? {
       agentId,
-      tasks: new Map<string, { description?: string; isSubagent: boolean }>(),
+      tasks: new Map<string, LiveSdkTask>(),
+      settled: [] as SettledSdkTask[],
       sdkState: 'idle' as const,
       bgWakes: 0,
       armedWakes: 0,
@@ -17012,8 +17056,22 @@ export class Daemon {
     // and hand the completion back to the model so the work is not stranded.
     const settle = (taskId: string, status?: string) => {
       const rec = lease.tasks.get(taskId)
-      if (!rec) return // already settled — dedup the near-simultaneous edges
-      lease.tasks.delete(taskId)
+      if (!rec) {
+        // Already settled: still dedup announce + wake, but let a later terminal edge fill in the
+        // outcome the first one could not carry — the snapshot and task_notification paths supply
+        // no status, so this is how `failed` becomes reachable at all. Display only.
+        if (status) {
+          const prior = lease.settled.find((t) => t.id === taskId) // at most one: retention dedups by id
+          if (prior && !prior.status) prior.status = status
+        }
+        return
+      }
+      lease.tasks.delete(taskId) // liveness removal FIRST — see the `tasks` field docblock
+      // Retained OUTSIDE the liveness set, and before the subagent bail so the panel's data set
+      // equals the set that fences reclaim (subagents are filtered at render, never at the source).
+      lease.settled = lease.settled.filter((t) => t.id !== taskId)
+      lease.settled.push({ id: taskId, ...rec, endedAt: this.clock.now(), status })
+      if (lease.settled.length > MAX_SETTLED_TASKS_PER_SESSION) lease.settled.shift()
       if (rec.isSubagent) return
       this.announceBackgroundTaskDone(agentId, acpSessionId, rec.description, status)
       this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, rec.description, status)
@@ -17029,7 +17087,9 @@ export class Daemon {
         if (typeof m.task_id === 'string')
           lease.tasks.set(m.task_id, {
             description: typeof m.description === 'string' ? m.description : undefined,
-            isSubagent: typeof m.subagent_type === 'string' && m.subagent_type.length > 0
+            isSubagent: typeof m.subagent_type === 'string' && m.subagent_type.length > 0,
+            // The feed carries no start time; this edge's arrival is the only one there is.
+            startedAt: this.clock.now()
           })
         break
       case 'task_notification':
@@ -17061,6 +17121,51 @@ export class Daemon {
     }
     lease.agentId = agentId
     this.sdkLease.set(leaseKey, lease)
+  }
+
+  /** Project one (agent, ACP session) background-task lease for the console's `task/list` read
+   *  (webchat-side-panels.md §3.5). A pure READ: it never touches the lease, so it cannot
+   *  disturb a reclaim decision. Live tasks come first (newest start first) because they are the
+   *  ones fencing the host; then the retained settled ones (newest end first). Only an unknown
+   *  agent is an error — no lease answers `tracked:false`, which is a different statement from
+   *  "no background tasks" and the console says so. */
+  private listBackgroundTasks(req: TaskListReq): TaskList {
+    if (!this.agents.has(req.agentId)) throw new TaskViolationError(`unknown agent "${req.agentId}"`, 'unknown-agent')
+    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, req.sessionId))
+    const iso = (ms: number) => new Date(ms).toISOString()
+    // Model-authored, so bounded here rather than trusted; the row survives, the tail does not.
+    const described = (description: string | undefined) =>
+      description ? { description: description.slice(0, MAX_TASK_DESCRIPTION) } : {}
+    const live = [...(lease?.tasks ?? new Map<string, LiveSdkTask>()).entries()]
+      .map(([id, rec]) => ({
+        id,
+        ...described(rec.description),
+        state: 'running' as const,
+        subagent: rec.isSubagent,
+        startedAt: iso(rec.startedAt)
+      }))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    // `failed` needs a REPORTED failure; a settle edge that carried no status is not evidence of
+    // one, and most of them carry none (the snapshot and task_notification paths supply nothing).
+    const done = [...(lease?.settled ?? [])]
+      .sort((a, b) => b.endedAt - a.endedAt)
+      .map((rec) => ({
+        id: rec.id,
+        ...described(rec.description),
+        state: rec.status === 'failed' || rec.status === 'killed' ? ('failed' as const) : ('done' as const),
+        subagent: rec.isSubagent,
+        startedAt: iso(rec.startedAt),
+        endedAt: iso(rec.endedAt),
+        ...(rec.status ? { detail: rec.status.slice(0, MAX_TASK_DETAIL) } : {})
+      }))
+    const all = [...live, ...done]
+    return {
+      agentId: req.agentId,
+      sessionId: req.sessionId,
+      tracked: !!lease,
+      tasks: all.slice(0, MAX_TASK_LIST_TASKS),
+      truncated: all.length > MAX_TASK_LIST_TASKS
+    }
   }
 
   /** Proactively announce a completed background task to its session's channel/thread
@@ -19600,6 +19705,9 @@ export class Daemon {
         // data, not an error, because a workspace write is exactly when the answer would be stale.
         message: (req) => workspaceGit.message(req)
       },
+      // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
+      // reclaim decision, so it needs neither of the workspace coordinators.
+      taskReader: { list: async (req) => this.listBackgroundTasks(req) },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(

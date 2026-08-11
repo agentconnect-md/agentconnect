@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  TASK_LIST_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE
@@ -43,7 +44,7 @@ function scaffold(): string {
   return root
 }
 
-describe('registrationFeatures — workspace git review + write + AI message', () => {
+describe('registrationFeatures — the console dock reads (git review + write + AI message + tasks)', () => {
   it('advertises the git reads, writes AND the message pass unconditionally (daemon code, not a runtime probe)', async () => {
     const daemon = new Daemon({
       root: scaffold(),
@@ -59,5 +60,8 @@ describe('registrationFeatures — workspace git review + write + AI message', (
     // The wand is gated separately: it is not a write, and whether the agent's RUNTIME can actually
     // draft a message is data the pass reports — not something a register-time flag can promise.
     expect(features).toContain(WORKSPACE_GIT_MESSAGE_FEATURE)
+    // `task/list` is likewise unconditional daemon code — whether the agent's runtime actually
+    // emits the SDK lifecycle feed is data the REP reports (`tracked`), not a register-time promise.
+    expect(features).toContain(TASK_LIST_FEATURE)
   }, 20_000)
 })

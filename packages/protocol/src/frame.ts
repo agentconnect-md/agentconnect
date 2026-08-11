@@ -80,6 +80,7 @@ import {
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult
 } from './frames/workspace.js'
+import { TaskListReq, TaskList } from './frames/task.js'
 import {
   MemoryChannelsReq,
   MemoryChannelsPage,
@@ -321,6 +322,9 @@ export const FRAME_SCHEMAS = {
   // ── AI commit message: a bounded model pass on the DAEMON's runtime, no write of any kind.
   'workspace/gitmessage': WorkspaceGitMessageReq,
   'workspace/gitmessage/result': WorkspaceGitMessageResult,
+  // ── background tasks: a read of the daemon's in-memory lease. No cancel frame — see task.ts.
+  'task/list': TaskListReq,
+  'task/list/result': TaskList,
   'memory/channels': MemoryChannelsReq,
   'memory/channels/page': MemoryChannelsPage,
   'memory/list': MemoryListReq,
@@ -544,6 +548,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('workspace/gitpush/result', FRAME_SCHEMAS['workspace/gitpush/result']),
   frame('workspace/gitmessage', FRAME_SCHEMAS['workspace/gitmessage']),
   frame('workspace/gitmessage/result', FRAME_SCHEMAS['workspace/gitmessage/result']),
+  frame('task/list', FRAME_SCHEMAS['task/list']),
+  frame('task/list/result', FRAME_SCHEMAS['task/list/result']),
   frame('memory/channels', FRAME_SCHEMAS['memory/channels']),
   frame('memory/channels/page', FRAME_SCHEMAS['memory/channels/page']),
   frame('memory/list', FRAME_SCHEMAS['memory/list']),

@@ -27,6 +27,7 @@ import {
   MAX_WORKSPACE_STAGE_PATHS,
   MAX_WORKSPACE_STAGE_PATH_BYTES,
   WorkspaceGitWriteReason,
+  TaskState,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
   normalizeGitHubSkillSource,
@@ -3075,6 +3076,38 @@ export const WorkspaceGitMessageResultDto = z.object({
   detail: z.string().nullable() // human explanation of a refusal
 })
 
+// ── agent background tasks (projected live from the owning daemon's lease; nothing stored) ──
+/** `GET /agents/:id/tasks` query. `sessionId` is REQUIRED, unlike every workspace read: the
+ *  daemon's background-task lease is keyed per (agent, ACP session) and there is no per-agent
+ *  aggregate but a boolean, so an unscoped list would have nothing to answer with. */
+export const AgentTasksQueryDto = z.object({
+  sessionId: z.string().min(1) // ACP session id (== the CP session row's id)
+})
+
+/** One background task of one ACP session. `state` is the daemon's closed vocabulary: no
+ *  `queued` (the lifecycle feed's only start edge is `task_started`), and `done` means
+ *  "settled with no reported failure" because most settle edges carry no status at all. */
+export const AgentTaskDto = z.object({
+  id: z.string(), // runtime-local task id
+  description: z.string().nullable(), // null ⇒ the runtime named none
+  state: TaskState,
+  subagent: z.boolean(), // the runtime's own internal Task invocation — carried, filtered at render
+  startedAt: z.string(), // RFC3339
+  endedAt: z.string().nullable(), // RFC3339; null ⇒ still running
+  detail: z.string().nullable() // the terminal status the runtime reported, when it named one
+})
+
+/** `GET /agents/:id/tasks` — live tasks first, then the daemon's bounded settled history.
+ *  `tracked:false` means the owning daemon holds no lease for this session (a non-Claude
+ *  runtime, an adapter without the lifecycle extension, or nothing emitted yet), which is a
+ *  different statement from "this session has no background tasks". */
+export const AgentTasksDto = z.object({
+  sessionId: z.string(),
+  tracked: z.boolean(),
+  tasks: z.array(AgentTaskDto),
+  truncated: z.boolean() // true ⇒ the daemon held more tasks than this page carries
+})
+
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
 export const UsageRange = z.enum(['d1', 'd7', 'd30', 'd90'])
 export const UsageQueryDto = z.object({
@@ -3198,4 +3231,5 @@ export type WorkspaceGitPullDtoT = z.infer<typeof WorkspaceGitPullDto>
 export type WorkspaceGitCommitResultDtoT = z.infer<typeof WorkspaceGitCommitResultDto>
 export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDto>
 export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
+export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

@@ -63,6 +63,8 @@ import type {
   WorkspaceGitPushResult,
   WorkspaceGitMessageReq,
   WorkspaceGitMessageResult,
+  TaskListReq,
+  TaskList,
   MemoryChannelsReq,
   MemoryChannelsPage,
   MemoryListReq,
@@ -877,5 +879,19 @@ export class ControlSender {
       { epoch: c.sessionEpoch },
       { ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }
     )
+  }
+
+  /**
+   * List the background tasks of ONE ACP session from the owning daemon's in-memory lease
+   * (REQ → `task/list/result`). Read-only, and a pure projection on the daemon side, so it
+   * cannot disturb a reclaim decision. The CP proxies the snapshot and stores none of it —
+   * descriptions are model-authored (body-locality, webchat-side-panels.md §2). A session
+   * the daemon holds no lease for (`tracked:false`) and a lease with nothing in it are both
+   * DATA; only an unknown agent is an error. Default request budget: the daemon answers
+   * from memory, so there is no in-flight pass a retransmit could duplicate.
+   */
+  async taskList(daemonId: string, req: TaskListReq): Promise<TaskList> {
+    const c = this.must(daemonId)
+    return c.conn.request<TaskList>('task/list', req, { epoch: c.sessionEpoch })
   }
 }

@@ -22,9 +22,12 @@ import {
   toWorkspaceGitCommitDto,
   toWorkspaceGitPushDto,
   toWorkspaceGitMessageDto,
+  toAgentTasksDto,
   workspaceGitConfigOf,
   workspaceErrorCode,
   workspaceFailure,
+  taskErrorCode,
+  taskFailure,
   toDreamDto,
   toDreamListDto,
   toDreamFilesDto,
@@ -695,5 +698,132 @@ describe('toDreamListDto / toDreamFilesDto / toDreamFileDto', () => {
         truncated: true
       })
     ).toMatchObject({ exists: true, content: '- uses tabs', nextOffset: 11, truncated: true })
+  })
+})
+
+describe('toAgentTasksDto', () => {
+  it('keeps the daemon’s order and null-coalesces every optional a running task lacks', () => {
+    expect(
+      toAgentTasksDto({
+        agentId: 'a1',
+        sessionId: 'acp-1',
+        tracked: true,
+        tasks: [
+          { id: 't2', state: 'running', subagent: false, startedAt: '2026-08-10T10:00:02Z' },
+          {
+            id: 't1',
+            description: 'run the integration suite',
+            state: 'failed',
+            subagent: false,
+            startedAt: '2026-08-10T10:00:00Z',
+            endedAt: '2026-08-10T10:04:00Z',
+            detail: 'failed'
+          },
+          {
+            id: 't0',
+            state: 'done',
+            subagent: true,
+            startedAt: '2026-08-10T09:00:00Z',
+            endedAt: '2026-08-10T09:01:00Z'
+          }
+        ],
+        truncated: true
+      })
+    ).toEqual({
+      sessionId: 'acp-1',
+      tracked: true,
+      tasks: [
+        {
+          id: 't2',
+          description: null,
+          state: 'running',
+          subagent: false,
+          startedAt: '2026-08-10T10:00:02Z',
+          endedAt: null,
+          detail: null
+        },
+        {
+          id: 't1',
+          description: 'run the integration suite',
+          state: 'failed',
+          subagent: false,
+          startedAt: '2026-08-10T10:00:00Z',
+          endedAt: '2026-08-10T10:04:00Z',
+          detail: 'failed'
+        },
+        {
+          id: 't0',
+          description: null,
+          state: 'done',
+          subagent: true,
+          startedAt: '2026-08-10T09:00:00Z',
+          endedAt: '2026-08-10T09:01:00Z',
+          detail: null
+        }
+      ],
+      truncated: true
+    })
+  })
+
+  it('keeps an untracked session apart from a tracked one holding no tasks', () => {
+    const untracked = toAgentTasksDto({
+      agentId: 'a1',
+      sessionId: 'acp-9',
+      tracked: false,
+      tasks: [],
+      truncated: false
+    })
+    expect(untracked).toEqual({ sessionId: 'acp-9', tracked: false, tasks: [], truncated: false })
+    expect(
+      toAgentTasksDto({ agentId: 'a1', sessionId: 'acp-9', tracked: true, tasks: [], truncated: false }).tracked
+    ).toBe(true)
+  })
+})
+
+describe('taskErrorCode / taskFailure', () => {
+  const badPayload = (reason?: string): ProtocolError =>
+    new ProtocolError('BAD_PAYLOAD', 'task/list failed: unknown agent "a1"', {
+      ...(reason ? { details: { reason } } : {})
+    })
+
+  it('screaming-snakes the daemon reason under its OWN prefix and ignores a foreign vocabulary', () => {
+    expect(taskErrorCode(badPayload('unknown-agent'))).toBe('TASK_UNKNOWN_AGENT')
+    // A workspace-only reason is not a task reason: the two enums move independently.
+    expect(taskErrorCode(badPayload('path-escape'))).toBeNull()
+    expect(taskErrorCode(badPayload())).toBeNull()
+  })
+
+  it('answers an agent its daemon does not hold with 404 + code, not the offline 503', () => {
+    expect(taskFailure(badPayload('unknown-agent'))).toEqual({
+      status: 404,
+      error: 'Not Found',
+      message: 'agent not found on its daemon',
+      code: 'TASK_UNKNOWN_AGENT'
+    })
+  })
+
+  it('keeps the 503 for a reasonless rejection, an offline daemon, and rethrows a CP bug', () => {
+    expect(taskFailure(badPayload())).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'daemon rejected the request: task/list failed: unknown agent "a1"'
+    })
+    expect(taskFailure(new Error('connection closed'))).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'owning daemon is offline'
+    })
+    expect(taskFailure(new TypeError('rep.tasks is not iterable'))).toBeNull()
+  })
+
+  it('does not invent a 409: the read mutates nothing, so a CONFLICT is not a task answer', () => {
+    const conflict = new ProtocolError('CONFLICT', 'the agent is working in this workspace', {
+      details: { reason: 'unknown-agent' }
+    })
+    expect(taskFailure(conflict)).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'daemon rejected the request: the agent is working in this workspace'
+    })
   })
 })

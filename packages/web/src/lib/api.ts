@@ -3074,6 +3074,45 @@ export async function draftWorkspaceCommitMessage(
   )
 }
 
+// ── session background tasks (proxied live from the owning daemon's lease) ────
+// What the daemon can know about a task, and nothing more. No `queued`: the runtime lifecycle
+// feed's only start edge is `task_started`, so a task is either live in the lease or gone. `done`
+// means "settled with no reported failure" rather than "reported successful", because most settle
+// edges carry no status at all — `detail` carries one when the runtime named it.
+export type AgentTaskState = 'running' | 'done' | 'failed'
+
+// One background task of one ACP session. `subagent` is the runtime's own internal Task
+// invocation; the wire carries those rather than filtering them, because the same records fence
+// host reclaim — so this panel shows them marked instead of hiding them (webchat-side-panels.md §3.5).
+export interface AgentTaskDto {
+  id: string
+  description: string | null // null ⇒ the runtime named none
+  state: AgentTaskState
+  subagent: boolean
+  startedAt: string // RFC3339
+  endedAt: string | null // RFC3339; null ⇒ still running
+  detail: string | null // the terminal status the runtime reported, when it named one
+}
+
+// GET /agents/:id/tasks?sessionId=… — live tasks first, then the daemon's bounded settled
+// history. `tracked:false` means that daemon holds no lease for the session (a runtime that
+// reports no task lifecycle, or one that has not yet), which is a different answer from an empty
+// list and the panel says so.
+export interface AgentTasksDto {
+  sessionId: string
+  tracked: boolean
+  tasks: AgentTaskDto[]
+  truncated: boolean // true ⇒ the daemon held more tasks than this page carries
+}
+
+// Read one ACP session's background tasks. `sessionId` is REQUIRED, unlike the workspace reads:
+// the lease is per (agent, ACP session) and there is no per-agent aggregate to answer with. There
+// is no cancel counterpart — no agent-protocol primitive can address a single background task.
+export async function fetchAgentTasks(agentId: string, sessionId: string): Promise<AgentTasksDto> {
+  const q = new URLSearchParams({ sessionId })
+  return apiGet<AgentTasksDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/tasks?${q.toString()}`)
+}
+
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's
 // persisted per-session usage store, summed over the selected range. ──
 export type UsageRange = 'd1' | 'd7' | 'd30' | 'd90'

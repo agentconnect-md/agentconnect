@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
+import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
 
@@ -26,6 +27,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     sessionRead: _sessionReadOver,
     workspaceRead: _workspaceReadOver,
     workspaceGit: _workspaceGitOver,
+    taskReader: _taskReaderOver,
     ...overRest
   } = over
   const configApply = {
@@ -82,6 +84,10 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     pull: vi.fn(async () => ({ agentId: 'a', isRepo: false, ok: false })),
     ...((over.workspaceGit as any) ?? {})
   }
+  const taskReader = {
+    list: vi.fn(async () => ({ agentId: 'a', sessionId: 'acp-1', tracked: false, tasks: [], truncated: false })),
+    ...((over.taskReader as any) ?? {})
+  }
   const deps: CpClientDeps = {
     url: 'wss://cp/daemon/ws',
     token: 't',
@@ -99,6 +105,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     sessionRead,
     workspaceRead,
     workspaceGit,
+    taskReader,
     clock,
     connect: async () => t,
     log: silent,
@@ -144,7 +151,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   await tick()
   t.sent.length = 0 // clear handshake frames
   vi.clearAllMocks() // reset mock call counts after handshake
-  return { t, clock, client, configApply, workspaceRead, workspaceGit }
+  return { t, clock, client, configApply, workspaceRead, workspaceGit, taskReader }
 }
 
 describe('CpClient dispatch', () => {
@@ -833,6 +840,53 @@ describe('CpClient dispatch', () => {
       } as any
     })
     const f = JSON.parse(frame('workspace/gitstatus', { agentId: 'nope' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.corr).toBe(f.id)
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'unknown-agent' })
+  })
+
+  it('replies task/list/result from the taskReader seam', async () => {
+    const list = vi.fn(async () => ({
+      agentId: 'a1',
+      sessionId: 'acp-1',
+      tracked: true,
+      truncated: false,
+      tasks: [
+        {
+          id: 't1',
+          description: 'Sleep 15',
+          state: 'running' as const,
+          subagent: false,
+          startedAt: '2026-06-26T00:00:00.000Z'
+        }
+      ]
+    }))
+    const { t, taskReader } = await readyClient({ taskReader: { list } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1' }
+    const f = JSON.parse(frame('task/list', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(taskReader.list).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('task/list/result')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.tasks[0].state).toBe('running')
+    expect(rep.payload.tracked).toBe(true)
+  })
+
+  it('maps an unknown-agent task violation to BAD_PAYLOAD with its reason', async () => {
+    const { t } = await readyClient({
+      taskReader: {
+        list: async () => {
+          throw new TaskViolationError('unknown agent "nope"', 'unknown-agent')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('task/list', { agentId: 'nope', sessionId: 'acp-1' }, { epoch: 5 }))
     t.pushInbound(JSON.stringify(f))
     await tick()
     const err = JSON.parse(t.sent[0]!)

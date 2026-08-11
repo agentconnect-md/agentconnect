@@ -102,6 +102,7 @@ import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/compone
 import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
 import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
+import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
 import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/components/console/viewer/SessionViewer'
 import {
   EMPTY_RAIL_AGENT_FILTER,
@@ -1185,6 +1186,13 @@ const DOCK_TABS: DockTab[] = [
     icon: 'git-commit-horizontal',
     actionIcon: 'refresh-cw',
     actionLabel: 'Refresh git status'
+  },
+  {
+    key: 'tasks',
+    label: 'Tasks',
+    icon: 'list-checks',
+    actionIcon: 'refresh-cw',
+    actionLabel: 'Refresh background tasks'
   }
 ]
 
@@ -1826,6 +1834,9 @@ export default function SessionDetailView() {
     focusedSession?.workspaceIsolation !== undefined
   // A REJECTED isolation read is not a pending one. The checkout still may not be read — the answer is unknown either way — but a spinner that never resolves is a worse lie than saying so, so this state gets its own copy and the tab counts as answered.
   const filesScopeFailed = !filesScopeReady && extraHeaderDetailError !== undefined
+  // Which lease the Tasks tab reads. Tasks are NOT a checkout, so this waits on neither the worktree gate `filesSessionId` applies nor the isolation round trip Files and Git hold for — a session's background tasks exist whatever it is checked out into, and the CP says so. What it does need is the CANONICAL session id the lease is keyed by, which is what the focus options already carry. A playground session the daemon has not created yet has no canonical id and no tasks either, so it gets no tab rather than a 404 notice.
+  const tasksSessionId =
+    headerFocusSessionId && !(syntheticPlayground && headerFocusSessionId === session?.id) ? headerFocusSessionId : null
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
@@ -1880,6 +1891,9 @@ export default function SessionDetailView() {
     setFilesRefreshTick((tick) => tick + 1)
   }, [])
   const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({ settled: false, changed: null })
+  // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
+  const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
+  const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
   // A seed narrowed to the conversation already on screen hides the list AND the picker that could widen it, so re-ask it unfiltered.
   const railSeedKeyNow = railSeedKey(railFilter)
   // Waited on because an in-flight family reads as EMPTY, not `undefined`: latching there widens a list about to grow a Related tree.
@@ -1905,11 +1919,16 @@ export default function SessionDetailView() {
   const filesStatus = filesScopeFailed ? 'ready' : filesScopeReady ? filesTabStatus(filesRootSettled) : 'loading'
   // Same three states for Git, and for the same reasons: an unknown checkout is `loading`, a failed isolation read is answered copy.
   const gitStatus = filesScopeFailed ? 'ready' : filesScopeReady ? gitTabStatus(gitVerdict.settled) : 'loading'
+  // Tasks has no isolation branch to wait on, so its status is only ever "has the read answered".
+  const tasksStatus = tasksTabStatus(tasksVerdict.settled)
   // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
   const dockTabs = useMemo<DockTab[]>(
     () =>
-      DOCK_TABS.filter(
-        (tab) => (tab.key !== 'files' && tab.key !== 'git') || (filesAgentId !== null && !MOCK_MODE)
+      DOCK_TABS.filter((tab) =>
+        tab.key === 'files' || tab.key === 'git'
+          ? filesAgentId !== null && !MOCK_MODE
+          : // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
+            tab.key !== 'tasks' || (filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE)
       ).map((tab) =>
         tab.key === 'sessions'
           ? { ...tab, status: sessionsStatus }
@@ -1922,9 +1941,25 @@ export default function SessionDetailView() {
                   // The badge is the changed-file count, omitted rather than shown as `0`: a clean tree wears no pill, and neither does a workspace whose status could not be read.
                   ...(gitVerdict.changed ? { badge: gitVerdict.changed } : {})
                 }
-              : tab
+              : tab.key === 'tasks'
+                ? {
+                    ...tab,
+                    status: tasksStatus,
+                    // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
+                    ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
+                  }
+                : tab
       ),
-    [filesAgentId, filesStatus, gitStatus, gitVerdict.changed, sessionsStatus]
+    [
+      filesAgentId,
+      filesStatus,
+      gitStatus,
+      gitVerdict.changed,
+      sessionsStatus,
+      tasksSessionId,
+      tasksStatus,
+      tasksVerdict.running
+    ]
   )
   // The active tab has to be one that exists: a Files tab dropped under the reader would otherwise leave the dock with no active tab and an unlabelled panel.
   const dockTabKey = dockTabs.some((tab) => tab.key === dockTab) ? dockTab : DOCK_TABS[0]!.key
@@ -4483,6 +4518,7 @@ export default function SessionDetailView() {
         onTabAction={(key) => {
           if (key === 'files') setFilesRefreshTick((tick) => tick + 1)
           if (key === 'git') setGitRefreshTick((tick) => tick + 1)
+          if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
         label="Panels"
@@ -4553,6 +4589,18 @@ export default function SessionDetailView() {
                 setViewerFile(path, filesAgentId, untracked ? 'file' : staged ? 'staged' : 'diff')
               }
               onVerdictChange={setGitVerdict}
+            />
+          ) : null}
+        </DockPanel>
+        {/* No isolation gate and no withheld state: the lease is keyed by the session, not by a checkout, so there is nothing to resolve first. `active` is what keeps a hidden panel from polling. */}
+        <DockPanel active={dockTabKey === 'tasks'}>
+          {filesAgentId && tasksSessionId ? (
+            <TasksPanel
+              agentId={filesAgentId}
+              sessionId={tasksSessionId}
+              active={dockTabKey === 'tasks'}
+              refreshTick={tasksRefreshTick}
+              onVerdictChange={setTasksVerdict}
             />
           ) : null}
         </DockPanel>
