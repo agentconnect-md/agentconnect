@@ -94,6 +94,9 @@ export interface K8sRuntimePlane {
   /** A git runner for an agent whose workspace lives on its sandbox pod, or undefined when this
    *  daemon has no channel for it — the caller then keeps its local behaviour. */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+  /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
+   *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
+  workspaceRootFor: (agentId: string) => string | undefined
   stop: () => Promise<void>
 }
 
@@ -206,6 +209,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       if (!session?.isAttached()) return undefined
       return new ShimGitRunner(session, cwd, undefined, abort)
     },
+    workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     stop: async () => {
       for (const timer of lossTimers.values()) clearTimeout(timer)
       lossTimers.clear()

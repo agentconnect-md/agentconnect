@@ -105,6 +105,8 @@ export class K8sDriver implements SpawnDriver {
   private readonly modeQueue = new Map<string, Promise<void>>()
   /** Logical channels per agent, which survive the shim's credential renewals. */
   private readonly sessions = new Map<string, ShimSession>()
+  /** Workspace mount per agent, as the bound pod's shim reported it. */
+  private readonly workspaceRoots = new Map<string, string>()
   private readonly clock: Clock
 
   constructor(private readonly deps: K8sDriverDeps) {
@@ -283,6 +285,7 @@ export class K8sDriver implements SpawnDriver {
   async removeAgent(agentId: string): Promise<void> {
     this.launches.delete(agentId)
     this.draining.delete(agentId)
+    this.workspaceRoots.delete(agentId)
     await this.deps.api.deleteClaim(this.claimName(agentId))
   }
 
@@ -377,6 +380,7 @@ export class K8sDriver implements SpawnDriver {
         throw err
       })
     timer?.mark('shim_handshake')
+    this.recordWorkspaceRoot(agentId, connection)
     // The session is created HERE rather than in `launch`, because a channel bound for workspace
     // preparation needs one too — and a second session per agent would mean the runtime and the
     // workspace seam disagreeing about whether the channel is alive.
@@ -398,6 +402,20 @@ export class K8sDriver implements SpawnDriver {
    *  does rather than opening a second one that can disagree about whether it is alive. */
   sessionFor(agentId: string): ShimSession | undefined {
     return this.sessions.get(agentId)
+  }
+
+  /** Where the agent's bound pod mounts its workspace, or undefined before a bind (or when a
+   *  legacy shim reported nothing — callers fall back to the historical mount). */
+  workspaceRootFor(agentId: string): string | undefined {
+    return this.workspaceRoots.get(agentId)
+  }
+
+  // Mirrors the CURRENT pod, absence included: a root kept from a previous incarnation (an image
+  // rollback to a shim that reports none) names a mount this pod may not have — the exact failure
+  // this seam exists to remove. Unset ⇒ callers fall back to the historical mount.
+  private recordWorkspaceRoot(agentId: string, connection: ShimConnection): void {
+    if (connection.workspaceRoot) this.workspaceRoots.set(agentId, connection.workspaceRoot)
+    else this.workspaceRoots.delete(agentId)
   }
 
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
@@ -444,6 +462,7 @@ export class K8sDriver implements SpawnDriver {
 
   /** Re-attach a renewed or replacement connection to the launch it belongs to. */
   onChannelBound(connection: ShimConnection): void {
+    this.recordWorkspaceRoot(connection.binding.agentId, connection)
     const session = this.sessions.get(connection.binding.agentId)
     if (!session) return
     // Counted apart from the first bind: a re-establishment rate is the signal that renewals or

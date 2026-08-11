@@ -37,6 +37,7 @@ import {
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
+import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 
 const skillsLog = makeLogger('info')
 
@@ -671,6 +672,33 @@ export async function prepareSessionWorkspace(
   }
   const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
   return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
+}
+
+/**
+ * The ACP cwd for a CLUSTER agent, in the sandbox pod's own coordinates.
+ *
+ * `agent.workspace.path` names a directory on the DAEMON's filesystem and stays its
+ * bookkeeping identity; the runtime and every shim-executed operation live in the pod,
+ * whose volume mounts wherever the image says. Sending the daemon path across (which is
+ * what happened before this split) hands the runtime a cwd that exists on no machine it
+ * can see. The root comes from the bound shim's hello; a legacy shim that reported none
+ * gets the one mount layout such images ever had.
+ */
+export function clusterWorkspaceCwd(
+  agent: Agent,
+  runtimeRoot: string | undefined,
+  request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+): string {
+  if (agent.workspace.mode !== 'from-scratch') {
+    // Refused loudly rather than half-working: the clone/pull/audit flow still mixes daemon
+    // and pod coordinates for git-repo workspaces, and a clear error beats a mystery one
+    // from git inside the sandbox.
+    throw new Error(`git-repo workspaces are not supported with --k8s yet (agent "${agent.id}")`)
+  }
+  if (request?.isolation === 'session') {
+    throw new Error(`session-isolated workspaces are not supported with --k8s yet (agent "${agent.id}")`)
+  }
+  return runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
 }
 
 /** Resolve the already-prepared ACP cwd without pulling, acquiring sources, or

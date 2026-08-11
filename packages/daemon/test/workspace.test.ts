@@ -41,6 +41,7 @@ vi.mock('simple-git', () => ({
 // Imported after vi.mock so the mock is in effect.
 const {
   additionalWorkspaceDirectories,
+  clusterWorkspaceCwd,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   prepareSessionWorkspace,
@@ -926,5 +927,27 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       'https://github.com/acme/repo'
     ])
     expect(pullMock).toHaveBeenCalled()
+  })
+})
+
+describe('clusterWorkspaceCwd (--k8s pod coordinates)', () => {
+  it('hands a from-scratch agent the pod root, never the daemon-disk workspace path', () => {
+    const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
+    expect(clusterWorkspaceCwd(agent, '/agent')).toBe('/agent')
+  })
+
+  it('falls back to the historical mount for a legacy shim that reported none', () => {
+    const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
+    expect(clusterWorkspaceCwd(agent, undefined)).toBe('/agent')
+  })
+
+  it('refuses a git-repo workspace loudly instead of half-working across two filesystems', () => {
+    const agent = gitRepoAgent('/var/lib/agentconnect/agents/bot-git/workspace')
+    expect(() => clusterWorkspaceCwd(agent, '/agent')).toThrow(/git-repo workspaces are not supported with --k8s/)
+  })
+
+  it('refuses session isolation, whose worktrees still assume the daemon filesystem', () => {
+    const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
+    expect(() => clusterWorkspaceCwd(agent, '/agent', { isolation: 'session' })).toThrow(/session-isolated/)
   })
 })

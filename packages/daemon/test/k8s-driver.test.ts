@@ -56,10 +56,11 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended' } = 
 }
 
 /** Enough of a bound channel for `launch()` to attach a session to. */
-function stubConnection(generation = 1): ShimConnection {
+function stubConnection(generation = 1, workspaceRoot?: string): ShimConnection {
   return {
     binding: { agentId: 'agent-a', generation, grants: ['acp'], podName: 'p', podUid: 'u' },
     issuedCredential: 'cred',
+    ...(workspaceRoot ? { workspaceRoot } : {}),
     send: () => {},
     onFrame: () => {},
     close: () => {}
@@ -253,6 +254,45 @@ describe('cluster spawn driver', () => {
     expect(launch.sandboxName).toBe('sb-1')
     // And it did NOT publish: nothing may be authorized against a pod that does not exist yet.
     expect(records).toEqual([])
+  })
+
+  it('remembers where the bound pod mounts its workspace, until the agent goes away', async () => {
+    const { api } = fakeApi()
+    let generation = 0
+    const { instance } = driver(api, {
+      awaitChannel: async () => stubConnection(++generation, '/agent')
+    })
+    // Unknown before any bind: the daemon cannot name a path on a machine it has not heard from.
+    expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
+    await instance.launch(launchRequest)
+    expect(instance.workspaceRootFor('agent-a')).toBe('/agent')
+    // A renewal reporting a root keeps it current on the replacement connection too.
+    instance.onChannelBound(stubConnection(generation, '/mnt/agent'))
+    expect(instance.workspaceRootFor('agent-a')).toBe('/mnt/agent')
+    await instance.removeAgent('agent-a')
+    expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
+  })
+
+  it('keeps no workspace root from a legacy shim that reports none', async () => {
+    const { api } = fakeApi()
+    const { instance } = driver(api)
+    await instance.launch(launchRequest)
+    expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
+  })
+
+  it('forgets a custom root when the replacement pod reports none, rather than keeping a stale mount', async () => {
+    // An image rollback puts a shim that reports nothing on the agent's next pod. Retaining the
+    // previous incarnation's root would send it a path only the OLD image mounted, which is the
+    // failure this reporting exists to remove — the fallback has to become reachable again.
+    const { api } = fakeApi()
+    let generation = 0
+    const { instance } = driver(api, {
+      awaitChannel: async () => stubConnection(++generation, '/mnt/agent')
+    })
+    await instance.launch(launchRequest)
+    expect(instance.workspaceRootFor('agent-a')).toBe('/mnt/agent')
+    instance.onChannelBound(stubConnection(generation))
+    expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
   })
 
   it('deletes the claim when an agent goes away', async () => {

@@ -5,7 +5,7 @@ import { ClientTransport } from '@agentconnect.md/connection'
 import { ShimClient, type ShimTransport } from './client.js'
 import { createExecHandler } from './exec-handler.js'
 import { resolveCommandInPath } from './path-resolve.js'
-import { SHIM_ENDPOINT_ENV, SHIM_WORKSPACE_ROOT_ENV } from './protocol.js'
+import { DEFAULT_SHIM_WORKSPACE_ROOT, SHIM_ENDPOINT_ENV, SHIM_WORKSPACE_ROOT_ENV } from './protocol.js'
 
 const log = {
   info: (message: string) => console.error(`[shim] ${message}`),
@@ -18,6 +18,7 @@ async function main(): Promise<number> {
     log.warn(`${SHIM_ENDPOINT_ENV} is not set — nothing to dial`)
     return 2
   }
+  const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
   const client = new ShimClient({
     endpoint,
     dial: (url, opts) =>
@@ -29,7 +30,9 @@ async function main(): Promise<number> {
     podEnv: process.env,
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands.
-    handle: createExecHandler({ workspaceRoot: process.env[SHIM_WORKSPACE_ROOT_ENV] ?? '/agent', log }),
+    handle: createExecHandler({ workspaceRoot, log }),
+    // Reported in the hello: daemon-built pod paths (ACP cwd, git cwd) are anchored on it.
+    workspaceRoot,
     log
   })
   // A signal is the pod being torn down; drop the channel rather than racing the
