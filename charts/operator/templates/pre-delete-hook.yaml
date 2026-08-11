@@ -24,7 +24,7 @@ spec:
       serviceAccountName: {{ .Release.Name }}-operator
       containers:
         - name: guard
-          image: '{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}'
+          image: '{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}'
           # TODO(chart): replace with a real check — list agentconnectorgs in this
           # namespace and exit non-zero (failing the uninstall) when any remain.
           command: ['node', '-e', 'console.log("TODO: fail when AgentConnectOrg resources remain"); process.exit(0)']

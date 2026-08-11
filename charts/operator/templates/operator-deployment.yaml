@@ -22,7 +22,7 @@ spec:
       serviceAccountName: {{ .Release.Name }}-operator
       containers:
         - name: operator
-          image: '{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}'
+          image: '{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}'
           env:
             - name: AC_ORG_NAMESPACE_PREFIX
               value: {{ .Values.orgNamespacePrefix | quote }}

@@ -11,7 +11,8 @@ orgNamespacePrefix: ac-org-
 operator:
   image:
     repository: ghcr.io/agentconnect-md/operator
-    tag: latest
+    # Empty = the chart's appVersion (stamped by the release pipeline).
+    tag: ''
   replicas: 2
   resyncIntervalSeconds: 600
   leaseName: agentconnect-operator

@@ -55,6 +55,8 @@ COPY packages/daemon/package.json packages/daemon/
 COPY packages/relay/package.json packages/relay/
 COPY packages/memory-plugin-mem0/package.json packages/memory-plugin-mem0/
 COPY packages/web/package.json packages/web/
+COPY packages/k8s-client/package.json packages/k8s-client/
+COPY packages/operator/package.json packages/operator/
 
 # ───────────────────────── control-plane: build ─────────────────────────────
 # Install the control-plane, the self-contained Setup Server package, and
@@ -224,6 +226,56 @@ EXPOSE 8085
 # PID 1 ignores the signal and every rollout ends in SIGKILL mid-drain.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js", "run", "--k8s"]
+
+# ────────────────────────── operator: build ─────────────────────────────────
+# The cluster operator (packages/operator): reconciles AgentConnectOrg CRs into
+# per-org execution envelopes. Installed by charts/operator, one per environment.
+FROM manifests AS operator-builder
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm install --frozen-lockfile --filter "@agentconnect.md/operator..."
+
+COPY . .
+
+# protocol → connection → k8s-client → operator (topological).
+RUN pnpm --filter "@agentconnect.md/protocol" \
+  --filter "@agentconnect.md/connection" \
+  --filter "@agentconnect.md/k8s-client" \
+  --filter "@agentconnect.md/operator" \
+  -r build
+
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+  pnpm --config.inject-workspace-packages=true \
+  --filter "@agentconnect.md/operator" \
+  deploy --prod /operator
+
+# ───────────────────────── operator: runtime ────────────────────────────────
+FROM node:24-bookworm-slim AS operator
+WORKDIR /app/packages/operator
+ENV NODE_ENV=production
+
+# ca-certificates only: the operator talks to the in-cluster API server and
+# nothing else — no git, no provider egress, no inbound port.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates tini \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=operator-builder /operator ./
+
+# Same rationale as the daemon image: the repo manifest stays at 1.0.0-dev, so a
+# release build stamps the effective version for anything that reports it.
+ARG OPERATOR_VERSION=""
+RUN if echo "$OPERATOR_VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then \
+  OPERATOR_VERSION="$OPERATOR_VERSION" node -e "const fs=require('node:fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.env.OPERATOR_VERSION.replace(/^v/,'');fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"; \
+  fi
+
+# Non-root; the operator holds no volumes, so the uid only needs to be stable.
+RUN groupadd --gid 10003 operator-user \
+  && useradd --uid 10003 --gid 10003 --home-dir /home/operator-user --create-home operator-user
+USER 10003:10003
+
+# tini so SIGTERM reaches the elector and the lease is released before exit.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "dist/index.js"]
 
 # ────────────────────────────── web: build ──────────────────────────────────
 FROM manifests AS web-builder
