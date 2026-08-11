@@ -219,6 +219,57 @@ describe('cluster spawn driver', () => {
     expect(state.modeWrites).toHaveLength(5)
   })
 
+  it('does not hand a resumed sandbox the session its departed pod already closed', async () => {
+    // A lost session is terminal and `attach()` is a no-op once closed, while a CACHED launch
+    // keeps its generation — so a re-bind that matched generations re-attached the dead session
+    // and handed the runtime a channel that could never serve a request. Losing the channel has
+    // to end the launch, which is what makes the next turn claim a fresh generation.
+    const { api } = fakeApi()
+    const { instance } = driver(api, {
+      awaitChannel: async (_a: string, generation: number) => stubConnection(generation)
+    })
+    await instance.ensureBoundChannel('agent-a')
+    expect(instance.sessionFor('agent-a')?.isAttached()).toBe(true)
+
+    instance.onChannelLost('agent-a', 'pod deleted')
+    expect(instance.sessionFor('agent-a')).toBeUndefined()
+
+    await instance.ensureBoundChannel('agent-a')
+    expect(instance.sessionFor('agent-a')?.isAttached()).toBe(true)
+  })
+
+  it('suspends an idle agent, keeps its claim, and resumes it at a new generation', async () => {
+    const { api, state } = fakeApi()
+    const { instance, records } = driver(api, {
+      awaitChannel: async (_a: string, generation: number) => stubConnection(generation)
+    })
+    await instance.ensureBoundChannel('agent-a')
+
+    expect(await instance.suspendIfIdle('agent-a')).toBe('suspended')
+    expect(state.modeWrites).toEqual([{ desired: 'Suspended', observed: 'Running' }])
+    // The pod is what goes: the claim (and with it the workspace volume) is untouched.
+    expect(state.deleted).toEqual([])
+
+    await instance.ensureBoundChannel('agent-a')
+    expect(state.modeWrites.at(-1)).toEqual({ desired: 'Running', observed: 'Suspended' })
+    expect(records.map((record) => record.generation)).toEqual([1, 2])
+    expect(instance.sessionFor('agent-a')?.isAttached()).toBe(true)
+  })
+
+  it('declines to suspend a sandbox that work still holds, rather than waiting for it', async () => {
+    const { api, state } = fakeApi()
+    const { instance } = driver(api)
+    let outcome: string | undefined
+    await instance.withSandbox('agent-a', async () => {
+      outcome = await instance.suspendIfIdle('agent-a')
+    })
+    // The caller is a periodic sweep, so the next pass finds it quiet. Waiting here would hold a
+    // decision open across the very turn that makes it wrong.
+    expect(outcome).toBe('busy')
+    expect(state.modeWrites).toEqual([])
+    expect(await instance.suspendIfIdle('agent-never-launched')).toBe('absent')
+  })
+
   it('does not wake an instance while a drain request is pending', async () => {
     const { api, state } = fakeApi({ mode: 'Suspended' })
     const { instance } = driver(api)

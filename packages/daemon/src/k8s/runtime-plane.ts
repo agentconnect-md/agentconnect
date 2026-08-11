@@ -123,6 +123,16 @@ export interface K8sRuntimePlane {
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
+  /** Agents this daemon holds a Sandbox for — the candidate set for an idle sweep. Read from the
+   *  driver rather than inferred from live hosts: a launch outlives the host it was made for. */
+  launchedAgents: () => string[]
+  /** Suspend a quiet agent's pod, keeping its Sandbox and workspace volume. `busy` means work
+   *  still holds it and the caller should try again later; `absent` means there is nothing to
+   *  suspend. Waking is not a separate call — the next launch's bind does it. */
+  suspendIdle: (agentId: string) => Promise<'suspended' | 'busy' | 'absent'>
+  /** Destroy an agent's sandbox for good: the claim goes, and its workspace volume with it. For
+   *  agent REMOVAL only — the local path deletes the checkout at the same point. */
+  discardAgent: (agentId: string) => Promise<void>
   stop: () => Promise<void>
 }
 
@@ -285,6 +295,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return await new ShimFileSink(session).clear(root)
     },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
+    launchedAgents: () => driver.launchedAgents(),
+    suspendIdle: (agentId) => driver.suspendIfIdle(agentId),
+    discardAgent: async (agentId) => {
+      // Close and forget the pod's channel before the claim goes: the pod has its whole
+      // termination grace to keep using a binding this daemon no longer means to honour.
+      listener.revokeAgent(agentId)
+      // Ordered after the revoke, whose close schedules one: a loss check for an agent that no
+      // longer exists would report a lost launch nobody is waiting for.
+      clearTimeout(lossTimers.get(agentId))
+      lossTimers.delete(agentId)
+      proxies.get(agentId)?.proxy.stop('agent removed')
+      proxies.delete(agentId)
+      await driver.removeAgent(agentId)
+    },
     stop: async () => {
       driver.stopSandboxWatch()
       for (const timer of lossTimers.values()) clearTimeout(timer)

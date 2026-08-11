@@ -110,6 +110,17 @@ function respondingConnection(outcome: 'ok' | 'error' | 'timeout') {
   }
 }
 
+/** The shim's replacement socket for an agent, as the listener reports it. */
+function rebind(generation = 1) {
+  return {
+    binding: { agentId: 'agent-a', generation, grants: ['acp'], podName: 'p', podUid: 'u' },
+    issuedCredential: 'cred-2',
+    send: () => {},
+    onFrame: () => {},
+    close: () => {}
+  } as never
+}
+
 function driverFor(
   metrics: ClusterMetrics,
   api: ReturnType<typeof fakeApi>,
@@ -365,21 +376,27 @@ describe('cluster launch metrics', () => {
     expect(retried.retries).toEqual(['rejected_precondition'])
   })
 
-  it('counts a channel drop and a re-establishment separately', async () => {
+  it('counts a renewal as a re-establishment, separately from the first bind', async () => {
+    const churn = recorder()
+    const driver = driverFor(churn.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }))
+    await driver.launch(launchRequest)
+    // The routine half-TTL renewal: the shim re-dials and the listener hands the SAME launch its
+    // replacement socket, with no loss reported in between. A re-establishment rate is the signal
+    // that renewals or pod churn exceed expectations, which pooling it with the first bind hides.
+    driver.onChannelBound(rebind())
+    expect(churn.channels).toEqual(['bound', 'reestablished'])
+  })
+
+  it('does not count a bind arriving after the launch was already lost', async () => {
     const churn = recorder()
     const driver = driverFor(churn.metrics, fakeApi({ claimExists: true, mode: 'Suspended' }))
     await driver.launch(launchRequest)
     driver.onChannelLost('agent-a', 'socket closed')
-    driver.onChannelBound({
-      binding: { agentId: 'agent-a', generation: 1, grants: ['acp'], podName: 'p', podUid: 'u' },
-      issuedCredential: 'cred-2',
-      send: () => {},
-      onFrame: () => {},
-      close: () => {}
-    } as never)
-    // A re-establishment rate is the signal that renewals or pod churn exceed expectations,
-    // which pooling it with the first bind would hide.
-    expect(churn.channels).toEqual(['bound', 'dropped', 'reestablished'])
+    // Loss is terminal and ends the launch, so a socket that arrives after it belongs to nothing:
+    // its session is gone and the next turn claims a new generation. Counting it as a
+    // re-establishment would report a recovery that did not happen.
+    driver.onChannelBound(rebind())
+    expect(churn.channels).toEqual(['bound', 'dropped'])
   })
 })
 

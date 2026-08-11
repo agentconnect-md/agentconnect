@@ -257,4 +257,29 @@ describe('k8s runtime plane assembly', () => {
     await launching
     expect(await until(() => plane.gitRunnerFor('agent-a') !== undefined)).toBe(true)
   })
+
+  it('deletes the claim when an agent is removed, and stops waiting on the channel it just dropped', async () => {
+    const api = fakeApi()
+    const deleted: string[] = []
+    api.api.deleteClaim = async (name: string) => void deleted.push(name)
+    const plane = await planeUnderTest(api)
+
+    const port = plane.listener.listeningPort()!
+    const launching = plane.driver.launch({
+      command: 'x',
+      args: [],
+      env: { AC_AGENT_ID: 'agent-a' },
+      cwd: '/agent'
+    } as never)
+    shimAgainst(port)
+    await launching
+
+    await plane.discardAgent('agent-a')
+    // The claim is the whole teardown: the Sandbox and its workspace volume go with it.
+    expect(deleted).toEqual(['agent-agent-a'])
+    // And the launch is forgotten, so nothing is left waiting on a channel for an agent that no
+    // longer exists — a loss report for one would name work nobody is expecting.
+    expect(plane.driver.currentLaunch('agent-a')).toBeUndefined()
+    expect(plane.launchedAgents()).toEqual([])
+  })
 })

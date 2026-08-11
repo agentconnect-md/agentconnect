@@ -241,6 +241,42 @@ export class K8sDriver implements SpawnDriver {
   }
 
   /**
+   * Suspend the Sandbox of an agent that has gone quiet: the pod goes, the object and the
+   * workspace volume stay, and the next message resumes onto the same checkout.
+   *
+   * Declines rather than waits when work still holds the sandbox — the caller is a periodic
+   * sweep, so the next pass finds it quiet, whereas waiting here would hold a suspend decision
+   * open across a turn that has already made it stale.
+   *
+   * The launch is forgotten on success, deliberately: the pod it names is being deleted, and the
+   * replacement must be bound at a new generation. Leaving it to the channel-loss path instead
+   * would make correctness depend on a timer whose whole job is unplanned loss.
+   */
+  async suspendIfIdle(agentId: string): Promise<'suspended' | 'busy' | 'absent'> {
+    const launch = this.launches.get(agentId)
+    if (!launch) return 'absent'
+    // Checked and held with no await in between, so a launch cannot slip past the check and lose
+    // its pod to the write below.
+    if ((this.busy.get(launch.sandboxName) ?? 0) > 0) return 'busy'
+    this.retain(launch.sandboxName)
+    try {
+      await this.queueMode(launch.sandboxName, 'Suspended')
+      if (this.launches.get(agentId) === launch) {
+        this.sessions.delete(agentId)
+        this.forgetLaunch(agentId)
+      }
+      return 'suspended'
+    } finally {
+      this.release(launch.sandboxName)
+    }
+  }
+
+  /** Agents this daemon currently holds a Sandbox for — the candidates an idle sweep considers. */
+  launchedAgents(): string[] {
+    return [...this.launches.keys()]
+  }
+
+  /**
    * Move a Sandbox to a mode, re-reading and re-deciding when the guarded write is rejected.
    *
    * The rejection deliberately does not claim what the intervening state was, so the only
@@ -478,6 +514,9 @@ export class K8sDriver implements SpawnDriver {
     this.launches.delete(agentId)
     if (launch) this.forgetSandbox(launch.sandboxName)
     this.workspaceRoots.delete(agentId)
+    // The session outlives the claim otherwise, and `runsInSandbox` would keep answering true for
+    // an agent whose pod is being deleted — sending the workspace seam into a sandbox that is gone.
+    this.sessions.delete(agentId)
     await this.deps.api.deleteClaim(this.claimName(agentId))
   }
 
@@ -707,7 +746,17 @@ export class K8sDriver implements SpawnDriver {
   /** Report that an agent's channel is gone, so its runtime learns rather than hanging. */
   onChannelLost(agentId: string, reason: string): void {
     this.metrics.channel('dropped')
-    this.sessions.get(agentId)?.lose(reason)
+    const session = this.sessions.get(agentId)
+    session?.lose(reason)
+    // A lost session is TERMINAL, so it must not survive to meet the replacement pod: `attach()`
+    // is a no-op once closed, and `bindChannel` re-attaches whenever the generations match — which
+    // they would, because a cached launch keeps its own. The resumed sandbox would then bind a
+    // channel whose session can never serve a request. Dropping both here is what makes the next
+    // turn re-claim at a FRESH generation, which is the fence the replacement pod is bound against.
+    if (session && this.sessions.get(agentId) === session) {
+      this.sessions.delete(agentId)
+      this.forgetLaunch(agentId)
+    }
   }
 }
 
