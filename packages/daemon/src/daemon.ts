@@ -76,7 +76,9 @@ import type {
   StartOrchestrationResult,
   OrchestrationOwnerReq,
   SetSessionTitleReq,
-  SubmitGithubReviewReq
+  SubmitGithubReviewReq,
+  ReplyGithubReviewThreadsReq,
+  ReplyGithubReviewThreadsResult
 } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import {
@@ -1077,7 +1079,7 @@ interface CallMeta {
   parentPrivate?: boolean
 }
 
-type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown'
+type TurnInterruptReason = 'pause' | 'loop protection' | 'stop' | 'cancel' | 'shutdown' | 'superseded'
 
 /** One durable loop-guard scope shared by every agent on one physical bot.
  *  DMs are keyed at channel level because malformed platform wrappers may lose
@@ -1125,9 +1127,24 @@ interface GithubReplyTarget {
   reviewThreadRootCommentId?: string
 }
 
-/** Durable, daemon-private identity for one accepted hook delivery. Unlike the
- * model-visible NormalizedMessage, this contains only relay-verified metadata
- * and the exact CP-compiled dispatch fence. */
+interface GithubReviewBatchItem {
+  deliveryKey: string
+  firedAt: string
+  text: string
+  reply: GithubReplyTarget & { reviewThreadRootCommentId: string }
+  publishState?: 'not_started' | 'in_flight' | 'settled'
+  publishedComment?: GithubPublishedComment
+}
+
+interface GithubReviewBatch {
+  reviewId: string
+  openedAt: number
+  updatedAt: number
+  sealed?: boolean
+  items: GithubReviewBatchItem[]
+}
+
+/** Durable daemon-private hook identity; coalesced prompt excerpts stay local and HookReport omits them. */
 interface HookDispatchContext {
   hookId: string
   agentId: string
@@ -1137,6 +1154,7 @@ interface HookDispatchContext {
   snapshot?: HookConfigSnapshot
   github?: GithubHookMetadata
   githubReply?: GithubReplyTarget
+  githubReviewBatch?: GithubReviewBatch
   turnStartedAt?: string
   reviewAttemptId?: string
   reviewRequestedEvent?: GithubReviewEvent
@@ -1161,6 +1179,99 @@ const GITHUB_DELETED_HOOK_EVENTS = new Set([
 
 function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
   return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
+}
+
+interface GithubHookCoordinates {
+  agentId: string
+  platform: string
+  channel: string
+  integrationId?: string
+}
+
+type GithubCoordinatedHook = Pick<HookDispatchContext, 'hookId' | 'agentId' | 'event' | 'github'>
+
+function githubHookCoordinates(
+  agentId: string,
+  msg: Pick<NormalizedMessage, 'platform' | 'channel'>,
+  integrationId?: string
+): GithubHookCoordinates {
+  return {
+    agentId,
+    platform: msg.platform,
+    channel: msg.channel,
+    ...(integrationId !== undefined ? { integrationId } : {})
+  }
+}
+
+function githubPullRequestLane(
+  hook: GithubCoordinatedHook | undefined,
+  coords: GithubHookCoordinates
+): string | undefined {
+  const github = hook?.github
+  if (hook?.agentId !== coords.agentId || github?.subjectKind !== 'pull_request' || github.pullNumber === undefined)
+    return undefined
+  return JSON.stringify([
+    hook.hookId,
+    hook.agentId,
+    github.repoId,
+    github.pullNumber,
+    coords.platform,
+    coords.channel,
+    coords.integrationId ?? null
+  ])
+}
+
+function githubPullRevisionStream(
+  hook: GithubCoordinatedHook | undefined,
+  coords: GithubHookCoordinates
+): string | undefined {
+  const lane = githubPullRequestLane(hook, coords)
+  if (!lane || hook?.event !== 'pull_request:synchronize' || !hook.github?.headSha) return undefined
+  return JSON.stringify(['revision', lane])
+}
+
+function githubReviewBatchStream(
+  hook: GithubCoordinatedHook | undefined,
+  coords: GithubHookCoordinates
+): string | undefined {
+  const github = hook?.github
+  const lane = githubPullRequestLane(hook, coords)
+  if (
+    !github ||
+    !lane ||
+    hook?.event !== 'pull_request_review_comment:created' ||
+    github.pullRequestReviewId === undefined ||
+    github.reviewCommentId === undefined ||
+    github.reviewThreadRootCommentId === undefined ||
+    github.reviewCommentId !== github.reviewThreadRootCommentId
+  ) {
+    return undefined
+  }
+  return JSON.stringify(['review', lane, github.pullRequestReviewId])
+}
+
+function renderGithubReviewBatchPrompt(batch: GithubReviewBatch): string {
+  const items = [...batch.items].sort(
+    (a, b) => a.firedAt.localeCompare(b.firedAt) || a.deliveryKey.localeCompare(b.deliveryKey)
+  )
+  return [
+    `GitHub submitted-review inline comment batch (review ${batch.reviewId})`,
+    `Authorized thread roots: ${items.map((item) => item.reply.reviewThreadRootCommentId).join(', ')}`,
+    '',
+    ...items.flatMap((item, index) => [
+      `===== REVIEW THREAD ${index + 1} · ROOT ${item.reply.reviewThreadRootCommentId} =====`,
+      item.text,
+      `===== END REVIEW THREAD ${index + 1} =====`,
+      ''
+    ]),
+    'Inspect shared PR context once, then call `replyGithubReviewThreads` exactly once with one complete answer for every authorized root above. Do not omit, combine, or add roots. The tool owns all public replies; keep the final answer transcript-only.'
+  ].join('\n')
+}
+
+function compareGithubPullRevisionRecency(a: HookDispatchContext, b: HookDispatchContext): number {
+  if (a.firedAt !== b.firedAt) return a.firedAt < b.firedAt ? -1 : 1
+  if (a.deliveryKey === b.deliveryKey) return 0
+  return a.deliveryKey < b.deliveryKey ? -1 : 1
 }
 
 /** Relay-authored lifecycle events that remove the isolated checkout without
@@ -1247,6 +1358,16 @@ interface ActiveGithubTurnMeta {
   sessionId: string
   reviewState: 'idle' | 'submitting' | 'done'
 }
+
+interface ActiveGithubReplyBatchMeta {
+  entry: QueueEntry
+  sessionId: string
+  called: boolean
+}
+
+const GITHUB_REVIEW_BATCH_QUIET_MS = 5_000
+const GITHUB_REVIEW_BATCH_MAX_WAIT_MS = 30_000
+const GITHUB_REVIEW_BATCH_MAX_COMMENTS = 25
 
 /** Review-comment follow-ups already belong to one existing inline thread.
  * They may receive exactly one daemon-owned inline reply, but must never gain
@@ -1354,10 +1475,23 @@ interface QueueEntry {
    *  pause/loop state, this survives a quick pause→unpause or trip→!resume race while
    *  a cold sessions.handle() call is still initializing. */
   cancelledReason?: TurnInterruptReason
+  /** Cross-session GitHub coordination must settle before this durable entry can start. */
+  coordinationWait?: Promise<void>
   posterPublishState?: 'not_started' | 'in_flight' | 'settled'
   /** The live inbox row was redacted into a durable terminal HookReport
    * receipt; removeInbox must retain it for restart-safe redelivery dedup. */
   hookTerminalReceipt?: boolean
+}
+
+interface GithubQueueCandidate {
+  key: string
+  entry: QueueEntry
+  state: 'active' | 'queued' | 'incoming'
+}
+
+interface GithubRevisionAdmissionPlan {
+  winner: GithubQueueCandidate
+  superseded: GithubQueueCandidate[]
 }
 
 /** The narrow persistence ownership needed to terminalize a hook delivery.
@@ -2103,9 +2237,9 @@ export class Daemon {
   // Daemon-side cache of the bot-agnostic collaboration snapshot (agent-collaboration
   // §2.3/§6.2) — the terminal-verify source for forwarded REMOTE agent callers.
   private readonly cpCollab = new CpCollabRoutes()
-  /** One active PR hook turn per logical session key. Long-lived ACP sessions
-   * may span deliveries, so authorization must never live in SessionContext. */
+  /** Active GitHub effect authority is turn-local and keyed by logical session. */
   private readonly activeGithubTurnMeta = new Map<string, ActiveGithubTurnMeta>()
+  private readonly activeGithubReplyBatchMeta = new Map<string, ActiveGithubReplyBatchMeta>()
   private readonly githubReviewClient = new GithubReviewClient()
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
@@ -2133,6 +2267,8 @@ export class Daemon {
   private safetyDrainingAgents = new Set<string>()
   private safetyDrainWaits = new Map<string, Set<Promise<void>>>()
   private safetyDrainRuns = new Map<string, symbol>()
+  private safetyDrainAdmissionKeys = new Map<string, Set<string>>()
+  private safetyDrainGithubLanes = new Map<string, Set<string>>()
   // Cold-move staging is distinct from an ordinary agent/stop gate: staged
   // agents are excluded from the effective roster, so restoring an old archive
   // during bootstrap cannot reopen stale platform credentials before activate
@@ -3160,6 +3296,7 @@ export class Daemon {
       getOrchestration: (req) => Promise.resolve(this.getOrchestrationForOwner(req)),
       cancelOrchestration: (req) => Promise.resolve(this.cancelOrchestrationForOwner(req)),
       submitGithubReview: (req) => this.submitGithubReview(req),
+      replyGithubReviewThreads: (req) => this.replyGithubReviewThreads(req),
       memory: this.memory,
       // Every session may READ shared agent memory; only a non-isolated session
       // may WRITE it, so a private DM/A2A turn can use existing memory but cannot
@@ -9924,7 +10061,23 @@ export class Daemon {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'paused' }
     }
-    if (!maintenance && this.safetyDrainingAgents.has(msg.agentId)) {
+    const normalized = buildHookMessage(msg, 'safety-drain-probe')
+    const normalizedKey = sessionKey(
+      normalized.platform,
+      normalized.channel,
+      normalized.thread ?? normalized.msgId,
+      msg.agentId,
+      normalized.transportScope
+    )
+    const githubLane = githubPullRequestLane(
+      msg,
+      githubHookCoordinates(msg.agentId, normalized, msg.target?.integrationId)
+    )
+    if (
+      !maintenance &&
+      this.safetyDrainingAgents.has(msg.agentId) &&
+      !this.safetyDrainAllows(msg.agentId, normalizedKey, githubLane)
+    ) {
       this.log.info(`hook: agent "${msg.agentId}" is stopping an interrupted turn — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
     }
@@ -10018,14 +10171,43 @@ export class Daemon {
         ? { hookId: msg.hookId, repo: c.repo, number: c.number }
         : undefined)
     if (githubReply) hookContext.githubReply = githubReply
+    const githubLane = githubPullRequestLane(
+      hookContext,
+      githubHookCoordinates(msg.agentId, nmsg, msg.target?.integrationId)
+    )
     const anchored = await this.anchorTrigger(
       msg.agentId,
       nmsg,
       msg.target,
       hookAnchorText(msg),
-      `hook "${msg.hookId}"`
+      `hook "${msg.hookId}"`,
+      githubLane
     )
     if (!anchored) return { accepted: false, reason: 'dropped' }
+    const batchReply =
+      githubReviewBatchStream(hookContext, githubHookCoordinates(msg.agentId, anchored, msg.target?.integrationId)) &&
+      githubReply &&
+      'reviewThreadRootCommentId' in githubReply &&
+      githubReply.reviewThreadRootCommentId
+        ? githubReply
+        : undefined
+    if (batchReply) {
+      const now = this.clock.now()
+      hookContext.githubReviewBatch = {
+        reviewId: hookContext.github!.pullRequestReviewId!,
+        openedAt: now,
+        updatedAt: now,
+        items: [
+          {
+            deliveryKey: hookContext.deliveryKey,
+            firedAt: hookContext.firedAt,
+            text: anchored.text,
+            reply: { ...batchReply, reviewThreadRootCommentId: batchReply.reviewThreadRootCommentId },
+            publishState: 'not_started'
+          }
+        ]
+      }
+    }
     let admission: { accepted: boolean; reason?: string; duplicate?: boolean } | undefined
     const turn = this.dispatch(
       msg.agentId,
@@ -10522,6 +10704,58 @@ export class Daemon {
       this.log.warn(`github review: immediate result report failed (${formatErr(err)})`)
     }
     return effect
+  }
+
+  private async replyGithubReviewThreads(req: ReplyGithubReviewThreadsReq): Promise<ReplyGithubReviewThreadsResult> {
+    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
+    const active = this.activeGithubReplyBatchMeta.get(key)
+    const batch = active?.entry.hookContext?.githubReviewBatch
+    if (!active || !batch?.sealed || batch.items.length < 2 || active.entry.agentId !== req.agentId) {
+      throw new Error('batched GitHub replies are only available during the active submitted-review comment turn')
+    }
+    if (active.called) throw new Error('this GitHub review-comment batch already used its reply tool')
+    const expected = new Set(batch.items.map((item) => item.reply.reviewThreadRootCommentId))
+    const supplied = new Map<string, string>()
+    for (const reply of req.replies) {
+      if (supplied.has(reply.threadRootCommentId)) {
+        throw new Error(`duplicate GitHub review thread root ${reply.threadRootCommentId}`)
+      }
+      supplied.set(reply.threadRootCommentId, reply.body)
+    }
+    if (supplied.size !== expected.size || [...supplied].some(([root]) => !expected.has(root))) {
+      throw new Error(`reply exactly once to every authorized GitHub review thread: ${[...expected].join(', ')}`)
+    }
+    active.called = true
+    const results: ReplyGithubReviewThreadsResult['replies'] = []
+    for (const item of batch.items) {
+      const root = item.reply.reviewThreadRootCommentId
+      if (item.publishState === 'in_flight') {
+        results.push({ threadRootCommentId: root, state: 'ambiguous' })
+        continue
+      }
+      if (item.publishState === 'settled') {
+        results.push({
+          threadRootCommentId: root,
+          state: 'settled',
+          ...(item.publishedComment ? { commentId: item.publishedComment.commentId } : {})
+        })
+        continue
+      }
+      item.publishState = 'in_flight'
+      this.persistHookState(active.entry, undefined, true)
+      const published = await this.makeGithubReply(req.agentId, item.reply, active.sessionId).poster.publish(
+        supplied.get(root)!
+      )
+      if (published) item.publishedComment = published
+      item.publishState = 'settled'
+      this.persistHookState(active.entry, undefined, true)
+      results.push({
+        threadRootCommentId: root,
+        state: published ? 'published' : 'settled',
+        ...(published ? { commentId: published.commentId } : {})
+      })
+    }
+    return { replies: results }
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
@@ -11035,6 +11269,217 @@ export class Daemon {
       this.log.info(`turn context: coalesced ${count} queued activation(s) into ${key}`)
     }
     return count
+  }
+
+  private githubQueueCandidates(): GithubQueueCandidate[] {
+    const candidates: GithubQueueCandidate[] = []
+    for (const [key, entry] of this.activeGateEntries) candidates.push({ key, entry, state: 'active' })
+    for (const [key, queue] of this.serialQueue) {
+      for (const entry of queue) candidates.push({ key, entry, state: 'queued' })
+    }
+    return candidates
+  }
+
+  /** Pick the newest relay-fired revision across every session key in one trusted GitHub lane. */
+  private githubRevisionAdmissionPlan(key: string, incoming: QueueEntry): GithubRevisionAdmissionPlan | undefined {
+    const stream = githubPullRevisionStream(
+      incoming.hookContext,
+      githubHookCoordinates(incoming.agentId, incoming.msg, incoming.integrationId)
+    )
+    if (!stream) return undefined
+    const revisions = [
+      ...this.githubQueueCandidates().filter(
+        (candidate) =>
+          !candidate.entry.cancelledReason &&
+          githubPullRevisionStream(
+            candidate.entry.hookContext,
+            githubHookCoordinates(candidate.entry.agentId, candidate.entry.msg, candidate.entry.integrationId)
+          ) === stream
+      ),
+      { key, entry: incoming, state: 'incoming' as const }
+    ]
+    const winner = revisions.reduce((latest, candidate) =>
+      compareGithubPullRevisionRecency(candidate.entry.hookContext!, latest.entry.hookContext!) > 0 ? candidate : latest
+    )
+    return {
+      winner,
+      superseded: revisions.filter((candidate) => candidate !== winner)
+    }
+  }
+
+  private removeQueuedGithubRevisions(candidates: readonly GithubQueueCandidate[]): void {
+    const removals = new Map<string, Set<QueueEntry>>()
+    for (const candidate of candidates) {
+      if (candidate.state !== 'queued') continue
+      const entries = removals.get(candidate.key) ?? new Set<QueueEntry>()
+      entries.add(candidate.entry)
+      removals.set(candidate.key, entries)
+    }
+    for (const [key, entries] of removals) {
+      const next = (this.serialQueue.get(key) ?? []).filter((entry) => !entries.has(entry))
+      if (next.length > 0) this.serialQueue.set(key, next)
+      else this.serialQueue.delete(key)
+    }
+  }
+
+  private settleSupersededGithubRevisions(entries: readonly QueueEntry[], successor: QueueEntry): void {
+    if (entries.length === 0) return
+    for (const entry of entries) {
+      this.terminateQueuedSink(entry)
+      if (entry.hookContext) this.emitHookCompletion(entry.hookContext, 'failed', { reason: 'superseded' }, entry)
+      this.removeInbox(entry)
+      entry.resolve(null)
+      this.emitEvaluation({
+        type: 'turn.cancelled',
+        agentId: entry.agentId,
+        turnId: this.evaluationTurnIdFor(entry.agentId, entry.msg),
+        platform: entry.msg.platform,
+        channel: entry.msg.channel,
+        data: { reason: 'superseded_by_newer_revision' }
+      })
+    }
+    defaultTurnOutputMetrics.queueCoalesced(successor.msg.platform, entries.length)
+    this.log.info(`github review: superseded ${entries.length} queued or incoming revision(s)`)
+  }
+
+  private extendGithubCoordinationWait(entry: QueueEntry, waits: readonly Promise<void>[]): void {
+    const pending = [...(entry.coordinationWait ? [entry.coordinationWait] : []), ...waits]
+    if (pending.length > 0) entry.coordinationWait = Promise.all(pending).then(() => undefined)
+  }
+
+  private applyGithubRevisionAdmissionPlan(plan: GithubRevisionAdmissionPlan, incoming: QueueEntry): boolean {
+    const activeLosers = plan.superseded.filter((candidate) => candidate.state === 'active')
+    const terminalLosers = plan.superseded.filter((candidate) => candidate.state !== 'active')
+    this.removeQueuedGithubRevisions(terminalLosers)
+    this.settleSupersededGithubRevisions(
+      terminalLosers.map((candidate) => candidate.entry),
+      plan.winner.entry
+    )
+    const waits: Promise<void>[] = []
+    const winnerLane = githubPullRequestLane(
+      plan.winner.entry.hookContext,
+      githubHookCoordinates(plan.winner.entry.agentId, plan.winner.entry.msg, plan.winner.entry.integrationId)
+    )
+    for (const candidate of activeLosers) {
+      if (candidate.entry.coordinationWait) waits.push(candidate.entry.coordinationWait)
+      const activeDone = this.activeDispatchDoneByKey.get(candidate.key)
+      if (activeDone) waits.push(activeDone)
+      if (candidate.entry.cancelledReason) continue
+      this.interruptTurn(candidate.entry.agentId, candidate.key, 'superseded', undefined, {
+        preserveQueued: true,
+        allowSameKeyAdmissions: true,
+        ...(winnerLane ? { allowGithubLane: winnerLane } : {})
+      })
+    }
+    if (this.safetyDrainingAgents.has(plan.winner.entry.agentId)) {
+      waits.push(this.waitForSafetyDrain(plan.winner.entry.agentId))
+    }
+    if (plan.winner.state !== 'active') this.extendGithubCoordinationWait(plan.winner.entry, waits)
+    return plan.winner.entry === incoming
+  }
+
+  private githubReviewBatchLeader(incoming: QueueEntry): QueueEntry | undefined {
+    const batchStream = githubReviewBatchStream(
+      incoming.hookContext,
+      githubHookCoordinates(incoming.agentId, incoming.msg, incoming.integrationId)
+    )
+    if (!batchStream) return undefined
+    return this.githubQueueCandidates()
+      .map((candidate) => candidate.entry)
+      .filter((candidate) => {
+        const batch = candidate.hookContext?.githubReviewBatch
+        return (
+          !candidate.cancelledReason &&
+          githubReviewBatchStream(
+            candidate.hookContext,
+            githubHookCoordinates(candidate.agentId, candidate.msg, candidate.integrationId)
+          ) === batchStream &&
+          batch !== undefined &&
+          !batch.sealed &&
+          batch.items.length < GITHUB_REVIEW_BATCH_MAX_COMMENTS
+        )
+      })
+      .sort((a, b) => compareGithubPullRevisionRecency(a.hookContext!, b.hookContext!))[0]
+  }
+
+  private coalesceGithubReviewBatch(leader: QueueEntry, follower: QueueEntry): boolean {
+    const leaderHook = leader.hookContext
+    const followerHook = follower.hookContext
+    const leaderBatch = leaderHook?.githubReviewBatch
+    const followerItem = followerHook?.githubReviewBatch?.items[0]
+    if (!leaderHook || !followerHook || !leaderBatch || !followerItem || !leader.inboxId || !follower.inboxId) {
+      return false
+    }
+    if (
+      leaderBatch.sealed ||
+      leaderBatch.items.length >= GITHUB_REVIEW_BATCH_MAX_COMMENTS ||
+      leaderBatch.items.some(
+        (item) => item.reply.reviewThreadRootCommentId === followerItem.reply.reviewThreadRootCommentId
+      )
+    ) {
+      return false
+    }
+    const nextHook: HookDispatchContext = {
+      ...leaderHook,
+      githubReviewBatch: {
+        ...leaderBatch,
+        updatedAt: this.clock.now(),
+        items: [...leaderBatch.items, followerItem]
+      }
+    }
+    const report = this.buildHookReport(followerHook, 'success', { reason: 'coalesced_review_batch' })
+    try {
+      const committed = this.store.coalesceHookInbox({
+        leaderId: leader.inboxId,
+        leaderMsg: JSON.stringify(leader.msg),
+        leaderHookContext: JSON.stringify(nextHook),
+        followerId: follower.inboxId,
+        followerTerminalReport: JSON.stringify(report),
+        completedAt: this.clock.now()
+      })
+      if (!committed) return false
+    } catch (err) {
+      this.log.warn(`github review batch: durable coalesce failed (${formatErr(err)})`)
+      return false
+    }
+    leader.hookContext = nextHook
+    follower.hookTerminalReceipt = true
+    this.liveInboxIds.delete(follower.inboxId)
+    this.sendHookReport(report, follower.inboxId)
+    defaultTurnOutputMetrics.queueCoalesced(follower.msg.platform, 1)
+    this.log.info(
+      `github review batch: coalesced thread ${followerItem.reply.reviewThreadRootCommentId} into review ${leaderBatch.reviewId}`
+    )
+    return true
+  }
+
+  private async settleGithubReviewBatch(entry: QueueEntry): Promise<void> {
+    while (true) {
+      const batch = entry.hookContext?.githubReviewBatch
+      if (!batch) return
+      if (batch.sealed) {
+        if (batch.items.length > 1) entry.githubReply = undefined
+        return
+      }
+      if (entry.cancelledReason) return
+      const deadline = Math.min(
+        batch.updatedAt + GITHUB_REVIEW_BATCH_QUIET_MS,
+        batch.openedAt + GITHUB_REVIEW_BATCH_MAX_WAIT_MS
+      )
+      const delay = deadline - this.clock.now()
+      if (delay > 0) {
+        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, delay))
+        continue
+      }
+      const sealed: GithubReviewBatch = { ...batch, sealed: true }
+      entry.hookContext = { ...entry.hookContext!, githubReviewBatch: sealed }
+      if (sealed.items.length > 1) {
+        entry.msg = { ...entry.msg, text: renderGithubReviewBatchPrompt(sealed) }
+        entry.githubReply = undefined
+      }
+      this.persistHookPayload(entry, true)
+      return
+    }
   }
 
   /** Move only the accepted generation through the existing renderer. This call and
@@ -11858,16 +12303,32 @@ export class Daemon {
     }
   }
 
-  private emitHookCompletion(
+  private persistHookPayload(entry: QueueEntry, required = false): void {
+    if (!entry.inboxId || !entry.hookContext) {
+      if (required) throw new Error('hook payload has no durable inbox row')
+      return
+    }
+    try {
+      const updated = this.store.updateInboxHookPayload(
+        entry.inboxId,
+        JSON.stringify(entry.msg),
+        JSON.stringify(entry.hookContext)
+      )
+      if (!updated) throw new Error('durable inbox row is missing')
+    } catch (err) {
+      if (required) throw err
+      this.log.warn(`durable inbox: hook payload update failed for ${entry.inboxId}: ${(err as Error).message}`)
+    }
+  }
+
+  private buildHookReport(
     hook: HookDispatchContext,
     status: 'success' | 'failed',
-    extra: { sessionId?: string; reason?: string } = {},
-    owner?: HookCompletionOwner
-  ): void {
-    if (owner?.hookTerminalReceipt) return
+    extra: { sessionId?: string; reason?: string } = {}
+  ): HookReport {
     const start = Date.parse(hook.turnStartedAt ?? hook.firedAt)
     const review = githubReviewResultForCompletion(hook)
-    const report: HookReport = {
+    return {
       hookId: hook.hookId,
       agentId: hook.agentId,
       deliveryKey: hook.deliveryKey,
@@ -11880,6 +12341,16 @@ export class Daemon {
       ...(review ? { reviewAttemptId: review.attemptId, reviewResult: review.result } : {}),
       ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {})
     }
+  }
+
+  private emitHookCompletion(
+    hook: HookDispatchContext,
+    status: 'success' | 'failed',
+    extra: { sessionId?: string; reason?: string } = {},
+    owner?: HookCompletionOwner
+  ): void {
+    if (owner?.hookTerminalReceipt) return
+    const report = this.buildHookReport(hook, status, extra)
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
       try {
@@ -12174,6 +12645,9 @@ export class Daemon {
       this.recordObservedInbound(msg, agentId)
     }
     return new Promise<string | null>((resolve, reject) => {
+      const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
+      const githubLane = githubPullRequestLane(hookContext, githubHookCoordinates(agentId, msg, integrationId))
+      const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
       let admissionSettled = false
       const settleAdmission = (result: { accepted: boolean; reason?: string; duplicate?: boolean }): void => {
         if (admissionSettled) return
@@ -12231,7 +12705,7 @@ export class Daemon {
       // selected old dispatches fully unwind. Live platform arrivals are intentionally
       // dropped; a DURABLE startup replay cannot be lost/dormant, so retry that same row
       // after the transient drain closes (its inbox id has not been adopted yet).
-      if (this.safetyDrainingAgents.has(agentId)) {
+      if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, githubLane)) {
         if (opts?.fromInboxReplay) {
           void this.waitForSafetyDrain(agentId)
             .then(() => {
@@ -12266,7 +12740,6 @@ export class Daemon {
         }
         return
       }
-      const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
       const loopScope = loopGuardScope(msg)
       // A latched circuit is checked at the common dispatch seam, so startup replay,
       // cron/hook turns, webchat, and agent→agent calls cannot bypass it. Purging here
@@ -12316,15 +12789,25 @@ export class Daemon {
         ...(opts?.isQueueCmd ? { isQueueCmd: true } : {}),
         ...(githubReply ? { githubReply } : {}),
         ...(posterPublishState ? { posterPublishState } : {}),
+        ...(this.safetyDrainingAgents.has(agentId) && !safetyDrainByKey
+          ? { coordinationWait: this.waitForSafetyDrain(agentId) }
+          : {}),
         resolve,
         reject
       }
+      const batchLeader = this.githubReviewBatchLeader(entry)
+      const revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
       // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
       if (this.inflight.has(key)) {
         const q = this.serialQueue.get(key) ?? []
+        const supersededQueued =
+          revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
+            .length ?? 0
+        const queueIncoming = revisionPlan === undefined || revisionPlan.winner.entry === entry
+        const projectedDepth = batchLeader ? q.length : q.length - supersededQueued + (queueIncoming ? 1 : 0)
         // §4.4 backpressure: per-session queue-depth cap → queue_full fast-fail. The
         // rejected entry settles its OWN promise; nothing is admitted or persisted.
-        if (q.length >= MAX_QUEUED_PER_SESSION) {
+        if (projectedDepth > MAX_QUEUED_PER_SESSION) {
           this.log.warn(`dispatch: queue full for session ${key} (${q.length}) — rejecting (queue_full)`)
           settleAdmission({ accepted: false, reason: 'queue_full' })
           reject(new QueueFullError(key))
@@ -12361,10 +12844,23 @@ export class Daemon {
           resolve(null)
           return
         }
-        q.push(entry)
-        this.serialQueue.set(key, q)
         settleAdmission({ accepted: true })
-        this.log.debug(`dispatch: queued behind in-flight turn for session ${key} (depth ${q.length})`)
+        if (batchLeader && this.coalesceGithubReviewBatch(batchLeader, entry)) {
+          entry.resolve(null)
+          return
+        }
+        if (revisionPlan) {
+          if (!this.applyGithubRevisionAdmissionPlan(revisionPlan, entry)) return
+          const next = this.serialQueue.get(key) ?? []
+          next.push(entry)
+          this.serialQueue.set(key, next)
+        } else {
+          q.push(entry)
+          this.serialQueue.set(key, q)
+        }
+        this.log.debug(
+          `dispatch: queued behind in-flight turn for session ${key} (depth ${this.serialQueue.get(key)?.length ?? 0})`
+        )
         return
       }
       // Claim ownership of the key in the SAME tick as the check, before any await.
@@ -12392,8 +12888,13 @@ export class Daemon {
         resolve(null)
         return
       }
-      this.inflight.add(key)
       settleAdmission({ accepted: true })
+      if (batchLeader && this.coalesceGithubReviewBatch(batchLeader, entry)) {
+        entry.resolve(null)
+        return
+      }
+      if (revisionPlan && !this.applyGithubRevisionAdmissionPlan(revisionPlan, entry)) return
+      this.inflight.add(key)
       void this.runLoop(key, entry)
     })
   }
@@ -12420,10 +12921,39 @@ export class Daemon {
     }
   }
 
+  private safetyDrainAllows(agentId: string, key: string, githubLane?: string): boolean {
+    return (
+      this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true ||
+      (githubLane !== undefined && this.safetyDrainGithubLanes.get(agentId)?.has(githubLane) === true)
+    )
+  }
+
+  private intersectSafetyDrainAdmissions(
+    map: Map<string, Set<string>>,
+    agentId: string,
+    incoming: Iterable<string> | undefined
+  ): void {
+    const allowed = new Set(incoming ?? [])
+    const current = map.get(agentId)
+    if (!current) {
+      map.set(agentId, allowed)
+      return
+    }
+    for (const value of current) {
+      if (!allowed.has(value)) current.delete(value)
+    }
+  }
+
   /** Gate new work until the selected active dispatches have fully unwound. Waits are
    *  additive: overlapping interrupts on different keys of one agent join the same drain
    *  instead of letting the first completion reopen admission too early. */
-  private beginSafetyDrain(agentId: string, reason: TurnInterruptReason, keys?: Iterable<string>): void {
+  private beginSafetyDrain(
+    agentId: string,
+    reason: TurnInterruptReason,
+    keys?: Iterable<string>,
+    admissionKeys?: Iterable<string>,
+    admissionGithubLanes?: Iterable<string>
+  ): void {
     const selected =
       keys === undefined
         ? [...(this.activeDispatchesByAgent.get(agentId) ?? [])]
@@ -12431,6 +12961,8 @@ export class Daemon {
             .map((key) => this.activeDispatchDoneByKey.get(key))
             .filter((done): done is Promise<void> => done !== undefined)
     if (selected.length === 0) return
+    this.intersectSafetyDrainAdmissions(this.safetyDrainAdmissionKeys, agentId, admissionKeys)
+    this.intersectSafetyDrainAdmissions(this.safetyDrainGithubLanes, agentId, admissionGithubLanes)
     const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
     for (const done of selected) waits.add(done)
     this.safetyDrainWaits.set(agentId, waits)
@@ -12454,6 +12986,8 @@ export class Daemon {
         this.safetyDrainWaits.delete(agentId)
         this.safetyDrainRuns.delete(agentId)
         this.safetyDrainingAgents.delete(agentId)
+        this.safetyDrainAdmissionKeys.delete(agentId)
+        this.safetyDrainGithubLanes.delete(agentId)
         this.log.info(`${reason}: interrupted turns fully stopped for agent "${agentId}"`)
       }
     })()
@@ -12633,9 +13167,14 @@ export class Daemon {
           return
         }
         try {
+          if (entry.coordinationWait) {
+            await entry.coordinationWait
+            entry.coordinationWait = undefined
+          }
           const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
           let sessionId: string | null
           try {
+            await this.settleGithubReviewBatch(entry)
             sessionId = await this.dispatchOne(entry, key)
           } finally {
             releaseDispatch()
@@ -13186,6 +13725,10 @@ export class Daemon {
       return undefined
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
+    const githubReplyBatch = hookContext?.githubReviewBatch
+    const activeGithubReplyBatch =
+      githubReplyBatch?.sealed && githubReplyBatch.items.length > 1 ? { entry, sessionId, called: false } : undefined
+    if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     let finalPhase: EventSession['phase'] = 'end'
     let turnModel: string | undefined
     let propagatingTurnError = false
@@ -13856,6 +14399,9 @@ export class Daemon {
       // the map is keyed by sessionKey and the gate guarantees one active turn per key.
       if (callMeta) this.activeTurnCallMeta.delete(key)
       if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
+      if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
+        this.activeGithubReplyBatchMeta.delete(key)
+      }
       // Anything other than no attempt or a correlated definite no-effect
       // result is fail-closed: GitHub may already own the public response.
       const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
@@ -13935,7 +14481,23 @@ export class Daemon {
     // Turn finished cleanly. Draining the next queued message for this sessionKey is
     // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
     // above rethrows and runLoop applies fail-stop (§6.9 #378).
-    if (hookContext) this.emitHookCompletion(hookContext, 'success', { sessionId }, entry)
+    if (hookContext) {
+      const batch = hookContext.githubReviewBatch
+      const batchFailure =
+        batch && batch.items.length > 1
+          ? batch.items.some((item) => item.publishState === 'in_flight')
+            ? 'review_batch_publish_ambiguous'
+            : batch.items.some((item) => item.publishState !== 'settled')
+              ? 'review_batch_replies_missing'
+              : undefined
+          : undefined
+      this.emitHookCompletion(
+        hookContext,
+        batchFailure ? 'failed' : 'success',
+        { sessionId, ...(batchFailure ? { reason: batchFailure } : {}) },
+        entry
+      )
+    }
     return sessionId
   }
 
@@ -13953,25 +14515,39 @@ export class Daemon {
     key: string,
     reason: TurnInterruptReason,
     acpSessionId?: string,
-    opts: { dropQueued?: boolean } = {}
+    opts: {
+      dropQueued?: boolean
+      preserveQueued?: boolean
+      allowSameKeyAdmissions?: boolean
+      allowGithubLane?: string
+    } = {}
   ): void {
     // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
     // dispatch is gone so a quick retry cannot be killed by the old turn's backstop.
-    this.beginSafetyDrain(agentId, reason, [key])
+    this.beginSafetyDrain(
+      agentId,
+      reason,
+      [key],
+      opts.allowSameKeyAdmissions ? [key] : undefined,
+      opts.allowGithubLane ? [opts.allowGithubLane] : undefined
+    )
     // Latch the current head even during the cold pre-Pending window. A quick reset
     // must not let pre-interrupt work resume once sessions.handle() returns.
     const activeEntry = this.activeGateEntries.get(key)
     if (activeEntry) {
       activeEntry.cancelledReason ??= reason
-      // An explicit interrupt makes the head terminal. Delete its durable row now,
-      // not only after ACP unwinds, so an immediate daemon stop cannot replay it.
-      this.removeInbox(activeEntry)
+      // Terminalize before cancellation unwinds so a crash cannot replay the head; superseded hooks retain the reason.
+      if (reason === 'superseded' && activeEntry.hookContext) {
+        this.emitHookCompletion(activeEntry.hookContext, 'failed', { reason }, activeEntry)
+      } else {
+        this.removeInbox(activeEntry)
+      }
     }
     // Drop everything buffered behind this turn first (one unified queue) and settle each
     // waiter's own promise, so `!cancel`/`!stop` doesn't leave queued dispatch() promises
     // hanging and the drained queue can't later chain onto the cancelled turn.
     const queued = this.serialQueue.get(key)
-    if (queued && queued.length > 0) {
+    if (!opts.preserveQueued && queued && queued.length > 0) {
       this.serialQueue.delete(key)
       for (const e of queued) {
         this.terminateQueuedSink(e, opts.dropQueued ? undefined : reason)
@@ -19254,8 +19830,10 @@ export class Daemon {
     msg: NormalizedMessage,
     target: { channel?: string; integrationId?: string } | undefined,
     anchorText: string,
-    label: string
+    label: string,
+    safetyGithubLane?: string
   ): Promise<NormalizedMessage | null> {
+    const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
     // and start no turn.
@@ -19263,7 +19841,7 @@ export class Daemon {
       this.draining ||
       this.drainingAgents.has(agentId) ||
       this.paused(agentId) ||
-      this.safetyDrainingAgents.has(agentId)
+      (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyGithubLane))
     ) {
       this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
       return null

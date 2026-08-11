@@ -113,6 +113,51 @@ describe('LocalStore inbox', () => {
     s.close()
   })
 
+  it('atomically persists a coalesced hook leader and terminalizes its follower', () => {
+    const s = store()
+    const key = sessionKey('hook', 'acme/repo', '42', 'bot-a')
+    expect(s.appendInbox({ ...row('leader', key, '100'), hookContext: '{"batch":["first"]}' })).toBe(true)
+    expect(s.appendInbox({ ...row('follower', key, '200'), hookContext: '{"batch":["second"]}' })).toBe(true)
+
+    expect(
+      s.coalesceHookInbox({
+        leaderId: 'leader',
+        leaderMsg: '{"text":"first and second"}',
+        leaderHookContext: '{"batch":["first","second"]}',
+        followerId: 'follower',
+        followerTerminalReport: '{"status":"success","reason":"coalesced_review_batch"}',
+        completedAt: 123
+      })
+    ).toBe(true)
+    const rows = s.listInboxBySessionKeyFifo()
+    expect(rows.find((entry) => entry.id === 'leader')).toMatchObject({
+      msg: '{"text":"first and second"}',
+      hookContext: '{"batch":["first","second"]}',
+      completedAt: null
+    })
+    expect(rows.find((entry) => entry.id === 'follower')).toMatchObject({
+      msg: '{}',
+      hookContext: null,
+      terminalReport: '{"status":"success","reason":"coalesced_review_batch"}',
+      completedAt: 123
+    })
+
+    expect(
+      s.coalesceHookInbox({
+        leaderId: 'leader',
+        leaderMsg: '{"text":"must roll back"}',
+        leaderHookContext: '{"batch":["wrong"]}',
+        followerId: 'missing',
+        followerTerminalReport: '{}',
+        completedAt: 999
+      })
+    ).toBe(false)
+    expect(s.listInboxBySessionKeyFifo().find((entry) => entry.id === 'leader')?.msg).toBe(
+      '{"text":"first and second"}'
+    )
+    s.close()
+  })
+
   it('capacity-prunes only CP-acknowledged receipts, never pending reports', () => {
     const s = store()
     const k = sessionKey('hook', 'hook-1', 'delivery', 'bot-a')

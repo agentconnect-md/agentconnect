@@ -3071,6 +3071,66 @@ export class LocalStore {
     return result.changes === 1
   }
 
+  /** Persist a hook prompt rewrite and its matching trusted context together. */
+  updateInboxHookPayload(id: string, msg: string, hookContext: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE inbox
+         SET msg = @msg, hookContext = @hookContext
+         WHERE id = @id AND hookContext IS NOT NULL AND completedAt IS NULL`
+      )
+      .run({ id, msg, hookContext })
+    return result.changes === 1
+  }
+
+  /** Atomically fold one live hook delivery into another and retain the follower as a terminal receipt. */
+  coalesceHookInbox(input: {
+    leaderId: string
+    leaderMsg: string
+    leaderHookContext: string
+    followerId: string
+    followerTerminalReport: string
+    completedAt: number
+  }): boolean {
+    if (input.leaderId === input.followerId) return false
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const leader = this.db
+        .prepare(
+          `UPDATE inbox
+           SET msg = @leaderMsg, hookContext = @leaderHookContext
+           WHERE id = @leaderId AND hookContext IS NOT NULL AND completedAt IS NULL`
+        )
+        .run({
+          leaderId: input.leaderId,
+          leaderMsg: input.leaderMsg,
+          leaderHookContext: input.leaderHookContext
+        })
+      const follower = this.db
+        .prepare(
+          `UPDATE inbox
+           SET msg = '{}', integrationId = NULL, callMeta = NULL, hookContext = NULL,
+               posterPublishState = 'settled', terminalReport = @followerTerminalReport,
+               completedAt = @completedAt, isQueueCmd = NULL
+           WHERE id = @followerId AND hookContext IS NOT NULL AND completedAt IS NULL`
+        )
+        .run({
+          followerId: input.followerId,
+          followerTerminalReport: input.followerTerminalReport,
+          completedAt: input.completedAt
+        })
+      if (leader.changes !== 1 || follower.changes !== 1) {
+        this.db.exec('ROLLBACK')
+        return false
+      }
+      this.db.exec('COMMIT')
+      return true
+    } catch (err) {
+      this.db.exec('ROLLBACK')
+      throw err
+    }
+  }
+
   /** Atomically turn a live hook inbox row into a redacted terminal receipt.
    * The stable id remains present to absorb relay redelivery after restart;
    * startup re-emits only the metadata report, never the model prompt. The CAS

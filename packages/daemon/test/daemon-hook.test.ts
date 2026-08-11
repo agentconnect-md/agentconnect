@@ -29,6 +29,7 @@ import { GithubReplyCollector } from '../src/github/poster.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { sessionWorktreePath } from '../src/workspace/workspace-manager.js'
+import { FakeClock } from '@agentconnect.md/connection'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -398,6 +399,157 @@ describe('Daemon rd/msg hook fires', () => {
     })
     await daemon.stop()
   }, 15_000)
+
+  it.each([
+    { mode: 'headless', target: undefined },
+    {
+      mode: 'targeted',
+      target: { platform: 'slack' as const, channel: 'C-alerts', integrationId: 'int-a' }
+    }
+  ])(
+    'batches one submitted review into one turn and replies independently to every root thread ($mode)',
+    async ({ target }) => {
+      const clock = new FakeClock(Date.parse('2026-08-12T00:00:00.000Z'))
+      let onUpdate!: (sid: string, update: unknown) => void
+      let sessionNumber = 0
+      const prompts: string[] = []
+      const published: Array<{ root?: string; body: string }> = []
+      const host = {
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => `acp-review-batch-${++sessionNumber}`),
+        modelOptions: vi.fn(() => null),
+        hasSession: vi.fn(() => true),
+        prompt: vi.fn(async (sid: string, blocks: unknown) => {
+          prompts.push(JSON.stringify(blocks))
+          if (prompts.length === 1) {
+            await (daemon as any).replyGithubReviewThreads({
+              agentId: AGENT_ID,
+              platform: target?.platform ?? 'hook',
+              channel: target?.channel ?? 'acme/infra',
+              thread: target ? 'anchor-1' : '42',
+              ...(target ? {} : { transportScope: 'github:123' }),
+              replies: [
+                { threadRootCommentId: '101', body: 'Answer for the first thread.' },
+                { threadRootCommentId: '102', body: 'Answer for the second thread.' }
+              ]
+            })
+            onUpdate(sid, {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Batch replies posted.' }
+            })
+          } else {
+            onUpdate(sid, {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: 'follow-up-final',
+              _meta: { codex: { phase: 'final_answer' } },
+              content: { type: 'text', text: 'Follow-up answer.' }
+            })
+          }
+          return { stopReason: 'end_turn' }
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      const daemon = new Daemon({
+        root: scaffold(),
+        clock,
+        hostFactory: (_agent, cb) => {
+          onUpdate = cb
+          return host as never
+        }
+      })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      let anchorNumber = 0
+      if (target) {
+        ;(daemon as any).connByIntegration.set(target.integrationId, {
+          postMessage: vi.fn(async () => `anchor-${++anchorNumber}`),
+          postContext: vi.fn(async () => {}),
+          setStatus: vi.fn(async () => {})
+        })
+      }
+      ;(daemon as any).makeGithubReply = vi.fn((_agentId: string, ref: { reviewThreadRootCommentId?: string }) => ({
+        collector: new GithubReplyCollector(),
+        poster: {
+          publish: vi.fn(async (body: string) => {
+            published.push({ root: ref.reviewThreadRootCommentId, body })
+            return { kind: 'review_comment' as const, commentId: String(9000 + published.length) }
+          })
+        }
+      }))
+
+      const reviewComment = (deliveryKey: string, commentId: string, rootId: string, body: string): RdMsgHook =>
+        fire({
+          sessionKey: 'acme/infra#42',
+          ...(target ? { target } : {}),
+          msgId: `${HOOK_ID}:${deliveryKey}`,
+          deliveryKey,
+          firedAt: `2026-08-12T00:00:0${deliveryKey === 'root-1' ? '0' : deliveryKey === 'root-2' ? '1' : '2'}.000Z`,
+          event: 'pull_request_review_comment:created',
+          github: {
+            repoId: '123',
+            repoFullName: 'acme/infra',
+            sourceInstallationId: '456',
+            subjectKind: 'pull_request',
+            pullNumber: 42,
+            pullRequestReviewId: '900',
+            reviewCommentId: commentId,
+            reviewThreadRootCommentId: rootId
+          },
+          context: {
+            source: 'github',
+            event: 'pull_request_review_comment',
+            action: 'created',
+            repo: 'acme/infra',
+            number: 42,
+            senderLogin: 'reviewer',
+            bodyExcerpt: body,
+            truncated: false
+          }
+        })
+
+      await expect(
+        (daemon as any).handleRelayMsg(reviewComment('root-1', '101', '101', 'First finding.'), () => {})
+      ).resolves.toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect((daemon as any).activeGateEntries.size).toBe(1), WAIT)
+      await expect(
+        (daemon as any).handleRelayMsg(reviewComment('root-2', '102', '102', 'Second finding.'), () => {})
+      ).resolves.toMatchObject({ accepted: true })
+      expect(host.prompt).not.toHaveBeenCalled()
+
+      clock.advance(5_000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+      await vi.waitFor(() => expect(published).toHaveLength(2), WAIT)
+      expect(prompts[0]).toContain('Authorized thread roots: 101, 102')
+      expect(prompts[0]).toContain('First finding.')
+      expect(prompts[0]).toContain('Second finding.')
+      expect(published).toEqual([
+        { root: '101', body: 'Answer for the first thread.' },
+        { root: '102', body: 'Answer for the second thread.' }
+      ])
+      await vi.waitFor(
+        () =>
+          expect(cp.hookReports).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ deliveryKey: 'root-2', reason: 'coalesced_review_batch' }),
+              expect.objectContaining({ deliveryKey: 'root-1', status: 'success' })
+            ])
+          ),
+        WAIT
+      )
+
+      await expect(
+        (daemon as any).handleRelayMsg(reviewComment('reply-1', '103', '101', 'One later thread reply.'), () => {})
+      ).resolves.toMatchObject({ accepted: true })
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+      await vi.waitFor(() => expect(published).toHaveLength(3), WAIT)
+      expect(prompts[1]).not.toContain('Authorized thread roots')
+      expect(published[2]).toEqual({ root: '101', body: 'Follow-up answer.' })
+      await daemon.stop()
+    },
+    15_000
+  )
 
   it('grants formal-review authority only when an issue_comment explicitly requests review', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: streamingHost().factory })
@@ -1650,6 +1802,270 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('keeps only the newest relay-fired PR revision without reordering explicit GitHub turns', async () => {
+    let onUpdate!: (sid: string, update: unknown) => void
+    const releases: Array<(error?: Error) => void> = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-pr-review'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string) => {
+        await new Promise<void>((resolve, reject) => releases.push((error) => (error ? reject(error) : resolve())))
+        onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => releases.shift()?.(new Error('cancelled by shutdown'))),
+      stop: vi.fn(async () => {})
+    }
+    const root = scaffold()
+    const daemon = new Daemon({
+      root,
+      hostFactory: (_agent, cb) => {
+        onUpdate = cb
+        return host as never
+      }
+    })
+    await daemon.start()
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 0
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+
+    const revision = (deliveryKey: string, head: string, firedAt: string): RdMsgHook =>
+      fire({
+        sessionKey: 'acme/infra#42',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        firedAt,
+        event: 'pull_request:synchronize',
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 42,
+          headSha: head.repeat(40),
+          baseSha: '0'.repeat(40),
+          reportSha: head.repeat(40)
+        },
+        context: {
+          source: 'github',
+          event: 'pull_request',
+          action: 'synchronize',
+          repo: 'acme/infra',
+          number: 42,
+          title: 'Keep revision reviews current',
+          senderLogin: 'alice',
+          truncated: false
+        }
+      })
+    const comment = fire({
+      sessionKey: 'acme/infra#42',
+      msgId: `${HOOK_ID}:comment`,
+      deliveryKey: 'comment',
+      event: 'issue_comment:created',
+      github: {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request',
+        pullNumber: 42,
+        headSha: 'b'.repeat(40),
+        baseSha: '0'.repeat(40),
+        reportSha: 'b'.repeat(40)
+      },
+      context: {
+        source: 'github',
+        event: 'issue_comment',
+        action: 'created',
+        repo: 'acme/infra',
+        number: 42,
+        senderLogin: 'maintainer',
+        bodyExcerpt: '@agent please focus on cancellation',
+        truncated: false
+      }
+    })
+
+    await expect(
+      (daemon as any).handleRelayMsg(revision('active', 'a', '2026-08-12T00:00:00.000Z'), () => {})
+    ).resolves.toMatchObject({
+      accepted: true
+    })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    await expect(
+      (daemon as any).handleRelayMsg(revision('old', 'b', '2026-08-12T00:00:01.000Z'), () => {})
+    ).resolves.toMatchObject({
+      accepted: true
+    })
+    await expect((daemon as any).handleRelayMsg(comment, () => {})).resolves.toMatchObject({ accepted: true })
+    await expect(
+      (daemon as any).handleRelayMsg(revision('newest', 'c', '2026-08-12T00:00:03.000Z'), () => {})
+    ).resolves.toMatchObject({
+      accepted: true
+    })
+    await expect(
+      (daemon as any).handleRelayMsg(revision('delayed-older', 'b', '2026-08-12T00:00:02.000Z'), () => {})
+    ).resolves.toMatchObject({
+      accepted: true
+    })
+
+    const queued = [...(daemon as any).serialQueue.values()].flat() as Array<{
+      hookContext?: { deliveryKey: string }
+    }>
+    expect(queued.map((entry) => entry.hookContext?.deliveryKey)).toEqual(['comment', 'newest'])
+    await vi.waitFor(
+      () =>
+        expect(cp.hookReports.filter((report) => ['old', 'delayed-older'].includes(report.deliveryKey))).toEqual([
+          expect.objectContaining({ deliveryKey: 'old', status: 'failed', reason: 'superseded' }),
+          expect.objectContaining({ deliveryKey: 'delayed-older', status: 'failed', reason: 'superseded' })
+        ]),
+      WAIT
+    )
+    expect(cp.hookReports).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ deliveryKey: 'active', status: 'failed', reason: 'superseded' })
+      ])
+    )
+    expect(host.cancel).toHaveBeenCalled()
+
+    await daemon.stop()
+
+    const restartedHost = streamingHost()
+    const restarted = new Daemon({ root, hostFactory: restartedHost.factory })
+    const restartedCp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = restartedCp
+    ;(restarted as any).makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+    await restarted.start()
+
+    await vi.waitFor(
+      () =>
+        expect(
+          restartedCp.hookReports.filter((report) => !['old', 'delayed-older'].includes(report.deliveryKey))
+        ).toHaveLength(2),
+      WAIT
+    )
+    expect(
+      restartedCp.hookReports
+        .filter((report) => !['old', 'delayed-older'].includes(report.deliveryKey))
+        .map((report) => report.deliveryKey)
+    ).toEqual(['comment', 'newest'])
+    expect(restartedHost.host.prompt).toHaveBeenCalledTimes(2)
+    await restarted.stop()
+  }, 15_000)
+
+  it('keeps targeted PR revision reviews latest-wins across distinct anchor session keys', async () => {
+    let onUpdate!: (sid: string, update: unknown) => void
+    let sessionNumber = 0
+    let activePrompts = 0
+    let maxActivePrompts = 0
+    const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>()
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => `acp-targeted-review-${++sessionNumber}`),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string) => {
+        activePrompts += 1
+        maxActivePrompts = Math.max(maxActivePrompts, activePrompts)
+        try {
+          await new Promise<void>((resolve, reject) => pending.set(sid, { resolve, reject }))
+          onUpdate(sid, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
+          return { stopReason: 'end_turn' }
+        } finally {
+          activePrompts -= 1
+        }
+      }),
+      cancel: vi.fn(async (sid: string) => pending.get(sid)?.reject(new Error('superseded'))),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: (_agent, cb) => {
+        onUpdate = cb
+        return host as never
+      }
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    let anchorNumber = 0
+    ;(daemon as any).connByIntegration.set('int-a', {
+      postMessage: vi.fn(async () => `anchor-${++anchorNumber}`),
+      postContext: vi.fn(async () => {}),
+      setStatus: vi.fn(async () => {})
+    })
+    ;(daemon as any).makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => {}) },
+      collector: new GithubReplyCollector()
+    }))
+    const target = { platform: 'slack' as const, channel: 'C-alerts', integrationId: 'int-a' }
+    const revision = (deliveryKey: string, head: string, firedAt: string): RdMsgHook =>
+      fire({
+        sessionKey: 'acme/infra#42',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        firedAt,
+        target,
+        event: 'pull_request:synchronize',
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 42,
+          headSha: head.repeat(40),
+          baseSha: '0'.repeat(40),
+          reportSha: head.repeat(40)
+        },
+        context: {
+          source: 'github',
+          event: 'pull_request',
+          action: 'synchronize',
+          repo: 'acme/infra',
+          number: 42,
+          title: 'Keep targeted revisions current',
+          senderLogin: 'alice',
+          truncated: false
+        }
+      })
+
+    await expect(
+      (daemon as any).handleRelayMsg(revision('active-target', 'a', '2026-08-12T00:00:00.000Z'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    await expect(
+      (daemon as any).handleRelayMsg(revision('newest-target', 'c', '2026-08-12T00:00:02.000Z'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+    await expect(
+      (daemon as any).handleRelayMsg(revision('delayed-target', 'b', '2026-08-12T00:00:01.000Z'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    expect(host.cancel).toHaveBeenCalledWith('acp-targeted-review-1')
+    expect(maxActivePrompts).toBe(1)
+    pending.get('acp-targeted-review-2')?.resolve()
+    await vi.waitFor(
+      () =>
+        expect(cp.hookReports).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ deliveryKey: 'active-target', status: 'failed', reason: 'superseded' }),
+            expect.objectContaining({ deliveryKey: 'delayed-target', status: 'failed', reason: 'superseded' }),
+            expect.objectContaining({ deliveryKey: 'newest-target', status: 'success' })
+          ])
+        ),
+      WAIT
+    )
+    expect(host.prompt).toHaveBeenCalledTimes(2)
+    await daemon.stop()
+  }, 15_000)
+
   it.each([
     {
       lifecycle: 'pause',
@@ -2207,12 +2623,30 @@ describe('buildHookMessage', () => {
           }
         )
       )
-      expect(inlineReply).toContain(
-        'posts that final back to the existing review thread on acme/infra#42 automatically'
-      )
-      expect(inlineReply).toContain('daemon-owned inline reply')
+      expect(inlineReply).toContain('daemon posts it back to the existing review thread automatically')
+      expect(inlineReply).toContain('exclusively owns every inline reply')
       expect(inlineReply).not.toContain('submitGithubReview')
       expect(inlineReply).not.toContain('ordinary GitHub comment')
+      const batchableInline = buildHookText(
+        ghFire(
+          { event: 'pull_request_review_comment', action: 'created' },
+          {
+            event: 'pull_request_review_comment:created',
+            github: {
+              repoId: '123',
+              repoFullName: 'acme/infra',
+              sourceInstallationId: '456',
+              subjectKind: 'pull_request',
+              pullNumber: 42,
+              pullRequestReviewId: '900',
+              reviewCommentId: '3565656411',
+              reviewThreadRootCommentId: '3565656411'
+            }
+          }
+        )
+      )
+      expect(batchableInline).toContain('replyGithubReviewThreads')
+      expect(batchableInline).toContain('root comments from the same submitted review')
       // During a rolling relay upgrade the event family is still known, but
       // an old relay cannot provide the trusted thread root. Promise only the
       // ordinary fallback and keep formal-review guidance disabled.

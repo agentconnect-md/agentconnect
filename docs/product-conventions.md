@@ -770,6 +770,23 @@ then updated through queued, in-progress, and terminal states; the previous run 
 historical. A request that supersedes an incomplete generation keeps that active Check
 instead of leaving it permanently unfinished.
 
+Automatic PR revision reviews are latest-wins while active or queued. When a newer
+`pull_request:synchronize` delivery for the same Agent, integration, repository, and pull
+request is durably admitted, the daemon cancels the older active review, suppresses all of
+its remaining output, and removes intermediate queued heads. Relay ingest time determines
+recency even if asynchronous authorization reorders delivery; the delivery key breaks
+same-timestamp ties deterministically. Explicit comments, review requests, and Check reruns
+remain ordered work and are never discarded by revision supersession.
+The trusted pull-request lane spans per-delivery anchor session keys but remains isolated by
+the configured output platform, channel, and integration.
+
+GitHub emits every root inline comment in one submitted PR review as a separate webhook.
+The daemon groups those roots by the trusted review id during a bounded quiet window, runs
+one model turn over the shared review context, and requires one independently authored reply
+for every trusted thread root. A later reply inside any one thread remains a separate turn.
+The open batch can span per-delivery anchor session keys; it, its individual publish fences,
+and revision ordering survive daemon restarts.
+
 ## GitHub maintainer trigger authorization
 
 GitHub Issue and pull-request integrations treat current repository permission—not the

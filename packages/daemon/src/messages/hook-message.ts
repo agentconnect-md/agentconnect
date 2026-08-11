@@ -214,9 +214,14 @@ function githubReplyHint(
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
   const reviewGeneration = githubOpensReviewGeneration(event, github, reviewPolicy)
   if (inlineTarget) {
+    const batchedReview = github?.pullRequestReviewId !== undefined
     return [
       '',
-      `Return one self-contained final answer for the triggering inline review conversation. The daemon posts that final back to the existing review thread on ${where} automatically and exclusively owns the inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned inline reply.${githubWorkspaceCheckHint(github, false)}`
+      `Answer the triggering inline review conversation on ${where}. ${
+        batchedReview
+          ? 'The daemon may group root comments from the same submitted review into one prompt. For a single comment, return one self-contained final answer; when the prompt lists multiple review threads, use the structured `replyGithubReviewThreads` tool exactly once with one answer per listed root and keep the final reply transcript-only.'
+          : 'Return one self-contained final answer; the daemon posts it back to the existing review thread automatically.'
+      } The daemon exclusively owns every inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files).${githubWorkspaceCheckHint(github, false)}`
     ].join('\n')
   }
   if (c.event === 'pull_request_review_comment') {

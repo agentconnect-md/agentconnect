@@ -405,7 +405,7 @@ describe('toolsForIntegrations', () => {
   })
 
   it('formal review descriptor has no model-selectable GitHub target', () => {
-    const tool = GITHUB_REVIEW_TOOLS[0]!
+    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'submitGithubReview')!
     expect(tool.name).toBe('submitGithubReview')
     const properties = (tool.inputSchema.properties ?? {}) as Record<string, unknown>
     expect(Object.keys(properties)).toEqual(['event', 'verdict', 'body', 'comments'])
@@ -414,5 +414,15 @@ describe('toolsForIntegrations', () => {
     expect(properties).not.toHaveProperty('commitId')
     expect(properties.body).toMatchObject({ minLength: 1 })
     expect(tool.description).toContain('only a definite not_submitted result preserves')
+  })
+
+  it('batched review replies select only trusted thread roots exposed by the prompt', () => {
+    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'replyGithubReviewThreads')!
+    const properties = (tool.inputSchema.properties ?? {}) as Record<string, any>
+    expect(Object.keys(properties)).toEqual(['replies'])
+    expect(properties.replies).toMatchObject({ minItems: 1, maxItems: 25 })
+    expect(properties.replies.items.properties).toHaveProperty('threadRootCommentId')
+    expect(properties.replies.items.properties).not.toHaveProperty('repo')
+    expect(properties.replies.items.properties).not.toHaveProperty('number')
   })
 })
