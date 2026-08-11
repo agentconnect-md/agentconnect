@@ -35,7 +35,7 @@ variable "MEM0_BACKEND_VERSION" {
 }
 
 group "default" {
-  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "runtime-sandbox"]
+  targets = ["control-plane", "relay", "web", "mem0", "mem0-backend", "daemon", "runtime-sandbox"]
 }
 
 target "_release" {
@@ -67,6 +67,15 @@ target "runtime-sandbox" {
   tags = concat(
     ["${REGISTRY}/${OWNER}/runtime-sandbox:${VERSION}"],
     LATEST ? ["${REGISTRY}/${OWNER}/runtime-sandbox:latest"] : []
+  )
+}
+
+target "daemon" {
+  inherits = ["_release"]
+  target   = "daemon"
+  tags = concat(
+    ["${REGISTRY}/${OWNER}/daemon:${VERSION}"],
+    LATEST ? ["${REGISTRY}/${OWNER}/daemon:latest"] : []
   )
 }
 
