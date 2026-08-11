@@ -91,12 +91,11 @@ describe('buildStatus', () => {
 })
 
 describe('observeWorkloads', () => {
-  async function observe(deployment: unknown) {
+  async function observe(deployment: unknown, extra: (path: string) => object | undefined = () => undefined) {
     const { config: cluster } = await fakeApiServer(({ url }) => {
       const path = url.pathname
       if (path.endsWith('/deployments/ac-daemon')) return { json: deployment as object }
-      if (path.endsWith('/pods')) return { json: { items: [] } }
-      return { json: { items: [] } }
+      return { json: extra(path) ?? { items: [] } }
     })
     const http = new K8sHttp(cluster)
     const ctx = {
@@ -140,6 +139,44 @@ describe('observeWorkloads', () => {
     })
     expect(obs.daemon?.ready).toBe(true)
     expect(obs.progressing).toBe(false)
+  })
+
+  it('summarizes warm pools from readyReplicas and counts bound claims per pool', async () => {
+    const obs = await observe({ spec: { replicas: 1 } }, (path) => {
+      if (path.endsWith('/sandboxwarmpools'))
+        return {
+          items: [
+            { metadata: { name: 'ac-runtime-small' }, status: { replicas: 3, readyReplicas: 2 } },
+            // A pool the vendor has not populated yet: status carries the selector only.
+            { metadata: { name: 'ac-runtime-large' }, status: { selector: 'warm-pool-sandbox=abc' } }
+          ]
+        }
+      if (path.endsWith('/sandboxclaims'))
+        return {
+          items: [
+            { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: { sandbox: { name: 'sb-1' } } },
+            { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: { sandbox: { name: 'sb-2' } } },
+            // Not bound yet — it holds no Sandbox, so it is not claimed capacity.
+            { spec: { warmPoolRef: { name: 'ac-runtime-small' } }, status: {} },
+            { spec: { warmPoolRef: { name: 'ac-runtime-large' } }, status: { sandbox: { name: 'sb-3' } } }
+          ]
+        }
+      return undefined
+    })
+    expect(obs.pools).toEqual([
+      { name: 'ac-runtime-small', warmAvailable: 2, claimed: 2 },
+      { name: 'ac-runtime-large', warmAvailable: 0, claimed: 1 }
+    ])
+  })
+
+  it('does not list claims when the namespace has no warm pools', async () => {
+    const seen: string[] = []
+    const obs = await observe({ spec: { replicas: 1 } }, (path) => {
+      seen.push(path)
+      return undefined
+    })
+    expect(obs.pools).toEqual([])
+    expect(seen.some((path) => path.endsWith('/sandboxclaims'))).toBe(false)
   })
 })
 
