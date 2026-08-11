@@ -127,6 +127,21 @@ function canonical(path: string): string {
   }
 }
 
+/**
+ * Refuse an absolute path that escapes the workspace root, for a path that does not exist yet.
+ *
+ * Lexical rather than `realpath`, because a clone target is precisely a path that is not there:
+ * containment is decided on the normalized form, and the ROOT is canonicalized so a symlinked mount
+ * still compares correctly.
+ */
+function assertInsideRoot(root: string, requested: string): void {
+  const base = canonical(root)
+  const target = normalize(resolve(requested))
+  if (target !== base && !target.startsWith(base + sep)) {
+    throw new ExecRefusedError(`path escapes the workspace root: ${requested}`)
+  }
+}
+
 /** Refuse a cwd that escapes the workspace root, whatever the daemon asked for. */
 function resolveCwd(root: string, requested: string | undefined): string {
   const base = canonical(root)
@@ -214,6 +229,15 @@ async function runGit(payload: unknown, deps: ExecHandlerDeps, abort?: AbortSign
     }
   }
   const cwd = resolveCwd(deps.workspaceRoot, parsed.cwd)
+  // A clone WRITES to a path in argv, which the cwd fence above never looks at. The daemon sends a
+  // relative target for exactly that reason, so an absolute one is either a mistake or an attempt to
+  // write outside the workspace — and this side is the one holding the filesystem.
+  if (subcommand === 'clone') {
+    for (const argument of rest) {
+      if (argument.startsWith('-') || !isAbsolute(argument)) continue
+      assertInsideRoot(deps.workspaceRoot, argument)
+    }
+  }
   // The caller's deadline governs, bounded by this side's ceiling: a compromised daemon must not
   // be able to pin a child here indefinitely, and a child outliving the request that asked for
   // it keeps holding index.lock after the caller has given up.

@@ -38,8 +38,10 @@ import {
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
+import { SANDBOX_CHECKOUT_DIR } from '../shim/sandbox-paths.js'
 
 const skillsLog = makeLogger('info')
+const workspaceLog = makeLogger('info')
 
 /**
  * Post-clone skills step (docs/designs/shared-skills.md §6). Installs the agent's
@@ -167,6 +169,30 @@ function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunne
     resolveWorkspaceGitRunner?.(agentId, cwd, abort) ??
     new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
   )
+}
+
+/**
+ * Empties a directory in the filesystem that agent's work happens in; undefined ⇒ this daemon's.
+ *
+ * Registered like the git runner above, and for the same reason: the one destructive path a cluster
+ * workspace needs (a partial clone) cannot be an `rmSync`, because the directory is on a volume this
+ * process cannot see.
+ */
+export type WorkspacePathClearer = (agentId: string, root: string) => Promise<string | undefined>
+
+let clearWorkspacePathInSandbox: WorkspacePathClearer | undefined
+
+export function setWorkspacePathClearer(clearer: WorkspacePathClearer | undefined): void {
+  clearWorkspacePathInSandbox = clearer
+}
+
+/** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
+ *  reach, so there is nothing to empty — the local path never calls this. */
+async function clearSandboxPath(agentId: string, root: string): Promise<void> {
+  const error = await clearWorkspacePathInSandbox?.(agentId, root).catch((err: unknown) => (err as Error).message)
+  if (error) {
+    workspaceLog.warn(`workspace: could not empty ${root} for agent "${agentId}" after a failed clone (${error})`)
+  }
 }
 
 /** The same resolution for git run OUTSIDE this module — the console's workspace git seam. Exported
@@ -689,16 +715,124 @@ export function clusterWorkspaceCwd(
   runtimeRoot: string | undefined,
   request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
 ): string {
-  if (agent.workspace.mode !== 'from-scratch') {
-    // Refused loudly rather than half-working: the clone/pull/audit flow still mixes daemon
-    // and pod coordinates for git-repo workspaces, and a clear error beats a mystery one
-    // from git inside the sandbox.
-    throw new Error(`git-repo workspaces are not supported with --k8s yet (agent "${agent.id}")`)
-  }
   if (request?.isolation === 'session') {
+    // Still refused loudly: a logical-session worktree needs a daemon-owned parent beside the
+    // checkout, `worktree add` in the sandbox, and a retention GC that reads the pod's tree — a
+    // separate migration, and a clear error beats a mystery one from git inside the sandbox.
     throw new Error(`session-isolated workspaces are not supported with --k8s yet (agent "${agent.id}")`)
   }
-  return runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+  const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+  if (agent.workspace.mode === 'from-scratch') return root
+  // A git-repo workspace checks out one level down, away from the runtime's HOME. The configured
+  // working subdirectory is applied LEXICALLY here: validating it means resolving symlinks and
+  // stat-ing, which only means something in the filesystem that holds it — so the shim does that
+  // when it refuses a cwd outside its own root.
+  const checkout = join(root, SANDBOX_CHECKOUT_DIR)
+  const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
+  return agentDir === undefined ? checkout : join(checkout, ...agentDir.split('/'))
+}
+
+/**
+ * Prepare a CLUSTER agent's workspace on its sandbox pod's volume.
+ *
+ * A separate function from {@link prepareWorkspace} rather than a branch inside it, because the two
+ * differ in every step that touches a filesystem: `existsSync(.git)` becomes a question asked of the
+ * POD, `mkdirSync` is the mounted volume's job, and a failed clone cannot be cleaned up with
+ * `rmSync`. Sharing the body would mean a conditional at each of those, and the local path — the one
+ * every self-hosted daemon runs — is the one that must not acquire new ways to be wrong.
+ *
+ * Skills are NOT installed here. Their acquisition, ledger and executable-content removal are all
+ * local-filesystem work, and pointing them at a pod path would write them onto this daemon's disk;
+ * that migration is its own change, so a cluster agent runs with none.
+ */
+export async function prepareClusterWorkspace(
+  agent: Agent,
+  runtimeRoot: string | undefined,
+  request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+): Promise<string> {
+  const acpCwd = clusterWorkspaceCwd(agent, runtimeRoot, request)
+  if (agent.workspace.mode === 'from-scratch') return acpCwd
+  // Validated at the execution boundary, exactly as the local path does: a hand-edited agent.json
+  // must not turn daemon-managed git into a local-path or remote-helper launcher.
+  const repository = gitRepoOf(agent)
+  const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+  const checkout = join(root, SANDBOX_CHECKOUT_DIR)
+  const githubApp = usesGithubApp(agent)
+
+  if (!(await clusterCheckoutExists(agent.id, checkout))) {
+    await cloneRepoInSandbox(agent, root, repository)
+  } else if (githubApp) {
+    // The helper line in `.git/config` outlives the launch that wrote it, and a resumed volume
+    // carries the previous generation's id. Re-pinned through the runner so it lands in the pod.
+    await writeRepoHelperConfig(runnerFor(agent.id, checkout), agent.id).catch(() => undefined)
+  }
+
+  if (agent.workspace.pullOnNewSession) {
+    if (githubApp) await preWarmGitCred(agent.id, 'pull').catch(() => undefined)
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
+    try {
+      await assertSafeWorkspaceGitConfig(runnerFor(agent.id, checkout))
+      const pullTarget = workspaceGitPullTarget(repository)
+      const git = runnerFor(agent.id, checkout, abort.signal).withEnv({
+        ...workspaceGitLocalEnv(),
+        ...pullTarget.env,
+        ...(githubApp ? gitCredentialEnv(agent.id) : {}),
+        GIT_TERMINAL_PROMPT: '0'
+      })
+      await pullWorkspaceRef(git, pullTarget.remote, agent.workspace.gitBranch)
+    } catch {
+      // offline / timed out / non-fast-forward: proceed with the checkout on the volume, which is
+      // the same degradation the local path accepts.
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  return acpCwd
+}
+
+/**
+ * Whether the pod already holds a checkout — asked of the pod, because that is where it would be.
+ *
+ * `rev-parse --git-dir` rather than a file test: it is in the shim's permitted inventory, and it
+ * answers the question that matters (a USABLE repository) instead of the one a `.git` entry answers.
+ * A half-written clone has a `.git` and fails this, which is the case that would otherwise make
+ * every later session believe the checkout exists.
+ */
+async function clusterCheckoutExists(agentId: string, checkout: string): Promise<boolean> {
+  try {
+    await runnerFor(agentId, checkout).withEnv(workspaceGitLocalEnv()).raw(['rev-parse', '--git-dir'])
+    return true
+  } catch {
+    // Missing directory, empty directory, or a partial clone — all "clone it".
+    return false
+  }
+}
+
+/**
+ * Clone into the pod, with the target RELATIVE to the fenced working directory.
+ *
+ * That is what keeps it inside the sandbox: the shim validates the `cwd` it is given and refuses one
+ * outside its workspace root, so a relative target cannot land anywhere else. An absolute target
+ * would be argv the fence never looks at.
+ */
+async function cloneRepoInSandbox(agent: Agent, root: string, repository: string): Promise<void> {
+  const githubApp = usesGithubApp(agent)
+  if (githubApp) await preWarmGitCred(agent.id, 'clone')
+  const env = githubApp
+    ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository) }
+    : { ...workspaceGitEnvBase(repository), GIT_TERMINAL_PROMPT: '0' }
+  try {
+    await runnerFor(agent.id, root)
+      .withEnv(env)
+      .clone(repository, SANDBOX_CHECKOUT_DIR, ['--branch', agent.workspace.gitBranch, '--single-branch'])
+  } catch (err) {
+    // A partial checkout would fail the probe above forever after, since git refuses to clone into
+    // a non-empty directory. Emptying it is the pod's own job — there is no rmSync to reach it.
+    await clearSandboxPath(agent.id, join(root, SANDBOX_CHECKOUT_DIR))
+    throw err
+  }
+  if (githubApp) await writeRepoHelperConfig(runnerFor(agent.id, join(root, SANDBOX_CHECKOUT_DIR)), agent.id)
 }
 
 /** Resolve the already-prepared ACP cwd without pulling, acquiring sources, or

@@ -6,6 +6,7 @@ import { clusterMetrics } from './cluster-metrics.js'
 import { ShimListener } from '../shim/listener.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { TunnelProxy } from '../shim/tunnel-proxy.js'
+import { ShimFileSink } from '../shim/channels.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import type { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
@@ -113,6 +114,10 @@ export interface K8sRuntimePlane {
    *  answers on. Callers that build paths for that work read it here rather than re-deriving it,
    *  so an environment can never describe one filesystem while the execution happens in another. */
   runsInSandbox: (agentId: string) => boolean
+  /** Empty a directory on the agent's pod volume, reporting why not rather than throwing. The one
+   *  destructive operation a cluster workspace needs — a partial clone — and it cannot be an
+   *  `rmSync`, because the directory is on a filesystem the daemon cannot see. */
+  clearPath: (agentId: string, root: string) => Promise<string | undefined>
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
@@ -266,6 +271,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return new ShimGitRunner(driver.sessionFor(agentId)!, cwd, undefined, abort)
     },
     runsInSandbox,
+    clearPath: async (agentId, root) => {
+      const session = driver.sessionFor(agentId)
+      if (!session?.isAttached()) return `agent ${agentId} has no bound sandbox channel`
+      return await new ShimFileSink(session).clear(root)
+    },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     stop: async () => {
       for (const timer of lossTimers.values()) clearTimeout(timer)

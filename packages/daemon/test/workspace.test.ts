@@ -943,9 +943,12 @@ describe('clusterWorkspaceCwd (--k8s pod coordinates)', () => {
     expect(clusterWorkspaceCwd(agent, undefined)).toBe('/agent')
   })
 
-  it('refuses a git-repo workspace loudly instead of half-working across two filesystems', () => {
+  it('checks a git-repo workspace out below the mount, never at the daemon-disk path', () => {
+    // The mount is also the runtime's HOME, so a working tree at the root would sit on top of its
+    // `.claude`/`.codex` state. What must never appear is the daemon's own workspace path.
     const agent = gitRepoAgent('/var/lib/agentconnect/agents/bot-git/workspace')
-    expect(() => clusterWorkspaceCwd(agent, '/agent')).toThrow(/git-repo workspaces are not supported with --k8s/)
+    expect(clusterWorkspaceCwd(agent, '/agent')).toBe('/agent/repo')
+    expect(clusterWorkspaceCwd(agent, '/agent')).not.toContain('/var/lib/agentconnect')
   })
 
   it('refuses session isolation, whose worktrees still assume the daemon filesystem', () => {

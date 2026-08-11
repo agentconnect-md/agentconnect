@@ -210,6 +210,7 @@ import {
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
+  prepareClusterWorkspace,
   prepareWorkspace,
   prepareSessionWorkspace,
   prepareWorkspaceForActivation,
@@ -266,7 +267,7 @@ import {
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { setWorkspaceGitRunnerResolver } from './workspace/workspace-manager.js'
+import { setWorkspaceGitRunnerResolver, setWorkspacePathClearer } from './workspace/workspace-manager.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
@@ -2671,6 +2672,9 @@ export class Daemon {
       // resolver answers undefined for any without a bound channel, so an agent this daemon has
       // not launched into a sandbox keeps its local behaviour.
       setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      // And the one destructive operation a cluster workspace needs, for the same reason: a
+      // partial clone sits on a volume no `rmSync` here can reach.
+      setWorkspacePathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
       this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
@@ -4840,7 +4844,10 @@ export class Daemon {
     // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
     if (this.k8sPlane) {
       await this.k8sPlane.ensureChannel(agent.id)
-      return clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id), request)
+      // The pod's own preparation: clone and pull happen on its volume through the runner, and none
+      // of the local work below runs — its mkdir, `existsSync(.git)` and skills installation all
+      // land on this daemon's disk, describing a filesystem the runtime never reads.
+      return await prepareClusterWorkspace(agent, this.k8sPlane.workspaceRootFor(agent.id), request)
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {
@@ -20401,6 +20408,7 @@ export class Daemon {
     // unable to send its ACP close — a sandbox process still running, and reconnecting.
     await this.k8sPlane?.stop().catch(() => undefined)
     setWorkspaceGitRunnerResolver(undefined)
+    setWorkspacePathClearer(undefined)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

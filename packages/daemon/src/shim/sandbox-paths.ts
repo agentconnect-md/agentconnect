@@ -17,6 +17,17 @@ export const SANDBOX_GIT_CREDENTIAL_HELPER = '/opt/agentconnect/bin/git-credenti
 export const SANDBOX_GIT_CONFIG_DIR = '/run/agentconnect/git'
 
 /**
+ * Where a git-repo workspace is checked out, relative to the pod's workspace mount.
+ *
+ * A subdirectory rather than the mount itself, because the mount is also the runtime's HOME: a
+ * checkout at the root would put the repository's working tree on top of `.claude`, `.codex` and
+ * `.config`, where `git status` reports them as untracked and `git clean` would delete them. A
+ * from-scratch workspace keeps using the root — it has no working tree to confuse with HOME, and
+ * moving it would strand every volume already provisioned.
+ */
+export const SANDBOX_CHECKOUT_DIR = 'repo'
+
+/**
  * The daemon-side servers the shim serves locally, and the in-pod path of each.
  *
  * A plain record here rather than beside the tunnel's schemas, because the credential helper needs
