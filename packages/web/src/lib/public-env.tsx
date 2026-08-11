@@ -95,15 +95,16 @@ async function resolve(): Promise<Record<string, string>> {
   const relayUrl = process.env.RELAY_URL ?? process.env.PUBLIC_RELAY_URL ?? process.env.NEXT_PUBLIC_RELAY_URL
   if (relayUrl) env.RELAY_URL = relayUrl
 
-  // CP_INTERNAL_URL is deployment topology and remains a bootstrap env value.
-  // The CP snapshot supplies only DB-owned auth state. Browser-facing service
-  // routes stay owned by this Web process because their public path can differ
-  // from the CP's daemon/control origin (for example apiHost /v1 rewrites to
-  // the CP's internal /api/v1 mount). Cache the first attempt, including absence
-  // or failure, so configuration never hot-reloads between requests.
+  // Cache a successful CP snapshot (including configured absence) but retry transient startup failures.
   if (process.env.CP_INTERNAL_URL) {
-    deploymentEnv ??= loadDeploymentEnv().catch(() => null)
-    const persisted = await deploymentEnv
+    deploymentEnv ??= loadDeploymentEnv()
+    const pending = deploymentEnv
+    let persisted: Record<string, string> | null = null
+    try {
+      persisted = await pending
+    } catch {
+      if (deploymentEnv === pending) deploymentEnv = undefined
+    }
     if (persisted) {
       for (const key of ['LOGTO_ENDPOINT', 'LOGTO_APP_ID', 'LOGTO_API_RESOURCE', 'SOCIAL_PROVIDERS']) {
         delete env[key]
