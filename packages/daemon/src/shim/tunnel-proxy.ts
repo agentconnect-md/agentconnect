@@ -18,6 +18,8 @@ export interface TunnelProxyDeps {
     request: (capability: ShimCapability, payload: unknown) => Promise<unknown>
     onEvent: (listener: (event: ShimEvent) => void) => void
     offEvent: (listener: (event: ShimEvent) => void) => void
+    onAttach: (listener: () => void) => void
+    offAttach: (listener: () => void) => void
     onLost: (listener: (reason: string) => void) => void
   }
   /** This daemon's own socket for a tunnel, or undefined when it serves none — an unserved
@@ -39,17 +41,46 @@ export interface TunnelProxyDeps {
  * filesystem.
  */
 export class TunnelProxy {
-  private readonly streams = new Map<string, { socket: Socket; timer: NodeJS.Timeout }>()
+  private readonly streams = new Map<string, { socket: Socket; timer: NodeJS.Timeout; inFlight: number }>()
   private readonly listening = new Set<TunnelName>()
   private readonly onEvent = (event: ShimEvent): void => this.accept(event)
+  private readonly onAttach = (): void => this.dropUnaccountedStreams()
   private stopped = false
 
   constructor(private readonly deps: TunnelProxyDeps) {
     deps.session.onEvent(this.onEvent)
+    // The pod's listener and its live client connections outlive a physical channel — the shim
+    // re-dials at half the credential TTL — but a frame that was travelling when the socket was
+    // replaced does not. See dropUnaccountedStreams.
+    deps.session.onAttach(this.onAttach)
     // A lost channel takes every stream with it: the pod that held the other end is gone, and a
     // local socket kept open would hold a daemon-side server session for a client that cannot
     // return.
     deps.session.onLost((reason) => this.stop(reason))
+  }
+
+  /**
+   * End every stream whose delivery stopped being accountable, at the moment a replacement channel
+   * binds.
+   *
+   * A renewal aborts the requests in flight on the socket it replaced, and that abort says a REPLY
+   * was lost — not whether the request itself ever landed. So the bytes of an in-flight `data`
+   * frame are in an unknown state, and neither choice is safe to make silently: re-sending can
+   * duplicate them, and these tunnels carry request/response protocols where a duplicated fragment
+   * is a corrupt request rather than a retry.
+   *
+   * Terminating instead makes the in-pod client see EOF at once. For gitcred that is git reporting
+   * an authentication failure it can be retried — the alternative, leaving the stream open on a
+   * reply that will never arrive, is git waiting out {@link STREAM_IDLE_MS}.
+   *
+   * A stream that was idle across the renewal is untouched: nothing was in doubt, and its next
+   * frame travels on the new socket.
+   */
+  private dropUnaccountedStreams(): void {
+    for (const [streamId, entry] of [...this.streams]) {
+      if (entry.inFlight === 0) continue
+      this.close(streamId, 'the sandbox channel was renewed while a frame was in flight')
+    }
   }
 
   /**
@@ -77,6 +108,7 @@ export class TunnelProxy {
     if (this.stopped) return
     this.stopped = true
     this.deps.session.offEvent(this.onEvent)
+    this.deps.session.offAttach(this.onAttach)
     for (const streamId of [...this.streams.keys()]) this.close(streamId, reason)
     this.listening.clear()
   }
@@ -141,14 +173,14 @@ export class TunnelProxy {
     }
     const timer = setTimeout(() => this.close(streamId, `idle for ${STREAM_IDLE_MS}ms`), STREAM_IDLE_MS)
     timer.unref?.()
-    this.streams.set(streamId, { socket, timer })
+    this.streams.set(streamId, { socket, timer, inFlight: 0 })
     socket.on('data', (data: Buffer) => {
       const entry = this.streams.get(streamId)
       if (!entry) return
       entry.timer.refresh()
       for (let offset = 0; offset < data.length; offset += MAX_TUNNEL_CHUNK_BYTES) {
         const slice = data.subarray(offset, offset + MAX_TUNNEL_CHUNK_BYTES)
-        void this.send({ op: 'data', streamId, chunk: slice.toString('base64') })
+        void this.deliver(streamId, { op: 'data', streamId, chunk: slice.toString('base64') })
       }
     })
     socket.on('error', (err) => this.close(streamId, err.message))
@@ -177,8 +209,32 @@ export class TunnelProxy {
     return true
   }
 
-  // Best-effort by design: every one of these is a byte or a hang-up for a connection the pod
-  // owns, and a channel that cannot carry them has already failed the stream from the pod's side.
+  /**
+   * Send a stream's bytes, and end the stream if they cannot be accounted for.
+   *
+   * The undelivered case is NOT recoverable by re-sending: a rejection can mean the frame never
+   * left, or that it landed and only its acknowledgement was lost, and re-sending the second case
+   * duplicates bytes inside a request/response protocol. So the stream ends and the in-pod client
+   * sees EOF — a failure it can report — rather than waiting on a reply that is not coming.
+   */
+  private async deliver(streamId: string, payload: unknown): Promise<void> {
+    const entry = this.streams.get(streamId)
+    if (!entry || this.stopped) return
+    entry.inFlight += 1
+    try {
+      await this.deps.session.request('tunnel', payload)
+      const current = this.streams.get(streamId)
+      if (current) current.inFlight -= 1
+    } catch (err) {
+      const message = (err as Error).message
+      this.deps.log.warn(`tunnel: agent ${this.deps.session.agentId} frame not delivered (${message})`)
+      this.close(streamId, `a frame could not be delivered to the sandbox (${message})`)
+    }
+  }
+
+  // Best-effort by design: a hang-up for a stream this side has already dropped. It cannot be
+  // retried into anything better, and a channel that will not carry it has failed the stream in
+  // the pod's own view too.
   private async send(payload: unknown): Promise<void> {
     if (this.stopped) return
     try {

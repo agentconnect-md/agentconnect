@@ -34,8 +34,10 @@ const servers: Server[] = []
 const hosts: TunnelHost[] = []
 const sockets: Socket[] = []
 const dirs: string[] = []
+const intervals: NodeJS.Timeout[] = []
 
 afterEach(async () => {
+  for (const timer of intervals.splice(0)) clearInterval(timer)
   for (const socket of sockets.splice(0)) socket.destroy()
   for (const host of hosts.splice(0)) host.close()
   for (const client of clients.splice(0)) client.stop()
@@ -95,6 +97,9 @@ interface Cluster {
   /** Where the pod serves the tunnel — the in-image path, redirected into a temp dir. */
   podSocketPath: string
   warnings: string[]
+  /** The SHIM's clock: advancing it past half the credential TTL performs a real renewal. */
+  shimClock: FakeClock
+  bindCount: () => number
 }
 
 /**
@@ -109,9 +114,11 @@ async function clusterWithTunnel(
     daemonSocketPath?: string
     tunnels?: TunnelName[]
     maxStreams?: number
+    credentialTtlMs?: number
   } = {}
 ): Promise<Cluster> {
   const warnings: string[] = []
+  const shimClock = new FakeClock()
   const podSocketPath = join(scratchDir(), 'pod-gitcred.sock')
   const plane = await startK8sRuntimePlane({
     orgId: 'org-1',
@@ -122,6 +129,7 @@ async function clusterWithTunnel(
     api: fakeApi() as never,
     tunnelsFor: () => options.tunnels ?? ['gitcred'],
     tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? options.daemonSocketPath : undefined),
+    ...(options.credentialTtlMs === undefined ? {} : { credentialTtlMs: options.credentialTtlMs }),
     log: { info: () => {}, warn: (message) => warnings.push(message), debug: () => {} }
   })
   planes.push(plane)
@@ -143,14 +151,25 @@ async function clusterWithTunnel(
       if (capability === 'tunnel') return host.handle(payload)
       throw new Error(`unexpected capability ${capability}`)
     },
-    clock: new FakeClock(),
+    clock: shimClock,
     backoff: new Backoff({ jitter: () => 0 }),
     log: { info: () => {}, warn: () => {} }
   })
   clients.push(client)
   void client.start()
   await ensuring
-  return { plane, podSocketPath, warnings }
+  // Whoever owns the listener re-attaches a rebound channel; the daemon does that in production,
+  // and this stands in for it so a renewal reaches the driver's session.
+  const seen: unknown[] = []
+  const watch = setInterval(() => {
+    for (const connection of plane.listener.connectionsFor('agent-a')) {
+      if (seen.includes(connection)) continue
+      seen.push(connection)
+      plane.driver.onChannelBound(connection)
+    }
+  }, 10)
+  intervals.push(watch)
+  return { plane, podSocketPath, warnings, shimClock, bindCount: () => seen.length }
 }
 
 /**
@@ -159,24 +178,35 @@ async function clusterWithTunnel(
  * The dial is stubbed to an unconnected socket rather than a real one: what these assert is which
  * announcements produce a dial at all, and a socket that fails asynchronously would race that.
  */
-function proxyUnderTest(): {
+function proxyUnderTest(options: { stall?: (payload: unknown) => boolean } = {}): {
   instance: TunnelProxy
   dialled: string[]
   sent: unknown[]
   announce: (event: ShimEvent['event'], streamId: string) => void
+  /** Fire the session's attach signal — what a credential renewal produces. */
+  reattach: () => void
+  socketFor: (streamId: string) => Socket | undefined
 } {
   const dialled: string[] = []
   const sent: unknown[] = []
   const listeners: Array<(event: ShimEvent) => void> = []
+  const attachListeners: Array<() => void> = []
+  const dialledSockets = new Map<string, Socket>()
+  let lastDialled: Socket | undefined
   const instance = new TunnelProxy({
     session: {
       agentId: 'agent-a',
       request: async (_capability, payload) => {
         sent.push(payload)
+        // A frame the channel never settles: what an in-flight request looks like when the socket
+        // it was written to is replaced underneath.
+        if (options.stall?.(payload)) return await new Promise(() => {})
         return { socketPath: '/run/agentconnect/gitcred.sock' }
       },
       onEvent: (listener) => listeners.push(listener),
       offEvent: () => undefined,
+      onAttach: (listener) => attachListeners.push(listener),
+      offAttach: () => undefined,
       onLost: () => undefined
     },
     socketPathFor: (tunnel) => (tunnel === 'gitcred' ? '/daemon/gitcred.sock' : undefined),
@@ -184,6 +214,7 @@ function proxyUnderTest(): {
       dialled.push(path)
       const socket = new Socket()
       sockets.push(socket)
+      lastDialled = socket
       return socket
     },
     log: { info: () => {}, warn: () => {} }
@@ -194,7 +225,12 @@ function proxyUnderTest(): {
     sent,
     announce: (event, streamId) => {
       for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
-    }
+      if (event.kind === 'connect' && lastDialled) dialledSockets.set(streamId, lastDialled)
+    },
+    reattach: () => {
+      for (const listener of attachListeners) listener()
+    },
+    socketFor: (streamId) => dialledSockets.get(streamId)
   }
 }
 
@@ -239,6 +275,55 @@ describe('the shim tunnel', () => {
     helper.socket.write('ask\n')
     await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
   }, 30_000)
+
+  it('keeps a live connection working across a real credential renewal', async () => {
+    // The pod's listener and its open connections belong to the POD, not to a channel: the shim
+    // re-dials at half the credential TTL, and a helper that was mid-conversation must not care.
+    const daemonSocketPath = daemonSideServer((chunk, socket) => socket.write(`echo:${chunk.toString('utf8')}`))
+    const { podSocketPath, shimClock, bindCount } = await clusterWithTunnel({
+      daemonSocketPath,
+      credentialTtlMs: 600_000
+    })
+
+    const helper = inPodClient(podSocketPath)
+    helper.socket.write('before\n')
+    await vi.waitFor(() => expect(helper.received()).toContain('echo:before'), { timeout: 10_000 })
+
+    const bindsBefore = bindCount()
+    shimClock.advance(300_000)
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), { timeout: 15_000 })
+
+    // Same in-pod connection, same daemon-side socket, after the channel underneath was replaced.
+    helper.socket.write('after\n')
+    await vi.waitFor(() => expect(helper.received()).toContain('echo:after'), { timeout: 10_000 })
+    expect(helper.ended()).toBe(false)
+  }, 40_000)
+
+  it('ends a stream whose frame was in flight when the channel was replaced', async () => {
+    // The other half of a renewal. `ShimSession.attach` aborts the requests on the socket it
+    // replaced, and that abort means a REPLY was lost — not whether the request landed. Re-sending
+    // could duplicate bytes inside a request/response protocol, so the stream ends instead and the
+    // in-pod client sees EOF. Left open, git would instead wait out the five-minute idle timer.
+    const proxy = proxyUnderTest({ stall: (payload) => (payload as { op?: string }).op === 'data' })
+    await proxy.instance.ensure('gitcred')
+
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    expect(proxy.instance.streamCount()).toBe(1)
+
+    // A reply from the daemon's server, whose delivery frame never settles.
+    proxy.socketFor(streamId)!.emit('data', Buffer.from('reply'))
+    await vi.waitFor(() => expect(proxy.sent.some((p) => (p as { op?: string }).op === 'data')).toBe(true))
+
+    proxy.reattach()
+    expect(proxy.instance.streamCount()).toBe(0)
+    // And the pod is told, on the channel that just bound, so its client stops waiting.
+    await vi.waitFor(() =>
+      expect(proxy.sent).toContainEqual(
+        expect.objectContaining({ op: 'close', streamId, error: expect.stringContaining('renewed') })
+      )
+    )
+  })
 
   it('splits a reply larger than one frame instead of dropping it', async () => {
     // 32 KiB per chunk: a single frame is capped at 256 KiB and base64 expands by a third, so a

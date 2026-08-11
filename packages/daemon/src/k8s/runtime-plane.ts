@@ -54,6 +54,9 @@ export interface K8sRuntimePlaneOptions {
    */
   tunnelsFor?: (agentId: string) => TunnelName[]
   tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  /** Lifetime of an issued session credential. The shim renews at half of it, so a test that has
+   *  to cross a renewal shortens it rather than waiting out the default. */
+  credentialTtlMs?: number
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -148,6 +151,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     // routine renewal, which is the exact failure ShimSession exists to prevent. Loss is reported
     // only if no replacement binds for the same launch within the grace window.
     onConnectionLost: (agentId, reason) => scheduleLossCheck(agentId, reason),
+    ...(options.credentialTtlMs === undefined ? {} : { credentialTtlMs: options.credentialTtlMs }),
     log: options.log ?? SILENT
   })
   // One proxy per agent, replaced when a NEW launch binds: its streams belong to a pod, and a
