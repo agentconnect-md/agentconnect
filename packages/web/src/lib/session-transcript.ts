@@ -38,27 +38,29 @@ function promptKey(text: string, image?: SessionImage): string {
   return JSON.stringify([text, image?.name ?? null, image?.mimeType ?? null, image?.data ?? null])
 }
 
-/**
- * Drop only adopted-WebChat turns whose optimistic user prompt has a matching,
- * newly persisted transcript row. Failed pre-admission turns have no such row
- * and therefore retain both the attempted prompt and its error feedback.
- */
+/** Drop exact post duplicates from all rows and fuzzy prompt duplicates from prompt rows. */
 export function reconcilePersistedLiveSteps(
   live: SessionStep[],
   persisted: SessionMessageDto[],
-  agentId: string
+  agentId: string,
+  promptRows: SessionMessageDto[] = persisted
 ): SessionStep[] {
   if (live.length === 0 || persisted.length === 0) return live
 
+  const persistedPostIds = new Set(persisted.flatMap((m) => (m.postId ? [m.postId] : [])))
+  const withoutConfirmedPosts =
+    persistedPostIds.size === 0 ? live : live.filter((step) => !(step.postId && persistedPostIds.has(step.postId)))
+  if (withoutConfirmedPosts.length === 0) return withoutConfirmedPosts
+
   const turns: Array<{ start: number; end: number; key: string; observedAtMs: number }> = []
-  for (let start = 0; start < live.length;) {
-    if (live[start]!.kind !== 'msg') {
+  for (let start = 0; start < withoutConfirmedPosts.length;) {
+    if (withoutConfirmedPosts[start]!.kind !== 'msg') {
       start += 1
       continue
     }
     let end = start + 1
-    while (end < live.length && live[end]!.kind !== 'msg') end += 1
-    const prompt = live[start]!
+    while (end < withoutConfirmedPosts.length && withoutConfirmedPosts[end]!.kind !== 'msg') end += 1
+    const prompt = withoutConfirmedPosts[start]!
     if (prompt.observedAtMs != null && Number.isFinite(prompt.observedAtMs)) {
       turns.push({
         start,
@@ -69,10 +71,10 @@ export function reconcilePersistedLiveSteps(
     }
     start = end
   }
-  if (turns.length === 0) return live
+  if (turns.length === 0) return withoutConfirmedPosts
 
   const confirmed = new Set<number>()
-  for (const message of persisted) {
+  for (const message of promptRows) {
     if (message.kind.toLowerCase() !== 'text' || message.sender === agentId) continue
     const persistedAtMs = transcriptRowTimeMs(message)
     if (persistedAtMs == null) continue
@@ -89,12 +91,12 @@ export function reconcilePersistedLiveSteps(
     }
     if (bestTurn >= 0) confirmed.add(bestTurn)
   }
-  if (confirmed.size === 0) return live
+  if (confirmed.size === 0) return withoutConfirmedPosts
 
   const removed = new Set<number>()
   for (const index of confirmed) {
     const turn = turns[index]!
     for (let step = turn.start; step < turn.end; step++) removed.add(step)
   }
-  return live.filter((_, index) => !removed.has(index))
+  return withoutConfirmedPosts.filter((_, index) => !removed.has(index))
 }

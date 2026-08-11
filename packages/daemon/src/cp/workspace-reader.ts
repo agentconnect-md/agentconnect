@@ -37,7 +37,8 @@ import type {
   WorkspaceWriteOk,
   WorkspaceDeleteReq,
   WorkspaceDeleteOk,
-  WorkspaceEntry
+  WorkspaceEntry,
+  WorkspaceErrorReason
 } from '@agentconnect.md/protocol'
 import { MAX_WORKSPACE_EDIT_BYTES } from '@agentconnect.md/protocol'
 import { REPLY_BUDGET, encodedBytes, utf8Boundary, fitToBudget } from './wire-slice.js'
@@ -45,20 +46,92 @@ import { REPLY_BUDGET, encodedBytes, utf8Boundary, fitToBudget } from './wire-sl
 /** Bytes sniffed from the head of a file for binary (NUL byte) detection. */
 const SNIFF_BYTES = 8192
 
-/** Path-containment / bad-request violation → `BAD_PAYLOAD` on the wire. */
+/** Path-containment / bad-request violation → `BAD_PAYLOAD` on the wire. `reason`
+ *  rides along in the error frame's `details` so the CP can answer a bad request
+ *  with a status the console can tell apart from an offline daemon. */
 export class WorkspaceViolationError extends Error {
-  constructor(message: string) {
+  readonly reason: WorkspaceErrorReason
+  constructor(message: string, reason: WorkspaceErrorReason) {
     super(message)
     this.name = 'WorkspaceViolationError'
+    this.reason = reason
   }
 }
 
 /** Optimistic-concurrency failure → `CONFLICT` on the wire. */
 export class WorkspaceConflictError extends Error {
+  readonly reason: WorkspaceErrorReason = 'stale'
   constructor(message: string) {
     super(message)
     this.name = 'WorkspaceConflictError'
   }
+}
+
+/** Lexical containment for ONE workspace-relative path, shared by the file reader
+ * and the git seam: `.git`, an absolute path and anything resolving outside the
+ * root are violations. Returns the lexically-resolved absolute path — a caller that
+ * goes on to read bytes must still canonicalise it (see {@link canonicalUnder}). */
+/**
+ * Lexical containment PLUS realpath re-verification on the real target, which is
+ * the only check that closes the check-vs-use gap: `containedWorkspacePath` is
+ * lexical, and `lstat`/`stat` follow INTERMEDIATE components, so a symlinked
+ * directory inside the workspace otherwise resolves out of it. Returns the
+ * canonical path, or `null` when the path (or the root) is absent — absence is
+ * DATA, and a deleted-but-tracked path still has a diff. Every seam that touches
+ * the filesystem or hands git a pathspec must come through here.
+ */
+export async function canonicalWorkspacePath(root: string, relPath: string): Promise<string | null> {
+  const resolved = containedWorkspacePath(root, relPath)
+  let realRoot: string
+  try {
+    realRoot = await fs.realpath(root)
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) return null
+    throw err
+  }
+  try {
+    const canon = await fs.realpath(resolved)
+    if (!under(realRoot, canon)) {
+      throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
+    }
+    if (containsGitInternals(path.relative(realRoot, canon))) {
+      throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
+    }
+    return canon
+  } catch (err) {
+    if (!isErrno(err, 'ENOENT')) throw err
+  }
+  // The leaf is absent, which is data — but the CHAIN above it still has to be checked, or
+  // "outside and present" (rejected) and "outside and absent" (exists:false) remain two
+  // distinguishable answers, i.e. the same oracle inverted. Canonicalise the deepest ancestor
+  // that does exist and verify containment there.
+  let ancestor = path.dirname(resolved)
+  for (;;) {
+    try {
+      const canon = await fs.realpath(ancestor)
+      if (!under(realRoot, canon) && canon !== realRoot) {
+        throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
+      }
+      return null
+    } catch (err) {
+      if (err instanceof WorkspaceViolationError) throw err
+      if (!isErrno(err, 'ENOENT')) throw err
+      const up = path.dirname(ancestor)
+      // Ran out of chain without finding anything real: nothing to escape through.
+      if (up === ancestor) return null
+      ancestor = up
+    }
+  }
+}
+
+export function containedWorkspacePath(root: string, relPath: string): string {
+  if (containsGitInternals(relPath)) {
+    throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
+  }
+  if (path.isAbsolute(relPath)) throw new WorkspaceViolationError('absolute paths are not allowed', 'path-escape')
+  const resolved = path.resolve(root, relPath)
+  if (!under(root, resolved)) throw new WorkspaceViolationError('path escapes the workspace root', 'path-escape')
+  return resolved
 }
 
 export interface WorkspaceLocation {
@@ -93,7 +166,7 @@ export function createWorkspaceReader(
 ): WorkspaceReader {
   function locationFor(agentId: string, sessionId?: string): WorkspaceLocation {
     const location = workspaceByAgent(agentId, sessionId)
-    if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`)
+    if (!location) throw new WorkspaceViolationError(`unknown agent "${agentId}"`, 'unknown-agent')
     return location
   }
 
@@ -106,12 +179,7 @@ export function createWorkspaceReader(
     root: string,
     relPath: string
   ): Promise<{ resolved: string; realRoot: string | null }> {
-    if (containsGitInternals(relPath)) {
-      throw new WorkspaceViolationError('git internals are not readable')
-    }
-    if (path.isAbsolute(relPath)) throw new WorkspaceViolationError('absolute paths are not allowed')
-    const resolved = path.resolve(root, relPath)
-    if (!under(root, resolved)) throw new WorkspaceViolationError('path escapes the workspace root')
+    const resolved = containedWorkspacePath(root, relPath)
     try {
       return { resolved, realRoot: await fs.realpath(root) }
     } catch (err) {
@@ -125,9 +193,10 @@ export function createWorkspaceReader(
    *  out and is rejected here). Returns the canonical path used for I/O. */
   async function canonicalUnder(realRoot: string, abs: string): Promise<string> {
     const canon = await fs.realpath(abs)
-    if (!under(realRoot, canon)) throw new WorkspaceViolationError('path resolves outside the workspace root')
+    if (!under(realRoot, canon))
+      throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
     if (containsGitInternals(path.relative(realRoot, canon))) {
-      throw new WorkspaceViolationError('git internals are not readable')
+      throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
     }
     return canon
   }
@@ -152,7 +221,7 @@ export function createWorkspaceReader(
         }
         st = await fs.lstat(candidate)
       }
-      if (!st.isDirectory()) throw new WorkspaceViolationError('the parent path is not a directory')
+      if (!st.isDirectory()) throw new WorkspaceViolationError('the parent path is not a directory', 'not-a-directory')
       parent = await canonicalUnder(realRoot, candidate)
     }
     return parent
@@ -246,7 +315,26 @@ export function createWorkspaceReader(
         if (isErrno(err, 'ENOENT')) return notFound
         throw err
       }
-      if (!st.isFile()) throw new WorkspaceViolationError('not a regular file')
+      // A DIRECTORY is DATA (`type:'dir'`, no content): reporting it as a violation
+      // made a `?file=` naming a directory indistinguishable from an offline daemon.
+      // Every OTHER non-regular target keeps the violation — a final-component
+      // symlink is a containment matter and must not read as an ordinary answer.
+      if (st.isDirectory()) {
+        // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
+        // directory inside the workspace would otherwise let this branch report the
+        // existence and mtime of a host directory outside it — the same oracle the
+        // git-diff seam had, reopened by making directories an ordinary answer.
+        const dir = await canonicalUnder(realRoot, resolved)
+        const canonSt = await fs.lstat(dir)
+        return {
+          agentId: req.agentId,
+          path: req.path,
+          exists: true,
+          type: 'dir' as const,
+          mtime: canonSt.mtime.toISOString()
+        }
+      }
+      if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
 
       // Canonicalise and re-verify (catches an intermediate component swapped to
       // a symlink after resolveContained), then read the canonical path.
@@ -261,7 +349,15 @@ export function createWorkspaceReader(
           const sniff = Buffer.alloc(sniffLen)
           const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
           if (sniff.subarray(0, bytesRead).includes(0)) {
-            return { agentId: req.agentId, path: req.path, exists: true, size, mtime, encoding: 'none' as const }
+            return {
+              agentId: req.agentId,
+              path: req.path,
+              exists: true,
+              type: 'file' as const,
+              size,
+              mtime,
+              encoding: 'none' as const
+            }
           }
         }
 
@@ -288,6 +384,7 @@ export function createWorkspaceReader(
           agentId: req.agentId,
           path: req.path,
           exists: true,
+          type: 'file' as const,
           size,
           mtime,
           encoding: 'utf8' as const,
@@ -303,24 +400,33 @@ export function createWorkspaceReader(
 
     async write(req) {
       if (!locationFor(req.agentId).scratch) {
-        throw new WorkspaceViolationError('workspace files are editable only in scratch workspaces')
+        throw new WorkspaceViolationError(
+          'workspace files are editable only in scratch workspaces',
+          'read-only-workspace'
+        )
       }
 
       const bytes = Buffer.from(req.contentBase64, 'base64')
       if (bytes.byteLength > MAX_WORKSPACE_EDIT_BYTES) {
-        throw new WorkspaceViolationError(`workspace file exceeds the ${MAX_WORKSPACE_EDIT_BYTES}-byte edit limit`)
+        throw new WorkspaceViolationError(
+          `workspace file exceeds the ${MAX_WORKSPACE_EDIT_BYTES}-byte edit limit`,
+          'too-large'
+        )
       }
-      if (bytes.includes(0)) throw new WorkspaceViolationError('binary files are not editable')
+      if (bytes.includes(0)) throw new WorkspaceViolationError('binary files are not editable', 'binary')
       try {
         new TextDecoder('utf-8', { fatal: true }).decode(bytes)
       } catch {
-        throw new WorkspaceViolationError('workspace file content must be valid UTF-8')
+        throw new WorkspaceViolationError('workspace file content must be valid UTF-8', 'not-utf8')
       }
 
       return coordinateWrite(req.agentId, async () => {
         const location = locationFor(req.agentId)
         if (!location.scratch) {
-          throw new WorkspaceViolationError('workspace files are editable only in scratch workspaces')
+          throw new WorkspaceViolationError(
+            'workspace files are editable only in scratch workspaces',
+            'read-only-workspace'
+          )
         }
 
         let { resolved, realRoot } = await resolveContained(location.root, req.path)
@@ -370,7 +476,7 @@ export function createWorkspaceReader(
           if (isErrno(err, 'ENOENT')) throw changedFile()
           throw err
         }
-        if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file')
+        if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
         if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
 
         let target: string
@@ -390,7 +496,7 @@ export function createWorkspaceReader(
             const sniff = Buffer.alloc(sniffLen)
             const { bytesRead } = await fh.read(sniff, 0, sniffLen, 0)
             if (sniff.subarray(0, bytesRead).includes(0)) {
-              throw new WorkspaceViolationError('binary files are not editable')
+              throw new WorkspaceViolationError('binary files are not editable', 'binary')
             }
           }
         } finally {
@@ -429,13 +535,19 @@ export function createWorkspaceReader(
 
     async delete(req) {
       if (!locationFor(req.agentId).scratch) {
-        throw new WorkspaceViolationError('workspace files are editable only in scratch workspaces')
+        throw new WorkspaceViolationError(
+          'workspace files are editable only in scratch workspaces',
+          'read-only-workspace'
+        )
       }
 
       return coordinateWrite(req.agentId, async () => {
         const location = locationFor(req.agentId)
         if (!location.scratch) {
-          throw new WorkspaceViolationError('workspace files are editable only in scratch workspaces')
+          throw new WorkspaceViolationError(
+            'workspace files are editable only in scratch workspaces',
+            'read-only-workspace'
+          )
         }
 
         const { resolved, realRoot } = await resolveContained(location.root, req.path)
@@ -448,7 +560,7 @@ export function createWorkspaceReader(
           if (isErrno(err, 'ENOENT')) throw changedFile()
           throw err
         }
-        if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file')
+        if (!initial.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
         if (initial.mtime.toISOString() !== req.ifMatchMtime) throw changedFile()
 
         let target: string

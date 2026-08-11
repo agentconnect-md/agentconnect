@@ -23,10 +23,8 @@ if (process.argv[2] === '__sandbox-runtime' || process.argv[2] === '__sandbox-ru
 }
 
 const telemetry = startDaemonOpenTelemetry({ serviceVersion: DAEMON_VERSION })
-const [{ Command }, { runChat }, { runForeground }, { acquireSingletonLock }, { resolveRoot }] = await Promise.all([
+const [{ Command }, { acquireSingletonLock }, { resolveRoot }] = await Promise.all([
   import('commander'),
-  import('./cli/chat.js'),
-  import('./cli/run-foreground.js'),
   import('./lock.js'),
   import('./paths.js')
 ])
@@ -60,6 +58,7 @@ program
   .option('--agents-dir <dir>', 'override agents directory')
   .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
   .option('--require-sandbox', 'require the Linux SRT sandbox for every agent or refuse daemon startup')
+  .option('--k8s', 'run runtimes in cluster sandbox pods instead of on this host (no probing, no local runtimes)')
   .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
   .option('--agent <name>', 'select a single agent by id (run/chat)')
 
@@ -90,6 +89,29 @@ program
       return exit(1)
     }
     try {
+      // A k8s daemon's version IS its image: there is no CLI or version store to
+      // self-install from, so the bootstrap upgrade path is skipped outright rather
+      // than left to fail on a missing cli-entry pointer.
+      if (opts.k8s !== true) {
+        const bootstrap = await import('./bootstrap-upgrade.js')
+        const bootstrapOutcome = await bootstrap.runBootstrapUpgrade({
+          root: opts.root,
+          configPath: opts.config,
+          supervisor: process.env.AGENTCONNECT_SUPERVISOR,
+          overrides: {
+            apiUrl: opts.apiUrl,
+            apiKey: opts.apiKey,
+            noCp: opts.cp === false,
+            daemonId: opts.daemonId
+          }
+        })
+        if (bootstrapOutcome === 'restart') {
+          lock.release()
+          return exit(bootstrap.BOOTSTRAP_RESTART_CODE)
+        }
+      }
+      // Load the business graph only after auth-only recovery.
+      const { runForeground } = await import('./cli/run-foreground.js')
       await runForeground({
         root: opts.root,
         configPath: opts.config,
@@ -98,6 +120,7 @@ program
         // this daemon is supervised; the daemon can no longer self-detect it now
         // that the service layer lives in the CLI (cli-daemon-split.md §7.1).
         supervisor: process.env.AGENTCONNECT_SUPERVISOR,
+        k8s: opts.k8s === true,
         overrides: {
           apiUrl: opts.apiUrl,
           apiKey: opts.apiKey,
@@ -190,6 +213,7 @@ program
   .action(async (message?: string) => {
     const opts = program.opts()
     try {
+      const { runChat } = await import('./cli/chat.js')
       await runChat({
         agentsDir: opts.agentsDir,
         agentName: opts.agent,

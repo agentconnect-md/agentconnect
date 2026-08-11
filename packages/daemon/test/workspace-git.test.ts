@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -34,7 +35,10 @@ const { WorkspaceViolationError } = await import('../src/cp/workspace-reader.js'
 function ws(repo: boolean): string {
   const dir = join(mkdtempSync(join(tmpdir(), 'ac-git-')), 'co')
   mkdirSync(dir, { recursive: true })
-  if (repo) mkdirSync(join(dir, '.git'), { recursive: true })
+  // A REAL `git init`, not a bare `.git` directory: the seam asks whether this is a checkout
+  // through the runner (`rev-parse --is-inside-work-tree`) rather than by looking for a `.git` on
+  // the daemon's own disk, because a cluster-backed agent's checkout is not on that disk at all.
+  if (repo) execFileSync('git', ['init', '-q', '-b', 'main', dir], { stdio: 'ignore' })
   return dir
 }
 
@@ -121,13 +125,14 @@ describe('createWorkspaceGit.status', () => {
     const fetchedAt = new Date('2026-07-02T09:00:00.000Z')
     utimesSync(join(dir, '.git', 'FETCH_HEAD'), fetchedAt, fetchedAt)
     statusImpl = vi.fn().mockResolvedValue({ current: 'main', ahead: 0, behind: 0, files: [], isClean: () => true })
-    logImpl = vi.fn().mockResolvedValue({
-      latest: {
-        hash: 'a3f9c21deadbeef0000000000000000000000000',
-        date: '2026-07-02T07:00:00+00:00',
-        subject: 'Pin deploy image'
-      }
-    })
+    // simple-git populates BOTH `all` and `latest`; the runner reads `all`, so a mock
+    // supplying only `latest` describes a response simple-git never returns.
+    const commit = {
+      hash: 'a3f9c21deadbeef0000000000000000000000000',
+      date: '2026-07-02T07:00:00+00:00',
+      subject: 'Pin deploy image'
+    }
+    logImpl = vi.fn().mockResolvedValue({ all: [commit], latest: commit })
     const git = createWorkspaceGit(() => dir)
     const s = await git.status('a')
     expect(s.lastCommit).toEqual({
@@ -148,9 +153,36 @@ describe('createWorkspaceGit.status', () => {
     expect(s.lastCommit).toBeUndefined()
   })
 
+  // The numstat join, the binary/untracked cases and the no-HEAD failure moved to
+  // workspace-git-read.test.ts when the read moved off simple-git onto a bounded
+  // execFile: this suite mocks simple-git, so it can no longer feed or observe that
+  // read, and a case that cannot construct its own state is worse than no case.
+
   it('throws WorkspaceViolationError for an unknown agent', async () => {
     const git = createWorkspaceGit(() => undefined)
     await expect(git.status('nope')).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(git.diff({ agentId: 'nope', path: 'a.ts', staged: false })).rejects.toBeInstanceOf(
+      WorkspaceViolationError
+    )
+    await expect(git.log({ agentId: 'nope', limit: 20 })).rejects.toBeInstanceOf(WorkspaceViolationError)
+  })
+
+  it('short-circuits diff and log for a from-scratch workspace without touching git', async () => {
+    const dir = ws(false)
+    const git = createWorkspaceGit(() => dir)
+    expect(await git.diff({ agentId: 'a', path: 'a.ts', staged: false })).toEqual({
+      agentId: 'a',
+      path: 'a.ts',
+      isRepo: false,
+      exists: false
+    })
+    expect(await git.log({ agentId: 'a', limit: 20 })).toEqual({
+      agentId: 'a',
+      isRepo: false,
+      commits: [],
+      truncated: false
+    })
+    expect(rawImpl).not.toHaveBeenCalled()
   })
 })
 

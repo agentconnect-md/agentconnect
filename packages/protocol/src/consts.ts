@@ -54,6 +54,40 @@ export const SESSION_LIVE_TAIL_FEATURE = 'session-live-tail-v1'
  * worktree named by `sessionId` instead of silently falling back to primary. */
 export const WORKSPACE_SESSION_READ_FEATURE = 'workspace-session-read-v1'
 
+/** Daemon serves the console's git review reads — `workspace/gitdiff`,
+ * `workspace/gitlog`, and per-file `additions`/`deletions` on `workspace/gitstatus`.
+ * The CP must check this before sending either new frame: an older daemon ignores
+ * an unknown frame silently, so the REQ would burn its whole retransmit budget and
+ * then surface as an offline daemon. */
+export const WORKSPACE_GIT_REVIEW_FEATURE = 'workspace-git-review-v1'
+
+/** Daemon serves the console's git WRITES — `workspace/gitstage`, `workspace/gitunstage`,
+ * `workspace/gitcommit` and `workspace/gitpush`. Checked before sending, for the same reason
+ * as the review feature: an older daemon ignores an unknown frame silently, so the REQ would
+ * burn its retransmit budget and then read as an offline daemon. The console renders the write
+ * controls as ABSENT (not inert) on a daemon without it. */
+export const WORKSPACE_GIT_WRITE_FEATURE = 'workspace-git-write-v1'
+
+/** Daemon serves `workspace/gitmessage` — the AI commit-message draft, run on the AGENT's own
+ * runtime. Separate from the write feature on purpose: it is not a write, and the console hides one
+ * button (the wand) on a daemon without it while keeping stage/commit/push. Checked before sending,
+ * like every other new frame: an older daemon ignores it silently and the REQ would burn its
+ * retransmit budget before reading as an offline daemon. */
+export const WORKSPACE_GIT_MESSAGE_FEATURE = 'workspace-git-message-v1'
+
+/** Daemon serves `task/list` — the console Tasks panel's read of one ACP session's background-task
+ * lease. Checked before sending, like every other new frame: an older daemon ignores it silently, so
+ * the REQ would burn its whole retransmit budget and then read as an offline daemon. The console
+ * hides the Tasks tab on a daemon without it rather than showing a tab that can never answer. */
+export const TASK_LIST_FEATURE = 'task-list-v1'
+
+/** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
+ * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
+ * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon
+ * joins them into one pass, but the CP would still fail the request while the answer was coming.
+ * The daemon's own budget is strictly smaller, so the REP always wins this race. */
+export const WORKSPACE_GIT_MESSAGE_BUDGET_MS = 75_000
+
 /**
  * CP accepts the `event/session-purged` retention-GC receipt (#485) and marks the
  * session's stored metadata content-purged. Advertised by the CP in
@@ -113,6 +147,12 @@ export const SLACK_SESSION_AUDIENCE_FEATURE = 'slack-session-audience-v1'
  */
 export const AGENT_CONFIG_REVISION_FEATURE = 'agent-config-revision-v1'
 
+/** Auth-only recovery capability that permits CP to queue an offline daemon upgrade. */
+export const DAEMON_BOOTSTRAP_UPGRADE_FEATURE = 'daemon-bootstrap-upgrade-v1'
+
+/** Frozen version of the auth-only bootstrap handshake. */
+export const DAEMON_BOOTSTRAP_PROTOCOL_VERSION = 1
+
 /**
  * Per-value ceiling for an environment variable or secret, shared by the agent
  * and organization surfaces so one entry can never be sized past what any
@@ -139,3 +179,14 @@ export const MAX_ENVIRONMENT_VALUE_LENGTH = 64 * 1024
  * whether to relaunch vs propagate the child's exit.
  */
 export const RESERVED_RESTART_CODE = 75
+
+/**
+ * `AGENTCONNECT_SUPERVISOR` value a cloud daemon runs under: Kubernetes, where the
+ * kubelet takes the place of launchd/systemd AND of the CLI's version store.
+ *
+ * It supervises restart — `restartPolicy: Always` brings the container back after
+ * {@link RESERVED_RESTART_CODE}, in place and in the same pod, which is the same
+ * shape as a systemd process restart — but not upgrade: the running version is the
+ * image, so only whoever owns the Deployment can change it.
+ */
+export const K8S_SUPERVISOR = 'k8s'

@@ -126,6 +126,7 @@ function build(): Built {
   const connReg = new ConnectionRegistry()
   const deps: DaemonWsDeps = {
     auth: {} as DaemonWsDeps['auth'],
+    lifecycleOps: {} as DaemonWsDeps['lifecycleOps'],
     registry: {} as DaemonWsDeps['registry'],
     orchestrator: {} as DaemonWsDeps['orchestrator'],
     connReg,

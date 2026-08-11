@@ -10,6 +10,8 @@
 // ── cross-package wire + lifecycle constants ──
 export {
   AGENT_CONFIG_REVISION_FEATURE,
+  DAEMON_BOOTSTRAP_PROTOCOL_VERSION,
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   CP_SUBPROTOCOL,
   CP_WS_PATH,
   hasReachedAgentCallHopLimit,
@@ -20,11 +22,17 @@ export {
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   RESERVED_RESTART_CODE,
+  K8S_SUPERVISOR,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  TASK_LIST_FEATURE,
+  WORKSPACE_GIT_MESSAGE_BUDGET_MS,
+  WORKSPACE_GIT_MESSAGE_FEATURE,
+  WORKSPACE_GIT_REVIEW_FEATURE,
+  WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE
 } from './consts.js'
 
@@ -51,6 +59,7 @@ export * from './frames/secrets.js'
 export * from './frames/session.js'
 export * from './frames/channel.js'
 export * from './frames/workspace.js'
+export * from './frames/task.js'
 export * from './frames/memory.js'
 export * from './frames/organization-knowledge.js'
 export * from './frames/telemetry.js'

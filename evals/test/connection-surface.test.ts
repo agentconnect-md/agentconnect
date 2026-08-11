@@ -33,6 +33,7 @@ const EXEMPT: Record<string, string> = {
   rememberMissingScopes: 'private scope-error bookkeeping',
   permissionUpdateUrl: 'private permission-card helper',
   postPermissionUpdateCard: 'private permission-card helper',
+  postIfThreadExists: 'private Slack root-existence guard',
   postChatMessage: 'private shared post boundary behind postMessage/postBlocks',
   // Interactive Slack surfaces (Block Kit actions / modals) are driven by
   // Bolt callbacks the virtual transport never receives; the daemon only

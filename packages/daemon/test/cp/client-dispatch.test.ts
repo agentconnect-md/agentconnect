@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildEnvelope, decodeEnvelope, MAX_FRAME_BYTES, SESSION_LIVE_TAIL_FEATURE } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
-import { WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
+import { WorkspaceConflictError, WorkspaceViolationError } from '../../src/cp/workspace-reader.js'
+import { TaskViolationError } from '../../src/cp/task-reader.js'
 import { FakeTransport } from './fake-transport.js'
 import { FakeClock } from './fake-clock.js'
 
@@ -26,6 +27,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     sessionRead: _sessionReadOver,
     workspaceRead: _workspaceReadOver,
     workspaceGit: _workspaceGitOver,
+    taskReader: _taskReaderOver,
     ...overRest
   } = over
   const configApply = {
@@ -77,8 +79,14 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   }
   const workspaceGit = {
     status: vi.fn(async () => ({ agentId: 'a', isRepo: false, clean: true })),
+    diff: vi.fn(async () => ({ agentId: 'a', path: 'f', isRepo: false, exists: false })),
+    log: vi.fn(async () => ({ agentId: 'a', isRepo: false, commits: [], truncated: false })),
     pull: vi.fn(async () => ({ agentId: 'a', isRepo: false, ok: false })),
     ...((over.workspaceGit as any) ?? {})
+  }
+  const taskReader = {
+    list: vi.fn(async () => ({ agentId: 'a', sessionId: 'acp-1', tracked: false, tasks: [], truncated: false })),
+    ...((over.taskReader as any) ?? {})
   }
   const deps: CpClientDeps = {
     url: 'wss://cp/daemon/ws',
@@ -97,6 +105,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
     sessionRead,
     workspaceRead,
     workspaceGit,
+    taskReader,
     clock,
     connect: async () => t,
     log: silent,
@@ -142,7 +151,7 @@ async function readyClient(over: Partial<CpClientDeps> = {}, serverFeatures: str
   await tick()
   t.sent.length = 0 // clear handshake frames
   vi.clearAllMocks() // reset mock call counts after handshake
-  return { t, clock, client, configApply, workspaceRead, workspaceGit }
+  return { t, clock, client, configApply, workspaceRead, workspaceGit, taskReader }
 }
 
 describe('CpClient dispatch', () => {
@@ -614,11 +623,219 @@ describe('CpClient dispatch', () => {
     expect(rep.payload.detail).toBe('pull timed out')
   })
 
+  it('replies workspace/gitdiff/result and forwards the whole scoped request', async () => {
+    const diff = vi.fn(async () => ({
+      agentId: 'a1',
+      path: 'src/x.ts',
+      isRepo: true,
+      exists: true,
+      diff: '@@ -1 +1 @@\n-a\n+b\n',
+      truncated: true
+    }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { diff } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1', path: 'src/x.ts', staged: true }
+    const f = JSON.parse(frame('workspace/gitdiff', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceGit.diff).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitdiff/result')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.diff).toContain('@@ -1 +1 @@')
+    expect(rep.payload.truncated).toBe(true)
+  })
+
+  it('replies workspace/gitdiff/result for a binary path (data, not an error)', async () => {
+    const diff = vi.fn(async () => ({ agentId: 'a1', path: 'logo.png', isRepo: true, exists: true, binary: true }))
+    const { t } = await readyClient({ workspaceGit: { diff } as any })
+    const f = JSON.parse(frame('workspace/gitdiff', { agentId: 'a1', path: 'logo.png', staged: false }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitdiff/result')
+    expect(rep.payload.binary).toBe(true)
+    expect(rep.payload.diff).toBeUndefined()
+  })
+
+  it('replies workspace/gitlog/result from the workspaceGit seam', async () => {
+    const log = vi.fn(async () => ({
+      agentId: 'a1',
+      isRepo: true,
+      tracking: 'origin/main',
+      truncated: false,
+      commits: [
+        {
+          sha: 'a'.repeat(40),
+          shortSha: 'aaaaaaa',
+          subject: 'Add the dock',
+          author: 'Ada Lovelace',
+          committedAt: '2026-07-02T07:00:00+00:00',
+          pushed: false
+        }
+      ]
+    }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { log } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1', limit: 20 }
+    const f = JSON.parse(frame('workspace/gitlog', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(workspaceGit.log).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitlog/result')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.commits[0].pushed).toBe(false)
+    expect(rep.payload.tracking).toBe('origin/main')
+  })
+
+  it('replies workspace/gitstage/result and workspace/gitunstage/result with the FRESH status', async () => {
+    const staged = {
+      agentId: 'a1',
+      isRepo: true,
+      clean: false,
+      branch: 'main',
+      files: [{ path: 'src/x.ts', index: 'M', workingDir: ' ' }]
+    }
+    const stage = vi.fn(async () => staged)
+    const unstage = vi.fn(async () => ({ ...staged, files: [{ path: 'src/x.ts', index: ' ', workingDir: 'M' }] }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { stage, unstage } as any })
+
+    const payload = { agentId: 'a1', sessionId: 'acp-1', paths: ['src/x.ts'] }
+    t.pushInbound(frame('workspace/gitstage', payload, { epoch: 5 }))
+    await tick()
+    expect(workspaceGit.stage).toHaveBeenCalledWith(payload)
+    const stageRep = JSON.parse(t.sent[0]!)
+    expect(stageRep.type).toBe('workspace/gitstage/result')
+    expect(stageRep.payload.files[0].index).toBe('M')
+
+    t.sent.length = 0
+    t.pushInbound(frame('workspace/gitunstage', payload, { epoch: 5 }))
+    await tick()
+    expect(workspaceGit.unstage).toHaveBeenCalledWith(payload)
+    const unstageRep = JSON.parse(t.sent[0]!)
+    expect(unstageRep.type).toBe('workspace/gitunstage/result')
+    expect(unstageRep.payload.files[0].workingDir).toBe('M')
+  })
+
+  it('replies workspace/gitcommit/result (a refusal is data, not an error frame)', async () => {
+    const commit = vi.fn(async () => ({
+      agentId: 'a1',
+      isRepo: true,
+      ok: false,
+      reason: 'no-identity' as const,
+      detail: 'no registered identity'
+    }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { commit } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1', message: 'feat: x' }
+    t.pushInbound(frame('workspace/gitcommit', payload, { epoch: 5 }))
+    await tick()
+    expect(workspaceGit.commit).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitcommit/result')
+    expect(rep.payload.ok).toBe(false)
+    expect(rep.payload.reason).toBe('no-identity')
+  })
+
+  it('replies workspace/gitpush/result (a diverged branch is data, not an error frame)', async () => {
+    const push = vi.fn(async () => ({
+      agentId: 'a1',
+      isRepo: true,
+      ok: false,
+      ahead: 2,
+      reason: 'diverged' as const,
+      detail: 'pull first'
+    }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { push } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1' }
+    t.pushInbound(frame('workspace/gitpush', payload, { epoch: 5 }))
+    await tick()
+    expect(workspaceGit.push).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitpush/result')
+    expect(rep.payload.reason).toBe('diverged')
+    expect(rep.payload.ahead).toBe(2)
+  })
+
+  it('replies workspace/gitmessage/result, and a runtime that declines is data', async () => {
+    const message = vi.fn(async () => ({ agentId: 'a1', ok: true, message: 'feat(dock): draft it' }))
+    const { t, workspaceGit } = await readyClient({ workspaceGit: { message } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1' }
+    t.pushInbound(frame('workspace/gitmessage', payload, { epoch: 5 }))
+    await tick()
+    expect(workspaceGit.message).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('workspace/gitmessage/result')
+    expect(rep.payload.message).toBe('feat(dock): draft it')
+  })
+
+  it('joins a RETRANSMITTED gitmessage REQ into the pass it already started', async () => {
+    // The correlator re-sends identical bytes when a REP is slow, and a model pass is always slower
+    // than one ack window — running it again would bill the press twice.
+    let release!: (value: { agentId: string; ok: boolean; message: string }) => void
+    const message = vi.fn(
+      () => new Promise<{ agentId: string; ok: boolean; message: string }>((resolve) => (release = resolve))
+    )
+    const { t } = await readyClient({ workspaceGit: { message } as any })
+    const req = frame('workspace/gitmessage', { agentId: 'a1' }, { epoch: 5 })
+    t.pushInbound(req)
+    t.pushInbound(req) // the retransmit: same id, same bytes
+    await tick()
+    expect(message).toHaveBeenCalledTimes(1)
+
+    release({ agentId: 'a1', ok: true, message: 'feat: once' })
+    await tick()
+    // Both arrivals are answered, and the second one does NOT start a pass of its own.
+    const reps = t.sent.map((raw) => JSON.parse(raw)).filter((f) => f.type === 'workspace/gitmessage/result')
+    expect(reps).toHaveLength(2)
+    expect(new Set(reps.map((f) => f.corr)).size).toBe(1)
+    expect(message).toHaveBeenCalledTimes(1)
+
+    // The entry is released once it settles, so a later press with a fresh id runs a fresh pass.
+    t.pushInbound(frame('workspace/gitmessage', { agentId: 'a1' }, { epoch: 5 }))
+    await tick()
+    expect(message).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps a busy-agent CONFLICT on a git write to CONFLICT with its reason', async () => {
+    // The coordinator's refusal — the console renders "the agent is working", not a failure.
+    const { t } = await readyClient({
+      workspaceGit: {
+        commit: async () => {
+          throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('workspace/gitcommit', { agentId: 'a1', message: 'feat: x' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.corr).toBe(f.id)
+    expect(err.payload.code).toBe('CONFLICT')
+    expect(err.payload.details).toEqual({ reason: 'stale' })
+  })
+
+  it('carries the violation REASON in the error frame details (400-able, not an opaque 503)', async () => {
+    const { t } = await readyClient({
+      workspaceRead: {
+        read: async () => {
+          throw new WorkspaceViolationError('path escapes the workspace root', 'path-escape')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('workspace/read', { agentId: 'a1', path: '../x', offset: 0, limit: 10 }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'path-escape' })
+  })
+
   it('maps an unknown-agent workspace git violation to BAD_PAYLOAD', async () => {
     const { t } = await readyClient({
       workspaceGit: {
         status: async () => {
-          throw new WorkspaceViolationError('unknown agent "nope"')
+          throw new WorkspaceViolationError('unknown agent "nope"', 'unknown-agent')
         }
       } as any
     })
@@ -629,6 +846,54 @@ describe('CpClient dispatch', () => {
     expect(err.type).toBe('error')
     expect(err.corr).toBe(f.id)
     expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'unknown-agent' })
+  })
+
+  it('replies task/list/result from the taskReader seam', async () => {
+    const list = vi.fn(async () => ({
+      agentId: 'a1',
+      sessionId: 'acp-1',
+      tracked: true,
+      truncated: false,
+      tasks: [
+        {
+          id: 't1',
+          description: 'Sleep 15',
+          state: 'running' as const,
+          subagent: false,
+          startedAt: '2026-06-26T00:00:00.000Z'
+        }
+      ]
+    }))
+    const { t, taskReader } = await readyClient({ taskReader: { list } as any })
+    const payload = { agentId: 'a1', sessionId: 'acp-1' }
+    const f = JSON.parse(frame('task/list', payload, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    expect(taskReader.list).toHaveBeenCalledWith(payload)
+    const rep = JSON.parse(t.sent[0]!)
+    expect(rep.type).toBe('task/list/result')
+    expect(rep.corr).toBe(f.id)
+    expect(rep.payload.tasks[0].state).toBe('running')
+    expect(rep.payload.tracked).toBe(true)
+  })
+
+  it('maps an unknown-agent task violation to BAD_PAYLOAD with its reason', async () => {
+    const { t } = await readyClient({
+      taskReader: {
+        list: async () => {
+          throw new TaskViolationError('unknown agent "nope"', 'unknown-agent')
+        }
+      } as any
+    })
+    const f = JSON.parse(frame('task/list', { agentId: 'nope', sessionId: 'acp-1' }, { epoch: 5 }))
+    t.pushInbound(JSON.stringify(f))
+    await tick()
+    const err = JSON.parse(t.sent[0]!)
+    expect(err.type).toBe('error')
+    expect(err.corr).toBe(f.id)
+    expect(err.payload.code).toBe('BAD_PAYLOAD')
+    expect(err.payload.details).toEqual({ reason: 'unknown-agent' })
   })
 
   it('drains: enters DRAINING, emits drain/progress, replies drain/done, returns to READY', async () => {

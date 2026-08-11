@@ -111,10 +111,10 @@ async function bootWithDispatchSpy(root: string) {
     channels: [{ orgId: TEST_ORG, platform: 'slack', channelId: 'C1', agents: localAgents }],
     agents: orgAgents
   })
-  const calls: { agentId: string; msg: any; integrationId?: string; callMeta?: any }[] = []
+  const calls: { agentId: string; msg: any; integrationId?: string; callMeta?: any; webchat?: any }[] = []
   ;(daemon as any).dispatch = vi.fn(
-    async (agentId: string, msg: any, integrationId?: string, _wc?: any, callMeta?: any, opts?: any) => {
-      calls.push({ agentId, msg, integrationId, callMeta })
+    async (agentId: string, msg: any, integrationId?: string, webchat?: any, callMeta?: any, opts?: any) => {
+      calls.push({ agentId, msg, integrationId, callMeta, webchat })
       opts?.onAdmission?.({ accepted: true })
       return 'acp-1'
     }
@@ -539,6 +539,25 @@ describe('messageAgent: same-daemon delivery', () => {
     const second = await call(baseReq({ platform: 'webchat', callerChannel: 'wc-1', channel: 'wc-9' }))
     expect(second.targetSession).toBe(first.targetSession)
     expect(calls).toHaveLength(2)
+    await daemon.stop()
+  })
+
+  // #753 regression: a fresh `toAgent`+`channel` wake from inside a webchat conversation
+  // lands on the synthetic `a2a:<callerId>` session above, not the browser's real
+  // conversation — no browser is watching that private pairwise session, so it must NOT
+  // get a live post-only webchat context (only a REPLY back into the real origin session
+  // should — see the replyToSession suite below).
+  it('a fresh webchat-originated wake gets no live post context — its target is the synthetic a2a session', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls, call } = await bootWithDispatchSpy(root)
+    const req = baseReq({
+      platform: 'webchat',
+      callerChannel: '11111111-1111-4111-8111-111111111111',
+      channel: '11111111-1111-4111-8111-111111111111'
+    })
+    expect(await call(req)).toMatchObject({ delivered: true })
+    expect(calls[0]!.msg.channel).toBe('a2a:bot-a') // confirms the synthetic substitution fired
+    expect(calls[0]!.webchat).toBeUndefined()
     await daemon.stop()
   })
 
@@ -1037,6 +1056,51 @@ describe('handleRelayAgentMsg: cross-daemon target side (P2)', () => {
     // The reply message carries the origin session's OWN coordinates, raw platform included.
     expect(calls[0]!.msg).toMatchObject({ platform: 'dream', channel: 'memory', thread: 'dream-1', source: 'agent' })
     expect(calls[0]!.callMeta).toMatchObject({ callFrom: 'bot-a', deliveryId: 'd-reply-1' })
+    await daemon.stop()
+  })
+
+  // #753: the cross-daemon analog of the replyToSession webchat test above — a lineage
+  // reply routed back into an existing webchat origin session carries that session's own
+  // real conversationId, so it gets a live post-only context; a FRESH cross-daemon wake
+  // into a webchat-platform coordinate does not (coordsDecision substitutes a2a:<caller>
+  // for it exactly as the same-daemon path does — see "a fresh webchat-originated wake…").
+  it('#753: a cross-daemon lineage reply into a real webchat origin session gets a live post-only context', async () => {
+    const root = scaffold([{ id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    withSnapshot(daemon)
+    const CONV = '66666666-6666-4666-8666-666666666666'
+    const originKey = sessionKey('webchat', CONV, `webchat:${CONV}`, 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: originKey,
+      agentId: 'bot-b',
+      platform: 'webchat',
+      channel: CONV,
+      thread: `webchat:${CONV}`,
+      acpSessionId: 'acp-webchat-origin',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
+
+    const ack = await (daemon as any).handleRelayAgentMsg(
+      fwd({
+        coords: { platform: 'webchat', channel: CONV },
+        lineageReplyTo: 'acp-webchat-origin',
+        deliveryId: 'd-reply-2'
+      })
+    )
+    expect(ack).toMatchObject({ delivered: true, childSessionId: originKey })
+    expect(calls).toHaveLength(1)
+    const wc = calls[0]!.webchat
+    expect(wc).toMatchObject({ conversationId: CONV, initiator: 'agent' })
+    wc.postSink({
+      conversationId: CONV,
+      agentId: 'bot-b',
+      post: { postId: 'p2', conversationId: CONV, author: { kind: 'agent', agentId: 'bot-b' }, text: 'hi', at: 1 }
+    })
+    expect(sendWebchatPost).toHaveBeenCalledTimes(1)
     await daemon.stop()
   })
 
@@ -1608,6 +1672,110 @@ describe('replyToSession: SessionTarget delivery + origin-only authorization', (
       nextAction: 'finish-turn-and-wait'
     })
     expect(status.message).toMatch(/next turn.*do not retry/i)
+    await daemon.stop()
+  })
+
+  // #753: a reply routed back into an EXISTING webchat origin session carries that
+  // session's own real conversationId (read off the session row, not re-derived through
+  // coordsDecision) — unlike a fresh wake, this DOES have a live browser to post to.
+  it('#753: a reply into a real webchat origin session gets a live post-only context', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    const CONV = '22222222-2222-4222-8222-222222222222'
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('webchat', CONV, `webchat:${CONV}`, 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'webchat',
+      channel: CONV,
+      thread: `webchat:${CONV}`,
+      acpSessionId: 'acp-parent-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      originSessionId: 'acp-parent-1',
+      needsParentReply: 1
+    })
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-1',
+      originCoords: { platform: 'webchat', channel: CONV }
+    })
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
+
+    const res = await (daemon as any).replyToSession(replyReq())
+    expect(res.delivered).toBe(true)
+    expect(calls).toHaveLength(1)
+    const wc = calls[0]!.webchat
+    expect(wc).toMatchObject({ conversationId: CONV, initiator: 'agent' })
+    expect(typeof wc.postSink).toBe('function')
+    wc.postSink({
+      conversationId: CONV,
+      agentId: 'bot-a',
+      post: { postId: 'p1', conversationId: CONV, author: { kind: 'agent', agentId: 'bot-a' }, text: 'hi', at: 1 }
+    })
+    expect(sendWebchatPost).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  })
+
+  // #753: the origin session's channel can itself be a synthetic `a2a:<agentId>` pairwise
+  // session (a reply chain nested inside an earlier postless A2A call) — no browser was
+  // ever watching that channel, so the reply back into it must stay post-less too.
+  it('#753: a reply into a synthetic a2a origin session gets no live post context', async () => {
+    const root = scaffold([{ id: 'bot-a' }, { id: 'bot-b' }])
+    const { daemon, calls } = await bootWithDispatchSpy(root)
+    const SYNTHETIC = 'a2a:bot-a'
+    ;(daemon as any).store.upsertSession({
+      key: sessionKey('webchat', SYNTHETIC, `webchat:${SYNTHETIC}`, 'bot-a'),
+      agentId: 'bot-a',
+      platform: 'webchat',
+      channel: SYNTHETIC,
+      thread: `webchat:${SYNTHETIC}`,
+      acpSessionId: 'acp-parent-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const callerKey = sessionKey('slack', 'C2', '200.1', 'bot-b')
+    ;(daemon as any).store.upsertSession({
+      key: callerKey,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: 'C2',
+      thread: '200.1',
+      acpSessionId: 'acp-child-1',
+      state: 'prompting',
+      lastDeliveredTs: null,
+      updatedAt: Date.now(),
+      originSessionId: 'acp-parent-1',
+      needsParentReply: 1
+    })
+    armTurn(daemon, callerKey, {
+      callFrom: 'bot-a',
+      hopCount: 1,
+      deliveryId: 'd1',
+      originSessionId: 'acp-parent-1',
+      originCoords: { platform: 'webchat', channel: SYNTHETIC }
+    })
+
+    const res = await (daemon as any).replyToSession(replyReq())
+    expect(res.delivered).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.webchat).toBeUndefined()
     await daemon.stop()
   })
 

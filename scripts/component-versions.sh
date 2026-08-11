@@ -53,10 +53,16 @@ SETUP_PATHS="$CP_PATHS"
 WEB_PATHS="packages/web packages/protocol $COMMON"
 RELAY_PATHS="packages/relay packages/message packages/protocol packages/connection packages/observability $COMMON"
 MEM0_PATHS="packages/memory-plugin-mem0 packages/protocol $COMMON"
+DAEMON_PATHS="packages/daemon packages/message packages/protocol packages/connection packages/observability $COMMON"
 # The backend's application source is the immutable external context declared in
 # docker-bake.hcl. Changes to that pin, its owned Dockerfile, or this resolver
 # rebuild the image; unrelated app/package changes leave it on its effective tag.
 MEM0_BACKEND_PATHS="docker/mem0-backend.Dockerfile docker-bake.hcl scripts/component-versions.sh"
+# The runtime sandbox has its OWN Dockerfile, so it deliberately does not share COMMON's
+# docker/Dockerfile. Its inputs are the shim's source graph — the shim ships inside it and the two
+# halves of that channel must not drift apart — plus the pinned runtime versions and table
+# generator that the published runtime table describes.
+RUNTIME_SANDBOX_PATHS="docker/runtime-sandbox.Dockerfile docker/runtime-sandbox packages/daemon/src/shim packages/daemon/tsdown.shim.config.ts packages/daemon/package.json packages/protocol packages/connection docker-bake.hcl .dockerignore .npmrc .pnpmfile.mjs pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json scripts"
 
 # The channel's tags (prerelease tags carry a `-`), oldest → newest. Within one
 # channel `sort -V` compares version fields numerically (rc.9 < rc.10), so the
@@ -103,3 +109,5 @@ printf 'relay=%s\n' "$(effective "$RELAY_PATHS")"
 printf 'mem0=%s\n' "$(effective "$MEM0_PATHS")"
 printf 'mem0Backend=%s\n' "$(effective "$MEM0_BACKEND_PATHS")"
 printf 'setup=%s\n' "$(effective "$SETUP_PATHS")"
+printf 'runtimeSandbox=%s\n' "$(effective "$RUNTIME_SANDBOX_PATHS")"
+printf 'daemon=%s\n' "$(effective "$DAEMON_PATHS")"

@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { hostname, tmpdir } from 'node:os'
-import { existsSync, readFileSync, type Stats } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
+import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
 import { sessionRetentionMs, type Config, type RuntimeDef } from './config/config-schema.js'
 import { discoverAgentsTolerant, type LoadedAgent } from './agents/load-agents.js'
 import { agentChildEnv } from './agents/agent-env.js'
@@ -87,9 +88,11 @@ import {
 import { writeGhShim } from './cp/gh-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
+  daemonGitCredentialTarget,
   gitCredentialEnv,
   initGitInjection,
   probeGitVersion,
+  sandboxGitCredentialTarget,
   sessionGitEnv,
   sessionGitPolicyEnv
 } from './workspace/git-injection.js'
@@ -203,6 +206,7 @@ import {
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
+  clusterWorkspaceCwd,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
@@ -261,6 +265,9 @@ import {
 } from './github/review.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
+import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { setWorkspaceGitRunnerResolver } from './workspace/workspace-manager.js'
+import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
   probeAllRuntimes,
@@ -279,7 +286,7 @@ import { composeRuntimeLaunch, runtimeSandboxReadRoots } from './runtimes/launch
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
-import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH } from './cp/client.js'
+import { CpClient, CP_SUBPROTOCOL, CP_WS_PATH, type BootstrapUpgradeOutcome } from './cp/client.js'
 import { RelayManager } from './cp/relay-manager.js'
 import { CpCollabRoutes } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
@@ -294,12 +301,21 @@ import {
   RELAY_DAEMON_SUBPROTOCOL,
   RELAY_DAEMON_WS_PATH,
   RESERVED_RESTART_CODE,
+  K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
+  DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_VISIBILITY_FEATURE,
   SLACK_SESSION_AUDIENCE_FEATURE,
+  MAX_TASK_DESCRIPTION,
+  MAX_TASK_DETAIL,
+  MAX_TASK_LIST_TASKS,
+  TASK_LIST_FEATURE,
+  WORKSPACE_GIT_MESSAGE_FEATURE,
+  WORKSPACE_GIT_REVIEW_FEATURE,
+  WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
   effectiveMemoryDreamingPolicy,
   effectiveManagedMemoryScope,
@@ -318,6 +334,7 @@ import {
 import { isNoResponseBody, isNoResponsePrefix } from './session/no-response.js'
 import { createSessionReader } from './cp/session-reader.js'
 import { createWorkspaceReader, WorkspaceConflictError } from './cp/workspace-reader.js'
+import { TaskViolationError } from './cp/task-reader.js'
 import { createMemoryReader } from './cp/memory-reader.js'
 import {
   createMemoryProvider,
@@ -459,7 +476,9 @@ import type {
   WebchatRemoteMcpEntitlement,
   ExternalSessionAudience,
   ExternalSessionOrigin,
-  ChannelAgentsOk
+  ChannelAgentsOk,
+  TaskList,
+  TaskListReq
 } from '@agentconnect.md/protocol'
 
 /** Format an error for logs, surfacing a JSON-RPC/ACP RequestError's `code` and
@@ -741,11 +760,11 @@ const MAX_QUEUED_PER_SESSION = 10
 const MAX_TURN_CONTEXT_REGENERATIONS = 3
 const MAX_TURN_CONTEXT_REGENERATION_MS = 120_000
 
-/** Bounded hard-stop for a dream extraction whose runtime ignores `session/cancel`:
- *  how long after the abort the daemon stops awaiting `host.prompt` and discards
- *  the isolated ACP session, rather than wedging forever. The runner's own grace
- *  window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
-const DREAM_CANCEL_FORCE_MS = 15_000
+/** Bounded hard-stop for an isolated model pass (a dream extraction, a commit-message draft) whose
+ *  runtime ignores `session/cancel`: how long after the abort the daemon stops awaiting
+ *  `host.prompt` and discards the isolated ACP session, rather than wedging forever. The dream
+ *  runner's own grace window (DreamRunnerDeps.cancelGraceMs) releases the reservation independently. */
+const CANCEL_FORCE_MS = 15_000
 
 /** How often the idle sweep also reclaims abandoned probe temp roots. One disposable
  *  probe can materialize gigabytes of package caches, so PID-tagged roots whose owner
@@ -838,6 +857,9 @@ const WEBCHAT_REPLAY_MAX_EVENTS = 256
 const WEBCHAT_REPLAY_MAX_BYTES = 1024 * 1024
 const WEBCHAT_REPLAY_MAX_STREAMS = 64
 const WEBCHAT_REPLAY_TTL_MS = 5 * 60_000
+/** A genuine webchat conversationId, as opposed to a synthetic `a2a:<agentId>` channel
+ *  (see `webchatWakeContext`). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** Split `text` into pieces whose UTF-8 byte length each stays under WEBCHAT_CHUNK_BYTES
  *  so no single relay `rd/chat` payload exceeds the 256 KiB cap. Splits on byte budget
@@ -881,6 +903,23 @@ function pendingTurnKey(agentId: string, acpSessionId: string): string {
  *  suppress the other's completion wake, or overwrite its task record under a colliding id. */
 function sdkLeaseKey(agentId: string, acpSessionId: string): string {
   return pendingTurnKey(agentId, acpSessionId)
+}
+
+/** One LIVE background task — a member of the lease's liveness set. `startedAt` is when the
+ *  `task_started` edge arrived, which is the only start time the feed offers. */
+interface LiveSdkTask {
+  description?: string
+  isSubagent: boolean
+  startedAt: number
+}
+
+/** One SETTLED background task, retained for the console's `task/list` read. Display history and
+ *  nothing else: it lives in the lease's `settled` array, never in `tasks`, so no reclaim
+ *  decision can see it. `status` is the terminal status a runtime edge reported, when any. */
+interface SettledSdkTask extends LiveSdkTask {
+  id: string
+  endedAt: number
+  status?: string
 }
 
 // Cap on agent→agent hop depth (design §2.4/§4.5) — reject a `messageAgent` whose
@@ -943,6 +982,13 @@ const MAX_BG_TASK_WAKE_REARMS = 15
  *  budget is the only backstop against a self-feeding wake loop. Counted over the
  *  lease's life (i.e. until the host is reclaimed), not per turn. */
 const MAX_BG_TASK_WAKES_PER_SESSION = 20
+
+/** How many SETTLED background tasks one lease retains for the console's `task/list` read. The
+ *  daemon keeps no task history anywhere else, so without this a finished task is unshowable;
+ *  with it, a `done`/`failed` row survives until the 21st task settles, the session TTL-closes
+ *  or the host is reclaimed. 20 is a display depth, not a durability promise — the panel is a
+ *  live view, and the retained records are strictly outside the liveness set (see `settled`). */
+const MAX_SETTLED_TASKS_PER_SESSION = 20
 
 /**
  * DAEMON-PRIVATE trusted metadata for an agent-originated delivery. Authoritative
@@ -1597,6 +1643,11 @@ interface WebchatTurnContext {
    * relay can fan it to the other participants' daemons as context
    * (webchat-multi-agents.md §5.2). Absent on an older relay / synthetic turn. */
   postSink?: (post: RdWebchatPost) => void
+  /** Set only for a post-only wake context built by {@link webchatWakeContext}: an
+   *  agent-initiated turn inside a webchat conversation, with no browser turn of its
+   *  own to stream to (#753). Carried onto the completed `RdWebchatPost` so the
+   *  browser knows this reply never streamed live and needs rendering from the post. */
+  initiator?: 'agent'
   runtime?: WebchatRuntimeConfig
   worktree?: boolean
   /** Authority captured only from the relay's validated rd/msg envelope. It is
@@ -1733,6 +1784,10 @@ export class Daemon {
   /** One isolated extractor session per agent/host lifetime (never shown to users). */
   private memoryExtractionSessions = new Map<string, string>()
   private memoryExtractionDirs = new Map<string, string>()
+  /** Throwaway empty cwd per agent for the console's commit-message pass (never written to). */
+  private commitMessageDirs = new Map<string, string>()
+  /** The quarantine key of an agent's LAST commit-message pass, so presses don't accumulate one. */
+  private commitMessageTombstones = new Map<string, string>()
   /** Host instances that failed the trusted/read-only preflight; retry only after host replacement. */
   private memoryExtractionUnavailable = new WeakSet<AcpHost>()
   /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
@@ -1784,7 +1839,18 @@ export class Daemon {
     string,
     {
       agentId: string
-      tasks: Map<string, { description?: string; isSubagent: boolean }>
+      /** The LIVENESS set. Membership means "still owed a terminal edge" and is what every
+       *  reclaim decision reads (see the 7 consumers of `tasks.size`/`get`/`delete`). A settled
+       *  task is deleted from here BEFORE any notification, which is also the dedup against the
+       *  three overlapping terminal edges the runtime really sends. */
+      tasks: Map<string, LiveSdkTask>
+      /** Settled tasks retained for the console's `task/list` read — DISPLAY history, never
+       *  liveness. Deliberately a separate array rather than entries left in `tasks`: nothing
+       *  that gates reclaim, the wake budget, session TTL-close, retention GC, secret-file
+       *  cleanup or workspace mutations reads this field, so a retained record cannot be
+       *  mistaken for live work by construction rather than by remembering to filter. Oldest
+       *  first, capped at {@link MAX_SETTLED_TASKS_PER_SESSION}. */
+      settled: SettledSdkTask[]
       sdkState: 'idle' | 'running'
       /** Background-task wakes already spent on this session — see
        *  {@link MAX_BG_TASK_WAKES_PER_SESSION}. */
@@ -1967,6 +2033,21 @@ export class Daemon {
   // per-agent requests are ineffective; security.requireSandbox refuses startup
   // (including on unsupported macOS/Windows hosts).
   private sandboxMechanism: SandboxMechanism | undefined
+  // `--k8s`: this daemon supervises runtimes in sandbox pods instead of local
+  // subprocesses, so every "daemon and runtime share one machine" behavior is off.
+  private readonly k8s: boolean
+  // The k8s execution plane: shim endpoint + driver + workspace seam. Undefined outside --k8s.
+  private k8sPlane?: K8sRuntimePlane
+  // The resolved catalog the probed table is projected onto; it supplies command/args, which the
+  // table never does — the table only says which ids this image provides.
+  private k8sResolvedCatalog?: ResolvedRuntimeCatalog
+  // Model snapshot declared alongside the k8s runtime image; applied after the
+  // SQLite catalog hydrate so the image's list wins over a stale cached one.
+  private k8sDeclaredModels: Record<string, string[]> = {}
+  // The image's `initialize` snapshot. --k8s runs no probe, so without this the fields
+  // runtimeProfiles() reports — ACP protocol version, the adapter's own version, MCP transports —
+  // stay empty and the published snapshot describes nothing.
+  private k8sDeclaredAcp: Record<string, K8sRuntimeAcpSnapshot> = {}
   private runtimeNames: Record<string, string> = {} // registry id -> display name (for CP reporting)
   private runtimeVersions: Record<string, string> = {} // registry id -> version (for the facts/daemon-runtimes snapshot)
   // Models learned by actively probing each runtime (registry id -> model ids).
@@ -2043,6 +2124,8 @@ export class Daemon {
   // Guards against a second CP lifecycle command (restart/upgrade) racing one
   // already in flight (§7.1). Cleared only if an upgrade aborts before exiting.
   private lifecycleInFlight = false
+  private fleetUpgradeInFlight?: { targetVersion: string; installation: Promise<boolean> }
+  private fleetExitStarted = false
   // Whole-daemon drain gate: once set, no new turns are dispatched (SIGTERM, or a
   // scope:daemon drain). Agent-scoped drains gate just their agentId.
   private draining = false
@@ -2166,11 +2249,13 @@ export class Daemon {
       clock?: Clock
       /** How the daemon exits for daemon/restart + daemon/upgrade (spied in tests). */
       requestExit?: (code: number) => void
-      /** Who supervises this process — 'cli' (respawn shell) or 'service' (launchd/
-       *  systemd). Set by the launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown
-       *  means no supervisor (bare `node dist/index.js run`), so CP-commanded
-       *  restart/upgrade is refused: exiting would leave the daemon down
-       *  (cli-daemon-split.md §7.1). */
+      /** Test seam for a blocked or failed CLI upgrade installation. */
+      upgradeInstaller?: typeof runCliUpgrade
+      /** Who supervises this process — 'cli' (respawn shell), 'service' (launchd/systemd),
+       *  or 'k8s' (the kubelet: restart only, since the version is the image). Set by the
+       *  launcher via AGENTCONNECT_SUPERVISOR. Absent/unknown means no supervisor (bare
+       *  `node dist/index.js run`), so CP-commanded restart/upgrade is refused: exiting
+       *  would leave the daemon down (cli-daemon-split.md §7.1). */
       supervisor?: string
       /** Seam for the post-connect runtime probe sweep (tests inject a fake to avoid
        *  spawning real agent subprocesses). Defaults to the real `probeAllRuntimes`. */
@@ -2178,18 +2263,31 @@ export class Daemon {
         runtimes: Record<string, import('./config/config-schema.js').RuntimeDef>,
         opts: ProbeOptions
       ) => Promise<RuntimeProbeResult[]>
+      /** Seam for the k8s execution plane. `--k8s` builds it from the pod's own in-cluster
+       *  config and REFUSES to boot without one — running runtimes on the daemon's host is the
+       *  outcome the mode exists to prevent, so it must not be a fallback. Tests override this
+       *  to exercise k8s-mode policy without a cluster. */
+      startK8sPlane?: typeof startK8sRuntimePlane
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
+      /** `--k8s`: runtimes live in sandbox pods, not on this host. Disables runtime
+       *  probing, host executable discovery (the image declares its runtimes instead),
+       *  the SRT mechanism, and the self-installing upgrade path. */
+      k8s?: boolean
       /** Test seam for the daemon-private memory-plugin transport. */
       memoryPluginConnect?: MemoryPluginConnector
       /** Optional, observer-only evaluation surface and add-on treatment. */
       evaluation?: DaemonEvaluationOptions
     } = {}
   ) {
-    this.sandboxMechanism = opts.sandboxMechanism === null ? undefined : (opts.sandboxMechanism ?? detectSandbox())
+    this.k8s = opts.k8s === true
+    // A k8s runtime is isolated by its own pod, so the in-process SRT mechanism is
+    // not part of that shape — it stays off even if this host happens to support it.
+    this.sandboxMechanism =
+      opts.sandboxMechanism === null || this.k8s ? undefined : (opts.sandboxMechanism ?? detectSandbox())
     this.clock = opts.clock ?? systemClock
     if (opts.evaluation?.capabilityProfile && !opts.evaluation.observer) {
       throw new Error('evaluation capability profile requires an evaluation observer')
@@ -2561,8 +2659,45 @@ export class Daemon {
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     if (cfg.security.requireSandbox && !this.sandboxMechanism) {
       throw new Error(
-        'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
+        this.k8s
+          ? 'daemon startup refused: security.requireSandbox is not supported with --k8s — a k8s runtime is isolated by its own pod, not by the in-process SRT mechanism'
+          : 'daemon startup refused: security.requireSandbox is true but this host has no supported Linux SRT/bwrap mechanism'
       )
+    }
+    if (this.k8s) {
+      // A pod's terminationGracePeriodSeconds must exceed this, or the kubelet SIGKILLs
+      // mid-drain and the graceful window is a promise the deployment cannot keep. The
+      // daemon cannot read its own grace period (it has no pod read), so it states the
+      // number it will actually use and leaves the alignment to the deployment.
+      this.log.info(
+        `k8s: shutdown drain deadline ${Math.round(cfg.limits.shutdownDrainMs / 1000)}s — ` +
+          `terminationGracePeriodSeconds must exceed it; supervisor=${this.opts.supervisor ?? 'unset'}` +
+          `${this.opts.supervisor === K8S_SUPERVISOR ? '' : ' (restart requires AGENTCONNECT_SUPERVISOR=k8s)'}`
+      )
+      // The execution plane itself. Without this `--k8s` only changes behaviour — no Sandbox is
+      // ever created and runtimes still spawn on this host, which is the one outcome the mode
+      // exists to prevent, so a failure here refuses the boot rather than degrading.
+      const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
+      this.k8sPlane = await startPlane({
+        // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
+        // workspace is the one case today: its git reaches the credential helper over a unix
+        // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
+        // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
+        // a listener for it would be a socket nobody can use.
+        tunnelsFor: (agentId) =>
+          this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
+        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
+        log: {
+          info: (message) => this.log.info(message),
+          warn: (message) => this.log.warn(message),
+          debug: (message) => this.log.debug?.(message)
+        }
+      })
+      // Workspace git then runs where the workspace actually is. Registered for ALL agents; the
+      // resolver answers undefined for any without a bound channel, so an agent this daemon has
+      // not launched into a sandbox keeps its local behaviour.
+      setWorkspaceGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
     // A skill runs sandboxed only when its agent does (agentRunsInSandbox), so the
@@ -2601,9 +2736,16 @@ export class Daemon {
         return gitRepoLabel(ws.gitRepo) ?? undefined
       }
     })
-    initGitInjection({
+    const daemonCredentialTarget = daemonGitCredentialTarget({
       shimPath: writeGitcredShim(root, daemonEntryForShims(root)),
-      runDir: join(root, 'run'),
+      runDir: join(root, 'run')
+    })
+    initGitInjection({
+      // Off the SAME predicate the workspace git runner uses, so the pointers always describe the
+      // filesystem the git that reads them will run in. Derived per call rather than fixed at boot:
+      // a cluster agent's channel comes and goes, and both resolvers follow it together.
+      targetFor: (agentId) =>
+        this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       preWarm: async (agentId, reason) => {
         await this.gitCreds.get(agentId, reason)
@@ -2704,7 +2846,9 @@ export class Daemon {
       mode: 'cache-first'
     })
     // Advertise (and launch) only runtimes actually installed on this host — the
-    // registry lists every known agent, but most aren't present here.
+    // registry lists every known agent, but most aren't present here. Under --k8s
+    // there is nothing to discover locally: the sandbox image declares what it ships
+    // (k8s-runtimes.ts), so presence is a declaration rather than a probe.
     const installedCatalog = this.opts.installed
       ? (() => {
           const runtimes = this.opts.installed!(resolvedCatalog.runtimes)
@@ -2715,7 +2859,9 @@ export class Daemon {
             )
           }
         })()
-      : installedRuntimeCatalog(resolvedCatalog)
+      : this.k8s
+        ? this.declaredCloudCatalog(root, resolvedCatalog)
+        : installedRuntimeCatalog(resolvedCatalog)
     const { runtimes: installed, entries: installedEntries } = installedCatalog
     this.runtimeCatalog = installedCatalog
     this.refreshAdmittedRuntimes()
@@ -2758,6 +2904,15 @@ export class Daemon {
     // starts, so the register-time facts snapshot already carries models + the
     // capability matrix instead of blanking the CP until the sweep completes.
     this.hydrateRuntimeCatalogCache()
+    // The image's declared models are the fresher truth than any cached row, and stay
+    // `cached` provenance: no live probe confirmed them, so model gates remain permissive.
+    this.applyK8sDeclaredFacts()
+    // Started HERE, not when the plane comes up: the probe projects onto the resolved catalog, and
+    // that is only assembled further down start(). Kicking it off earlier meant it returned
+    // immediately every time — a probe that never ran, and a daemon that silently advertised
+    // nothing. Background because it needs a pod, and blocking boot on one would make a slow
+    // cluster look like a hung daemon; `facts/daemon-runtimes` replaces, so the probed set wins.
+    if (this.k8sPlane) void this.probeK8sRuntimes()
     this.modelCatalogSvc = new ModelCatalogService({
       store: this.store,
       log: this.log,
@@ -3069,7 +3224,13 @@ export class Daemon {
       agentById: (id) => this.agents.get(id),
       prepareWorkspace: (agent, expectedWarmHost, request) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
-      resolvePreparedWorkspace: (agent) => resolvePreparedWorkspaceCwd(agent),
+      // Cluster agents resolve to POD coordinates — the local resolver would hand back the
+      // daemon-disk path the runtime cannot see. Called only after hostFor's cold gate, so
+      // the channel (and with it the pod's reported mount) has already bound.
+      resolvePreparedWorkspace: (agent) =>
+        this.k8sPlane
+          ? clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id))
+          : resolvePreparedWorkspaceCwd(agent),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
         this.log.warn(
@@ -4715,6 +4876,15 @@ export class Daemon {
   }
 
   private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
+    // In --k8s the workspace lives on the sandbox pod's volume, in the POD's coordinates: the
+    // sandbox has to exist before anything else (the channel reports where the volume mounts),
+    // and none of the local preparation below may run — its mkdir/existsSync/skills work would
+    // land on this daemon's disk, describing a filesystem the runtime never sees. Skills and
+    // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
+    if (this.k8sPlane) {
+      await this.k8sPlane.ensureChannel(agent.id)
+      return clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id), request)
+    }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {
       managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
@@ -4725,6 +4895,9 @@ export class Daemon {
   }
 
   private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
+    // A cluster workspace materializes on the pod's volume at session time; a local prefetch
+    // would clone the repository onto this daemon's own disk instead.
+    if (this.k8sPlane) return Promise.resolve()
     return prefetchWorkspace(agent)
   }
 
@@ -5036,7 +5209,10 @@ export class Daemon {
         explicitEnv: { ...runtimeEnv, ...env },
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
-        allowModelToolUnixSockets: githubAppCredentials
+        allowModelToolUnixSockets: githubAppCredentials,
+        // The pod is the isolation boundary AND a different filesystem, so this daemon's env
+        // must not travel with the launch.
+        ...(this.k8s ? { k8s: true as const } : {})
       })
       launch = composed.launch
       launchRuntime = composed.runtime
@@ -5050,6 +5226,9 @@ export class Daemon {
       throw new Error(`agent "${agentId}" runtime launch preparation failed: ${formatErr(err)}`, { cause: err })
     }
     const host = new AcpHost(launchRuntime, {
+      // In --k8s the runtime runs in the agent's own Sandbox pod; everywhere else AcpHost falls
+      // back to its LocalDriver, which is what a self-hosted daemon wants.
+      ...(this.k8sPlane ? { driver: this.k8sPlane.driver } : {}),
       onUpdate,
       onPermission: (sid, params) => this.onAcpPermission(agentId, sid, params),
       ...(this.evaluation.enabled
@@ -5097,6 +5276,10 @@ export class Daemon {
       'workspace-file-edit-v1',
       'workspace-file-delete-v1',
       WORKSPACE_SESSION_READ_FEATURE,
+      TASK_LIST_FEATURE,
+      WORKSPACE_GIT_MESSAGE_FEATURE,
+      WORKSPACE_GIT_REVIEW_FEATURE,
+      WORKSPACE_GIT_WRITE_FEATURE,
       ...(this.sandboxMechanism ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
@@ -5110,6 +5293,7 @@ export class Daemon {
       // organization environment entry on this marker. Static — the fence is
       // unconditional daemon code, with no runtime dependency.
       AGENT_CONFIG_REVISION_FEATURE,
+      ...(this.bootstrapUpgradeCapable() ? [DAEMON_BOOTSTRAP_UPGRADE_FEATURE] : []),
       // Multi-agent webchat conversations (webchat-multi-agents.md): mentions/post
       // on turns, the transcript-only context op, agent-attributed stream frames,
       // and rd/webchat-post reply fan-out. Static — no runtime dependency.
@@ -5120,6 +5304,17 @@ export class Daemon {
       // built-in preset; turn-time dispatch rechecks the replicated marker.
       ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
     ]
+  }
+
+  private bootstrapUpgradeCapable(): boolean {
+    // A k8s daemon's version is its image, and self-installing would exit the pod for
+    // a version the cluster never asked for. Refuse on the mode, not on the absence of a
+    // supervisor marker or cli-entry pointer: a stale pointer on the root volume, or an
+    // inherited AGENTCONNECT_SUPERVISOR, would otherwise re-enable the whole path.
+    if (this.k8s) return false
+    return (
+      (this.opts.supervisor === 'cli' || this.opts.supervisor === 'service') && readCliEntry(this.root) !== undefined
+    )
   }
 
   private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
@@ -5346,6 +5541,114 @@ export class Daemon {
       this.memoryExtractionQuarantines.set(key, agentId)
       this.memoryExtractionCollectors.delete(key)
     }
+  }
+
+  /**
+   * One bounded commit-message pass for the console's wand (webchat-side-panels.md §5.1): a FRESH
+   * isolated ACP session on the agent's own runtime, prompted once, then discarded.
+   *
+   * What is copied from the two extraction passes and what is not:
+   * - The **fresh, discarded session** is the dream's shape (daemon.ts `runDreamExtractionOnHost`):
+   *   nothing about one press may linger in a cached context, and the LIVE chat session is never
+   *   prompted — the design requires no transcript entry, and the live session also carries tools
+   *   and history this call must not get.
+   * - The **warm host** is distillation's shape (`runMemoryExtraction`). A dedicated one-off host is
+   *   the dream's credential isolation, and it costs an adapter spawn per press; the reader is
+   *   watching a spinner. The diff is the agent's own staged work, not a mined third-party
+   *   transcript, so the residual accepted here is the one #658 already tracks for distillation:
+   *   an injected diff runs against a host that holds tool credentials, and read-only blocks writes,
+   *   not reads.
+   * - **Silence** is distillation's shape: a collector with no `sessionKey` and no `transcript`, so
+   *   this produces zero store rows, zero telemetry, and no platform delivery — the collector's
+   *   presence in `onAcpUpdate` is what keeps the whole turn out of every consumer at once.
+   * - **No MCP tools at all** (`newSession(cwd, [])`), and the collector's blanket permission cancel
+   *   denies anything the runtime asks to do. Its BUILT-IN tools cannot be removed over ACP, so the
+   *   read-only/plan mode below is the hard gate that neuters them, exactly as the dream documents.
+   *
+   * cwd is a throwaway empty dir, not the checkout: the runtime would otherwise load the repository's
+   * own agent instructions into a utility call that must only read the diff it was handed.
+   *
+   * Every failure here is DATA at the caller (`cp/workspace-git.ts` turns it into `ok:false`), so
+   * this method may throw freely — including on the `signal`, which the caller arms as its budget.
+   */
+  private async runCommitMessagePass(
+    agentId: string,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal
+  ): Promise<{ output: string; stopReason: string }> {
+    if (!this.agents.get(agentId)) throw new Error(`unknown agent ${agentId}`)
+    if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
+    const host = await this.ensureHostAsync(agentId)
+    // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
+    // runtime has that channel and is prepended inline where it does not. The output contract lives
+    // in the prompt either way, so a runtime that drops the key still answers in the right shape.
+    const trusted = host.usesMetaSystemPrompt()
+    // HARD GATE, fail closed: a staged diff can carry injected text, and this pass must not be the
+    // thing that gives it a write. No verified non-mutating mode ⇒ no draft.
+    const readOnlyMode = readOnlyExtractionMode(host.permissionModeOptions()?.modes ?? [])
+    if (!readOnlyMode) throw new Error('runtime lacks a verified read-only/plan mode')
+    let cwd = this.commitMessageDirs.get(agentId)
+    if (!cwd) {
+      cwd = await mkdtemp(join(tmpdir(), 'agentconnect-commit-message-'))
+      this.commitMessageDirs.set(agentId, cwd)
+    }
+    const sessionId = trusted ? await host.newSession(cwd, [], undefined, systemPrompt) : await host.newSession(cwd, [])
+    const key = pendingTurnKey(agentId, sessionId)
+    try {
+      if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
+        throw new Error('runtime rejected the read-only/plan mode')
+      }
+      if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
+      const onAbort = () => void host.cancel(sessionId).catch(() => {})
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+      const chunks: string[] = []
+      this.memoryExtractionQuarantines.delete(key)
+      this.memoryExtractionCollectors.set(key, { chunks })
+      try {
+        // Keep the invariant every host.prompt in this file holds: config files exist for the turn.
+        this.rematerializeConfigFiles(agentId)
+        const text = trusted ? prompt : `${systemPrompt}\n\n${prompt}`
+        const result = await this.promptWithCancelBackstop(
+          host,
+          sessionId,
+          text,
+          signal,
+          (detached) => {
+            // Release the chunks but keep a key-only tombstone: a detached adapter can still emit.
+            this.memoryExtractionCollectors.delete(key)
+            this.retainCommitMessageTombstone(agentId, key)
+            void detached.catch(() => {})
+          },
+          'commit-message pass'
+        )
+        // Token counts only, never content: this pass owns no session row to bill, so the operator's
+        // only view of what a wand press cost is this line.
+        this.log.debug(
+          `commit-message: agent "${agentId}" answered (${result.stopReason}, ${result.usage?.totalTokens ?? 0} tokens)`
+        )
+        return { output: chunks.join(''), stopReason: String(result.stopReason) }
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+        this.retainCommitMessageTombstone(agentId, key)
+        this.memoryExtractionCollectors.delete(key)
+      }
+    } finally {
+      // The warm host stays; only THIS session goes. Its quarantine tombstone is reclaimed by
+      // stopHost's per-agent sweep, which a warm-host session (unlike a dream's) always reaches.
+      host.discardSession(sessionId)
+    }
+  }
+
+  /** Keep the terminal fence for THIS pass and drop the one before it. Every press opens a fresh ACP
+   *  session, so without the replacement a long-lived warm host would accumulate one tombstone per
+   *  press until it stopped — and the previous session's stragglers have long since arrived. */
+  private retainCommitMessageTombstone(agentId: string, key: string): void {
+    const prior = this.commitMessageTombstones.get(agentId)
+    if (prior && prior !== key) this.memoryExtractionQuarantines.delete(prior)
+    this.commitMessageTombstones.set(agentId, key)
+    this.memoryExtractionQuarantines.set(key, agentId)
   }
 
   /**
@@ -5680,7 +5983,7 @@ export class Daemon {
           text
         })
         // Bounded backstop: if the runtime ignores `session/cancel` and never
-        // yields, stop awaiting after DREAM_CANCEL_FORCE_MS from the abort so the
+        // yields, stop awaiting after CANCEL_FORCE_MS from the abort so the
         // `finally` discards the ACP session instead of leaking it. The runner's
         // own grace window already releases the reservation independently.
         const result = await this.promptWithCancelBackstop(host, sessionId, text, signal, (prompt) => {
@@ -5769,7 +6072,7 @@ export class Daemon {
     }
   }
 
-  /** Await `host.prompt`, but stop waiting `DREAM_CANCEL_FORCE_MS` after an abort
+  /** Await `host.prompt`, but stop waiting `CANCEL_FORCE_MS` after an abort
    *  if the runtime never yields — so a runtime that ignores `session/cancel`
    *  can't wedge this call (and its ACP session) forever. */
   private async promptWithCancelBackstop(
@@ -5777,7 +6080,9 @@ export class Daemon {
     sessionId: string,
     text: string,
     signal: AbortSignal,
-    onDetached?: (prompt: ReturnType<AcpHost['prompt']>) => void
+    onDetached?: (prompt: ReturnType<AcpHost['prompt']>) => void,
+    /** Names the pass in the detach error — every caller here is an isolated, off-transcript turn. */
+    label = 'dream extraction'
   ): Promise<Awaited<ReturnType<AcpHost['prompt']>>> {
     const done = host.prompt(sessionId, [{ type: 'text', text }])
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -5785,8 +6090,8 @@ export class Daemon {
       const arm = () =>
         (timer = setTimeout(() => {
           onDetached?.(done)
-          reject(new Error('dream extraction ignored session/cancel; detached after backstop'))
-        }, DREAM_CANCEL_FORCE_MS))
+          reject(new Error(`${label} ignored session/cancel; detached after backstop`))
+        }, CANCEL_FORCE_MS))
       if (signal.aborted) arm()
       else signal.addEventListener('abort', arm, { once: true })
     })
@@ -6908,6 +7213,37 @@ export class Daemon {
     return stream
   }
 
+  /**
+   * A post-only `WebchatTurnContext` for a turn that wakes an agent INSIDE a webchat
+   * conversation from another agent — `sendMessage`/lineage-reply, same-daemon or
+   * cross-daemon (#753). Such a wake has no browser turn of its own (no turnId, no
+   * `rd/chat` socket) to stream through, so `sink` is a no-op; only the
+   * completed-reply boundary needs a live transport, and `postSink` fans that out to
+   * every relay this daemon holds via {@link RelayManager.sendWebchatPost} (any relay
+   * without this conversation's browser connection or roster cache just drops it).
+   *
+   * `conversationId` must be the browser's real UUID chatId, not just any webchat-
+   * platform channel: `CpCollabRoutes.coordsDecision` never finds a webchat conversation
+   * "known" (the CP's collab snapshot has no notion of one), so a fresh `toAgent`+
+   * `channel` wake ALWAYS substitutes the synthetic, caller-derived `a2a:<callerId>`
+   * channel (`a2aCoordChannel`) regardless of what channel was asserted — that private
+   * pairwise session has no browser watching it at all. Only a REPLY routed back into an
+   * existing origin session (`origin.channel`/`local.channel`, read from the session row
+   * directly rather than re-derived through `coordsDecision`) can carry the genuine
+   * conversationId. `RdWebchatPost.conversationId` is schema-validated `.uuid()` too —
+   * this guard is what keeps a synthetic channel from ever reaching the wire.
+   */
+  private webchatWakeContext(platform: string, conversationId: string): WebchatTurnContext | undefined {
+    if (platform !== 'webchat' || !UUID_RE.test(conversationId)) return undefined
+    return {
+      conversationId,
+      turnId: randomUUID(),
+      sink: { output: () => undefined, done: () => undefined },
+      initiator: 'agent',
+      postSink: (post) => this.relays?.sendWebchatPost(post)
+    }
+  }
+
   /** Buffer before sending so a transport gap is recoverable even when the live
    * write is lost. The terminal frame carries the final output index for browser
    * gap detection. */
@@ -7926,7 +8262,13 @@ export class Daemon {
         // can answer in its own thread. A parent living on another daemon must not differ
         // from a local one, so neither branch stamps `headless` any more.
       }
-      void this.dispatch(msg.toAgentId, reply, replyIntegrationId, undefined, callMeta).catch((err) =>
+      void this.dispatch(
+        msg.toAgentId,
+        reply,
+        replyIntegrationId,
+        this.webchatWakeContext(origin.platform, origin.channel),
+        callMeta
+      ).catch((err) =>
         this.log.error(`relay lineage-reply dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
       )
       this.log.info(
@@ -8045,9 +8387,14 @@ export class Daemon {
     // Fire-and-forget dispatch (P4-gate admission). delivered:true on ADMISSION — the
     // target processes the turn in its own time (§6.4). dispatch() drops the turn on a
     // pause/drain gate; a reason-typed NAK on those local gates is a follow-up.
-    void this.dispatch(msg.toAgentId, normalized, integrationId, undefined, callMeta, {
-      ...(pairingKey !== undefined ? { requireDurable: true } : {})
-    }).catch((err) => {
+    void this.dispatch(
+      msg.toAgentId,
+      normalized,
+      integrationId,
+      this.webchatWakeContext(platform, sessionChannel),
+      callMeta,
+      { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
+    ).catch((err) => {
       if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`relay agentmsg dispatch failed for agent "${msg.toAgentId}": ${formatErr(err)}`)
     })
@@ -8504,9 +8851,14 @@ export class Daemon {
       pairingKey = key
       callMeta.activationKey = key
     }
-    void this.dispatch(req.toAgentId, normalized, integrationId, undefined, callMeta, {
-      ...(pairingKey !== undefined ? { requireDurable: true } : {})
-    }).catch((err) => {
+    void this.dispatch(
+      req.toAgentId,
+      normalized,
+      integrationId,
+      this.webchatWakeContext(platform, coordChannel),
+      callMeta,
+      { ...(pairingKey !== undefined ? { requireDurable: true } : {}) }
+    ).catch((err) => {
       if (pairingKey !== undefined) this.store.releaseActivation(pairingKey)
       this.log.error(`messageAgent dispatch failed for agent "${req.toAgentId}": ${formatErr(err)}`)
     })
@@ -8665,11 +9017,18 @@ export class Daemon {
         isDm: false
       }
       let admission: { accepted: boolean; reason?: string } | undefined
-      const turn = this.dispatch(originOwner, normalized, integrationId, undefined, callMeta, {
-        onAdmission: (result) => {
-          admission = result
+      const turn = this.dispatch(
+        originOwner,
+        normalized,
+        integrationId,
+        this.webchatWakeContext(originPlatform, local.channel),
+        callMeta,
+        {
+          onAdmission: (result) => {
+            admission = result
+          }
         }
-      })
+      )
       void turn.catch((err) =>
         this.log.error(`replyToSession dispatch failed for session "${req.sessionId}": ${formatErr(err)}`)
       )
@@ -11466,23 +11825,13 @@ export class Daemon {
     })
   }
 
-  /**
-   * §6.9 #353 durable inbox: persist an ADMITTED entry BEFORE its admission ACK/return, so a
-   * hard kill / agent move can't lose a message the caller was already told delivered:true.
-   * Called ONLY on the two genuine admission branches in dispatch() (claim + enqueue), never
-   * on a rejected/gate-dropped admission — a queue-full or paused/draining drop persists
-   * nothing. WEBCHAT turns are skipped (§6.9 #367): their `sink` is a live in-memory transport
-   * that can't be restored across a restart and a dead browser socket can't be resumed, so a
-   * durable row would be un-replayable. Sets `entry.inboxId` so every terminal path can delete
-   * the row. Its id is the stable deliveryId or bot-scoped platform message id (§6.3), making
-   * same-bot re-appends idempotent without colliding across physical bots.
-   */
+  /** Persist an admitted replayable entry before its admission settles (§6.9 #353). */
   private persistInbox(
     entry: QueueEntry,
     key: string,
     options: { required?: boolean; adoptExisting?: boolean; existingId?: string } = {}
   ): 'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed' {
-    if (entry.webchat) return 'skipped' // non-persistable live sink — see §6.9 #367
+    if (entry.webchat && entry.webchat.initiator !== 'agent') return 'skipped' // Browser-owned live sinks cannot replay.
     const id = options.existingId ?? entry.callMeta?.deliveryId ?? stableMessageId(entry.msg)
     try {
       const inserted = this.store.appendInbox({
@@ -12191,21 +12540,51 @@ export class Daemon {
     return run
   }
 
+  /** Whether a console-initiated workspace mutation must be refused because the agent itself could
+   *  be writing. Shared by both coordinators so the two can never drift apart on what "busy" is;
+   *  the SDK-lease half is the load-bearing one — background/followup work edits the tree with no
+   *  `pending` entry at all. */
+  private workspaceMutationBusy(agentId: string): boolean {
+    return (
+      this.draining ||
+      this.drainingAgents.has(agentId) ||
+      this.safetyDrainingAgents.has(agentId) ||
+      (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
+      this.agentHasLiveSdkWork(agentId)
+    )
+  }
+
   private withWorkspaceFileWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
     // Admission into the shared mutation tail is synchronous: a preparation or
     // second publication accepted in the next call stack can only run after this
     // complete stop+write operation, and vice versa.
     return this.withWorkspaceAdmissionFence(agentId, async () => {
-      if (
-        this.draining ||
-        this.drainingAgents.has(agentId) ||
-        this.safetyDrainingAgents.has(agentId) ||
-        (this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0 ||
-        this.agentHasLiveSdkWork(agentId)
-      ) {
+      if (this.workspaceMutationBusy(agentId)) {
         throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
       }
       await this.stopHost(agentId)
+      return await write()
+    })
+  }
+
+  /**
+   * The same coordination as {@link withWorkspaceFileWrite} for a console git write — one admission
+   * fence published synchronously, the same refuse-if-busy rule, the same per-agent serial tail —
+   * MINUS the host stop.
+   *
+   * Stopping the adapter is what a file write, a delete and a pull pay for: each rewrites
+   * working-tree FILES under a runtime that may hold them open, or (the pull) under a session that
+   * is reading them. `add` / `reset` / `commit` / `push` touch only `.git`, never the working tree,
+   * and `.git/index.lock` is git's own mutual exclusion for that — so the residual risk of not
+   * killing the child is a git command that FAILS and reports it as data, not a corrupted checkout.
+   * Paying a host stop per stage toggle would instead discard the open session's warm ACP context
+   * on every click, which is a worse trade for a per-row control.
+   */
+  private withWorkspaceIndexWrite<T>(agentId: string, write: () => Promise<T>): Promise<T> {
+    return this.withWorkspaceAdmissionFence(agentId, async () => {
+      if (this.workspaceMutationBusy(agentId)) {
+        throw new WorkspaceConflictError('the agent is working in this workspace; retry when it is idle')
+      }
       return await write()
     })
   }
@@ -13293,7 +13672,8 @@ export class Daemon {
               author: { kind: 'agent', agentId },
               text: p.webchat.replyText,
               at: Number(replyTs)
-            }
+            },
+            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
           })
         }
         if (!p.webchat.doneSent) {
@@ -13437,7 +13817,8 @@ export class Daemon {
               author: { kind: 'agent', agentId },
               text: p.webchat.replyText,
               at: Number(replyTs)
-            }
+            },
+            ...(p.webchat.initiator ? { initiator: p.webchat.initiator } : {})
           })
         }
       } else {
@@ -16746,7 +17127,8 @@ export class Daemon {
     const leaseKey = sdkLeaseKey(agentId, acpSessionId)
     const lease = this.sdkLease.get(leaseKey) ?? {
       agentId,
-      tasks: new Map<string, { description?: string; isSubagent: boolean }>(),
+      tasks: new Map<string, LiveSdkTask>(),
+      settled: [] as SettledSdkTask[],
       sdkState: 'idle' as const,
       bgWakes: 0,
       armedWakes: 0,
@@ -16757,8 +17139,22 @@ export class Daemon {
     // and hand the completion back to the model so the work is not stranded.
     const settle = (taskId: string, status?: string) => {
       const rec = lease.tasks.get(taskId)
-      if (!rec) return // already settled — dedup the near-simultaneous edges
-      lease.tasks.delete(taskId)
+      if (!rec) {
+        // Already settled: still dedup announce + wake, but let a later terminal edge fill in the
+        // outcome the first one could not carry — the snapshot and task_notification paths supply
+        // no status, so this is how `failed` becomes reachable at all. Display only.
+        if (status) {
+          const prior = lease.settled.find((t) => t.id === taskId) // at most one: retention dedups by id
+          if (prior && !prior.status) prior.status = status
+        }
+        return
+      }
+      lease.tasks.delete(taskId) // liveness removal FIRST — see the `tasks` field docblock
+      // Retained OUTSIDE the liveness set, and before the subagent bail so the panel's data set
+      // equals the set that fences reclaim (subagents are filtered at render, never at the source).
+      lease.settled = lease.settled.filter((t) => t.id !== taskId)
+      lease.settled.push({ id: taskId, ...rec, endedAt: this.clock.now(), status })
+      if (lease.settled.length > MAX_SETTLED_TASKS_PER_SESSION) lease.settled.shift()
       if (rec.isSubagent) return
       this.announceBackgroundTaskDone(agentId, acpSessionId, rec.description, status)
       this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, rec.description, status)
@@ -16774,7 +17170,9 @@ export class Daemon {
         if (typeof m.task_id === 'string')
           lease.tasks.set(m.task_id, {
             description: typeof m.description === 'string' ? m.description : undefined,
-            isSubagent: typeof m.subagent_type === 'string' && m.subagent_type.length > 0
+            isSubagent: typeof m.subagent_type === 'string' && m.subagent_type.length > 0,
+            // The feed carries no start time; this edge's arrival is the only one there is.
+            startedAt: this.clock.now()
           })
         break
       case 'task_notification':
@@ -16806,6 +17204,51 @@ export class Daemon {
     }
     lease.agentId = agentId
     this.sdkLease.set(leaseKey, lease)
+  }
+
+  /** Project one (agent, ACP session) background-task lease for the console's `task/list` read
+   *  (webchat-side-panels.md §3.5). A pure READ: it never touches the lease, so it cannot
+   *  disturb a reclaim decision. Live tasks come first (newest start first) because they are the
+   *  ones fencing the host; then the retained settled ones (newest end first). Only an unknown
+   *  agent is an error — no lease answers `tracked:false`, which is a different statement from
+   *  "no background tasks" and the console says so. */
+  private listBackgroundTasks(req: TaskListReq): TaskList {
+    if (!this.agents.has(req.agentId)) throw new TaskViolationError(`unknown agent "${req.agentId}"`, 'unknown-agent')
+    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, req.sessionId))
+    const iso = (ms: number) => new Date(ms).toISOString()
+    // Model-authored, so bounded here rather than trusted; the row survives, the tail does not.
+    const described = (description: string | undefined) =>
+      description ? { description: description.slice(0, MAX_TASK_DESCRIPTION) } : {}
+    const live = [...(lease?.tasks ?? new Map<string, LiveSdkTask>()).entries()]
+      .map(([id, rec]) => ({
+        id,
+        ...described(rec.description),
+        state: 'running' as const,
+        subagent: rec.isSubagent,
+        startedAt: iso(rec.startedAt)
+      }))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    // `failed` needs a REPORTED failure; a settle edge that carried no status is not evidence of
+    // one, and most of them carry none (the snapshot and task_notification paths supply nothing).
+    const done = [...(lease?.settled ?? [])]
+      .sort((a, b) => b.endedAt - a.endedAt)
+      .map((rec) => ({
+        id: rec.id,
+        ...described(rec.description),
+        state: rec.status === 'failed' || rec.status === 'killed' ? ('failed' as const) : ('done' as const),
+        subagent: rec.isSubagent,
+        startedAt: iso(rec.startedAt),
+        endedAt: iso(rec.endedAt),
+        ...(rec.status ? { detail: rec.status.slice(0, MAX_TASK_DETAIL) } : {})
+      }))
+    const all = [...live, ...done]
+    return {
+      agentId: req.agentId,
+      sessionId: req.sessionId,
+      tracked: !!lease,
+      tasks: all.slice(0, MAX_TASK_LIST_TASKS),
+      truncated: all.length > MAX_TASK_LIST_TASKS
+    }
   }
 
   /** Proactively announce a completed background task to its session's channel/thread
@@ -17929,19 +18372,7 @@ export class Daemon {
     this.serialQueue.clear()
   }
 
-  /**
-   * §6.9 #353 startup replay: re-admit durably-persisted admitted-but-not-completed inbox rows
-   * through the SAME serial gate (`dispatch`), FIFO-by-sessionKey (rows come back ordered by
-   * (sessionKey, enqueuedAt), so order within a sessionKey is preserved and the gate keeps them
-   * serial). Runs once on start() after the store is open, agents are loaded into `this.agents`,
-   * and platform connections/crons are up (so a re-admitted turn has its reply transport), as
-   * normal inbound begins. Idempotency: a row whose id is already live in the gate (`liveInboxIds`)
-   * is skipped — dispatch re-appends the same id with INSERT OR IGNORE so no double row is written,
-   * and the re-admitted entry adopts the existing row for later removal. Rows for an agent that no
-   * longer exists on this daemon are SKIPPED + logged (the simplest choice — another owner/daemon
-   * may hold that agent; we neither drop the row nor block on it). Webchat turns were never
-   * persisted, so none appear here.
-   */
+  /** Re-admit durable inbox rows through the serial gate at startup while preserving replay ownership and FIFO. */
   private replayInbox(agentIds?: ReadonlySet<string>): void {
     let rows: InboxRow[]
     try {
@@ -18043,7 +18474,7 @@ export class Daemon {
         row.agentId,
         msg,
         row.integrationId ?? undefined,
-        undefined,
+        msg.source === 'agent' ? this.webchatWakeContext(msg.platform, msg.channel) : undefined,
         callMeta,
         {
           ...(row.isQueueCmd ? { isQueueCmd: true } : {}),
@@ -18104,59 +18535,75 @@ export class Daemon {
     // negotiates ACK support; scheduling here would hammer legacy EVT delivery.
   }
 
-  /** daemon/restart + daemon/upgrade (§8.3): ack now, then drain + stop + exit so
-   *  the supervisor relaunches (the new binary, for upgrade). Refused when no
-   *  supervisor is present, since exiting would leave the daemon down (§7.1). */
-  private scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck {
-    const supervisor = this.opts.supervisor
-    if (supervisor !== 'cli' && supervisor !== 'service') {
-      const reason = `no supervisor (AGENTCONNECT_SUPERVISOR=${supervisor ?? 'unset'}) — a bare \`run\` cannot ${kind}; use the CLI or an installed service`
+  private admitFleetExit(
+    kind: 'restart' | 'upgrade',
+    targetVersion?: string
+  ):
+    { accepted: false; reason: string } | { accepted: true; root: string; cliEntry?: string; willDrainUntil?: string } {
+    const refuse = (reason: string) => {
       this.log.warn(`cp: ${kind} refused — ${reason}`)
-      return { accepted: false, reason }
+      return { accepted: false as const, reason }
+    }
+    const supervisor = this.opts.supervisor
+    const imageOwnsVersion = "the running version is this pod's image — roll the Deployment instead of self-installing"
+    // Refused on the MODE, not the marker: a live upgrade is delivered without consulting
+    // the advertised capability, so this is the last line of defence, and an inherited
+    // AGENTCONNECT_SUPERVISOR plus a stale cli-entry on the root volume must not reach the
+    // installer — the same invariant bootstrapUpgradeCapable() already holds.
+    if (kind === 'upgrade' && this.k8s) return refuse(imageOwnsVersion)
+    // The kubelet restarts the container in place after the reserved exit code, but never
+    // changes the image, so it supervises restart and not upgrade.
+    if (supervisor === K8S_SUPERVISOR) {
+      if (kind === 'upgrade') return refuse(imageOwnsVersion)
+    } else if (supervisor !== 'cli' && supervisor !== 'service') {
+      const reason = `no supervisor (AGENTCONNECT_SUPERVISOR=${supervisor ?? 'unset'}) — a bare \`run\` cannot ${kind}; use the CLI or an installed service`
+      return refuse(reason)
     }
     if (this.lifecycleInFlight) {
-      const reason = 'another lifecycle operation is already in progress'
-      this.log.warn(`cp: ${kind} refused — ${reason}`)
-      return { accepted: false, reason }
+      return refuse('another lifecycle operation is already in progress')
     }
 
     const root = resolveRoot(this.opts.root)
-
-    // An upgrade must locate the CLI (the out-of-band installer, §7.1) up front, so
-    // an unreachable CLI is refused now rather than silently downgraded to a restart.
     let cliEntry: string | undefined
     if (kind === 'upgrade') {
-      cliEntry = this.readCliEntry(root)
+      cliEntry = readCliEntry(root)
       if (!cliEntry) {
         const reason = `cannot locate the CLI (${cliEntryPointer(root)} missing or invalid) to run the upgrade`
-        this.log.warn(`cp: upgrade refused — ${reason}`)
-        return { accepted: false, reason }
+        return refuse(reason)
       }
-      if (!targetVersion) {
-        return { accepted: false, reason: 'upgrade requires a targetVersion' }
-      }
+      if (!targetVersion) return refuse('upgrade requires a targetVersion')
     }
 
     this.lifecycleInFlight = true
-    // restart drains on a predictable timer; upgrade's install runs FIRST and its
-    // duration is unbounded, so `willDrainUntil` would be misleading — omit it (§7.1).
     const willDrainUntil =
       kind === 'restart' ? new Date(this.clock.now() + this.cfg.limits.shutdownDrainMs).toISOString() : undefined
     this.log.info(`cp: ${kind}${targetVersion ? ` → ${targetVersion}` : ''} accepted`)
+    return { accepted: true, root, ...(cliEntry ? { cliEntry } : {}), ...(willDrainUntil ? { willDrainUntil } : {}) }
+  }
 
-    void (async () => {
-      // §7.1 ②: for upgrade, swap `current` via the CLI BEFORE draining. On failure
-      // the daemon stays up, fully intact — no drain, no exit, `current` untouched.
-      if (kind === 'upgrade') {
-        const ok = await this.runCliUpgrade(cliEntry!, targetVersion!, root)
+  private startFleetUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
+    const installation = Promise.resolve()
+      .then(() => (this.opts.upgradeInstaller ?? runCliUpgrade)(cliEntry, targetVersion, root, this.log))
+      .catch((err) => {
+        this.log.error(`cp: could not install daemon ${targetVersion}: ${formatErr(err)}`)
+        return false
+      })
+      .then((ok) => {
         if (!ok) {
           this.log.error(`cp: upgrade to ${targetVersion} aborted — daemon continues on the current version`)
           this.lifecycleInFlight = false
-          return
+          if (this.fleetUpgradeInFlight?.installation === installation) this.fleetUpgradeInFlight = undefined
         }
-      }
-      // §7.1 ③: drain then exit with the reserved code so the supervisor relaunches
-      // (the new bundle via <root>/current for upgrade).
+        return ok
+      })
+    this.fleetUpgradeInFlight = { targetVersion, installation }
+    return installation
+  }
+
+  private finishFleetExit(kind: 'restart' | 'upgrade'): void {
+    if (this.fleetExitStarted) return
+    this.fleetExitStarted = true
+    void (async () => {
       try {
         await this.stop()
       } catch (err) {
@@ -18165,39 +18612,37 @@ export class Daemon {
         this.requestExit(RESERVED_RESTART_CODE)
       }
     })()
-
-    return { accepted: true, willDrainUntil }
   }
 
-  /** Read the CLI entry path the CLI self-heals into `<root>/cli-entry` (§3). */
-  private readCliEntry(root: string): string | undefined {
-    try {
-      const entry = readFileSync(cliEntryPointer(root), 'utf8').trim()
-      return entry && existsSync(entry) ? entry : undefined
-    } catch {
-      return undefined
+  /** Admit immediately, then install before the existing drain-and-relaunch path. */
+  private scheduleFleetExit(kind: 'restart' | 'upgrade', targetVersion?: string): DaemonControlAck {
+    const admission = this.admitFleetExit(kind, targetVersion)
+    if (!admission.accepted) return admission
+    void (async () => {
+      if (kind === 'upgrade' && !(await this.startFleetUpgrade(admission.cliEntry!, targetVersion!, admission.root))) {
+        return
+      }
+      this.finishFleetExit(kind)
+    })()
+
+    return { accepted: true, ...(admission.willDrainUntil ? { willDrainUntil: admission.willDrainUntil } : {}) }
+  }
+
+  private async runBootstrapFleetUpgrade(targetVersion: string): Promise<BootstrapUpgradeOutcome> {
+    if (targetVersion === DAEMON_VERSION) return { status: 'current' }
+    const existing = this.fleetUpgradeInFlight
+    if (existing?.targetVersion === targetVersion) {
+      const installed = await existing.installation
+      return installed
+        ? { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
+        : { status: 'failed', reason: `failed to install ${targetVersion}` }
     }
-  }
-
-  /** Run `agentconnect upgrade --to <v> --root <root>` (no --restart; the daemon's
-   *  own exit + supervisor relaunch applies it). Resolves true iff it exits 0. */
-  private async runCliUpgrade(cliEntry: string, targetVersion: string, root: string): Promise<boolean> {
-    const { spawn } = await import('node:child_process')
-    this.log.info(`cp: installing daemon ${targetVersion} via ${cliEntry}`)
-    return await new Promise<boolean>((resolve) => {
-      const child = spawn(process.execPath, [cliEntry, 'upgrade', '--to', targetVersion, '--root', root], {
-        stdio: 'inherit'
-      })
-      child.on('exit', (code) => {
-        if (code === 0) this.log.info(`cp: daemon ${targetVersion} installed and activated`)
-        else this.log.error(`cp: CLI upgrade exited ${code ?? 'via signal'}`)
-        resolve(code === 0)
-      })
-      child.on('error', (err) => {
-        this.log.error(`cp: could not launch CLI upgrade: ${formatErr(err)}`)
-        resolve(false)
-      })
-    })
+    const admission = this.admitFleetExit('upgrade', targetVersion)
+    if (!admission.accepted) return { status: 'failed', reason: admission.reason }
+    if (!(await this.startFleetUpgrade(admission.cliEntry!, targetVersion, admission.root))) {
+      return { status: 'failed', reason: `failed to install ${targetVersion}` }
+    }
+    return { status: 'installed', restart: () => this.finishFleetExit('upgrade') }
   }
 
   // ── ConfigApply seam (CP changes config, never live routing) ──
@@ -19224,7 +19669,12 @@ export class Daemon {
               githubApp: workspace.gitCredential === 'github-app'
             }
           : undefined
-      }
+      },
+      // Registered on `register/ok` only, and reset by every reconnect — a console commit is
+      // refused as data whenever it is absent (workspace-git.ts explains why).
+      () => this.gitCommitIdentity,
+      // The model pass runs HERE, on the agent's own runtime: the CP is never on the inference path.
+      (id, systemPrompt, prompt, signal) => this.runCommitMessagePass(id, systemPrompt, prompt, signal)
     )
 
     this.cpClient = new CpClient({
@@ -19244,6 +19694,12 @@ export class Daemon {
         this.cpOrgSlug = slug
         if (slug) this.log.debug(`cp: org slug "${slug}" (session deep links)`)
       },
+      ...(this.bootstrapUpgradeCapable()
+        ? {
+            onBootstrapUpgrade: (lifecycle: { targetVersion: string }) =>
+              this.runBootstrapFleetUpgrade(lifecycle.targetVersion)
+          }
+        : {}),
       agentVersion: DAEMON_VERSION,
       host: hostname(),
       heartbeatDefaultMs: cp.heartbeatMs,
@@ -19317,8 +19773,24 @@ export class Daemon {
       workspaceRead: createWorkspaceReader(workspaceLocation, (id, write) => this.withWorkspaceFileWrite(id, write)),
       workspaceGit: {
         status: (id, sessionId) => workspaceGit.status(id, sessionId),
-        pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id))
+        // diff/log are read-only, so they skip the runtime-quiescence coordinator the pull needs.
+        diff: (req) => workspaceGit.diff(req),
+        log: (req) => workspaceGit.log(req),
+        pull: (id) => this.withWorkspaceFileWrite(id, () => workspaceGit.pull(id)),
+        // The four console git writes serialize against agent turns without evicting the warm host
+        // — they touch `.git`, never the working tree (see withWorkspaceIndexWrite).
+        stage: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.stage(req)),
+        unstage: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.unstage(req)),
+        commit: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.commit(req)),
+        push: (req) => this.withWorkspaceIndexWrite(req.agentId, () => workspaceGit.push(req)),
+        // The wand writes nothing, so it skips both coordinators like the other reads. It does start
+        // the agent's host, which the admission fence blocks while a mutation holds it — reported as
+        // data, not an error, because a workspace write is exactly when the answer would be stale.
+        message: (req) => workspaceGit.message(req)
       },
+      // A pure projection of the in-memory lease — no I/O, no runtime, and nothing it can do to a
+      // reclaim decision, so it needs neither of the workspace coordinators.
+      taskReader: { list: async (req) => this.listBackgroundTasks(req) },
       memoryReader: createMemoryReader((id) => this.agents.get(id)?.dir, this.memory),
       dreamReader: createDreamReader(this.dreamRunner()),
       localSkillsReader: createLocalSkillsReader(
@@ -19409,6 +19881,118 @@ export class Daemon {
     } catch (err) {
       this.log.debug(`runtime auth facts emit failed (${runtimeId}): ${(err as Error).message}`)
     }
+  }
+
+  /**
+   * `--k8s` runtime set: the runtimes the sandbox image declares it provides,
+   * projected onto the resolved catalog (which still supplies command/args, and is
+   * served cache-first from `<root>/acp_registry.json` in an image). Replaces host
+   * executable discovery, which can only ever answer "nothing" in a daemon pod.
+   */
+  /** Fold the declared/probed snapshot into the SAME maps runtimeProfiles() reads, so a probed
+   *  fact and a locally probed one are indistinguishable downstream. */
+  private applyK8sDeclaredFacts(): void {
+    for (const [runtimeId, models] of Object.entries(this.k8sDeclaredModels)) {
+      this.runtimeModels.set(runtimeId, [...models])
+      this.runtimeModelsSource.set(runtimeId, 'cached')
+    }
+    for (const [runtimeId, snapshot] of Object.entries(this.k8sDeclaredAcp)) {
+      if (snapshot.protocolVersion !== undefined) this.runtimeAcpVersions.set(runtimeId, snapshot.protocolVersion)
+      const mcp = snapshot.capabilities?.mcpCapabilities
+      if (mcp && typeof mcp === 'object') {
+        const caps = mcp as { http?: unknown; sse?: unknown }
+        this.runtimeMcpCaps.set(runtimeId, { http: caps.http === true, sse: caps.sse === true })
+      }
+    }
+  }
+
+  private declaredCloudCatalog(root: string, resolved: ResolvedRuntimeCatalog): ResolvedRuntimeCatalog {
+    // Kept for a file-supplied table (an override, or a daemon started before its first probe
+    // returns). The authoritative answer comes from the sandbox itself — see probeK8sRuntimes.
+    this.k8sResolvedCatalog = resolved
+    const table = loadK8sRuntimeTable(root)
+    if (!table) {
+      this.log.info('runtimes: --k8s advertises none until the sandbox probe reports what the image provides')
+      return { entries: {}, runtimes: {} }
+    }
+    return this.projectDeclaredRuntimes(resolved, table)
+  }
+
+  /**
+   * Ask a sandbox which runtimes the image provides, and advertise THAT.
+   *
+   * The alternative shapes are both worse in the same way. Compiling the list into the daemon
+   * couples a runtime version bump to a daemon release and states something about an image the
+   * daemon never opened. Projecting it from a ConfigMap is a copy, and a copy left behind when the
+   * image tag moves is silent: the daemon advertises a version nobody can run and looks healthy.
+   *
+   * Runs in the background because it needs a pod: the daemon must register and advertise
+   * something first, and `facts/daemon-runtimes` has replace semantics, so the probed set simply
+   * supersedes whatever was advertised at boot.
+   */
+  private async probeK8sRuntimes(): Promise<void> {
+    const plane = this.k8sPlane
+    const resolved = this.k8sResolvedCatalog
+    if (!plane || !resolved) return
+    try {
+      this.log.info('runtimes: probing a sandbox for the runtimes this image provides')
+      const table = await plane.probeRuntimes()
+      const catalog = this.projectDeclaredRuntimes(resolved, table)
+      this.runtimeCatalog = catalog
+      // The profile reports these, and they come from the catalog entry rather than the table —
+      // so without this refresh the version the image just told us about would be reported as the
+      // registry's, or as an empty string.
+      for (const [id, entry] of Object.entries(catalog.entries)) {
+        this.runtimeNames[id] = entry.name
+        if (entry.version) this.runtimeVersions[id] = entry.version
+        this.runtimeProbedVersions.set(id, entry.version || (this.runtimeProbedVersions.get(id) ?? ''))
+      }
+      this.applyK8sDeclaredFacts()
+      this.log.info(
+        `runtimes ready (probed): ${table.runtimes.map((entry) => `${entry.id}@${entry.version}`).join(', ') || '(none)'}`
+      )
+      this.cpClient?.emitDaemonRuntimes?.(
+        this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
+        this.mcpServerFactsFromDefs()
+      )
+    } catch (err) {
+      // Advertising nothing is the honest outcome: the Control Plane then assigns no agent, which
+      // is better than assigning one to a daemon that cannot launch it.
+      const message = (err as Error).message
+      // The one failure with a specific cause worth naming: an image built before the probe
+      // capability existed rejects the request, and the symptom — a daemon that advertises
+      // nothing — is otherwise indistinguishable from a cluster that is merely slow.
+      const stale = /not granted|not served/.test(message)
+      this.log.warn(
+        stale
+          ? `runtimes: the runtime image does not serve the probe capability — pin one built with it (${message})`
+          : `runtimes: sandbox probe failed — advertising none (${message})`
+      )
+    }
+  }
+
+  private projectDeclaredRuntimes(
+    resolved: ResolvedRuntimeCatalog,
+    table: import('./runtimes/k8s-runtimes.js').K8sRuntimeTable
+  ): ResolvedRuntimeCatalog {
+    const declared = declaredRuntimeCatalog(resolved, table)
+    if (declared.unresolved.length)
+      this.log.warn(`runtimes: declared but unknown to the catalog: ${declared.unresolved.join(', ')}`)
+    // Curated admission needs a live probe, which --k8s does not run, so a declared
+    // curated id could never launch — drop it loudly instead of advertising it.
+    if (declared.rejectedCurated.length)
+      this.log.warn(
+        `runtimes: declared curated runtimes cannot be admitted under --k8s: ${declared.rejectedCurated.join(', ')}`
+      )
+    // A package launcher fetches its artifact at launch: not the image's build, not what
+    // the version pin names, and impossible on a restricted egress. Dropped, not warned.
+    if (declared.rejectedPackageLaunchers.length)
+      this.log.warn(
+        `runtimes: declared runtimes launch through a package manager and cannot be pinned to this image: ${declared.rejectedPackageLaunchers.join(', ')} — resolve them to a local executable in the catalog`
+      )
+    this.k8sDeclaredModels = declared.models
+    this.k8sDeclaredAcp = declared.acp
+    return declared.catalog
   }
 
   /** Synchronously pre-fill the in-memory runtime maps from the SQLite last-good
@@ -19517,6 +20101,17 @@ export class Daemon {
    * must not affect the CP connection.
    */
   private async probeRuntimesAndEmit(includeOrdinary = true): Promise<void> {
+    // --k8s has no runtime to launch on this host: profiles come from the image's
+    // declared table. Still emit them, because this is also the CP (re)connect path
+    // that (re)asserts the runtime list. Unconditional — unlike the fake-host guard
+    // below, an injected prober must not re-enable local spawning in this mode.
+    if (this.k8s) {
+      this.cpClient?.emitDaemonRuntimes?.(
+        this.reportedRuntimeIds().map((id) => this.runtimeProfileFor(id)),
+        this.mcpServerFactsFromDefs()
+      )
+      return
+    }
     // With a hostFactory (unit tests use fake in-memory hosts) we don't spawn real
     // subprocesses unless a probe seam is injected.
     if (this.opts.hostFactory && !this.opts.probeRuntimes) return
@@ -19852,6 +20447,11 @@ export class Daemon {
     const hostStarts = [...this.hostStarts.values()]
     const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
     for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
+    // Only now: the shim channel IS the runtimes' transport, so closing it before the drain
+    // would cut in-flight turns and closing it before host teardown would leave `AcpHost.stop()`
+    // unable to send its ACP close — a sandbox process still running, and reconnecting.
+    await this.k8sPlane?.stop().catch(() => undefined)
+    setWorkspaceGitRunnerResolver(undefined)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

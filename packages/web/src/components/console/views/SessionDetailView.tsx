@@ -8,7 +8,7 @@ import { selfConversationPath } from '@/lib/conversation-addressing'
 import { assembleConversationLineage, type ConversationLineage } from '@/lib/conversation-lineage'
 import { encodeConversationKey } from '@/lib/conversation-key'
 import { unverifiedConversationNotice } from '@/lib/session-access-notifications'
-import { useParams, useRouter, useSearchParams } from 'next/navigation'
+import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import {
   agentLabel,
@@ -84,6 +84,8 @@ import { isAuthConfigured } from '@/lib/auth'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { ContextWindowIndicator } from '@/components/console/ContextWindowIndicator'
 import { ComposerMenu } from '@/components/console/ComposerMenu'
+import { MentionMenu, type MentionOption } from '@/components/console/MentionMenu'
+import { useMentionAutocomplete } from '@/components/console/useMentionAutocomplete'
 import {
   WORK_LANES,
   sessionTurnInFlight,
@@ -96,7 +98,12 @@ import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
 import { SessionAgentFocusMenu, type SessionAgentFocusOption } from '@/components/console/SessionAgentFocusMenu'
 import { useCrumbSlot } from '@/components/console/Shell'
-import { SessionRail, SessionRailSlot } from '@/components/console/SessionRail'
+import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
+import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
+import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
+import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
+import { TasksPanel, tasksTabStatus, type TasksPanelVerdict } from '@/components/console/dock/TasksPanel'
+import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/components/console/viewer/SessionViewer'
 import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
@@ -211,36 +218,77 @@ function ComposerTextarea({
   sessionId,
   placeholder,
   onSend,
-  onImageFile
+  onImageFile,
+  mentionCandidates,
+  onPickMention,
+  onMentionJoiningChange
 }: {
   sessionId: string
   placeholder: string
   onSend: () => void
   onImageFile: (file: File) => void
+  mentionCandidates: MentionOption[]
+  onPickMention: (option: MentionOption) => void | Promise<boolean>
+  /** Mirrors `mention.joining` up to the parent so the (separately isolated)
+   *  Send button can disable itself too — see the effect below. */
+  onMentionJoiningChange: (joining: boolean) => void
 }) {
   const draft = usePgDraft(sessionId)
   const { setPgInput } = usePlayground()
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // @mention picker (webchat-multi-agents.md §9.1/§9.2) — same contract as the
+  // Home composer's: picking a candidate inserts "@Name " and typedMentionIds()
+  // resolves that text back into a structural mention on send.
+  const mention = useMentionAutocomplete({
+    ref: textareaRef,
+    value: draft,
+    setValue: (v) => setPgInput(sessionId, v),
+    candidates: mentionCandidates,
+    onPick: onPickMention
+  })
+  useEffect(() => onMentionJoiningChange(mention.joining), [mention.joining, onMentionJoiningChange])
   return (
-    <textarea
-      className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
-      placeholder={placeholder}
-      value={draft}
-      onChange={(e) => setPgInput(sessionId, e.target.value)}
-      onPaste={(event) => {
-        const image = clipboardImageFile(event.clipboardData)
-        if (!image) return
-        event.preventDefault()
-        onImageFile(image)
-      }}
-      onKeyDown={(e) => {
-        // Enter sends — but NOT while an IME is composing (that Enter
-        // just confirms the candidate), and Shift+Enter is a newline.
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-          e.preventDefault()
-          onSend()
-        }
-      }}
-    />
+    <div className="relative">
+      <textarea
+        ref={textareaRef}
+        className="block max-h-[160px] min-h-[56px] w-full resize-none border-0 bg-transparent px-[15px] pt-[13px] pb-[2px] font-sans text-[14px] leading-[1.55] text-(--text-primary) outline-none placeholder:text-(--text-tertiary)"
+        placeholder={placeholder}
+        value={draft}
+        onChange={(e) => {
+          setPgInput(sessionId, e.target.value)
+          mention.sync(e.target.value, e.target.selectionStart ?? e.target.value.length)
+        }}
+        onSelect={(e) => {
+          // Re-derives the anchor on every caret move, not just typing — see
+          // the Home composer's identical handler for why.
+          const el = e.currentTarget
+          mention.sync(el.value, el.selectionStart ?? el.value.length)
+        }}
+        onPaste={(event) => {
+          const image = clipboardImageFile(event.clipboardData)
+          if (!image) return
+          event.preventDefault()
+          onImageFile(image)
+        }}
+        onKeyDown={(e) => {
+          if (mention.handleKeyDown(e)) return
+          // Enter sends — but NOT while an IME is composing (that Enter
+          // just confirms the candidate), while a mention join is still in
+          // flight (see onMentionJoiningChange), and Shift+Enter is a newline.
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !mention.joining) {
+            e.preventDefault()
+            onSend()
+          }
+        }}
+      />
+      <MentionMenu
+        options={mention.matches}
+        activeIndex={mention.activeIndex}
+        coords={mention.coords}
+        onHover={mention.setActiveIndex}
+        onPick={mention.pick}
+      />
+    </div>
   )
 }
 
@@ -253,6 +301,7 @@ function ComposerSendButton({
   busy,
   imagePreparing,
   hasImage,
+  mentionJoining,
   onSend,
   onStop
 }: {
@@ -260,6 +309,9 @@ function ComposerSendButton({
   busy: boolean
   imagePreparing: boolean
   hasImage: boolean
+  /** A picked @mention's mid-conversation join is still in flight — see
+   *  ComposerTextarea's onMentionJoiningChange for why Send holds off too. */
+  mentionJoining: boolean
   onSend: () => void
   onStop: () => void
 }) {
@@ -269,7 +321,7 @@ function ComposerSendButton({
       className="sendbtn ml-1 h-[26px] w-[26px] flex-none rounded-[7px]"
       aria-label={busy ? 'Stop response' : 'Send message'}
       onClick={() => (busy ? onStop() : onSend())}
-      disabled={!busy && (imagePreparing || (!hasText && !hasImage))}
+      disabled={!busy && (imagePreparing || mentionJoining || (!hasText && !hasImage))}
     >
       <Icon name={busy ? 'square' : 'arrow-up'} size={busy ? 10 : 14} />
     </button>
@@ -1124,24 +1176,40 @@ function MobileSessionFamilyLinks({
   )
 }
 
-/**
- * Loading stays on the same rail + body tracks as the transcript that replaces it.
- * A resolved missing resource opts out of the rail so its standalone 404 card uses
- * the whole content wrap instead of reserving an empty session-list column.
- */
-function SessionDetailFrame({ children, withRail = true }: { children: ReactNode; withRail?: boolean }) {
+/** The dock's tabs. PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
+const DOCK_TABS: DockTab[] = [
+  { key: 'sessions', label: 'Sessions', icon: 'messages-square' },
+  { key: 'files', label: 'Files', icon: 'folder-tree', actionIcon: 'refresh-cw', actionLabel: 'Refresh files' },
+  {
+    key: 'git',
+    label: 'Git',
+    icon: 'git-commit-horizontal',
+    actionIcon: 'refresh-cw',
+    actionLabel: 'Refresh git status'
+  },
+  {
+    key: 'tasks',
+    label: 'Tasks',
+    icon: 'list-checks',
+    actionIcon: 'refresh-cw',
+    actionLabel: 'Refresh background tasks'
+  }
+]
+
+/** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
+function SessionDetailFrame({ children, withDock = true }: { children: ReactNode; withDock?: boolean }) {
   return (
     <div className="flex min-h-full items-stretch gap-[26px]">
       <div
         className={
-          withRail
+          withDock
             ? 'mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col max-desktop:p-4'
             : 'flex min-h-full min-w-0 flex-1 flex-col max-desktop:p-4'
         }
       >
         {children}
       </div>
-      {withRail ? <SessionRailSlot /> : null}
+      {withDock ? <SessionDockSlot /> : null}
     </div>
   )
 }
@@ -1167,11 +1235,36 @@ function sessionUnavailableReasons(providerName: string | undefined, profileLink
 
 export default function SessionDetailView() {
   const acpRegistry = useAcpRegistry()
-  const { activeOrg, orgPath } = useOrgs()
+  const { activeOrg, orgPath, myRole } = useOrgs()
   const router = useRouter()
+  const pathname = usePathname()
   const searchParams = useSearchParams()
   const flatView = isFlatSessionView(searchParams)
   const { id: routeId, key: conversationKeyParam } = useParams<{ id?: string; key?: string }>()
+  // Which file the viewer holds, and the ONLY place that answer lives (§4): "look at this file" is a link a reviewer sends, so the pane mode is addressable and survives a reload. Derived from the route rather than mirrored into state — that is also what makes it per-session for free, since a session link carries no `file`.
+  // NOT trimmed: a POSIX filename may legitimately begin or end with whitespace, and `URLSearchParams` round-trips those bytes faithfully — trimming would ask the daemon for a different file, or close the viewer outright on a name made only of spaces. Only an absent or empty param means "no file".
+  const viewerPath = searchParams.get('file') || null
+  // Which workspace that path was read from. A merged conversation's header focus is component state that defaults to the current REPRESENTATIVE, and the representative changes as another participant becomes newest — so without this a link copied while focused on agent B reopens B's path against A's checkout.
+  const viewerAgentParam = searchParams.get('agent')
+  // Which read of that path is on screen (§4's M2 addition to the same param set): the file, its unstaged diff, or its staged diff. A value this console does not know degrades to File mode — the one read every workspace can answer — rather than to an error.
+  const viewerMode = viewerModeFromParam(searchParams.get('mode'))
+  // REPLACE, never push. The viewer is a pane mode inside one route, not a place: pushing would spend a history entry per tree click, so a reader who read six files would need seven Back presses to leave the session, and Back would stop meaning "leave this session". The cost, accepted: Back does not step file-by-file within a visit. Writing through URLSearchParams is also what makes a path with slashes and spaces round-trip — `router.replace` on `.toString()`, `searchParams.get` back.
+  const setViewerFile = useCallback(
+    (next: string | null, agentId?: string | null, mode: ViewerMode = 'file') => {
+      const query = new URLSearchParams(searchParams)
+      if (next) query.set('file', next)
+      else query.delete('file')
+      // The workspace travels with the path, so the link resolves to the checkout it was made from rather than to whichever agent the header happens to focus on reopening.
+      if (next && agentId) query.set('agent', agentId)
+      else query.delete('agent')
+      // File mode is the DEFAULT, so it writes no parameter at all: an M1 link stays byte-identical, and closing the viewer takes the mode with the path rather than leaving a mode behind for the next file opened.
+      if (next && mode !== 'file') query.set('mode', mode)
+      else query.delete('mode')
+      const search = query.toString()
+      router.replace(search ? `${pathname}?${search}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchParams]
+  )
   // Merged conversation mode (merged-conversation-view.md §5.3): /conversations/:key
   // resolves the roster through the bounded key-addressed resolver; the
   // REPRESENTATIVE (newest visible member) then drives every session-scoped
@@ -1390,6 +1483,11 @@ export default function SessionDetailView() {
   const [imageError, setImageError] = useState<string | null>(null)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
   const [composerMenuOpen, setComposerMenuOpen] = useState<ComposerMenuKey | null>(null)
+  // Mirrors ComposerTextarea's mention.joining (isolated from this component
+  // to keep typing cheap) — true while a picked @mention's mid-conversation
+  // join is still in flight, so the separately-isolated Send button can
+  // disable itself for the same reason ComposerTextarea holds off Enter-send.
+  const [mentionJoining, setMentionJoining] = useState(false)
   const [runtimeSelections, setRuntimeSelections] = useState<
     Record<string, { model?: string; effort?: string; permissionPreset?: string; fast?: boolean }>
   >({})
@@ -1546,15 +1644,8 @@ export default function SessionDetailView() {
       : sessionBase
   const agentRuntime = session?.runtime || owner?.runtime || ''
 
-  // The lineage links the rail and the mobile card draw, in their three levels
-  // rather than either source's wire shape: what woke the open row, the row
-  // itself, what it woke.
-  //
-  // A conversation contributes no lineage SIBLINGS. That relation is "the other
-  // children of my parent session" — a per-session fact the CP derives, which a
-  // room has no version of — so the slot stays absent here instead of carrying
-  // this page's additional parent conversations under a name that means
-  // something else. Those are parents, and they render as parents.
+  // The lineage links the Sessions panel and the mobile card draw, in their three levels rather than either source's wire shape: what woke the open row, the row itself, what it woke.
+  // A conversation contributes no lineage SIBLINGS: "the other children of my parent session" is a per-session fact the CP derives and a room has no version of, so the slot stays absent rather than carrying this page's additional parent conversations under a name that means something else — those are parents and render as parents.
   const familyLinks = useMemo(() => {
     if (conversationFamily) {
       return { parentSessions: conversationFamily.parentSessions, childSessions: conversationFamily.childSessions }
@@ -1673,7 +1764,24 @@ export default function SessionDetailView() {
   const storedHeaderFocusValid =
     headerFocusSelection.scope === headerFocusScope &&
     headerFocusOptions.some((option) => option.agentId === headerFocusSelection.agentId)
-  const headerFocusAgentId = storedHeaderFocusValid ? headerFocusSelection.agentId : defaultHeaderFocusAgentId
+  // A deep link's `agent` outranks both the stored selection and the default while it names an agent this conversation actually has.
+  const linkedFocusAgentId =
+    viewerAgentParam && headerFocusOptions.some((option) => option.agentId === viewerAgentParam)
+      ? viewerAgentParam
+      : null
+  // An `agent` that is PRESENT but does not resolve fails CLOSED. Falling back to the default here would read the linked path from a different checkout and draw plausible-but-wrong content — exactly the ambiguity this parameter exists to remove. Only a link without `agent` at all gets the legacy default. Held until the roster has options, since an empty list means "not known yet", not "not there".
+  const linkedFocusStale = viewerAgentParam !== null && linkedFocusAgentId === null && headerFocusOptions.length > 0
+  const headerFocusAgentId =
+    linkedFocusAgentId ?? (storedHeaderFocusValid ? headerFocusSelection.agentId : defaultHeaderFocusAgentId)
+  // Both focus menus go through here, because a `?file=` with an `agent` OUTRANKS the local selection: writing only the selection would make the control a no-op — the menu closes and the URL's agent renders again. So the URL moves with the reader, and the open path follows them into the checkout they picked (where the viewer's own not-found state covers a path that agent does not have).
+  const changeHeaderFocus = useCallback(
+    (agentId: string) => {
+      setHeaderFocusSelection({ scope: headerFocusScope, agentId })
+      // The MODE travels with the path: a reader comparing one agent's diff to another's must not be dropped into File mode by the act of switching.
+      if (viewerPath !== null) setViewerFile(viewerPath, agentId, viewerMode)
+    },
+    [headerFocusScope, setViewerFile, viewerMode, viewerPath]
+  )
   useEffect(() => {
     if (!defaultHeaderFocusAgentId) return
     setHeaderFocusSelection((current) =>
@@ -1682,13 +1790,19 @@ export default function SessionDetailView() {
         : { scope: headerFocusScope, agentId: defaultHeaderFocusAgentId }
     )
   }, [defaultHeaderFocusAgentId, headerFocusOptionIds, headerFocusScope])
+  // Whose checkout the Files tab and the viewer read: the agent the header is focused on. Empty on a session with no agent at all, and then there is no workspace to offer a tab for.
+  const filesAgentId = headerFocusAgentId || null
   const headerFocusOption = headerFocusOptions.find((option) => option.agentId === headerFocusAgentId)
   const headerFocusSessionId = headerFocusOption?.sessionId
   const extraHeaderDetailId =
     headerFocusSessionId && headerFocusSessionId !== currentSessionDetail?.id && !syntheticPlayground
       ? headerFocusSessionId
       : null
-  const { data: extraHeaderDetail, mutate: mutateExtraHeaderDetail } = useSWR<SessionDetailDto>(
+  const {
+    data: extraHeaderDetail,
+    error: extraHeaderDetailError,
+    mutate: mutateExtraHeaderDetail
+  } = useSWR<SessionDetailDto>(
     consoleKeys.sessionDetail(activeOrg?.id, extraHeaderDetailId),
     ([, orgId, , sessionId]) => fetchSessionDetail(sessionId as string, orgId as string)
   )
@@ -1712,27 +1826,24 @@ export default function SessionDetailView() {
         daemon: focusedSessionBase.daemon ?? focusedAgent?.daemon
       }
     : null
+  // Whether the focused session's workspace isolation has an ANSWER yet. A related session in the focus menu has an id but no detail until its own round trip lands, and both isolation sources read undefined until then — so a surface mounted now would take "not isolated" for an answer and read the agent's primary checkout instead of the worktree the session actually owns. Withhold rather than guess.
+  const filesScopeReady =
+    !headerFocusSessionId ||
+    extraHeaderDetailId === null ||
+    extraHeaderDetail !== undefined ||
+    focusedSession?.workspaceIsolation !== undefined
+  // A REJECTED isolation read is not a pending one. The checkout still may not be read — the answer is unknown either way — but a spinner that never resolves is a worse lie than saying so, so this state gets its own copy and the tab counts as answered.
+  const filesScopeFailed = !filesScopeReady && extraHeaderDetailError !== undefined
+  // Which lease the Tasks tab reads. Tasks are NOT a checkout, so this waits on neither the worktree gate `filesSessionId` applies nor the isolation round trip Files and Git hold for — a session's background tasks exist whatever it is checked out into, and the CP says so. What it does need is the CANONICAL session id the lease is keyed by, which is what the focus options already carry. A playground session the daemon has not created yet has no canonical id and no tasks either, so it gets no tab rather than a 404 notice.
+  const tasksSessionId =
+    headerFocusSessionId && !(syntheticPlayground && headerFocusSessionId === session?.id) ? headerFocusSessionId : null
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''
   const focusedRuntimeMeta = acpRuntime(acpRegistry, focusedAgentRuntime)
 
-  // Other sessions for the left rail, scoped by the rail's own agent filter — see
-  // lib/session-rail-filter.ts for why an untouched filter follows the route and an
-  // edited one does not.
-  //
-  // Seeded DURING RENDER rather than in an effect. An effect commits one frame in
-  // which the filter is still empty while the roster is already known — long enough
-  // to paint "All agents" over org-wide rows and fire the unfiltered request before
-  // snapping to the default. `seedRailAgentFilter` is pure and returns an edited
-  // filter unchanged, so the stored state only ever holds the reader's own choice
-  // and the seed is recomputed from the route every time.
-  //
-  // The seed is the whole conversation roster: in conversation mode the resolver's
-  // members, in session mode the same resolver's probe (already fetched above for
-  // the §5.3 redirect), falling back to the lone owning agent.
-  // (The ladder itself — resolver, then this browser's own live roster, then the
-  // owning agent — is railSeedAgentIds. Joined into a string so the roster's fresh
-  // array identity per render, rebuilt from the detail snapshot, cannot churn the memo.)
+  // Other sessions for the dock's Sessions panel, scoped by that panel's own agent filter — see lib/session-rail-filter.ts for why an untouched filter follows the route and an edited one does not.
+  // Joined into a string so the roster's fresh array identity per render, rebuilt from the detail snapshot, cannot churn the memo below.
   const liveSeedAgentIds = (session?.participants ?? []).map((p) => p.agentId).join(',')
+  // The seed is the whole conversation roster (`railSeedAgentIds`): the resolver's members — in session mode its §5.3 redirect probe — then this browser's own live roster, then the lone owning agent.
   const seedAgentIds = useMemo(
     () =>
       railSeedAgentIds(
@@ -1743,54 +1854,115 @@ export default function SessionDetailView() {
     [conversationKey, conversationMembers, selfConversation, liveSeedAgentIds, session?.agentId]
   )
   const [chosenRailFilter, setChosenRailFilter] = useState<RailAgentFilter>(EMPTY_RAIL_AGENT_FILTER)
+  // Seeded DURING RENDER: an effect would commit one frame of "All agents" over org-wide rows and fire the unfiltered request first, and `seedRailAgentFilter` is pure — state only ever holds the reader's own choice, the seed is recomputed from the route.
   const railFilter = seedRailAgentFilter(chosenRailFilter, seedAgentIds)
   const setRailAgentIds = useCallback((agentIds: string[]) => setChosenRailFilter({ agentIds, touched: true }), [])
 
-  // With agents selected this reads a FILTERED page, not the org-wide `allSessions`
-  // window — a busy org's newest 50 may not include them at all, which would hide
-  // the rail on an agent that has plenty of runs. Cleared, the unfiltered page IS
-  // the question being asked. A null query means the filter has nothing to say yet
-  // (no session, and the reader has not touched it), so the org key stays null and
-  // no page is fetched to be thrown away.
-  //
-  // The ordinary detail rail is conversation-shaped. An explicit flat route keeps
-  // the same raw-session mode so navigating the rail cannot silently return to the
-  // grouped list or hide superseded sessions again.
+  // With agents selected this reads a FILTERED page, not the org-wide `allSessions` window — a busy org's newest 50 may not include them at all, leaving the panel empty on an agent that has plenty of runs.
+  // Cleared, the unfiltered page IS the question; `null` means the filter has nothing to say yet (no session, untouched), so the org key stays null and no page is fetched to be thrown away.
   const railQuery = railAgentFilterQuery(railFilter)
   const railAgentIds = railQuery?.agentId ?? []
+  // The panel's list is conversation-shaped as the detail route is; an explicit flat route keeps the same raw-session mode, so navigating the panel cannot silently return to the grouped list or re-hide superseded sessions.
   const {
     sessions: seededRailRows,
     total: seededRailTotal,
     isLoading: seededRailLoading
   } = useSessionList(MOCK_MODE || !railQuery ? null : activeOrg?.id, railQuery ?? {}, { grouped: !flatView })
-  // A seed that narrows the rail down to the conversation already on screen would
-  // hide the rail — and the picker that could widen it — behind SessionRail's
-  // `empty`. Re-ask that question unfiltered instead of stranding the reader.
-  //
-  // The rail reports the verdict because only it can reach the whole of it: its
-  // rows are this page merged with globally hydrated pins and the open row, and
-  // lineage alone can keep a one-row page worth drawing. Latched to the SEED, not
-  // held as a boolean — widening replaces the rows, so the collapse that
-  // justified it stops being observable the moment it works.
-  //
-  // Lineage is waited on here because the rail cannot tell a conversation with no
-  // relatives from one whose relatives have not arrived: `conversationFamily` is an
-  // EMPTY family, not `undefined`, for as long as its own multi-request fetch is in
-  // flight. Latching on that would widen a rail that is about to grow a Related
-  // tree — the very regression this gate exists to prevent, reached by a race
-  // instead of a miscount. The rail withholds its verdict over its own pins.
+  // Which panel is on screen. Sessions is where a session page opens; every other tab is one the reader asked for.
+  const [dockTab, setDockTab] = useState(DOCK_TABS[0]!.key)
+  // The Files tab's `refresh-cw` action: re-reads the tree and the git status without remounting the panel, so the reader's filter and expanded folders survive it.
+  const [filesRefreshTick, setFilesRefreshTick] = useState(0)
+  // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
+  const [filesRootSettled, setFilesRootSettled] = useState(false)
+  // The Git tab's own `refresh-cw`, and the verdict it reports — its settle state feeds the tab status, its changed count the tab's badge.
+  const [gitRefreshTick, setGitRefreshTick] = useState(0)
+  // The ORG role, which is what the CP gates these writes on (`denyViewerWrite`): a viewer gets the
+  // read surface M2 shipped and is told so, rather than offered a control the route will refuse.
+  // The demo tour has no daemon to write to at all.
+  const canWriteWorkspace = !MOCK_MODE && myRole !== 'viewer'
+  // The viewer's own stage/unstage moved the index, so the panel's status and its log are stale.
+  const onViewerIndexChanged = useCallback(() => setGitRefreshTick((tick) => tick + 1), [])
+  // A write from the PANEL moves the index the other way: the open diff now describes a tree that
+  // moved, and the Files tree's status tags with it. The panel applies the fresh status its own
+  // reply carried, so it is the only reader here that does NOT need a re-read.
+  const [viewerDiffTick, setViewerDiffTick] = useState(0)
+  const onPanelWrote = useCallback(() => {
+    setViewerDiffTick((tick) => tick + 1)
+    setFilesRefreshTick((tick) => tick + 1)
+  }, [])
+  const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({ settled: false, changed: null })
+  // The Tasks tab's own `refresh-cw` and verdict. Its settle state feeds the tab status, its running count the badge.
+  const [tasksRefreshTick, setTasksRefreshTick] = useState(0)
+  const [tasksVerdict, setTasksVerdict] = useState<TasksPanelVerdict>({ settled: false, running: null })
+  // A seed narrowed to the conversation already on screen hides the list AND the picker that could widen it, so re-ask it unfiltered.
   const railSeedKeyNow = railSeedKey(railFilter)
+  // Waited on because an in-flight family reads as EMPTY, not `undefined`: latching there widens a list about to grow a Related tree.
   const railFamilySettled = conversationMode
     ? conversationLineage !== undefined || conversationLineageError !== undefined
     : !sessionDetailLoading
+  // Latched to the SEED, not held as a boolean: widening replaces the rows, so the collapse that justified it stops being observable.
   const [widenedSeed, setWidenedSeed] = useState<string | null>(null)
-  const handleRailWouldHide = useCallback(
+  // The same verdict as a live boolean for the tab status — `null` until the panel has reported one, which is not the answer `true` is.
+  const [sessionsWouldHide, setSessionsWouldHide] = useState<boolean | null>(null)
+  // Reported by the panel rather than re-derived here: only it can reach the whole verdict, its page merged with globally hydrated pins and the open row.
+  const handleSessionsWouldHide = useCallback(
     (wouldHide: boolean) => {
+      setSessionsWouldHide(wouldHide)
       if (!railSeedShouldWiden(railSeedKeyNow, wouldHide, !seededRailLoading && railFamilySettled)) return
       setWidenedSeed(railSeedKeyNow)
     },
     [railSeedKeyNow, seededRailLoading, railFamilySettled]
   )
+  // What tells "the list is still coming" from "there is no list": the dock withholds its chrome and holds its track for either, and the two only differ in the placeholder a sibling-tab-ready dock shows.
+  const sessionsStatus = sessionsTabStatus(sessionsWouldHide, !seededRailLoading && railFamilySettled)
+  // `loading` also covers "we do not know which checkout yet": a related session's isolation is a round trip behind, and reading before it lands would read the wrong one. A failed isolation read is `ready` instead — it has copy to draw, and it is never going to resolve on its own.
+  const filesStatus = filesScopeFailed ? 'ready' : filesScopeReady ? filesTabStatus(filesRootSettled) : 'loading'
+  // Same three states for Git, and for the same reasons: an unknown checkout is `loading`, a failed isolation read is answered copy.
+  const gitStatus = filesScopeFailed ? 'ready' : filesScopeReady ? gitTabStatus(gitVerdict.settled) : 'loading'
+  // Tasks has no isolation branch to wait on, so its status is only ever "has the read answered".
+  const tasksStatus = tasksTabStatus(tasksVerdict.settled)
+  // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
+  const dockTabs = useMemo<DockTab[]>(
+    () =>
+      DOCK_TABS.filter((tab) =>
+        tab.key === 'files' || tab.key === 'git'
+          ? filesAgentId !== null && !MOCK_MODE
+          : // Dropped on the same terms and for the same reason, but against its OWN scope: no agent to ask, or no canonical session for the lease to be keyed by.
+            tab.key !== 'tasks' || (filesAgentId !== null && tasksSessionId !== null && !MOCK_MODE)
+      ).map((tab) =>
+        tab.key === 'sessions'
+          ? { ...tab, status: sessionsStatus }
+          : tab.key === 'files'
+            ? { ...tab, status: filesStatus }
+            : tab.key === 'git'
+              ? {
+                  ...tab,
+                  status: gitStatus,
+                  // The badge is the changed-file count, omitted rather than shown as `0`: a clean tree wears no pill, and neither does a workspace whose status could not be read.
+                  ...(gitVerdict.changed ? { badge: gitVerdict.changed } : {})
+                }
+              : tab.key === 'tasks'
+                ? {
+                    ...tab,
+                    status: tasksStatus,
+                    // Running tasks only, and omitted rather than shown as `0`: an idle session wears no pill, and neither does an untracked one, whose count is null rather than zero.
+                    ...(tasksVerdict.running ? { badge: tasksVerdict.running } : {})
+                  }
+                : tab
+      ),
+    [
+      filesAgentId,
+      filesStatus,
+      gitStatus,
+      gitVerdict.changed,
+      sessionsStatus,
+      tasksSessionId,
+      tasksStatus,
+      tasksVerdict.running
+    ]
+  )
+  // The active tab has to be one that exists: a Files tab dropped under the reader would otherwise leave the dock with no active tab and an unlabelled panel.
+  const dockTabKey = dockTabs.some((tab) => tab.key === dockTab) ? dockTab : DOCK_TABS[0]!.key
   const railSeedWidened = !MOCK_MODE && railSeedKeyNow !== '' && widenedSeed === railSeedKeyNow
   const { sessions: widenedRailRows, total: widenedRailTotal } = useSessionList(
     railSeedWidened ? activeOrg?.id : null,
@@ -1799,25 +1971,21 @@ export default function SessionDetailView() {
   )
   const railSessionRows = railSeedWidened ? widenedRailRows : seededRailRows
   const railSessionTotal = railSeedWidened ? widenedRailTotal : seededRailTotal
-  // The chips have to describe the list actually on screen — a widened rail is
-  // unfiltered, and leaving the seed's chips up would misname it.
+  // The chips describe the list on screen, and a widened rail is unfiltered — leaving the seed's chips up would misname it.
   const railDisplayAgentIds = railSeedWidened ? [] : railFilter.agentIds
   const railSessions = useMemo(() => {
     if (!MOCK_MODE) return railSessionRows
     if (!railQuery) return []
     if (railAgentIds.length === 0) return allSessions
     if (railAgentIds.length === 1) return getSessions(railAgentIds[0]!)
-    // The demo fixtures carry no conversation grouping, so stand in for it with
-    // the channel — enough for the multi-agent filter to behave like the real one.
+    // The demo fixtures carry no conversation grouping, so the channel stands in for it — enough for the multi-agent filter to behave like the real one.
     const channelsOf = (agentId: string) => new Set(getSessions(agentId).map((s) => `${s.platform}\0${s.channel}`))
     const shared = railAgentIds.map(channelsOf).reduce((a, b) => new Set([...a].filter((c) => b.has(c))))
     return allSessions.filter(
       (s) => railAgentIds.includes(s.agentId ?? '') && shared.has(`${s.platform}\0${s.channel}`)
     )
   }, [allSessions, getSessions, railAgentIds, railQuery, railSessionRows])
-  // The open row as the rail sees it: its conversation and, where the resolver
-  // has answered, that conversation's full membership. Both are identity the rail
-  // matches on, and neither is on the session row itself.
+  // The open row as the Sessions panel sees it: its conversation and, where the resolver has answered, that conversation's full membership — both identity the panel matches on, and neither on the session row itself.
   const railCurrentKey = conversationKey ?? selfKey
   const railCurrentMemberIds = useMemo(() => {
     const roster = conversationKey ? conversationMembers : (selfConversation?.sessions ?? null)
@@ -1989,23 +2157,23 @@ export default function SessionDetailView() {
         setConversationHasEarlier([...older.values()].some((cursor) => cursor !== null))
         setConversationLoadedKey(conversationKey)
         setConversationOffline(failed)
-        setMsgs(
-          mergeConversationRows(
-            sources,
-            rowsBySession,
-            conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current,
-            conversationSourceAgentByMessageRef.current
-          )
+        // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
+        const merged = mergeConversationRows(
+          sources,
+          rowsBySession,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
+        setMsgs(merged)
         setMsgLoading(false)
         setMsgPaging(false)
         liveCursorRef.current = cursors.get(sid) ?? null
         tailReadyRef.current = true
         setTailReady(true)
-        const repRows = rowsBySession.get(sid)
-        if (repRows && !sessionBusyRef.current) reconcileLiveSteps(sid, repRows, aid)
+        if (merged.length > 0 && !sessionBusyRef.current)
+          reconcileLiveSteps(sid, merged, aid, rowsBySession.get(sid) ?? [])
       })().catch((e) => {
         if (!active) return
         setMsgErr(e instanceof Error ? e.message : String(e))
@@ -2075,11 +2243,11 @@ export default function SessionDetailView() {
       const sources = conversationMembersRef.current ?? []
       const run = (async () => {
         const state = conversationSourcesRef.current
-        const repRows: SessionMessageDto[] = []
         // Per-source isolation, mirroring the initial fan-out: one member's
         // daemon going offline mid-conversation must degrade THAT source to
         // the partial-merge notice, never stall the whole tail round.
         let failed = 0
+        let fetchedAny = false
         for (const src of sources) {
           try {
             let cursor = state.cursors.get(src.sessionId) ?? null
@@ -2094,7 +2262,7 @@ export default function SessionDetailView() {
                 src.sessionId,
                 mergeSessionMessages(current, page.messages, platformTranscriptOrdering(src.platform))
               )
-              if (src.sessionId === sid) repRows.push(...page.messages)
+              if (page.messages.length > 0) fetchedAny = true
               if (page.liveCursor !== null) {
                 cursor = page.liveCursor
                 state.cursors.set(src.sessionId, cursor)
@@ -2107,18 +2275,18 @@ export default function SessionDetailView() {
         }
         if (tailSessionRef.current !== sid) return
         setConversationOffline(failed)
-        setMsgs(
-          mergeConversationRows(
-            sources,
-            state.rows,
-            conversationSourceSessionByMessageRef.current,
-            conversationSourceTurnByMessageRef.current,
-            conversationSourcePlatformByMessageRef.current,
-            conversationSourceAgentByMessageRef.current
-          )
+        // Exact post matching uses every participant row; fuzzy prompt matching stays representative-only.
+        const merged = mergeConversationRows(
+          sources,
+          state.rows,
+          conversationSourceSessionByMessageRef.current,
+          conversationSourceTurnByMessageRef.current,
+          conversationSourcePlatformByMessageRef.current,
+          conversationSourceAgentByMessageRef.current
         )
-        if (tailSessionRef.current === sid && !sessionBusyRef.current && repRows.length > 0)
-          reconcileLiveSteps(sid, repRows, aid)
+        setMsgs(merged)
+        if (tailSessionRef.current === sid && !sessionBusyRef.current && fetchedAny)
+          reconcileLiveSteps(sid, merged, aid, state.rows.get(sid) ?? [])
       })()
         .catch(() => {
           // Keep the last good transcript; the next signal retries.
@@ -2303,7 +2471,7 @@ export default function SessionDetailView() {
   if (conversationKey && (conversationError || (conversationAccessDegraded && !conversationRoster))) {
     const notice = unverifiedConversationNotice(Boolean(conversationError), conversationAccessIssues, orgPath)
     return (
-      <SessionDetailFrame withRail={false}>
+      <SessionDetailFrame withDock={false}>
         <div className="card p-6">
           <div className="font-sans text-[13.5px] leading-[1.55] text-(--text-secondary)">{notice.message}</div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -2325,7 +2493,7 @@ export default function SessionDetailView() {
     // A grace-expired null or a resolved-but-empty roster, with the access
     // checks themselves healthy — so absence here is a real answer.
     return (
-      <SessionDetailFrame withRail={false}>
+      <SessionDetailFrame withDock={false}>
         <NotFound
           icon="message-square-off"
           kind="CONVERSATION"
@@ -2352,7 +2520,7 @@ export default function SessionDetailView() {
       )
     }
     return (
-      <SessionDetailFrame withRail={false}>
+      <SessionDetailFrame withDock={false}>
         <NotFound
           icon="message-square-off"
           kind="SESSION"
@@ -2476,6 +2644,11 @@ export default function SessionDetailView() {
   const workspaceTitle = hasSessionWorktree
     ? `Open ${focusedAgentLabel}’s session worktree`
     : `Open ${focusedAgentLabel}’s workspace`
+  // Scoped to this session's OWN worktree only where it has one. `hasSessionWorktree` is the same gate the Workspace link above uses, and it is load-bearing for the reads: the daemon answers a shared workspace's sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
+  const filesSessionId = hasSessionWorktree && headerFocusSessionId ? headerFocusSessionId : undefined
+  const filesWorkdir = focusedAgent && focusedAgent.workdir !== '—' ? focusedAgent.workdir : undefined
+  // A `?file=` on a session with no agent to read it from has nothing to open, so the conversation stays: the viewer never renders without a checkout behind it, nor before that checkout's scope is known, nor when the link named a workspace this conversation does not have.
+  const viewerOpen = viewerPath !== null && filesAgentId !== null && filesScopeReady && !linkedFocusStale
   const liveSteps = isWebchat ? getLiveSteps(session.id) : []
 
   // The conversation roster, for EVERY live surface — the synthetic playground and
@@ -2507,7 +2680,7 @@ export default function SessionDetailView() {
   // Resume the webchat conversation by its id (session.channelId == the conversationId);
   // a synthetic playground turn omits it (the CP mints a fresh id).
   const onPgSend = (text?: string) => {
-    if (imagePreparing) return
+    if (imagePreparing || mentionJoining) return
     setImageError(null)
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
@@ -2575,6 +2748,34 @@ export default function SessionDetailView() {
           )
         }))
     : []
+  // Same candidate pool as addAgentOptions (isPg can invite; an adopted session
+  // can only narrow among the roster it already has), reshaped for the
+  // @mention picker — see ComposerTextarea's `mention` above.
+  const mentionCandidates: MentionOption[] = isPg
+    ? agents.map((a) => ({
+        id: a.id,
+        name: liveRoster.find((p) => p.agentId === a.id)?.name ?? agentLabel(a),
+        icon: a.icon,
+        runtime: a.runtime,
+        inRoster: liveRoster.some((p) => p.agentId === a.id)
+      }))
+    : multiLive
+      ? liveRoster.flatMap((p) => {
+          const a = agents.find((x) => x.id === p.agentId)
+          return a ? [{ id: a.id, name: p.name, icon: a.icon, runtime: a.runtime, inRoster: true }] : []
+        })
+      : []
+  // Returns the join's promise (not fire-and-forget): pgAddAgent awaits the
+  // HTTP request before the roster reflects the new participant, and the
+  // composer holds Enter-send off until it settles — sending against the OLD
+  // roster would find no typed mention for the just-picked name and silently
+  // fall back to messaging every existing participant instead (or, on a
+  // failed join, leave the inserted "@Name" text pointing at nobody).
+  const onPickMention = (option: MentionOption): Promise<boolean> | void => {
+    if (option.inRoster) return
+    const picked = agents.find((a) => a.id === option.id)
+    return picked ? pgAddAgent(session.id, picked) : undefined
+  }
   const onCopyLink = () => {
     try {
       const canonicalId = session.realSessionId ?? session.id
@@ -3203,18 +3404,20 @@ export default function SessionDetailView() {
     ) : null
 
   return (
-    // Three-column track ([nav · body · rail]): the full-width row lets the
-    // sibling-session rail sit flush against the page's right edge while the 880px
-    // body centres in what remains. The rail always occupies its column above the
-    // `wide` breakpoint, even with no rows to show, so this is the one position the
-    // body ever takes. Keep the row in step with SessionDetailFrame, which draws
-    // the same two columns for every state that precedes or replaces a session.
+    // Body · dock track, 26px apart in a full-width row: the −30px bleed reaches the page's right edge while the 880px body centres in what remains, and the track is a column only above `wide:` (below it the dock is an overlay and spends nothing) but holds that column in every tab status, so the body's position is a constant of the band — keep in step with SessionDetailFrame, whose slot holds the identical box while the session loads.
     <div className="flex min-h-full items-stretch gap-[26px]">
       {/* No bottom padding here on mobile: the sticky composer cancels exactly
           `.content`'s bottom inset (see its negative `bottom`), so any padding
           BELOW it becomes a strip the composer can never reach — it stops short
           of the screen edge at the end of the scroll. */}
-      <div className="mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col">
+      {/* The viewer is full-width in every band (§7) — a file wants the columns a transcript does not. The 880px cap is the only geometry that changes: the dock's reserved TRACK keeps its column either way, which is the one thing §7 forbids trading. */}
+      <div
+        className={
+          viewerOpen
+            ? 'flex min-h-full min-w-0 flex-1 flex-col'
+            : 'mx-auto flex min-h-full min-w-0 max-w-[880px] flex-1 flex-col'
+        }
+      >
         {/* DESKTOP TITLE ROW — the session name + its status badge. These used to live
           in the top-bar crumb; with the crumb gone the page has to name itself. The
           mobile title/status live in Shell's app bar, so this region is desktop-only. */}
@@ -3256,7 +3459,7 @@ export default function SessionDetailView() {
           <SessionAgentFocusMenu
             options={headerFocusOptions}
             value={headerFocusAgentId}
-            onChange={(agentId) => setHeaderFocusSelection({ scope: headerFocusScope, agentId })}
+            onChange={(agentId) => changeHeaderFocus(agentId)}
           />
           {headerCron ? (
             <Link
@@ -3375,6 +3578,17 @@ export default function SessionDetailView() {
           </div>
         )}
 
+        {/* The link named a workspace this conversation does not have. Saying so beats opening the same path against whichever agent the header would otherwise focus — that reads plausible and is wrong. */}
+        {linkedFocusStale && viewerPath !== null && (
+          <div
+            data-viewer-stale-link=""
+            className="mb-3 rounded-md border border-(--status-paused) bg-(--status-paused-soft) px-3 py-2 font-sans text-[12px] font-medium leading-normal text-(--text-secondary) max-desktop:mx-4 max-desktop:mt-3"
+          >
+            This link points at an agent that is not part of this conversation, so its file was not opened. Pick an
+            agent in the header and open the file from the Files tab.
+          </div>
+        )}
+
         {/* MOBILE HEADER ROW — the desktop meta row's shape at 390px: the focused
           agent, workspace, visibility, and everything numeric collapsed behind
           the SAME Details popover. It replaces the old 4-up stat strip and the
@@ -3386,7 +3600,7 @@ export default function SessionDetailView() {
             <SessionAgentFocusMenu
               options={headerFocusOptions}
               value={headerFocusAgentId}
-              onChange={(agentId) => setHeaderFocusSelection({ scope: headerFocusScope, agentId })}
+              onChange={(agentId) => changeHeaderFocus(agentId)}
             />
           </span>
           {workspaceHref ? (
@@ -3471,818 +3685,926 @@ export default function SessionDetailView() {
 
         {!isLive && approvalCard('mx-4 mt-4 max-desktop:rounded-lg desktop:mx-0 desktop:mt-0 desktop:mb-4')}
 
-        {wantTranscript && visibleMsgLoading && (
-          <div className="flex justify-center py-10">
-            <Spinner size={30} />
-          </div>
-        )}
-        {conversationOffline > 0 && (
-          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-            <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-            <span>
-              Some participants&apos; records are on an offline daemon — this view may be missing part of the
-              conversation until it reconnects.
-            </span>
-          </div>
-        )}
-        {wantTranscript && visibleMsgErr && !transcriptPurged && (
-          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-            <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
-            <span>
-              Couldn&apos;t load the transcript — the owning daemon may be offline. Session history is pulled live from
-              the daemon, so it&apos;s unavailable while that machine is disconnected.
-            </span>
-          </div>
-        )}
-        {transcriptPurged && (
-          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-            <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
-            <span>
-              This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with any
-              workspace created just for it. The details on this page are all that remain.
-            </span>
-          </div>
-        )}
-        {transcriptPartiallyPurged && (
-          <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
-            <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
-            <span>
-              Part of this history is missing:{' '}
-              {memberCount > 1
-                ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
-                : 'this transcript was deleted'}{' '}
-              on {fmtDate(purgedAt)} by the session retention policy. What you see below is the remaining record.
-            </span>
-          </div>
-        )}
-        {transcriptEmpty && !transcriptPurged && (
-          <div className="card m-4 flex flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:m-0">
-            <Icon name="message-square-dashed" size={20} color="var(--text-tertiary)" />
-            <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-              No messages in this session yet.
-            </div>
-          </div>
-        )}
+        {viewerOpen && viewerPath && filesAgentId ? (
+          // Keyed on the whole WORKSPACE SCOPE, not just the path: the viewer resets its slice in a passive effect, which runs AFTER paint, so without a fresh mount one committed frame draws the previous read's bytes — and its line count and size — under the new heading. The path alone is not that scope: switching header focus from one agent to another while `?file=` holds still is the same stale paint. Same hazard `transcriptMatchesSession` guards for the transcript; nothing inside the viewer is worth carrying across either axis.
+          <SessionViewer
+            key={`${filesAgentId}:${filesSessionId ?? 'primary'}:${viewerPath}`}
+            agentId={filesAgentId}
+            {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+            path={viewerPath}
+            // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
+            mode={viewerMode}
+            onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode)}
+            diffRefreshTick={viewerDiffTick}
+            {...(canWriteWorkspace ? { onIndexChanged: onViewerIndexChanged } : {})}
+            onClose={() => {
+              // Keep the reader ON the workspace they were reading before dropping `agent=`. The
+              // param outranks the stored selection, so clearing it alone snaps focus back to the
+              // default — a scope change with no user action behind it, which would discard whatever
+              // is in the commit box, including a message the reader just paid a model pass for.
+              if (filesAgentId) setHeaderFocusSelection({ scope: headerFocusScope, agentId: filesAgentId })
+              setViewerFile(null)
+            }}
+          />
+        ) : null}
 
-        {conversationKey && conversationHasEarlier && (
-          <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
-            <button
-              className="lnk text-[12px]"
-              onClick={() => void loadEarlierConversation()}
-              disabled={conversationPagingEarlier}
-            >
-              {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
-            </button>
-          </div>
-        )}
-        {visibleMsgPaging && (
-          <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
-            <Spinner size={14} />
-            Loading earlier activity…
-          </div>
-        )}
-        {/* TRANSCRIPT — one shared tree. Mobile adds the 16px gutter column around
+        {/* CONVERSATION MODE, concealed rather than unmounted. Everything below belongs to the transcript and the composer, and all of it is state a session round trip must not spend: every expanded tool body and its refetch, the composer's caret and any open @mention menu (with the `mentionJoining` latch it reports upward, which has no owner left to clear it once the composer is gone), and the approval cards' poll. `contents` keeps the flex layout it has today exactly — an active box here would be a second flex item in the column.
+          The cost, accepted: a pending webchat MCP write approval is concealed with the composer and has no header twin the way permission requests do (those stay in the Requests popover). A reader who opened a file sees the agent stall until they come back. */}
+        <div data-conversation-pane="" className={viewerOpen ? 'hidden' : 'contents'}>
+          {wantTranscript && visibleMsgLoading && (
+            <div className="flex justify-center py-10">
+              <Spinner size={30} />
+            </div>
+          )}
+          {conversationOffline > 0 && (
+            <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+              <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+              <span>
+                Some participants&apos; records are on an offline daemon — this view may be missing part of the
+                conversation until it reconnects.
+              </span>
+            </div>
+          )}
+          {wantTranscript && visibleMsgErr && !transcriptPurged && (
+            <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+              <Icon name="triangle-alert" size={15} color="var(--amber-500)" />
+              <span>
+                Couldn&apos;t load the transcript — the owning daemon may be offline. Session history is pulled live
+                from the daemon, so it&apos;s unavailable while that machine is disconnected.
+              </span>
+            </div>
+          )}
+          {transcriptPurged && (
+            <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+              <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+              <span>
+                This transcript was deleted on {fmtDate(purgedAt)} by the session retention policy, together with any
+                workspace created just for it. The details on this page are all that remain.
+              </span>
+            </div>
+          )}
+          {transcriptPartiallyPurged && (
+            <div className="card m-4 flex items-start gap-[10px] px-[18px] py-4 font-sans text-[12.5px] font-normal leading-[1.55] text-(--text-secondary) desktop:m-0">
+              <Icon name="trash-2" size={15} color="var(--text-tertiary)" />
+              <span>
+                Part of this history is missing:{' '}
+                {memberCount > 1
+                  ? `${purgedMemberCount} of ${memberCount} participants had their transcript deleted`
+                  : 'this transcript was deleted'}{' '}
+                on {fmtDate(purgedAt)} by the session retention policy. What you see below is the remaining record.
+              </span>
+            </div>
+          )}
+          {transcriptEmpty && !transcriptPurged && (
+            <div className="card m-4 flex flex-col items-center gap-[6px] px-6 py-[34px] text-center desktop:m-0">
+              <Icon name="message-square-dashed" size={20} color="var(--text-tertiary)" />
+              <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                No messages in this session yet.
+              </div>
+            </div>
+          )}
+
+          {conversationKey && conversationHasEarlier && (
+            <div className="flex items-center justify-center pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
+              <button
+                className="lnk text-[12px]"
+                onClick={() => void loadEarlierConversation()}
+                disabled={conversationPagingEarlier}
+              >
+                {conversationPagingEarlier ? 'Loading earlier activity…' : 'Load earlier activity'}
+              </button>
+            </div>
+          )}
+          {visibleMsgPaging && (
+            <div className="flex items-center justify-center gap-2 pt-[10px] font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary) desktop:pt-1 desktop:pb-3">
+              <Spinner size={14} />
+              Loading earlier activity…
+            </div>
+          )}
+          {/* TRANSCRIPT — one shared tree. Mobile adds the 16px gutter column around
           turns + live tail. The column grows to fill the page (flex-1 inside the
           min-h-full wrap) so the flex-1 spacer below can pin the composer to the
           bottom even when the transcript is short. */}
-        {/* `max-desktop:pb-0` for the same reason as the wrap above: this column's
+          {/* `max-desktop:pb-0` for the same reason as the wrap above: this column's
           last child is the sticky composer, and a bottom gutter under it is a strip
           the composer stops short of. (Longhand `pb-*` always sorts after shorthand
           `p-*`, so the cancel wins — STYLE.md §8.) */}
-        <div className="flex flex-1 flex-col gap-4 p-4 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
-          {turns.length > 0 && (
-            <div className="flex flex-col gap-4 desktop:gap-[15px]">
-              {turns.map((turn, ti) => (
-                // The turn's clock time is its own centred line above the message —
-                // a shared separator for both sides, instead of a label-row tail
-                // that never lines up with the bubble edge on either side.
-                <div key={`${session.id}:${ti}`} className="flex flex-col gap-[5px]">
-                  {turn.time && (
-                    <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
-                      {turn.time}
-                    </div>
-                  )}
-                  {turn.kind === 'user' ? (
-                    // 2b: user turns are right-aligned brand-soft bubbles. A sender label
-                    // sits above the bubble only when it isn't you (platform user / cron).
-                    <div key={`${session.id}:${ti}`} className="group/turn flex items-start justify-end gap-[9px]">
-                      <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
-                        {showsSenderLabel(turn) && (
-                          <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-                            {turn.isCron && turn.cronId ? (
-                              <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
-                                {turn.sp.name}
-                              </Link>
-                            ) : (
-                              <span>{turn.sp.name}</span>
-                            )}
-                          </span>
-                        )}
-                        <div className={SELF_BUBBLE}>
-                          {turn.image && (
-                            <img
-                              src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
-                              alt={turn.image.name}
-                              className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
-                            />
+          <div className="flex flex-1 flex-col gap-4 p-4 max-desktop:pb-0 desktop:gap-0 desktop:p-0">
+            {turns.length > 0 && (
+              <div className="flex flex-col gap-4 desktop:gap-[15px]">
+                {turns.map((turn, ti) => (
+                  // The turn's clock time is its own centred line above the message —
+                  // a shared separator for both sides, instead of a label-row tail
+                  // that never lines up with the bubble edge on either side.
+                  <div key={`${session.id}:${ti}`} className="flex flex-col gap-[5px]">
+                    {turn.time && (
+                      <div className="mono text-center text-[11px] leading-normal text-(--text-tertiary)">
+                        {turn.time}
+                      </div>
+                    )}
+                    {turn.kind === 'user' ? (
+                      // 2b: user turns are right-aligned brand-soft bubbles. A sender label
+                      // sits above the bubble only when it isn't you (platform user / cron).
+                      <div key={`${session.id}:${ti}`} className="group/turn flex items-start justify-end gap-[9px]">
+                        <div className="relative flex min-w-0 max-w-[86%] flex-col items-end gap-[3px]">
+                          {showsSenderLabel(turn) && (
+                            <span className="flex items-center gap-[6px] pr-1 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
+                              {turn.isCron && turn.cronId ? (
+                                <Link className="lnk text-inherit" href={orgPath(`/crons/${turn.cronId}`)}>
+                                  {turn.sp.name}
+                                </Link>
+                              ) : (
+                                <span>{turn.sp.name}</span>
+                              )}
+                            </span>
                           )}
-                          {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
-                        </div>
-                        {/* Sent bubbles are complete by definition — the copy affordance
+                          <div className={SELF_BUBBLE}>
+                            {turn.image && (
+                              <img
+                                src={`data:${turn.image.mimeType};base64,${turn.image.data}`}
+                                alt={turn.image.name}
+                                className={`max-h-[360px] max-w-full rounded-md object-contain ${turn.text ? 'mb-[10px]' : ''}`}
+                              />
+                            )}
+                            {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                          </div>
+                          {/* Sent bubbles are complete by definition — the copy affordance
                         (hover-revealed, right-aligned under the bubble) always mounts.
                         Absolutely positioned into the inter-turn gap so revealing it
                         never changes the row's height. */}
-                        {turn.text && (
-                          <span className="absolute right-0 top-full">
-                            <CopyTurnButton text={turn.text} />
-                          </span>
-                        )}
+                          {turn.text && (
+                            <span className="absolute right-0 top-full">
+                              <CopyTurnButton text={turn.text} />
+                            </span>
+                          )}
+                        </div>
+                        <ParticipantAvatar
+                          agent={turn.agent}
+                          avatarUrl={turn.avatarUrl}
+                          avatarInitials={turn.avatarInitials}
+                          platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
+                          sp={turn.sp}
+                          isCron={turn.isCron}
+                          // Optically centre the 26px mark on the bubble's FIRST LINE, not
+                          // on the bubble's top edge: 9px of padding plus half of a 21px
+                          // line puts that centre 19.5px down, while a top-aligned mark
+                          // centres at 13px — the 6px it looked too high by. A labelled row
+                          // keeps the mark level with its label instead, like the bot side.
+                          className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
+                        />
                       </div>
-                      <ParticipantAvatar
-                        agent={turn.agent}
-                        avatarUrl={turn.avatarUrl}
-                        avatarInitials={turn.avatarInitials}
-                        platformMark={usesIntegrationAvatar ? sessionIntegration : undefined}
-                        sp={turn.sp}
-                        isCron={turn.isCron}
-                        // Optically centre the 26px mark on the bubble's FIRST LINE, not
-                        // on the bubble's top edge: 9px of padding plus half of a 21px
-                        // line puts that centre 19.5px down, while a top-aligned mark
-                        // centres at 13px — the 6px it looked too high by. A labelled row
-                        // keeps the mark level with its label instead, like the bot side.
-                        className={showsSenderLabel(turn) ? '' : 'mt-[6px]'}
-                      />
-                    </div>
-                  ) : (
-                    (() => {
-                      // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
-                      // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
-                      const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
-                      const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
-                      // Reasoning steps / tool commands / edited FILES (distinct paths across
-                      // EDIT rows, since one EDIT row can touch several files).
-                      const { thinkCount, toolCount, editCount } = workCounts(workSteps)
-                      const summary = workSummary(thinkCount, toolCount, editCount)
-                      // Is this turn still streaming? A multi-agent live webchat runs
-                      // several reply lanes at once, so a TAGGED turn asks its own lane
-                      // (an earlier still-active participant must not show the copy
-                      // affordance or lose its live line just because a later turn renders
-                      // below it). Lane-less/single-agent streams keep the trailing-turn
-                      // fallback. statusLabel carries the RAW session state — the
-                      // active-turn predicate lives (and is tested) in session-work.ts.
-                      const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
-                      const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
-                      // The lane only says WHICH AGENT is busy — restrict the match to that
-                      // agent's LAST turn so its finished history stays non-streaming.
-                      const streaming =
-                        turnInFlight &&
-                        (turn.agentId && busyLanes.length > 0
-                          ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
-                          : ti === turns.length - 1)
-                      const openWork = workPanelOpen(workOverride.get(ti))
-                      // Is the WORK itself still running? `streaming` alone is turn-level —
-                      // it stays true while the spoken answer streams AFTER the last tool
-                      // finished, which must not keep the live line alive. ACP tool calls
-                      // can also run in PARALLEL, each update replacing its original row
-                      // in place (keyed by toolCallId) — so "the newest row is finished"
-                      // does not mean the work is: any non-terminal tool row keeps the
-                      // work running, and the LATEST such row is what the toggle line
-                      // reports. With no active tool, a trailing unfinished work step
-                      // still counts (THINK rows carry no status and run until
-                      // superseded); a trailing text step means the agent moved on to its
-                      // answer.
-                      const stepDone = (st?: FmtStep) =>
-                        ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
-                      const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
-                      const lastStep = turn.steps[turn.steps.length - 1]
-                      const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
-                      const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
-                      const workRunning = streaming && liveStep !== undefined
-                      // While work runs, the toggle line also carries what is running RIGHT
-                      // NOW — the live step's first line (tool rows keep the command in
-                      // `code`) — so a collapsed panel still shows live progress.
-                      const liveLine =
-                        workRunning && liveStep
-                          ? (liveStep.text || liveStep.code)?.split('\n', 1)[0]?.trim()
-                          : undefined
-                      // Step identity for the fade-in key: two consecutive steps can show
-                      // the SAME first line, and a keyed-by-text span would keep its DOM
-                      // node and never replay the animation.
-                      const liveKey =
-                        liveStep && liveLine
-                          ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
-                          : undefined
-                      // Keyed by agent id where there is one so the colour survives a
-                      // rename; a mock/playground row without an id falls back to the
-                      // display name, which is stable for as long as the row is.
-                      const turnTone = agentToneColor(turn.agentId || turn.agentName)
-                      // What the bubble-level copy button copies: the spoken answer.
-                      const answerText = textSteps
-                        .map((st) => st.text)
-                        .filter(Boolean)
-                        .join('\n\n')
-                      return (
-                        <div key={`${session.id}:${ti}`} className="group/turn flex items-start gap-[10px]">
-                          <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                            <AgentIconView
-                              icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
-                              runtime={
-                                (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
-                                (agentRuntime || turn.model)
-                              }
-                              size={26}
-                            />
-                          </span>
-                          <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
-                            <div className="mb-[5px] flex items-center gap-[7px]">
-                              <span className={AGENT_NAME}>{turn.agentName}</span>
-                            </div>
-                            {/* One bubble PER text step, not one around the set: each step is
+                    ) : (
+                      (() => {
+                        // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
+                        // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
+                        const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
+                        const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
+                        // Reasoning steps / tool commands / edited FILES (distinct paths across
+                        // EDIT rows, since one EDIT row can touch several files).
+                        const { thinkCount, toolCount, editCount } = workCounts(workSteps)
+                        const summary = workSummary(thinkCount, toolCount, editCount)
+                        // Is this turn still streaming? A multi-agent live webchat runs
+                        // several reply lanes at once, so a TAGGED turn asks its own lane
+                        // (an earlier still-active participant must not show the copy
+                        // affordance or lose its live line just because a later turn renders
+                        // below it). Lane-less/single-agent streams keep the trailing-turn
+                        // fallback. statusLabel carries the RAW session state — the
+                        // active-turn predicate lives (and is tested) in session-work.ts.
+                        const turnInFlight = sessionTurnInFlight(pgBusy, session.statusLabel)
+                        const busyLanes = turnInFlight ? getBusyLaneAgentIds(session.id) : []
+                        // The lane only says WHICH AGENT is busy — restrict the match to that
+                        // agent's LAST turn so its finished history stays non-streaming.
+                        const streaming =
+                          turnInFlight &&
+                          (turn.agentId && busyLanes.length > 0
+                            ? busyLanes.includes(turn.agentId) && lastBotTurnIndexByAgent.get(turn.agentId) === ti
+                            : ti === turns.length - 1)
+                        const openWork = workPanelOpen(workOverride.get(ti))
+                        // Is the WORK itself still running? `streaming` alone is turn-level —
+                        // it stays true while the spoken answer streams AFTER the last tool
+                        // finished, which must not keep the live line alive. ACP tool calls
+                        // can also run in PARALLEL, each update replacing its original row
+                        // in place (keyed by toolCallId) — so "the newest row is finished"
+                        // does not mean the work is: any non-terminal tool row keeps the
+                        // work running, and the LATEST such row is what the toggle line
+                        // reports. With no active tool, a trailing unfinished work step
+                        // still counts (THINK rows carry no status and run until
+                        // superseded); a trailing text step means the agent moved on to its
+                        // answer.
+                        const stepDone = (st?: FmtStep) =>
+                          ['completed', 'failed'].includes((st?.msg?.toolStatus ?? '').toLowerCase())
+                        const activeTool = [...workSteps].reverse().find((st) => st.msg?.toolCallId && !stepDone(st))
+                        const lastStep = turn.steps[turn.steps.length - 1]
+                        const tailRunning = !!lastStep && WORK_LANES.has(lastStep.lane) && !stepDone(lastStep)
+                        const liveStep = activeTool ?? (tailRunning ? lastStep : undefined)
+                        const workRunning = streaming && liveStep !== undefined
+                        // While work runs, the toggle line also carries what is running RIGHT
+                        // NOW — the live step's first line (tool rows keep the command in
+                        // `code`) — so a collapsed panel still shows live progress.
+                        const liveLine =
+                          workRunning && liveStep
+                            ? (liveStep.text || liveStep.code)?.split('\n', 1)[0]?.trim()
+                            : undefined
+                        // Step identity for the fade-in key: two consecutive steps can show
+                        // the SAME first line, and a keyed-by-text span would keep its DOM
+                        // node and never replay the animation.
+                        const liveKey =
+                          liveStep && liveLine
+                            ? `${liveStep.msg?.toolCallId ?? turn.steps.indexOf(liveStep)}:${liveLine}`
+                            : undefined
+                        // Keyed by agent id where there is one so the colour survives a
+                        // rename; a mock/playground row without an id falls back to the
+                        // display name, which is stable for as long as the row is.
+                        const turnTone = agentToneColor(turn.agentId || turn.agentName)
+                        // What the bubble-level copy button copies: the spoken answer.
+                        const answerText = textSteps
+                          .map((st) => st.text)
+                          .filter(Boolean)
+                          .join('\n\n')
+                        return (
+                          <div key={`${session.id}:${ti}`} className="group/turn flex items-start gap-[10px]">
+                            <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                              <AgentIconView
+                                icon={((turn.agentId ? agentById.get(turn.agentId) : owner) ?? owner)?.icon}
+                                runtime={
+                                  (turn.agentId ? agentById.get(turn.agentId)?.runtime : undefined) ??
+                                  (agentRuntime || turn.model)
+                                }
+                                size={26}
+                              />
+                            </span>
+                            <div className="min-w-0 flex-1" style={{ '--agent-accent': turnTone } as CSSProperties}>
+                              <div className="mb-[5px] flex items-center gap-[7px]">
+                                <span className={AGENT_NAME}>{turn.agentName}</span>
+                              </div>
+                              {/* One bubble PER text step, not one around the set: each step is
                             its own delivered message (a turn that answers in two chunks
                             arrives as two), so bubbling them together would merge messages
                             the platform kept apart. `w-fit` keeps a short reply from
                             drawing a full-width card. */}
-                            {textSteps.map((st, si) => (
-                              <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
-                                {st.image && (
-                                  <img
-                                    src={`data:${st.image.mimeType};base64,${st.image.data}`}
-                                    alt={st.image.name}
-                                    className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
-                                  />
-                                )}
-                                {st.text && (
-                                  <div className="whitespace-pre-wrap">
-                                    <MessageText text={st.text} platform={st.platform} />
-                                  </div>
-                                )}
-                                <StepExtras step={st} sessionId={toolSid} />
-                              </div>
-                            ))}
-                            {workSteps.length > 0 && (
-                              <>
-                                {/* One row: the work toggle, with the bubble's copy button at
-                                the line's end — mounted only once the turn has finished. */}
-                                <div className="mt-2 flex min-w-0 items-center gap-[6px]">
-                                  <button
-                                    type="button"
-                                    onClick={() => toggleWork(ti, openWork)}
-                                    className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
-                                    title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
-                                  >
-                                    <Icon
-                                      name={openWork ? 'chevron-down' : 'chevron-right'}
-                                      size={13}
-                                      color="var(--text-tertiary)"
+                              {textSteps.map((st, si) => (
+                                <div key={si} className={`${AGENT_BUBBLE} ${si > 0 ? 'mt-2' : ''}`}>
+                                  {st.image && (
+                                    <img
+                                      src={`data:${st.image.mimeType};base64,${st.image.data}`}
+                                      alt={st.image.name}
+                                      className={`max-h-[360px] max-w-full rounded-md object-contain ${st.text ? 'mb-[10px]' : ''}`}
                                     />
-                                    <span className="flex-none">{summary || 'Details'}</span>
-                                    {liveLine && (
-                                      // Keyed by step identity + content: a new step (or a new
-                                      // first line within one) remounts the span, replaying the
-                                      // ac-rise fade-in (honors reduced-motion in globals.css).
-                                      <span key={liveKey} className="ac-rise min-w-0 truncate">
-                                        · {liveLine}
-                                      </span>
-                                    )}
-                                  </button>
-                                  {!streaming && answerText && <CopyTurnButton text={answerText} />}
+                                  )}
+                                  {st.text && (
+                                    <div className="whitespace-pre-wrap">
+                                      <MessageText text={st.text} platform={st.platform} />
+                                    </div>
+                                  )}
+                                  <StepExtras step={st} sessionId={toolSid} />
                                 </div>
-                                {openWork && (
-                                  <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
-                                    {/* All work steps show, streaming or not — a live turn's
+                              ))}
+                              {workSteps.length > 0 && (
+                                <>
+                                  {/* One row: the work toggle, with the bubble's copy button at
+                                the line's end — mounted only once the turn has finished. */}
+                                  <div className="mt-2 flex min-w-0 items-center gap-[6px]">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleWork(ti, openWork)}
+                                      className="inline-flex min-w-0 items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary) hover:text-(--text-secondary)"
+                                      title={openWork ? 'Hide the agent’s work' : 'Show the agent’s work'}
+                                    >
+                                      <Icon
+                                        name={openWork ? 'chevron-down' : 'chevron-right'}
+                                        size={13}
+                                        color="var(--text-tertiary)"
+                                      />
+                                      <span className="flex-none">{summary || 'Details'}</span>
+                                      {liveLine && (
+                                        // Keyed by step identity + content: a new step (or a new
+                                        // first line within one) remounts the span, replaying the
+                                        // ac-rise fade-in (honors reduced-motion in globals.css).
+                                        <span key={liveKey} className="ac-rise min-w-0 truncate">
+                                          · {liveLine}
+                                        </span>
+                                      )}
+                                    </button>
+                                    {!streaming && answerText && <CopyTurnButton text={answerText} />}
+                                  </div>
+                                  {openWork && (
+                                    <div className="mt-2 overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+                                      {/* All work steps show, streaming or not — a live turn's
                                     panel grows as steps arrive so the whole run is visible. */}
-                                    {workSteps.map((st, si) => (
-                                      <div
-                                        // Keyed by tool identity where there is one, so an
-                                        // expanded ToolBodyDetail survives re-renders as new
-                                        // steps stream in. Steps without a tool id (THINK
-                                        // rows) fall back to the index; within one agent's
-                                        // turn a toolCallId appears once.
-                                        key={st.msg?.toolCallId ?? `i:${si}`}
-                                        className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
-                                          si > 0 ? 'border-t border-(--border-subtle)' : ''
-                                        }`}
-                                      >
-                                        {/* min-h matches the text column's FIRST LINE box
+                                      {workSteps.map((st, si) => (
+                                        <div
+                                          // Keyed by tool identity where there is one, so an
+                                          // expanded ToolBodyDetail survives re-renders as new
+                                          // steps stream in. Steps without a tool id (THINK
+                                          // rows) fall back to the index; within one agent's
+                                          // turn a toolCallId appears once.
+                                          key={st.msg?.toolCallId ?? `i:${si}`}
+                                          className={`flex items-start gap-[11px] px-[14px] py-[10px] ${
+                                            si > 0 ? 'border-t border-(--border-subtle)' : ''
+                                          }`}
+                                        >
+                                          {/* min-h matches the text column's FIRST LINE box
                                         (13px × 1.5), so centring inside it puts the dot
                                         and lane label on that line's centre line. The
                                         old `pt-[1px]` guessed at the same thing against
                                         a 15px-tall mono box and read a few px high. */}
-                                        <div className="flex min-h-[20px] w-[52px] flex-none items-center gap-[6px]">
-                                          <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
-                                          <span
-                                            className="mono text-[10px] font-semibold tracking-[.02em]"
-                                            style={{ color: st.laneColor }}
-                                          >
-                                            {st.lane}
-                                          </span>
-                                        </div>
-                                        <div className="min-w-0 flex-1">
-                                          {st.text && (
-                                            <div
-                                              className="font-sans text-[13px] leading-[1.5]"
-                                              style={{ fontWeight: st.weight, color: st.textColor }}
+                                          <div className="flex min-h-[20px] w-[52px] flex-none items-center gap-[6px]">
+                                            <span className="dot h-[7px] w-[7px]" style={{ background: st.dot }} />
+                                            <span
+                                              className="mono text-[10px] font-semibold tracking-[.02em]"
+                                              style={{ color: st.laneColor }}
                                             >
-                                              <MessageText text={st.text} platform={st.platform} />
-                                            </div>
-                                          )}
-                                          <StepExtras step={st} sessionId={toolSid} />
+                                              {st.lane}
+                                            </span>
+                                          </div>
+                                          <div className="min-w-0 flex-1">
+                                            {st.text && (
+                                              <div
+                                                className="font-sans text-[13px] leading-[1.5]"
+                                                style={{ fontWeight: st.weight, color: st.textColor }}
+                                              >
+                                                <MessageText text={st.text} platform={st.platform} />
+                                              </div>
+                                            )}
+                                            <StepExtras step={st} sessionId={toolSid} />
+                                          </div>
                                         </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </>
-                            )}
-                            {/* A turn with no work has no toggle row — the finished
+                                      ))}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                              {/* A turn with no work has no toggle row — the finished
                             bubble's copy button gets its own line instead. */}
-                            {workSteps.length === 0 && !streaming && answerText && (
-                              <div className="mt-2 flex">
-                                <CopyTurnButton text={answerText} />
-                              </div>
-                            )}
+                              {workSteps.length === 0 && !streaming && answerText && (
+                                <div className="mt-2 flex">
+                                  <CopyTurnButton text={answerText} />
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )
-                    })()
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+                        )
+                      })()
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
-          {/* LIVE INDICATOR — mobile-only trailing bot avatar + blue-dot note while a
+            {/* LIVE INDICATOR — mobile-only trailing bot avatar + blue-dot note while a
             platform run is live. (A live playground/webchat surface uses the
             typing-dots affordance below instead.) */}
-          {session.status === 'online' && !isLive && (
-            <div className="flex items-center gap-[10px] desktop:hidden">
-              <span className="av h-[30px] w-[30px] flex-none rounded-md">
-                <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={30} />
-              </span>
-              <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
-                <span className="h-[6px] w-[6px] rounded-full bg-(--blue-500)" />
-                {session.statusLabel || 'Live'}
-              </span>
-            </div>
-          )}
+            {session.status === 'online' && !isLive && (
+              <div className="flex items-center gap-[10px] desktop:hidden">
+                <span className="av h-[30px] w-[30px] flex-none rounded-md">
+                  <AgentIconView icon={owner?.icon} runtime={agentRuntime} size={30} />
+                </span>
+                <span className="inline-flex items-center gap-[6px] font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+                  <span className="h-[6px] w-[6px] rounded-full bg-(--blue-500)" />
+                  {session.statusLabel || 'Live'}
+                </span>
+              </div>
+            )}
 
-          {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
-          {isLive && (
-            <>
-              {pgBusy &&
-                (() => {
-                  // Multi-agent conversations attribute the typing indicator to
-                  // the participants whose reply lanes are STILL OPEN — after a
-                  // supersession it is the REGENERATING agent working, not the
-                  // primary. Single-agent (and lane-less adopted) sessions keep
-                  // the owner row.
-                  const busyAgents =
-                    (session.participants?.length ?? 0) > 1
-                      ? getBusyLaneAgentIds(session.id)
-                          .map((agentId) => agentById.get(agentId))
-                          .filter((agent): agent is Agent => agent !== undefined)
-                      : []
-                  const rows = busyAgents.length > 0 ? busyAgents : [owner]
-                  // 26px mark + 10px gap, same geometry as an agent turn's row, so the
-                  // dots start on the same left edge as that agent's bubbles above.
-                  return rows.map((agent, i) => (
-                    <div key={agent?.id ?? i} className="flex items-center gap-[10px] desktop:mt-[14px]">
-                      <span className="av h-[26px] w-[26px] flex-none rounded-md">
-                        <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
-                      </span>
-                      <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
-                        <span className="tdot" />
-                        <span className="tdot [animation-delay:.18s]" />
-                        <span className="tdot [animation-delay:.36s]" />
+            {/* Playground / resumed webchat: typing indicator, starter prompts, composer. */}
+            {isLive && (
+              <>
+                {pgBusy &&
+                  (() => {
+                    // Multi-agent conversations attribute the typing indicator to
+                    // the participants whose reply lanes are STILL OPEN — after a
+                    // supersession it is the REGENERATING agent working, not the
+                    // primary. Single-agent (and lane-less adopted) sessions keep
+                    // the owner row.
+                    const busyAgents =
+                      (session.participants?.length ?? 0) > 1
+                        ? getBusyLaneAgentIds(session.id)
+                            .map((agentId) => agentById.get(agentId))
+                            .filter((agent): agent is Agent => agent !== undefined)
+                        : []
+                    const rows = busyAgents.length > 0 ? busyAgents : [owner]
+                    // 26px mark + 10px gap, same geometry as an agent turn's row, so the
+                    // dots start on the same left edge as that agent's bubbles above.
+                    return rows.map((agent, i) => (
+                      <div key={agent?.id ?? i} className="flex items-center gap-[10px] desktop:mt-[14px]">
+                        <span className="av h-[26px] w-[26px] flex-none rounded-md">
+                          <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agentRuntime} size={26} />
+                        </span>
+                        <div className="inline-flex items-center gap-1 rounded-[11px] bg-(--brand-soft) px-[14px] py-[11px]">
+                          <span className="tdot" />
+                          <span className="tdot [animation-delay:.18s]" />
+                          <span className="tdot [animation-delay:.36s]" />
+                        </div>
                       </div>
+                    ))
+                  })()}
+                {pgEmpty && (
+                  <div className="desktop:mt-[6px]">
+                    <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
+                      Start with
                     </div>
-                  ))
-                })()}
-              {pgEmpty && (
-                <div className="desktop:mt-[6px]">
-                  <div className="mb-2 font-mono text-[10.5px] font-semibold uppercase tracking-[.08em] text-(--text-tertiary)">
-                    Start with
+                    <div className="flex flex-wrap gap-2">
+                      {prompts.map((p) => (
+                        <button key={p} className="chip whitespace-nowrap" onClick={() => onPgSend(p)}>
+                          {p}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {prompts.map((p) => (
-                      <button key={p} className="chip whitespace-nowrap" onClick={() => onPgSend(p)}>
-                        {p}
-                      </button>
-                    ))}
+                )}
+                {imageError && (
+                  <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">
+                    {imageError}
                   </div>
-                </div>
-              )}
-              {imageError && (
-                <div className="font-sans text-[11.5px] font-medium leading-normal text-(--red-600)">{imageError}</div>
-              )}
-              {/* Flexible spacer (design): pushes the composer to the bottom of the page
+                )}
+                {/* Flexible spacer (design): pushes the composer to the bottom of the page
                 when the transcript is short; collapses once content overflows. -mt-4
                 cancels the mobile gutter's gap so a collapsed spacer adds no height. */}
-              <div aria-hidden="true" className="-mt-4 flex-1 desktop:mt-0 desktop:min-h-[18px]" />
-              {/* Sticky-to-bottom composer: pinned to the bottom of the scroll area so it's
+                <div aria-hidden="true" className="-mt-4 flex-1 desktop:mt-0 desktop:min-h-[18px]" />
+                {/* Sticky-to-bottom composer: pinned to the bottom of the scroll area so it's
                 always reachable while scrolling the transcript. Its opaque page-colour
                 background covers earlier turns scrolling behind it; the negative `bottom`
                 + matching bottom padding pull it flush past `.content`'s bottom padding
                 (else turns would show through that strip). A top gradient softens the
                 seam where the transcript slides underneath. */}
-              <div className="sticky z-10 bg-(--surface-app) bottom-[calc(-24px-env(safe-area-inset-bottom,0px))] pb-[calc(24px+env(safe-area-inset-bottom,0px))] pt-2 desktop:bottom-[-26px] desktop:pb-[26px] desktop:pt-3">
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
-                />
-                {approvalCard('mb-2 max-desktop:rounded-lg')}
-                {/* Webchat MCP write approvals ride the same sticky footer as permission
-                  requests: always above the input, never scrolled away. */}
-                {activeOrg && session.agentId && webchatConversationId && (
-                  <WebchatMcpApprovalCard
-                    key={webchatConversationId}
-                    orgId={activeOrg.id}
-                    agentId={session.agentId}
-                    conversationId={webchatConversationId}
-                    className="mb-2"
+                <div className="sticky z-10 bg-(--surface-app) bottom-[calc(-24px-env(safe-area-inset-bottom,0px))] pb-[calc(24px+env(safe-area-inset-bottom,0px))] pt-2 desktop:bottom-[-26px] desktop:pb-[26px] desktop:pt-3">
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 -top-5 h-5 bg-gradient-to-b from-transparent to-(--surface-app)"
                   />
-                )}
-                {/* Queued messages (Claude Code-style): sends accepted while a turn was
+                  {approvalCard('mb-2 max-desktop:rounded-lg')}
+                  {/* Webchat MCP write approvals ride the same sticky footer as permission
+                  requests: always above the input, never scrolled away. */}
+                  {activeOrg && session.agentId && webchatConversationId && (
+                    <WebchatMcpApprovalCard
+                      key={webchatConversationId}
+                      orgId={activeOrg.id}
+                      agentId={session.agentId}
+                      conversationId={webchatConversationId}
+                      className="mb-2"
+                    />
+                  )}
+                  {/* Queued messages (Claude Code-style): sends accepted while a turn was
                   still streaming wait here, dispatch in order as turns finish, and can
                   be cancelled individually before they go out. */}
-                {pgQueue.length > 0 && (
-                  <div className="mb-2 flex flex-col items-end gap-1">
-                    {pgQueue.map((q) => (
-                      <div
-                        key={q.queueId}
-                        className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
-                      >
-                        <Icon name="clock" size={13} color="var(--text-tertiary)" />
-                        <span
-                          className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
-                          title={q.text}
+                  {pgQueue.length > 0 && (
+                    <div className="mb-2 flex flex-col items-end gap-1">
+                      {pgQueue.map((q) => (
+                        <div
+                          key={q.queueId}
+                          className="group flex max-w-full items-center gap-2 rounded-[9px] border border-dashed border-(--border-default) bg-(--surface-card) py-[5px] pr-[5px] pl-3"
                         >
-                          {q.text || q.image?.name || 'Image'}
-                        </span>
-                        <button
-                          type="button"
-                          className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                          aria-label="Cancel queued message"
-                          title="Cancel queued message"
-                          onClick={() => pgCancelQueued(session.id, q.queueId)}
-                        >
-                          <Icon name="x" size={13} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {/* Composer card (design "achero"): textarea on top, a toolbar row below
+                          <Icon name="clock" size={13} color="var(--text-tertiary)" />
+                          <span
+                            className="min-w-0 truncate font-sans text-[13px] leading-normal text-(--text-tertiary)"
+                            title={q.text}
+                          >
+                            {q.text || q.image?.name || 'Image'}
+                          </span>
+                          <button
+                            type="button"
+                            className="flex h-6 w-6 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                            aria-label="Cancel queued message"
+                            title="Cancel queued message"
+                            onClick={() => pgCancelQueued(session.id, q.queueId)}
+                          >
+                            <Icon name="x" size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Composer card (design "achero"): textarea on top, a toolbar row below
                   the divider — attach · model pill (fast toggle in its menu) · effort ·
                   permission · context ring · send. Tokens/cost live in the header's
                   Details popover, not here. */}
-                <div
-                  className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
-                  inert={resumeDisabled}
-                  aria-disabled={resumeDisabled}
-                  onKeyDown={(event) => {
-                    if (event.key !== 'Escape') return
-                    setAttachMenuOpen(false)
-                    setComposerMenuOpen(null)
-                  }}
-                >
-                  {resumeDisabled && (
-                    <textarea
-                      className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
-                      aria-label="Conversation unavailable"
-                      placeholder={resumePlaceholder}
-                      disabled
-                    />
-                  )}
-                  <input
-                    ref={imageInputRef}
-                    type="file"
-                    accept="image/*"
-                    hidden
-                    onChange={(event) => void onImageFile(event.target.files?.[0])}
-                  />
-                  {pgImage && (
-                    <div className="relative mx-[15px] mt-3 w-fit">
-                      <img
-                        src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
-                        alt={pgImage.name}
-                        title={pgImage.name}
-                        className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                  <div
+                    className="relative min-w-0 rounded-[11px] border border-(--border-default) bg-(--surface-card) shadow-(--shadow-xs) transition-[border-color,box-shadow] focus-within:border-(--brand) focus-within:[box-shadow:0_0_0_3px_var(--brand-ring)]"
+                    inert={resumeDisabled}
+                    aria-disabled={resumeDisabled}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Escape') return
+                      setAttachMenuOpen(false)
+                      setComposerMenuOpen(null)
+                    }}
+                  >
+                    {resumeDisabled && (
+                      <textarea
+                        className="absolute inset-0 z-10 block h-full min-h-[92px] w-full resize-none rounded-[10px] border-0 bg-(--surface-sunken) px-[15px] py-[13px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-tertiary) outline-none placeholder:text-(--text-tertiary) disabled:cursor-not-allowed"
+                        aria-label="Conversation unavailable"
+                        placeholder={resumePlaceholder}
+                        disabled
                       />
-                      <button
-                        type="button"
-                        className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
-                        title="Remove image"
-                        aria-label="Remove image"
-                        onClick={() => setPgImage(session.id)}
-                      >
-                        <Icon name="x" size={14} />
-                      </button>
-                    </div>
-                  )}
-                  <ComposerTextarea
-                    sessionId={session.id}
-                    placeholder={
-                      (session.participants?.length ?? 0) > 1 ? 'Message everyone…' : `Message ${session.agentName}…`
-                    }
-                    onSend={() => onPgSend()}
-                    onImageFile={(file) => void onImageFile(file)}
-                  />
-                  <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
-                    <div className="relative flex-none">
-                      <button
-                        type="button"
-                        className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
-                        aria-label="Attach a file"
-                        aria-haspopup="menu"
-                        aria-expanded={attachMenuOpen}
-                        title="Attach a file"
-                        disabled={imagePreparing}
-                        onClick={() => {
-                          setComposerMenuOpen(null)
-                          setAttachMenuOpen((open) => !open)
-                        }}
-                      >
-                        {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
-                      </button>
-                      {attachMenuOpen && (
-                        <>
-                          <div
-                            aria-hidden="true"
-                            className="fixed inset-0 z-40"
-                            onClick={() => setAttachMenuOpen(false)}
-                          ></div>
-                          <div
-                            role="menu"
-                            className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
-                          >
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="fopt"
-                              onClick={() => {
-                                setAttachMenuOpen(false)
-                                imageInputRef.current?.click()
-                              }}
+                    )}
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(event) => void onImageFile(event.target.files?.[0])}
+                    />
+                    {pgImage && (
+                      <div className="relative mx-[15px] mt-3 w-fit">
+                        <img
+                          src={`data:${pgImage.mimeType};base64,${pgImage.data}`}
+                          alt={pgImage.name}
+                          title={pgImage.name}
+                          className="h-20 w-20 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) object-cover"
+                        />
+                        <button
+                          type="button"
+                          className="iconbtn absolute -right-2 -top-2 h-6 w-6 rounded-full shadow-(--shadow-xs)"
+                          title="Remove image"
+                          aria-label="Remove image"
+                          onClick={() => setPgImage(session.id)}
+                        >
+                          <Icon name="x" size={14} />
+                        </button>
+                      </div>
+                    )}
+                    <ComposerTextarea
+                      sessionId={session.id}
+                      placeholder={
+                        (session.participants?.length ?? 0) > 1 ? 'Message everyone…' : `Message ${session.agentName}…`
+                      }
+                      onSend={() => onPgSend()}
+                      onImageFile={(file) => void onImageFile(file)}
+                      mentionCandidates={mentionCandidates}
+                      onPickMention={onPickMention}
+                      onMentionJoiningChange={setMentionJoining}
+                    />
+                    <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+                      <div className="relative flex-none">
+                        <button
+                          type="button"
+                          className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-md border-0 bg-transparent text-(--text-tertiary) hover:bg-(--surface-hover) hover:text-(--text-secondary)"
+                          aria-label="Attach a file"
+                          aria-haspopup="menu"
+                          aria-expanded={attachMenuOpen}
+                          title="Attach a file"
+                          disabled={imagePreparing}
+                          onClick={() => {
+                            setComposerMenuOpen(null)
+                            setAttachMenuOpen((open) => !open)
+                          }}
+                        >
+                          {imagePreparing ? <Spinner size={14} /> : <Icon name="paperclip" size={15} />}
+                        </button>
+                        {attachMenuOpen && (
+                          <>
+                            <div
+                              aria-hidden="true"
+                              className="fixed inset-0 z-40"
+                              onClick={() => setAttachMenuOpen(false)}
+                            ></div>
+                            <div
+                              role="menu"
+                              className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[166px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)"
                             >
-                              <Icon name="image" size={16} color="var(--text-secondary)" />
-                              Add photos
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                    {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="fopt"
+                                onClick={() => {
+                                  setAttachMenuOpen(false)
+                                  imageInputRef.current?.click()
+                                }}
+                              >
+                                <Icon name="image" size={16} color="var(--text-secondary)" />
+                                Add photos
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      {/* nowrap on mobile — pills shrink + truncate (ComposerMenu min-w-0)
                       instead of wrapping into a second toolbar line. Except with a
                       multi-agent roster: those chips are unbounded in count, so no
                       amount of truncation bounds one line — let that case wrap. */}
-                    <div
-                      className={
-                        multiLive
-                          ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
-                          : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
-                      }
-                    >
-                      {multiLive &&
-                        liveRoster.map((p) => {
-                          const rosterAgent = agents.find((a) => a.id === p.agentId)
-                          return (
-                            <span key={p.agentId} className={COMPOSER_PILL_STATIC} title="Participant">
-                              {rosterAgent && (
-                                <span className="av h-[14px] w-[14px] flex-none rounded-xs">
-                                  <AgentIconView icon={rosterAgent.icon} runtime={rosterAgent.runtime} size={14} />
-                                </span>
-                              )}
-                              <span className="truncate">{p.name}</span>
-                            </span>
-                          )
-                        })}
-                      {/* h-7 w-7 like every other control on this row (and the Home composer's
+                      <div
+                        className={
+                          multiLive
+                            ? 'flex min-w-0 flex-1 flex-wrap items-center gap-2'
+                            : 'flex min-w-0 flex-1 items-center gap-2 desktop:flex-wrap'
+                        }
+                      >
+                        {multiLive &&
+                          liveRoster.map((p) => {
+                            const rosterAgent = agents.find((a) => a.id === p.agentId)
+                            return (
+                              <span key={p.agentId} className={COMPOSER_PILL_STATIC} title="Participant">
+                                {rosterAgent && (
+                                  <span className="av h-[14px] w-[14px] flex-none rounded-xs">
+                                    <AgentIconView icon={rosterAgent.icon} runtime={rosterAgent.runtime} size={14} />
+                                  </span>
+                                )}
+                                <span className="truncate">{p.name}</span>
+                              </span>
+                            )
+                          })}
+                        {/* h-7 w-7 like every other control on this row (and the Home composer's
                         twin), so the dashed circle shares their 28px box instead of floating
                         inside it. A lucide glyph, not a text "+": a text plus centres on its
                         line box, which left it a hair low. */}
-                      {isPg && addAgentOptions.length > 0 && (
-                        <ComposerMenu
-                          title="Add agents"
-                          value=""
-                          options={addAgentOptions}
-                          iconOnly
-                          open={composerMenuOpen === 'addAgent'}
-                          align="left"
-                          triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
-                          tooltips={false}
-                          leading={<Icon name="plus" size={14} />}
-                          onOpenChange={(open) => {
-                            setAttachMenuOpen(false)
-                            setComposerMenuOpen(open ? 'addAgent' : null)
-                          }}
-                          onChange={(v) => {
-                            const picked = agents.find((a) => a.id === v)
-                            if (picked) void pgAddAgent(session.id, picked)
-                          }}
-                        />
-                      )}
-                      {!multiLive &&
-                        (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+                        {isPg && addAgentOptions.length > 0 && (
                           <ComposerMenu
-                            title="Model"
-                            value={pgModel}
-                            options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
-                            open={composerMenuOpen === 'model'}
+                            title="Add agents"
+                            value=""
+                            options={addAgentOptions}
+                            iconOnly
+                            open={composerMenuOpen === 'addAgent'}
                             align="left"
-                            triggerClassName={COMPOSER_PILL}
+                            triggerClassName="inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border border-dashed border-(--border-default) font-sans leading-normal text-(--text-secondary) hover:bg-(--surface-hover) hover:text-(--text-primary)"
                             tooltips={false}
-                            leading={
-                              <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                                <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
-                              </span>
-                            }
-                            trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
-                            footer={
-                              pgFastModeAvailable ? (
-                                <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
-                                  <button
-                                    type="button"
-                                    role="switch"
-                                    aria-checked={pgFastMode}
-                                    aria-label="Fast mode"
-                                    title="Fast mode trades depth for latency"
-                                    className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
-                                      pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
-                                    }`}
-                                    onClick={() => {
-                                      const fast = !pgFastMode
-                                      setRuntimeSelection({ fast })
-                                      pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
-                                    }}
-                                  >
-                                    <span
-                                      className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
-                                        pgFastMode ? 'left-3' : 'left-[1px]'
-                                      }`}
-                                    />
-                                  </button>
-                                  <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
-                                    Fast mode
-                                  </span>
-                                  <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                    lower latency
-                                  </span>
-                                </div>
-                              ) : undefined
-                            }
+                            leading={<Icon name="plus" size={14} />}
                             onOpenChange={(open) => {
                               setAttachMenuOpen(false)
-                              setComposerMenuOpen(open ? 'model' : null)
+                              setComposerMenuOpen(open ? 'addAgent' : null)
                             }}
-                            onChange={(model) => {
-                              const currentEffort = runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
-                              const effort = sessionEffortAfterModelChange(
-                                agentRuntime,
-                                owningDaemon,
-                                model,
-                                currentEffort
-                              )
-                              setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
-                              pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
-                              if (effort !== currentEffort) {
-                                pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                            onChange={(v) => {
+                              const picked = agents.find((a) => a.id === v)
+                              if (picked) void pgAddAgent(session.id, picked)
+                            }}
+                          />
+                        )}
+                        {!multiLive &&
+                          (runtimeChangesEnabled && pgModelOptions.length > 0 ? (
+                            <ComposerMenu
+                              title="Model"
+                              value={pgModel}
+                              options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
+                              open={composerMenuOpen === 'model'}
+                              align="left"
+                              triggerClassName={COMPOSER_PILL}
+                              tooltips={false}
+                              leading={
+                                <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                                  <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                                </span>
                               }
-                            }}
-                          />
-                        ) : (
-                          pgModel && (
-                            <span className={COMPOSER_PILL_STATIC} title="Model">
-                              <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
-                                <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                              trailing={pgFastModeAvailable && pgFastMode ? <FastBadge /> : undefined}
+                              footer={
+                                pgFastModeAvailable ? (
+                                  <div className="flex items-center gap-[10px] px-[7px] pt-2 pb-[3px]">
+                                    <button
+                                      type="button"
+                                      role="switch"
+                                      aria-checked={pgFastMode}
+                                      aria-label="Fast mode"
+                                      title="Fast mode trades depth for latency"
+                                      className={`relative h-[15px] w-[26px] flex-none cursor-pointer rounded-full border-0 p-0 transition-colors ${
+                                        pgFastMode ? 'bg-(--brand)' : 'bg-(--border-strong)'
+                                      }`}
+                                      onClick={() => {
+                                        const fast = !pgFastMode
+                                        setRuntimeSelection({ fast })
+                                        pgSetFast(session.id, session.agentId ?? '', fast, webchatConversationId)
+                                      }}
+                                    >
+                                      <span
+                                        className={`absolute top-[1px] h-[13px] w-[13px] rounded-full bg-white transition-[left] ${
+                                          pgFastMode ? 'left-3' : 'left-[1px]'
+                                        }`}
+                                      />
+                                    </button>
+                                    <span className="flex-1 font-sans text-[13px] font-medium leading-normal text-(--text-primary)">
+                                      Fast mode
+                                    </span>
+                                    <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                                      lower latency
+                                    </span>
+                                  </div>
+                                ) : undefined
+                              }
+                              onOpenChange={(open) => {
+                                setAttachMenuOpen(false)
+                                setComposerMenuOpen(open ? 'model' : null)
+                              }}
+                              onChange={(model) => {
+                                const currentEffort =
+                                  runtimeSelection?.effort ?? session.effort ?? owner?.reasoning ?? ''
+                                const effort = sessionEffortAfterModelChange(
+                                  agentRuntime,
+                                  owningDaemon,
+                                  model,
+                                  currentEffort
+                                )
+                                setRuntimeSelection(effort === currentEffort ? { model } : { model, effort })
+                                pgSetModel(session.id, session.agentId ?? '', model, webchatConversationId)
+                                if (effort !== currentEffort) {
+                                  pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                                }
+                              }}
+                            />
+                          ) : (
+                            pgModel && (
+                              <span className={COMPOSER_PILL_STATIC} title="Model">
+                                <span className="inline-flex h-[14px] w-[14px] flex-none items-center justify-center">
+                                  <ModelMark model={pgModel} fallbackRuntime={agentRuntime} />
+                                </span>
+                                <span className="truncate">{modelLabel(pgModel)}</span>
+                                {pgFastModeAvailable && pgFastMode && <FastBadge />}
                               </span>
-                              <span className="truncate">{modelLabel(pgModel)}</span>
-                              {pgFastModeAvailable && pgFastMode && <FastBadge />}
-                            </span>
-                          )
-                        ))}
-                      {!multiLive &&
-                        (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
-                          <ComposerMenu
-                            title="Effort"
-                            value={pgEffort}
-                            options={pgEffortOptions.map((effort) => ({
-                              value: effort.value,
-                              label: effort.label,
-                              description: effort.description
-                            }))}
-                            open={composerMenuOpen === 'effort'}
-                            align="left"
-                            triggerClassName={COMPOSER_CHIP}
-                            tooltips={false}
-                            onOpenChange={(open) => {
-                              setAttachMenuOpen(false)
-                              setComposerMenuOpen(open ? 'effort' : null)
-                            }}
-                            onChange={(effort) => {
-                              setRuntimeSelection({ effort })
-                              pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
-                            }}
-                          />
-                        ) : (
-                          pgEffort && (
-                            <span className={COMPOSER_CHIP_STATIC} title="Effort">
-                              <span className="truncate">
-                                {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
-                                  effortLabel(agentRuntime, pgEffort)}
+                            )
+                          ))}
+                        {!multiLive &&
+                          (runtimeChangesEnabled && pgEffortOptions.length > 0 ? (
+                            <ComposerMenu
+                              title="Effort"
+                              value={pgEffort}
+                              options={pgEffortOptions.map((effort) => ({
+                                value: effort.value,
+                                label: effort.label,
+                                description: effort.description
+                              }))}
+                              open={composerMenuOpen === 'effort'}
+                              align="left"
+                              triggerClassName={COMPOSER_CHIP}
+                              tooltips={false}
+                              onOpenChange={(open) => {
+                                setAttachMenuOpen(false)
+                                setComposerMenuOpen(open ? 'effort' : null)
+                              }}
+                              onChange={(effort) => {
+                                setRuntimeSelection({ effort })
+                                pgSetEffort(session.id, session.agentId ?? '', effort, webchatConversationId)
+                              }}
+                            />
+                          ) : (
+                            pgEffort && (
+                              <span className={COMPOSER_CHIP_STATIC} title="Effort">
+                                <span className="truncate">
+                                  {pgEffortChoices.find((choice) => choice.value === pgEffort)?.label ??
+                                    effortLabel(agentRuntime, pgEffort)}
+                                </span>
                               </span>
-                            </span>
-                          )
-                        ))}
-                      {!multiLive &&
-                        (runtimeChangesEnabled && pgPermissionPresets.length > 0 ? (
-                          <ComposerMenu
-                            title="Permission"
-                            value={pgPermissionPreset}
-                            options={pgPermissionPresets.map((mode) => ({
-                              value: mode.v,
-                              label: mode.l,
-                              description: mode.description
-                            }))}
-                            open={composerMenuOpen === 'permission'}
-                            align="left"
-                            triggerClassName={COMPOSER_CHIP}
-                            onOpenChange={(open) => {
-                              setAttachMenuOpen(false)
-                              setComposerMenuOpen(open ? 'permission' : null)
-                            }}
-                            onChange={(permissionPreset) => {
-                              setRuntimeSelection({ permissionPreset })
-                              pgSetPermissionPreset(
-                                session.id,
-                                session.agentId ?? '',
-                                permissionPreset,
-                                webchatConversationId
-                              )
-                            }}
-                          />
-                        ) : (
-                          pgPermissionPreset && (
-                            <span className={COMPOSER_CHIP_STATIC} title="Permission">
-                              <span className="truncate">
-                                {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                            )
+                          ))}
+                        {!multiLive &&
+                          (runtimeChangesEnabled && pgPermissionPresets.length > 0 ? (
+                            <ComposerMenu
+                              title="Permission"
+                              value={pgPermissionPreset}
+                              options={pgPermissionPresets.map((mode) => ({
+                                value: mode.v,
+                                label: mode.l,
+                                description: mode.description
+                              }))}
+                              open={composerMenuOpen === 'permission'}
+                              align="left"
+                              triggerClassName={COMPOSER_CHIP}
+                              onOpenChange={(open) => {
+                                setAttachMenuOpen(false)
+                                setComposerMenuOpen(open ? 'permission' : null)
+                              }}
+                              onChange={(permissionPreset) => {
+                                setRuntimeSelection({ permissionPreset })
+                                pgSetPermissionPreset(
+                                  session.id,
+                                  session.agentId ?? '',
+                                  permissionPreset,
+                                  webchatConversationId
+                                )
+                              }}
+                            />
+                          ) : (
+                            pgPermissionPreset && (
+                              <span className={COMPOSER_CHIP_STATIC} title="Permission">
+                                <span className="truncate">
+                                  {agentPermissionDisplay(owningDaemon, agentRuntime, pgPermissionPreset)}
+                                </span>
                               </span>
-                            </span>
-                          )
-                        ))}
-                      {canChooseWorktree && (
-                        <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
-                          <input
-                            type="checkbox"
-                            checked={pgWorktree}
-                            onChange={(event) => {
-                              const worktree = event.target.checked
-                              setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
-                              pgSetWorktree(session.id, worktree)
-                            }}
-                            className="h-4 w-4 flex-none accent-(--brand)"
-                          />
-                          <span className="truncate">Worktree</span>
-                        </label>
-                      )}
+                            )
+                          ))}
+                        {canChooseWorktree && (
+                          <label className={`${COMPOSER_CHIP} min-w-0 cursor-pointer`}>
+                            <input
+                              type="checkbox"
+                              checked={pgWorktree}
+                              onChange={(event) => {
+                                const worktree = event.target.checked
+                                setWorktreeSelections((current) => ({ ...current, [session.id]: worktree }))
+                                pgSetWorktree(session.id, worktree)
+                              }}
+                              className="h-4 w-4 flex-none accent-(--brand)"
+                            />
+                            <span className="truncate">Worktree</span>
+                          </label>
+                        )}
+                      </div>
+                      <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
+                      <ComposerSendButton
+                        sessionId={session.id}
+                        busy={pgBusy}
+                        imagePreparing={imagePreparing}
+                        hasImage={!!pgImage}
+                        mentionJoining={mentionJoining}
+                        onSend={() => onPgSend()}
+                        onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
+                      />
                     </div>
-                    <ContextWindowIndicator used={u?.contextUsed} size={u?.contextSize} />
-                    <ComposerSendButton
-                      sessionId={session.id}
-                      busy={pgBusy}
-                      imagePreparing={imagePreparing}
-                      hasImage={!!pgImage}
-                      onSend={() => onPgSend()}
-                      onStop={() => pgCancel(session.id, session.agentId ?? '', webchatConversationId)}
-                    />
                   </div>
                 </div>
-              </div>
-            </>
-          )}
+              </>
+            )}
+          </div>
         </div>
       </div>
-      <SessionRail
-        sessions={railSessions}
-        // The open row has to name its conversation and its members, because that
-        // is how the rail collapses it against the grouped list and how a pin
-        // finds it — matching on the session id alone would double the row (or
-        // lose its pin) whenever the two disagree on which member is newest.
-        // `selfKey` is the same §5.1 key computed for the redirect probe, so a
-        // single-participant thread is deduplicated on exactly the same terms, and
-        // the roster resolver is not agent-filtered, so its members are complete.
-        current={railCurrent ?? session}
-        total={railSessionTotal}
-        agentIds={railDisplayAgentIds}
-        filterTouched={railFilter.touched}
-        onAgentIdsChange={setRailAgentIds}
-        family={familyLinks}
-        flatView={flatView}
-        childOriginById={conversationLineage?.childOriginById}
-        roomLineage={conversationLineage?.roomLineage}
-        onSelect={setRouteSession}
-        onWouldHideChange={handleRailWouldHide}
-      />
+      {/* Opening a file also closes the collapsed-band overlay: below `wide:` the dock is a drawer over the very pane the file lands in, and on a phone the viewer IS the screen (§8). The dock's own latch resets on this key. */}
+      <SessionDock
+        tabs={dockTabs}
+        activeKey={dockTabKey}
+        onTabChange={setDockTab}
+        onTabAction={(key) => {
+          if (key === 'files') setFilesRefreshTick((tick) => tick + 1)
+          if (key === 'git') setGitRefreshTick((tick) => tick + 1)
+          if (key === 'tasks') setTasksRefreshTick((tick) => tick + 1)
+        }}
+        overlayKey={`${session.id}:${viewerPath ?? ''}`}
+        label="Panels"
+      >
+        {/* Both panels stay mounted; only the active one draws. Sessions owns the verdict that sets its own tab status, and Files owns the tree, the filter and the scroll position a tab switch must not spend. */}
+        <DockPanel active={dockTabKey === 'sessions'}>
+          <SessionsPanel
+            sessions={railSessions}
+            // Named by conversation and members (the §5.1 key, roster complete): that is how the panel collapses this row and how a pin finds it.
+            current={railCurrent ?? session}
+            total={railSessionTotal}
+            agentIds={railDisplayAgentIds}
+            filterTouched={railFilter.touched}
+            onAgentIdsChange={setRailAgentIds}
+            family={familyLinks}
+            flatView={flatView}
+            childOriginById={conversationLineage?.childOriginById}
+            roomLineage={conversationLineage?.roomLineage}
+            onSelect={setRouteSession}
+            onWouldHideChange={handleSessionsWouldHide}
+          />
+        </DockPanel>
+        <DockPanel active={dockTabKey === 'files'}>
+          {/* Withheld until the scope is known, so no listing is ever issued against a checkout we only assumed. A rejected isolation read says so rather than spinning forever. */}
+          {filesScopeFailed ? (
+            <div
+              data-files-scope-failed=""
+              className="px-3 py-4 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
+            >
+              Couldn’t tell which checkout this session reads — its details didn’t load. Reopen the session, or read the
+              files from the agent’s workspace page.
+            </div>
+          ) : null}
+          {filesAgentId && filesScopeReady ? (
+            <FilesPanel
+              agentId={filesAgentId}
+              {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+              {...(filesWorkdir ? { workdir: filesWorkdir } : {})}
+              refreshTick={filesRefreshTick}
+              openFilePath={viewerOpen && viewerMode === 'file' ? viewerPath : null}
+              onOpenFile={(path) => setViewerFile(path, filesAgentId)}
+              onRootSettledChange={setFilesRootSettled}
+            />
+          ) : null}
+        </DockPanel>
+        <DockPanel active={dockTabKey === 'git'}>
+          {/* Same withholding as Files: no status is read against a checkout we only assumed, and a rejected isolation read says so instead of spinning. */}
+          {filesScopeFailed ? (
+            <div
+              data-git-scope-failed=""
+              className="px-3 py-4 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
+            >
+              Couldn’t tell which checkout this session works in — its details didn’t load. Reopen the session, or read
+              its git status from the agent’s workspace page.
+            </div>
+          ) : null}
+          {/* Mounted on the same terms as Files, and for the same reason: the panel's verdict is what keeps its own tab out of the dock's vacant state, so a lazily mounted one makes the tab unreachable. */}
+          {filesAgentId && filesScopeReady ? (
+            <GitPanel
+              agentId={filesAgentId}
+              {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+              refreshTick={gitRefreshTick}
+              openPath={viewerOpen && viewerMode !== 'file' ? viewerPath : null}
+              openStaged={viewerMode === 'staged'}
+              canWrite={canWriteWorkspace}
+              onWrote={onPanelWrote}
+              onOpenDiff={(path, staged, untracked) =>
+                setViewerFile(path, filesAgentId, untracked ? 'file' : staged ? 'staged' : 'diff')
+              }
+              onVerdictChange={setGitVerdict}
+            />
+          ) : null}
+        </DockPanel>
+        {/* No isolation gate and no withheld state: the lease is keyed by the session, not by a checkout, so there is nothing to resolve first. `active` is what keeps a hidden panel from polling. */}
+        <DockPanel active={dockTabKey === 'tasks'}>
+          {filesAgentId && tasksSessionId ? (
+            <TasksPanel
+              agentId={filesAgentId}
+              sessionId={tasksSessionId}
+              active={dockTabKey === 'tasks'}
+              refreshTick={tasksRefreshTick}
+              onVerdictChange={setTasksVerdict}
+            />
+          ) : null}
+        </DockPanel>
+      </SessionDock>
     </div>
   )
 }

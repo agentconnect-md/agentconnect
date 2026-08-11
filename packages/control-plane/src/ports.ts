@@ -235,6 +235,8 @@ export interface DaemonLiveness {
   /** `sessionEpoch` is the LIVE connection's fencing epoch — the epoch a control frame
    *  sent right now would ride. Lifecycle commands capture it as the settlement baseline. */
   get(daemonId: string): { state: string; reachable: boolean; sessionEpoch: number } | undefined
+  /** Close the same non-READY epoch so an auth-time bootstrap directive cannot be missed. */
+  reconnectForBootstrap?(daemonId: string, sessionEpoch: number): boolean
 }
 
 /**

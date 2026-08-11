@@ -156,6 +156,8 @@ export function composeRuntimeLaunch(opts: {
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
   allowModelToolUnixSockets?: boolean
+  /** True in --k8s: the runtime runs in a sandbox pod, so this daemon's env must not travel. */
+  k8s?: boolean
 }): ComposedRuntimeLaunch {
   const policyId = runtimeMemoryPolicyId(opts.runtime, opts.runtimeId)
   const capabilities = runtimeMemoryCapabilities(opts.runtime, opts.runtimeId)
@@ -171,6 +173,7 @@ export function composeRuntimeLaunch(opts: {
   const stateSourceEnv = opts.stateSourceEnv ?? opts.hostEnv ?? process.env
   const sandboxAccess = opts.runInSandbox ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv) : undefined
   const launch = prepareRuntimeLaunch({
+    ...(opts.k8s === true ? { k8s: true } : {}),
     runtimeId: opts.runtimeId,
     runtime: opts.runtime,
     scopeDir: opts.scopeDir,

@@ -134,4 +134,34 @@ describe('auth handler — valid key mints next epoch; invalid key closes 4401',
     const row = await repo.getUnscoped(DaemonId(DAEMON))
     expect(row?.sessionEpoch).toBe(1n)
   })
+
+  it('delivers and arms a pending upgrade during bootstrap auth, then records installer failure', async () => {
+    const h = buildWsHarness(prisma)
+    const token = await h.mintToken(DAEMON)
+    const op = await h.deps.lifecycleOps.open({
+      daemonId: DaemonId(DAEMON),
+      op: 'upgrade',
+      targetVersion: '2.0.0',
+      commandEpoch: 0n,
+      deadline: new Date(h.clock.now() + 60_000)
+    })
+    const { stub } = h.connect()
+    stub.inject('auth', { ...authPayload(token), bootstrapProtocolVersion: 1 }, { id: AUTH_ID })
+
+    const ok = await stub.expectFrame('auth/ok')
+    if (!isFrame('auth/ok')(ok)) throw new Error('expected auth/ok')
+    expect(ok.payload.lifecycle).toEqual({ operationId: op.id, action: 'upgrade', targetVersion: '2.0.0' })
+    expect((await h.deps.lifecycleOps.getById(op.id))?.acceptedAt).not.toBeNull()
+    expect((await h.deps.lifecycleOps.getById(op.id))?.commandEpoch).toBe(1n)
+
+    stub.inject('daemon/bootstrap/result', {
+      operationId: op.id,
+      status: 'failed',
+      reason: 'registry unavailable'
+    })
+    const ack = await stub.expectFrame('ack')
+    if (!isFrame('ack')(ack)) throw new Error('expected ack')
+    expect(ack.payload.ok).toBe(true)
+    expect((await h.deps.lifecycleOps.getById(op.id))?.status).toBe('failed')
+  })
 })

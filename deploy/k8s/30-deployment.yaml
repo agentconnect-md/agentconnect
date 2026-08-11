@@ -1,0 +1,104 @@
+# The k8s daemon.
+#
+# `--k8s` is already this image's default command, and outside a pod it REFUSES to start rather
+# than falling back to running runtimes on its own host — so a misconfigured deployment fails
+# loudly instead of quietly becoming a single-tenant machine running agent code.
+#
+# replicas is 1 on purpose: a launch's spawn records and shim channels live in THIS process, so a
+# second replica would answer callbacks for launches it never made. Horizontal scale is a
+# daemon-per-shard decision, not a replica count.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentconnect-daemon
+  namespace: agentconnect
+  labels:
+    app: agentconnect-daemon
+spec:
+  replicas: 1
+  strategy:
+    # Never two daemons briefly sharing one agent's sandboxes: the old pod must be gone before the
+    # new one starts binding channels for the same launches.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agentconnect-daemon
+  template:
+    metadata:
+      labels:
+        app: agentconnect-daemon
+    spec:
+      serviceAccountName: agentconnect-daemon
+      # Must EXCEED the daemon's shutdown drain (it logs the deadline it will use at boot), or the
+      # kubelet SIGKILLs mid-drain and every rollout cuts in-flight turns.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+      initContainers:
+        # The daemon enforces owner-only permissions on a config that carries a secret, and repairs
+        # the mode if it is looser. A Secret volume is read-only, so that repair fails and the
+        # daemon refuses to start; and a Secret file is root-owned, so a mode it would accept
+        # (0400) is one this uid cannot read. Copying it onto the writable state volume satisfies
+        # both — and keeps the key out of the argument list, which is the point of not passing it
+        # as a flag.
+        - name: install-config
+          image: ghcr.io/agentconnect-md/daemon:<IMAGE_TAG>
+          command:
+            - sh
+            - -c
+            - install -m 0600 /etc/agentconnect-secret/config.json /var/lib/agentconnect/config.json
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentconnect-secret
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/agentconnect
+      containers:
+        - name: daemon
+          image: ghcr.io/agentconnect-md/daemon:<IMAGE_TAG>
+          # ENTRYPOINT is `tini --`, and `args` replaces CMD without replacing it — so these are
+          # tini's arguments and must name the interpreter. Dropping `node dist/index.js` here
+          # makes tini try to exec `run`.
+          args:
+            - node
+            - dist/index.js
+            - run
+            - --k8s
+            - --root
+            - /var/lib/agentconnect
+            # The API key is NOT passed as an argument: arguments are visible in `kubectl describe
+            # pod` and in the container's own process list. It travels in the Secret-mounted config.
+            - --config
+            - /var/lib/agentconnect/config.json
+          env:
+            # Refused rather than defaulted by the daemon: a guessed org labels another tenant's
+            # claims, and a guessed pool yields sandboxes that never bind with nothing saying why.
+            - name: AC_K8S_ORG_ID
+              value: agentconnect
+            - name: AC_K8S_WARM_POOL
+              value: agentconnect-runtime-pool
+            - name: AC_K8S_SHIM_PORT
+              value: '8085'
+          ports:
+            - name: shim
+              containerPort: 8085
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/agentconnect
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: config
+          secret:
+            secretName: agentconnect-daemon-config
+        - name: state
+          # emptyDir for a first test environment: agent state is re-fetched from the Control
+          # Plane on register. Swap for a PVC once a restart losing local state matters.
+          emptyDir: {}

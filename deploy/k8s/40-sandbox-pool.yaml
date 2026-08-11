@@ -1,0 +1,106 @@
+# What an agent's runtime executes inside.
+#
+# The workspace PVC is declared HERE, at pool level, and deliberately not on the claim: a claim
+# carrying `volumeClaimTemplates` (or `env`) bypasses warm-pool adoption and forces a cold start,
+# which is exactly the latency the pool exists to avoid. The daemon's claim therefore carries only
+# a warmPoolRef and its org/agent labels.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: agentconnect-runtime
+  namespace: agentconnect
+spec:
+  volumeClaimTemplatesPolicy: Disallowed
+  # The controller manages a NetworkPolicy for this template by default, and an empty egress list
+  # is default-DENY — which would block the one direction this design depends on: the shim dialling
+  # the daemon. Stated explicitly rather than left to the default, and narrow: the daemon, DNS, and
+  # provider egress (direct-connect for now; this is the rule an egress proxy would replace).
+  # Ingress stays empty, so the sandbox accepts nothing — the daemon never dials in.
+  networkPolicy:
+    egress:
+      - to:
+          - podSelector:
+              matchLabels:
+                app: agentconnect-daemon
+        ports:
+          - protocol: TCP
+            port: 8085
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - ports:
+          - protocol: TCP
+            port: 443
+  podTemplate:
+    spec:
+      # No ServiceAccount token is auto-mounted: the ONLY identity this pod gets is the projected
+      # token below, restricted to the daemon's audience, so it is useless anywhere else.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Matches the image's uid so the workspace volume is writable by the runtime that owns it.
+        fsGroup: 10001
+      containers:
+        - name: runtime
+          image: ghcr.io/agentconnect-md/runtime-sandbox:<IMAGE_TAG>
+          env:
+            # Where the shim dials back. The daemon never dials in, so this is the only direction
+            # that has to work — and it is why the sandbox needs no inbound rules at all.
+            - name: AC_SHIM_ENDPOINT
+              value: ws://agentconnect-daemon-shim.agentconnect.svc.cluster.local:8085
+            - name: AC_SHIM_WORKSPACE_ROOT
+              value: /agent
+          volumeMounts:
+            - name: workspace
+              mountPath: /agent
+            - name: ac-identity
+              mountPath: /var/run/ac-identity
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: ac-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  # This audience is the whole reason the pod's own token is safe to hand over:
+                  # a token minted for anything else must not authenticate at the shim endpoint.
+                  # It must match SHIM_TOKEN_AUDIENCE in packages/daemon/src/shim/protocol.ts.
+                  audience: ac-daemon-callback
+                  expirationSeconds: 3600
+                  path: token
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 10Gi
+        # A cluster-wide CSI rather than the cluster's default `local-path`: that provisioner has
+        # no path on every node, so a workspace pinned to it fails to bind wherever the scheduler
+        # happens to put the pod — observed as ProvisioningFailed on sea-admin. It also ties the
+        # sandbox to one node for the volume's life, which a resumable workspace should not be.
+        storageClassName: standard
+---
+# `replicas: 0` is a cold pool: sandboxes are created on demand and pay a cold start. Raise it
+# once cold-start latency matters — that is what the D9 `cold` vs `resume` split measures.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: agentconnect-runtime-pool
+  namespace: agentconnect
+spec:
+  replicas: 0
+  updateStrategy:
+    type: Recreate
+  sandboxTemplateRef:
+    name: agentconnect-runtime

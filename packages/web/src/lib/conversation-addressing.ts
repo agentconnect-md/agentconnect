@@ -92,6 +92,37 @@ export function typedMentionIds(
   return roster.filter((p) => mentioned.has(p.agentId)).map((p) => p.agentId)
 }
 
+/** The @mention being typed at `caret`, if any (composer autocomplete —
+ *  webchat-multi-agents.md §9.1/§9.2). Mirrors typedMentionIds' left-edge rule:
+ *  an `@` glued to a preceding word addresses no one, so it never opens the
+ *  picker either. A space since the `@` ends the query — the picker narrows on
+ *  the first word only; a multi-word display name still lands in full because
+ *  picking inserts the whole name, not just what was typed.
+ */
+export function mentionQueryAt(text: string, caret: number): { start: number; query: string } | null {
+  const upto = text.slice(0, caret)
+  const at = upto.lastIndexOf('@')
+  if (at === -1) return null
+  const query = upto.slice(at + 1)
+  if (/\s/.test(query)) return null
+  if (at > 0 && NAME_CHAR_RE.test(upto[at - 1]!)) return null
+  return { start: at, query }
+}
+
+/** The full extent of the @mention token starting at `start` (the `@`'s
+ *  index) — the run of non-space characters after it, regardless of where the
+ *  caret currently sits inside that run. Picking an option replaces this
+ *  whole span, not just the prefix up to the caret: the caret can land
+ *  mid-token (arrow keys, a click) after `mentionQueryAt` first found it, and
+ *  replacing only up to a mid-token caret would leave the token's tail behind
+ *  as stray text instead of being consumed by the inserted name.
+ */
+export function mentionSpanEnd(text: string, start: number): number {
+  let end = start + 1
+  while (end < text.length && !/\s/.test(text[end]!)) end++
+  return end
+}
+
 /** Where a `/sessions/:id` deep link goes when its session turns out to belong
  *  to a multi-participant conversation (merged-conversation-view.md §5.3).
  *

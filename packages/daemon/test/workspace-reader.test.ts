@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, symlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -246,9 +247,38 @@ describe('workspace read', () => {
     expect(past).toMatchObject({ content: '', offset: 100, truncated: false })
   })
 
-  it('directory read → violation', async () => {
+  it('directory read → DATA (type:dir, no content), so it is not an offline-looking error', async () => {
     mkdirSync(join(ws, 'src'))
-    await expect(reader.read(readReq('src'))).rejects.toBeInstanceOf(WorkspaceViolationError)
+    const r = await reader.read(readReq('src'))
+    expect(r).toEqual({
+      agentId: AGENT,
+      path: 'src',
+      exists: true,
+      type: 'dir',
+      mtime: statSync(join(ws, 'src')).mtime.toISOString()
+    })
+    expect(r.content).toBeUndefined()
+    expect(r.encoding).toBeUndefined()
+    // A regular file still names itself, so the console can branch on one field.
+    writeFileSync(join(ws, 'src', 'a.txt'), 'hi')
+    expect((await reader.read(readReq('src/a.txt'))).type).toBe('file')
+  })
+
+  it('a non-regular, non-directory target keeps the violation — with a machine-readable reason', async () => {
+    // A FIFO is neither a file nor a directory: reading it would block on a writer,
+    // so it stays a violation the CP can answer with a code (not a 503).
+    execFileSync('mkfifo', [join(ws, 'pipe')])
+    await expect(reader.read(readReq('pipe'))).rejects.toMatchObject({
+      name: 'WorkspaceViolationError',
+      reason: 'not-a-file'
+    })
+  })
+
+  it('write and delete still refuse a directory (a mutation cannot be data)', async () => {
+    mkdirSync(join(ws, 'docs'))
+    const mtime = statSync(join(ws, 'docs')).mtime.toISOString()
+    await expect(reader.write(writeReq('docs', 'x', mtime))).rejects.toMatchObject({ reason: 'not-a-file' })
+    await expect(reader.delete(deleteReq('docs', mtime))).rejects.toMatchObject({ reason: 'not-a-file' })
   })
 
   it('reports nextOffset (not a client recount) so paging is exact', async () => {
@@ -383,5 +413,16 @@ describe('frame-size budget on listings', () => {
     expect(pages).toBeGreaterThan(1) // the byte budget broke the page before the count limit
     expect(seen.size).toBe(500)
     expect(names.every((n) => seen.has(n))).toBe(true)
+  })
+  it('refuses a DIRECTORY behind an intermediate symlink instead of reporting its mtime', async () => {
+    // Making a directory an ordinary answer reopened the oracle the git-diff seam had:
+    // `lstat` follows intermediate components, so `vendor/private` behind a symlinked
+    // `vendor` would report a host directory's existence and mtime.
+    mkdirSync(join(outside, 'private'), { recursive: true })
+    symlinkSync(outside, join(ws, 'vendor'), 'dir')
+
+    await expect(reader.read({ agentId: AGENT, path: 'vendor/private', offset: 0, limit: 1024 })).rejects.toMatchObject(
+      { reason: 'path-escape' }
+    )
   })
 })

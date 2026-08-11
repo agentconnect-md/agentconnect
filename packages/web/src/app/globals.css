@@ -16,10 +16,8 @@
 @theme {
   --breakpoint-*: initial;
   --breakpoint-desktop: 769px;
-  /* `wide:` — the session detail page's three-column threshold (nav · body ·
-     session rail). Below it the rail collapses to a floating button; it is NOT
-     a general layout breakpoint — everything else keeps the single 769px one. */
-  --breakpoint-wide: 1240px;
+  /* `wide:` — where nav · body · dock fit inline: 240 rail (expanded) + 60 `.content` padding + 26 column gap − 30 track bleed + 380 min dock + 640 transcript floor = 1316 (dock-width.ts `DOCK_WIDE_MIN`); below it the dock is an overlay. Not a general breakpoint. */
+  --breakpoint-wide: 1316px;
   --leading-normal: normal;
   --default-transition-duration: var(--duration-fast);
   --default-transition-timing-function: var(--ease-standard);
@@ -173,6 +171,9 @@
   --shadow-md: 0 2px 4px rgba(17, 22, 29, 0.06), 0 4px 12px rgba(17, 22, 29, 0.06);
   --shadow-lg: 0 4px 8px rgba(17, 22, 29, 0.06), 0 12px 28px rgba(17, 22, 29, 0.1);
   --shadow-xl: 0 8px 16px rgba(17, 22, 29, 0.08), 0 24px 56px rgba(17, 22, 29, 0.14);
+
+  /* The session dock's applied width (dock-width.ts `DOCK_WIDTH_DEFAULT`). The `(app)` layout's pre-paint script overrides it from storage; this is what renders without one. */
+  --dock-width: 480px;
 
   /* Motion — confident, no bounce. Snappy enter, soft settle. */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);

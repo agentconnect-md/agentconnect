@@ -355,6 +355,7 @@ type AppLike = {
     }
     chat: {
       postMessage: (a: unknown) => Promise<{ ts?: string }>
+      getPermalink: (a: unknown) => Promise<{ permalink?: string }>
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
     }
@@ -483,6 +484,14 @@ function missingScopesFrom(err: unknown): string[] {
  * retried and cannot duplicate a message whose first result was ambiguous. */
 function isMissingCustomizeScope(err: unknown): boolean {
   return missingScopesFrom(err).includes('chat:write.customize')
+}
+
+function slackApiErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object') return undefined
+  const data = (err as { data?: unknown }).data
+  if (!data || typeof data !== 'object') return undefined
+  const code = (data as { error?: unknown }).error
+  return typeof code === 'string' ? code : undefined
 }
 
 // Re-probe periodically so granting chat:write.customize to an existing Slack app
@@ -853,9 +862,7 @@ export class SlackConnection implements PlatformConnection {
       : `https://api.slack.com/apps/${appId}/install-on-team?`
   }
 
-  /** Post the Devin-style reauthorization notice once for this connection.
-   * This bypasses `postChatMessage` deliberately: the card must use the Slack App
-   * identity and must not recursively trigger itself. */
+  /** Post the reauthorization notice once with the Slack App identity. */
   private async postPermissionUpdateCard(channel: string, threadTs?: string): Promise<void> {
     if (this.permissionUpdateAnnounced || this.missingScopes.size === 0) return
     const updateUrl = this.permissionUpdateUrl()
@@ -866,7 +873,7 @@ export class SlackConnection implements PlatformConnection {
     const text =
       'Permissions update required. Please update and re-authorize this Slack app to ensure all features work correctly.'
     try {
-      await this.app.client.chat.postMessage({
+      const posted = await this.postIfThreadExists(channel, threadTs, {
         channel,
         thread_ts: threadTs,
         text,
@@ -875,6 +882,7 @@ export class SlackConnection implements PlatformConnection {
         unfurl_media: false,
         metadata: { event_type: SLACK_CHROME_EVENT_TYPE, event_payload: {} }
       })
+      if (!posted) this.permissionUpdateAnnounced = false
     } catch (err) {
       this.permissionUpdateAnnounced = false
       this.rememberMissingScopes(err)
@@ -882,36 +890,50 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** Shared chat.postMessage boundary for plain/markdown and Block Kit messages.
-   *  `username` + `icon_url` are the per-message identity overrides — both gated by
-   *  the same `chat:write.customize` scope, so they share one probe/cooldown. A
-   *  missing customize scope is safe to retry because Slack rejected the first
-   *  request before creating a message; every other error is propagated. */
+  /** Post only while a threaded reply's root remains extant. */
+  private async postIfThreadExists(
+    channel: string,
+    threadTs: string | undefined,
+    payload: Record<string, unknown>
+  ): Promise<{ ts?: string } | undefined> {
+    if (threadTs) {
+      try {
+        await this.app.client.chat.getPermalink({ channel, message_ts: threadTs })
+      } catch (err) {
+        if (slackApiErrorCode(err) !== 'message_not_found') throw err
+        this.deps.log?.info(`slack: skipped reply to deleted root ch=${channel} thread=${threadTs}`)
+        return undefined
+      }
+    }
+    return this.app.client.chat.postMessage(payload)
+  }
+
+  /** Shared chat.postMessage boundary with optional per-message identity. */
   private async postChatMessage(
     channel: string,
     threadTs: string | undefined,
     payload: Record<string, unknown>,
     options?: SlackPostOptions
-  ): Promise<{ ts?: string }> {
+  ): Promise<{ ts?: string } | undefined> {
     const customize: Record<string, unknown> = {}
     const username = options?.username?.trim()
     const iconUrl = options?.icon_url?.trim()
     if (username) customize.username = username
     if (iconUrl) customize.icon_url = iconUrl
     try {
-      let result: { ts?: string }
+      let result: { ts?: string } | undefined
       if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
-        result = await this.app.client.chat.postMessage(payload)
+        result = await this.postIfThreadExists(channel, threadTs, payload)
       } else {
         try {
-          result = await this.app.client.chat.postMessage({ ...payload, ...customize })
+          result = await this.postIfThreadExists(channel, threadTs, { ...payload, ...customize })
           this.customUsernameRetryAt = 0
         } catch (err) {
           this.rememberMissingScopes(err)
           if (!isMissingCustomizeScope(err)) throw err
           this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
           this.deps.log?.debug('slack: chat:write.customize missing — retrying with the app default identity')
-          result = await this.app.client.chat.postMessage(payload)
+          result = await this.postIfThreadExists(channel, threadTs, payload)
         }
       }
       await this.postPermissionUpdateCard(channel, threadTs)

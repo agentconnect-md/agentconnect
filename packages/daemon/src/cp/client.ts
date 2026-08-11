@@ -38,7 +38,15 @@ import type {
   WorkspaceWriteReq,
   WorkspaceDeleteReq,
   WorkspaceGitStatusReq,
+  WorkspaceGitDiffReq,
+  WorkspaceGitLogReq,
   WorkspaceGitPullReq,
+  WorkspaceGitStageReq,
+  WorkspaceGitCommitReq,
+  WorkspaceGitPushReq,
+  WorkspaceGitMessageReq,
+  TaskListReq,
+  WorkspaceGitMessageResult,
   GitCredRequest,
   GitCredGrant,
   ChannelAgentsReq,
@@ -89,7 +97,8 @@ import type {
   ManagedSkillReadReq,
   ManagedSkillChunk,
   OrganizationSuggestionReadReq,
-  OrganizationSuggestionReviewReq
+  OrganizationSuggestionReviewReq,
+  BootstrapLifecycle
 } from '@agentconnect.md/protocol'
 import {
   buildEnvelope,
@@ -99,7 +108,8 @@ import {
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
-  ORGANIZATION_KNOWLEDGE_FEATURE
+  ORGANIZATION_KNOWLEDGE_FEATURE,
+  DAEMON_BOOTSTRAP_PROTOCOL_VERSION
 } from '@agentconnect.md/protocol'
 import type { SessionReader } from './session-reader.js'
 import { WorkspaceConflictError, WorkspaceViolationError, type WorkspaceReader } from './workspace-reader.js'
@@ -111,6 +121,8 @@ import {
   type MemoryReader
 } from './memory-reader.js'
 import type { WorkspaceGit } from './workspace-git.js'
+import type { TaskReader } from './task-reader.js'
+import { TaskViolationError } from './task-reader.js'
 import type { DreamReader } from './dream-reader.js'
 import type { LocalSkillsReader } from './local-skills-reader.js'
 import { DreamViolationError, DreamStateError } from '../agents/dream-runner.js'
@@ -130,6 +142,9 @@ const REGISTERING_CONTROL_QUEUE_LIMIT = 1024
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
 export type CpState = 'CONNECTING' | 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'DRAINING' | 'CLOSED' | 'DEGRADED'
+
+export type BootstrapUpgradeOutcome =
+  { status: 'current' } | { status: 'failed'; reason: string } | { status: 'installed'; restart: () => void }
 
 interface RegisterControlBarrier {
   transport: Transport
@@ -172,6 +187,8 @@ export interface CpClientDeps {
   workspaceRead: WorkspaceReader
   /** Git status/pull seam over the agents' git-repo workspace dirs (§1/§12). */
   workspaceGit: WorkspaceGit
+  /** Read-only projection of the in-memory background-task lease (§3.5 of webchat-side-panels.md). */
+  taskReader: TaskReader
   /** Read/write seam over the agents' memory dirs (`<agent-root>/memory/`, §1/§12). */
   memoryReader: MemoryReader
   /** Dream-job lifecycle + staged-output review seam (docs/designs/memory-dreaming.md §10). */
@@ -196,6 +213,8 @@ export interface CpClientDeps {
    *  resolve it). The console is org-scoped, so this becomes the `<orgSlug>` segment of a
    *  session deep link (`<webAppUrl>/<orgSlug>/sessions/<id>`). */
   onOrgSlug?: (orgSlug: string | undefined) => void
+  /** Auth-time recovery directive handled before full registration. */
+  onBootstrapUpgrade?: (lifecycle: BootstrapLifecycle) => Promise<BootstrapUpgradeOutcome>
   /** Called once the daemon reaches READY on each (re)connect, after the initial
    *  runtime profiles are emitted. The daemon uses this to kick off background
    *  runtime probing and push the refreshed snapshot via `emitDaemonRuntimes`. */
@@ -237,6 +256,9 @@ export class CpClient {
   // register value, refreshed by `capabilities/update`). Serialized for the
   // change check in updateCapabilities(); reset on each register.
   private lastSentCapabilities?: string
+  /** In-flight commit-message passes by REQ id, so a retransmit of the same REQ joins the pass it
+   *  already started instead of running a second model turn (see the `workspace/gitmessage` case). */
+  private gitMessageInflight = new Map<string, Promise<WorkspaceGitMessageResult>>()
 
   constructor(private readonly deps: CpClientDeps) {
     this.correlator = new ReqRep<AnyFrame>(deps.clock, ACK_TIMEOUT_MS)
@@ -343,7 +365,8 @@ export class CpClient {
     this.state = 'AUTHENTICATING'
     const authPayload: Record<string, unknown> = {
       apiKey: this.deps.token,
-      agentVersion: this.deps.agentVersion
+      agentVersion: this.deps.agentVersion,
+      ...(this.deps.onBootstrapUpgrade ? { bootstrapProtocolVersion: DAEMON_BOOTSTRAP_PROTOCOL_VERSION } : {})
     }
     // Send daemonId only if configured; otherwise the CP derives it from the
     // token's `sub` and returns it in auth/ok (token-only onboarding).
@@ -360,6 +383,7 @@ export class CpClient {
       heartbeatSec: number
       webAppUrl?: string
       orgSlug?: string
+      lifecycle?: BootstrapLifecycle
     }
     this.sessionEpoch = ok.sessionEpoch
     this.lastAuthedEpoch = ok.sessionEpoch
@@ -373,9 +397,28 @@ export class CpClient {
     this.deps.onWebAppUrl?.(ok.webAppUrl)
     // Adopt the org slug the daemon belongs to — the `<orgSlug>` path segment of a deep link.
     this.deps.onOrgSlug?.(ok.orgSlug)
+    this.state = 'REGISTERING'
+    if (ok.lifecycle && this.deps.onBootstrapUpgrade) {
+      let outcome: BootstrapUpgradeOutcome
+      try {
+        outcome = await this.deps.onBootstrapUpgrade(ok.lifecycle)
+      } catch (err) {
+        outcome = { status: 'failed', reason: err instanceof Error ? err.message : String(err) }
+      }
+      if (outcome.status === 'failed') {
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'failed', outcome.reason)
+      } else if (outcome.status === 'installed') {
+        await this.reportBootstrapResult(expectedTransport, ok.lifecycle, 'installed').catch((err) => {
+          this.deps.log.error(`cp: could not confirm bootstrap installation: ${(err as Error).message}`)
+        })
+        this.stopped = true
+        outcome.restart()
+        expectedTransport.close(1000, 'bootstrap upgrade installed')
+        throw new Error(`bootstrap upgrade to ${ok.lifecycle.targetVersion} installed`)
+      }
+    }
 
     // ── register ──
-    this.state = 'REGISTERING'
     const registerCapabilities = this.deps.capabilities()
     this.lastSentCapabilities = JSON.stringify(registerCapabilities)
     const register = buildEnvelope('register', {
@@ -441,6 +484,23 @@ export class CpClient {
     // arrive later as another `facts/daemon-runtimes` snapshot that replaces
     // the one just sent.
     this.deps.onReady?.()
+  }
+
+  private async reportBootstrapResult(
+    transport: Transport,
+    lifecycle: BootstrapLifecycle,
+    status: 'installed' | 'failed',
+    reason?: string
+  ): Promise<void> {
+    const result = buildEnvelope('daemon/bootstrap/result', {
+      operationId: lifecycle.operationId,
+      status,
+      ...(reason ? { reason: reason.slice(0, 500) } : {})
+    })
+    const reply = await this.correlator.request(result, (encoded) => transport.send(encoded))
+    if (reply.type !== 'ack' || !(reply.payload as { ok?: boolean }).ok) {
+      throw new Error('control plane rejected the bootstrap result')
+    }
   }
 
   /**
@@ -903,9 +963,17 @@ export class CpClient {
     return 'BAD_PAYLOAD'
   }
 
-  private sendError(corr: string, code: string, message: string, retryable: boolean): void {
+  private sendError(
+    corr: string,
+    code: string,
+    message: string,
+    retryable: boolean,
+    details?: Record<string, unknown>
+  ): void {
     if (!this.transport) return
-    this.transport.send(encode(buildEnvelope('error', { code, message, retryable }, { corr })))
+    this.transport.send(
+      encode(buildEnvelope('error', { code, message, retryable, ...(details ? { details } : {}) }, { corr }))
+    )
   }
 
   private onClose(source: Transport, code: number, _reason: string): void {
@@ -1265,12 +1333,87 @@ export class CpClient {
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitstatus', err))
         return
       }
+      case 'workspace/gitdiff': {
+        // Unified diff for one path — binary / unchanged / non-repo all come back as a result.
+        this.deps.workspaceGit
+          .diff(frame.payload as WorkspaceGitDiffReq)
+          .then((result) => this.reply(frame, 'workspace/gitdiff/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitdiff', err))
+        return
+      }
+      case 'workspace/gitlog': {
+        // Newest commits of the checked-out branch; an empty repo is a result, not an error.
+        this.deps.workspaceGit
+          .log(frame.payload as WorkspaceGitLogReq)
+          .then((result) => this.reply(frame, 'workspace/gitlog/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitlog', err))
+        return
+      }
       case 'workspace/gitpull': {
         // On-demand ff-only pull — a failed pull comes back as a result (ok:false), not an error.
         this.deps.workspaceGit
           .pull((frame.payload as WorkspaceGitPullReq).agentId)
           .then((result) => this.reply(frame, 'workspace/gitpull/result', result))
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitpull', err))
+        return
+      }
+      case 'workspace/gitstage': {
+        // Console staging — the REP is the FRESH status, so the panel never re-polls its own action.
+        this.deps.workspaceGit
+          .stage(frame.payload as WorkspaceGitStageReq)
+          .then((status) => this.reply(frame, 'workspace/gitstage/result', status))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitstage', err))
+        return
+      }
+      case 'workspace/gitunstage': {
+        this.deps.workspaceGit
+          .unstage(frame.payload as WorkspaceGitStageReq)
+          .then((status) => this.reply(frame, 'workspace/gitunstage/result', status))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitunstage', err))
+        return
+      }
+      case 'workspace/gitcommit': {
+        // Nothing staged / no registered identity / a git refusal are all results, not errors.
+        this.deps.workspaceGit
+          .commit(frame.payload as WorkspaceGitCommitReq)
+          .then((result) => this.reply(frame, 'workspace/gitcommit/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitcommit', err))
+        return
+      }
+      case 'workspace/gitpush': {
+        // A diverged branch, no upstream, a detached HEAD and a remote rejection are all results.
+        this.deps.workspaceGit
+          .push(frame.payload as WorkspaceGitPushReq)
+          .then((result) => this.reply(frame, 'workspace/gitpush/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitpush', err))
+        return
+      }
+      case 'workspace/gitmessage': {
+        // The AI commit-message draft: a bounded model turn on THIS daemon's runtime. Nothing staged,
+        // a runtime that declines and a timeout are all results, not errors.
+        //
+        // Retransmit-joined, and this is the only frame that needs it: the correlator re-sends the
+        // IDENTICAL bytes (same id) when a REP is slow, and a model pass is always slower than one
+        // ack window. Without this, one press could run — and bill — several passes.
+        const inflight = this.gitMessageInflight.get(frame.id)
+        const pass =
+          inflight ??
+          this.deps.workspaceGit
+            .message(frame.payload as WorkspaceGitMessageReq)
+            .finally(() => this.gitMessageInflight.delete(frame.id))
+        if (!inflight) this.gitMessageInflight.set(frame.id, pass)
+        pass
+          .then((result) => this.reply(frame, 'workspace/gitmessage/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitmessage', err))
+        return
+      }
+      case 'task/list': {
+        // Background tasks of ONE ACP session, projected live from the lease. A session with no
+        // lease and a session with no tasks are both results (`tracked` tells them apart).
+        this.deps.taskReader
+          .list(frame.payload as TaskListReq)
+          .then((result) => this.reply(frame, 'task/list/result', result))
+          .catch((err) => this.taskError(frame.id, 'task/list', err))
         return
       }
       case 'memory/channels': {
@@ -1479,18 +1622,31 @@ export class CpClient {
     }
   }
 
-  /** Map a workspace file failure onto the wire: stale writes → CONFLICT;
-   *  containment/bad-request
-   *  violations → BAD_PAYLOAD (their messages are hand-written and path-free);
-   *  anything else → INTERNAL with a GENERIC message — raw fs errors (ELOOP,
-   *  EACCES, …) embed absolute host paths that must not leak to the CP/UI. */
+  /** Map a workspace failure onto the wire: stale writes → CONFLICT; containment/
+   *  bad-request violations → BAD_PAYLOAD (their messages are hand-written and
+   *  path-free); anything else → INTERNAL with a GENERIC message — raw fs errors
+   *  (ELOOP, EACCES, …) embed absolute host paths that must not leak to the CP/UI.
+   *  Both typed cases carry their `reason` in `details` so the CP can answer a bad
+   *  request with a status the console can tell apart from an offline daemon. */
   private workspaceError(corr: string, op: string, err: unknown): void {
     if (err instanceof WorkspaceConflictError) {
-      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
+      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }
     if (err instanceof WorkspaceViolationError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
+      return
+    }
+    this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)
+    this.sendError(corr, 'INTERNAL', `${op} failed`, false)
+  }
+
+  /** Unknown agent → BAD_PAYLOAD with the machine reason; anything else → INTERNAL with a generic
+   *  message. There is no CONFLICT arm because `task/list` reads in-memory state and mutates
+   *  nothing, so no lifecycle state can make it a legal-but-refused request. */
+  private taskError(corr: string, op: string, err: unknown): void {
+    if (err instanceof TaskViolationError) {
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }
     this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)

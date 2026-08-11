@@ -1,0 +1,202 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
+import { Readable, Writable } from 'node:stream'
+import { resolveCommandPath } from '../runtimes/probe.js'
+import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
+import type { ClaudeProtectedSettings } from './claude-runtime.js'
+import type { Logger } from '../log.js'
+
+export interface AcpSandboxLaunch {
+  mechanism: SandboxMechanism
+  writable: string[]
+  /** Common filesystem policy, consumed through SRT settings. */
+  denyReadRoots?: string[]
+  allowReadRoots?: string[]
+  /** Trusted SRT policy for ordinary ACP hosts. */
+  settingsPath?: string
+  /** Trusted working directory used to anchor SRT's Linux mandatory-deny scan. */
+  cwd?: string
+  /** Credential paths available to the trusted ACP runtime itself but denied to
+   * model-authored commands by a runtime-native nested sandbox. */
+  protectedCredentialRoots?: string[]
+  /** A deliberately exposed model-side Unix channel, currently gitcred.sock for
+   * GitHub App workspaces. Linux SRT cannot allow AF_UNIX by pathname. */
+  allowModelToolUnixSockets?: boolean
+  /** SDK flag settings that pin protected parent-only profile selection after
+   * Claude merges workspace-controlled settings. */
+  claudeProtectedSettings?: ClaudeProtectedSettings
+}
+
+/**
+ * One env pointer the runtime needs filled with an executable path, resolved in
+ * the TARGET's filesystem rather than the daemon's. Only applied when the caller
+ * left the variable unset.
+ */
+export interface ExecutableHint {
+  envVar: string
+  command: string
+}
+
+export interface SpawnRequest {
+  command: string
+  args: string[]
+  /** The complete child environment; the driver adds nothing but resolved hints. */
+  env: Record<string, string>
+  hints?: ExecutableHint[]
+  /** Disposable probes suppress raw stderr so a harness cannot print credential
+   *  material or host paths outside our sanitizer. */
+  suppressChildStderr?: boolean
+  /** OS sandbox for the agent process (issue #312). Absent ⇒ run unconfined. */
+  sandbox?: AcpSandboxLaunch
+}
+
+/** A launched ACP runtime, reduced to what the protocol layer actually needs. */
+export interface SpawnedRuntime {
+  /** ND-JSON byte streams carrying ACP in both directions. */
+  toAgent: WritableStream<Uint8Array>
+  fromAgent: ReadableStream<Uint8Array>
+  /** Fires once when the runtime reaches terminal exit on its own. */
+  onExit(listener: () => void): void
+  /** Graceful stop escalating past the deadline. Safe to call on a dead target. */
+  stop(deadlineMs: number): Promise<void>
+}
+
+/**
+ * Where an ACP runtime runs. `LocalDriver` is a child process on this host; a
+ * cluster driver launches it in a sandbox pod and carries ACP over the network.
+ * The seam is deliberately narrow — the protocol layer wants a byte stream pair
+ * and a lifecycle, and everything filesystem- or process-shaped lives below it.
+ */
+export interface SpawnDriver {
+  launch(request: SpawnRequest): Promise<SpawnedRuntime>
+}
+
+/** The ACP runtime as a child process of this daemon: today's only behavior. */
+export class LocalDriver implements SpawnDriver {
+  constructor(private opts: { log?: Logger } = {}) {}
+
+  async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
+    const env = { ...request.env }
+    for (const hint of request.hints ?? []) {
+      if (env[hint.envVar]) continue
+      const resolved = resolveCommandPath(hint.command, env)
+      if (!resolved) continue
+      env[hint.envVar] = resolved
+      this.opts.log?.info(`acp: ${hint.envVar} not set — using ${hint.command} on PATH (${resolved})`)
+    }
+    // Resolve the command to an absolute path (or a path-qualified relative one for
+    // auto-downloaded archives), so ACP registry binary commands with a `./` prefix
+    // ("./opencode", "./goose", …) are not resolved against CWD only and missed on
+    // `$PATH`. Falls back to the raw command when resolution fails — spawn's own
+    // error surface is clearer than a synthetic one.
+    const resolvedCommand = resolveCommandPath(request.command, env) ?? request.command
+    const resolved = request.sandbox && existsSync(resolvedCommand) ? realpathSync(resolvedCommand) : resolvedCommand
+    // Linux SRT sandbox (issue #312). Fail-open — ensureHost only sets sandbox after a
+    // live probe, so no mechanism means the adapter runs unconfined unless daemon
+    // policy required sandboxing and refused startup.
+    const launch = request.sandbox
+      ? sandboxWrap(resolved, request.args, request.sandbox)
+      : { cmd: resolved, args: request.args }
+    const child = spawn(launch.cmd, launch.args, {
+      stdio: ['pipe', 'pipe', request.suppressChildStderr ? 'ignore' : 'inherit'],
+      env,
+      // Own process group (POSIX): a foreground daemon's Ctrl-C sends SIGINT to the
+      // whole terminal group, which killed adapters out from under the graceful
+      // drain; and stop()'s escalation must reach the full tree — npx-distributed
+      // runtimes run the real adapter as a grandchild of the npm wrapper, and
+      // SIGKILLing just the wrapper orphans the adapter. The group id (= child pid)
+      // lets stop() signal wrapper + adapter + their children in one kill.
+      detached: process.platform !== 'win32'
+    })
+    child.once('exit', () => {
+      // Sweep group survivors (an adapter orphaned by its npx wrapper's death) NOW:
+      // moments after the leader exits its pgid cannot have been recycled — a pgid
+      // stays reserved while any member lives — so this can never hit a stranger.
+      // A later sweep could (pid reuse), which is why stop() never signals a child
+      // it found already dead.
+      if (child.pid && process.platform !== 'win32') {
+        try {
+          process.kill(-child.pid, 'SIGTERM')
+        } catch {
+          /* group already empty */
+        }
+      }
+    })
+
+    if (!child.stdin || !child.stdout) {
+      throw new Error('AcpHost: subprocess stdin/stdout are not piped')
+    }
+    return new LocalSpawnedRuntime(child, this.opts.log)
+  }
+}
+
+class LocalSpawnedRuntime implements SpawnedRuntime {
+  readonly toAgent: WritableStream<Uint8Array>
+  readonly fromAgent: ReadableStream<Uint8Array>
+  private stopped = false
+
+  constructor(
+    private child: ChildProcess,
+    private log?: Logger
+  ) {
+    this.toAgent = Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>
+    this.fromAgent = Readable.toWeb(child.stdout!) as unknown as ReadableStream<Uint8Array>
+  }
+
+  onExit(listener: () => void): void {
+    this.child.once('exit', listener)
+  }
+
+  async stop(deadlineMs: number): Promise<void> {
+    if (this.stopped) return
+    this.stopped = true
+    const child = this.child
+    // Group signal when the child has its own group (detached spawn); fall back to
+    // the direct child on win32 or once the group is gone (ESRCH).
+    const kill = (sig: NodeJS.Signals) => {
+      if (child.pid && process.platform !== 'win32') {
+        try {
+          process.kill(-child.pid, sig)
+          return
+        } catch {
+          /* group already gone — try the direct child */
+        }
+      }
+      child.kill(sig)
+    }
+    // A child that already exited on its own has emitted 'exit' already: once('exit')
+    // below would never fire and stop() would hang the daemon forever, kill() being a
+    // no-op on a reaped pid. No group sweep here — the child may have been dead for
+    // minutes (idle sweep cadence) and its pgid recycled to an unrelated process;
+    // the spawn-time 'exit' listener already swept while the pgid was provably ours.
+    if (child.exitCode !== null || child.signalCode !== null) return
+    // Graceful first: ACP is a stdio protocol, EOF on stdin is the idiomatic "we're
+    // done" and propagates through an npx wrapper to the adapter. The web-stream
+    // wrapper may hold the pipe locked mid-write — then the signals below still land.
+    try {
+      child.stdin?.end()
+    } catch {
+      /* stream locked/destroyed — signals still land */
+    }
+    kill('SIGTERM')
+    await new Promise<void>((resolve) => {
+      let settled = false
+      let killFailsafe: NodeJS.Timeout | undefined
+      const done = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        clearTimeout(killFailsafe)
+        resolve()
+      }
+      const timer = setTimeout(() => {
+        this.log?.warn(`acp: child ignored SIGTERM after ${deadlineMs}ms — sending SIGKILL`)
+        kill('SIGKILL')
+        // SIGKILL on a live child always ends in 'exit'; the failsafe only covers a
+        // kill with nothing left to hit, so stop() resolves no matter what.
+        killFailsafe = setTimeout(done, 2000)
+      }, deadlineMs)
+      child.once('exit', done)
+    })
+  }
+}

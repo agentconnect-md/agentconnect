@@ -35,7 +35,9 @@ import {
   workspaceGitPullTarget,
   writeRepoHelperConfig
 } from './git-injection.js'
+import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
+import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 
 const skillsLog = makeLogger('info')
 
@@ -103,10 +105,16 @@ const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const MATERIALIZATION_FILE = 'workspace-materialization.json'
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
 
-// Single-flight clone lock keyed by the absolute cwd. Two concurrent sessions
-// (especially multiple agents sharing one repo checkout) must not race into the
-// same dir — the second awaits the first's in-flight clone instead of re-cloning.
+// Single-flight clone lock. Two concurrent sessions (especially multiple agents sharing one repo
+// checkout) must not race into the same dir — the second awaits the first's in-flight clone.
 const cloneInFlight = new Map<string, Promise<void>>()
+
+// The key is the cwd for a local workspace, where sharing a path means sharing a checkout and
+// coalescing is the intent. For a cluster workspace the same path is a DIFFERENT filesystem per
+// agent, so coalescing there would hand one agent the other's clone; the agent id disambiguates.
+function cloneKey(agentId: string, cwd: string): string {
+  return resolveWorkspaceGitRunner?.(agentId, cwd) ? `${agentId}\u0000${cwd}` : cwd
+}
 
 function usesGithubApp(agent: Agent): boolean {
   return agent.workspace.mode === 'git-repo' && agent.workspace.gitCredential === 'github-app'
@@ -141,12 +149,39 @@ function isTrustedGithubOrigin(input: string): boolean {
   }
 }
 
+// Resolves where one agent's git runs. Per-agent because a cluster workspace's runner is bound to
+// that agent's own sandbox channel; undefined means local, so self-hosting needs no registration.
+export type WorkspaceGitRunnerResolver = (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
+
+/** Module-level init, mirroring cloneInFlight and git-injection's own registration. */
+let resolveWorkspaceGitRunner: WorkspaceGitRunnerResolver | undefined
+
+export function setWorkspaceGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
+  resolveWorkspaceGitRunner = resolver
+}
+
+// Every git operation here routes through this: a direct gitFor still passes locally and then runs
+// a cluster agent's git on the wrong filesystem.
+function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
+  return (
+    resolveWorkspaceGitRunner?.(agentId, cwd, abort) ??
+    new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
+  )
+}
+
+/** The same resolution for git run OUTSIDE this module — the console's workspace git seam. Exported
+ *  rather than re-derived, so a second local-runner construction cannot reappear elsewhere and
+ *  quietly run a cluster agent's write on this daemon's own disk. */
+export function workspaceGitRunnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
+  return runnerFor(agentId, cwd, abort)
+}
+
 async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {
-  const clone = cloneInFlight.get(cwd)
+  const clone = cloneInFlight.get(cloneKey(agent.id, cwd))
   if (clone) await clone
   if (!existsSync(join(cwd, '.git'))) return
   const expected = gitRepoOf(agent)
-  const git = gitFor(cwd).env(workspaceGitLocalEnv())
+  const git = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
   let current: string
   try {
     current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
@@ -293,7 +328,7 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
     // The CP follows repository renames by numeric repo id. Repoint the existing
     // checkout instead of treating that canonical URL refresh as a new workspace.
     await convergeWorkspaceOrigin(agent, cwd)
-    await writeRepoHelperConfig(cwd, agent.id).catch(() => undefined)
+    await writeRepoHelperConfig(runnerFor(agent.id, cwd), agent.id).catch(() => undefined)
   } else {
     // Historical anonymous checkouts may still have credential-bearing or
     // disallowed origins even after their CP row has been sanitized.
@@ -314,9 +349,10 @@ export async function prepareWorkspace(agent: Agent, opts: PrepareWorkspaceOptio
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
     try {
       const repository = gitRepoOf(agent)
-      await assertSafeWorkspaceGitConfig(cwd)
+      await assertSafeWorkspaceGitConfig(runnerFor(agent.id, cwd))
       const pullTarget = workspaceGitPullTarget(repository)
-      const git = gitFor(cwd, abort.signal).env({
+      const git = runnerFor(agent.id, cwd, abort.signal).withEnv({
+        ...workspaceGitLocalEnv(),
         ...pullTarget.env,
         ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
         GIT_TERMINAL_PROMPT: '0'
@@ -396,7 +432,7 @@ export type SessionWorktreeRemoval =
  * on-disk state. */
 export async function removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
   const id = sessionWorktreeId(sessionKey)
-  const primaryGit = () => gitFor(agent.workspace.path).env(workspaceGitLocalEnv())
+  const primaryGit = () => runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv())
   // Drop the stale Git registration and this worktree's daemon-owned review refs.
   // Ref deletion is best-effort: most worktrees never had review refs.
   const cleanupRegistrations = async () => {
@@ -435,7 +471,7 @@ export async function removeSessionWorktree(agent: Agent, sessionKey: string): P
       await cleanupRegistrations()
       return { outcome: 'removed' }
     }
-    const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
+    const worktreeGit = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
     if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '') {
       return { outcome: 'retained', reason: 'dirty' }
     }
@@ -468,10 +504,10 @@ function exactObjectId(value: string, label: string): string {
   return value.toLowerCase()
 }
 
-async function revParse(cwd: string, ref: string): Promise<string> {
+async function revParse(agentId: string, cwd: string, ref: string): Promise<string> {
   return (
-    await gitFor(cwd)
-      .env(workspaceGitLocalEnv())
+    await runnerFor(agentId, cwd)
+      .withEnv(workspaceGitLocalEnv())
       .raw(['rev-parse', '--verify', `${ref}^{commit}`])
   ).trim()
 }
@@ -491,13 +527,13 @@ async function fetchReviewRevision(
   const headRef = `${root}/head`
   const mergeRef = `${root}/merge`
   const repository = gitRepoOf(agent)
-  await assertSafeWorkspaceGitConfig(agent.workspace.path)
+  await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
   if (usesGithubApp(agent)) await preWarmGitCred(agent.id, 'pull')
   const pullTarget = workspaceGitPullTarget(repository)
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
   try {
-    const git = gitFor(agent.workspace.path, abort.signal).env({
+    const git = runnerFor(agent.id, agent.workspace.path, abort.signal).withEnv({
       ...pullTarget.env,
       ...(usesGithubApp(agent) ? gitCredentialEnv(agent.id) : {}),
       GIT_TERMINAL_PROMPT: '0'
@@ -511,10 +547,10 @@ async function fetchReviewRevision(
       `+${base}:${baseRef}`,
       `+refs/pull/${review.pullNumber}/head:${headRef}`
     ])
-    if ((await revParse(agent.workspace.path, baseRef)).toLowerCase() !== base) {
+    if ((await revParse(agent.id, agent.workspace.path, baseRef)).toLowerCase() !== base) {
       throw new Error('github review base ref did not resolve to the requested SHA')
     }
-    if ((await revParse(agent.workspace.path, headRef)).toLowerCase() !== head) {
+    if ((await revParse(agent.id, agent.workspace.path, headRef)).toLowerCase() !== head) {
       throw new Error('github review head ref did not resolve to the requested SHA')
     }
 
@@ -531,11 +567,11 @@ async function fetchReviewRevision(
         pullTarget.remote,
         `+refs/pull/${review.pullNumber}/merge:${mergeRef}`
       ])
-      const merge = (await revParse(agent.workspace.path, mergeRef)).toLowerCase()
+      const merge = (await revParse(agent.id, agent.workspace.path, mergeRef)).toLowerCase()
       const expectedMerge = review.mergeCommitSha ? exactObjectId(review.mergeCommitSha, 'merge SHA') : undefined
       const parents = (
-        await gitFor(agent.workspace.path)
-          .env(workspaceGitLocalEnv())
+        await runnerFor(agent.id, agent.workspace.path)
+          .withEnv(workspaceGitLocalEnv())
           .raw(['rev-list', '--parents', '-n', '1', mergeRef])
       )
         .trim()
@@ -607,7 +643,7 @@ export async function prepareSessionWorkspace(
   let attached = existsSync(join(cwd, '.git'))
   if (attached) {
     try {
-      await revParse(cwd, 'HEAD')
+      await revParse(agent.id, cwd, 'HEAD')
     } catch {
       attached = false
       rmSync(cwd, { recursive: true, force: true })
@@ -615,25 +651,54 @@ export async function prepareSessionWorkspace(
   }
   if (!attached) {
     rmSync(cwd, { recursive: true, force: true })
-    await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
+    await runnerFor(agent.id, agent.workspace.path).withEnv(workspaceGitLocalEnv()).raw(['worktree', 'prune'])
     // prepareWorkspace's pull is best-effort (and may be disabled), but this
     // checkout runs in the daemon process. Unsafe executable config must gate
     // the worktree operation itself instead of being swallowed as a pull error.
-    await assertSafeWorkspaceGitConfig(agent.workspace.path)
-    await gitFor(agent.workspace.path).env(workspaceGitLocalEnv()).raw(['worktree', 'add', '--detach', cwd, target])
+    await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
+    await runnerFor(agent.id, agent.workspace.path)
+      .withEnv(workspaceGitLocalEnv())
+      .raw(['worktree', 'add', '--detach', cwd, target])
   } else if (review) {
     // Re-audit at the checkout boundary rather than relying on the earlier
     // network fetch audit; repository config may have changed while fetching.
-    await assertSafeWorkspaceGitConfig(agent.workspace.path)
-    const worktreeGit = gitFor(cwd).env(workspaceGitLocalEnv())
+    await assertSafeWorkspaceGitConfig(runnerFor(agent.id, agent.workspace.path))
+    const worktreeGit = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
     await worktreeGit.raw(['reset', '--hard', target])
     await worktreeGit.raw(['clean', '-ffdx'])
   }
-  if (review && (await revParse(cwd, 'HEAD')).toLowerCase() !== review.checkout) {
+  if (review && (await revParse(agent.id, cwd, 'HEAD')).toLowerCase() !== review.checkout) {
     throw new Error('github review worktree HEAD does not match the verified revision')
   }
   const agentDir = normalizeRepoSubdir(agent.workspace.agentDir)
   return withSkills(agent, resolveAcpCwd(cwd, agentDir), opts)
+}
+
+/**
+ * The ACP cwd for a CLUSTER agent, in the sandbox pod's own coordinates.
+ *
+ * `agent.workspace.path` names a directory on the DAEMON's filesystem and stays its
+ * bookkeeping identity; the runtime and every shim-executed operation live in the pod,
+ * whose volume mounts wherever the image says. Sending the daemon path across (which is
+ * what happened before this split) hands the runtime a cwd that exists on no machine it
+ * can see. The root comes from the bound shim's hello; a legacy shim that reported none
+ * gets the one mount layout such images ever had.
+ */
+export function clusterWorkspaceCwd(
+  agent: Agent,
+  runtimeRoot: string | undefined,
+  request?: Pick<PrepareSessionWorkspaceRequest, 'isolation'>
+): string {
+  if (agent.workspace.mode !== 'from-scratch') {
+    // Refused loudly rather than half-working: the clone/pull/audit flow still mixes daemon
+    // and pod coordinates for git-repo workspaces, and a clear error beats a mystery one
+    // from git inside the sandbox.
+    throw new Error(`git-repo workspaces are not supported with --k8s yet (agent "${agent.id}")`)
+  }
+  if (request?.isolation === 'session') {
+    throw new Error(`session-isolated workspaces are not supported with --k8s yet (agent "${agent.id}")`)
+  }
+  return runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
 }
 
 /** Resolve the already-prepared ACP cwd without pulling, acquiring sources, or
@@ -869,7 +934,8 @@ async function cloneRepo(agent: Agent): Promise<void> {
 }
 
 async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
-  const inflight = cloneInFlight.get(cwd)
+  const key = cloneKey(agent.id, cwd)
+  const inflight = cloneInFlight.get(key)
   if (inflight) return inflight
 
   // Validate again at the execution boundary: a hand-edited/legacy agent.json
@@ -880,11 +946,11 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
 
   const p = (async () => {
     // github-app: credentials ride the env-injected helper (no repo config exists
-    // yet). SPREAD over process.env — simple-git's .env() REPLACES the child env.
+    // yet). SPREAD over process.env — withEnv REPLACES the child env, as .env() did.
     if (githubApp) await preWarmGitCred(agent.id, 'clone')
     const git = githubApp
-      ? gitFor().env({ ...workspaceGitEnvBase(gitRepo), ...cloneGitEnv(agent.id, gitRepo) })
-      : gitFor().env({ ...workspaceGitEnvBase(gitRepo), GIT_TERMINAL_PROMPT: '0' })
+      ? runnerFor(agent.id).withEnv({ ...workspaceGitEnvBase(gitRepo), ...cloneGitEnv(agent.id, gitRepo) })
+      : runnerFor(agent.id).withEnv({ ...workspaceGitEnvBase(gitRepo), GIT_TERMINAL_PROMPT: '0' })
     try {
       await git.clone(gitRepo, cwd, ['--branch', branch, '--single-branch'])
     } catch (e) {
@@ -896,10 +962,10 @@ async function cloneRepoAt(agent: Agent, cwd: string): Promise<void> {
     // Pin the repo-local helper so AGENT-run git in this checkout authenticates
     // through the daemon too — the "no credentials on the machine, but the agent
     // can still push" half of the design.
-    if (githubApp) await writeRepoHelperConfig(cwd, agent.id)
+    if (githubApp) await writeRepoHelperConfig(runnerFor(agent.id, cwd), agent.id)
   })().finally(() => {
-    cloneInFlight.delete(cwd)
+    cloneInFlight.delete(key)
   })
-  cloneInFlight.set(cwd, p)
+  cloneInFlight.set(key, p)
   return p
 }

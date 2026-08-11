@@ -80,6 +80,78 @@ describe('openapi plane', () => {
     }
   })
 
+  it('names the git review reads and keeps every operationId unique', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/agents/{id}/workspace'
+      const diff = doc.paths?.[`${base}/gitdiff`]?.get
+      const log = doc.paths?.[`${base}/gitlog`]?.get
+      for (const op of [diff, log]) {
+        expect(op).toMatchObject({ tags: ['Agent workspace'] })
+        expect(op?.summary).toBeTruthy()
+        expect(op?.description).toBeTruthy()
+      }
+      expect(diff?.operationId).toBe('getAgentWorkspaceGitDiff')
+      expect(log?.operationId).toBe('listAgentWorkspaceGitLog')
+      // The diff scope is a closed vocabulary in the docs, not a free-form boolean.
+      const scope = (diff?.parameters ?? []).find((p: any) => p.name === 'scope')
+      expect(scope?.schema?.enum).toEqual(['unstaged', 'staged'])
+
+      // A duplicated operationId makes a docs UI render one route and silently drop
+      // the other, so uniqueness is asserted across the WHOLE spec, not just here.
+      const ids = Object.values<Record<string, any>>(doc.paths ?? {}).flatMap((item) =>
+        Object.values(item)
+          .map((op: any) => op?.operationId)
+          .filter((id: unknown): id is string => typeof id === 'string')
+      )
+      expect(ids.length).toBeGreaterThan(0)
+      expect([...new Set(ids)].sort()).toEqual([...ids].sort())
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('names every git write route and documents its body and session scope', async () => {
+    const app = await buildReady()
+    try {
+      const doc = (await app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as Record<string, any>
+      const base = '/api/v1/orgs/{orgId}/agents/{id}/workspace'
+      const expected: Record<string, string> = {
+        gitstage: 'stageAgentWorkspacePaths',
+        gitunstage: 'unstageAgentWorkspacePaths',
+        gitcommit: 'commitAgentWorkspace',
+        gitpush: 'pushAgentWorkspace',
+        gitmessage: 'draftAgentWorkspaceCommitMessage'
+      }
+      for (const [path, operationId] of Object.entries(expected)) {
+        const op = doc.paths?.[`${base}/${path}`]?.post
+        expect(op, path).toMatchObject({ tags: ['Agent workspace'], operationId })
+        expect(op?.summary, path).toBeTruthy()
+        expect(op?.description, path).toBeTruthy()
+        // Every write is addressable at a session worktree, and every write can be
+        // refused by role (403), by staleness (409) or by an offline daemon (503).
+        expect(
+          (op?.parameters ?? []).map((p: any) => p.name),
+          path
+        ).toContain('sessionId')
+        expect(Object.keys(op?.responses ?? {}), path).toEqual(
+          expect.arrayContaining(['200', '400', '403', '404', '409', '503'])
+        )
+      }
+
+      // The two body-bearing writes document their payload; the other three take none.
+      const stageBody = doc.paths?.[`${base}/gitstage`]?.post?.requestBody
+      expect(stageBody?.content?.['application/json']?.schema?.properties?.paths?.type).toBe('array')
+      const commitBody = doc.paths?.[`${base}/gitcommit`]?.post?.requestBody
+      expect(commitBody?.content?.['application/json']?.schema?.properties?.message?.type).toBe('string')
+      expect(doc.paths?.[`${base}/gitpush`]?.post?.requestBody).toBeUndefined()
+      expect(doc.paths?.[`${base}/gitmessage`]?.post?.requestBody).toBeUndefined()
+    } finally {
+      await app.close()
+    }
+  })
+
   it('excludes non-public surfaces (/health) from the spec', async () => {
     const app = await buildReady()
     try {

@@ -80,8 +80,12 @@ interface PlaygroundData {
   /** Add a participant to a LIVE conversation (mid-conversation join,
    *  webchat-multi-agents.md §3.1). Registers the agent with the CP, then
    *  rebuilds the socket so the relay re-verifies and caches the grown roster.
-   *  Failures surface as a ⚠️ transcript step. Refused while a turn streams. */
-  pgAddAgent: (id: string, agent: Agent) => Promise<void>
+   *  Failures surface as a ⚠️ transcript step AND resolve to `false` — the
+   *  promise settling is not itself success (refused-while-busy and rejected
+   *  joins settle normally too), so a caller that gates routing on this join
+   *  (e.g. the mention picker) can tell an actual join from a no-op/refusal.
+   *  Refused while a turn streams. */
+  pgAddAgent: (id: string, agent: Agent) => Promise<boolean>
   /** Returns whether the send was ACCEPTED — false only when there is nothing to
    *  send. A send while a turn is still streaming is accepted too: it QUEUES
    *  (Claude Code-style) and dispatches in order as turns finish. Callers that
@@ -124,8 +128,13 @@ interface PlaygroundData {
    *  superseded regeneration keeps its author's lane open, so the indicator
    *  names the agent actually working, not the primary). */
   getBusyLaneAgentIds: (id: string) => string[]
-  /** Retire only optimistic turns confirmed by authoritative transcript rows. */
-  reconcileLiveSteps: (id: string, persisted: SessionMessageDto[], agentId: string) => void
+  /** Retire only live steps confirmed by authoritative transcript rows. */
+  reconcileLiveSteps: (
+    id: string,
+    persisted: SessionMessageDto[],
+    agentId: string,
+    promptRows?: SessionMessageDto[]
+  ) => void
 }
 
 /** One message waiting behind the in-flight turn. Send args are captured at
@@ -237,6 +246,15 @@ type WebchatDone = {
   agentId?: string
   lastIndex?: number
   error?: string
+}
+
+/** One completed conversation post (mirrors protocol WebchatPost). Only rendered here
+ *  when its frame carries `initiator: 'agent'` (#753) — a user-authored post's reply
+ *  already streamed live via output/done and would double-render otherwise. */
+type WebchatPost = {
+  postId: string
+  author: { kind: 'user'; user?: string } | { kind: 'agent'; agentId: string }
+  text: string
 }
 
 /** One roster entry from the relay `ready` frame. */
@@ -830,6 +848,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 output?: WebchatOutput
                 done?: WebchatDone
                 ack?: { accepted?: boolean; reason?: string; turnId?: string; agentId?: string }
+                post?: WebchatPost
+                initiator?: string
               }
               try {
                 m = JSON.parse(String(e.data))
@@ -873,6 +893,23 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 if (m.output) receiveOutput(id, m.output)
               } else if (m.type === 'done') {
                 if (m.done) receiveDone(id, m.done)
+              } else if (m.type === 'post' && m.initiator === 'agent' && m.post?.author.kind === 'agent') {
+                // Agent-initiated turn (another participant's sendMessage/lineage-reply
+                // wake, #753): it never streamed output/done to this socket, so the
+                // completed post IS its first and only rendering here.
+                const agentId = m.post.author.agentId
+                pushStep(id, {
+                  kind: 'done',
+                  turnId: m.post.postId,
+                  // The daemon persists this reply before the post frame ever arrives, so
+                  // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
+                  // the canonical row lands in a later transcript refresh (#753) — text/time
+                  // matching (the prompt-turn heuristic) has nothing to anchor on here.
+                  postId: m.post.postId,
+                  agentId,
+                  ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
+                  text: m.post.text
+                })
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
                 let key = cursorKeyFor(id, m.ack?.agentId)
                 // The relay may target participants the client did not lane (a
@@ -1021,15 +1058,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   )
 
   const pgAddAgent = useCallback(
-    async (id: string, added: Agent): Promise<void> => {
+    async (id: string, added: Agent): Promise<boolean> => {
       const orgId = activeOrg?.id
       const session = pgSessions[id]
       const primaryId = session?.agentId
-      if (!orgId || !primaryId) return
-      if (primaryId === added.id || session.participants?.some((p) => p.agentId === added.id)) return
+      if (!orgId || !primaryId) return false
+      // Already there — nothing to join, but not a failure either.
+      if (primaryId === added.id || session.participants?.some((p) => p.agentId === added.id)) return true
       if (busyRef.current[id]) {
         pushStep(id, { kind: 'done', text: '⚠️ Wait for the current reply to finish before adding an agent.' })
-        return
+        return false
       }
       const conversationId = conversationIds.current.get(id)
       if (conversationId) {
@@ -1040,7 +1078,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             kind: 'done',
             text: `⚠️ ${err instanceof ApiError ? err.message : `Could not add ${agentLabel(added)}.`}`
           })
-          return
+          return false
         }
       }
       const ids = rosterAgentIds.current.get(id) ?? [primaryId]
@@ -1075,6 +1113,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         connect(id, primaryId, conversationId).ready.catch(() => {})
       }
+      return true
     },
     [activeOrg, pgSessions, connect, pushStep]
   )
@@ -1323,18 +1362,21 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const getPgImage = useCallback((id: string) => pgImageBy[id], [pgImageBy])
   const isPgBusy = useCallback((id: string) => !!pgBusyBy[id], [pgBusyBy])
   const getLiveSteps = useCallback((id: string) => wcSteps[id] ?? NO_STEPS, [wcSteps])
-  const reconcileLiveSteps = useCallback((id: string, persisted: SessionMessageDto[], agentId: string): void => {
-    setWcSteps((cur) => {
-      const live = cur[id]
-      if (!live) return cur
-      const reconciled = reconcilePersistedLiveSteps(live, persisted, agentId)
-      if (reconciled === live) return cur
-      const next = { ...cur }
-      if (reconciled.length === 0) delete next[id]
-      else next[id] = reconciled
-      return next
-    })
-  }, [])
+  const reconcileLiveSteps = useCallback(
+    (id: string, persisted: SessionMessageDto[], agentId: string, promptRows?: SessionMessageDto[]): void => {
+      setWcSteps((cur) => {
+        const live = cur[id]
+        if (!live) return cur
+        const reconciled = reconcilePersistedLiveSteps(live, persisted, agentId, promptRows)
+        if (reconciled === live) return cur
+        const next = { ...cur }
+        if (reconciled.length === 0) delete next[id]
+        else next[id] = reconciled
+        return next
+      })
+    },
+    []
+  )
   const pgSessionList = useMemo(() => Object.values(pgSessions), [pgSessions])
 
   const value = useMemo<PlaygroundData>(

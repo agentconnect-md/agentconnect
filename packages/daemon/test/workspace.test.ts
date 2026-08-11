@@ -41,6 +41,7 @@ vi.mock('simple-git', () => ({
 // Imported after vi.mock so the mock is in effect.
 const {
   additionalWorkspaceDirectories,
+  clusterWorkspaceCwd,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   prepareSessionWorkspace,
@@ -52,7 +53,12 @@ const {
   sessionWorktreePath,
   sessionWorktreeRoot
 } = await import('../src/workspace/workspace-manager.js')
-const { initGitInjection } = await import('../src/workspace/git-injection.js')
+const { daemonGitCredentialTarget, initGitInjection } = await import('../src/workspace/git-injection.js')
+
+// Made once and reused: `targetFor` is called on every pointer build, so minting a directory
+// inside it would leave one behind per resolution.
+let gitcredRunDirPath: string | undefined
+const gitcredRunDir = (): string => (gitcredRunDirPath ??= mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')))
 
 function fromScratchAgent(path: string): Agent {
   return {
@@ -633,8 +639,7 @@ describe('prepareWorkspaceForActivation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
     const current = githubAppAgent(path)
     initGitInjection({
-      shimPath: '/run/helper.sh',
-      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }),
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })
@@ -672,8 +677,7 @@ describe('prepareWorkspaceForActivation', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-edit-')), 'workspace')
     const agent = githubAppAgent(path)
     initGitInjection({
-      shimPath: '/run/helper.sh',
-      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }),
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })
@@ -770,8 +774,7 @@ describe('prepareWorkspaceForActivation', () => {
 describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
   beforeEach(() => {
     initGitInjection({
-      shimPath: '/run/helper.sh',
-      runDir: mkdtempSync(join(tmpdir(), 'ac-ws-gitcred-')),
+      targetFor: () => daemonGitCredentialTarget({ shimPath: '/run/helper.sh', runDir: gitcredRunDir() }),
       preWarm: async () => undefined,
       capabilityFor: (agentId) => `cap-${agentId}`
     })
@@ -926,5 +929,27 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
       'https://github.com/acme/repo'
     ])
     expect(pullMock).toHaveBeenCalled()
+  })
+})
+
+describe('clusterWorkspaceCwd (--k8s pod coordinates)', () => {
+  it('hands a from-scratch agent the pod root, never the daemon-disk workspace path', () => {
+    const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
+    expect(clusterWorkspaceCwd(agent, '/agent')).toBe('/agent')
+  })
+
+  it('falls back to the historical mount for a legacy shim that reported none', () => {
+    const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
+    expect(clusterWorkspaceCwd(agent, undefined)).toBe('/agent')
+  })
+
+  it('refuses a git-repo workspace loudly instead of half-working across two filesystems', () => {
+    const agent = gitRepoAgent('/var/lib/agentconnect/agents/bot-git/workspace')
+    expect(() => clusterWorkspaceCwd(agent, '/agent')).toThrow(/git-repo workspaces are not supported with --k8s/)
+  })
+
+  it('refuses session isolation, whose worktrees still assume the daemon filesystem', () => {
+    const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
+    expect(() => clusterWorkspaceCwd(agent, '/agent', { isolation: 'session' })).toThrow(/session-isolated/)
   })
 })

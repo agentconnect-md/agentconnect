@@ -21,7 +21,13 @@ import {
   GitCloneUrlError,
   RepoSubdirError,
   SessionImageAttachment,
+  MAX_WORKSPACE_COMMIT_MESSAGE,
   MAX_WORKSPACE_EDIT_BYTES,
+  MAX_WORKSPACE_LOG_COMMITS,
+  MAX_WORKSPACE_STAGE_PATHS,
+  MAX_WORKSPACE_STAGE_PATH_BYTES,
+  WorkspaceGitWriteReason,
+  TaskState,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
   normalizeGitHubSkillSource,
@@ -2664,6 +2670,7 @@ export const WorkspaceFileQueryDto = WorkspaceScopeQueryDto.extend({
 export const WorkspaceFileDto = z.object({
   path: z.string(),
   exists: z.boolean(), // false ⇒ the file does not exist (data, not an error)
+  type: z.enum(['file', 'dir']).nullable(), // what the path IS; 'dir' ⇒ no content (null from an older daemon)
   size: z.number().nullable(),
   mtime: z.string().nullable(), // RFC3339
   encoding: z.enum(['utf8', 'none']).nullable(), // 'none' ⇒ binary detected, content omitted
@@ -2931,7 +2938,9 @@ export const LocalSkillsDto = z.object({
 export const WorkspaceGitFileDto = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char
-  workingDir: z.string() // unstaged (Y) status char
+  workingDir: z.string(), // unstaged (Y) status char
+  additions: z.number().nullable(), // `git diff HEAD --numstat` lines added; null ⇒ untracked / binary / older daemon
+  deletions: z.number().nullable() // …and lines removed
 })
 
 export const WorkspaceGitCommitDto = z.object({
@@ -2959,6 +2968,47 @@ export const WorkspaceGitStatusDto = z.object({
   lastFetchAt: z.string().nullable() // RFC3339; when the checkout last fetched/pulled
 })
 
+/** `GET /agents/:id/workspace/gitdiff` query. `scope` is a closed vocabulary, not a
+ *  boolean: a querystring `staged=false` coerces to `true` and shows the wrong side. */
+export const WorkspaceGitDiffQueryDto = WorkspaceScopeQueryDto.extend({
+  path: z.string().min(1).max(4096), // workspace-relative POSIX path (a directory diffs its subtree)
+  scope: z.enum(['unstaged', 'staged']).default('unstaged') // 'staged' ⇒ index vs HEAD; 'unstaged' ⇒ worktree vs index
+})
+
+/** `GET /agents/:id/workspace/gitdiff` — one path's unified diff, or the data saying
+ *  why there is none (`diff:null` + `exists:true` + `binary:false` ⇒ no changes). */
+export const WorkspaceGitDiffDto = z.object({
+  path: z.string(),
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); nothing to diff
+  exists: z.boolean(), // false ⇒ the path is neither changed nor present in the workspace
+  diff: z.string().nullable(), // unified-diff text as git emits it (bounded; see `truncated`)
+  binary: z.boolean(), // true ⇒ git reports a binary change, so there is no text to show
+  truncated: z.boolean() // true ⇒ `diff` is only the head of a bigger diff
+})
+
+/** `GET /agents/:id/workspace/gitlog` query — the newest commits of the checkout. */
+export const WorkspaceGitLogQueryDto = WorkspaceScopeQueryDto.extend({
+  limit: z.coerce.number().int().positive().max(MAX_WORKSPACE_LOG_COMMITS).optional()
+})
+
+export const WorkspaceGitLogCommitDto = z.object({
+  sha: z.string(),
+  shortSha: z.string(),
+  subject: z.string(),
+  author: z.string(),
+  committedAt: z.string(), // RFC3339
+  pushed: z.boolean() // true ⇒ reachable from the branch's upstream ref
+})
+
+/** `GET /agents/:id/workspace/gitlog` — newest-first commits; an empty repo is data
+ *  (`commits: []`). `tracking` null ⇒ tracks nothing, so every `pushed` reads false. */
+export const WorkspaceGitLogDto = z.object({
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); no log
+  commits: z.array(WorkspaceGitLogCommitDto),
+  truncated: z.boolean(), // true ⇒ the branch has more commits than the requested limit
+  tracking: z.string().nullable() // upstream ref `pushed` was computed against
+})
+
 /** `POST /agents/:id/workspace/gitpull` — outcome of a forced ff-only pull. A
  *  pull that can't fast-forward is `ok:false` (data), not an HTTP error. */
 export const WorkspaceGitPullDto = z.object({
@@ -2968,6 +3018,94 @@ export const WorkspaceGitPullDto = z.object({
   changed: z.number().nullable(), // files changed by the pull
   insertions: z.number().nullable(),
   deletions: z.number().nullable()
+})
+
+// ── workspace git writes (executed only on the owning daemon; the CP stores nothing) ──
+/** `POST /agents/:id/workspace/gitstage|gitunstage` body — the paths to move across the
+ *  index. An empty list is accepted and answers with the fresh status, because staging
+ *  nothing is data, not a bad request. The byte total is rechecked because zod counts
+ *  characters while the wire cap counts encoded bytes. */
+export const WorkspaceGitStageBody = z
+  .object({
+    paths: z
+      .array(z.string().min(1).max(4096))
+      .max(MAX_WORKSPACE_STAGE_PATHS)
+      .refine(
+        (paths) =>
+          paths.reduce((total, path) => total + Buffer.byteLength(path, 'utf8'), 0) <= MAX_WORKSPACE_STAGE_PATH_BYTES,
+        { message: `paths exceed ${MAX_WORKSPACE_STAGE_PATH_BYTES} bytes in total` }
+      )
+  })
+  .strict()
+
+/** `POST /agents/:id/workspace/gitcommit` body — the message git receives verbatim. */
+export const WorkspaceGitCommitBody = z
+  .object({
+    message: z.string().min(1).max(MAX_WORKSPACE_COMMIT_MESSAGE) // subject + optional body
+  })
+  .strict()
+
+/** `POST /agents/:id/workspace/gitcommit` — outcome of one commit. Nothing staged, a
+ *  blank message, a daemon with no registered commit identity and a git refusal are all
+ *  `ok:false` + `reason` (data), not HTTP errors. */
+export const WorkspaceGitCommitResultDto = z.object({
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); nothing to commit
+  ok: z.boolean(), // true ⇒ a commit was created
+  sha: z.string().nullable(), // full hash of the new commit; null unless ok
+  detail: z.string().nullable(), // human summary or refusal reason (daemon-scrubbed)
+  reason: WorkspaceGitWriteReason.nullable() // machine reason; null when ok
+})
+
+/** `POST /agents/:id/workspace/gitpush` — outcome of one push. A diverged branch, a
+ *  detached HEAD, a branch with no upstream and a remote rejection are all `ok:false` +
+ *  `reason` (data); a push with nothing to send is `ok:true` with `ahead:0`. */
+export const WorkspaceGitPushResultDto = z.object({
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); nothing to push
+  ok: z.boolean(), // true ⇒ the remote now has every local commit on this branch
+  detail: z.string().nullable(), // human summary or refusal reason (daemon-scrubbed)
+  ahead: z.number().nullable(), // commits STILL ahead of the upstream (0 once pushed)
+  reason: WorkspaceGitWriteReason.nullable() // machine reason; null when ok
+})
+
+/** `POST /agents/:id/workspace/gitmessage` — a commit message drafted on the AGENT's own
+ *  runtime (the CP never calls a model provider). Every way the draft can fail to appear
+ *  is data (`ok:false` + `detail`): nothing staged, a runtime that declines, a timeout. */
+export const WorkspaceGitMessageResultDto = z.object({
+  ok: z.boolean(), // true ⇒ `message` is present and usable
+  message: z.string().nullable(), // conventional-commit subject + optional body
+  detail: z.string().nullable() // human explanation of a refusal
+})
+
+// ── agent background tasks (projected live from the owning daemon's lease; nothing stored) ──
+/** `GET /agents/:id/tasks` query. `sessionId` is REQUIRED, unlike every workspace read: the
+ *  daemon's background-task lease is keyed per (agent, ACP session) and there is no per-agent
+ *  aggregate but a boolean, so an unscoped list would have nothing to answer with. */
+export const AgentTasksQueryDto = z.object({
+  sessionId: z.string().min(1) // ACP session id (== the CP session row's id)
+})
+
+/** One background task of one ACP session. `state` is the daemon's closed vocabulary: no
+ *  `queued` (the lifecycle feed's only start edge is `task_started`), and `done` means
+ *  "settled with no reported failure" because most settle edges carry no status at all. */
+export const AgentTaskDto = z.object({
+  id: z.string(), // runtime-local task id
+  description: z.string().nullable(), // null ⇒ the runtime named none
+  state: TaskState,
+  subagent: z.boolean(), // the runtime's own internal Task invocation — carried, filtered at render
+  startedAt: z.string(), // RFC3339
+  endedAt: z.string().nullable(), // RFC3339; null ⇒ still running
+  detail: z.string().nullable() // the terminal status the runtime reported, when it named one
+})
+
+/** `GET /agents/:id/tasks` — live tasks first, then the daemon's bounded settled history.
+ *  `tracked:false` means the owning daemon holds no lease for this session (a non-Claude
+ *  runtime, an adapter without the lifecycle extension, or nothing emitted yet), which is a
+ *  different statement from "this session has no background tasks". */
+export const AgentTasksDto = z.object({
+  sessionId: z.string(),
+  tracked: z.boolean(),
+  tasks: z.array(AgentTaskDto),
+  truncated: z.boolean() // true ⇒ the daemon held more tasks than this page carries
 })
 
 // ── usage dashboard (aggregated from the persisted per-session usage store) ──
@@ -3087,5 +3225,11 @@ export type DreamListDtoT = z.infer<typeof DreamListDto>
 export type DreamFilesDtoT = z.infer<typeof DreamFilesDto>
 export type DreamFileDtoT = z.infer<typeof DreamFileDto>
 export type WorkspaceGitStatusDtoT = z.infer<typeof WorkspaceGitStatusDto>
+export type WorkspaceGitDiffDtoT = z.infer<typeof WorkspaceGitDiffDto>
+export type WorkspaceGitLogDtoT = z.infer<typeof WorkspaceGitLogDto>
 export type WorkspaceGitPullDtoT = z.infer<typeof WorkspaceGitPullDto>
+export type WorkspaceGitCommitResultDtoT = z.infer<typeof WorkspaceGitCommitResultDto>
+export type WorkspaceGitPushResultDtoT = z.infer<typeof WorkspaceGitPushResultDto>
+export type WorkspaceGitMessageResultDtoT = z.infer<typeof WorkspaceGitMessageResultDto>
+export type AgentTasksDtoT = z.infer<typeof AgentTasksDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

@@ -82,3 +82,22 @@ describe('ControlSender daemon restart/upgrade — send outcome classification',
     expect(r).toEqual({ kind: 'unsent' })
   })
 })
+
+describe('ConnectionRegistry bootstrap reconnect', () => {
+  it('closes only the matching reachable pre-READY epoch', () => {
+    const close = vi.fn()
+    const conn = { daemonId: DAEMON, request: vi.fn(), send: vi.fn(), close } as unknown as ConnChannel
+    const registry = new ConnectionRegistry()
+    const registering: DaemonConnState = { ...state(conn), state: 'REGISTERING' }
+    registry.add(registering)
+
+    expect(registry.reconnectForBootstrap(DAEMON, 6)).toBe(false)
+    expect(close).not.toHaveBeenCalled()
+    expect(registry.reconnectForBootstrap(DAEMON, 7)).toBe(true)
+    expect(close).toHaveBeenCalledWith(1012, 'bootstrap upgrade queued')
+
+    registering.state = 'READY'
+    expect(registry.reconnectForBootstrap(DAEMON, 7)).toBe(false)
+    expect(close).toHaveBeenCalledOnce()
+  })
+})

@@ -249,10 +249,13 @@ export class RelayClient {
     }
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: reqId })))
   }
-  /** One completed conversation post (fire-and-forget EVT). Sent on the same
-   *  socket the turn arrived on; a dead transport drops it — bounded loss, the
-   *  transcript row already exists on the authoring daemon. */
-  private sendWebchatPost(post: RdWebchatPost): void {
+  /** One completed conversation post (fire-and-forget EVT) — either on the socket the
+   *  triggering turn arrived on, or (agent-initiated turns, #753) broadcast by
+   *  {@link RelayManager.sendWebchatPost} to every relay this daemon holds, since none
+   *  of them is "the" socket for a wake with no browser turn of its own. A dead
+   *  transport drops it — bounded loss, the transcript row already exists on the
+   *  authoring daemon. */
+  sendWebchatPost(post: RdWebchatPost): void {
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/webchat-post', post)))
   }
 

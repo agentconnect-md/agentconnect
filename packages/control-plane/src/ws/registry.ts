@@ -70,6 +70,13 @@ export class ConnectionRegistry {
     return this.byDaemon.get(daemonId)
   }
 
+  reconnectForBootstrap(daemonId: string, sessionEpoch: number): boolean {
+    const state = this.byDaemon.get(daemonId)
+    if (!state?.reachable || state.state === 'READY' || state.sessionEpoch !== sessionEpoch) return false
+    state.conn.close(1012, 'bootstrap upgrade queued')
+    return true
+  }
+
   has(daemonId: string): boolean {
     return this.byDaemon.has(daemonId)
   }

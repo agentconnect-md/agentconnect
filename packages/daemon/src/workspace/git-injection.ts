@@ -30,10 +30,13 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type GitCommitIdentity } from '@agentconnect.md/protocol'
-import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../cp/gitcred-server.js'
+import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../cp/gitcred-server.js'
+import { SANDBOX_GIT_CONFIG_DIR, SANDBOX_GIT_CREDENTIAL_HELPER } from '../shim/sandbox-paths.js'
+import { SANDBOX_TUNNEL_PATHS } from '../shim/tunnel.js'
 
 /**
  * simple-git ≥3.36 vulnerability-checks argv AND any child env passed via
@@ -83,6 +86,7 @@ export function gitFor(cwd?: string, abort?: AbortSignal): SimpleGit {
 const HOST_ENV_STRIP = new Set([
   GITCRED_CAPABILITY_ENV,
   GITCRED_AGENT_ENV,
+  GITCRED_SOCKET_ENV,
   'EDITOR',
   'VISUAL',
   'PAGER',
@@ -251,6 +255,43 @@ export function workspaceGitPullTarget(repository: string): {
   return { remote, env: { ...env, ...gitConfigEnv(pairs) } }
 }
 
+/**
+ * Bind a validated PUSH URL to an unguessable daemon-owned remote name, like
+ * {@link workspaceGitPullTarget}, plus the credential channel a push actually needs.
+ *
+ * The helper pairs must come AFTER `workspaceGitConfigPairs`: its `credential.helper=''` is a
+ * command-scope reset of the whole helper list, so a helper pinned earlier — including the
+ * repo-local `credential.https://github.com.helper` written post-clone — never runs. `cloneGitEnv`
+ * survives for exactly this reason; a push has to re-add the pointer the same way or it reaches
+ * the remote with no credentials at all. `credentialAgentId` is omitted for a workspace with no
+ * github-app credential, which then pushes on whatever ambient (ssh) auth the host provides.
+ */
+export function workspaceGitPushTarget(
+  repository: string,
+  credentialAgentId?: string
+): { remote: string; env: Record<string, string> } {
+  const normalized = normalizeGitCloneUrl(repository)
+  const remote = `agentconnect-${randomUUID()}`
+  const pairs = [
+    ...workspaceGitConfigPairs(normalized),
+    ...(credentialAgentId ? credentialConfigPairs(credentialAgentId) : []),
+    [`remote.${remote}.url`, normalized] as const,
+    [`remote.${remote}.proxy`, ''] as const
+  ]
+  const env = workspaceGitProcessEnv()
+  env.GIT_ALLOW_PROTOCOL = 'https:ssh'
+  return {
+    remote,
+    env: {
+      ...env,
+      ...gitConfigEnv(pairs),
+      ...(credentialAgentId ? gitCredentialEnv(credentialAgentId) : {}),
+      // A missing credential must fail immediately rather than block on a prompt nobody answers.
+      GIT_TERMINAL_PROMPT: '0'
+    }
+  }
+}
+
 /** Environment for workspace Git operations that must never contact a remote. */
 export function workspaceGitLocalEnv(): Record<string, string> {
   return {
@@ -271,9 +312,11 @@ export function workspaceGitLocalEnv(): Record<string, string> {
  * separate worktree config scope is also disallowed because `--local` cannot
  * audit `.git/config.worktree`, while later daemon Git operations still read it.
  */
-export async function assertSafeWorkspaceGitConfig(cwd: string): Promise<void> {
-  const names = await gitFor(cwd)
-    .env(workspaceGitLocalEnv())
+export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void> {
+  // A runner, not a cwd: the audit must read the config the guarded git will read, which for a
+  // cluster workspace is the sandbox's — auditing this disk would pass a check nothing performed.
+  const names = await git
+    .withEnv(workspaceGitLocalEnv())
     .raw(['config', '--local', '--includes', '--name-only', '-z', '--list'])
   if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
     throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
@@ -298,44 +341,102 @@ export function sessionGitPolicyEnv(): Record<string, string> {
  * origin/<branch> current for status. check-ref-format prevents a configured
  * branch from being interpreted as an option or refspec.
  */
-export async function pullWorkspaceRef(git: SimpleGit, remote: string, branch: string) {
+export async function pullWorkspaceRef(git: GitRunner, remote: string, branch: string): Promise<GitPullSummary> {
   await git.raw(['check-ref-format', '--branch', branch])
   const refspec = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
   return git.pull(remote, refspec, ['--ff-only', '--no-recurse-submodules'])
 }
 
+/**
+ * Where the git that will READ these pointers runs.
+ *
+ * Every value this module writes is a path, and a path only means something in one filesystem. A
+ * cluster agent's git runs in its sandbox pod, so a helper line derived from the daemon's own root
+ * names an executable that pod has never had — the failure mode being an authentication error
+ * rather than a missing file, which is why this is a type and not a convention.
+ */
+export interface GitCredentialTarget {
+  /** `daemon` may write files as it goes; `sandbox` must be materialized through the shim. */
+  kind: 'daemon' | 'sandbox'
+  /** The credential-helper executable, in that filesystem. */
+  helper: string
+  /** Directory holding the per-agent gitconfig, in that filesystem. */
+  configDir: string
+  /** The daemon operator's own ~/.gitconfig, included first. Omitted for a sandbox: its git has
+   *  never seen the daemon's home, and pointing at it would silently include nothing. */
+  hostConfig?: string
+  /** Socket the helper must dial, when it is not the one under the daemon's root. */
+  socketPath?: string
+}
+
 /** Module-level init (workspace-manager is functional; mirrors cloneInFlight). */
-let shimPath: string | undefined
-let runDir: string | undefined
+let targetFor: ((agentId: string) => GitCredentialTarget) | undefined
 let preWarm: ((agentId: string, reason: 'clone' | 'pull') => Promise<void>) | undefined
 let capabilityFor: ((agentId: string) => string) | undefined
 
 export function initGitInjection(opts: {
-  shimPath: string
-  runDir: string
+  /**
+   * Resolves the filesystem an agent's git runs in.
+   *
+   * It has to answer with the SAME predicate `setWorkspaceGitRunnerResolver` uses, or the
+   * environment and the execution disagree: a remote runner running with daemon-local pointers is
+   * exactly the bug this seam exists to remove.
+   */
+  targetFor: (agentId: string) => GitCredentialTarget
   /** Warm the daemon credential cache BEFORE a timed git op (never inside its budget). */
   preWarm: (agentId: string, reason: 'clone' | 'pull') => Promise<void>
   /** Runtime-only local socket capability. Never written to a config file. */
   capabilityFor: (agentId: string) => string
 }): void {
-  shimPath = opts.shimPath
-  runDir = opts.runDir
+  targetFor = opts.targetFor
   preWarm = opts.preWarm
   capabilityFor = opts.capabilityFor
+}
+
+/** This daemon's own filesystem: the helper shim and run dir it (re)writes on every boot. */
+export function daemonGitCredentialTarget(opts: { shimPath: string; runDir: string }): GitCredentialTarget {
+  return {
+    kind: 'daemon',
+    helper: opts.shimPath,
+    configDir: join(opts.runDir, 'gitcred'),
+    hostConfig: join(homedir(), '.gitconfig')
+  }
+}
+
+/** A sandbox pod: the image's fixed helper path, and the socket the shim tunnels to the daemon. */
+export function sandboxGitCredentialTarget(): GitCredentialTarget {
+  return {
+    kind: 'sandbox',
+    helper: SANDBOX_GIT_CREDENTIAL_HELPER,
+    configDir: SANDBOX_GIT_CONFIG_DIR,
+    socketPath: SANDBOX_TUNNEL_PATHS.gitcred
+  }
+}
+
+function targetOf(agentId: string): GitCredentialTarget {
+  if (!targetFor) throw new Error('git credential injection is not initialized')
+  return targetFor(agentId)
 }
 
 /** Auth for helper subprocesses. Keep separate from the persisted config pointers.
  *  Identity and capability are minted as a PAIR: the helper prefers this env
  *  identity over the agentId baked into a `.git/config` helper line, so a stale
- *  repo-local pin (previous agent generation) can never desync the two. */
+ *  repo-local pin (previous agent generation) can never desync the two.
+ *  The socket rides along for a target that is not this daemon's filesystem: the helper cannot
+ *  derive a daemon root it does not have. */
 export function gitCredentialEnv(agentId: string): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
-  return { [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId), [GITCRED_AGENT_ENV]: agentId }
+  const target = targetOf(agentId)
+  return {
+    [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId),
+    [GITCRED_AGENT_ENV]: agentId,
+    ...(target.socketPath ? { [GITCRED_SOCKET_ENV]: target.socketPath } : {})
+  }
 }
 
 function quotedHelper(agentId: string): string {
-  if (!shimPath) throw new Error('git credential injection is not initialized')
-  return `!'${shimPath.replaceAll("'", "'\\''")}' ${agentId}`
+  const { helper } = targetOf(agentId)
+  return `!'${helper.replaceAll("'", "'\\''")}' ${agentId}`
 }
 
 /** The three github.com-scoped config pairs both channels share. */
@@ -363,46 +464,77 @@ export function cloneGitEnv(agentId: string, repository?: string): Record<string
 }
 
 /**
- * Session-env channel: (re)write the per-agent gitconfig and return the env to
- * inject into the agent's ACP runtime process. Regenerated on every host spawn
- * (#251 retries rebuild the host ⇒ this re-runs).
+ * The session-env channel as DATA: where the per-agent gitconfig belongs, what goes in it, and the
+ * env that points the agent's runtime at it.
+ *
+ * Separated from the write because only one of the two targets can be written by this process. A
+ * sandbox's copy has to travel through the shim's materialize channel, and a `writeFileSync` to
+ * `/run/agentconnect/git/...` would land on the DAEMON's disk — creating the file the check would
+ * look for while the pod still has nothing.
  */
-export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentity): Record<string, string> {
-  if (!runDir) throw new Error('git credential injection is not initialized')
-  const dir = join(runDir, 'gitcred')
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const file = join(dir, `${agentId}.gitconfig`)
+export function sessionGitConfig(
+  agentId: string,
+  commitIdentity?: GitCommitIdentity
+): { path: string; content: string; env: Record<string, string> } {
+  const target = targetOf(agentId)
+  const file = join(target.configDir, `${agentId}.gitconfig`)
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
     '# Keeps non-identity host config, then pins github.com credentials to the daemon helper.',
-    '[include]',
-    `\tpath = ${join(homedir(), '.gitconfig')}`,
+    ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
     '[credential "https://github.com"]',
     '\thelper = ', // reset the accumulated helper list for github.com
     `\thelper = ${quotedHelper(agentId)}`,
     '\tuseHttpPath = true',
     ''
   ]
-  writeFileSync(file, lines.join('\n'), { mode: 0o644 })
   return {
-    ...gitCredentialEnv(agentId),
-    ...sessionGitPolicyEnv(),
-    GIT_CONFIG_GLOBAL: file,
-    GIT_TERMINAL_PROMPT: '0',
-    ...(commitIdentity
-      ? {
-          GIT_AUTHOR_NAME: commitIdentity.name,
-          GIT_AUTHOR_EMAIL: commitIdentity.email,
-          GIT_COMMITTER_NAME: commitIdentity.name,
-          GIT_COMMITTER_EMAIL: commitIdentity.email
-        }
-      : {})
+    path: file,
+    content: lines.join('\n'),
+    env: {
+      ...gitCredentialEnv(agentId),
+      ...sessionGitPolicyEnv(),
+      GIT_CONFIG_GLOBAL: file,
+      GIT_TERMINAL_PROMPT: '0',
+      ...(commitIdentity ? gitCommitIdentityEnv(commitIdentity) : {})
+    }
+  }
+}
+
+/**
+ * Session-env channel: (re)write the per-agent gitconfig and return the env to
+ * inject into the agent's ACP runtime process. Regenerated on every host spawn
+ * (#251 retries rebuild the host ⇒ this re-runs).
+ *
+ * Refuses a sandbox target rather than writing one: this is a synchronous local write, and the
+ * caller that owns a pod's files is the async materialization path.
+ */
+export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentity): Record<string, string> {
+  if (targetOf(agentId).kind !== 'daemon') {
+    throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
+  }
+  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity)
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  writeFileSync(file, content, { mode: 0o644 })
+  return env
+}
+
+/** The four env vars that make a commit's attribution explicit. The ONLY channel a daemon-run
+ *  commit has: every workspace git env pins `GIT_CONFIG_GLOBAL=/dev/null` and
+ *  `GIT_CONFIG_NOSYSTEM=1`, so no config file can supply `user.name`/`user.email` — and git would
+ *  otherwise guess an identity from the host's passwd entry and commit as the operator. */
+export function gitCommitIdentityEnv(identity: GitCommitIdentity): Record<string, string> {
+  return {
+    GIT_AUTHOR_NAME: identity.name,
+    GIT_AUTHOR_EMAIL: identity.email,
+    GIT_COMMITTER_NAME: identity.name,
+    GIT_COMMITTER_EMAIL: identity.email
   }
 }
 
 /** Post-clone: pin the repo-local helper so agent-run git in the checkout works. */
-export async function writeRepoHelperConfig(cwd: string, agentId: string): Promise<void> {
-  const git = gitFor(cwd).env(workspaceGitLocalEnv())
+export async function writeRepoHelperConfig(runner: GitRunner, agentId: string): Promise<void> {
+  const git = runner.withEnv(workspaceGitLocalEnv())
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
   await git.raw(['config', '--replace-all', 'credential.https://github.com.helper', ''])

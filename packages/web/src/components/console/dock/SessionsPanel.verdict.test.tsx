@@ -1,15 +1,6 @@
 // @vitest-environment happy-dom
 
-// The rail's hide VERDICT as the caller consumes it — the sequence, not the
-// snapshot. `SessionDetailView` widens a collapsed seed off this callback and
-// latches the result, and that latch is a one-way door: widening replaces the
-// rows, so the collapse that justified it stops being observable the moment it
-// works. A verdict reported before its inputs settle therefore does not merely
-// flicker, it freezes — which is why the orderings below are pinned here rather
-// than left to the pure-function tests, which cannot see them.
-//
-// Effects have to run for any of that to be observable, so this file is happy-dom
-// rather than the SSR markup harness in SessionRail.test.tsx.
+// The hide VERDICT as the caller consumes it — the sequence rather than the snapshot, since the widen it feeds is a one-way door (a verdict reported before its inputs settle does not flicker, it FREEZES), pinned in happy-dom because effects have to run for any of it to be observable.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -31,18 +22,16 @@ vi.mock('next/link', () => ({
   default: ({ children, href }: { children: ReactElement; href: string }) => <a href={href}>{children}</a>
 }))
 
-// The pin-hydration read, held open so the "still loading" window is a state the
-// test controls rather than a race it hopes to win. Partial mock: the platform
-// registry SessionRail pulls in re-exports much of this module, and replacing it
-// wholesale fails at import time long before any of it is rendered.
+// The pin-hydration read, held open so the "still loading" window is a state the test controls rather than a race it hopes to win.
 const detailCalls: Array<(value: unknown) => void> = []
+// Partial: the platform registry SessionsPanel pulls in re-exports much of this module, and replacing it wholesale fails at import time.
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   fetchSessionDetail: () => new Promise((resolve) => detailCalls.push(resolve)),
   sessionFromDetailDto: (dto: unknown) => dto
 }))
 
-import { SessionRail } from './SessionRail'
+import { SessionsPanel } from './SessionsPanel'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -106,7 +95,7 @@ async function render(node: ReactElement) {
   await act(async () => root?.render(node))
 }
 
-function rail({
+function panel({
   onWouldHideChange,
   family = NO_FAMILY,
   sessions = [] as Session[],
@@ -118,7 +107,7 @@ function rail({
   total?: number
 }) {
   return (
-    <SessionRail
+    <SessionsPanel
       sessions={sessions}
       current={session('current')}
       total={total}
@@ -132,45 +121,39 @@ function rail({
   )
 }
 
-describe('SessionRail hide verdict', () => {
+describe('SessionsPanel hide verdict', () => {
   it('reports that it would draw nothing once a collapsed page has settled', async () => {
     // The reported bug's shape: a seeded page carrying only the open conversation.
     const onWouldHideChange = vi.fn()
-    await render(rail({ onWouldHideChange }))
+    await render(panel({ onWouldHideChange }))
 
     expect(onWouldHideChange).toHaveBeenCalledWith(true)
   })
 
   it('corrects the verdict when lineage lands after the one-row page', async () => {
-    // The ordering the geometry suite already acknowledges — a one-row rail that
-    // learns about lineage only after its own list arrived. The rail renders its
-    // Related tree and keeps the picker, so the earlier `true` is now wrong; the
-    // caller must not have acted on it, which is why it waits for lineage before
-    // latching.
+    // A one-row list that learns about lineage afterwards: it now draws a Related tree, so the earlier `true` is wrong and must not have been acted on.
     const onWouldHideChange = vi.fn()
-    await render(rail({ onWouldHideChange }))
+    await render(panel({ onWouldHideChange }))
     expect(onWouldHideChange).toHaveBeenLastCalledWith(true)
 
-    await render(rail({ onWouldHideChange, family: { ...NO_FAMILY, childSessions: [relation('child')] } }))
+    await render(panel({ onWouldHideChange, family: { ...NO_FAMILY, childSessions: [relation('child')] } }))
 
     expect(onWouldHideChange).toHaveBeenLastCalledWith(false)
   })
 
   it('withholds the verdict entirely while an off-page pin is still hydrating', async () => {
-    // A pin the seeded page never carried is a row the rail is about to gain, and
-    // an in-flight pin read is indistinguishable from having none. Reporting here
-    // would latch a widen that the arriving row immediately disproves.
+    // An in-flight pin read is indistinguishable from having none, so reporting here latches a widen the arriving row immediately disproves.
     window.localStorage.setItem(SESSION_PINS_KEY, JSON.stringify([{ id: 'pinned-elsewhere', orgId: 'org-1' }]))
     const onWouldHideChange = vi.fn()
 
-    await render(rail({ onWouldHideChange }))
+    await render(panel({ onWouldHideChange }))
 
     expect(detailCalls.length).toBe(1)
     expect(onWouldHideChange).not.toHaveBeenCalled()
 
     await act(async () => detailCalls[0]?.(session('pinned-elsewhere')))
 
-    // Settled — and the hydrated pin is a second row, so the rail is worth drawing.
+    // Settled — and the hydrated pin is a second row, so the list is worth drawing.
     expect(onWouldHideChange).toHaveBeenCalled()
     expect(onWouldHideChange).toHaveBeenLastCalledWith(false)
   })

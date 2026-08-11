@@ -367,6 +367,26 @@ it('turns slash-separated new-file directories into breadcrumb segments', async 
   expect(writeWorkspaceFile).toHaveBeenCalledWith('agent-a', 'guides/setup/README.md', { content: '# Setup' })
 })
 
+it('loads and expands the directories a new-file path names', async () => {
+  workspace.entries = [{ name: 'guides', type: 'dir', size: null, mtime: null }]
+  workspace.listings = {
+    guides: [{ name: 'setup', type: 'dir', size: null, mtime: null }],
+    'guides/setup': [{ name: 'intro.md', type: 'file', size: 4, mtime: null }]
+  }
+  await renderWorkspace()
+  await clickButton('Add file')
+
+  const path = container?.querySelector<HTMLInputElement>('input[aria-label="New file path"]')
+  await changeValue(path!, 'guides/setup/')
+  await act(async () => Promise.resolve())
+
+  // Each typed segment is fetched and left open, so the tree behind the draft shows where the file is about to land.
+  const requested = vi.mocked(fetchWorkspaceFiles).mock.calls.map((call) => call[1].path)
+  expect(requested).toContain('guides')
+  expect(requested).toContain('guides/setup')
+  expect(container?.textContent).toContain('intro.md')
+})
+
 it('keeps file identity in the breadcrumb and confirms deletion inline', async () => {
   workspace.entries = [
     {
