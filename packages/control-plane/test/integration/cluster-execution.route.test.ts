@@ -394,12 +394,38 @@ describe('POST /cluster-execution/credential', () => {
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
     await prisma.orgClusterExecution.update({
       where: { orgId: DEFAULT_ORG_ID },
-      data: { credentialRotationAt: new Date() }
+      data: { credentialRotationAt: new Date(), credentialRotationToken: 'peer-token' }
     })
 
     const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
     expect(res.statusCode).toBe(409)
     expect(res.json().code).toBe('CLUSTER_ROTATION_IN_PROGRESS')
+    // The loser minted nothing at all — no daemon, no key.
+    expect(await prisma.daemon.count()).toBe(0)
+  })
+
+  it('adopts the key a crashed rotation left staged, rather than stranding it', async () => {
+    const { http } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
+
+    // A holder that died after staging a second key and before committing it,
+    // with its lease long expired.
+    const orphan = await prisma.apiKey.findFirstOrThrow({ where: { daemonId: first.daemonId } })
+    await prisma.orgClusterExecution.update({
+      where: { orgId: DEFAULT_ORG_ID },
+      data: {
+        credentialStagedApiKeyId: orphan.id,
+        credentialRotationAt: new Date(Date.now() - 60 * 60 * 1000),
+        credentialRotationToken: 'dead-holder'
+      }
+    })
+
+    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(201)
+    const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
+    expect(row?.credentialStagedApiKeyId).toBeNull()
+    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).not.toBeNull()
+    expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
   })
 
   it('409s while the operator has not created the envelope namespace yet', async () => {

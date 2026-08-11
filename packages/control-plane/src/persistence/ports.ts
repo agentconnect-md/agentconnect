@@ -4939,6 +4939,8 @@ export interface ClusterExecutionSettings {
   credentialDaemonId?: string
   /** The `api_key` row currently published in the Secret. */
   credentialApiKeyId?: string
+  /** A key minted for an in-flight transition and not yet committed. */
+  credentialStagedApiKeyId?: string
   runtimeImage: string
   runtimeTiers: ClusterRuntimeTier[]
   quota: ClusterQuota
@@ -4990,26 +4992,53 @@ export interface OrgClusterExecutionRepo {
   listPendingTeardowns(limit: number): Promise<PendingEnvelopeTeardown[]>
   /** Drop a tombstone once its resource is confirmed gone. Idempotent. */
   clearPendingTeardown(orgId: string): Promise<void>
-  /** Record the credential now published in the org's Secret, bumping
-   *  `specRevision` like any other write so the provisioner re-applies the CR
-   *  with the new `credentialRevision`. Null clears the credential (on disable). */
-  setCredential(
+  /**
+   * Claim the org's credential transition under a fresh fencing `token`, or
+   * return null when a live claim belongs to someone else. A claim older than
+   * `leaseMs` is taken over — and the takeover ADOPTS any staged key the dead
+   * holder left, queueing it for revocation in the same transaction, so a
+   * crashed rotation cannot strand a live key.
+   */
+  beginCredentialRotation(
     orgId: OrgId,
-    credential: { daemonId: string; apiKeyId: string; revision: string } | null
-  ): Promise<ClusterExecutionSettings>
+    token: string,
+    now: Date,
+    leaseMs: number
+  ): Promise<ClusterExecutionSettings | null>
+  /** Release the claim, only if `token` still holds it. */
+  endCredentialRotation(orgId: OrgId, token: string): Promise<void>
   /** Record the daemon identity a first issue just provisioned, before anything
    *  can fail — otherwise every retry would provision another daemon. Does not
-   *  bump `specRevision`: the CR spec carries no daemon id. */
-  setCredentialDaemon(orgId: OrgId, daemonId: string): Promise<void>
-  /** Conditionally claim the org's credential transition, returning the row the
-   *  winner must act on, or null when another caller holds it. A LEASE, not a
-   *  lock: a claim older than `leaseMs` is taken over, so a process that died
-   *  mid-rotation cannot wedge the envelope. */
-  beginCredentialRotation(orgId: OrgId, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null>
-  /** Release the claim. Idempotent. */
-  endCredentialRotation(orgId: OrgId): Promise<void>
-  /** Record that a daemon key must be revoked, before the attempt is made.
-   *  Idempotent on the key id. */
+   *  bump `specRevision`: the CR spec carries no daemon id. False ⇒ claim lost. */
+  stageCredentialDaemon(orgId: OrgId, token: string, daemonId: string): Promise<boolean>
+  /** Record a minted key as staged, BEFORE it is published. False ⇒ claim lost. */
+  stageCredentialKey(orgId: OrgId, token: string, apiKeyId: string): Promise<boolean>
+  /**
+   * Promote the staged key to the org's credential in ONE transaction: bump
+   * `specRevision` (so the CR re-applies with the new `credentialRevision`),
+   * clear the staged slot, and queue the superseded key for revocation. Atomic
+   * because a commit that queued the predecessor separately could lose it.
+   * False ⇒ the claim was taken over; nothing was written.
+   */
+  commitCredential(
+    orgId: OrgId,
+    token: string,
+    credential: { daemonId: string; apiKeyId: string; revision: string },
+    reason: string
+  ): Promise<boolean>
+  /** Queue the staged key for revocation and clear the slot — the unwind path
+   *  when publication fails. Conditional on `token`. */
+  abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void>
+  /**
+   * Retire the envelope's credential in ONE transaction: clear the credential
+   * and staged slots, queue both keys for revocation, and record the resource
+   * for teardown. Everything durable BEFORE the cluster is touched, so a
+   * disable whose delete fails still converges through maintenance.
+   * False ⇒ the claim was taken over; nothing was written.
+   */
+  retireCredential(orgId: OrgId, token: string, reason: string): Promise<boolean>
+  /** Record that a key must be revoked, outside any claim — the unwind path for
+   *  a pass that lost its claim mid-flight. Idempotent on the key id. */
   enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void>
   /** Oldest-first batch of keys still awaiting revocation. */
   listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]>

@@ -2783,14 +2783,20 @@ model OrgClusterExecution {
   /// The api_key row currently published in the Secret; revoked when the next
   /// rotation lands, so exactly one live key exists per envelope.
   credentialApiKeyId   String?
-  /// Held while a credential transition is in flight. Claiming it is a
-  /// conditional write, so exactly one caller across every control-plane
-  /// instance mints and publishes — two concurrent rotations could otherwise
-  /// write Secrets in one order and record them in the other, leaving the Secret
-  /// and the row naming different (both live) keys. A lease, not a lock: a
-  /// process that dies mid-rotation must not wedge the envelope, so a claim
-  /// older than the lease window is taken over.
-  credentialRotationAt DateTime?           @db.Timestamptz(6)
+  /// When the in-flight credential transition was claimed, and by whom. The
+  /// token is the fencing half: EVERY write in a transition — staging,
+  /// committing, retiring, and the release itself — is conditional on it, so a
+  /// holder whose lease expired and whose claim was taken over can no longer
+  /// mutate the row or unlock its successor. The timestamp only decides when a
+  /// takeover is allowed, so a process that dies mid-rotation cannot wedge the
+  /// envelope.
+  credentialRotationAt    DateTime?        @db.Timestamptz(6)
+  credentialRotationToken String?
+  /// A key that has been minted and may already be published, but is not yet the
+  /// committed credential. Written BEFORE the Secret is, because every failure
+  /// after that point would otherwise leave a live non-expiring key with nothing
+  /// naming it. Whoever next claims the transition adopts it for revocation.
+  credentialStagedApiKeyId String?
   runtimeImage         String
   /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
   runtimeTiers         Json                @db.JsonB

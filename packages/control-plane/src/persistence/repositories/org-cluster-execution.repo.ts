@@ -20,6 +20,7 @@ import type {
   PendingEnvelopeTeardown
 } from '../ports.js'
 import type { OrgId } from '../../domain/ids.js'
+import { withTx, type PrismaLike } from '../prisma.js'
 
 /** The stored tier array, defensively narrowed — the column is JSONB. */
 function toTiers(value: unknown): ClusterRuntimeTier[] {
@@ -29,6 +30,11 @@ function toTiers(value: unknown): ClusterRuntimeTier[] {
     if (typeof tier?.name !== 'string') return []
     return [{ name: tier.name, warmReplicas: typeof tier.warmReplicas === 'number' ? tier.warmReplicas : 0 }]
   })
+}
+
+/** Record a revocation intent inside the caller's transaction. Idempotent on the key id. */
+async function enqueueRevocation(tx: PrismaLike, orgId: string, apiKeyId: string, reason: string): Promise<void> {
+  await tx.pendingDaemonKeyRevocation.createMany({ data: [{ apiKeyId, orgId, reason }], skipDuplicates: true })
 }
 
 function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
@@ -44,6 +50,7 @@ function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
     ...(row.credentialRevision ? { credentialRevision: row.credentialRevision } : {}),
     ...(row.credentialDaemonId ? { credentialDaemonId: row.credentialDaemonId } : {}),
     ...(row.credentialApiKeyId ? { credentialApiKeyId: row.credentialApiKeyId } : {}),
+    ...(row.credentialStagedApiKeyId ? { credentialStagedApiKeyId: row.credentialStagedApiKeyId } : {}),
     runtimeImage: row.runtimeImage,
     runtimeTiers: toTiers(row.runtimeTiers),
     quota: {
@@ -78,35 +85,134 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     await this.prisma.pendingEnvelopeTeardown.deleteMany({ where: { orgId } })
   }
 
-  async setCredentialDaemon(orgId: OrgId, daemonId: string): Promise<void> {
-    await this.prisma.orgClusterExecution.update({ where: { orgId }, data: { credentialDaemonId: daemonId } })
-  }
-
-  async beginCredentialRotation(orgId: OrgId, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null> {
-    // One conditional statement is the whole fence: `updateMany` with the
-    // free-or-expired predicate either matches (this caller owns the transition)
-    // or does not (someone else does). A read-then-write pair could not say that.
-    const claimed = await this.prisma.orgClusterExecution.updateMany({
-      where: {
-        orgId,
-        OR: [{ credentialRotationAt: null }, { credentialRotationAt: { lt: new Date(now.getTime() - leaseMs) } }]
-      },
-      data: { credentialRotationAt: now }
+  /**
+   * The claim is one conditional statement plus, on takeover, the adoption of
+   * whatever the dead holder left staged. Both live in one transaction: a
+   * takeover that forgot the staged key would strand a live, non-expiring
+   * credential with nothing naming it.
+   */
+  async beginCredentialRotation(
+    orgId: OrgId,
+    token: string,
+    now: Date,
+    leaseMs: number
+  ): Promise<ClusterExecutionSettings | null> {
+    return withTx(this.prisma, async (tx) => {
+      const claimed = await tx.orgClusterExecution.updateMany({
+        where: {
+          orgId,
+          OR: [
+            { credentialRotationToken: null },
+            { credentialRotationAt: null },
+            { credentialRotationAt: { lt: new Date(now.getTime() - leaseMs) } }
+          ]
+        },
+        data: { credentialRotationAt: now, credentialRotationToken: token }
+      })
+      if (claimed.count === 0) return null
+      const row = await tx.orgClusterExecution.findUnique({ where: { orgId } })
+      if (!row) return null
+      if (row.credentialStagedApiKeyId) {
+        await enqueueRevocation(tx, orgId, row.credentialStagedApiKeyId, 'cluster credential rotation abandoned')
+        await tx.orgClusterExecution.update({ where: { orgId }, data: { credentialStagedApiKeyId: null } })
+        return toRecord({ ...row, credentialStagedApiKeyId: null })
+      }
+      return toRecord(row)
     })
-    if (claimed.count === 0) return null
-    const row = await this.prisma.orgClusterExecution.findUnique({ where: { orgId } })
-    return row ? toRecord(row) : null
   }
 
-  async endCredentialRotation(orgId: OrgId): Promise<void> {
-    await this.prisma.orgClusterExecution.updateMany({ where: { orgId }, data: { credentialRotationAt: null } })
+  async endCredentialRotation(orgId: OrgId, token: string): Promise<void> {
+    // Token-conditional: an expired holder must not unlock its successor.
+    await this.prisma.orgClusterExecution.updateMany({
+      where: { orgId, credentialRotationToken: token },
+      data: { credentialRotationAt: null, credentialRotationToken: null }
+    })
+  }
+
+  async stageCredentialDaemon(orgId: OrgId, token: string, daemonId: string): Promise<boolean> {
+    const held = await this.prisma.orgClusterExecution.updateMany({
+      where: { orgId, credentialRotationToken: token },
+      data: { credentialDaemonId: daemonId }
+    })
+    return held.count > 0
+  }
+
+  async stageCredentialKey(orgId: OrgId, token: string, apiKeyId: string): Promise<boolean> {
+    const held = await this.prisma.orgClusterExecution.updateMany({
+      where: { orgId, credentialRotationToken: token },
+      data: { credentialStagedApiKeyId: apiKeyId }
+    })
+    return held.count > 0
+  }
+
+  async commitCredential(
+    orgId: OrgId,
+    token: string,
+    credential: { daemonId: string; apiKeyId: string; revision: string },
+    reason: string
+  ): Promise<boolean> {
+    return withTx(this.prisma, async (tx) => {
+      const current = await tx.orgClusterExecution.findUnique({ where: { orgId } })
+      if (!current || current.credentialRotationToken !== token) return false
+      await tx.orgClusterExecution.update({
+        where: { orgId },
+        data: {
+          // A credential change IS a spec change (`credentialRevision` is what
+          // forces the pod Recreate), so it rides the same fence as every other write.
+          specRevision: { increment: 1 },
+          credentialDaemonId: credential.daemonId,
+          credentialApiKeyId: credential.apiKeyId,
+          credentialRevision: credential.revision,
+          credentialStagedApiKeyId: null
+        }
+      })
+      // Same transaction as the overwrite: queueing the predecessor separately
+      // would lose it whenever the process stopped in between.
+      const superseded = current.credentialApiKeyId
+      if (superseded && superseded !== credential.apiKeyId) {
+        await enqueueRevocation(tx, orgId, superseded, reason)
+      }
+      return true
+    })
+  }
+
+  async abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void> {
+    await withTx(this.prisma, async (tx) => {
+      const current = await tx.orgClusterExecution.findUnique({ where: { orgId } })
+      if (!current || current.credentialRotationToken !== token || !current.credentialStagedApiKeyId) return
+      await enqueueRevocation(tx, orgId, current.credentialStagedApiKeyId, reason)
+      await tx.orgClusterExecution.update({ where: { orgId }, data: { credentialStagedApiKeyId: null } })
+    })
+  }
+
+  async retireCredential(orgId: OrgId, token: string, reason: string): Promise<boolean> {
+    return withTx(this.prisma, async (tx) => {
+      const current = await tx.orgClusterExecution.findUnique({ where: { orgId } })
+      if (!current || current.credentialRotationToken !== token) return false
+      for (const apiKeyId of [current.credentialApiKeyId, current.credentialStagedApiKeyId]) {
+        if (apiKeyId) await enqueueRevocation(tx, orgId, apiKeyId, reason)
+      }
+      // The resource must go too, and the cluster call can fail — so record the
+      // intent here, where it is atomic with the credential being dropped.
+      await tx.pendingEnvelopeTeardown.createMany({
+        data: [{ orgId, targetNamespace: current.targetNamespace }],
+        skipDuplicates: true
+      })
+      await tx.orgClusterExecution.update({
+        where: { orgId },
+        data: {
+          specRevision: { increment: 1 },
+          credentialApiKeyId: null,
+          credentialRevision: null,
+          credentialStagedApiKeyId: null
+        }
+      })
+      return true
+    })
   }
 
   async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void> {
-    await this.prisma.pendingDaemonKeyRevocation.createMany({
-      data: [{ apiKeyId, orgId, reason }],
-      skipDuplicates: true
-    })
+    await enqueueRevocation(this.prisma, orgId, apiKeyId, reason)
   }
 
   async listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]> {
@@ -119,24 +225,6 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
 
   async clearKeyRevocation(apiKeyId: string): Promise<void> {
     await this.prisma.pendingDaemonKeyRevocation.deleteMany({ where: { apiKeyId } })
-  }
-
-  async setCredential(
-    orgId: OrgId,
-    credential: { daemonId: string; apiKeyId: string; revision: string } | null
-  ): Promise<ClusterExecutionSettings> {
-    const row = await this.prisma.orgClusterExecution.update({
-      where: { orgId },
-      data: {
-        // A credential change IS a spec change (`credentialRevision` is what
-        // forces the pod Recreate), so it rides the same fence as every other write.
-        specRevision: { increment: 1 },
-        credentialDaemonId: credential?.daemonId ?? null,
-        credentialApiKeyId: credential?.apiKeyId ?? null,
-        credentialRevision: credential?.revision ?? null
-      }
-    })
-    return toRecord(row)
   }
 
   async upsert(

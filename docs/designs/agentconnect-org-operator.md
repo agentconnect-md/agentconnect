@@ -264,15 +264,33 @@ cluster Secret, and the response carries the daemon id, Secret name, and
 revision.
 
 Daemon keys never expire, so the design is mostly about what happens when a
-step fails. Claiming `credentialRotationAt` is a conditional write, so exactly
-one caller across every control-plane instance mints and publishes; it is a
-LEASE, not a lock, so a process that dies mid-rotation cannot wedge the
-envelope. Every revocation is recorded in `pending_daemon_key_revocation`
-BEFORE it is attempted and cleared only once it lands, so a transient failure
-never leaves a live key with nothing naming it. A credential is only issued
-while the envelope is ENABLED — a disabled one is being torn down, and
-publishing into its dying namespace would undo the retirement disable just
-performed.
+step fails. A credential is only issued while the envelope is ENABLED — a
+disabled one is being torn down, and publishing into its dying namespace would
+undo the retirement disable just performed. Beyond that, three mechanisms:
+
+- **A fencing token, not just a lease.** A transition claims
+  `credentialRotationAt` + `credentialRotationToken`, and every subsequent write
+  — staging, committing, retiring, and the release itself — is conditional on
+  that token. The timestamp only decides when a takeover is allowed; the token
+  is what stops an expired holder from committing behind its successor or
+  unlocking it. A takeover ADOPTS whatever the dead holder left in
+  `credentialStagedApiKeyId`, queueing it for revocation in the same
+  transaction.
+- **Staged before published.** The minted key is recorded before the Secret is
+  written, so every failure point after that leaves a durable handle rather than
+  a live key nobody can name.
+- **Queued before attempted.** Revocations go into
+  `pending_daemon_key_revocation` before they are tried and are cleared only
+  once they land; promoting a key and queueing the one it supersedes happen in
+  ONE transaction, because a stop in between would overwrite the only handle to
+  the predecessor. The maintenance loop retries whatever is still owed.
+
+Disabling takes the same claim and does all of its durable work — dropping the
+credential, queueing both its keys, and recording the resource for teardown —
+in one transaction BEFORE the cluster is touched, so a delete that fails leaves
+state that converges rather than an `enabled: false` row beside a live pod
+holding a live key. Re-enabling cancels a pending teardown, or the drain would
+delete the resource the re-enable just created.
 
 Four orderings carry the rest:
 

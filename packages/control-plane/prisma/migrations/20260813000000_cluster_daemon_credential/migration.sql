@@ -1,7 +1,9 @@
 -- AlterTable
 ALTER TABLE "org_cluster_execution" ADD COLUMN     "credentialApiKeyId" TEXT,
 ADD COLUMN     "credentialDaemonId" UUID,
-ADD COLUMN     "credentialRotationAt" TIMESTAMPTZ(6);
+ADD COLUMN     "credentialRotationAt" TIMESTAMPTZ(6),
+ADD COLUMN     "credentialRotationToken" TEXT,
+ADD COLUMN     "credentialStagedApiKeyId" TEXT;
 
 -- CreateTable
 CREATE TABLE "pending_daemon_key_revocation" (

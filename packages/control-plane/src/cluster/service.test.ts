@@ -42,6 +42,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
   tombstones: PendingEnvelopeTeardown[] = []
   revocations: PendingDaemonKeyRevocation[] = []
   rotationAt: Date | null = null
+  rotationToken: string | null = null
   /** Simulates an upsert whose row is cascaded away before anything reads it. */
   swallowUpsert = false
 
@@ -57,20 +58,85 @@ class FakeRepo implements OrgClusterExecutionRepo {
     this.tombstones = this.tombstones.filter((entry) => entry.orgId !== orgId)
   }
 
-  async setCredentialDaemon(_orgId: OrgId, daemonId: string): Promise<void> {
-    if (this.row) this.row = { ...this.row, credentialDaemonId: daemonId }
-  }
-
-  async beginCredentialRotation(_orgId: OrgId, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null> {
+  async beginCredentialRotation(
+    _orgId: OrgId,
+    token: string,
+    now: Date,
+    leaseMs: number
+  ): Promise<ClusterExecutionSettings | null> {
     if (!this.row) return null
     const held = this.rotationAt
-    if (held && held.getTime() > now.getTime() - leaseMs) return null
+    if (held && this.rotationToken && held.getTime() > now.getTime() - leaseMs) return null
     this.rotationAt = now
+    this.rotationToken = token
+    const staged = this.row.credentialStagedApiKeyId
+    if (staged) {
+      await this.enqueueKeyRevocation(this.row.orgId, staged, 'cluster credential rotation abandoned')
+      this.row = { ...this.row, credentialStagedApiKeyId: undefined }
+    }
     return { ...this.row }
   }
 
-  async endCredentialRotation(): Promise<void> {
+  async endCredentialRotation(_orgId: OrgId, token: string): Promise<void> {
+    if (this.rotationToken !== token) return
     this.rotationAt = null
+    this.rotationToken = null
+  }
+
+  async stageCredentialDaemon(_orgId: OrgId, token: string, daemonId: string): Promise<boolean> {
+    if (this.rotationToken !== token || !this.row) return false
+    this.row = { ...this.row, credentialDaemonId: daemonId }
+    return true
+  }
+
+  async stageCredentialKey(_orgId: OrgId, token: string, apiKeyId: string): Promise<boolean> {
+    if (this.rotationToken !== token || !this.row) return false
+    this.row = { ...this.row, credentialStagedApiKeyId: apiKeyId }
+    return true
+  }
+
+  async commitCredential(
+    _orgId: OrgId,
+    token: string,
+    credential: { daemonId: string; apiKeyId: string; revision: string },
+    reason: string
+  ): Promise<boolean> {
+    if (this.rotationToken !== token || !this.row) return false
+    const superseded = this.row.credentialApiKeyId
+    this.row = {
+      ...this.row,
+      specRevision: this.row.specRevision + 1,
+      credentialDaemonId: credential.daemonId,
+      credentialApiKeyId: credential.apiKeyId,
+      credentialRevision: credential.revision,
+      credentialStagedApiKeyId: undefined
+    }
+    if (superseded && superseded !== credential.apiKeyId) {
+      await this.enqueueKeyRevocation(this.row.orgId, superseded, reason)
+    }
+    return true
+  }
+
+  async abandonStagedCredential(_orgId: OrgId, token: string, reason: string): Promise<void> {
+    if (this.rotationToken !== token || !this.row?.credentialStagedApiKeyId) return
+    await this.enqueueKeyRevocation(this.row.orgId, this.row.credentialStagedApiKeyId, reason)
+    this.row = { ...this.row, credentialStagedApiKeyId: undefined }
+  }
+
+  async retireCredential(_orgId: OrgId, token: string, reason: string): Promise<boolean> {
+    if (this.rotationToken !== token || !this.row) return false
+    for (const apiKeyId of [this.row.credentialApiKeyId, this.row.credentialStagedApiKeyId]) {
+      if (apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, apiKeyId, reason)
+    }
+    this.tombstones.push({ orgId: this.row.orgId, targetNamespace: this.row.targetNamespace })
+    this.row = {
+      ...this.row,
+      specRevision: this.row.specRevision + 1,
+      credentialApiKeyId: undefined,
+      credentialRevision: undefined,
+      credentialStagedApiKeyId: undefined
+    }
+    return true
   }
 
   async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void> {
@@ -85,25 +151,6 @@ class FakeRepo implements OrgClusterExecutionRepo {
 
   async clearKeyRevocation(apiKeyId: string): Promise<void> {
     this.revocations = this.revocations.filter((entry) => entry.apiKeyId !== apiKeyId)
-  }
-
-  async setCredential(
-    _orgId: OrgId,
-    credential: { daemonId: string; apiKeyId: string; revision: string } | null
-  ): Promise<ClusterExecutionSettings> {
-    if (!this.row) throw new Error('no row')
-    this.row = {
-      ...this.row,
-      specRevision: this.row.specRevision + 1,
-      ...(credential
-        ? {
-            credentialDaemonId: credential.daemonId,
-            credentialApiKeyId: credential.apiKeyId,
-            credentialRevision: credential.revision
-          }
-        : { credentialDaemonId: undefined, credentialApiKeyId: undefined, credentialRevision: undefined })
-    }
-    return { ...this.row }
   }
 
   async upsert(
@@ -163,9 +210,12 @@ class FakeApi implements OrgResourceApi {
 class FakeSecrets implements OrgSecretApi {
   written: { namespace: string; name: string; configJson: string }[] = []
   namespaceMissing = false
+  /** Runs inside the publish, so a test can steal the claim mid-flight. */
+  duringApply?: () => void
 
   async applyCredential(namespace: string, name: string, configJson: string): Promise<void> {
     if (this.namespaceMissing) throw new NamespaceNotReadyError(namespace)
+    this.duringApply?.()
     this.written.push({ namespace, name, configJson })
   }
 
@@ -357,7 +407,7 @@ describe('ClusterExecutionService.issueCredential', () => {
     const { service, repo } = build()
     await service.configure(ORG, { enabled: true })
     // Someone else claimed it a moment ago and has not released it.
-    await repo.beginCredentialRotation(ORG, new Date(), 60_000)
+    await repo.beginCredentialRotation(ORG, 'peer-token', new Date(), 60_000)
 
     await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
   })
@@ -366,8 +416,39 @@ describe('ClusterExecutionService.issueCredential', () => {
     const { service, repo } = build()
     await service.configure(ORG, { enabled: true })
     repo.rotationAt = new Date(Date.now() - 60 * 60 * 1000)
+    repo.rotationToken = 'dead-holder'
 
     await expect(service.issueCredential(ORG)).resolves.toMatchObject({ rotated: false })
+  })
+
+  it('adopts the key a crashed rotation left staged, instead of stranding it', async () => {
+    const { service, repo, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    // A holder that died after staging its key and before committing it.
+    repo.row = { ...repo.row!, credentialStagedApiKeyId: 'orphan-key' }
+    repo.rotationAt = new Date(Date.now() - 60 * 60 * 1000)
+    repo.rotationToken = 'dead-holder'
+
+    await service.issueCredential(ORG)
+    expect(keys.revoked).toContain('orphan-key')
+    expect((await repo.get())?.credentialStagedApiKeyId).toBeUndefined()
+  })
+
+  it('refuses to commit behind the successor that took its claim over', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    // The claim is stolen while this pass is publishing — the exact window an
+    // expiry timestamp alone could not fence.
+    secrets.duringApply = () => {
+      repo.rotationToken = 'successor'
+    }
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
+    expect((await repo.get())?.credentialRevision).toBeUndefined()
+    // The key it minted is not silently dropped.
+    expect(keys.revoked).toEqual(['key-1'])
+    // And its release did not unlock the successor.
+    expect(repo.rotationToken).toBe('successor')
   })
 
   it('releases the claim even when the attempt fails', async () => {
@@ -436,6 +517,43 @@ describe('ClusterExecutionService.issueCredential', () => {
     expect(row?.credentialApiKeyId).toBeUndefined()
     expect(keys.revoked).toEqual([issued.revision])
   })
+
+  it('records the revocation and the teardown BEFORE touching the cluster on disable', async () => {
+    const { service, repo, api, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    const issued = await service.issueCredential(ORG)
+
+    // A cluster that refuses the delete must not leave a disabled row beside a
+    // live pod holding a live key with nothing recorded.
+    api.failDelete = true
+    keys.failRevoke = true
+    await service.configure(ORG, { enabled: false })
+
+    expect((await repo.get())?.credentialApiKeyId).toBeUndefined()
+    expect(repo.revocations.map((entry) => entry.apiKeyId)).toEqual([issued.revision])
+    expect(repo.tombstones.map((entry) => entry.orgId)).toEqual([ORG])
+
+    // Both settle on the next maintenance pass.
+    api.failDelete = false
+    keys.failRevoke = false
+    expect(await service.drainTeardowns()).toBe(1)
+    expect(await service.drainKeyRevocations()).toBe(1)
+    expect(api.deleted).toContain('ac-org-acme')
+    expect(keys.revoked).toEqual([issued.revision])
+  })
+
+  it('cancels a pending teardown when the org is enabled again', async () => {
+    const { service, repo, api } = build()
+    await service.configure(ORG, { enabled: true })
+    api.failDelete = true
+    await service.configure(ORG, { enabled: false })
+    expect(repo.tombstones).toHaveLength(1)
+
+    api.failDelete = false
+    await service.configure(ORG, { enabled: true })
+    // Otherwise the drain would delete the resource this re-enable just created.
+    expect(repo.tombstones).toEqual([])
+  })
 })
 
 describe('ClusterExecutionService.drainTeardowns', () => {
@@ -454,7 +572,9 @@ describe('ClusterExecutionService.drainTeardowns', () => {
     const { service, repo, api } = build()
     repo.tombstones = [{ orgId: 'gone', targetNamespace: 'ac-org-gone' }]
     api.failDelete = true
-    await expect(service.drainTeardowns()).rejects.toThrow('cluster unreachable')
+    // Swallowed per row: one unreachable envelope must not hold up the others,
+    // and callers that only recorded an intent must not fail on the sweep.
+    expect(await service.drainTeardowns()).toBe(0)
     expect(repo.tombstones).toHaveLength(1)
 
     api.failDelete = false
