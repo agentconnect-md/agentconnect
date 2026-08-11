@@ -338,7 +338,10 @@ describe('cluster launch metrics', () => {
     const drained = recorder()
     const api = fakeApi({ claimExists: true, mode: 'Suspended' })
     const driver = driverFor(drained.metrics, api)
-    driver.onSandboxObserved('agent-a', { [DRAIN_REQUESTED_ANNOTATION]: 'rollout-1' })
+    driver.onSandboxObserved({
+      metadata: { name: 'sb-1', annotations: { [DRAIN_REQUESTED_ANNOTATION]: 'rollout-1/img' } },
+      spec: { operatingMode: 'Suspended' }
+    })
     await expect(driver.launch(launchRequest)).rejects.toThrow(/draining/)
     // Held-for-rollout is not a missed target, and pooling it with errors would make a rollout
     // look like an outage on the dashboard.

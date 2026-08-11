@@ -19,7 +19,8 @@ import { K8sApiError } from '@agentconnect.md/k8s-client'
 export const AC_LABEL_ORG = 'agentconnect.md/org'
 export const AC_LABEL_AGENT = 'agentconnect.md/agent'
 
-/** Annotation an image rollout writes to ask a daemon to quiesce a Sandbox. */
+/** Annotation an image rollout writes to ask a daemon to quiesce a Sandbox (`<rolloutId>/<image>`).
+ *  The operator is the producer (`packages/operator/src/crd/types.ts`); this is the consumer. */
 export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 
 /**
@@ -83,8 +84,21 @@ export class LaunchTimeoutError extends Error {
   }
 }
 
+/** Work refused because its Sandbox is draining for an image rollout. Typed for the same reason:
+ *  a deliberate hold is not a missed target, and pooling the two makes a rollout look like an outage. */
+export class SandboxDrainingError extends Error {
+  constructor(agentId: string) {
+    super(`agent ${agentId} is draining for an image rollout — retry once it clears`)
+    this.name = 'SandboxDrainingError'
+  }
+}
+
 const DEFAULT_READY_TIMEOUT_MS = 90_000
 const MAX_MODE_ATTEMPTS = 5
+/** Restart delay bounds for the sandbox watch; watchCollection handles its own reconnects, so
+ *  this only covers a stream that ended some other way. */
+const WATCH_RESTART_BASE_MS = 500
+const WATCH_RESTART_CAP_MS = 30_000
 
 /** Per-agent launch state the driver keeps: the Sandbox it bound and which launch it is. */
 interface Launch {
@@ -105,13 +119,19 @@ export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
   private readonly launches = new Map<string, Launch>()
   private readonly generations = new Map<string, number>()
-  /** Agents whose Sandbox carries a drain request: hold off waking until it clears. */
-  private readonly draining = new Set<string>()
-  /** Per-agent transition queue. A guarded write protects competing writes, but it cannot
+  /** Sandboxes carrying a drain request, by name → the value that requested it. New work stays
+   *  off them, and each is suspended as soon as the work already on it ends. */
+  private readonly draining = new Map<string, string>()
+  /** Live work per Sandbox: binds in flight plus runtimes that have not exited. A drain waits
+   *  for this to reach zero, which is what keeps a rollout from pulling a pod out mid-turn. */
+  private readonly busy = new Map<string, number>()
+  /** Per-SANDBOX transition queue. A guarded write protects competing writes, but it cannot
    *  protect a decision that performs NO write: a later wake could observe Running and
    *  return while an earlier suspend patch was still in flight, and the older write would
    *  then land last and reverse the newer decision. Serializing removes that entirely. */
   private readonly modeQueue = new Map<string, Promise<void>>()
+  /** Term of the sandbox watch, so the plane can stop following on shutdown. */
+  private watch?: AbortController
   /** Logical channels per agent, which survive the shim's credential renewals. */
   private readonly sessions = new Map<string, ShimSession>()
   /** Workspace mount per agent, as the bound pod's shim reported it. */
@@ -205,7 +225,7 @@ export class K8sDriver implements SpawnDriver {
   /** Wake a suspended Sandbox, or confirm it is already running. Reports the mode it found, which
    *  is the only place a CACHED launch can learn whether it is resuming or already warm. */
   async wake(agentId: string): Promise<OperatingMode | undefined> {
-    if (this.draining.has(agentId)) {
+    if (this.isDraining(agentId)) {
       // A drain request is in flight: new messages queue rather than reviving the instance,
       // or one message would resurrect the image the rollout is replacing.
       this.deps.log.info(`cluster: holding agent ${agentId} suspended — a drain request is pending`)
@@ -227,11 +247,19 @@ export class K8sDriver implements SpawnDriver {
    * invalid patch would otherwise loop forever.
    */
   private setMode(agentId: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
-    const previous = this.modeQueue.get(agentId) ?? Promise.resolve()
-    const next = previous.catch(() => undefined).then(() => this.applyMode(agentId, desired))
+    const launch = this.launches.get(agentId)
+    if (!launch) return Promise.reject(new Error(`no sandbox launch recorded for agent ${agentId}`))
+    return this.queueMode(launch.sandboxName, desired)
+  }
+
+  /** Queued per SANDBOX rather than per agent: the drain path writes without an agent in hand,
+   *  and the object being serialized is the one both decisions patch. */
+  private queueMode(sandboxName: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
+    const previous = this.modeQueue.get(sandboxName) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(() => this.applyMode(sandboxName, desired))
     // Keep the chain even when a link rejects, so a failed transition cannot strand the queue.
     this.modeQueue.set(
-      agentId,
+      sandboxName,
       next.then(
         () => undefined,
         () => undefined
@@ -240,60 +268,195 @@ export class K8sDriver implements SpawnDriver {
     return next
   }
 
-  private async applyMode(agentId: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
-    const launch = this.launches.get(agentId)
-    if (!launch) throw new Error(`no sandbox launch recorded for agent ${agentId}`)
+  private async applyMode(sandboxName: string, desired: OperatingMode): Promise<OperatingMode | undefined> {
     // The mode observed on the FIRST read, before this call changed anything. A later attempt
     // sees the state we produced, which would say nothing about where the launch started.
     let first: OperatingMode | undefined
     for (let attempt = 1; attempt <= MAX_MODE_ATTEMPTS; attempt += 1) {
-      const sandbox = await this.deps.api.getSandbox(launch.sandboxName)
+      const sandbox = await this.deps.api.getSandbox(sandboxName)
       const observed = sandbox.spec?.operatingMode ?? 'Running'
       if (observed === desired) return first ?? observed
       first ??= observed
       try {
-        await this.deps.api.setOperatingMode(launch.sandboxName, desired, observed)
-        this.deps.log.info(`cluster: agent ${agentId} sandbox ${launch.sandboxName} → ${desired}`)
+        await this.deps.api.setOperatingMode(sandboxName, desired, observed)
+        this.deps.log.info(`cluster: sandbox ${sandboxName} → ${desired}`)
         return first
       } catch (err) {
         if (!(err instanceof OperatingModeRejectedError)) throw err
         this.metrics.writeRetry('rejected_precondition')
-        this.deps.log.debug?.(
-          `cluster: ${desired} write for ${launch.sandboxName} rejected (attempt ${attempt}) — re-reading`
-        )
+        this.deps.log.debug?.(`cluster: ${desired} write for ${sandboxName} rejected (attempt ${attempt}) — re-reading`)
       }
     }
     throw new Error(
-      `sandbox ${launch.sandboxName} would not accept ${desired} after ${MAX_MODE_ATTEMPTS} attempts — ` +
+      `sandbox ${sandboxName} would not accept ${desired} after ${MAX_MODE_ATTEMPTS} attempts — ` +
         `something else is changing its mode`
     )
   }
 
   /**
-   * Observe a Sandbox's drain annotation. While it is present the daemon must not wake the
-   * instance: the rollout is waiting for it to stay down long enough to change its image,
-   * and a single arriving message would otherwise revive the old one.
+   * Follow this namespace's Sandboxes, which is how a drain request is noticed without polling.
+   *
+   * Started by the runtime plane rather than the constructor: a driver a test builds by hand has
+   * no cluster to watch, and the watch is a term with an end (`stopSandboxWatch`) rather than a
+   * side effect of existing.
    */
-  onSandboxObserved(agentId: string, annotations: Record<string, string> | undefined): void {
-    const requested = annotations?.[DRAIN_REQUESTED_ANNOTATION]
-    if (requested && !this.draining.has(agentId)) {
-      this.draining.add(agentId)
-      this.deps.log.info(`cluster: drain requested for agent ${agentId} (${requested})`)
-      return
-    }
-    if (!requested && this.draining.delete(agentId)) {
-      this.deps.log.info(`cluster: drain request cleared for agent ${agentId} — resuming normally`)
+  startSandboxWatch(): void {
+    if (this.watch) return
+    const controller = new AbortController()
+    this.watch = controller
+    void this.runSandboxWatch(controller.signal)
+  }
+
+  stopSandboxWatch(): void {
+    this.watch?.abort()
+    this.watch = undefined
+  }
+
+  // `watchCollection` reconnects and re-LISTs on its own, so this only covers a stream that ended
+  // some other way — and it must be covered, because a daemon that quietly stopped watching would
+  // stall every rollout until the operator's drain deadline failed each instance in turn.
+  private async runSandboxWatch(signal: AbortSignal): Promise<void> {
+    const backoff = new Backoff({ baseMs: WATCH_RESTART_BASE_MS, capMs: WATCH_RESTART_CAP_MS })
+    while (!signal.aborted) {
+      try {
+        const source = this.deps.api.watchSandboxes({
+          signal,
+          clock: this.clock,
+          metrics: this.metrics,
+          log: this.deps.log
+        })
+        for await (const event of source) {
+          backoff.reset()
+          if (event.kind === 'synced') this.onSandboxesSynced(event.items)
+          else if (event.kind === 'deleted') this.onSandboxGone(event.object)
+          else this.onSandboxObserved(event.object)
+        }
+      } catch (err) {
+        if (signal.aborted) return
+        this.deps.log.warn(`cluster: sandbox watch failed (${(err as Error).message})`)
+      }
+      if (signal.aborted) return
+      await this.pause(backoff.next(), signal)
     }
   }
 
+  /** A snapshot decides the whole drain set: a watch gap can drop a request or its removal, so
+   *  what the list says wins over the events we happened to see. */
+  private onSandboxesSynced(items: Sandbox[]): void {
+    const seen = new Set<string>()
+    for (const sandbox of items) {
+      const name = sandbox.metadata?.name
+      if (name) seen.add(name)
+      this.onSandboxObserved(sandbox)
+    }
+    for (const name of [...this.draining.keys()]) if (!seen.has(name)) this.clearDrain(name)
+  }
+
+  /**
+   * Observe a Sandbox's drain annotation. While it is present the daemon must not wake the
+   * instance: the rollout is waiting for it to stay down long enough to change its image,
+   * and a single arriving message would otherwise revive the old one. An instance with no work
+   * left on it is suspended right here — that suspension is what lets the rollout proceed.
+   */
+  onSandboxObserved(sandbox: Sandbox): void {
+    const name = sandbox.metadata?.name
+    if (!name) return
+    const requested = sandbox.metadata?.annotations?.[DRAIN_REQUESTED_ANNOTATION]
+    if (!requested) {
+      this.clearDrain(name)
+      return
+    }
+    if (this.draining.get(name) !== requested) {
+      this.draining.set(name, requested)
+      this.deps.log.info(`cluster: drain requested for sandbox ${name} (${requested})`)
+    }
+    // Already down — including the object our own suspend just produced — so nothing to quiesce.
+    if ((sandbox.spec?.operatingMode ?? 'Running') === 'Suspended') return
+    void this.quiesceIfIdle(name)
+  }
+
+  /** A Sandbox that is gone takes its drain request with it; nothing may be written to it again. */
+  private onSandboxGone(sandbox: Sandbox): void {
+    const name = sandbox.metadata?.name
+    if (!name) return
+    this.forgetSandbox(name)
+  }
+
+  /** Whether this agent's bound Sandbox is holding a drain request. */
   isDraining(agentId: string): boolean {
-    return this.draining.has(agentId)
+    const launch = this.launches.get(agentId)
+    return launch !== undefined && this.draining.has(launch.sandboxName)
+  }
+
+  private clearDrain(name: string): void {
+    if (this.draining.delete(name)) {
+      this.deps.log.info(`cluster: drain request cleared for sandbox ${name} — waking normally again`)
+    }
+  }
+
+  private forgetSandbox(name: string): void {
+    this.clearDrain(name)
+    this.busy.delete(name)
+    this.modeQueue.delete(name)
+  }
+
+  /**
+   * Suspend a draining Sandbox once nothing this daemon started is still running on it.
+   *
+   * Suspension is what lets the rollout swap the image, and it is never forced: a live turn keeps
+   * its instance up until the work ends, and an instance that never goes quiet is the rollout's
+   * own deadline to give up on, not ours to kill.
+   */
+  private async quiesceIfIdle(sandboxName: string): Promise<void> {
+    if (!this.draining.has(sandboxName) || (this.busy.get(sandboxName) ?? 0) > 0) return
+    try {
+      await this.queueMode(sandboxName, 'Suspended')
+    } catch (err) {
+      // applyMode already spent its bounded re-read/re-decide budget, so this is a drain that did
+      // not land — say so and let the rollout's deadline report the instance failed.
+      this.metrics.drainTimeout()
+      this.deps.log.warn(
+        `cluster: sandbox ${sandboxName} did not suspend for its drain request — ${(err as Error).message}`
+      )
+    }
+  }
+
+  /** Count work on a Sandbox, so a drain request waits for it instead of pulling the pod out. */
+  private retain(sandboxName: string): void {
+    this.busy.set(sandboxName, (this.busy.get(sandboxName) ?? 0) + 1)
+  }
+
+  private release(sandboxName: string): void {
+    const left = (this.busy.get(sandboxName) ?? 0) - 1
+    if (left > 0) {
+      this.busy.set(sandboxName, left)
+      return
+    }
+    this.busy.delete(sandboxName)
+    // The last work on it just ended, which is when a pending drain gets its suspend.
+    void this.quiesceIfIdle(sandboxName)
+  }
+
+  /** Abortable delay on the driver's clock, so shutdown does not wait out a watch restart. */
+  private pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const onAbort = (): void => {
+        this.clock.clearTimeout(handle)
+        resolve()
+      }
+      const handle = this.clock.setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
   }
 
   /** Forget an agent and delete its claim; the volume goes with it, which is the intent. */
   async removeAgent(agentId: string): Promise<void> {
+    const launch = this.launches.get(agentId)
     this.launches.delete(agentId)
-    this.draining.delete(agentId)
+    if (launch) this.forgetSandbox(launch.sandboxName)
     this.workspaceRoots.delete(agentId)
     await this.deps.api.deleteClaim(this.claimName(agentId))
   }
@@ -349,13 +512,30 @@ export class K8sDriver implements SpawnDriver {
     timer?: LaunchTimer,
     grants: ShimCapability[] = RUNTIME_GRANTS
   ): Promise<ShimConnection> {
-    if (this.draining.has(agentId)) {
-      throw new Error(`agent ${agentId} is draining for an image rollout — retry once it clears`)
-    }
     const launch = await this.ensureSandbox(agentId, timer)
+    // Checked against the SANDBOX, and only once it is known: an agent this daemon has not bound
+    // yet cannot be matched to a drain request any earlier. Held across the bind so a request
+    // arriving mid-flight waits for it rather than suspending the pod we are waiting on.
+    this.refuseWhenDraining(agentId, launch.sandboxName)
+    this.retain(launch.sandboxName)
+    try {
+      return await this.bindChannel(agentId, launch, timer, grants)
+    } finally {
+      this.release(launch.sandboxName)
+    }
+  }
+
+  private async bindChannel(
+    agentId: string,
+    launch: Launch,
+    timer: LaunchTimer | undefined,
+    grants: ShimCapability[]
+  ): Promise<ShimConnection> {
     // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
-    // something asks for Running.
-    const modeBeforeWake = await this.wake(agentId)
+    // something asks for Running. Deliberately not `wake()`: this bind already passed the drain
+    // gate and holds the Sandbox, so a request landing mid-flight waits for the work instead of
+    // stranding it against a pod nothing will resume.
+    const modeBeforeWake = await this.setMode(agentId, 'Running')
     // A launch this daemon already has cached returns from ensureSandbox before any sandbox
     // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
     // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
@@ -439,14 +619,15 @@ export class K8sDriver implements SpawnDriver {
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
     const agentId = request.env.AC_AGENT_ID
     if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
-    if (this.draining.has(agentId)) {
-      // Launching now would wait out the readiness timeout against a sandbox we are
-      // deliberately holding down. Say so instead of timing out.
-      this.metrics.launch('warm', 'draining', 0)
-      throw new Error(`agent ${agentId} is draining for an image rollout — retry once it clears`)
-    }
     const timer = new LaunchTimer(this.metrics, () => this.clock.now())
+    // The Sandbox this launch holds, from before the bind until the runtime exits. Released on
+    // every failure path too, or one failed launch would hold a drain open forever.
+    let held: string | undefined
     try {
+      const bound = await this.ensureSandbox(agentId, timer)
+      this.refuseWhenDraining(agentId, bound.sandboxName)
+      this.retain(bound.sandboxName)
+      held = bound.sandboxName
       await this.ensureBoundChannel(agentId, timer)
       this.metrics.channel('bound')
       const session = this.sessions.get(agentId)
@@ -467,15 +648,29 @@ export class K8sDriver implements SpawnDriver {
           timer.finish(outcome)
         }
       })
+      // The runtime's exit is what makes the Sandbox idle, so it is where a pending drain lands.
+      const sandboxName = held
+      held = undefined
+      runtime.onExit(() => this.release(sandboxName))
       return runtime
     } catch (err) {
+      if (held) this.release(held)
       // Timeouts are the interesting failure — they are what a missed target looks like — so they
       // are distinguished from an outright error. By TYPE: all three launch deadlines (claim bind,
       // pod readiness, channel bind) throw LaunchTimeoutError, and the message regex this replaced
-      // silently stopped covering the channel wait the moment its wording changed.
-      timer.finish(err instanceof LaunchTimeoutError ? 'timeout' : 'error')
+      // silently stopped covering the channel wait the moment its wording changed. A held-for-
+      // rollout refusal is neither: pooling it with errors would make a rollout look like an outage.
+      timer.finish(
+        err instanceof SandboxDrainingError ? 'draining' : err instanceof LaunchTimeoutError ? 'timeout' : 'error'
+      )
       throw err
     }
+  }
+
+  private refuseWhenDraining(agentId: string, sandboxName: string): void {
+    // Launching now would wait out the readiness timeout against a sandbox we are deliberately
+    // holding down. Say so instead of timing out.
+    if (this.draining.has(sandboxName)) throw new SandboxDrainingError(agentId)
   }
 
   /** Re-attach a renewed or replacement connection to the launch it belongs to. */

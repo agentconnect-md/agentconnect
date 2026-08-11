@@ -221,6 +221,11 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // in between would hit an uninitialized binding.
   await listener.start(settings.shimPort, settings.shimHost ?? '0.0.0.0')
 
+  // Follows this namespace's Sandboxes for the rollout's drain requests. Part of starting the
+  // plane rather than of the first launch: an instance whose agent is idle is exactly the one a
+  // rollout is waiting on, and nothing else would ever look at it.
+  driver.startSandboxWatch()
+
   // A renewal re-dials immediately (the client resets its backoff for a planned rebind), so a
   // replacement that has not arrived well inside the request deadline is a pod that is gone.
   const REBIND_GRACE_MS = 20_000
@@ -277,6 +282,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     stop: async () => {
+      driver.stopSandboxWatch()
       for (const timer of lossTimers.values()) clearTimeout(timer)
       lossTimers.clear()
       for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, AC_LABEL_AGENT } from '../src/k8s/driver.js'
 import { OperatingModeRejectedError } from '../src/k8s/sandbox-api.js'
-import { K8sApiError } from '@agentconnect.md/k8s-client'
+import { K8sApiError, type ResourceEvent } from '@agentconnect.md/k8s-client'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import type { ShimConnection } from '../src/shim/listener.js'
@@ -53,6 +53,36 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended' } = 
     reviewToken: vi.fn()
   }
   return { api, state }
+}
+
+/** The Sandbox as a watch reports it, optionally carrying a rollout's drain request. */
+function observed(mode: 'Running' | 'Suspended', requested?: string): Sandbox {
+  return {
+    metadata: {
+      name: 'sb-1',
+      uid: 'sandbox-uid-1',
+      ...(requested ? { annotations: { [DRAIN_REQUESTED_ANNOTATION]: requested } } : {})
+    },
+    spec: { operatingMode: mode }
+  }
+}
+
+/** A watch a test drives by hand, so events land in a decided order rather than a raced one. */
+function watchSource() {
+  const queue: ResourceEvent<Sandbox>[] = []
+  let wake: (() => void) | undefined
+  return {
+    push(event: ResourceEvent<Sandbox>) {
+      queue.push(event)
+      wake?.()
+    },
+    async *stream(): AsyncGenerator<ResourceEvent<Sandbox>> {
+      for (;;) {
+        while (queue.length > 0) yield queue.shift()!
+        await new Promise<void>((resolve) => (wake = resolve))
+      }
+    }
+  }
 }
 
 /** Enough of a bound channel for `launch()` to attach a session to. */
@@ -193,17 +223,59 @@ describe('cluster spawn driver', () => {
     const { api, state } = fakeApi({ mode: 'Suspended' })
     const { instance } = driver(api)
     await instance.ensureSandbox('agent-a')
-    instance.onSandboxObserved('agent-a', { [DRAIN_REQUESTED_ANNOTATION]: 'rollout-7/image:v2' })
+    instance.onSandboxObserved(observed('Suspended', 'rollout-7/image:v2'))
     expect(instance.isDraining('agent-a')).toBe(true)
     await instance.wake('agent-a')
     // One arriving message must not revive the image the rollout is replacing; the message
     // queues instead.
     expect(state.modeWrites).toEqual([])
 
-    instance.onSandboxObserved('agent-a', {})
+    instance.onSandboxObserved(observed('Suspended'))
     expect(instance.isDraining('agent-a')).toBe(false)
     await instance.wake('agent-a')
     expect(state.modeWrites).toEqual([{ desired: 'Running', observed: 'Suspended' }])
+  })
+
+  it('suspends an idle sandbox as soon as a drain is requested, launch or no launch', async () => {
+    // Nothing bound it in this process — the daemon restarted, or the agent has been quiet — and
+    // that instance is exactly the one a rollout is waiting on. Suspension is what lets it swap
+    // the image, so it happens on the observation itself rather than on the next launch.
+    const { api, state } = fakeApi({ mode: 'Running' })
+    const { instance } = driver(api)
+    instance.onSandboxObserved(observed('Running', 'rollout-7/image:v2'))
+    await vi.waitFor(() => expect(state.modeWrites).toEqual([{ desired: 'Suspended', observed: 'Running' }]))
+  })
+
+  it('waits for the work on a draining sandbox to end before suspending it', async () => {
+    const { api, state } = fakeApi({ mode: 'Running' })
+    const { instance } = driver(api)
+    await instance.launch(launchRequest)
+    instance.onSandboxObserved(observed('Running', 'rollout-7/image:v2'))
+    await Promise.resolve()
+    // A live runtime keeps its pod: the rollout waits for the turn rather than the daemon
+    // killing it, and gives up on its own deadline if it never goes quiet.
+    expect(state.modeWrites).toEqual([])
+
+    // The runtime is gone, so the sandbox is idle — which is when the pending drain lands.
+    instance.onChannelLost('agent-a', 'shim channel gone')
+    await vi.waitFor(() => expect(state.modeWrites).toEqual([{ desired: 'Suspended', observed: 'Running' }]))
+  })
+
+  it('takes drain requests off the watch and converges on each snapshot', async () => {
+    const { api } = fakeApi({ mode: 'Running' })
+    const source = watchSource()
+    api.watchSandboxes = vi.fn(() => source.stream()) as never
+    const { instance } = driver(api)
+    await instance.ensureSandbox('agent-a')
+    instance.startSandboxWatch()
+    source.push({ kind: 'modified', object: observed('Running', 'rollout-7/image:v2') })
+    await vi.waitFor(() => expect(instance.isDraining('agent-a')).toBe(true))
+
+    // A snapshot is the whole truth: a watch gap can drop a request's removal, so a sandbox the
+    // re-LIST no longer reports must not stay held down forever.
+    source.push({ kind: 'synced', items: [] })
+    await vi.waitFor(() => expect(instance.isDraining('agent-a')).toBe(false))
+    instance.stopSandboxWatch()
   })
 
   it('orders concurrent wake and suspend decisions so the newer one wins', async () => {
@@ -237,7 +309,7 @@ describe('cluster spawn driver', () => {
     const { api } = fakeApi({ mode: 'Suspended' })
     const { instance } = driver(api)
     await instance.ensureSandbox('agent-a')
-    instance.onSandboxObserved('agent-a', { [DRAIN_REQUESTED_ANNOTATION]: 'rollout-1/img' })
+    instance.onSandboxObserved(observed('Suspended', 'rollout-1/img'))
     // wake() holds the sandbox down deliberately, so launching would block until the readiness
     // deadline elapsed. Failing fast says what is actually happening.
     await expect(instance.launch({ command: 'x', args: [], env: { AC_AGENT_ID: 'agent-a' } })).rejects.toThrow(
