@@ -7,7 +7,8 @@ import type { EnvelopeInputs } from './envelope.js'
 import { SANDBOX_GROUP, getOrNull, groupPath } from './resources.js'
 
 /** How long a Running instance may sit on a drain request before the rollout gives up on it.
- *  A constant, not a knob: the only sane value is "longer than a turn, shorter than a shift". */
+ *  Comfortably past the daemon's own idle host reclaim (15 min by default), which is what makes
+ *  a quiet instance drain at all — an instance still up after twice that is not going quiet. */
 export const DRAIN_TIMEOUT_MS = 30 * 60_000
 
 interface SandboxRead {

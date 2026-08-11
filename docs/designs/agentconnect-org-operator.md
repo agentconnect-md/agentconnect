@@ -94,11 +94,13 @@ onto it without ever killing a live turn, through a two-party handshake:
   ends — immediately when it is idle. The next pass then patches the image as above,
   and the pass after that sweeps both annotations once the instance runs the target.
   The operator never suspends a Running instance itself.
-- An instance still Running `DRAIN_TIMEOUT_MS` (30 minutes, an exported constant
-  rather than a knob) after its request is reported in `status.rollout.failed`. It
-  stays listed and nothing is re-requested for that target: a drain that has not
-  landed in half an hour will not land by being asked again. A new target image is a
-  new `rolloutId`, which starts the handshake over.
+- An instance still Running `DRAIN_TIMEOUT_MS` after its request is reported in
+  `status.rollout.failed`. It stays listed and nothing is re-requested for that
+  target: a drain that has not landed by then will not land by being asked again. A
+  new target image is a new `rolloutId`, which starts the handshake over. The bound
+  is 30 minutes — an exported constant rather than a knob, set comfortably past the
+  daemon's 15-minute idle host reclaim, which is what makes a quiet instance drain
+  in the first place.
 
 The request time lives on the object rather than in operator memory, so a leader
 change does not restart every drain's clock.
