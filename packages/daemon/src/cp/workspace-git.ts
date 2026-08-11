@@ -17,7 +17,6 @@
  * Every read here is bounded: `status` caps its file list, `log` caps commits and
  * their display text, and `diff` caps the bytes git may return (see {@link gitRead}).
  */
-import { execFile } from 'node:child_process'
 import { existsSync, promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { join } from 'node:path'
