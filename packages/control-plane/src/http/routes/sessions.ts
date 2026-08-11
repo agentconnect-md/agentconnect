@@ -23,6 +23,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
+import type { PullRequestView } from '../../github/pull-request-view.service.js'
 import {
   SessionListPageDto,
   SessionFacetsDto,
@@ -32,6 +33,9 @@ import {
   SessionToolBodyChunkDto,
   ErrorDto,
   IdParam,
+  SessionPullRequestDto,
+  SessionPullRequestQueryDto,
+  type SessionPullRequestDtoT,
   SetSessionVisibilityBody,
   SessionVisibilityDto,
   SetSessionExternalAccessBody,
@@ -340,6 +344,32 @@ const SessionHistoryQueryDto = z
   .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
     message: 'cursor and after are mutually exclusive'
   })
+
+/** Service view -> HTTP body. A pure rename plus explicit nulls for the response schema; every
+ *  judgement about what is degraded and why already happened in the service. */
+function toSessionPullRequestDto(view: PullRequestView): SessionPullRequestDtoT {
+  return {
+    repoFullName: view.repoFullName,
+    pullNumber: view.pullNumber,
+    title: view.title,
+    state: view.state,
+    isDraft: view.isDraft,
+    url: view.url,
+    headRef: view.headRef,
+    baseRef: view.baseRef,
+    additions: view.additions,
+    deletions: view.deletions,
+    reviewDecision: view.reviewDecision,
+    checks: view.checks,
+    checksTruncated: view.checksTruncated,
+    reviews: view.reviews,
+    threads: view.threads,
+    unresolvedCount: view.unresolvedCount,
+    threadsTruncated: view.threadsTruncated,
+    degraded: view.degraded,
+    degradedReason: view.degradedReason
+  }
+}
 
 export function sessionRoutes(deps: HttpDeps) {
   return async function sessionRoutesPlugin(app: FastifyInstance): Promise<void> {

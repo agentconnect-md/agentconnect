@@ -19,7 +19,7 @@
  */
 import { GithubApiError, githubGraphql, type FetchLike } from './api.js'
 import type { InstallationTokenService } from './installation-token.service.js'
-import type { Clock } from '../clock.js'
+import type { Clock } from '../domain/clock.js'
 
 /** How long one PR's projection is reused. Long enough that reopening the tab or switching between
  *  sessions on the same PR costs nothing, short enough that a check flipping to green shows up
@@ -206,7 +206,7 @@ export class PullRequestViewService {
    *  in-flight read, so a double press is one request. */
   async view(identity: PullRequestIdentity, force = false): Promise<PullRequestView> {
     const key = `${identity.repoId}#${identity.pullNumber}`
-    const now = this.clock.now().getTime()
+    const now = this.clock.now()
     if (!force) {
       const hit = this.cache.get(key)
       if (hit && now - hit.at < PR_VIEW_TTL_MS) return hit.view
@@ -218,7 +218,7 @@ export class PullRequestViewService {
       .then((view) => {
         // A degraded answer is cached too, and for the same reason a good one is: a rate-limited
         // installation must not be hammered once per panel mount.
-        this.cache.set(key, { at: this.clock.now().getTime(), view })
+        this.cache.set(key, { at: this.clock.now(), view })
         return view
       })
       .finally(() => this.inFlight.delete(key))
