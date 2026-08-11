@@ -100,6 +100,25 @@ jobs:
 
   # Keep the fast, Docker-free suites away from the resource-heavy build group
   # so their short per-test timeouts measure code rather than runner contention.
+  daemon-image:
+    name: Daemon Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # A local tag only: this job proves the image is sound, publication is build.yaml's job.
+      # Built with a version arg so the release-version path is exercised: without it the image
+      # reports the repo's 1.0.0-dev, which the Control Plane would persist as the fleet version.
+      - name: Build the daemon pod image
+        run: docker build -f docker/Dockerfile --target daemon --build-arg DAEMON_VERSION=v9.9.9-ci -t ac-daemon:ci .
+      # Against the BUILT image: non-root, tini as PID 1, git and CA certs present, no ACP
+      # runtime smuggled in, and — the one that matters — `--k8s` refusing to start outside a
+      # pod instead of quietly running agent code on the daemon's own host.
+      - name: Verify the image properties
+        run: node scripts/verify-daemon-image.mjs ac-daemon:ci v9.9.9-ci
+
   runtime-sandbox-image:
     name: Runtime Sandbox Image
     runs-on: ubuntu-latest
