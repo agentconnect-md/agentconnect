@@ -645,6 +645,29 @@ describe('workspace git push preconditions (data, not errors)', () => {
     expect(git(dir, ['ls-remote', '--heads', bare])).not.toContain(head)
   })
 
+  it('refuses a from-scratch workspace that merely SITS INSIDE another repository', async () => {
+    // `--is-inside-work-tree` is true from every descendant of a checkout, so a workspace under an
+    // unrelated ancestor repo would pass a naive preflight — and a commit here would then operate on
+    // that ancestor, including whatever it already had staged outside this workspace.
+    const outer = join(tempRoot(), 'outer')
+    mkdirSync(outer, { recursive: true })
+    git(outer, ['init', '-q', '-b', 'main'])
+    writeFileSync(join(outer, 'outer.txt'), 'theirs\n')
+    git(outer, ['add', 'outer.txt'])
+    const inner = join(outer, 'workspace')
+    mkdirSync(inner, { recursive: true })
+
+    const seam = seamFor(inner)
+    expect(await seam.status('a')).toMatchObject({ isRepo: false })
+    expect(await seam.commit({ agentId: 'a', message: 'feat: not mine to commit' })).toMatchObject({
+      isRepo: false,
+      ok: false,
+      reason: 'not-a-repo'
+    })
+    // The ancestor is untouched: its staged file is STILL staged, which a commit would have cleared.
+    expect(git(outer, ['diff', '--cached', '--name-only']).trim()).toBe('outer.txt')
+  })
+
   it('reports a from-scratch workspace as isRepo:false', async () => {
     const dir = join(tempRoot(), 'scratch')
     mkdirSync(dir, { recursive: true })

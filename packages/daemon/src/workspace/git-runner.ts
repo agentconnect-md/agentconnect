@@ -110,12 +110,22 @@ export class LocalGitRunner implements GitRunner {
   ) {}
 
   withEnv(env: Record<string, string>): GitRunner {
-    // simple-git's own env chaining, so the local path keeps its exact semantics.
-    return new LocalGitRunner(this.git.env(env), this.cwd, env)
+    // The env is STORED, not applied to the handle here. simple-git's `.env()` mutates the instance
+    // and returns it, so two runners derived from one base would share a handle and the last
+    // `withEnv` would silently win — which is exactly what happened when a caller resolved once and
+    // derived both an identity-carrying runner and a config-audit runner from it: the audit's env
+    // replaced the commit identity and the commit landed as the host's OS user. Applying it per
+    // invocation instead also matches the shim, where the environment travels with each request.
+    return new LocalGitRunner(this.git, this.cwd, env)
+  }
+
+  /** The handle with THIS runner's environment applied, immediately before it is used. */
+  private get scoped(): SimpleGit {
+    return Object.keys(this.env).length > 0 ? this.git.env(this.env) : this.git
   }
 
   async raw(args: string[]): Promise<string> {
-    return this.git.raw(args)
+    return this.scoped.raw(args)
   }
 
   readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }> {
@@ -148,11 +158,11 @@ export class LocalGitRunner implements GitRunner {
   }
 
   async clone(repo: string, target: string, options: string[] = []): Promise<void> {
-    await this.git.clone(repo, target, options)
+    await this.scoped.clone(repo, target, options)
   }
 
   async pull(remote: string, branch: string, options: string[] = []): Promise<GitPullSummary> {
-    const result = await this.git.pull(remote, branch, options)
+    const result = await this.scoped.pull(remote, branch, options)
     return {
       files: [...result.files],
       insertions: result.summary.insertions,
@@ -161,7 +171,7 @@ export class LocalGitRunner implements GitRunner {
   }
 
   async status(): Promise<GitStatusSummary> {
-    const summary = await this.git.status()
+    const summary = await this.scoped.status()
     return {
       current: summary.current ?? null,
       tracking: summary.tracking ?? null,
@@ -177,7 +187,7 @@ export class LocalGitRunner implements GitRunner {
   }
 
   async log(options: { maxCount: number }): Promise<GitLogEntry[]> {
-    const result = await this.git.log({
+    const result = await this.scoped.log({
       maxCount: options.maxCount,
       format: { hash: '%H', date: '%cI', subject: '%s' }
     })

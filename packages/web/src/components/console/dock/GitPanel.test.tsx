@@ -79,7 +79,7 @@ vi.mock('@/lib/api', () => {
 })
 
 import { GitPanel, gitTabStatus, splitGitSections, type GitPanelVerdict } from './GitPanel'
-import { fetchWorkspaceGitLog } from '@/lib/api'
+import { commitWorkspace, draftWorkspaceCommitMessage, fetchWorkspaceGitLog } from '@/lib/api'
 import type { WorkspaceGitFileDto, WorkspaceGitLogDto, WorkspaceGitStatusDto } from '@/lib/api'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -588,6 +588,60 @@ describe('GitPanel — staging', () => {
 
     // The in-flight reply describes the tree BEFORE that refresh, so it is dropped rather than painted over a newer read.
     expect(rowPaths('staged')).toEqual(['fresh.ts'])
+  })
+
+  it('keeps a drafted message the reader paid for, even if they switched checkout while it ran', async () => {
+    // The pass costs a model call. If the reader looks at a sibling agent while it is running, the box
+    // is unmounted before the answer arrives, so writing only to component state drops it — and the
+    // reader has paid for nothing. Held promise, switched through the FULL panel, then resolved.
+    let release: (() => void) | undefined
+    vi.mocked(draftWorkspaceCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ ok: true, message: 'fix: the paid answer', detail: null })
+        }) as ReturnType<typeof draftWorkspaceCommitMessage>
+    )
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    await render({ canWrite: true })
+    await click(container?.querySelector<HTMLElement>('[data-commit-draft]') ?? undefined, 'wand')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    expect(container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')?.value).toBe('fix: the paid answer')
+  })
+
+  it('does not hand back a message that has already become a commit', async () => {
+    // The inverse: a commit in flight while the reader switches away. The unmount parks the OLD text,
+    // and the successful clear lands on an unmounted component — so returning would offer to commit
+    // the very message that is already in the history.
+    let release: (() => void) | undefined
+    vi.mocked(commitWorkspace).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ isRepo: true, ok: true, sha: 'abc1234', detail: null, reason: null })
+        }) as ReturnType<typeof commitWorkspace>
+    )
+    wire.git = gitStatus({ clean: false, files: [file('src/a.ts', 'M', ' ')] })
+    await render({ canWrite: true })
+    const box = () => container?.querySelector<HTMLTextAreaElement>('[data-commit-message]')
+    await act(async () => {
+      const node = box()!
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(node, 'feat: already landed')
+      node.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await click(container?.querySelector<HTMLElement>('[data-commit-submit]') ?? undefined, 'commit')
+    await rerender({ canWrite: true, agentId: 'agent-b' })
+    await act(async () => {
+      release?.()
+      await Promise.resolve()
+    })
+
+    await rerender({ canWrite: true, agentId: 'agent-a' })
+    expect(box()?.value ?? '').toBe('')
   })
 
   it('keeps a commit draft across a checkout switch, through the panel that unmounts the box', async () => {

@@ -265,6 +265,34 @@ describe('git runner contract, local and shim-backed', () => {
     expect(payload.env).toMatchObject({ GIT_CONFIG_GLOBAL: globalConfig })
   })
 
+  it('keeps two runners derived from ONE base independent (local: simple-git mutates its handle)', async () => {
+    // Only the local runner can have this bug: simple-git's `.env()` mutates its instance and returns
+    // it, so a `withEnv` that applied the env at derivation made siblings share one handle and the
+    // LAST derivation silently win. Not academic — resolving the runner once per request and deriving
+    // both an identity-carrying runner and a config-audit runner from it made a commit land as the
+    // host's OS user. The shim carries the environment with each request, so it cannot alias.
+    const root = repository()
+    const { local } = runners(root)
+    const shared = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '' }
+    const first = local.withEnv({
+      ...shared,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'ac.who',
+      GIT_CONFIG_VALUE_0: 'first'
+    })
+    const second = local.withEnv({
+      ...shared,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'ac.who',
+      GIT_CONFIG_VALUE_0: 'second'
+    })
+
+    // `second` was derived AFTER `first`; asking `first` must still answer with its OWN environment.
+    expect((await first.raw(['config', '--get', 'ac.who'])).trim()).toBe('first')
+    expect((await second.raw(['config', '--get', 'ac.who'])).trim()).toBe('second')
+    expect((await first.raw(['config', '--get', 'ac.who'])).trim()).toBe('first')
+  })
+
   it('replaces rather than extends a chained environment, as simple-git does', async () => {
     // remote.withEnv(A).withEnv(B) must behave like two .env() calls: B alone. Merging would
     // keep a variable A had and B deliberately dropped — and the omission IS the sanitization.

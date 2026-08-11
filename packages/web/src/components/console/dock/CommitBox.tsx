@@ -116,12 +116,19 @@ export function CommitBox({
     if (running.current || nothingStaged) return
     running.current = true
     setBusy('draft')
+    // The checkout this request is FOR. A completion must never land on whichever scope happens to be current when it returns.
+    const asked = draftScope
     setOutcome(null)
     try {
       const rep = await draftWorkspaceCommitMessage(agentId, scope)
       // `ok:false` is the runtime's own answer — a prose reply, a decline, a budget it ran out of — so its `detail` is what the reader needs, not a generic failure.
-      if (rep.ok && rep.message) setMessage(rep.message)
-      else setOutcome({ ok: false, text: gitWriteFailureText(null, rep.detail) })
+      if (rep.ok && rep.message) {
+        // Written to the durable store for the scope it was ASKED for, not only into state: a reader
+        // who switched checkout while the pass was running has unmounted this box, so a `setMessage`
+        // alone is dropped by React and the paid answer is gone. The store is what they come back to.
+        rememberDraft(asked, rep.message)
+        setMessage(rep.message)
+      } else setOutcome({ ok: false, text: gitWriteFailureText(null, rep.detail) })
     } catch (e) {
       setOutcome({ ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) })
     } finally {
@@ -144,6 +151,8 @@ export function CommitBox({
     if (running.current || nothingStaged || blank) return
     running.current = true
     setBusy(thenPush ? 'push' : 'commit')
+    // The checkout this request is FOR. A completion must never land on whichever scope happens to be current when it returns.
+    const asked = draftScope
     setOutcome(null)
     try {
       const rep = await commitWorkspace(agentId, { message, ...scope })
@@ -151,7 +160,11 @@ export function CommitBox({
         setOutcome(commitOutcome(rep))
         return
       }
-      // The draft is spent the moment it becomes a commit; keeping it would offer to commit the same message twice.
+      // The draft is spent the moment it becomes a commit; keeping it would offer to commit the same
+      // message twice. Cleared in the durable store too, and for the scope the commit was made
+      // against: if the reader switched away while it was in flight, the unmount parked the OLD text
+      // and returning would hand back a message that is already a commit.
+      rememberDraft(asked, '')
       setMessage('')
       onWrote()
       if (!thenPush) {

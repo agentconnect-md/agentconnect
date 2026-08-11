@@ -304,7 +304,8 @@ describe('createWorkspaceGit.log against a real repo', () => {
       log: async () => [],
       readBounded: async (args: string[]) => {
         seen.push(args)
-        return { out: Buffer.from(args[1] === '--is-inside-work-tree' ? 'true\n' : ''), overflow: false }
+        // `--show-prefix` answers EMPTY at the top level, which is what the preflight requires.
+        return { out: Buffer.from(''), overflow: false }
       }
     }
     const nowhere = join(base, 'no-daemon-checkout')
@@ -314,7 +315,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
     try {
       const status = await createWorkspaceGit(() => nowhere).status(AGENT)
       expect(status.isRepo).toBe(true)
-      expect(seen.some((args) => args.includes('--is-inside-work-tree'))).toBe(true)
+      expect(seen.some((args) => args.includes('--show-prefix'))).toBe(true)
     } finally {
       setWorkspaceGitRunnerResolver(undefined)
     }
