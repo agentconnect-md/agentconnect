@@ -1,6 +1,6 @@
 # AgentConnectOrg CRD + Operator
 
-**Status:** Skeleton merged; reconcile bodies are TODO stubs for the implementation milestone.
+**Status:** Envelope, status, deletion, and rollout reconcile logic implemented; gateway policy rendering waits on the gateway spike.
 
 The managed execution plane provisions one _org envelope_ per organization on a
 Kubernetes cluster: a namespace, RBAC, network policies, sandbox templates and
@@ -63,20 +63,21 @@ only if CRD conversion webhooks become necessary.
 
 ## 3. Operator modules (`packages/operator/src/`)
 
-| Module                        | Role                                                                                                                                                                  | State          |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| `index.ts`                    | Bin entry: config → in-cluster client → elector → controller; SIGTERM drains.                                                                                         | done           |
-| `config.ts`                   | zod env, fail-fast: prefix (required), resync interval, lease name, watch timeout.                                                                                    | done           |
-| `crd/types.ts`                | Group/kind/finalizer/annotation/condition constants + zod spec/status schemas.                                                                                        | done           |
-| `crd/api.ts`                  | Typed verbs over the thin client: get/list/own-namespace watch, merge-patch meta (finalizers), `/status` patch.                                                       | done           |
-| `workqueue.ts`                | Per-key serialized, coalescing queue with per-key failure backoff.                                                                                                    | done           |
-| `controller.ts`               | Leader-gated term: CR watch + secondary Deployment/Pod watches (label `agentconnect.md/org`, mapped to the owning CR, filtered to known CRs) + bounded resync ticker. | done           |
-| `reconcile/reconcile.ts`      | Dispatch: deletion path vs ensure-finalizer → envelope → rollout → gateway policies → status.                                                                         | done           |
-| `reconcile/envelope.ts`       | The ordered inventory as named stubs (see §4).                                                                                                                        | **TODO stubs** |
-| `reconcile/status.ts`         | `setCondition` (transition-time handling) done; `buildStatus` stub.                                                                                                   | mixed          |
-| `reconcile/finalizer.ts`      | Deletion order stubs; `removeFinalizer` done.                                                                                                                         | mixed          |
-| `reconcile/rollout.ts`        | Drain-annotation state machine.                                                                                                                                       | **TODO stub**  |
-| `reconcile/gateway-limits.ts` | llmLimits/llmDeny → gateway policy kinds (pinned by the gateway spike).                                                                                               | **TODO stub**  |
+| Module                        | Role                                                                                                                                                                                                                                                                   | State         |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `index.ts`                    | Bin entry: config → in-cluster client → elector → controller; SIGTERM drains.                                                                                                                                                                                          | done          |
+| `config.ts`                   | zod env, fail-fast: prefix + tokenreview ClusterRole (required), master template prefix, resync interval, lease name, watch timeout.                                                                                                                                   | done          |
+| `crd/types.ts`                | Group/kind/finalizer/annotation/condition constants + zod spec/status schemas.                                                                                                                                                                                         | done          |
+| `crd/api.ts`                  | Typed verbs over the thin client: get/list/own-namespace watch, merge-patch meta (finalizers), `/status` patch.                                                                                                                                                        | done          |
+| `workqueue.ts`                | Per-key serialized, coalescing queue with per-key failure backoff.                                                                                                                                                                                                     | done          |
+| `controller.ts`               | Leader-gated term: CR watch + secondary Deployment/Pod watches (label `agentconnect.md/org`, mapped to the owning CR, filtered to known CRs) + bounded resync ticker.                                                                                                  | done          |
+| `reconcile/reconcile.ts`      | Dispatch: deletion path vs ensure-finalizer → envelope → rollout → gateway policies → status.                                                                                                                                                                          | done          |
+| `reconcile/resources.ts`      | Server-side-apply/get/delete primitives, path builders, and the envelope's fixed object names.                                                                                                                                                                         | done          |
+| `reconcile/envelope.ts`       | The ordered inventory implemented over SSA (see §4).                                                                                                                                                                                                                   | done          |
+| `reconcile/status.ts`         | `setCondition`, live workload observation, and the full condition/summary builder.                                                                                                                                                                                     | done          |
+| `reconcile/finalizer.ts`      | Deletion order implemented; only claimed, prefix-owned namespaces are touched.                                                                                                                                                                                         | done          |
+| `reconcile/rollout.ts`        | Conditioned image patch for Suspended instances; Running ones are reported `pending` and converge when they naturally sleep. The drain-requested handshake (producer + daemon consumer) lands together with the daemon milestone; drain timeouts → `failed` also TODO. | partial       |
+| `reconcile/gateway-limits.ts` | llmLimits/llmDeny → gateway policy kinds (pinned by the gateway spike).                                                                                                                                                                                                | **TODO stub** |
 
 Shared plumbing lives in `@agentconnect.md/k8s-client` (also used by the
 daemon's K8sDriver): in-cluster config with per-request token re-read, bare
@@ -86,9 +87,18 @@ live state (no informer cache, hence no cache-consistency window), and drift
 in envelope objects converges via the bounded full resync (default 10 min)
 plus the Deployment/Pod secondary watches that keep status conditions prompt.
 
-## 4. Envelope inventory (what each stub owes its implementer)
+## 4. Envelope inventory
 
-Order is policy-before-workload within one reconcile pass:
+Everything is stamped by server-side apply (field manager
+`agentconnect-operator`, force) — one PATCH per object per pass, no read-back
+diffing. Object names are fixed per-namespace constants (`ac-daemon`,
+`ac-daemon-shim`, `ac-daemon-state`, `ac-runtime-<tier>`, `ac-quota`,
+`ac-limits`); the namespace is per-org, so they never collide. Master
+SandboxTemplates live in the control namespace as
+`<AC_MASTER_TEMPLATE_PREFIX><tier>` (default `ac-runtime-<tier>`); daemon
+resource tiers are a built-in small/medium/large table, unknown names falling
+back to `small` with a warning. Order is policy-before-workload within one
+reconcile pass:
 
 1. `ensureNamespace` — create-or-adopt `targetNamespace` via claim label;
    label mismatch ⇒ `Degraded`, never adopt.

@@ -60,7 +60,10 @@ function build(route: FakeRoute, config: ReturnType<typeof loadConfig>, clock: F
   })()
 }
 
-const config = loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-' })
+const config = loadConfig({
+  AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-',
+  AC_TOKENREVIEW_CLUSTERROLE: 'test-ac-tokenreview'
+})
 
 describe('Controller', () => {
   it('reconciles nothing before leadership starts', async () => {
