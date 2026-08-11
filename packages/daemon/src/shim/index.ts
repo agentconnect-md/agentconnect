@@ -6,6 +6,7 @@ import { ShimClient, type ShimTransport } from './client.js'
 import { createExecHandler } from './exec-handler.js'
 import { resolveCommandInPath } from './path-resolve.js'
 import { DEFAULT_SHIM_WORKSPACE_ROOT, SHIM_ENDPOINT_ENV, SHIM_WORKSPACE_ROOT_ENV } from './protocol.js'
+import { TunnelHost } from './tunnel-host.js'
 
 const log = {
   info: (message: string) => console.error(`[shim] ${message}`),
@@ -19,6 +20,10 @@ async function main(): Promise<number> {
     return 2
   }
   const workspaceRoot = process.env[SHIM_WORKSPACE_ROOT_ENV] ?? DEFAULT_SHIM_WORKSPACE_ROOT
+  const exec = createExecHandler({ workspaceRoot, log })
+  // Its listeners belong to the POD, not to a channel, so it is built once here rather than per
+  // binding — a socket torn down on each credential renewal would break any client mid-request.
+  const tunnels = new TunnelHost({ emit: (streamId, event) => client.emit(streamId, event), log })
   const client = new ShimClient({
     endpoint,
     dial: (url, opts) =>
@@ -29,8 +34,10 @@ async function main(): Promise<number> {
     // Image-accepted provider config (AC_CLAUDE_*/AC_CODEX_* → the runtime's BASE_URL/API_KEY).
     podEnv: process.env,
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
-    // trusting that the daemon sent only permitted subcommands.
-    handle: createExecHandler({ workspaceRoot, log }),
+    // trusting that the daemon sent only permitted subcommands; tunnels are served separately
+    // because they own long-lived sockets rather than answering one request.
+    handle: (capability, payload, abort) =>
+      capability === 'tunnel' ? tunnels.handle(payload) : exec(capability, payload, abort),
     // Reported in the hello: daemon-built pod paths (ACP cwd, git cwd) are anchored on it.
     workspaceRoot,
     log
@@ -39,6 +46,7 @@ async function main(): Promise<number> {
   // container's exit, since every credential we hold is re-obtained on the next bind.
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
+      tunnels.close()
       client.stop()
       process.exit(0)
     })

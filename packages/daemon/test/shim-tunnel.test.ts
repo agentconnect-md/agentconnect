@@ -1,0 +1,325 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { createConnection, createServer, Socket, type Server } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Backoff, ClientTransport, FakeClock } from '@agentconnect.md/connection'
+import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
+import { ShimClient, type ShimTransport } from '../src/shim/client.js'
+import { TunnelHost } from '../src/shim/tunnel-host.js'
+import { TunnelProxy } from '../src/shim/tunnel-proxy.js'
+import { K8sApiError } from '../src/k8s/http.js'
+import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
+import type { ShimEvent } from '../src/shim/protocol.js'
+import type { TunnelName } from '../src/shim/tunnel.js'
+
+/**
+ * The credential tunnel, end to end over real sockets.
+ *
+ * It is tested here rather than as two unit suites because the whole feature IS the join: the
+ * daemon's git-credential helper socket exists on the daemon's filesystem, the git that needs it
+ * runs in another pod, and every part of that was already present — the capability, the grant, the
+ * frames — with nothing connecting them. A test of either half in isolation passes on a channel
+ * that carries no byte.
+ *
+ * The direction is what the assertions are really about: a tunnel connection is opened by a
+ * process INSIDE the pod, while shim requests only flow daemon → shim, so the pod has to announce
+ * it and the daemon has to answer by dialling its own end.
+ */
+
+const planes: K8sRuntimePlane[] = []
+const clients: ShimClient[] = []
+const servers: Server[] = []
+const hosts: TunnelHost[] = []
+const sockets: Socket[] = []
+const dirs: string[] = []
+
+afterEach(async () => {
+  for (const socket of sockets.splice(0)) socket.destroy()
+  for (const host of hosts.splice(0)) host.close()
+  for (const client of clients.splice(0)) client.stop()
+  for (const plane of planes.splice(0)) await plane.stop()
+  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))))
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+function scratchDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'ac-tunnel-'))
+  dirs.push(dir)
+  return dir
+}
+
+/** A Sandbox that binds, is Ready, and names its pod. */
+function fakeApi() {
+  const sandbox = {
+    metadata: { name: 'sb-1', uid: 'sandbox-uid-1', annotations: { 'agents.x-k8s.io/pod-name': 'pool-pod-9' } },
+    spec: { operatingMode: 'Running' as const },
+    status: { conditions: [{ type: 'Ready', status: 'True' }] }
+  } satisfies Sandbox
+  let claim: SandboxClaim | undefined
+  return {
+    ensureClaim: async (input: SandboxClaim & { metadata: { name: string } }) => {
+      const created = claim === undefined
+      claim = { ...input, status: { sandbox: { name: 'sb-1' } } }
+      return { claim, created }
+    },
+    getClaim: async () => {
+      if (!claim) throw new K8sApiError(404, 'NotFound', 'no claim')
+      return claim
+    },
+    deleteClaim: async () => undefined,
+    getSandbox: async () => sandbox,
+    setOperatingMode: async () => sandbox,
+    watchClaims: vi.fn(),
+    watchSandboxes: vi.fn(),
+    reviewToken: async () => ({ authenticated: true, podName: 'pool-pod-9', podUid: 'pod-uid-1' })
+  }
+}
+
+/** The daemon's own server behind the tunnel — gitcred.sock's stand-in. */
+function daemonSideServer(onData: (chunk: Buffer, socket: Socket) => void): string {
+  const dir = scratchDir()
+  const path = join(dir, 'gitcred.sock')
+  const server = createServer((socket) => {
+    socket.on('data', (chunk: Buffer) => onData(chunk, socket))
+    socket.on('error', () => undefined)
+  })
+  servers.push(server)
+  server.listen(path)
+  return path
+}
+
+interface Cluster {
+  plane: K8sRuntimePlane
+  /** Where the pod serves the tunnel — the in-image path, redirected into a temp dir. */
+  podSocketPath: string
+  warnings: string[]
+}
+
+/**
+ * A plane, a real shim client with a real {@link TunnelHost}, and a bound channel.
+ *
+ * The client's `handle` mirrors `src/shim/index.ts`: tunnels are served by the host, everything
+ * else would go to the exec handler. The in-pod path is redirected because the image's
+ * `/run/agentconnect` is not writable in a test process.
+ */
+async function clusterWithTunnel(
+  options: {
+    daemonSocketPath?: string
+    tunnels?: TunnelName[]
+    maxStreams?: number
+  } = {}
+): Promise<Cluster> {
+  const warnings: string[] = []
+  const podSocketPath = join(scratchDir(), 'pod-gitcred.sock')
+  const plane = await startK8sRuntimePlane({
+    orgId: 'org-1',
+    warmPoolName: 'pool',
+    shimPort: 0,
+    shimHost: '127.0.0.1',
+    readyTimeoutMs: 15_000,
+    api: fakeApi() as never,
+    tunnelsFor: () => options.tunnels ?? ['gitcred'],
+    tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? options.daemonSocketPath : undefined),
+    log: { info: () => {}, warn: (message) => warnings.push(message), debug: () => {} }
+  })
+  planes.push(plane)
+  const port = plane.listener.listeningPort()!
+
+  const ensuring = plane.ensureChannel('agent-a')
+  const host = new TunnelHost({
+    emit: (streamId, event) => client.emit(streamId, event),
+    socketPathFor: () => podSocketPath,
+    ...(options.maxStreams === undefined ? {} : { maxStreams: options.maxStreams })
+  })
+  hosts.push(host)
+  const client = new ShimClient({
+    endpoint: `ws://127.0.0.1:${port}`,
+    dial: (url, opts) =>
+      ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
+    readToken: () => 'projected-token',
+    handle: (capability, payload) => {
+      if (capability === 'tunnel') return host.handle(payload)
+      throw new Error(`unexpected capability ${capability}`)
+    },
+    clock: new FakeClock(),
+    backoff: new Backoff({ jitter: () => 0 }),
+    log: { info: () => {}, warn: () => {} }
+  })
+  clients.push(client)
+  void client.start()
+  await ensuring
+  return { plane, podSocketPath, warnings }
+}
+
+/**
+ * A proxy wired to a stub channel, for the branches only a lying shim can reach.
+ *
+ * The dial is stubbed to an unconnected socket rather than a real one: what these assert is which
+ * announcements produce a dial at all, and a socket that fails asynchronously would race that.
+ */
+function proxyUnderTest(): {
+  instance: TunnelProxy
+  dialled: string[]
+  sent: unknown[]
+  announce: (event: ShimEvent['event'], streamId: string) => void
+} {
+  const dialled: string[] = []
+  const sent: unknown[] = []
+  const listeners: Array<(event: ShimEvent) => void> = []
+  const instance = new TunnelProxy({
+    session: {
+      agentId: 'agent-a',
+      request: async (_capability, payload) => {
+        sent.push(payload)
+        return { socketPath: '/run/agentconnect/gitcred.sock' }
+      },
+      onEvent: (listener) => listeners.push(listener),
+      offEvent: () => undefined,
+      onLost: () => undefined
+    },
+    socketPathFor: (tunnel) => (tunnel === 'gitcred' ? '/daemon/gitcred.sock' : undefined),
+    dial: (path) => {
+      dialled.push(path)
+      const socket = new Socket()
+      sockets.push(socket)
+      return socket
+    },
+    log: { info: () => {}, warn: () => {} }
+  })
+  return {
+    instance,
+    dialled,
+    sent,
+    announce: (event, streamId) => {
+      for (const listener of listeners) listener({ type: 'shim/event', streamId, event })
+    }
+  }
+}
+
+/** An in-pod client, as the credential helper will be: connect, write, read the reply. */
+function inPodClient(path: string): { socket: Socket; received: () => string; ended: () => boolean } {
+  const socket = createConnection(path)
+  sockets.push(socket)
+  let text = ''
+  let ended = false
+  socket.on('data', (chunk: Buffer) => (text += chunk.toString('utf8')))
+  socket.on('close', () => (ended = true))
+  socket.on('error', () => (ended = true))
+  return { socket, received: () => text, ended: () => ended }
+}
+
+describe('the shim tunnel', () => {
+  it('carries an in-pod client through to the daemon-side socket and back', async () => {
+    // The failure this exists to prevent: the daemon's helper socket is unreachable from the pod,
+    // so a private-repo clone asks a credential helper that answers on a machine it is not on.
+    const asked: string[] = []
+    const daemonSocketPath = daemonSideServer((chunk, socket) => {
+      asked.push(chunk.toString('utf8'))
+      socket.write('{"ok":true,"password":"token"}\n')
+    })
+    const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath })
+
+    const helper = inPodClient(podSocketPath)
+    helper.socket.write('{"op":"get","agentId":"agent-a"}\n')
+
+    await vi.waitFor(() => expect(helper.received()).toContain('"password":"token"'), { timeout: 10_000 })
+    // And the daemon's server saw the request verbatim: nothing on the path interprets the bytes.
+    expect(asked).toEqual(['{"op":"get","agentId":"agent-a"}\n'])
+  }, 30_000)
+
+  it('ends the in-pod connection when the daemon-side server hangs up', async () => {
+    // A helper whose socket neither answers nor closes hangs the git operation that spawned it,
+    // and git has no deadline of its own — so the hang-up has to travel.
+    const daemonSocketPath = daemonSideServer((_chunk, socket) => socket.end())
+    const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath })
+
+    const helper = inPodClient(podSocketPath)
+    helper.socket.write('ask\n')
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
+  }, 30_000)
+
+  it('splits a reply larger than one frame instead of dropping it', async () => {
+    // 32 KiB per chunk: a single frame is capped at 256 KiB and base64 expands by a third, so a
+    // large write has to arrive in pieces — and it has to arrive INTACT and in order.
+    const payload = 'x'.repeat(200 * 1024)
+    const daemonSocketPath = daemonSideServer((_chunk, socket) => socket.write(payload))
+    const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath })
+
+    const helper = inPodClient(podSocketPath)
+    helper.socket.write('ask\n')
+    await vi.waitFor(() => expect(helper.received().length).toBe(payload.length), { timeout: 15_000 })
+    expect(helper.received()).toBe(payload)
+  }, 40_000)
+
+  it('opens no tunnel for an agent the daemon named none for', async () => {
+    // The policy is the daemon's: an agent with no GitHub-App workspace has no business with a
+    // credential socket, and a listener it never asked for is one more thing in the pod to reach.
+    const daemonSocketPath = daemonSideServer(() => undefined)
+    const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath, tunnels: [] })
+
+    const helper = inPodClient(podSocketPath)
+    // Nothing is listening in the pod, so the connection fails rather than reaching the daemon.
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
+  }, 30_000)
+
+  it('refuses to serve a tunnel this daemon has no socket for', async () => {
+    // Better than dialling something plausible: an unserved tunnel names a socket the daemon does
+    // not own, and guessing one would be a path traversal with extra steps.
+    const { podSocketPath, warnings } = await clusterWithTunnel({ daemonSocketPath: undefined })
+    const helper = inPodClient(podSocketPath)
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
+    expect(warnings.join('\n')).toMatch(/no gitcred socket/)
+  }, 30_000)
+
+  it('refuses a connect the daemon never authorized, whoever minted the stream id', async () => {
+    // The half-trusted side mints tunnel stream ids and announces them, so this side re-checks
+    // every bound the shim already applies: an unauthorized tunnel would dial a daemon socket on
+    // the sandbox's say-so, and a re-announced id would strand the socket indexed under it.
+    const proxy = proxyUnderTest()
+
+    const foreign = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'mcp' }, foreign)
+    expect(proxy.dialled).toEqual([])
+    expect(proxy.sent).toEqual([expect.objectContaining({ op: 'close', streamId: foreign })])
+
+    await proxy.instance.ensure('gitcred')
+    const streamId = randomUUID()
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    expect(proxy.dialled).toEqual(['/daemon/gitcred.sock'])
+    expect(proxy.instance.streamCount()).toBe(1)
+
+    // The same id again: refused, and the stream that owns it survives.
+    proxy.announce({ kind: 'connect', tunnel: 'gitcred' }, streamId)
+    expect(proxy.dialled).toEqual(['/daemon/gitcred.sock'])
+    expect(proxy.instance.streamCount()).toBe(1)
+    expect(proxy.sent.at(-1)).toEqual(expect.objectContaining({ op: 'close', streamId }))
+  })
+
+  it('refuses tunnel data for a stream the pod never opened', async () => {
+    // The mirror of the above, on the other side: the daemon is the trusted half here, and a
+    // stream id it made up must not become a write into whatever socket happens to be indexed.
+    const host = new TunnelHost({ emit: () => undefined, socketPathFor: () => join(scratchDir(), 'x.sock') })
+    hosts.push(host)
+    await expect(
+      host.handle({ op: 'data', streamId: randomUUID(), chunk: Buffer.from('x').toString('base64') })
+    ).rejects.toThrow(/unknown tunnel stream/)
+    // A close for one, by contrast, is ordinary: the connection may have ended as it arrived.
+    await expect(host.handle({ op: 'close', streamId: randomUUID() })).resolves.toBeNull()
+  })
+
+  it('refuses connections past the stream cap rather than minting unbounded daemon sockets', async () => {
+    // The runtime is the untrusted party and it is the one opening these. A connect loop that
+    // never reads would otherwise pin one daemon-side socket per iteration.
+    const daemonSocketPath = daemonSideServer(() => undefined)
+    const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath, maxStreams: 2 })
+
+    const held = [inPodClient(podSocketPath), inPodClient(podSocketPath)]
+    await vi.waitFor(() => expect(held.every((client) => !client.ended())).toBe(true), { timeout: 5_000 })
+    const refused = inPodClient(podSocketPath)
+    await vi.waitFor(() => expect(refused.ended()).toBe(true), { timeout: 10_000 })
+    // The two that were already open are untouched: the cap sheds new work, not live work.
+    expect(held.every((client) => !client.ended())).toBe(true)
+  }, 30_000)
+})

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TunnelNameSchema } from './tunnel.js'
 
 /** WS subprotocol and path the shim dials the daemon on. */
 export const SHIM_SUBPROTOCOL = 'agentconnect.shim.v1'
@@ -115,9 +116,12 @@ export const ShimResponseSchema = z.object({
  *  runtime emits stdout continuously and exits once, and neither fits one-shot correlation. */
 export const ShimEventSchema = z.object({
   type: z.literal('shim/event'),
-  /** The request id that opened the stream. */
+  /** The stream this belongs to: the request id that opened it, or — for a tunnel, whose
+   *  connections are opened by a process inside the pod — an id the shim mints and announces. */
   streamId: z.string().uuid(),
   event: z.discriminatedUnion('kind', [
+    /** A process in the sandbox connected to a tunnel's socket; the daemon dials its own end. */
+    z.object({ kind: z.literal('connect'), tunnel: TunnelNameSchema }),
     z.object({ kind: z.literal('chunk'), data: z.string() }),
     z.object({
       kind: z.literal('exit'),

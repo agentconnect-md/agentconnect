@@ -57,6 +57,15 @@ export interface K8sDriverDeps {
   awaitChannel: (agentId: string, generation: number, timeoutMs: number) => Promise<ShimConnection>
   /** Publishes the spawn record the shim handshake resolves a pod against. */
   publishSpawnRecord: (record: SpawnRecord) => void
+  /**
+   * Prepare a freshly bound channel before anything runs on it — today, opening the unix-socket
+   * tunnels the agent's runtime expects to find in its pod.
+   *
+   * Awaited inside the bind, deliberately: the workspace clone and the runtime both reach for
+   * those sockets, so a launch that returned first would race its own credential channel. A
+   * failure here does NOT fail the launch; the hook reports it and the affected feature degrades.
+   */
+  onChannelReady?: (agentId: string, session: ShimSession) => Promise<void>
   clock?: Clock
   log: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
   /** How long to wait for a pod to become Ready and its shim to bind. */
@@ -394,6 +403,15 @@ export class K8sDriver implements SpawnDriver {
       })
       session.attach(connection)
       this.sessions.set(agentId, session)
+    }
+    // After the session exists and before the caller can use the channel. Reported rather than
+    // raised: a sandbox without its credential tunnel still runs, and refusing the launch would
+    // turn one degraded feature into no agent at all.
+    const ready = this.sessions.get(agentId)
+    if (ready && this.deps.onChannelReady) {
+      await this.deps.onChannelReady(agentId, ready).catch((err: unknown) => {
+        this.deps.log.warn(`cluster: agent ${agentId} channel prepared with errors: ${(err as Error).message}`)
+      })
     }
     return connection
   }

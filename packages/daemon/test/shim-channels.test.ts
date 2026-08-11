@@ -190,27 +190,25 @@ describe('shim channel', () => {
 
 describe('tunnels', () => {
   it('names a closed set of sockets rather than allowing any path', () => {
-    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['gh-token', 'gitcred', 'mcp'])
+    // One entry per server the daemon actually runs. `gh`'s token helper shares gitcred.sock, so a
+    // third name would have been a second in-pod path onto the same socket.
+    expect(Object.keys(SANDBOX_TUNNEL_PATHS).sort()).toEqual(['gitcred', 'mcp'])
     // A generic "tunnel any socket" grant would let a compromised runtime reach whatever
     // the daemon happens to be listening on.
-    expect(
-      TunnelPayloadSchema.safeParse({
-        op: 'open',
-        tunnel: 'anything',
-        streamId: '11111111-1111-4111-8111-111111111111',
-        socketPath: '/tmp/x.sock'
-      }).success
-    ).toBe(false)
+    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'anything' }).success).toBe(false)
   })
 
   it('validates stream framing', () => {
     const streamId = '11111111-1111-4111-8111-111111111111'
-    expect(TunnelPayloadSchema.safeParse({ op: 'open', tunnel: 'gitcred', streamId, socketPath: '/s' }).success).toBe(
-      true
-    )
+    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'gitcred' }).success).toBe(true)
+    // The path is NOT a field: both sides know the map, so a daemon-supplied path would carry no
+    // information while widening what the shim can be told to create.
+    expect(TunnelPayloadSchema.safeParse({ op: 'listen', tunnel: 'gitcred', socketPath: '/s' }).success).toBe(true)
     expect(TunnelPayloadSchema.safeParse({ op: 'data', streamId, chunk: 'aGk=' }).success).toBe(true)
     expect(TunnelPayloadSchema.safeParse({ op: 'close', streamId }).success).toBe(true)
     expect(TunnelPayloadSchema.safeParse({ op: 'data', streamId: 'not-a-uuid', chunk: '' }).success).toBe(false)
+    // A chunk that could not fit one frame is refused at the schema, not after assembling it.
+    expect(TunnelPayloadSchema.safeParse({ op: 'data', streamId, chunk: 'a'.repeat(300 * 1024) }).success).toBe(false)
   })
 })
 

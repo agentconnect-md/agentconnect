@@ -297,6 +297,12 @@ export class ShimClient {
     transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true }))
   }
 
+  /** Emit an event for a stream the shim owns but the ACP runner does not — a tunnel connection,
+   *  whose bytes have to survive a rebind for exactly the same reason ACP output does. */
+  emit(streamId: string, event: ShimEvent['event']): void {
+    this.emitEvent(streamId, event)
+  }
+
   /** Send an event on whichever transport is currently bound, or hold it until one is. */
   private emitEvent(streamId: string, event: ShimEvent['event']): void {
     const text = JSON.stringify({ type: 'shim/event', streamId, event })
