@@ -2783,6 +2783,14 @@ model OrgClusterExecution {
   /// The api_key row currently published in the Secret; revoked when the next
   /// rotation lands, so exactly one live key exists per envelope.
   credentialApiKeyId   String?
+  /// Held while a credential transition is in flight. Claiming it is a
+  /// conditional write, so exactly one caller across every control-plane
+  /// instance mints and publishes — two concurrent rotations could otherwise
+  /// write Secrets in one order and record them in the other, leaving the Secret
+  /// and the row naming different (both live) keys. A lease, not a lock: a
+  /// process that dies mid-rotation must not wedge the envelope, so a claim
+  /// older than the lease window is taken over.
+  credentialRotationAt DateTime?           @db.Timestamptz(6)
   runtimeImage         String
   /// `{name, warmReplicas}[]` — the org's sandbox tiers and warm-pool sizes.
   runtimeTiers         Json                @db.JsonB
@@ -2820,4 +2828,21 @@ model PendingEnvelopeTeardown {
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_envelope_teardown")
+}
+
+/// A daemon key the cluster provisioner has finished with and must revoke.
+/// Daemon keys never expire, so a revoke that is merely attempted is not a
+/// revoke: a transient failure would leave a live credential with nothing left
+/// holding its id. The intent is recorded BEFORE the attempt and cleared only
+/// once the key is actually revoked, so the maintenance loop can retry forever.
+///
+/// Deliberately NO foreign key to `api_key` or `org`: the row must survive an
+/// organization deletion, which is one of the moments a key needs retiring.
+model PendingDaemonKeyRevocation {
+  apiKeyId  String   @id // the key to revoke (identity + idempotency key)
+  orgId     String // whose envelope it belonged to; diagnostics only
+  reason    String // recorded on the api_key row when the revoke lands
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("pending_daemon_key_revocation")
 }

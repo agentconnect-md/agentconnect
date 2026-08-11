@@ -4977,6 +4977,13 @@ export interface PendingEnvelopeTeardown {
   targetNamespace: string
 }
 
+/** A daemon key the provisioner has finished with and must still revoke. */
+export interface PendingDaemonKeyRevocation {
+  apiKeyId: string
+  orgId: string
+  reason: string
+}
+
 export interface OrgClusterExecutionRepo {
   get(orgId: OrgId): Promise<ClusterExecutionSettings | null>
   /** Oldest-first batch of envelopes whose organization is already gone. */
@@ -4990,6 +4997,24 @@ export interface OrgClusterExecutionRepo {
     orgId: OrgId,
     credential: { daemonId: string; apiKeyId: string; revision: string } | null
   ): Promise<ClusterExecutionSettings>
+  /** Record the daemon identity a first issue just provisioned, before anything
+   *  can fail — otherwise every retry would provision another daemon. Does not
+   *  bump `specRevision`: the CR spec carries no daemon id. */
+  setCredentialDaemon(orgId: OrgId, daemonId: string): Promise<void>
+  /** Conditionally claim the org's credential transition, returning the row the
+   *  winner must act on, or null when another caller holds it. A LEASE, not a
+   *  lock: a claim older than `leaseMs` is taken over, so a process that died
+   *  mid-rotation cannot wedge the envelope. */
+  beginCredentialRotation(orgId: OrgId, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null>
+  /** Release the claim. Idempotent. */
+  endCredentialRotation(orgId: OrgId): Promise<void>
+  /** Record that a daemon key must be revoked, before the attempt is made.
+   *  Idempotent on the key id. */
+  enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void>
+  /** Oldest-first batch of keys still awaiting revocation. */
+  listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]>
+  /** Drop the intent once the key is actually revoked. Idempotent. */
+  clearKeyRevocation(apiKeyId: string): Promise<void>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
    *  row, always bumping `specRevision`. `targetNamespace` and
    *  `credentialSecretName` are only ever written by the create branch — the CRD

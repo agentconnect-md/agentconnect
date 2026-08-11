@@ -10,11 +10,12 @@ export {
 export { AgentConnectOrgApi, type OrgResourceApi } from './org-api.js'
 export { ClusterSecretApi, CREDENTIAL_SECRET_KEY, NamespaceNotReadyError, type OrgSecretApi } from './secret-api.js'
 export { buildDaemonConfigJson, type DaemonCredentialInput } from './credential.js'
-export { EnvelopeTeardownDrain } from './teardown-drain.js'
+export { ClusterMaintenanceLoop, type ClusterMaintenanceWork } from './maintenance-loop.js'
 export { ClusterNamingError, orgNamespace, orgResourceName, type ClusterEnvelopeStatus } from './spec.js'
 export {
   ClusterExecutionService,
   ClusterNotEnabledError,
+  ClusterRotationInProgressError,
   type ClusterCredentialView,
   type ClusterExecutionPolicy,
   type ClusterKeyAuthority

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ClusterExecutionService,
   ClusterNotEnabledError,
+  ClusterRotationInProgressError,
   type ClusterExecutionPolicy,
   type ClusterKeyAuthority
 } from './service.js'
@@ -15,11 +16,13 @@ import { NamespaceNotReadyError, type OrgSecretApi } from './secret-api.js'
 import type { OrgResourceApi } from './org-api.js'
 import type { AgentConnectOrg, AgentConnectOrgSpec } from './crd.js'
 import { OrgId } from '../domain/ids.js'
+import { systemClock } from '../domain/clock.js'
 import type {
   ClusterExecutionDefaults,
   ClusterExecutionPatch,
   ClusterExecutionSettings,
   OrgClusterExecutionRepo,
+  PendingDaemonKeyRevocation,
   PendingEnvelopeTeardown
 } from '../persistence/ports.js'
 
@@ -37,6 +40,8 @@ const POLICY: ClusterExecutionPolicy = {
 class FakeRepo implements OrgClusterExecutionRepo {
   row: ClusterExecutionSettings | null = null
   tombstones: PendingEnvelopeTeardown[] = []
+  revocations: PendingDaemonKeyRevocation[] = []
+  rotationAt: Date | null = null
   /** Simulates an upsert whose row is cascaded away before anything reads it. */
   swallowUpsert = false
 
@@ -50,6 +55,36 @@ class FakeRepo implements OrgClusterExecutionRepo {
 
   async clearPendingTeardown(orgId: string): Promise<void> {
     this.tombstones = this.tombstones.filter((entry) => entry.orgId !== orgId)
+  }
+
+  async setCredentialDaemon(_orgId: OrgId, daemonId: string): Promise<void> {
+    if (this.row) this.row = { ...this.row, credentialDaemonId: daemonId }
+  }
+
+  async beginCredentialRotation(_orgId: OrgId, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null> {
+    if (!this.row) return null
+    const held = this.rotationAt
+    if (held && held.getTime() > now.getTime() - leaseMs) return null
+    this.rotationAt = now
+    return { ...this.row }
+  }
+
+  async endCredentialRotation(): Promise<void> {
+    this.rotationAt = null
+  }
+
+  async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void> {
+    if (!this.revocations.some((entry) => entry.apiKeyId === apiKeyId)) {
+      this.revocations.push({ apiKeyId, orgId, reason })
+    }
+  }
+
+  async listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]> {
+    return this.revocations.slice(0, limit)
+  }
+
+  async clearKeyRevocation(apiKeyId: string): Promise<void> {
+    this.revocations = this.revocations.filter((entry) => entry.apiKeyId !== apiKeyId)
   }
 
   async setCredential(
@@ -140,6 +175,7 @@ class FakeSecrets implements OrgSecretApi {
 class FakeKeys implements ClusterKeyAuthority {
   minted = 0
   revoked: string[] = []
+  failRevoke = false
 
   async provisionDaemon(): Promise<{ daemonId: string; apiKeyId: string; token: string }> {
     this.minted += 1
@@ -152,6 +188,7 @@ class FakeKeys implements ClusterKeyAuthority {
   }
 
   async revoke(apiKeyId: string): Promise<unknown> {
+    if (this.failRevoke) throw new Error('revoke unavailable')
     this.revoked.push(apiKeyId)
     return undefined
   }
@@ -170,7 +207,15 @@ function build(): Harness {
   const api = new FakeApi()
   const secrets = new FakeSecrets()
   const keys = new FakeKeys()
-  const service = new ClusterExecutionService(repo, api, { slugById: async () => 'acme' }, POLICY, secrets, keys)
+  const service = new ClusterExecutionService(
+    repo,
+    api,
+    { slugById: async () => 'acme' },
+    POLICY,
+    secrets,
+    keys,
+    systemClock
+  )
   return { service, repo, api, secrets, keys }
 }
 
@@ -273,14 +318,95 @@ describe('ClusterExecutionService.issueCredential', () => {
   it('leaves the running pod on its old key when the Secret cannot be written', async () => {
     const { service, repo, secrets, keys } = build()
     await service.configure(ORG, { enabled: true })
-    await service.issueCredential(ORG)
+    const issued = await service.issueCredential(ORG)
     const settled = await repo.get()
 
     secrets.namespaceMissing = true
     await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
-    // No revision bump and no revoke: the published credential is untouched.
+    // The published credential is untouched: no revision bump, and the key the
+    // running pod holds is NOT the one that got revoked.
     expect((await repo.get())?.credentialRevision).toBe(settled?.credentialRevision)
-    expect(keys.revoked).toEqual([])
+    expect(keys.revoked).not.toContain(issued.revision)
+  })
+
+  it('revokes the key it minted when publication fails, instead of leaking it', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    secrets.namespaceMissing = true
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
+    // Daemon keys never expire, so an unpublished one must not survive.
+    expect(keys.revoked).toEqual(['key-1'])
+    expect(repo.revocations).toEqual([])
+  })
+
+  it('reuses the daemon a failed first attempt provisioned, rather than making another', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    secrets.namespaceMissing = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
+    expect((await repo.get())?.credentialDaemonId).toBe('daemon-1')
+
+    secrets.namespaceMissing = false
+    const issued = await service.issueCredential(ORG)
+    expect(issued.daemonId).toBe('daemon-1')
+    expect(keys.minted).toBe(2) // two keys, one daemon
+  })
+
+  it('lets exactly one caller own the transition', async () => {
+    const { service, repo } = build()
+    await service.configure(ORG, { enabled: true })
+    // Someone else claimed it a moment ago and has not released it.
+    await repo.beginCredentialRotation(ORG, new Date(), 60_000)
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
+  })
+
+  it('takes over a claim whose holder died, so the envelope is not wedged', async () => {
+    const { service, repo } = build()
+    await service.configure(ORG, { enabled: true })
+    repo.rotationAt = new Date(Date.now() - 60 * 60 * 1000)
+
+    await expect(service.issueCredential(ORG)).resolves.toMatchObject({ rotated: false })
+  })
+
+  it('releases the claim even when the attempt fails', async () => {
+    const { service, repo, secrets } = build()
+    await service.configure(ORG, { enabled: true })
+    secrets.namespaceMissing = true
+    await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
+
+    expect(repo.rotationAt).toBeNull()
+    secrets.namespaceMissing = false
+    await expect(service.issueCredential(ORG)).resolves.toBeDefined()
+  })
+
+  it('refuses on a disabled envelope, which disable has already retired', async () => {
+    const { service, secrets } = build()
+    await service.configure(ORG, { enabled: true })
+    await service.issueCredential(ORG)
+    await service.configure(ORG, { enabled: false })
+    secrets.written.length = 0
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterNotEnabledError)
+    expect(secrets.written).toEqual([])
+  })
+
+  it('keeps owing a revocation whose attempt failed, and settles it on the next drain', async () => {
+    const { service, repo, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    const first = await service.issueCredential(ORG)
+
+    keys.failRevoke = true
+    await service.issueCredential(ORG)
+    // The handle survives the failure — the old key would otherwise stay live
+    // forever with nothing left naming it.
+    expect(repo.revocations.map((entry) => entry.apiKeyId)).toEqual([first.revision])
+
+    keys.failRevoke = false
+    expect(await service.drainKeyRevocations()).toBe(1)
+    expect(keys.revoked).toEqual([first.revision])
+    expect(repo.revocations).toEqual([])
   })
 
   it('reuses the daemon identity and revokes the superseded key last', async () => {

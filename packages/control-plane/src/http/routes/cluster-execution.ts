@@ -19,7 +19,12 @@ import type { HttpDeps } from '../deps.js'
 import { Tag } from '../plugins/openapi.js'
 import { denyNonOwner, orgOf } from '../rbac.js'
 import { sendClusterFailure } from '../cluster-failure.js'
-import { ClusterNotEnabledError, NamespaceNotReadyError, type ClusterExecutionService } from '../../cluster/index.js'
+import {
+  ClusterNotEnabledError,
+  ClusterRotationInProgressError,
+  NamespaceNotReadyError,
+  type ClusterExecutionService
+} from '../../cluster/index.js'
 import type { ClusterExecutionSettings } from '../../persistence/ports.js'
 import {
   ClusterCredentialDto,
@@ -100,7 +105,7 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
           tags: [Tag.Cluster],
           summary: 'Issue or rotate the envelope’s daemon credential',
           description:
-            'Owner-only. Mints the organization’s daemon API key, publishes it as the `config.json` entry of the Secret named by the AgentConnectOrg spec, and bumps `credentialRevision` so the operator recreates the daemon pod on the new credential. The key itself is never returned — it exists only inside the cluster Secret. Repeating the call rotates: the new key is published before the old one is revoked, and the daemon identity is reused so the organization’s sessions and agents survive the rotation. 409 while the envelope namespace does not exist yet — enable cluster execution first and retry once `NamespaceReady` is true.',
+            'Owner-only, and only while cluster execution is enabled. Mints the organization’s daemon API key, publishes it as the `config.json` entry of the Secret named by the AgentConnectOrg spec, and bumps `credentialRevision` so the operator recreates the daemon pod on the new credential. The key itself is never returned — it exists only inside the cluster Secret. Repeating the call rotates: the new key is published before the old one is revoked, and the daemon identity is reused so the organization’s sessions and agents survive the rotation. Exactly one rotation runs at a time. 409 carries `code`: `CLUSTER_NOT_ENABLED`, `CLUSTER_NAMESPACE_NOT_READY` (the operator has not created the envelope namespace yet — retry once `NamespaceReady` is true), or `CLUSTER_ROTATION_IN_PROGRESS`.',
           operationId: 'issueClusterExecutionCredential',
           response: { 201: ClusterCredentialDto, 403: ErrorDto, 409: ErrorDto, 502: ErrorDto }
         }
@@ -124,6 +129,14 @@ export function clusterExecutionRoutes(deps: HttpDeps) {
               statusCode: 409,
               message: error.message,
               code: 'CLUSTER_NAMESPACE_NOT_READY'
+            })
+          }
+          if (error instanceof ClusterRotationInProgressError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              statusCode: 409,
+              message: error.message,
+              code: 'CLUSTER_ROTATION_IN_PROGRESS'
             })
           }
           return sendClusterFailure(reply, error, 'cluster API rejected the request')

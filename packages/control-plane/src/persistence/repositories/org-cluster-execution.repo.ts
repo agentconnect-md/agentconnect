@@ -16,6 +16,7 @@ import type {
   ClusterExecutionSettings,
   ClusterRuntimeTier,
   OrgClusterExecutionRepo,
+  PendingDaemonKeyRevocation,
   PendingEnvelopeTeardown
 } from '../ports.js'
 import type { OrgId } from '../../domain/ids.js'
@@ -75,6 +76,49 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
 
   async clearPendingTeardown(orgId: string): Promise<void> {
     await this.prisma.pendingEnvelopeTeardown.deleteMany({ where: { orgId } })
+  }
+
+  async setCredentialDaemon(orgId: OrgId, daemonId: string): Promise<void> {
+    await this.prisma.orgClusterExecution.update({ where: { orgId }, data: { credentialDaemonId: daemonId } })
+  }
+
+  async beginCredentialRotation(orgId: OrgId, now: Date, leaseMs: number): Promise<ClusterExecutionSettings | null> {
+    // One conditional statement is the whole fence: `updateMany` with the
+    // free-or-expired predicate either matches (this caller owns the transition)
+    // or does not (someone else does). A read-then-write pair could not say that.
+    const claimed = await this.prisma.orgClusterExecution.updateMany({
+      where: {
+        orgId,
+        OR: [{ credentialRotationAt: null }, { credentialRotationAt: { lt: new Date(now.getTime() - leaseMs) } }]
+      },
+      data: { credentialRotationAt: now }
+    })
+    if (claimed.count === 0) return null
+    const row = await this.prisma.orgClusterExecution.findUnique({ where: { orgId } })
+    return row ? toRecord(row) : null
+  }
+
+  async endCredentialRotation(orgId: OrgId): Promise<void> {
+    await this.prisma.orgClusterExecution.updateMany({ where: { orgId }, data: { credentialRotationAt: null } })
+  }
+
+  async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void> {
+    await this.prisma.pendingDaemonKeyRevocation.createMany({
+      data: [{ apiKeyId, orgId, reason }],
+      skipDuplicates: true
+    })
+  }
+
+  async listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]> {
+    return this.prisma.pendingDaemonKeyRevocation.findMany({
+      select: { apiKeyId: true, orgId: true, reason: true },
+      orderBy: { createdAt: 'asc' },
+      take: limit
+    })
+  }
+
+  async clearKeyRevocation(apiKeyId: string): Promise<void> {
+    await this.prisma.pendingDaemonKeyRevocation.deleteMany({ where: { apiKeyId } })
   }
 
   async setCredential(

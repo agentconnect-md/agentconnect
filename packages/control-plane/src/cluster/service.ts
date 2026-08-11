@@ -11,6 +11,7 @@
  * spec true at the moment it changes.
  */
 import { DaemonId, type OrgId } from '../domain/ids.js'
+import type { Clock } from '../domain/clock.js'
 import { buildDaemonConfigJson } from './credential.js'
 import type { OrgSecretApi } from './secret-api.js'
 import type {
@@ -37,6 +38,14 @@ const CONVERGE_ATTEMPTS = 5
 
 /** Tombstones retired per drain pass; a backlog is rare and drains over passes. */
 const TEARDOWN_BATCH = 50
+
+/** Owed revocations attempted per drain pass. */
+const REVOCATION_BATCH = 50
+
+/** How long one caller may own a credential transition before it is taken over.
+ *  Generous against a slow API server, short enough that a crashed process does
+ *  not lock an operator out of rotating for long. */
+const ROTATION_LEASE_MS = 2 * 60 * 1000
 
 /** Deployment policy for an org's first enable; the stored row owns it after that. */
 export interface ClusterExecutionPolicy {
@@ -74,11 +83,19 @@ export interface ClusterKeyAuthority {
   revoke(apiKeyId: string, reason: string): Promise<unknown>
 }
 
-/** Raised when the envelope has no settings row to attach a credential to. */
+/** Raised when the org has no ENABLED envelope to attach a credential to. */
 export class ClusterNotEnabledError extends Error {
   constructor() {
     super('cluster execution is not enabled for this organization')
     this.name = 'ClusterNotEnabledError'
+  }
+}
+
+/** Raised when another caller already owns the org's credential transition. */
+export class ClusterRotationInProgressError extends Error {
+  constructor() {
+    super('a credential rotation is already in progress for this organization')
+    this.name = 'ClusterRotationInProgressError'
   }
 }
 
@@ -90,7 +107,9 @@ export class ClusterExecutionService {
     private readonly orgs: Pick<OrgRepo, 'slugById'>,
     private readonly policy: ClusterExecutionPolicy,
     private readonly secrets: OrgSecretApi,
-    private readonly keys: ClusterKeyAuthority
+    private readonly keys: ClusterKeyAuthority,
+    /** Drives the rotation lease; the same seam every other timed CP path uses. */
+    private readonly clock: Clock
   ) {}
 
   /** The control namespace this deployment provisions into — surfaced for operators. */
@@ -121,7 +140,7 @@ export class ClusterExecutionService {
     // agents and repoints collaboration routes) and this is not that.
     if (patch.enabled === false && settings.credentialApiKeyId) {
       await this.repo.setCredential(orgId, null)
-      await this.keys.revoke(settings.credentialApiKeyId, 'cluster execution disabled')
+      await this.retire(orgId, settings.credentialApiKeyId, 'cluster execution disabled')
       return this.settings(orgId)
     }
     return settings
@@ -207,45 +226,104 @@ export class ClusterExecutionService {
    * orphan the org's sessions, agents, and history under a new daemon row.
    */
   async issueCredential(orgId: OrgId, actorUserId?: string): Promise<ClusterCredentialView> {
-    const settings = await this.repo.get(orgId)
-    if (!settings) throw new ClusterNotEnabledError()
+    // A disabled envelope has no resource and is being torn down; publishing a
+    // fresh Secret into its dying namespace would silently undo the retirement
+    // that disabling just performed.
+    const current = await this.repo.get(orgId)
+    if (!current?.enabled) throw new ClusterNotEnabledError()
 
-    const previousApiKeyId = settings.credentialApiKeyId
-    const minted = settings.credentialDaemonId
-      ? {
-          daemonId: settings.credentialDaemonId,
-          ...(await this.keys.mintForDaemon(orgId, DaemonId(settings.credentialDaemonId), {
-            ...(actorUserId ? { createdByUserId: actorUserId } : {})
-          }))
-        }
-      : await this.keys.provisionDaemon({ orgId, ...(actorUserId ? { createdByUserId: actorUserId } : {}) })
+    // Exactly one caller mints and publishes. Without this, two rotations can
+    // write Secrets in one order and record them in the other, leaving the
+    // Secret and the row naming different — both live — keys.
+    const settings = await this.repo.beginCredentialRotation(orgId, new Date(this.clock.now()), ROTATION_LEASE_MS)
+    if (!settings) throw new ClusterRotationInProgressError()
+    try {
+      const previousApiKeyId = settings.credentialApiKeyId
+      const minted = await this.mintFor(orgId, settings.credentialDaemonId, actorUserId)
 
-    await this.secrets.applyCredential(
-      settings.targetNamespace,
-      settings.credentialSecretName,
-      buildDaemonConfigJson({
-        controlPlaneUrl: this.policy.controlPlaneUrl,
-        apiKey: minted.token,
-        daemonId: minted.daemonId
+      try {
+        await this.secrets.applyCredential(
+          settings.targetNamespace,
+          settings.credentialSecretName,
+          buildDaemonConfigJson({
+            controlPlaneUrl: this.policy.controlPlaneUrl,
+            apiKey: minted.token,
+            daemonId: minted.daemonId
+          })
+        )
+      } catch (error) {
+        // The key is already live and about to be forgotten — record it for
+        // revocation before unwinding, or it outlives every handle to it.
+        await this.retire(orgId, minted.apiKeyId, 'cluster credential never published')
+        throw error
+      }
+
+      // The api-key id is already a unique, opaque, traceable handle for exactly
+      // this credential — which is what `credentialRevision` is defined to be.
+      await this.repo.setCredential(orgId, {
+        daemonId: minted.daemonId,
+        apiKeyId: minted.apiKeyId,
+        revision: minted.apiKeyId
       })
-    )
+      await this.converge(orgId)
 
-    // The api-key id is already a unique, opaque, traceable handle for exactly
-    // this credential — which is what `credentialRevision` is defined to be.
-    await this.repo.setCredential(orgId, {
-      daemonId: minted.daemonId,
-      apiKeyId: minted.apiKeyId,
-      revision: minted.apiKeyId
-    })
-    await this.converge(orgId)
-
-    if (previousApiKeyId) await this.keys.revoke(previousApiKeyId, 'cluster credential rotated')
-    return {
-      daemonId: minted.daemonId,
-      secretName: settings.credentialSecretName,
-      revision: minted.apiKeyId,
-      rotated: previousApiKeyId !== undefined
+      if (previousApiKeyId) await this.retire(orgId, previousApiKeyId, 'cluster credential rotated')
+      return {
+        daemonId: minted.daemonId,
+        secretName: settings.credentialSecretName,
+        revision: minted.apiKeyId,
+        rotated: previousApiKeyId !== undefined
+      }
+    } finally {
+      await this.repo.endCredentialRotation(orgId)
     }
+  }
+
+  /**
+   * A key for the org's daemon, creating that daemon on the first issue. The
+   * new identity is recorded BEFORE anything can fail: a retry after a failed
+   * publication must re-key the same daemon, not provision another one.
+   */
+  private async mintFor(
+    orgId: OrgId,
+    existingDaemonId: string | undefined,
+    actorUserId?: string
+  ): Promise<{ daemonId: string; apiKeyId: string; token: string }> {
+    const by = actorUserId ? { createdByUserId: actorUserId } : {}
+    if (existingDaemonId) {
+      const key = await this.keys.mintForDaemon(orgId, DaemonId(existingDaemonId), by)
+      return { daemonId: existingDaemonId, ...key }
+    }
+    const provisioned = await this.keys.provisionDaemon({ orgId, ...by })
+    await this.repo.setCredentialDaemon(orgId, provisioned.daemonId)
+    return provisioned
+  }
+
+  /** Record a key for revocation, then try it now. Recording first is the point:
+   *  daemon keys never expire, so a revoke that merely failed must stay owed. */
+  private async retire(orgId: OrgId, apiKeyId: string, reason: string): Promise<void> {
+    await this.repo.enqueueKeyRevocation(orgId, apiKeyId, reason)
+    await this.drainKeyRevocations()
+  }
+
+  /**
+   * Revoke every key the provisioner still owes, dropping each intent only once
+   * its key is actually revoked. Errors are swallowed per key so one unreachable
+   * row cannot hold up the rest; the intent survives for the next pass.
+   */
+  async drainKeyRevocations(limit = REVOCATION_BATCH): Promise<number> {
+    const pending = await this.repo.listPendingKeyRevocations(limit)
+    let revoked = 0
+    for (const entry of pending) {
+      try {
+        await this.keys.revoke(entry.apiKeyId, entry.reason)
+      } catch {
+        continue // still owed; the maintenance loop retries
+      }
+      await this.repo.clearKeyRevocation(entry.apiKeyId)
+      revoked += 1
+    }
+    return revoked
   }
 
   /** Live envelope status from the resource; absent ⇒ `present: false`. */

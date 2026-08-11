@@ -263,12 +263,27 @@ to force a Recreate. **The key is never returned**; it exists only inside the
 cluster Secret, and the response carries the daemon id, Secret name, and
 revision.
 
-Three orderings carry the whole design:
+Daemon keys never expire, so the design is mostly about what happens when a
+step fails. Claiming `credentialRotationAt` is a conditional write, so exactly
+one caller across every control-plane instance mints and publishes; it is a
+LEASE, not a lock, so a process that dies mid-rotation cannot wedge the
+envelope. Every revocation is recorded in `pending_daemon_key_revocation`
+BEFORE it is attempted and cleared only once it lands, so a transient failure
+never leaves a live key with nothing naming it. A credential is only issued
+while the envelope is ENABLED — a disabled one is being torn down, and
+publishing into its dying namespace would undo the retirement disable just
+performed.
+
+Four orderings carry the rest:
 
 - **Secret before revision.** A failed write leaves the running pod on its old,
   still-valid key instead of rolling it onto a credential that was never
   published. The namespace not existing yet is the ordinary "just enabled" state
   and answers 409 rather than recording anything.
+- **Identity before publication.** A first issue records the provisioned
+  `credentialDaemonId` before anything can fail, and revokes its own key if
+  publication does — so a retry re-keys that daemon instead of provisioning
+  another one and leaking the first key.
 - **Revoke last.** The superseded key dies only after the rollout has been asked
   for, so there is no window in which no valid key exists.
 - **One daemon identity.** The row pins `credentialDaemonId`, so a rotation

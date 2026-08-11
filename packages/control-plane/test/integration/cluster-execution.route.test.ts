@@ -109,7 +109,8 @@ async function clusterApp(
     new PgOrgRepo(prisma),
     POLICY,
     new ClusterSecretApi(new K8sHttp(server.config)),
-    apiKeys
+    apiKeys,
+    systemClock
   )
   const http = buildHttpApp(
     prisma,
@@ -375,6 +376,32 @@ describe('POST /cluster-execution/credential', () => {
     expect(res.json().code).toBe('CLUSTER_NOT_ENABLED')
   })
 
+  it('409s once cluster execution is switched off, rather than re-publishing a Secret', async () => {
+    const { http, secrets } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    await http.app.inject({ method: 'POST', url: CREDENTIAL })
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: false } })
+    const written = secrets.length
+
+    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('CLUSTER_NOT_ENABLED')
+    expect(secrets).toHaveLength(written)
+  })
+
+  it('409s while another rotation owns the transition', async () => {
+    const { http } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    await prisma.orgClusterExecution.update({
+      where: { orgId: DEFAULT_ORG_ID },
+      data: { credentialRotationAt: new Date() }
+    })
+
+    const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
+    expect(res.statusCode).toBe(409)
+    expect(res.json().code).toBe('CLUSTER_ROTATION_IN_PROGRESS')
+  })
+
   it('409s while the operator has not created the envelope namespace yet', async () => {
     const { http } = await clusterApp({ namespaceMissing: true })
     await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
@@ -382,9 +409,17 @@ describe('POST /cluster-execution/credential', () => {
     const res = await http.app.inject({ method: 'POST', url: CREDENTIAL })
     expect(res.statusCode).toBe(409)
     expect(res.json().code).toBe('CLUSTER_NAMESPACE_NOT_READY')
-    // Nothing was recorded, so a retry after NamespaceReady starts clean.
+    // No credential was recorded, so a retry after NamespaceReady starts clean —
+    // but the daemon identity IS kept, so the retry re-keys it rather than
+    // provisioning a second daemon, and the unpublished key is already revoked.
     const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
     expect(row?.credentialRevision).toBeNull()
+    expect(row?.credentialDaemonId).not.toBeNull()
+    expect(row?.credentialRotationAt).toBeNull()
+    const keys = await prisma.apiKey.findMany({ where: { daemonId: row!.credentialDaemonId! } })
+    expect(keys).toHaveLength(1)
+    expect(keys[0]?.revokedAt).not.toBeNull()
+    expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
   })
 
   it('retires the credential when cluster execution is switched off', async () => {

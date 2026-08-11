@@ -38,13 +38,14 @@ import {
   AgentConnectOrgApi,
   ClusterExecutionService,
   ClusterSecretApi,
-  EnvelopeTeardownDrain,
+  ClusterMaintenanceLoop,
   loadClusterAccess
 } from './cluster/index.js'
 import { daemonWsUrl } from './http/onboarding.js'
 
-/** How often deleted organizations' envelopes are swept; the delete route also kicks it. */
-const ENVELOPE_TEARDOWN_DRAIN_MS = 5 * 60 * 1000
+/** How often owed envelope teardowns and key revocations are swept; the request
+ *  paths also kick their own work inline, so this is the backstop interval. */
+const CLUSTER_MAINTENANCE_INTERVAL_MS = 5 * 60 * 1000
 
 import {
   PgDaemonRepo,
@@ -464,7 +465,8 @@ export function buildContainer(
           controlPlaneUrl: daemonWsUrl(httpServerConfigFrom(config, { DEFAULT_OWNER_ID, relayStaleMs }))
         },
         new ClusterSecretApi(new K8sHttp(clusterAccess)),
-        apiKeys
+        apiKeys,
+        clock
       )
     : undefined
   // Bases the reconcile roster + DTOs resolve avatar URLs against: `cp` for the
@@ -1019,14 +1021,15 @@ export function buildContainer(
     http.log
   )
 
-  // Retires the AgentConnectOrg of every deleted organization. The delete
-  // transaction records the intent, so this loop is the backstop that also
-  // covers a process which had cluster execution switched off at delete time;
-  // the delete route kicks it inline for latency. Inert when the module is off.
-  const envelopeTeardownDrain = new EnvelopeTeardownDrain(
-    clusterExecution ? () => clusterExecution.drainTeardowns() : undefined,
+  // Retires deleted organizations' AgentConnectOrgs and superseded daemon keys.
+  // Both intents are recorded durably before the act, so this loop is the
+  // backstop for a cluster that was unreachable, a process that died between the
+  // two, or a deployment that had cluster execution switched off at the time;
+  // the request paths kick their own work inline for latency. Inert when off.
+  const clusterMaintenance = new ClusterMaintenanceLoop(
+    clusterExecution,
     clock,
-    ENVELOPE_TEARDOWN_DRAIN_MS,
+    CLUSTER_MAINTENANCE_INTERVAL_MS,
     http.log
   )
 
@@ -1586,7 +1589,7 @@ export function buildContainer(
     remoteGrantAuth,
     internalInvocationAuth,
     startBackground() {
-      envelopeTeardownDrain.start()
+      clusterMaintenance.start()
       cronRunReaper.start()
       hookRunReaper.start()
       webchatMcpOperationReaper.start()
@@ -1601,7 +1604,7 @@ export function buildContainer(
       void presetBackfill?.run().catch((err) => http.log.error({ err }, 'preset-backfill: sweep failed'))
     },
     async shutdown() {
-      envelopeTeardownDrain.stop()
+      clusterMaintenance.stop()
       cronRunReaper.stop()
       hookRunReaper.stop()
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()

@@ -79,6 +79,8 @@ const TABLES = [
   // FK-less by design (it names an org that is GONE), so CASCADE never reaches
   // it and a tombstone would otherwise outlive its test.
   'pending_envelope_teardown',
+  // Same reason: it names an api_key that may already be gone, so it carries no FK.
+  'pending_daemon_key_revocation',
   'membership',
   'app_user',
   'org'
