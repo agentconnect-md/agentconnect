@@ -17,6 +17,7 @@ export class ShimSession {
   private connection?: ShimConnection
   private readonly eventListeners = new Set<(event: ShimEvent) => void>()
   private readonly lostListeners = new Set<(reason: string) => void>()
+  private readonly attachListeners = new Set<() => void>()
   private closed = false
 
   constructor(
@@ -54,6 +55,10 @@ export class ShimSession {
       if (frame?.type !== 'shim/event') return
       for (const listener of this.eventListeners) listener(frame)
     })
+    // Announced AFTER the replacement is usable. A caller that had work in flight on the socket
+    // just abandoned learns here that its delivery is no longer accounted for — the abort above
+    // says a reply was lost, not whether the request itself ever landed.
+    for (const listener of this.attachListeners) listener()
   }
 
   /** Report that this launch's channel is gone for good. */
@@ -74,9 +79,18 @@ export class ShimSession {
     this.lostListeners.add(listener)
   }
 
+  /** Observe each (re)attach, including the routine half-TTL renewal. */
+  onAttach(listener: () => void): void {
+    this.attachListeners.add(listener)
+  }
+
   /** Drop a subscription — the runtime it belonged to is gone, and a session outlives it. */
   offEvent(listener: (event: ShimEvent) => void): void {
     this.eventListeners.delete(listener)
+  }
+
+  offAttach(listener: () => void): void {
+    this.attachListeners.delete(listener)
   }
 
   isAttached(): boolean {

@@ -269,7 +269,6 @@ export class ShimListener {
             }
             bound = connection
             this.connections.add(connection)
-            this.deps.onConnection?.(connection)
             const remainingMs = result.binding.expiresAtMs - this.deps.now()
             connection.send({
               type: 'shim/bound',
@@ -279,6 +278,13 @@ export class ShimListener {
               generation: result.binding.generation,
               grants: result.binding.grants
             })
+            // AFTER the bound frame is on the wire, not before. An observer may send a request the
+            // moment it learns of this connection, and the shim refuses anything that reaches it
+            // ahead of its own binding as `not bound` — for a renewal that meant the daemon's
+            // cleanup of an interrupted stream was rejected, leaving the in-pod client waiting.
+            // Ordering on the socket is the guarantee: the peer processes frames in sequence, so a
+            // request queued after this send is served with the binding already in place.
+            this.deps.onConnection?.(connection)
             // Backstop the shim's own re-handshake: if it never comes, close at expiry so
             // the peer observes a dead channel instead of holding an expired credential.
             const expiry = this.clock.setTimeout(

@@ -5,6 +5,9 @@ import { SandboxApi } from './sandbox-api.js'
 import { clusterMetrics } from './cluster-metrics.js'
 import { ShimListener } from '../shim/listener.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
+import { TunnelProxy } from '../shim/tunnel-proxy.js'
+import type { TunnelName } from '../shim/tunnel.js'
+import type { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
@@ -42,6 +45,18 @@ export interface K8sRuntimePlaneOptions {
   /** Kubernetes surface. Built from the pod's own in-cluster config when omitted; supplied by
    *  tests so the assembly can be exercised without a cluster. */
   api?: SandboxApi
+  /**
+   * Which daemon-side sockets an agent's sandbox needs a tunnel to, and where each one lives.
+   *
+   * Both halves are the DAEMON's to answer: only it knows that this agent authenticates git
+   * through a GitHub App, and only it knows the path its own server listens on. The plane holds
+   * the mechanism and no policy — omit either and no tunnel is opened.
+   */
+  tunnelsFor?: (agentId: string) => TunnelName[]
+  tunnelSocketPath?: (tunnel: TunnelName) => string | undefined
+  /** Lifetime of an issued session credential. The shim renews at half of it, so a test that has
+   *  to cross a renewal shortens it rather than waiting out the default. */
+  credentialTtlMs?: number
   log?: { info: (m: string) => void; warn: (m: string) => void; debug?: (m: string) => void }
 }
 
@@ -136,12 +151,46 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     // routine renewal, which is the exact failure ShimSession exists to prevent. Loss is reported
     // only if no replacement binds for the same launch within the grace window.
     onConnectionLost: (agentId, reason) => scheduleLossCheck(agentId, reason),
+    ...(options.credentialTtlMs === undefined ? {} : { credentialTtlMs: options.credentialTtlMs }),
     log: options.log ?? SILENT
   })
+  // One proxy per agent, replaced when a NEW launch binds: its streams belong to a pod, and a
+  // proxy kept across incarnations would answer connections for a sandbox that no longer exists.
+  const proxies = new Map<string, { generation: number; proxy: TunnelProxy }>()
+
+  async function ensureTunnels(agentId: string, session: ShimSession): Promise<void> {
+    const wanted = options.tunnelsFor?.(agentId) ?? []
+    const socketPathFor = options.tunnelSocketPath
+    if (wanted.length === 0 || !socketPathFor) return
+    const existing = proxies.get(agentId)
+    // Stopped counts as gone: a proxy whose session was lost can never serve again, and reusing
+    // one would leave the sandbox with a socket whose daemon end refuses every connection.
+    if (existing && (existing.generation !== session.generation || existing.proxy.isStopped())) {
+      existing.proxy.stop(`superseded by generation ${session.generation}`)
+      proxies.delete(agentId)
+    }
+    let entry = proxies.get(agentId)
+    if (!entry) {
+      entry = {
+        generation: session.generation,
+        proxy: new TunnelProxy({ session, socketPathFor, log: options.log ?? SILENT })
+      }
+      proxies.set(agentId, entry)
+    }
+    // Sequential rather than concurrent: this is on the launch path, the list has two members at
+    // most, and one failing tunnel must not lose the report of the other.
+    for (const tunnel of wanted) {
+      await entry.proxy.ensure(tunnel).catch((err: unknown) => {
+        options.log?.warn(`k8s: agent ${agentId} has no ${tunnel} tunnel — ${(err as Error).message}`)
+      })
+    }
+  }
+
   const driver = new K8sDriver({
     api,
     orgId: settings.orgId,
     warmPoolName: settings.warmPoolName,
+    onChannelReady: ensureTunnels,
     awaitChannel: (agentId, generation, timeoutMs) => listener.awaitConnection(agentId, generation, timeoutMs),
     publishSpawnRecord: (record) => {
       // Keyed by pod, and the previous pod's entry is dropped: leaving it would let a terminating
@@ -213,6 +262,8 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     stop: async () => {
       for (const timer of lossTimers.values()) clearTimeout(timer)
       lossTimers.clear()
+      for (const { proxy } of proxies.values()) proxy.stop('daemon is shutting down')
+      proxies.clear()
       await listener.stop()
     }
   }

@@ -2651,6 +2651,14 @@ export class Daemon {
       // exists to prevent, so a failure here refuses the boot rather than degrading.
       const startPlane = this.opts.startK8sPlane ?? startK8sRuntimePlane
       this.k8sPlane = await startPlane({
+        // Which sockets this agent's pod needs, and where this daemon serves them. A GitHub-App
+        // workspace is the one case today: its git reaches the credential helper over a unix
+        // socket that, without a tunnel, exists only on the daemon's own filesystem. MCP is
+        // deliberately absent — the in-pod bridge that would dial it is not in the image yet, so
+        // a listener for it would be a socket nobody can use.
+        tunnelsFor: (agentId) =>
+          this.agents.get(agentId)?.workspace.gitCredential === 'github-app' ? ['gitcred'] : [],
+        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : undefined),
         log: {
           info: (message) => this.log.info(message),
           warn: (message) => this.log.warn(message),
