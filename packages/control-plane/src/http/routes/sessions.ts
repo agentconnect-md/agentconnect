@@ -23,6 +23,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { Tag } from '../plugins/openapi.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
+import type { PullRequestView } from '../../github/pull-request-view.service.js'
 import {
   SessionListPageDto,
   SessionFacetsDto,
@@ -32,6 +33,9 @@ import {
   SessionToolBodyChunkDto,
   ErrorDto,
   IdParam,
+  SessionPullRequestDto,
+  SessionPullRequestQueryDto,
+  type SessionPullRequestDtoT,
   SetSessionVisibilityBody,
   SessionVisibilityDto,
   SetSessionExternalAccessBody,
@@ -340,6 +344,40 @@ const SessionHistoryQueryDto = z
   .refine(({ cursor, after }) => cursor === undefined || after === undefined, {
     message: 'cursor and after are mutually exclusive'
   })
+
+// HookRun.reviewEvent -> the panel's review vocabulary. An unrecognized event maps to nothing rather than to a guess.
+function agentReviewOf(event: string | null): 'approved' | 'changes_requested' | 'commented' | null {
+  if (event === 'APPROVE') return 'approved'
+  if (event === 'REQUEST_CHANGES') return 'changes_requested'
+  if (event === 'COMMENT') return 'commented'
+  return null
+}
+
+// Service view -> HTTP body, 1:1; every judgement about degradation already happened in the service.
+function toSessionPullRequestDto(view: PullRequestView): SessionPullRequestDtoT {
+  return {
+    repoFullName: view.repoFullName,
+    pullNumber: view.pullNumber,
+    title: view.title,
+    state: view.state,
+    isDraft: view.isDraft,
+    url: view.url,
+    headRef: view.headRef,
+    baseRef: view.baseRef,
+    additions: view.additions,
+    deletions: view.deletions,
+    reviewDecision: view.reviewDecision,
+    checks: view.checks,
+    checksTruncated: view.checksTruncated,
+    reviews: view.reviews,
+    threads: view.threads,
+    unresolvedCount: view.unresolvedCount,
+    threadsTruncated: view.threadsTruncated,
+    degraded: view.degraded,
+    degradedReason: view.degradedReason,
+    agentReview: view.agentReview
+  }
+}
 
 export function sessionRoutes(deps: HttpDeps) {
   return async function sessionRoutesPlugin(app: FastifyInstance): Promise<void> {
@@ -979,6 +1017,55 @@ export function sessionRoutes(deps: HttpDeps) {
             affected.length > 0 ? affected.map((s) => s.id) : [current.id]
           )
         }
+      }
+    )
+
+    // The session's PR (§3.4): identity from the owning run, live state from GitHub; a GitHub
+    // failure is DATA (`degraded`), and only a session with no pull-request run 404s (hides the tab).
+    r.get(
+      '/sessions/:id/pull-request',
+      {
+        schema: {
+          tags: [Tag.Sessions],
+          summary: 'Get the session’s pull request',
+          description:
+            'The pull request this session was dispatched for: identity (repo, number, url, head/base) from the owning hook run, and live state (checks, current reviews, unresolved review threads) proxied from GitHub in one GraphQL read. GitHub being rate limited, denying the installation, or unreachable is data — `degraded` names which, identity survives, and the live lists are empty — because a panel that still names its PR beats an empty one. 404 when the session has no pull-request run, when the deployment has no GitHub App configured, or when the run predates repo/installation capture; the console hides its PR tab on that. Review thread bodies are user content: proxied, never stored.',
+          operationId: 'getSessionPullRequest',
+          params: IdParam,
+          querystring: SessionPullRequestQueryDto,
+          response: { 200: SessionPullRequestDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const absent = () =>
+          reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'pull request not found' })
+        // Session audience first: thread bodies are content, unreadable for a session the caller cannot open.
+        const owned = await getOrgViewableSession(req, req.params.id)
+        if (!owned) return absent()
+        const view = deps.pullRequestView
+        if (!view) return absent()
+        const run = await deps.repos.hook.latestPullRequestRunForSession(orgOf(req), owned.session.id)
+        // Legacy rows predate repo/installation capture — nothing to mint against, so the PR reads absent.
+        if (!run?.pullNumber || !run.repoId || !run.repoFullName || !run.sourceInstallationId) return absent()
+        // The subject's own open/draft facts feed the degraded arm, so a rate-limited panel still names them.
+        const subject = run.projectionId
+          ? (await deps.repos.hook.listReviewSubjects(run.projectionId)).find((s) => s.pullNumber === run.pullNumber)
+          : undefined
+        return toSessionPullRequestDto(
+          await view.view(
+            {
+              orgId: orgOf(req),
+              installationId: run.sourceInstallationId,
+              repoId: run.repoId,
+              repoFullName: run.repoFullName,
+              pullNumber: run.pullNumber,
+              ...(subject ? { knownIsOpen: subject.isOpen } : {}),
+              ...(run.isDraft !== null ? { knownIsDraft: run.isDraft } : {}),
+              ...(agentReviewOf(run.reviewEvent) ? { knownAgentReview: agentReviewOf(run.reviewEvent)! } : {})
+            },
+            req.query.refresh === true
+          )
+        )
       }
     )
   }

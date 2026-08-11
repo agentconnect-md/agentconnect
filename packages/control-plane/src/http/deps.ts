@@ -53,6 +53,7 @@ import type {
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
+import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
 import type { LogtoIdentityService } from '../github/logto-identity.js'
 import type { HookService } from '../hooks/hook.service.js'
@@ -330,6 +331,8 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
+  /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
+  pullRequestView?: PullRequestViewService
   /** Per-user repo authorization (identity assertion, open question #7); absent ⇒ the
    *  org-level model (installation coverage only) and the permission route 404s. */
   githubUserAuthz?: GithubUserAuthzService

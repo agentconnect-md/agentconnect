@@ -1660,6 +1660,9 @@ model HookRun {
   @@index([status, startedAt])
   @@index([deliveryKey, status, redeliveryNextAttemptAt])
   @@index([status, redeliveryNextAttemptAt, redeliveryAttempts], map: "hook_run_redelivery_due_idx")
+  // The console PR panel's session -> owning run lookup. Declared unfiltered here because Prisma
+  // cannot express the partial predicate; the migration creates it WHERE sessionId IS NOT NULL.
+  @@index([orgId, sessionId], map: "hook_run_org_session_idx")
   @@map("hook_run")
 }
 

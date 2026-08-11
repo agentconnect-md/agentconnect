@@ -346,15 +346,15 @@ All following the existing workspace-route shape in `agents.ts`: `getOrgAgent` �
 `toDto`. Every route needs `tags`, `summary`, `description`, and a unique
 `operationId` or it renders nameless in the OpenAPI docs.
 
-| Method | Path                                                                         | Backing                              |
-| ------ | ---------------------------------------------------------------------------- | ------------------------------------ |
-| GET    | `/agents/:id/workspace/gitdiff`                                              | `workspace/gitdiff`                  |
-| GET    | `/agents/:id/workspace/gitlog`                                               | `workspace/gitlog`                   |
-| POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                         |
-| POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`               |
-| GET    | `/agents/:id/tasks`                                                          | `task/list`                          |
-| GET    | `/sessions/:id/pull-request`                                                 | GitHub API via installation token    |
-| POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge` |
+| Method | Path                                                                         | Backing                                 |
+| ------ | ---------------------------------------------------------------------------- | --------------------------------------- |
+| GET    | `/agents/:id/workspace/gitdiff`                                              | `workspace/gitdiff`                     |
+| GET    | `/agents/:id/workspace/gitlog`                                               | `workspace/gitlog`                      |
+| POST   | `/agents/:id/workspace/gitstage` \| `gitunstage` \| `gitcommit` \| `gitpush` | write frames                            |
+| POST   | `/agents/:id/workspace/gitmessage`                                           | `workspace/gitmessage`                  |
+| GET    | `/agents/:id/tasks`                                                          | `task/list`                             |
+| GET    | `/sessions/:id/pull-request`                                                 | Postgres identity + GitHub REST/GraphQL |
+| POST   | `/sessions/:id/pull-request/auto-merge`                                      | GraphQL `enablePullRequestAutoMerge`    |
 
 **`GET /agents/:id/tasks` does NOT use `canReadWorkspaceScope`**, and this
 paragraph's earlier claim that it would was wrong. That gate requires
@@ -861,6 +861,64 @@ status and counts; panel with checks, reviews and threads **read-only** (no
 Auto-fix, no Merge-when-ready). Tab hidden when the session has no linked run.
 _Exit:_ PR state is visible beside the conversation that is reviewing it.
 
+Three things measured against the shipped CP before writing any of it, each of
+which changes what M5 has to build:
+
+- **There is no GraphQL client in the control plane.** `github/api.ts` exposes
+  `githubRequest`, which is REST-only. Review-thread _resolution state_ does not
+  exist in REST at all — `/pulls/:n/comments` returns review comments with no
+  `isResolved` — so the design's "unresolved threads" section and its badge are
+  unbackable without one. M5 therefore adds a minimal `githubGraphql` helper
+  beside `githubRequest` (same installation auth, same timeout, same error
+  mapping, POST to `/graphql`). M6 needs it regardless for
+  `resolveReviewThread` and `enablePullRequestAutoMerge`, so this is not
+  speculative plumbing — but it was missing from this plan's route table, which
+  named both mutations as though the capability already existed.
+- **`HookRun.sessionId` is not indexed.** The lookup this route is built on — a
+  session id to the run that created it — would be a sequential scan of every
+  run in the deployment. M5 adds a migration for it. Nothing else in the plan
+  needed that column as a search key, which is why no index exists yet.
+- **The PR association is already persisted, so identity needs no GitHub call.**
+  `HookReviewProjection` carries `repoId`, `repoFullName`, `headSha`,
+  `reportSha` and `lastResolvedInstallationId`, and `HookReviewSubject` carries
+  `pullNumber`, `headSha`, `baseSha` and `isOpen` per projection — maintained by
+  the review broker's own commit→PR association pass. The route reads the PR's
+  identity and open/closed state from Postgres and spends GitHub calls only on
+  what is genuinely live: check runs, reviews, and threads. That also means a
+  rate-limited or denied GitHub call degrades to a panel that still names the
+  PR, rather than an empty tab.
+
+Two deliberate departures from M5's original sentence, found and settled while
+finishing the inherited wip:
+
+- **"Session DTO exposes its GitHub subject" is descoped.** The console finds
+  the tab by probing `GET /sessions/:id/pull-request` once per session view: the
+  404 arm costs 2–3 indexed DB queries and never reaches GitHub, and a linked
+  session's probe is the same read the panel needs anyway, deduplicated by the
+  service's TTL cache. Putting the subject on the session DTO would burden the
+  session LIST route with a per-row run lookup (or a batched join) to save a
+  probe that is already cheap — the sentence predates the probe design.
+- **Verdict precedence is fallback, not override.** GitHub's review list is
+  authoritative whenever it answered, because it already contains the agent's
+  own review. The run's `reviewEvent` surfaces as `agentReview` only on degraded
+  answers, so a rate-limited panel still shows the one review state the
+  deployment knows without GitHub. A GitHub 5xx reads as `unreachable`, not
+  `denied` — an outage must not point operators at a nonexistent installation
+  problem.
+- **A 404 probe is provisional, on a bounded ladder.** `hook/report` (which
+  writes `HookRun.sessionId`) and the terminal `event/session` snapshot are
+  separate concurrently-dispatched frames, so the session→run link can commit
+  after the status flip — or with no flip at all, when a reconnect restores an
+  already-terminal session. The panel therefore retries a held 404 on a bounded
+  backoff ladder (~2.5 min, then the absence is believed); a status transition
+  re-asks immediately and refills the ladder. These retries never reach GitHub —
+  the 404 arm is answered from the CP's own tables — so §9's rate-limit budget
+  is untouched, and an answered probe schedules nothing. The view service's
+  cache keys by `repoFullName` too (the name drives the query and URL, and
+  historical runs keep pre-rename names), and caches only the shared GitHub
+  projection: each caller's run facts (`knownIsOpen`/`knownIsDraft`/
+  `knownAgentReview`) are overlaid per return path, in-flight merges included.
+
 **M6 — PR actions.** The single Auto-fix button over the webchat turn path
 (§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the
 clamped token actually carrying write. _Exit:_ the design's headline loop — read
@@ -893,7 +951,10 @@ mutation.
   state; Sessions parity against the rail's own tests, which moved to
   `dock/SessionsPanel*.test.tsx` and must keep passing unchanged.
 - **control-plane `test:unit`** — DTO projections, the PR projection's
-  verdict-vs-GitHub precedence, the "no linked run" 404 path, write-capability
+  verdict-vs-GitHub precedence (GitHub's review list is authoritative when it
+  answered — it already contains the agent's review; the run's recorded
+  `reviewEvent` surfaces as `agentReview` ONLY on a degraded answer, so the
+  panel cannot double-draw it), the "no linked run" 404 path, write-capability
   clamping.
 - **control-plane `test:int`** — the authorization matrix on every new route:
   cross-org agent, restricted agent, session the viewer cannot see, agent with
@@ -920,7 +981,9 @@ a `sessionId` (the pull control was removed).
 **One deliberate departure from revision 2.** The per-thread auto-fix machine is
 not being built; the panel ships one Auto-fix action for the whole unresolved
 set (§5.2). The prototype's thread cards are therefore implemented read-only —
-location, body, and the review state that already comes from `HookRun.verdict`.
+location and body. The review state on thread cards comes from GitHub's own
+list; `HookRun`'s recorded review appears only as the degraded-arm fallback
+(`agentReview`), never beside GitHub's answer.
 
 ## 12. Open questions
 

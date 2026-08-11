@@ -2355,6 +2355,8 @@ export interface HookRepo {
   getRun(hookId: HookId, deliveryKey: string): Promise<HookRunRecord | null>
   /** Direct lookup for projection-owned metadata such as the terminal session deep link. */
   getRunById(runId: string): Promise<HookRunRecord | null>
+  /** Org-fenced: the pull-request run owning one session, for the console's PR panel. */
+  latestPullRequestRunForSession(orgId: OrgId, sessionId: string): Promise<HookRunRecord | null>
   /** Latest current revisions whose durable Check projection is absent or
    * stale. Used by the periodic R2a crash-repair loop. */
   listRunsNeedingReviewProjection(limit?: number): Promise<HookRunRecord[]>

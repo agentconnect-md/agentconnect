@@ -110,3 +110,37 @@ export async function githubRequest<T>(path: string, opts: GithubRequestOpts): P
   // 401 = our own JWT/key is wrong (misconfig) — internal, not retryable-by-daemon.
   throw new GithubApiError(`github error (${res.status}): ${detail}`, res.status, 'INTERNAL', res.status >= 500)
 }
+
+// One GraphQL query/mutation → its `data` — for facts with no REST equivalent (thread resolution
+// state, `resolveReviewThread`, `enablePullRequestAutoMerge`).
+export async function githubGraphql<T>(
+  query: string,
+  variables: Record<string, unknown>,
+  opts: Omit<GithubRequestOpts, 'method' | 'body'>
+): Promise<T> {
+  // GraphQL failures ride inside a 200, so `errors` decides here — the REST status mapping cannot.
+  const res = await githubRequest<{ data?: T | null; errors?: Array<{ type?: string; message?: string }> }>(
+    '/graphql',
+    { ...opts, method: 'POST', body: { query, variables } }
+  )
+  // Partial data beats a thrown read: a field-level denial degrades that field, not the whole answer.
+  if (res?.data) return res.data
+  const errors = res?.errors ?? []
+  if (errors.length > 0) {
+    const detail = errors.map((e) => e.message ?? e.type ?? 'unknown').join('; ')
+    // GitHub's GraphQL primary rate limit is a 200 with `errors[].type === 'RATE_LIMITED'`.
+    if (errors.some((e) => e.type === 'RATE_LIMITED')) {
+      throw new GithubApiError(`github graphql rate limited: ${detail}`, 200, 'RATE_LIMITED', true)
+    }
+    // Authorization and missing-node failures — the denial REST would have answered 404/403 with.
+    const denied = errors.some((e) => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND')
+    throw new GithubApiError(
+      `github graphql ${denied ? 'denied' : 'error'}: ${detail}`,
+      200,
+      denied ? 'LEASE_DENIED' : 'INTERNAL',
+      false
+    )
+  }
+  // `data` absent with no `errors` is a contract violation, not a partial answer.
+  throw new GithubApiError('github graphql returned no data', 200, 'INTERNAL', false)
+}

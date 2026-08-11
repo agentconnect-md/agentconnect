@@ -1026,6 +1026,15 @@ export class PgHookRepo implements HookRepo {
     return row ? toRunRecord(row) : null
   }
 
+  // The PR run owning one session (§3.4): org-fenced, PR-subject rows only, newest first (redelivery).
+  async latestPullRequestRunForSession(orgId: OrgId, sessionId: string): Promise<HookRunRecord | null> {
+    const row = await this.db.hookRun.findFirst({
+      where: { orgId, sessionId, subjectKind: 'pull_request', pullNumber: { not: null } },
+      orderBy: { startedAt: 'desc' }
+    })
+    return row ? toRunRecord(row) : null
+  }
+
   async listRunsNeedingReviewProjection(limit = 100): Promise<HookRunRecord[]> {
     const take = Math.max(1, Math.min(limit, 500))
     // There is intentionally no FK from HookRun to HookReviewProjection (the
