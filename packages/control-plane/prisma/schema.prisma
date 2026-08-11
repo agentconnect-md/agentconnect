@@ -2854,6 +2854,10 @@ model PendingDaemonKeyRevocation {
   apiKeyId  String   @id // the key to revoke (identity + idempotency key)
   orgId     String // whose envelope it belonged to; diagnostics only
   reason    String // recorded on the api_key row when the revoke lands
+  /// True ⇒ named but NOT yet eligible: the Secret may still carry this key, so
+  /// revoking it now could strand the pod on a dead credential. Cleared once a
+  /// higher-sequence publish has landed and its rollout has been asked for.
+  held      Boolean  @default(false)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("pending_daemon_key_revocation")

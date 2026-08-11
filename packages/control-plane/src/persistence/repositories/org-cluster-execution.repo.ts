@@ -32,9 +32,22 @@ function toTiers(value: unknown): ClusterRuntimeTier[] {
   })
 }
 
-/** Record a revocation intent inside the caller's transaction. Idempotent on the key id. */
-async function enqueueRevocation(tx: PrismaLike, orgId: string, apiKeyId: string, reason: string): Promise<void> {
-  await tx.pendingDaemonKeyRevocation.createMany({ data: [{ apiKeyId, orgId, reason }], skipDuplicates: true })
+/** Record a revocation intent inside the caller's transaction. Idempotent on the
+ *  key id — and never re-holds a key already released, since the insert is skipped. */
+async function enqueueRevocation(
+  tx: PrismaLike,
+  orgId: string,
+  apiKeyId: string,
+  reason: string,
+  held = false
+): Promise<void> {
+  await tx.pendingDaemonKeyRevocation.createMany({ data: [{ apiKeyId, orgId, reason, held }], skipDuplicates: true })
+}
+
+/** Release every key held against this org: a higher-sequence Secret has landed,
+ *  so nothing older can still be the credential the pod is about to mount. */
+async function releaseHeldRevocations(tx: PrismaLike, orgId: string): Promise<void> {
+  await tx.pendingDaemonKeyRevocation.updateMany({ where: { orgId, held: true }, data: { held: false } })
 }
 
 function toRecord(row: OrgClusterExecution): ClusterExecutionSettings {
@@ -141,10 +154,11 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       })
       if (held.count === 0) return false
       // The slot holds one key, so a key it displaces would otherwise lose its
-      // only handle. Queue it in the same transaction; the drain runs after a
-      // publish has superseded it.
+      // only handle. Queue it HELD in the same transaction: the displaced key may
+      // already sit in the Secret, and this successor has not published yet, so
+      // it must be named now but stay unrevocable until a commit supersedes it.
       if (displaced && displaced !== apiKeyId) {
-        await enqueueRevocation(tx, orgId, displaced, 'cluster credential rotation abandoned')
+        await enqueueRevocation(tx, orgId, displaced, 'cluster credential rotation abandoned', true)
       }
       return true
     })
@@ -177,15 +191,16 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       })
       if (won.count === 0) return false
       // Same transaction as the overwrite: queueing the predecessor separately
-      // would lose it whenever the process stopped in between. A key a previous
-      // rotation left STAGED is retired here too, not at claim time — it may
-      // already have been published, so it stays the pod's working credential
-      // until this publish has definitely replaced it.
+      // would lose it whenever the process stopped in between.
       for (const superseded of [before?.credentialApiKeyId, before?.credentialStagedApiKeyId]) {
         if (superseded && superseded !== credential.apiKeyId) {
           await enqueueRevocation(tx, orgId, superseded, reason)
         }
       }
+      // This commit is the higher-sequence publish every held key was waiting on:
+      // the Secret now carries `credential.apiKeyId` and the rollout is asked for
+      // by the `specRevision` bump above, so the older keys become revocable.
+      await releaseHeldRevocations(tx, orgId)
       return true
     })
   }
@@ -221,6 +236,9 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
       for (const apiKeyId of [current.credentialApiKeyId, current.credentialStagedApiKeyId]) {
         if (apiKeyId) await enqueueRevocation(tx, orgId, apiKeyId, reason)
       }
+      // The envelope is being destroyed, so no Secret it owns can still matter:
+      // a key held against a pod that is going away has nothing left to protect.
+      await releaseHeldRevocations(tx, orgId)
       // The resource must go too, and the cluster call can fail — so record the
       // intent here, where it is atomic with the credential being dropped.
       await tx.pendingEnvelopeTeardown.createMany({
@@ -231,12 +249,13 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
     })
   }
 
-  async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void> {
-    await enqueueRevocation(this.prisma, orgId, apiKeyId, reason)
+  async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string, held = false): Promise<void> {
+    await enqueueRevocation(this.prisma, orgId, apiKeyId, reason, held)
   }
 
   async listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]> {
     return this.prisma.pendingDaemonKeyRevocation.findMany({
+      where: { held: false },
       select: { apiKeyId: true, orgId: true, reason: true },
       orderBy: { createdAt: 'asc' },
       take: limit
@@ -245,6 +264,31 @@ export class PgOrgClusterExecutionRepo implements OrgClusterExecutionRepo {
 
   async clearKeyRevocation(apiKeyId: string): Promise<void> {
     await this.prisma.pendingDaemonKeyRevocation.deleteMany({ where: { apiKeyId } })
+  }
+
+  /** `ON CONFLICT DO NOTHING`, deliberately — an upsert here would let the loser
+   *  of a first-enable race rewrite the winner's freshly claimed row. */
+  async createIfAbsent(orgId: OrgId, defaults: ClusterExecutionDefaults): Promise<void> {
+    await this.prisma.orgClusterExecution.createMany({
+      data: [
+        {
+          orgId,
+          enabled: false,
+          targetNamespace: defaults.targetNamespace,
+          daemonImage: defaults.daemonImage,
+          daemonTier: defaults.daemonTier,
+          credentialSecretName: defaults.credentialSecretName,
+          runtimeImage: defaults.runtimeImage,
+          runtimeTiers: defaults.runtimeTiers as unknown as Prisma.InputJsonValue,
+          quotaMaxAgents: defaults.quota.maxAgents,
+          quotaCpu: defaults.quota.cpu,
+          quotaMemory: defaults.quota.memory,
+          quotaStorage: defaults.quota.storage,
+          egressPolicy: defaults.egressPolicy
+        }
+      ],
+      skipDuplicates: true
+    })
   }
 
   async upsert(

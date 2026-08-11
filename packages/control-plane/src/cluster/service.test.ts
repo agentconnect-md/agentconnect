@@ -36,15 +36,18 @@ const POLICY: ClusterExecutionPolicy = {
   controlPlaneUrl: 'wss://api.example.test/daemon/ws'
 }
 
+/** A queued revocation plus the eligibility flag the table carries. */
+type QueuedRevocation = PendingDaemonKeyRevocation & { held: boolean }
+
 /** In-memory settings row with the repo's revision-bump-on-every-write contract. */
 class FakeRepo implements OrgClusterExecutionRepo {
   row: ClusterExecutionSettings | null = null
   tombstones: PendingEnvelopeTeardown[] = []
-  revocations: PendingDaemonKeyRevocation[] = []
+  revocations: QueuedRevocation[] = []
   rotationAt: Date | null = null
   rotationToken: string | null = null
   rotationSeq = 0
-  /** Simulates an upsert whose row is cascaded away before anything reads it. */
+  /** Simulates a write whose row is cascaded away before anything reads it. */
   swallowUpsert = false
 
   async get(): Promise<ClusterExecutionSettings | null> {
@@ -92,7 +95,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
     const displaced = this.row.credentialStagedApiKeyId
     this.row = { ...this.row, credentialStagedApiKeyId: apiKeyId }
     if (displaced && displaced !== apiKeyId) {
-      await this.enqueueKeyRevocation(this.row.orgId, displaced, 'cluster credential rotation abandoned')
+      await this.enqueueKeyRevocation(this.row.orgId, displaced, 'cluster credential rotation abandoned', true)
     }
     return true
   }
@@ -117,6 +120,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
     for (const key of [superseded, stagedBefore]) {
       if (key && key !== credential.apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, key, reason)
     }
+    this.releaseHeld()
     return true
   }
 
@@ -132,6 +136,7 @@ class FakeRepo implements OrgClusterExecutionRepo {
     for (const apiKeyId of [this.row.credentialApiKeyId, this.row.credentialStagedApiKeyId]) {
       if (apiKeyId) await this.enqueueKeyRevocation(this.row.orgId, apiKeyId, reason)
     }
+    this.releaseHeld()
     this.tombstones.push({ orgId: this.row.orgId, targetNamespace: this.row.targetNamespace })
     this.row = {
       ...this.row,
@@ -143,18 +148,38 @@ class FakeRepo implements OrgClusterExecutionRepo {
     return true
   }
 
-  async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void> {
+  async enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string, held = false): Promise<void> {
     if (!this.revocations.some((entry) => entry.apiKeyId === apiKeyId)) {
-      this.revocations.push({ apiKeyId, orgId, reason })
+      this.revocations.push({ apiKeyId, orgId, reason, held })
     }
   }
 
+  /** A higher-sequence publish landed, so nothing older is the pod's credential. */
+  private releaseHeld(): void {
+    this.revocations = this.revocations.map((entry) => ({ ...entry, held: false }))
+  }
+
   async listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]> {
-    return this.revocations.slice(0, limit)
+    return this.revocations.filter((entry) => !entry.held).slice(0, limit)
   }
 
   async clearKeyRevocation(apiKeyId: string): Promise<void> {
     this.revocations = this.revocations.filter((entry) => entry.apiKeyId !== apiKeyId)
+  }
+
+  /** Insert-only, like the repo's `ON CONFLICT DO NOTHING`. */
+  async createIfAbsent(orgId: OrgId, defaults: ClusterExecutionDefaults): Promise<void> {
+    if (this.row || this.swallowUpsert) return
+    this.row = {
+      orgId,
+      enabled: false,
+      specRevision: 1,
+      credentialRotationSeq: 0,
+      suspend: false,
+      ...defaults,
+      createdAt: new Date(0),
+      updatedAt: new Date(0)
+    }
   }
 
   async upsert(
@@ -459,6 +484,28 @@ describe('ClusterExecutionService.issueCredential', () => {
     expect((await repo.get())?.credentialStagedApiKeyId).toBeUndefined()
   })
 
+  it('does not revoke the displaced orphan until a publish has superseded it', async () => {
+    const { service, repo, secrets, keys } = build()
+    await service.configure(ORG, { enabled: true })
+    repo.row = { ...repo.row!, credentialStagedApiKeyId: 'orphan-key' }
+    repo.rotationAt = new Date(Date.now() - 60 * 60 * 1000)
+    repo.rotationToken = 'dead-holder'
+    // The orphan may be what the Secret currently holds, and this pass never
+    // reaches the cluster — so its own cleanup must not drain the orphan with it.
+    secrets.namespaceMissing = true
+
+    await expect(service.issueCredential(ORG)).rejects.toThrow(NamespaceNotReadyError)
+    expect(keys.revoked).toEqual(['key-1'])
+    expect(repo.revocations.map((entry) => entry.apiKeyId)).toEqual(['orphan-key'])
+
+    // The next successful rotation is the higher-sequence publish it was waiting
+    // on, so only then does it become revocable.
+    secrets.namespaceMissing = false
+    await service.issueCredential(ORG)
+    expect(keys.revoked).toContain('orphan-key')
+    expect(repo.revocations).toEqual([])
+  })
+
   it('refuses to commit behind the successor that took its claim over', async () => {
     const { service, repo, secrets, keys } = build()
     await service.configure(ORG, { enabled: true })
@@ -470,8 +517,10 @@ describe('ClusterExecutionService.issueCredential', () => {
 
     await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
     expect((await repo.get())?.credentialRevision).toBeUndefined()
-    // The key it minted is not silently dropped.
-    expect(keys.revoked).toEqual(['key-1'])
+    // The key it minted is not silently dropped — but its publish DID land, so
+    // it is named and held rather than revoked out from under a restarting pod.
+    expect(repo.revocations.map((entry) => entry.apiKeyId)).toEqual(['key-1'])
+    expect(keys.revoked).toEqual([])
     // And its release did not unlock the successor.
     expect(repo.rotationToken).toBe('successor')
   })
@@ -512,6 +561,10 @@ describe('ClusterExecutionService.issueCredential', () => {
 
     await expect(service.issueCredential(ORG)).rejects.toThrow(ClusterRotationInProgressError)
     expect((await repo.get())?.credentialRevision).toBeUndefined()
+    // Named, and held only until the retirement that disabling performs releases
+    // it — the envelope is going away, so nothing is left to strand.
+    expect(repo.revocations.map((entry) => entry.apiKeyId)).toEqual(['key-1'])
+    await service.configure(ORG, { enabled: false })
     expect(keys.revoked).toEqual(['key-1'])
   })
 

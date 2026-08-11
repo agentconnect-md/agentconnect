@@ -4998,9 +4998,9 @@ export interface OrgClusterExecutionRepo {
   /**
    * Claim the org's credential transition under a fresh fencing `token`, or
    * return null when a live claim belongs to someone else. A claim older than
-   * `leaseMs` is taken over — and the takeover ADOPTS any staged key the dead
-   * holder left, queueing it for revocation in the same transaction, so a
-   * crashed rotation cannot strand a live key.
+   * `leaseMs` is taken over; a key the dead holder left staged is deliberately
+   * NOT touched here — it may already be published, so it stays the pod's
+   * working credential until a later publish has definitely replaced it.
    */
   beginCredentialRotation(
     orgId: OrgId,
@@ -5014,13 +5014,17 @@ export interface OrgClusterExecutionRepo {
    *  can fail — otherwise every retry would provision another daemon. Does not
    *  bump `specRevision`: the CR spec carries no daemon id. False ⇒ claim lost. */
   stageCredentialDaemon(orgId: OrgId, token: string, daemonId: string): Promise<boolean>
-  /** Record a minted key as staged, BEFORE it is published. False ⇒ claim lost. */
+  /** Record a minted key as staged, BEFORE it is published. A key it displaces
+   *  is queued HELD — named durably, but not revocable until a higher-sequence
+   *  publish supersedes it. False ⇒ claim lost. */
   stageCredentialKey(orgId: OrgId, token: string, apiKeyId: string): Promise<boolean>
   /**
    * Promote the staged key to the org's credential in ONE transaction: bump
    * `specRevision` (so the CR re-applies with the new `credentialRevision`),
-   * clear the staged slot, and queue the superseded key for revocation. Atomic
-   * because a commit that queued the predecessor separately could lose it.
+   * clear the staged slot, queue the superseded key for revocation, and release
+   * every key held against this envelope — this commit IS the higher-sequence
+   * publish they were waiting on. Atomic because a commit that queued the
+   * predecessor separately could lose it.
    * False ⇒ the claim was taken over; nothing was written.
    */
   commitCredential(
@@ -5034,19 +5038,25 @@ export interface OrgClusterExecutionRepo {
   abandonStagedCredential(orgId: OrgId, token: string, reason: string): Promise<void>
   /**
    * Retire the envelope's credential in ONE transaction: clear the credential
-   * and staged slots, queue both keys for revocation, and record the resource
-   * for teardown. Everything durable BEFORE the cluster is touched, so a
-   * disable whose delete fails still converges through maintenance.
-   * False ⇒ the claim was taken over; nothing was written.
+   * and staged slots, queue both keys for revocation, release every held key
+   * (the envelope itself is going away, so no Secret can still matter), and
+   * record the resource for teardown. Everything durable BEFORE the cluster is
+   * touched, so a disable whose delete fails still converges through
+   * maintenance. False ⇒ the claim was taken over; nothing was written.
    */
   retireCredential(orgId: OrgId, token: string, reason: string): Promise<boolean>
   /** Record that a key must be revoked, outside any claim — the unwind path for
-   *  a pass that lost its claim mid-flight. Idempotent on the key id. */
-  enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string): Promise<void>
-  /** Oldest-first batch of keys still awaiting revocation. */
+   *  a pass that lost its claim mid-flight. `held` ⇒ the key may already be in
+   *  the Secret, so name it now and let a later commit release it. Idempotent. */
+  enqueueKeyRevocation(orgId: string, apiKeyId: string, reason: string, held?: boolean): Promise<void>
+  /** Oldest-first batch of keys eligible for revocation; held keys are excluded. */
   listPendingKeyRevocations(limit: number): Promise<PendingDaemonKeyRevocation[]>
   /** Drop the intent once the key is actually revoked. Idempotent. */
   clearKeyRevocation(apiKeyId: string): Promise<void>
+  /** Insert a disabled row from `defaults` if the org has none. Insert-only: a
+   *  losing racer must NOT fall through to an update, or its 409 would carry the
+   *  winner's row backwards. Idempotent. */
+  createIfAbsent(orgId: OrgId, defaults: ClusterExecutionDefaults): Promise<void>
   /** Create from `defaults` merged with `patch`, or apply `patch` to the existing
    *  row, always bumping `specRevision`. `targetNamespace` and
    *  `credentialSecretName` are only ever written by the create branch — the CRD

@@ -277,8 +277,9 @@ undo the retirement disable just performed. Beyond that, three mechanisms:
   what stops an expired holder from committing behind its successor or unlocking
   it, and `commitCredential` additionally requires `enabled: true` so no
   rotation can land a live key on an envelope disable already retired. A
-  takeover ADOPTS whatever the dead holder left in `credentialStagedApiKeyId`,
-  queueing it for revocation in the same transaction.
+  takeover deliberately does NOT touch whatever the dead holder left in
+  `credentialStagedApiKeyId` — that key may already be published, so it stays
+  the pod's working credential until a later publish has definitely replaced it.
 - **A sequence for the cluster, since the token cannot reach it.** A database
   token cannot fence a request already in flight to the API server, so
   `credentialRotationSeq` — monotonic per claim — is stamped on the Secret as
@@ -295,6 +296,15 @@ undo the retirement disable just performed. Beyond that, three mechanisms:
   once they land; promoting a key and queueing the one it supersedes happen in
   ONE transaction, because a stop in between would overwrite the only handle to
   the predecessor. The maintenance loop retries whatever is still owed.
+- **Named before revocable.** Naming a key is not permission to kill it. A key
+  that MAY be in the Secret — the one a successor displaces out of the staged
+  slot, or one whose publish landed but whose commit lost the claim — is queued
+  `held`: durable, listed by nothing, drained by nothing. `commitCredential`
+  releases every held key for the org, because that commit IS the
+  higher-sequence publish they were waiting on and its `specRevision` bump is
+  the rollout request; retiring the envelope releases them too, since a pod that
+  is going away has no credential left to strand. Only a key that definitely
+  never reached the cluster is revoked on the spot.
 
 Disabling takes the same claim BEFORE it writes anything, and the write that
 clears `enabled` is the same transaction that drops the credential, queues both

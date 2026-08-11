@@ -153,11 +153,10 @@ export class ClusterExecutionService {
     // The claim comes FIRST, before `enabled` moves: a row flipped outside the
     // claim is a state change a concurrent disable or drain never saw.
     // `beginCredentialRotation` needs a row to claim, so an org that has never
-    // configured anything is created disabled and only then enabled under the
-    // claim — which is also the create path's own first write.
-    if (!(await this.repo.get(orgId))) {
-      await this.repo.upsert(orgId, this.defaults(orgId), { ...patch, enabled: false })
-    }
+    // configured anything gets a disabled defaults row and is enabled under the
+    // claim. Insert-only: two first-enable calls both see no row, and the one
+    // that loses must leave the winner's row exactly as the winner claimed it.
+    await this.repo.createIfAbsent(orgId, this.defaults(orgId))
     const token = randomUUID()
     const claimed = await this.repo.beginCredentialRotation(orgId, token, new Date(this.clock.now()), ROTATION_LEASE_MS)
     if (!claimed) {
@@ -345,7 +344,11 @@ export class ClusterExecutionService {
    *   behind its successor or unlock it.
    * - **Staged before published.** The minted key is recorded before the Secret
    *   is written, so any failure or crash after that point leaves a durable
-   *   handle — the next claimer adopts it for revocation.
+   *   handle the next claimer picks up.
+   * - **Named before revocable.** A key that MAY be in the Secret is queued
+   *   held: durably named, but not revocable until a higher-sequence publish has
+   *   landed and asked for its rollout. Only a key that definitely never reached
+   *   the cluster is revoked on the spot.
    * - **Committed atomically.** Promoting the staged key and queueing the one it
    *   supersedes happen in one transaction; separately, a stop in between would
    *   overwrite the only handle to the predecessor.
@@ -377,8 +380,10 @@ export class ClusterExecutionService {
 
       // Durable before the publish: from here on the key is recoverable by
       // whoever next claims the transition, whatever happens to this process.
+      // Nothing has reached the cluster yet, so a key this pass can no longer
+      // own is definitely not in the Secret and is revocable immediately.
       if (!(await this.repo.stageCredentialKey(orgId, token, minted.apiKeyId))) {
-        throw await this.lostClaim(orgId, minted.apiKeyId)
+        throw await this.lostClaim(orgId, minted.apiKeyId, false)
       }
       try {
         await this.secrets.publishCredential(
@@ -419,7 +424,9 @@ export class ClusterExecutionService {
         { daemonId: minted.daemonId, apiKeyId: minted.apiKeyId, revision: minted.apiKeyId },
         'cluster credential rotated'
       )
-      if (!committed) throw await this.lostClaim(orgId, minted.apiKeyId)
+      // The publish above succeeded, so this key IS in the Secret right now: name
+      // it, but leave it to the successor's commit to release.
+      if (!committed) throw await this.lostClaim(orgId, minted.apiKeyId, true)
       await this.converge(orgId)
       await this.drainKeyRevocations()
 
@@ -455,10 +462,12 @@ export class ClusterExecutionService {
 
   /** The lease expired and someone else owns the transition. The key this pass
    *  minted is no longer anyone's credential, so hand it to the revocation queue
-   *  under the successor's ownership rather than dropping it on the floor. */
-  private async lostClaim(orgId: OrgId, apiKeyId: string): Promise<Error> {
-    await this.repo.enqueueKeyRevocation(orgId, apiKeyId, 'cluster credential rotation superseded')
-    await this.drainKeyRevocations()
+   *  under the successor's ownership rather than dropping it on the floor —
+   *  HELD when it may already be published, since the successor's commit is what
+   *  proves a higher-sequence Secret has replaced it. */
+  private async lostClaim(orgId: OrgId, apiKeyId: string, published: boolean): Promise<Error> {
+    await this.repo.enqueueKeyRevocation(orgId, apiKeyId, 'cluster credential rotation superseded', published)
+    await this.drainKeyRevocations() // settles whatever is eligible; held keys are not
     return new ClusterRotationInProgressError()
   }
 

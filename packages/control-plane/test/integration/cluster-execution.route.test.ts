@@ -20,7 +20,8 @@ import { PgAuditRepo } from '../../src/persistence/repositories/audit.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
-import type { OrgMemberRole } from '../../src/persistence/ports.js'
+import type { ClusterExecutionDefaults, OrgMemberRole } from '../../src/persistence/ports.js'
+import { OrgId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -35,6 +36,17 @@ const POLICY = {
   controlPlaneUrl: 'wss://api.example.test/daemon/ws'
 }
 const TARGET_NAMESPACE = orgNamespace(POLICY.namespacePrefix, DEFAULT_ORG_ID)
+/** What the service derives for an org that has never configured anything. */
+const DEFAULTS: ClusterExecutionDefaults = {
+  targetNamespace: TARGET_NAMESPACE,
+  daemonImage: POLICY.daemonImage,
+  daemonTier: POLICY.daemonTier,
+  credentialSecretName: 'ac-daemon-token',
+  runtimeImage: POLICY.runtimeImage,
+  runtimeTiers: POLICY.runtimeTiers,
+  quota: { maxAgents: 0, cpu: '0', memory: '0', storage: '0' },
+  egressPolicy: 'curated'
+}
 const RESOURCE_PATH = `/apis/agentconnect.md/v1alpha1/namespaces/${CONTROL_NAMESPACE}/agentconnectorgs/${TARGET_NAMESPACE}`
 
 /** A per-request override; undefined falls through to the harness's default store. */
@@ -54,6 +66,8 @@ interface ClusterHarness {
   applied: { spec?: Record<string, unknown> }[]
   /** Credential Secrets written, newest last. */
   secrets: { path: string; seq: number; configJson: string }[]
+  /** Make every Secret call 404 from here on, as an uncreated namespace does. */
+  setNamespaceMissing(missing: boolean): void
 }
 
 /**
@@ -69,6 +83,7 @@ async function clusterApp(
   const secrets: { path: string; seq: number; configJson: string }[] = []
   let stored: unknown = null
   let storedSecret: { metadata: { resourceVersion: string; annotations: Record<string, string> } } | null = null
+  let namespaceMissing = options.namespaceMissing ?? false
   const server = await fakeApiServer((req) => {
     calls.push(`${req.method} ${req.url.pathname}`)
     // Secrets are a real little store: the provisioner reads before it writes,
@@ -76,7 +91,7 @@ async function clusterApp(
     const isSecret = req.url.pathname.includes('/secrets')
     if (isSecret) {
       const missing = { status: 404, json: { kind: 'Status', reason: 'NotFound', message: 'not found' } }
-      if (options.namespaceMissing) return missing
+      if (namespaceMissing) return missing
       if (req.method === 'GET') return storedSecret ? { json: storedSecret } : missing
       if (req.method === 'POST' || req.method === 'PUT') {
         const body = JSON.parse(req.body) as {
@@ -138,7 +153,15 @@ async function clusterApp(
     { clusterExecution: cluster }
   )
   opened.push(http)
-  return { http, calls, applied, secrets }
+  return {
+    http,
+    calls,
+    applied,
+    secrets,
+    setNamespaceMissing: (missing: boolean) => {
+      namespaceMissing = missing
+    }
+  }
 }
 
 /** Provision a user and add them to the default org with a role. */
@@ -264,6 +287,18 @@ describe('PUT /cluster-execution', () => {
     // The row still records what was asked for, so a retry converges.
     const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
     expect(row?.enabled).toBe(true)
+  })
+
+  it('never writes an existing row backwards while bootstrapping a first enable', async () => {
+    const repo = new PgOrgClusterExecutionRepo(prisma)
+    // Two first enables both see no row. The one that gets there second must
+    // find its bootstrap a pure no-op — an upsert here would push the winner's
+    // envelope back to disabled on its way to a 409.
+    await repo.upsert(OrgId(DEFAULT_ORG_ID), DEFAULTS, { enabled: true, daemonImage: 'registry.example.test/daemon:2' })
+    const winner = await repo.get(OrgId(DEFAULT_ORG_ID))
+
+    await repo.createIfAbsent(OrgId(DEFAULT_ORG_ID), { ...DEFAULTS, daemonImage: 'registry.example.test/daemon:3' })
+    expect(await repo.get(OrgId(DEFAULT_ORG_ID))).toEqual(winner)
   })
 })
 
@@ -459,6 +494,37 @@ describe('POST /cluster-execution/credential', () => {
     expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(201)
     const row = await prisma.orgClusterExecution.findUnique({ where: { orgId: DEFAULT_ORG_ID } })
     expect(row?.credentialStagedApiKeyId).toBeNull()
+    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).not.toBeNull()
+    expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
+  })
+
+  it('never revokes a displaced key while the Secret may still carry it', async () => {
+    const { http, setNamespaceMissing } = await clusterApp()
+    await http.app.inject({ method: 'PUT', url: CLUSTER, payload: { enabled: true } })
+    const first = (await http.app.inject({ method: 'POST', url: CREDENTIAL })).json()
+    const orphan = await prisma.apiKey.findFirstOrThrow({ where: { daemonId: first.daemonId } })
+    // A holder that died after staging that key — it is what the Secret holds.
+    await prisma.orgClusterExecution.update({
+      where: { orgId: DEFAULT_ORG_ID },
+      data: {
+        credentialStagedApiKeyId: orphan.id,
+        credentialRotationAt: new Date(Date.now() - 60 * 60 * 1000),
+        credentialRotationToken: 'dead-holder'
+      }
+    })
+
+    // This pass displaces the orphan and then fails to publish anything, so the
+    // Secret is unchanged: draining the orphan now would kill the live credential.
+    setNamespaceMissing(true)
+    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(409)
+    expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).toBeNull()
+    expect(await prisma.pendingDaemonKeyRevocation.findUniqueOrThrow({ where: { apiKeyId: orphan.id } })).toMatchObject(
+      { held: true }
+    )
+
+    // The next publish is the higher sequence it was waiting on.
+    setNamespaceMissing(false)
+    expect((await http.app.inject({ method: 'POST', url: CREDENTIAL })).statusCode).toBe(201)
     expect((await prisma.apiKey.findUniqueOrThrow({ where: { id: orphan.id } })).revokedAt).not.toBeNull()
     expect(await prisma.pendingDaemonKeyRevocation.count()).toBe(0)
   })
