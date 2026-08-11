@@ -348,10 +348,11 @@ describe('replacing a cluster workspace in place', () => {
     )
   })
 
-  it('will not trust a rewritten origin that no successful pull backs up', async () => {
+  it('will not trust a rewritten origin that no successful pull backs up, on ANY attempt', async () => {
     // A rewritten URL says nothing about the tree that was already there: the branch name can match
     // in both repositories while the content is the old one. Only a pull that succeeded against the
-    // new origin shows otherwise.
+    // new origin shows otherwise — and the proof has to survive a retry, which is what makes it a
+    // question about the stored marker rather than about what this call happened to rewrite.
     const agent = bookkeepingAgent()
     await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
 
@@ -363,9 +364,34 @@ describe('replacing a cluster workspace in place', () => {
     originUrl = 'https://github.com/acme/private.git' // convergence has to rewrite it
     pullFails = true
     await prepareClusterWorkspace(renamed, POD_ROOT)
+
+    // SECOND attempt: `set-url` persisted, so the origin already matches and nothing is rewritten
+    // this time. Keyed off that, the proof would evaporate and the marker would advance over a tree
+    // no pull has ever reached.
+    originUrl = 'https://github.com/acme/renamed.git'
+    await prepareClusterWorkspace(renamed, POD_ROOT)
+
     await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).rejects.toThrow(
       /cannot be converted in place with --k8s yet/
     )
+
+    // And once a pull from the new origin does succeed, it is proven and recorded.
+    pullFails = false
+    await prepareClusterWorkspace(renamed, POD_ROOT)
+    await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
+    )
+  })
+
+  it('requires a successful pull before trusting a volume no marker attests', async () => {
+    // A daemon with no marker and an existing checkout — a rebuilt daemon adopting a volume — knows
+    // nothing about where that tree came from, so `origin` matching proves nothing on its own.
+    checkoutExists = true
+    pullFails = true
+    const agent = bookkeepingAgent()
+    await prepareClusterWorkspace(agent, POD_ROOT)
+    // Unproven, so the marker stays absent and a conversion later is still detectable.
+    expect(existsSync(`${dirname(agent.workspace.path)}/.workspace.workspace-materialization.json`)).toBe(false)
   })
 
   it('refuses only a conversion of an EXISTING checkout, which has no rollback in a pod', async () => {

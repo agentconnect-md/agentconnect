@@ -223,6 +223,33 @@ async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path)
 }
 
 /**
+ * Whether a stored marker already attests that the volume's tree came from the configured
+ * REPOSITORY.
+ *
+ * Durable on purpose. The obvious proxy — "did convergence just rewrite the origin?" — is per call,
+ * while `remote set-url` persists: a second attempt after a failed pull finds the origin already
+ * correct, concludes nothing was rewritten, and would record a marker for a repository no pull has
+ * ever reached. Only something written down survives that, and the marker is the thing written down.
+ *
+ * Branch is deliberately not compared here; HEAD answers that directly. Absent or unparseable counts
+ * as no attestation, so a pull has to prove it.
+ */
+function markerAttestsRepository(previous: string | undefined, target: string): boolean {
+  if (previous === undefined) return false
+  const repoOf = (raw: string): string | undefined => {
+    try {
+      const parsed = JSON.parse(raw) as { repo?: unknown }
+      return typeof parsed.repo === 'string' ? parsed.repo.replace(/\.git$/i, '').toLowerCase() : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const left = repoOf(previous)
+  const right = repoOf(target)
+  return left !== undefined && right !== undefined && left === right
+}
+
+/**
  * Which branch the pod's checkout is actually on.
  *
  * `pullWorkspaceRef` pulls INTO the current branch rather than switching to the configured one, so
@@ -247,7 +274,7 @@ async function clusterCheckoutBranch(agentId: string, checkout: string): Promise
  * test, and for a pod it is a question asked over the channel. What follows is identical, and has to
  * be — this is where a repository rename is followed and where an untrusted origin is refused.
  */
-async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<{ rewritten: boolean }> {
+async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<void> {
   const expected = gitRepoOf(agent)
   const git = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
   let current: string
@@ -255,9 +282,7 @@ async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<{ rewri
     current = (await git.raw(['remote', 'get-url', 'origin'])).trim()
   } catch (cause) {
     if (usesGithubApp(agent)) throw new UntrustedGithubWorkspaceOriginError({ cause })
-    // An anonymous checkout with no readable origin: nothing was rewritten, and nothing more can be
-    // established about it here.
-    return { rewritten: false }
+    return
   }
   if (usesGithubApp(agent) && !isTrustedGithubOrigin(current)) {
     throw new UntrustedGithubWorkspaceOriginError()
@@ -271,11 +296,10 @@ async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<{ rewri
     unsafeCurrent = true
   }
   const mismatched = normalizedCurrent.toLowerCase() !== expected.toLowerCase()
-  if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !usesGithubApp(agent))) return { rewritten: false }
+  if ((!mismatched && !unsafeCurrent) || (!unsafeCurrent && !usesGithubApp(agent))) return
   // App-backed mismatches and unsafe anonymous origins must converge before
   // daemon-managed Git can proceed. A failed rewrite is fail-closed.
   await git.raw(['remote', 'set-url', 'origin', expected])
-  return { rewritten: true }
 }
 
 function materializationKey(agent: Agent): string {
@@ -807,7 +831,8 @@ export async function prepareClusterWorkspace(
   // Whether the volume can be PROVEN to hold what the marker would claim. A fresh clone can, by
   // construction (`--branch` at clone time). An existing one has to be interrogated.
   let volumeMatchesConfig = false
-  let originRewritten = false
+  const targetMarker = materializationKey(agent)
+  const repositoryAttested = markerAttestsRepository(readMaterialization(agent), targetMarker)
   if (!(await clusterCheckoutExists(agent.id, checkout))) {
     await cloneRepoInSandbox(agent, root, repository)
     volumeMatchesConfig = true
@@ -816,7 +841,7 @@ export async function prepareClusterWorkspace(
     // path does to one: follow a repository rename onto the canonical URL (and refuse an origin
     // that is not a trusted GitHub remote, which is fail-closed), and re-pin the helper line in
     // `.git/config`, whose agent id goes stale when an agent is recreated over a surviving volume.
-    originRewritten = (await convergeOriginInPlace(agent, checkout)).rewritten
+    await convergeOriginInPlace(agent, checkout)
     if (githubApp) {
       await writeRepoHelperConfig(runnerFor(agent.id, checkout), agent.id).catch(() => undefined)
     }
@@ -855,13 +880,16 @@ export async function prepareClusterWorkspace(
   // wrong branch indefinitely — silently, which is the property that makes it expensive.
   //
   // Provable means: a fresh clone (its `--branch` decided HEAD), or an existing checkout whose HEAD
-  // IS the configured branch — plus, when convergence had to rewrite the origin, a pull that
-  // succeeded against it, since a rewritten URL says nothing about the tree that was already there.
-  // Anything else leaves the marker alone, so a later activation still sees the change and refuses
-  // it with a message naming what to do.
+  // IS the configured branch AND whose tree is attributable to the configured repository — either
+  // because a stored marker already attests it, or because a pull from it just succeeded. A rewritten
+  // origin says nothing about the tree that was already there, and a branch name can match in both
+  // repositories, so without one of those two the volume is simply unproven.
+  //
+  // Anything else leaves the marker alone, so a later activation still sees the change and refuses it
+  // with a message naming what to do.
   if (!volumeMatchesConfig) {
     const head = await clusterCheckoutBranch(agent.id, checkout)
-    volumeMatchesConfig = head === agent.workspace.gitBranch && (!originRewritten || pulled)
+    volumeMatchesConfig = head === agent.workspace.gitBranch && (repositoryAttested || pulled)
   }
   if (!volumeMatchesConfig) {
     workspaceLog.warn(
