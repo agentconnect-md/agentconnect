@@ -41,6 +41,8 @@ export interface ShimClientDeps {
   handle?: (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown>
   /** Resolves executables in THIS filesystem for the ACP runner. */
   resolveCommand?: ResolveCommand
+  /** Pod environment the ACP runner consults for provider fill-ins (SANDBOX_PROVIDER_ENV). */
+  podEnv?: Record<string, string | undefined>
   clock?: Clock
   backoff?: Backoff
   log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -269,6 +271,7 @@ export class ShimClient {
         // a captured reference would send every later byte into it.
         emit: (event) => this.emitEvent(streamId, event),
         ...(this.deps.resolveCommand ? { resolveCommand: this.deps.resolveCommand } : {}),
+        ...(this.deps.podEnv ? { podEnv: this.deps.podEnv } : {}),
         ...(this.deps.log ? { log: this.deps.log } : {})
       })
       this.acpStreams.set(streamId, runner)

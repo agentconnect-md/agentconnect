@@ -10,7 +10,11 @@ runtimeClass, admission policy, egress control, and a managed egress proxy so a 
 key never enters the sandbox — is a separate, later plan. Until it lands, the pod and the
 per-org namespace are the only isolation boundaries, and a provider key is present inside
 the sandbox, so this shape suits internal dogfooding and self-hosted
-bring-your-own-key.
+bring-your-own-key. As an interim step the runtime image accepts deployment-owned provider
+config from the pod environment — `AC_CLAUDE_BASE_URL`/`AC_CLAUDE_API_KEY` and
+`AC_CODEX_BASE_URL`/`AC_CODEX_API_KEY`, which the shim maps onto the matching runtime's
+`ANTHROPIC_*`/`OPENAI_*` variables at spawn (fill-in only; a daemon-sent value wins) — so
+the key can live in the SandboxTemplate instead of traveling over the shim channel.
 
 ## 1. Why a seam at all
 
