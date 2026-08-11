@@ -1923,7 +1923,7 @@ describe('SessionManager — collaboration preamble', () => {
     expect(first).toContain('{"toUser":"<Slack user id>","message":"..."}')
     expect(first).toContain('"toUser":["<user id 1>","<user id 2>"]')
     expect(first).toContain('Every visible `sendMessage` lands at a channel root')
-    expect(first).toContain('write your ordinary turn reply and @-mention them in it')
+    expect(first).toContain('ordinary turn reply and @-mention them in it')
     expect(first).not.toContain('"thread":"<thread id>"')
     expect(first).not.toContain('in-thread form')
     expect(first).not.toContain('`to.toAgent`')
@@ -1934,36 +1934,33 @@ describe('SessionManager — collaboration preamble', () => {
     store.close()
   })
 
-  it('leads the guidance with the tool-precedence rule naming the built-in SendMessage hazard (issue #800)', async () => {
-    // Measured (tool-surface A/B, 2026-08-09): a Claude Code child session also
-    // carries the runtime's own built-in `SendMessage` — a literal name match
-    // for a report-back instruction — and a child that picks it loses its
-    // parent report silently. The standing context must say, before anything
-    // else about collaboration, that AgentConnect's MCP tools are the only
-    // channel that reaches anyone and that similarly-named built-ins are lost.
+  it('leads with visible current-conversation delivery before disambiguating AgentConnect tools', async () => {
+    // The current-thread rule must win without removing issue #800's warning about Claude's built-in SendMessage.
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1') } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
     const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'hi' }))
     const first = (blocks[0] as any).text as string
-    expect(first).toContain('ONLY channel that reaches other agents and humans')
+    expect(first).toContain('including when another agent or human should answer next')
+    expect(first).toContain('That visible reply is the hand-off')
+    expect(first).toContain('would hide the exchange from this conversation')
     expect(first).toContain('mcp__agentconnect__sendMessage')
     expect(first).toContain('a bare `SendMessage`')
-    expect(first).toContain('do NOT reach AgentConnect')
-    expect(first).toContain('Never use them for messaging, reporting back, or collaboration')
-    // It LEADS the collaboration section: the collision fires exactly when the
-    // model is choosing a messaging tool, so the warning must come first.
+    expect(first).toContain('does NOT reach AgentConnect')
+    expect(first).toContain('Never substitute it for an AgentConnect tool')
+    expect(first).not.toContain('ONLY channel that reaches other agents and humans')
     const section = first.slice(first.indexOf('# Collaborating with other agents'))
-    expect(section.indexOf('ONLY channel that reaches')).toBeLessThan(section.indexOf('To reach a specific agent'))
+    expect(section.indexOf('To speak in the conversation')).toBeLessThan(
+      section.indexOf("When a rule below tells you to call AgentConnect's")
+    )
+    expect(section.indexOf("When a rule below tells you to call AgentConnect's")).toBeLessThan(
+      section.indexOf('To reach a specific agent privately')
+    )
     store.close()
   })
 
   it('states the needsReply rule in the standing context, not only in the tool descriptor', async () => {
-    // The descriptor is one input among many; this context is ALWAYS present and used to
-    // present the bare `toAgent` form as the normal way to reach a peer privately, with no
-    // hint that an answer never comes back. A caller reading only that omitted `needsReply`
-    // for a question in production (#628) — so the rule has to be stated in both places, and
-    // in the SAME terms the descriptor uses.
+    // Standing context preserves #628's private-call report rule while keeping it subordinate to current-thread delivery.
     const store = newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
@@ -1971,7 +1968,9 @@ describe('SessionManager — collaboration preamble', () => {
     const metaArg = host.newSession.mock.calls[0][3] as string
     expect(metaArg).toContain('{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}')
     expect(metaArg).toContain('FIRE-AND-FORGET')
-    // The trigger, so the rule is actionable rather than a definition of the flag.
+    expect(metaArg).toContain('intentionally choose this private form')
+    expect(metaArg).not.toContain('Whenever you expect an answer')
+    // Keep an actionable trigger, not merely a flag definition.
     expect(metaArg).toMatch(/asks a question or requests a result/)
     store.close()
   })

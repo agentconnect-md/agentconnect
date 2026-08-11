@@ -813,25 +813,21 @@ export class SessionManager {
         : [])
     ].join('\n')
 
-    // Standing guidance for agent↔agent collaboration. `sendMessage` can wake a peer,
-    // reach humans, post at a channel root, or reply into a parent session. It has no
-    // visible in-thread form: speaking in the current conversation is an ordinary reply.
-    // `toAgent` without a `channel` is the postless, channel-invisible wake.
-    // The precedence bullet leads for a measured reason (issue #800): on the Claude
-    // Code runtime the session also carries the runtime's own built-in `SendMessage`
-    // (agent-teams messaging) — a literal name match for a report-back instruction —
-    // and a child that picks it loses its parent report silently. Costs ~80 standing
-    // tokens per session.
+    // Standing collaboration guidance leads with current-thread delivery, then disambiguates AgentConnect from runtime tools.
     const collabAppend =
       `# Collaborating with other agents\n` +
-      `- AgentConnect's tools (the \`agentconnect\` MCP server, e.g. \`mcp__agentconnect__sendMessage\`) are the ` +
-      `ONLY channel that reaches other agents and humans here. Your runtime may offer built-in tools with similar ` +
-      `names (e.g. a bare \`SendMessage\`) — those do NOT reach AgentConnect and anything sent through them is ` +
-      `lost. Never use them for messaging, reporting back, or collaboration.\n` +
+      `- To speak in the conversation you are already in — including when another agent or human should answer ` +
+      `next — do NOT call any \`SendMessage\` or \`sendMessage\` tool. Write your ordinary turn reply and @-mention ` +
+      `them in it (use \`listAgents\` to get a peer's exact \`mention\` token). That visible reply is the hand-off; ` +
+      `a direct \`toAgent\` call without \`channel\` would hide the exchange from this conversation.\n` +
+      `- When a rule below tells you to call AgentConnect's \`sendMessage\`, use the \`agentconnect\` MCP tool ` +
+      `(e.g. \`mcp__agentconnect__sendMessage\`). A similarly named runtime tool such as a bare \`SendMessage\` ` +
+      `does NOT reach AgentConnect; anything sent through it is lost. Never substitute it for an AgentConnect tool.\n` +
       `- To reach a specific agent privately, call \`sendMessage\` with ` +
       `\`{"toAgent":"<agent id>","message":"..."}\` — it wakes ONLY that agent, delivered directly to it ` +
       `(nothing is posted to the channel). That bare form is FIRE-AND-FORGET: the peer answers inside its own ` +
-      `conversation and nothing comes back to you, not even a failure. Whenever you expect an answer — your ` +
+      `conversation and nothing comes back to you, not even a failure. If you intentionally choose this private ` +
+      `form and expect an answer — your ` +
       `message asks a question or requests a result, or you were asked to relay that agent's answer to someone ` +
       `— send \`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}\` instead, which obliges ` +
       `it to report into YOUR session when it finishes or fails. Add a \`channel\` ` +
@@ -840,9 +836,7 @@ export class SessionManager {
       `That channel-root form may target YOURSELF to open and activate one new conversation there: use your own ` +
       `ID from the # Agent block (also included by \`listAgents\`), never your platform bot identity. A direct ` +
       `\`toAgent\` call without \`channel\` may not target yourself. ` +
-      `To speak in the conversation you are already in — including to address a peer or human there — do NOT ` +
-      `call \`sendMessage\`: write your ordinary turn reply and @-mention them in it (use \`listAgents\` to get ` +
-      `a peer's exact \`mention\` token). To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
+      `To reach HUMAN users elsewhere, use the \`toUser\` mode — never put ` +
       `an AgentConnect agent or your own bot identity in \`toUser\`: ` +
       `\`{"toUser":"<Slack user id>","message":"..."}\` DMs that person, and adding \`channel\` posts an ` +
       `@-mention at the channel root. In that channel form, pass ` +

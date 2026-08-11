@@ -120,9 +120,7 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       'already in, just write your ordinary reply.'
   }
 
-  // Mode 1 — toAgent: wake one AgentConnect agent. Two forms: postless (no channel, peers
-  // only) and channel root (channel, peers or self). There is no in-thread form — an ordinary
-  // reply that mentions the peer is how you address it in the current thread (§2.1).
+  // Mode 1 — toAgent wakes one peer postlessly or opens a channel-root conversation; it never continues this thread.
   const agentTarget = {
     title: 'toAgent — send to an agent',
     description:
@@ -131,20 +129,23 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       '(`{"toAgent":"<id>","channel":"<C>","message":"..."}`) also posts one visible message at the channel root, ' +
       '@-mentions the target in it, and anchors the target to that post. The channel-root form may target YOURSELF: ' +
       'use your own AgentConnect ID from the # Agent block (never your Slack `U…` bot identity) to open and activate ' +
-      'one new conversation there. The direct form may not target yourself. To reach an agent in the thread you are ' +
-      'ALREADY in, do not use this tool — @-mention it in your ordinary reply instead. Either form takes ' +
-      '`needsReply` (see `toAgent`), and you need it whenever you expect an answer back: the peer answers in ITS ' +
-      'OWN conversation, so without `needsReply` nothing comes back to you.',
+      'one new conversation there. The direct form may not target yourself. To hand the next turn to an agent in ' +
+      'the thread you are ALREADY in, do not use any `SendMessage` tool — @-mention it in your ordinary reply ' +
+      'instead. A direct `toAgent` call without `channel` is private and would hide that exchange from the thread. ' +
+      'After intentionally choosing either `toAgent` form, use `needsReply` (see `toAgent`) when its answer must ' +
+      'return to this session: the peer answers in ITS OWN conversation, so without `needsReply` nothing comes back.',
     ...obj(
       {
         toAgent: {
           description:
-            'The AgentConnect agent to wake. For a peer, use the BARE agent id only for fire-and-forget work whose ' +
-            'outcome you never need; ' +
-            'use `{"agentId":"<agent id>","needsReply":true}` whenever you expect anything back. Set `needsReply` ' +
-            'if your `message` asks a question or requests a result, if you were asked to relay the peer’s answer ' +
-            'to someone, or if you intend to act on the outcome — "reply to me", "tell me", "check X and report" ' +
-            'all qualify. A woken peer answers inside ITS OWN conversation, so without `needsReply` its answer ' +
+            'The AgentConnect agent to wake in a different or intentionally private conversation. Do not start a ' +
+            '`toAgent` call merely because a peer should answer next in the current conversation; @-mention it in ' +
+            'your ordinary reply there. For a chosen peer call, use the BARE agent id only for fire-and-forget work ' +
+            'whose outcome you never need; use `{"agentId":"<agent id>","needsReply":true}` if its answer must ' +
+            'return to this session. Set `needsReply` if your `message` asks a question or requests a result, if you ' +
+            'were asked to relay the peer’s answer to someone, or if you intend to act on the outcome — "reply to ' +
+            'me", "tell me", "check X and report" all qualify. A woken peer answers inside ITS OWN conversation, ' +
+            'so without `needsReply` its answer ' +
             'never reaches you or the humans waiting in yours, and you are not even told that it failed. With it, ' +
             'the peer’s session carries a standing instruction to reply into YOUR session when it finishes or ' +
             'fails. The result tells you to end the current turn and wait; use `viewSessionStatus` on the returned ' +
@@ -174,8 +175,9 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
                   needsReply: {
                     type: 'boolean',
                     description:
-                      'Set true whenever you expect an answer, a result, or a completion signal: the woken session ' +
-                      'is told to report back into this session (done or failed) when it completes. Defaults to ' +
+                      'For an intentional `toAgent` call, set true when you expect an answer, result, or completion ' +
+                      'signal back in this session. It tells the woken session to report here when it completes or ' +
+                      'fails; it does not make the exchange visible in your current conversation. Defaults to ' +
                       'false, which is fire-and-forget — the peer’s answer stays in its own conversation and you ' +
                       'learn nothing, not even that it failed.'
                   }
@@ -286,11 +288,12 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
     description:
       'Send one message using exactly one target mode: an AgentConnect agent (`toAgent`), human users (`toUser`), a channel ' +
       'with no recipient, or the parent-session reply.\n' +
-      'TO SPEAK IN THE CONVERSATION YOU ARE ALREADY IN — including to address a peer agent or a human there — do ' +
-      'NOT use this tool. Write your ordinary turn reply and @-mention them in it (use `listAgents` to get an ' +
-      'agent’s exact `mention` token). That reply already goes to the right thread as you. This tool is only for ' +
-      'what it cannot do: reaching a DIFFERENT conversation, a direct message, a postless agent call, or a reply ' +
-      'into the parent session.\n' +
+      'TO SPEAK IN THE CONVERSATION YOU ARE ALREADY IN — including when another agent or human should answer next — ' +
+      'do NOT use this tool or any similarly named `SendMessage` tool. Write your ordinary turn reply and @-mention ' +
+      'them in it (use `listAgents` to get an agent’s exact `mention` token). That visible reply is the hand-off. A ' +
+      'direct `toAgent` call without `channel` would hide the exchange from this conversation. This tool is only ' +
+      'for what the ordinary reply cannot do: reaching a DIFFERENT conversation, a direct message, a postless ' +
+      'agent call, or a reply into the parent session.\n' +
       '- toAgent — wake exactly one AgentConnect agent (id from listAgents or your own # Agent ID; never a ' +
       'platform member id):\n' +
       '  • direct: `{"toAgent":"<agent id>","message":"..."}` — postless PEER wake: nothing is posted anywhere; ' +
@@ -298,9 +301,10 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
       '  • channel root: `{"toAgent":"<agent id>","channel":"<channel id>","message":"..."}` — also posts one ' +
       'visible message at that channel’s ROOT, @-mentions the target, and anchors it to that post. This form MAY ' +
       'target yourself: use your own # Agent ID to open and activate one new conversation there.\n' +
-      '  Use `{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` WHENEVER you expect an answer ' +
-      'back — your message asks a question or requests a result, or someone asked you to relay the peer’s answer. ' +
-      'The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Follow the ' +
+      '  After intentionally choosing a `toAgent` form, use ' +
+      '`{"toAgent":{"agentId":"<agent id>","needsReply":true},"message":"..."}` when its answer must return here — ' +
+      'for example, your message asks a question or requests a result, or someone asked you to relay the peer’s ' +
+      'answer. The peer replies in its own conversation, so without `needsReply` its answer never reaches you. Follow the ' +
       'returned `nextAction`; use `viewSessionStatus` only for optional diagnostics.\n' +
       '- toUser — reach HUMAN users (Slack only for now), never an AgentConnect agent or your own bot identity:\n' +
       '  • dm: `{"toUser":"<Slack user id>","message":"..."}` — direct message; do not set `channel`.\n' +
