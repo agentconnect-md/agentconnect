@@ -12,6 +12,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { callDaemonTool, daemonMcpBinding, listDaemonTools, type DaemonMcpBinding } from '../games/mcp-client.js'
+import { THREAD_COUNT_SCENARIO, judgeThreadCount } from '../games/tool-surface-ab.js'
 import { AbFixture } from '../games/tool-surface-ab-fixture.js'
 
 let fixture: AbFixture | undefined
@@ -209,5 +210,61 @@ describe('tool-surface A/B fixture — each arm presents exactly one surface', (
     const delivered = fixture.world.allEffects().filter((effect) => effect.status === 'delivered')
     expect(delivered.filter((effect) => effect.channel !== fixture!.room('briefing').channel)).toEqual([])
     expect(delivered.some((effect) => effect.text.includes('what is your status?'))).toBe(false)
+  })
+
+  it('scenario 5: a both-mentioned kickoff plus ordinary replies carries the count — and the judge passes it', async () => {
+    // The in-thread turn-taking scenario's transport contract, credential-free:
+    // one plaza thread, both agents woken by the kickoff, and each delivered
+    // ordinary reply echoing back to wake the peer (#549 continuation) with NO
+    // messaging-tool call anywhere. If this wiring were broken, a real-model
+    // run would score the harness, not the prompt — exactly the class of
+    // silent fault the arena's scripted gates exist to catch.
+    const captured: CapturedSession[] = []
+    const target = THREAD_COUNT_SCENARIO.target
+    let next = 1
+    fixture = await startArm('A', captured, async (context) => {
+      // A deterministic well-behaved player: contribute the next number as an
+      // ORDINARY reply; after the target, acknowledge completion once.
+      if (next <= target) {
+        context.reply(String(next))
+        next += 1
+      } else {
+        context.reply('the count is complete')
+      }
+    })
+    const kickoff = fixture.injectHuman(
+      'plaza',
+      THREAD_COUNT_SCENARIO.instruction({
+        first: `<@${fixture.botUserId('runner')}>`,
+        second: `<@${fixture.botUserId('peer')}>`
+      }),
+      { mentions: [fixture.botUserId('runner'), fixture.botUserId('peer')] }
+    )
+    await fixture.settle(kickoff.handles)
+    const runnerId = fixture.agentId('runner')
+    const peerId = fixture.agentId('peer')
+    const verdict = judgeThreadCount({
+      target,
+      participants: [runnerId, peerId],
+      channel: fixture.room('plaza').channel,
+      thread: kickoff.messageId,
+      effects: fixture.world.allEffects(),
+      events: [...fixture.events()] as never
+    })
+    expect(verdict.failures).toEqual([])
+    expect(verdict.pass).toBe(true)
+    expect(verdict.reached).toBe(target)
+    expect(verdict.messagingToolCalls).toEqual([])
+    expect(verdict.lostMessages).toBe(0)
+    // BOTH participants contributed — the echo really woke the peer; a run
+    // where one agent counts alone would pass the count but not this pin.
+    const contributors = new Set(
+      fixture.world
+        .allEffects()
+        .filter((effect) => effect.status === 'delivered' && effect.kind === 'reply' && effect.agentId !== undefined)
+        .map((effect) => effect.agentId)
+    )
+    expect(contributors.has(runnerId)).toBe(true)
+    expect(contributors.has(peerId)).toBe(true)
   })
 })

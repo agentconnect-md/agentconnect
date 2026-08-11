@@ -4,8 +4,9 @@
  * The credential-free half (`tool-surface-ab.test.ts`, `post-facade.test.ts`,
  * `tool-surface-ab-fixture.test.ts`, all in the CI gates) pins the apparatus:
  * the façade's compilation, the shared classifier, and the arm-parity
- * preconditions. This file runs the pre-registered 4×2×3 matrix — four send
- * scenarios, two surfaces, three trials — and is deliberately NOT in any CI
+ * preconditions. This file runs the pre-registered matrix — four send
+ * scenarios plus the in-thread turn-taking scenario (the #801 regression
+ * gate), two surfaces, three trials each — and is deliberately NOT in any CI
  * gate: it needs a real runtime and provider credentials, and a model result
  * is a rate over trials, never a single pass/fail (collaboration-arena.md §8.1).
  *
@@ -38,11 +39,14 @@ import { atomicWrite, redactEvaluationValue } from '../../packages/daemon/src/ev
 import { compilePost } from '../games/post-facade.js'
 import {
   AB_SCENARIOS,
+  THREAD_COUNT_SCENARIO,
   classifyPostForm,
   extractTrialMetrics,
+  judgeThreadCount,
   type AbScenario,
   type AbTrialMetrics,
-  type SendForm
+  type SendForm,
+  type ThreadCountVerdict
 } from '../games/tool-surface-ab.js'
 import { AbFixture, type AbArm } from '../games/tool-surface-ab-fixture.js'
 
@@ -66,6 +70,11 @@ const armFilter = (process.env.AGENTCONNECT_EVAL_AB_ARMS ?? '')
 
 const scenarios = AB_SCENARIOS.filter((scenario) => scenarioFilter.length === 0 || scenarioFilter.includes(scenario.id))
 const arms: AbArm[] = (['A', 'B'] as const).filter((arm) => armFilter.length === 0 || armFilter.includes(arm))
+// Scenario 5 (in-thread turn-taking) rides the same filters; its index in the
+// full matrix follows the four send scenarios, which keeps counterbalancing
+// and seed derivation consistent with them.
+const runThreadCount = scenarioFilter.length === 0 || scenarioFilter.includes(THREAD_COUNT_SCENARIO.id)
+const THREAD_COUNT_SCENARIO_INDEX = AB_SCENARIOS.length
 
 interface AbRunRecord {
   scenario: string
@@ -97,8 +106,38 @@ interface AbRunRecord {
   notes: string[]
 }
 
+interface TokenBreakdown {
+  total: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+}
+
+/** One scenario-5 run: the daemon-judged verdict plus the run economics. Both
+ *  agents are subjects here, so tokens are reported per participant and for
+ *  the whole run — there is no single "subject agent" to scope to. */
+interface ThreadCountRunRecord {
+  scenario: typeof THREAD_COUNT_SCENARIO.id
+  arm: AbArm
+  trial: number
+  seed: number
+  status: 'ok' | 'invalid'
+  invalidReason?: string
+  verdict: ThreadCountVerdict
+  runnerTokens: TokenBreakdown
+  peerTokens: TokenBreakdown
+  runTokens: TokenBreakdown
+  runnerTurns: number
+  peerTurns: number
+  runTurns: number
+  latencyMs: number
+  notes: string[]
+}
+
 let fixture: AbFixture | undefined
 const results: AbRunRecord[] = []
+const threadCountResults: ThreadCountRunRecord[] = []
 
 afterEach(async () => {
   await fixture?.stop()
@@ -355,6 +394,129 @@ async function runTrial(scenario: AbScenario, arm: AbArm, trial: number): Promis
   return record
 }
 
+/**
+ * Scenario 5 — in-thread turn-taking (the #801 regression gate). One plaza
+ * thread, BOTH agents on the arm's surface, a human kickoff @-mentioning both;
+ * the agents continue via ordinary replies (each delivered reply echoes back
+ * and wakes the peer through the #549 continuation ladder). Judged by
+ * `judgeThreadCount` from the daemon's records: the count must reach the
+ * target through delivered thread replies with ZERO messaging-tool calls by
+ * either participant and no lost replies.
+ */
+async function runThreadCountTrial(arm: AbArm, trial: number): Promise<ThreadCountRunRecord> {
+  const seed = 5000 + THREAD_COUNT_SCENARIO_INDEX * 100 + trial
+  fixture = await AbFixture.start({
+    seed,
+    arm,
+    subject: { kind: 'real', subjectRoot: subjectRoot!, templateAgentIds: templateAgents }
+  })
+  const runnerId = fixture.agentId('runner')
+  const peerId = fixture.agentId('peer')
+  const plaza = fixture.room('plaza')
+  const instruction = THREAD_COUNT_SCENARIO.instruction({
+    first: `<@${fixture.botUserId('runner')}>`,
+    second: `<@${fixture.botUserId('peer')}>`
+  })
+  const notes: string[] = []
+
+  const kickoff = fixture.injectHuman('plaza', instruction, {
+    mentions: [fixture.botUserId('runner'), fixture.botUserId('peer')]
+  })
+  const startedAt = Date.now()
+  await fixture.settle(kickoff.handles, TRIAL_BUDGET_MS)
+  const latencyMs = Date.now() - startedAt
+
+  const allEvents = [...fixture.events()]
+  const toolName = arm === 'A' ? 'sendMessage' : 'post'
+
+  // ── validity: infra failures measure nothing about the prompt/surface ──
+  const failedTurn = allEvents.find((event) => event.type === 'turn.failed' || event.type === 'turn.timed_out')
+  let invalidReason: string | undefined
+  if (failedTurn) {
+    invalidReason = `turn ${failedTurn.type === 'turn.timed_out' ? 'timed out' : 'failed'} (${String(
+      failedTurn.data.code ?? 'unknown'
+    )})`
+  }
+  const anyParticipantTurn = allEvents.some(
+    (event) => event.type === 'turn.started' && (event.agentId === runnerId || event.agentId === peerId)
+  )
+  if (!anyParticipantTurn) invalidReason ??= 'the kickoff never activated either participant'
+
+  const verdict = judgeThreadCount({
+    target: THREAD_COUNT_SCENARIO.target,
+    participants: [runnerId, peerId],
+    channel: plaza.channel,
+    thread: kickoff.messageId,
+    effects: fixture.world.allEffects(),
+    events: allEvents as never
+  })
+  for (const failure of verdict.failures) notes.push(failure)
+
+  // Token/turn economics per participant and for the whole run. The extractor
+  // is reused for its usage folding only; scenario 5 has no expected form.
+  const tokenMetrics = (events: { type: string; data: Record<string, unknown> }[]) =>
+    extractTrialMetrics(events, { toolName, expected: 'unclassifiable', latencyMs })
+  const runnerMetrics = tokenMetrics(fixture.eventsOf('runner') as never)
+  const peerMetrics = tokenMetrics(fixture.eventsOf('peer') as never)
+  const runMetrics = tokenMetrics(allEvents as never)
+
+  const record: ThreadCountRunRecord = {
+    scenario: THREAD_COUNT_SCENARIO.id,
+    arm,
+    trial,
+    seed,
+    status: invalidReason ? 'invalid' : 'ok',
+    ...(invalidReason ? { invalidReason } : {}),
+    verdict,
+    runnerTokens: runnerMetrics.tokens,
+    peerTokens: peerMetrics.tokens,
+    runTokens: runMetrics.tokens,
+    runnerTurns: runnerMetrics.turns,
+    peerTurns: peerMetrics.turns,
+    runTurns: runMetrics.turns,
+    latencyMs,
+    notes
+  }
+
+  // ── artifacts: same layout as the send scenarios, one dir per run ──
+  const dir = join(ARTIFACT_DIR, `${THREAD_COUNT_SCENARIO.id}-${arm}-${trial}`)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  fixture.eventCollector().writeJsonl(join(dir, 'events.jsonl'))
+  const secrets = fixture.secrets
+  atomicWrite(
+    join(dir, 'world-events.jsonl'),
+    fixture.world
+      .events()
+      .map((entry) => JSON.stringify(redactEvaluationValue(entry, secrets)))
+      .join('\n') + '\n'
+  )
+  atomicWrite(
+    join(dir, 'trial.json'),
+    `${JSON.stringify(
+      redactEvaluationValue(
+        {
+          record,
+          instruction,
+          facadeCalls: fixture.facadeCalls,
+          effects: fixture.world.allEffects().map((effect) => ({
+            status: effect.status,
+            kind: effect.kind,
+            channel: effect.channel,
+            thread: effect.thread,
+            agentId: effect.agentId,
+            ...(effect.reason !== undefined ? { reason: effect.reason } : {}),
+            text: effect.text
+          }))
+        },
+        secrets
+      ),
+      null,
+      2
+    )}\n`
+  )
+  return record
+}
+
 function aggregate(records: AbRunRecord[]) {
   const cell = (scenario: string, arm: AbArm) => {
     const rows = records.filter((row) => row.scenario === scenario && row.arm === arm && row.status === 'ok')
@@ -373,23 +535,52 @@ function aggregate(records: AbRunRecord[]) {
       meanLatencyMs: Math.round(mean((row) => row.latencyMs))
     }
   }
+  const threadCell = (arm: AbArm) => {
+    const rows = threadCountResults.filter((row) => row.arm === arm && row.status === 'ok')
+    const mean = (select: (row: ThreadCountRunRecord) => number) =>
+      rows.length === 0 ? 0 : rows.reduce((total, row) => total + select(row), 0) / rows.length
+    return {
+      trials: rows.length,
+      pass: rows.filter((row) => row.verdict.pass).length,
+      messagingToolCalls: rows.reduce((total, row) => total + row.verdict.messagingToolCalls.length, 0),
+      lostMessages: rows.reduce((total, row) => total + row.verdict.lostMessages, 0),
+      meanReached: Number(mean((row) => row.verdict.reached).toFixed(2)),
+      duplicates: rows.reduce((total, row) => total + row.verdict.duplicates, 0),
+      skips: rows.reduce((total, row) => total + row.verdict.skips, 0),
+      overshoot: rows.reduce((total, row) => total + row.verdict.overshoot, 0),
+      meanBareNumberReplies: Number(mean((row) => row.verdict.bareNumberReplies).toFixed(2)),
+      meanMetaNarrationReplies: Number(mean((row) => row.verdict.metaNarrationReplies).toFixed(2)),
+      meanReplyChars: Number(mean((row) => row.verdict.meanReplyChars).toFixed(1)),
+      meanTurnsPerNumber: Number(mean((row) => row.verdict.turnsPerNumber).toFixed(2)),
+      meanRunTokensTotal: Math.round(mean((row) => row.runTokens.total)),
+      meanRunTokensInOut: Math.round(mean((row) => row.runTokens.input + row.runTokens.output)),
+      meanLatencyMs: Math.round(mean((row) => row.latencyMs))
+    }
+  }
   return {
     generatedAt: new Date().toISOString(),
     trialsPerCell: TRIALS,
     cells: Object.fromEntries(
       scenarios.flatMap((scenario) => arms.map((arm) => [`${scenario.id}/${arm}`, cell(scenario.id, arm)] as const))
     ),
-    invalidTrials: records.filter((row) => row.status === 'invalid'),
-    records
+    threadCountCells: runThreadCount
+      ? Object.fromEntries(arms.map((arm) => [`${THREAD_COUNT_SCENARIO.id}/${arm}`, threadCell(arm)] as const))
+      : {},
+    invalidTrials: [
+      ...records.filter((row) => row.status === 'invalid'),
+      ...threadCountResults.filter((row) => row.status === 'invalid')
+    ],
+    records,
+    threadCountRecords: threadCountResults
   }
 }
 
 afterAll(() => {
-  if (results.length === 0) return
+  if (results.length === 0 && threadCountResults.length === 0) return
   mkdirSync(ARTIFACT_DIR, { recursive: true, mode: 0o700 })
   const summary = aggregate(results)
   atomicWrite(join(ARTIFACT_DIR, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
-  console.log(JSON.stringify(summary.cells, null, 2))
+  console.log(JSON.stringify({ ...summary.cells, ...summary.threadCountCells }, null, 2))
 })
 
 describe.skipIf(!configured)('tool-surface A/B against a real ACP runtime', () => {
@@ -417,6 +608,31 @@ describe.skipIf(!configured)('tool-surface A/B against a real ACP runtime', () =
     }
   }
 
+  // Scenario 5: in-thread turn-taking, same counterbalancing rule at its
+  // matrix index. A model result is reported, never asserted (a hard-fail
+  // verdict here IS a result — the prompt-change gate reads the summary).
+  if (runThreadCount) {
+    for (let trial = 1; trial <= TRIALS; trial += 1) {
+      const ordered = (THREAD_COUNT_SCENARIO_INDEX + trial) % 2 === 0 ? [...arms] : [...arms].reverse()
+      for (const arm of ordered) {
+        it(
+          `${THREAD_COUNT_SCENARIO.id} arm ${arm} trial ${trial}`,
+          async () => {
+            const record = await runThreadCountTrial(arm, trial)
+            threadCountResults.push(record)
+            if (record.status === 'invalid') {
+              console.warn(`INVALID trial ${THREAD_COUNT_SCENARIO.id}/${arm}/${trial}: ${record.invalidReason}`)
+            } else if (!record.verdict.pass) {
+              console.warn(`FAIL ${THREAD_COUNT_SCENARIO.id}/${arm}/${trial}: ${record.verdict.failures.join('; ')}`)
+            }
+            expect(true).toBe(true)
+          },
+          TRIAL_BUDGET_MS + 60_000
+        )
+      }
+    }
+  }
+
   it('produced at least one scoreable trial per cell', () => {
     for (const scenario of scenarios) {
       for (const arm of arms) {
@@ -424,6 +640,12 @@ describe.skipIf(!configured)('tool-surface A/B against a real ACP runtime', () =
           (row) => row.scenario === scenario.id && row.arm === arm && row.status === 'ok'
         ).length
         expect(ok, `${scenario.id}/${arm} has no scoreable trial`).toBeGreaterThan(0)
+      }
+    }
+    if (runThreadCount) {
+      for (const arm of arms) {
+        const ok = threadCountResults.filter((row) => row.arm === arm && row.status === 'ok').length
+        expect(ok, `${THREAD_COUNT_SCENARIO.id}/${arm} has no scoreable trial`).toBeGreaterThan(0)
       }
     }
   })

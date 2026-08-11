@@ -207,6 +207,238 @@ export function extractTrialMetrics(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Scenario 5 — in-thread turn-taking conversation (the #801 regression gate).
+//
+// The four send scenarios above each demand ONE explicit send, so a prompt
+// change that made the model over-use the messaging surface could pass the
+// whole matrix while breaking ordinary thread play. That is exactly what
+// happened with the #801 tool-precedence bullet (validated only against
+// parent-session, 10/10): in a live channel counting game the agent started
+// routing every in-thread turn through `sendMessage` to "hand off" the next
+// number to its peer, posting meta-narration into the thread with skipped and
+// duplicated numbers. #801 was reverted (#861); issue #800 records the lesson.
+//
+// This scenario is the missing coverage: one channel thread, TWO subject
+// agents on the arm's surface, a human kickoff @-mentioning both, and the
+// agents then take turns counting via ORDINARY replies (the #549 continuation
+// ladder — each delivered reply echoes back and wakes the peer). The correct
+// number of messaging-tool calls here is ZERO: in-thread speech is the
+// ordinary turn reply, by product convention (`sendMessage` deliberately has
+// no in-thread form).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Small on purpose: enough replies to prove sustained turn-taking, cheap
+ *  enough to run 2 arms × 3 trials routinely as a prompt-change gate. */
+export const THREAD_COUNT_TARGET = 6
+
+export const THREAD_COUNT_SCENARIO = {
+  id: 'in-thread-count',
+  target: THREAD_COUNT_TARGET,
+  /** Kickoff, spoken by a HUMAN into the shared thread, @-mentioning both
+   *  participants. Names no tool, no field, no form — the same
+   *  banned-vocabulary rule as the send scenarios covers this text. */
+  instruction: (mentions: { first: string; second: string }) =>
+    `${mentions.first} ${mentions.second} Let's count together right here in this thread, taking turns. ` +
+    `Each turn is one reply in this thread containing ONLY the next number — nothing else, no commentary. ` +
+    `Start at 1. Do not repeat a number that is already in the thread, and after you contribute one, let the ` +
+    `other participant take the next one. Stop once ${THREAD_COUNT_TARGET} has appeared.`
+}
+
+/** Is this tool name a messaging tool, on ANY surface the session might carry?
+ *  Covers the product `sendMessage` (`mcp__agentconnect__sendMessage`), the
+ *  arm-B façade `post` (`mcp__agentconnect__post`), and the Claude Code
+ *  runtime's own built-in `SendMessage` (the #800 name-collision hazard).
+ *  During the in-thread game every one of them is the #801 failure mode. */
+export function isMessagingToolName(name: string): boolean {
+  const normalized = name.toLowerCase()
+  if (normalized.includes('sendmessage')) return true
+  return normalized === 'post' || normalized.endsWith('__post')
+}
+
+export interface ThreadCountEffect {
+  sequence: number
+  kind: string
+  status: string
+  channel: string
+  thread?: string
+  agentId?: string
+  text: string
+}
+
+export interface ThreadCountMessagingCall {
+  agentId?: string
+  tool: string
+  failed: boolean
+}
+
+export interface ThreadCountVerdict {
+  /** The hard verdict. Fail reasons are enumerated in `failures`. */
+  pass: boolean
+  failures: string[]
+  /** Highest number ≤ target seen in a delivered participant thread reply. */
+  reached: number
+  target: number
+  /** First integer of each delivered participant thread reply that carries
+   *  one, in delivery order — the visible count as the thread saw it. */
+  numbersPosted: number[]
+  /** HARD RULE: every messaging-tool call by any participant during the game
+   *  (any surface, delivered or refused). One is the #801 failure mode. */
+  messagingToolCalls: ThreadCountMessagingCall[]
+  /** Participant thread replies the world refused to deliver. */
+  lostMessages: number
+  // ── soft metrics: reported, never failed on ──
+  duplicates: number
+  skips: number
+  /** Numbers posted beyond the stop target. */
+  overshoot: number
+  /** Delivered participant replies in the thread (numbered or not). */
+  replies: number
+  /** Replies that are just the number (markdown emphasis/punctuation allowed). */
+  bareNumberReplies: number
+  /** Replies carrying a number plus prose — the meta-narration signal
+   *  ("Handing off for 5"-style). */
+  metaNarrationReplies: number
+  meanReplyChars: number
+  /** Participant completed turns per counted number. */
+  turnsPerNumber: number
+}
+
+interface ThreadCountJudgeOptions {
+  target: number
+  /** The two subject agents' ids. */
+  participants: readonly string[]
+  channel: string
+  /** Root message id of the kickoff thread. */
+  thread: string
+  /** The world's recorded outbound effects, in sequence order. */
+  effects: readonly ThreadCountEffect[]
+  /** The daemon's evaluation events (all agents). */
+  events: readonly { type: string; agentId?: string; data: Record<string, unknown> }[]
+}
+
+/**
+ * Judge one in-thread turn-taking trial from the daemon's records, never the
+ * models' claims — same philosophy as the send scenarios.
+ *
+ * Hard pass: the count reached the target via ordinary delivered thread
+ * replies, ZERO messaging-tool calls by any participant during the game (a
+ * call with a legitimate non-thread purpose has no reason to occur in this
+ * scenario, so the rule stays simple: any messaging-tool call = fail), and no
+ * participant reply was lost (rejected by the world).
+ *
+ * Soft (reported, not failed on): duplicated and skipped numbers, overshoot
+ * past the stop target, meta-narration beyond the bare number, reply length,
+ * turns per number.
+ */
+export function judgeThreadCount(options: ThreadCountJudgeOptions): ThreadCountVerdict {
+  const participants = new Set(options.participants)
+
+  // ── messaging-tool calls, folded by toolCallId across ACP updates ──
+  const callById = new Map<string, ThreadCountMessagingCall>()
+  const callOrder: string[] = []
+  let participantTurns = 0
+  for (const event of options.events) {
+    if (event.agentId === undefined || !participants.has(event.agentId)) continue
+    if (event.type === 'turn.completed') {
+      participantTurns += 1
+      continue
+    }
+    if (event.type !== 'acp.update') continue
+    const update = event.data.update as
+      | {
+          sessionUpdate?: string
+          toolCallId?: string
+          title?: string
+          status?: string
+          _meta?: { claudeCode?: { toolName?: string } }
+        }
+      | undefined
+    if (!update) continue
+    if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') continue
+    const id = update.toolCallId
+    if (typeof id !== 'string') continue
+    const name = update._meta?.claudeCode?.toolName ?? update.title
+    const existing = callById.get(id)
+    if (!existing) {
+      if (typeof name !== 'string' || !isMessagingToolName(name)) continue
+      callById.set(id, { agentId: event.agentId, tool: name, failed: false })
+      callOrder.push(id)
+    }
+    const call = callById.get(id)!
+    if (update.status === 'failed') call.failed = true
+    if (update.status === 'completed') call.failed = false
+  }
+  const messagingToolCalls = callOrder.map((id) => callById.get(id)!)
+
+  // ── the visible thread: delivered participant replies, in order ──
+  const participantThreadEffects = options.effects.filter(
+    (effect) =>
+      effect.kind === 'reply' &&
+      effect.agentId !== undefined &&
+      participants.has(effect.agentId) &&
+      effect.channel === options.channel &&
+      (effect.thread === undefined || effect.thread === options.thread)
+  )
+  const delivered = participantThreadEffects.filter((effect) => effect.status === 'delivered')
+  const lostMessages = participantThreadEffects.filter((effect) => effect.status === 'rejected').length
+
+  const numbersPosted: number[] = []
+  let bareNumberReplies = 0
+  let metaNarrationReplies = 0
+  let replyChars = 0
+  for (const effect of delivered) {
+    // Digits inside platform mention tokens (`<@W123…>`) are not count signal.
+    const text = effect.text.replace(/<@[^>]+>/g, '').trim()
+    replyChars += text.length
+    const match = /-?\d+/.exec(text)
+    if (!match) continue
+    numbersPosted.push(Number(match[0]))
+    // Bare = the number alone, allowing markdown emphasis and punctuation.
+    if (/^[*_`~\s]*-?\d+[*_`~\s.!]*$/.test(text)) bareNumberReplies += 1
+    else metaNarrationReplies += 1
+  }
+
+  const occurrences = new Map<number, number>()
+  for (const value of numbersPosted) occurrences.set(value, (occurrences.get(value) ?? 0) + 1)
+  const reached = Math.max(0, ...numbersPosted.filter((value) => value >= 1 && value <= options.target))
+  let duplicates = 0
+  let skips = 0
+  for (let value = 1; value <= reached; value += 1) {
+    const count = occurrences.get(value) ?? 0
+    if (count === 0) skips += 1
+    else duplicates += count - 1
+  }
+  const overshoot = numbersPosted.filter((value) => value > options.target).length
+
+  const failures: string[] = []
+  if (reached < options.target) {
+    failures.push(`the count reached ${reached} of ${options.target} via ordinary thread replies`)
+  }
+  for (const call of messagingToolCalls) {
+    failures.push(`participant ${call.agentId ?? 'unknown'} called messaging tool "${call.tool}" during the game`)
+  }
+  if (lostMessages > 0) failures.push(`${lostMessages} participant thread repl(ies) were rejected, not delivered`)
+
+  return {
+    pass: failures.length === 0,
+    failures,
+    reached,
+    target: options.target,
+    numbersPosted,
+    messagingToolCalls,
+    lostMessages,
+    duplicates,
+    skips,
+    overshoot,
+    replies: delivered.length,
+    bareNumberReplies,
+    metaNarrationReplies,
+    meanReplyChars: delivered.length === 0 ? 0 : Number((replyChars / delivered.length).toFixed(1)),
+    turnsPerNumber: options.target === 0 ? 0 : Number((participantTurns / options.target).toFixed(2))
+  }
+}
+
 /** Arm B's classifier: compile the façade input, then classify the product args
  *  it becomes — the symmetry that makes the two arms score identically. An
  *  input the façade refuses names no legal form. */

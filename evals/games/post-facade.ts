@@ -206,13 +206,11 @@ export const POST_TOOL_DESCRIPTOR = {
  */
 export const POST_COLLAB_GUIDANCE =
   `# Collaborating with other agents\n` +
-  // Arm parity with the production precedence bullet (issue #800): the runtime's
-  // built-in messaging tools are a hazard for BOTH surfaces, so both arms carry
-  // the equivalent warning — worded for the surface each arm actually has.
-  `- AgentConnect's tools (the \`agentconnect\` MCP server, e.g. \`mcp__agentconnect__post\`) are the ` +
-  `ONLY channel that reaches other agents and humans here. Your runtime may offer built-in tools with similar ` +
-  `purposes (e.g. a bare \`SendMessage\`) — those do NOT reach AgentConnect and anything sent through them is ` +
-  `lost. Never use them for messaging, reporting back, or collaboration.\n` +
+  // Parity note: the #800 tool-precedence bullet briefly led this text (worded
+  // for this arm's surface, mirroring production's #801) and was removed when
+  // production reverted it (#861, after the live in-thread regression the
+  // `in-thread-count` scenario now gates). Both arms are back to the
+  // pre-#801 guidance, so prompt parity still holds.
   `- One tool, \`post\`, sends any message that leaves your current conversation. Choose three things ` +
   `independently: WHICH conversation it belongs to, WHO it addresses, and whether it is visible on the platform.\n` +
   `- To reach a specific agent privately: ` +
