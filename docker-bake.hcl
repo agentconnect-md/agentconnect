@@ -73,6 +73,9 @@ target "runtime-sandbox" {
 target "daemon" {
   inherits = ["_release"]
   target   = "daemon"
+  args = {
+    DAEMON_VERSION = VERSION
+  }
   tags = concat(
     ["${REGISTRY}/${OWNER}/daemon:${VERSION}"],
     LATEST ? ["${REGISTRY}/${OWNER}/daemon:latest"] : []

@@ -14,8 +14,9 @@
 import { execFileSync } from 'node:child_process'
 
 const image = process.argv[2]
+const expectedVersion = process.argv[3]
 if (!image) {
-  process.stderr.write('usage: verify-daemon-image.mjs <image>\n')
+  process.stderr.write('usage: verify-daemon-image.mjs <image> [expected-version]\n')
   process.exit(2)
 }
 
@@ -120,6 +121,19 @@ check('names the missing deployment settings instead of guessing them', () => {
   if (!/AC_K8S_ORG_ID/.test(output)) throw new Error(`did not name the missing setting: ${output.slice(-300)}`)
   return 'reports AC_K8S_ORG_ID'
 })
+
+// The Control Plane persists what this reports as `agentVersion` and drives fleet and upgrade
+// state from it, so a pod that identifies itself as the dev version is worse than unversioned:
+// it looks like a real answer.
+if (expectedVersion) {
+  check('reports the release version rather than the repo manifest', () => {
+    const reported = inImage('node dist/index.js --version').trim()
+    const wanted = expectedVersion.replace(/^v/, '')
+    if (reported !== wanted) throw new Error(`reports ${reported}, expected ${wanted}`)
+    if (/-dev$/.test(reported)) throw new Error('reports the development version')
+    return reported
+  })
+}
 
 process.stdout.write(`daemon image checks (${image})\n${[...notes, ...failures].join('\n')}\n`)
 if (failures.length > 0) {

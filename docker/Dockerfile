@@ -198,6 +198,18 @@ RUN apt-get update \
 
 COPY --from=daemon-builder /daemon ./
 
+# The version this pod reports. The repo manifest stays at 1.0.0-dev and semantic-release does not
+# commit a bump, so an image built from the release tag would otherwise report the dev version —
+# and the Control Plane persists it as `agentVersion` for fleet and upgrade state, meaning every
+# pod would identify itself wrongly. CI passes the effective image tag; the leading `v` is dropped
+# because a package version is semver, not a git tag.
+ARG DAEMON_VERSION=""
+# Only a semver-shaped value is written: a local `bake` passes VERSION=local, and a package
+# version of "local" would be a nonsense answer rather than an obviously absent one.
+RUN if echo "$DAEMON_VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then \
+  DAEMON_VERSION="$DAEMON_VERSION" node -e "const fs=require('node:fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version=process.env.DAEMON_VERSION.replace(/^v/,'');fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"; \
+  fi
+
 # Non-root, and a fixed uid so a daemon state volume survives a rollout.
 RUN groupadd --gid 10002 daemon-user \
   && useradd --uid 10002 --gid 10002 --home-dir /var/lib/agentconnect --create-home daemon-user \
