@@ -8,6 +8,7 @@ import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon, seedSessionMeta } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PullRequestViewService } from '../../src/github/pull-request-view.service.js'
+import { GitCredDeniedError, type GithubService } from '../../src/github/service.js'
 import type { InstallationTokenService } from '../../src/github/installation-token.service.js'
 import type { FetchLike } from '../../src/github/api.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -119,16 +120,31 @@ function fullAnswer() {
   }
 }
 
-function app(view?: PullRequestViewService, userId?: string): HttpApp {
-  const running = buildHttpApp(
-    prisma,
-    userId ? { DEFAULT_OWNER_ID: userId } : undefined,
-    undefined,
-    undefined,
-    view ? { pullRequestView: view } : undefined
-  )
+function app(view?: PullRequestViewService, userId?: string, github?: GithubService): HttpApp {
+  const running = buildHttpApp(prisma, userId ? { DEFAULT_OWNER_ID: userId } : undefined, undefined, undefined, {
+    ...(view ? { pullRequestView: view } : {}),
+    ...(github ? { github } : {})
+  })
   opened.push(running)
   return running
+}
+
+// The clamp seam as the route sees it: capability answers and a write-purpose mint, no real GithubService.
+function fakeGithub(deny?: 'SCOPE_DENIED' | 'LEASE_DENIED'): GithubService {
+  return {
+    canArmAutoMerge: async () => deny === undefined,
+    mintAutoMergeForAgent: async () => {
+      if (deny) throw new GitCredDeniedError(`denied by clamp: ${deny}`, deny, false)
+      return {
+        token: 'ghs_write',
+        ttlSec: 3600,
+        expiresAt: '2026-08-11T01:00:00Z',
+        repoFullName: REPO,
+        access: 'write' as const,
+        installationId: INSTALLATION
+      }
+    }
+  } as unknown as GithubService
 }
 
 async function makeUser(sub: string): Promise<string> {
@@ -216,6 +232,8 @@ describe('GET /sessions/:id/pull-request', () => {
       threads: [{ location: 'src/app.ts:12', body: 'rename this', author: 'dana', isOutdated: false }],
       unresolvedCount: 1,
       threadsTruncated: false,
+      autoMergeArmed: false,
+      canArmAutoMerge: false,
       degraded: false,
       degradedReason: null,
       agentReview: null
@@ -443,6 +461,104 @@ describe('GET /sessions/:id/pull-request', () => {
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${randomUUID()}/pull-request` })
 
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual(NOT_FOUND)
+    expect(github.calls).toHaveLength(0)
+  })
+})
+
+// The M6 write (§7): auto-merge armed under the owning agent's clamp, refusals as data-bearing statuses.
+describe('POST /sessions/:id/pull-request/auto-merge', () => {
+  const nodeAnswer = (armed: boolean) =>
+    graphqlOk({
+      data: { repository: { pullRequest: { id: 'PR_node1', autoMergeRequest: armed ? { enabledAt: 'now' } : null } } }
+    })
+  const post = (running: HttpApp, sessionId: string, enabled = true) =>
+    running.app.inject({
+      method: 'POST',
+      url: `${ORG}/sessions/${sessionId}/pull-request/auto-merge`,
+      payload: { enabled }
+    })
+
+  it('arms auto-merge end to end and reports canArmAutoMerge on the read', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([
+      nodeAnswer(false),
+      graphqlOk({ data: { enablePullRequestAutoMerge: { clientMutationId: null } } }),
+      graphqlOk(fullAnswer())
+    ])
+    const running = app(github.view, undefined, fakeGithub())
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ armed: true })
+    expect((github.calls[1] as { body: { query: string } }).body.query).toContain('enablePullRequestAutoMerge')
+
+    // The write-capable caller reads canArmAutoMerge: true — the flag behind the panel's enabled control.
+    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+    expect(read.json()).toMatchObject({ canArmAutoMerge: true })
+  })
+
+  it('refuses a read-tier agent with 403 before any GitHub call — the disabled-control contract', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([graphqlOk(fullAnswer())])
+    const running = app(github.view, undefined, fakeGithub('SCOPE_DENIED'))
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(403)
+    expect(github.calls).toHaveLength(0)
+
+    // And the read-side flag agrees, so the console never offered the control in the first place.
+    const read = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/${session}/pull-request` })
+    expect(read.json()).toMatchObject({ canArmAutoMerge: false })
+  })
+
+  it('relays GitHub declining the state change as 409, not a 5xx', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session)
+    const github = githubStub([
+      nodeAnswer(false),
+      graphqlOk({ data: null, errors: [{ type: 'UNPROCESSABLE', message: 'Pull request is in clean status' }] })
+    ])
+    const running = app(github.view, undefined, fakeGithub())
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(409)
+    expect(res.json().message).toContain('clean status')
+  })
+
+  it('403s a run whose owning agent is gone — the write rides the agent authorization, which no longer exists', async () => {
+    const session = await seedAgentAndSession()
+    await seedPullRequestRun(session, { agentId: null })
+    const github = githubStub([])
+    const running = app(github.view, undefined, fakeGithub())
+
+    const res = await post(running, session)
+    expect(res.statusCode).toBe(403)
+    expect(github.calls).toHaveLength(0)
+  })
+
+  it('404s a session with no linked run, with the GET route\u2019s exact body', async () => {
+    const github = githubStub([])
+    const running = app(github.view, undefined, fakeGithub())
+    const bare = await seedAgentAndSession()
+
+    const res = await post(running, bare)
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual(NOT_FOUND)
+    expect(github.calls).toHaveLength(0)
+  })
+
+  it('hides another member\u2019s private session behind the same 404, spending nothing', async () => {
+    const github = githubStub([])
+    const running = app(github.view, undefined, fakeGithub())
+    const owner = await makeUser(`owner-${randomUUID().slice(0, 8)}`)
+    const priv = await seedAgentAndSession({ visibility: 'private', ownerIdentity: `user:${owner}` })
+    await seedPullRequestRun(priv)
+
+    const res = await post(running, priv)
     expect(res.statusCode).toBe(404)
     expect(res.json()).toEqual(NOT_FOUND)
     expect(github.calls).toHaveLength(0)

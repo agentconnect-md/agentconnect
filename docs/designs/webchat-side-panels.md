@@ -860,6 +860,7 @@ Known M4 follow-ups, none of which change what the code does today:
 status and counts; panel with checks, reviews and threads **read-only** (no
 Auto-fix, no Merge-when-ready). Tab hidden when the session has no linked run.
 _Exit:_ PR state is visible beside the conversation that is reviewing it.
+**Landed.**
 
 Three things measured against the shipped CP before writing any of it, each of
 which changes what M5 has to build:
@@ -923,6 +924,27 @@ finishing the inherited wip:
 (§5.2), and `Merge when ready` (`enablePullRequestAutoMerge`) gated on the
 clamped token actually carrying write. _Exit:_ the design's headline loop — read
 the review, hand it to the agent, arm the merge — works end to end.
+
+Decisions recorded while building it:
+
+- **No Merge button.** The route table backs exactly one write —
+  `POST /sessions/:id/pull-request/auto-merge` — so the merge box draws the
+  checkbox as the action and nothing else; a direct-merge button would be
+  unbacked and M3's rule (absent rather than inert) applies. The checkbox is
+  disabled below write tier via the read projection's per-caller
+  `canArmAutoMerge` flag (Postgres-only, computed in the route like the overlay
+  facts — never cached), and GitHub declining the state change (a PR whose
+  checks already pass) relays as a 409 the box shows as data. The CP route is
+  idempotent — a fresh node read decides whether the mutation runs — and the
+  mint carries `contents: write` beside `pull_requests: write` because GitHub
+  performs the eventual merge under the same grant; the additional-repo comment
+  tier is deliberately excluded (arming merges code).
+- **Auto-fix's only follow-up is one forced re-read on the turn's falling
+  edge.** The panel never watches the turn; it takes a `turnActive` prop, and a
+  pressed Auto-fix arms a per-scope wait that the next falling edge consumes —
+  one `refresh=true` read, because the write-back it waits for (resolved
+  threads) happened on GitHub inside the turn and the CP TTL would hide it. No
+  `onAutoFix` prop (a hook session with no live composer) means no button.
 
 **Sequencing rationale.** M0 unblocks everything and is pure front-end. M1 is
 nearly free and proves the dock at width. M2 makes the dock genuinely useful

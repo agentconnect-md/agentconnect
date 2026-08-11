@@ -69,6 +69,7 @@ export interface PullRequestView {
   threads: PrThread[]
   unresolvedCount: number // unresolved threads on the carried page — a floor when `threadsTruncated`
   threadsTruncated: boolean
+  autoMergeArmed: boolean | null // null while degraded — only GitHub holds the auto-merge fact
   // Degraded ⇒ identity is Postgres's, the live lists are empty, and the panel says why.
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
@@ -84,6 +85,7 @@ query PanelPullRequest($owner:String!,$name:String!,$number:Int!,$threads:Int!,$
     pullRequest(number:$number){
       number title state isDraft merged additions deletions url
       baseRefName headRefName reviewDecision
+      autoMergeRequest{enabledAt}
       latestReviews(first:$reviews){nodes{state author{login __typename}}}
       commits(last:1){nodes{commit{statusCheckRollup{contexts(first:$checks){pageInfo{hasNextPage} nodes{
         __typename
@@ -112,6 +114,7 @@ interface GqlAnswer {
       baseRefName: string
       headRefName: string
       reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null
+      autoMergeRequest: { enabledAt: string | null } | null
       latestReviews: { nodes: Array<{ state: string; author: { login: string; __typename: string } | null }> | null }
       commits: {
         nodes: Array<{
@@ -199,6 +202,15 @@ interface CacheEntry {
 export class PullRequestViewService {
   private readonly cache = new Map<string, CacheEntry>()
   private readonly inFlight = new Map<string, Promise<PullRequestView>>()
+  // The invalidation fence: bumped per key, snapshotted when a read starts, checked before it stores.
+  // Without it a read that started BEFORE a write finishes after and repopulates the pre-write state,
+  // absorbing the console's immediate verification read for a full TTL. Entries are permanent by
+  // design — deleting one would reset it to 0 and re-admit exactly the stale read it fenced out.
+  private readonly epochs = new Map<string, number>()
+
+  private epochOf(key: string): number {
+    return this.epochs.get(key) ?? 0
+  }
 
   constructor(
     private readonly tokens: InstallationTokenService,
@@ -230,13 +242,18 @@ export class PullRequestViewService {
     const running = this.inFlight.get(key)
     if (running) return running.then((view) => overlay(view, identity))
 
+    const startEpoch = this.epochOf(key)
     const read = this.read(identity)
       .then((view) => {
         // Degraded answers cache too: a rate-limited installation must not be hammered per panel mount.
-        this.store(key, view)
+        // Stored only when no invalidation crossed this read — a fenced-out answer is served to its own
+        // awaiters (it was true when asked) but never becomes the cache's post-write truth.
+        if (this.epochOf(key) === startEpoch) this.store(key, view)
         return view
       })
-      .finally(() => this.inFlight.delete(key))
+      .finally(() => {
+        if (this.inFlight.get(key) === read) this.inFlight.delete(key)
+      })
     this.inFlight.set(key, read)
     return read.then((view) => overlay(view, identity))
   }
@@ -254,18 +271,28 @@ export class PullRequestViewService {
     }
   }
 
-  // Drop one PR's cached projections (every org) — for a caller that just changed the PR itself (M6).
+  // Drop one PR's projections (every org) — for a caller that just changed the PR itself (M6).
+  // Settled cache, in-flight joins AND late stores all go: the epoch bump is what keeps a read that
+  // started before the write from finishing after it and reinstating the pre-write state.
   invalidate(repoId: bigint, pullNumber: number): void {
     const suffix = `#${repoId}#${pullNumber}`
-    for (const key of [...this.cache.keys()]) if (key.endsWith(suffix)) this.cache.delete(key)
+    this.drop((key) => key.endsWith(suffix))
   }
 
   // Mirror of InstallationTokenService.invalidateInstallation: a suspended/revoked installation must
-  // not keep serving its cached views. An already-in-flight read may still repopulate for ≤ one TTL.
+  // not keep serving its cached views — and the same epoch fence keeps its in-flight reads from repopulating.
   invalidateInstallation(installationId: bigint): void {
     const marker = `#${installationId}#`
-    for (const key of [...this.cache.keys()]) if (key.includes(marker)) this.cache.delete(key)
-    for (const key of [...this.inFlight.keys()]) if (key.includes(marker)) this.inFlight.delete(key)
+    this.drop((key) => key.includes(marker))
+  }
+
+  private drop(matches: (key: string) => boolean): void {
+    for (const key of new Set([...this.cache.keys(), ...this.inFlight.keys(), ...this.epochs.keys()])) {
+      if (!matches(key)) continue
+      this.epochs.set(key, this.epochOf(key) + 1)
+      this.cache.delete(key)
+      this.inFlight.delete(key)
+    }
   }
 
   private async read(identity: PullRequestIdentity): Promise<PullRequestView> {
@@ -291,6 +318,7 @@ export class PullRequestViewService {
       threads: [],
       unresolvedCount: 0,
       threadsTruncated: false,
+      autoMergeArmed: null,
       degraded: false,
       degradedReason: null,
       agentReview: null
@@ -383,7 +411,56 @@ export class PullRequestViewService {
       reviews,
       threads,
       unresolvedCount: unresolved.length,
-      threadsTruncated: (pr.reviewThreads?.totalCount ?? 0) > THREAD_LIMIT
+      threadsTruncated: (pr.reviewThreads?.totalCount ?? 0) > THREAD_LIMIT,
+      autoMergeArmed: pr.autoMergeRequest != null
     }
   }
+
+  /** Arm or disarm GitHub auto-merge, with a token the CALLER minted under the agent's clamp — this
+   *  service's own token facility is the read floor and must never sign a write. Idempotent: the fresh
+   *  node read decides whether the mutation runs at all, and the cached view is dropped either way. */
+  async setAutoMerge(
+    target: { repoId: bigint; repoFullName: string; pullNumber: number },
+    token: string,
+    enabled: boolean
+  ): Promise<{ armed: boolean }> {
+    const [owner, name] = target.repoFullName.split('/')
+    if (!owner || !name) throw new GithubApiError('malformed repository name', 0, 'LEASE_DENIED', false)
+    const opts = {
+      auth: token,
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      ...(this.baseUrl ? { baseUrl: this.baseUrl } : {})
+    }
+    const node = await githubGraphql<AutoMergeNodeAnswer>(
+      'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id autoMergeRequest{enabledAt}}}}',
+      { owner, name, number: target.pullNumber },
+      opts
+    )
+    const pr = node.repository?.pullRequest
+    if (!pr) throw new GithubApiError('pull request not visible to the installation', 200, 'LEASE_DENIED', false)
+    try {
+      if (enabled === (pr.autoMergeRequest != null)) return { armed: enabled }
+      // strictErrors: a refused mutation is `{ data: { …: null }, errors: [...] }` — success must not be claimed off the truthy half.
+      if (enabled) {
+        await githubGraphql(
+          'mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}',
+          { id: pr.id },
+          { ...opts, strictErrors: true }
+        )
+      } else {
+        await githubGraphql(
+          'mutation($id:ID!){disablePullRequestAutoMerge(input:{pullRequestId:$id}){clientMutationId}}',
+          { id: pr.id },
+          { ...opts, strictErrors: true }
+        )
+      }
+      return { armed: enabled }
+    } finally {
+      this.invalidate(target.repoId, target.pullNumber)
+    }
+  }
+}
+
+interface AutoMergeNodeAnswer {
+  repository: { pullRequest: { id: string; autoMergeRequest: { enabledAt: string | null } | null } | null } | null
 }

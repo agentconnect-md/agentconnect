@@ -1223,6 +1223,40 @@ describe('GithubService.mintReviewForAgent — persisted installation permission
       permissions: { metadata: 'read', pull_requests: 'write' }
     })
   })
+
+  // M6 auto-merge: arming merges code, so only write tier + accepted pull_requests:write qualify.
+  it('mints the auto-merge token with pull_requests + contents write for a write-tier agent', async () => {
+    const { svc, agent, mintBodies } = reviewHarness({ pull_requests: 'write', contents: 'write' })
+    await expect(svc.mintAutoMergeForAgent(agent, 123n, 'acme/infra')).resolves.toMatchObject({ token: 'ghs_2' })
+    expect(mintBodies[1]).toMatchObject({
+      repository_ids: [123],
+      permissions: { pull_requests: 'write', contents: 'write' }
+    })
+    await expect(svc.canArmAutoMerge(agent, 123n, 'acme/infra')).resolves.toBe(true)
+  })
+
+  it('refuses auto-merge below write tier and on a missing installation grant, and canArmAutoMerge mirrors it', async () => {
+    const readTier = reviewHarness({ pull_requests: 'write', contents: 'write' })
+    const readAgent = {
+      ...(readTier.agent as Record<string, unknown>),
+      workspace: {
+        mode: 'github',
+        gitRepo: 'https://github.com/acme/infra',
+        installationId: 'row-1',
+        gitAccess: 'read'
+      }
+    } as never
+    await expect(readTier.svc.mintAutoMergeForAgent(readAgent, 123n, 'acme/infra')).rejects.toMatchObject({
+      code: 'SCOPE_DENIED'
+    })
+    await expect(readTier.svc.canArmAutoMerge(readAgent, 123n, 'acme/infra')).resolves.toBe(false)
+
+    const noGrant = reviewHarness({ pull_requests: 'read' })
+    await expect(noGrant.svc.mintAutoMergeForAgent(noGrant.agent, 123n, 'acme/infra')).rejects.toMatchObject({
+      code: 'LEASE_DENIED'
+    })
+    await expect(noGrant.svc.canArmAutoMerge(noGrant.agent, 123n, 'acme/infra')).resolves.toBe(false)
+  })
 })
 
 describe('GithubService.refreshInstallationFacts', () => {

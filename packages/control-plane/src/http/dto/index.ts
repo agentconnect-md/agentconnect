@@ -3148,12 +3148,20 @@ export const SessionPullRequestDto = z.object({
   threads: z.array(SessionPullRequestThreadDto),
   unresolvedCount: z.number().int(), // a floor when `threadsTruncated`
   threadsTruncated: z.boolean(),
+  autoMergeArmed: z.boolean().nullable(), // null while degraded — only GitHub holds the auto-merge fact
+  // Whether THIS caller may arm auto-merge: the owning agent is write-tier and the installation accepted
+  // pull_requests:write. Postgres-only, so a read-tier agent renders a disabled control, not a failed call.
+  canArmAutoMerge: z.boolean(),
   degraded: z.boolean(),
   degradedReason: z.enum(['rate_limited', 'denied', 'unreachable']).nullable(),
   // The agent's own recorded review, present ONLY on a degraded answer — GitHub's list is authoritative when it answered.
   agentReview: z.enum(['approved', 'changes_requested', 'commented']).nullable()
 })
 export type SessionPullRequestDtoT = z.infer<typeof SessionPullRequestDto>
+
+export const SessionPullRequestAutoMergeBodyDto = z.object({ enabled: z.boolean() })
+/** `POST /sessions/:id/pull-request/auto-merge` — the armed state after the call (idempotent). */
+export const SessionPullRequestAutoMergeDto = z.object({ armed: z.boolean() })
 
 /** `GET /agents/:id/tasks` — live tasks first, then the daemon's bounded settled history.
  *  `tracked:false` means the owning daemon holds no lease for this session (a non-Claude

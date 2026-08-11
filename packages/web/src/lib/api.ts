@@ -3160,6 +3160,8 @@ export interface SessionPullRequestDto {
   threads: SessionPullRequestThreadDto[]
   unresolvedCount: number // a floor when `threadsTruncated`
   threadsTruncated: boolean
+  autoMergeArmed: boolean | null // null while degraded — only GitHub holds the auto-merge fact
+  canArmAutoMerge: boolean // the owning agent's clamp allows the write; false renders a disabled control
   degraded: boolean
   degradedReason: 'rate_limited' | 'denied' | 'unreachable' | null
   /** The agent's own recorded review, present ONLY on a degraded answer — the one review state the deployment knows without GitHub. */
@@ -3174,6 +3176,14 @@ export async function fetchSessionPullRequest(
 ): Promise<SessionPullRequestDto> {
   const query = opts.refresh ? '?refresh=true' : ''
   return apiGet<SessionPullRequestDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request${query}`)
+}
+
+// Arm/disarm GitHub auto-merge (squash) on the session's PR, under the owning agent's clamped grant.
+// Idempotent on the CP; a 409 relays GitHub declining the state change (e.g. checks already pass).
+export async function setSessionPullRequestAutoMerge(sessionId: string, enabled: boolean): Promise<{ armed: boolean }> {
+  return apiPost<{ armed: boolean }>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/pull-request/auto-merge`, {
+    enabled
+  })
 }
 
 // ── usage dashboard (GET /usage) — real historical aggregates from the CP's

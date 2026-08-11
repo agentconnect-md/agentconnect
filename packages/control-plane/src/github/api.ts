@@ -112,11 +112,13 @@ export async function githubRequest<T>(path: string, opts: GithubRequestOpts): P
 }
 
 // One GraphQL query/mutation → its `data` — for facts with no REST equivalent (thread resolution
-// state, `resolveReviewThread`, `enablePullRequestAutoMerge`).
+// state, `resolveReviewThread`, `enablePullRequestAutoMerge`). `strictErrors` is for MUTATIONS:
+// GitHub rejects one as `{ data: { <mutation>: null }, errors: [...] }` — truthy data beside the
+// refusal — and reporting that as success would claim a write that never happened.
 export async function githubGraphql<T>(
   query: string,
   variables: Record<string, unknown>,
-  opts: Omit<GithubRequestOpts, 'method' | 'body'>
+  opts: Omit<GithubRequestOpts, 'method' | 'body'> & { strictErrors?: boolean }
 ): Promise<T> {
   // GraphQL failures ride inside a 200, so `errors` decides here — the REST status mapping cannot.
   const res = await githubRequest<{ data?: T | null; errors?: Array<{ type?: string; message?: string }> }>(
@@ -124,7 +126,7 @@ export async function githubGraphql<T>(
     { ...opts, method: 'POST', body: { query, variables } }
   )
   // Partial data beats a thrown read: a field-level denial degrades that field, not the whole answer.
-  if (res?.data) return res.data
+  if (res?.data && !(opts.strictErrors && res.errors?.length)) return res.data
   const errors = res?.errors ?? []
   if (errors.length > 0) {
     const detail = errors.map((e) => e.message ?? e.type ?? 'unknown').join('; ')
