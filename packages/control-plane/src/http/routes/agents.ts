@@ -11,6 +11,8 @@ import type {
   WorkspaceListPage,
   WorkspaceReadContent,
   WorkspaceGitStatus,
+  WorkspaceGitDiffResult,
+  WorkspaceGitLog,
   WorkspaceGitPullResult,
   MemoryReadContent,
   MemoryListPage,
@@ -33,6 +35,8 @@ import {
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   WORKSPACE_SESSION_READ_FEATURE,
+  WORKSPACE_GIT_REVIEW_FEATURE,
+  WorkspaceErrorReason,
   gitRepoLabel,
   normalizeGitUrl
 } from '@agentconnect.md/protocol'
@@ -99,6 +103,10 @@ import {
   DeleteWorkspaceFileQueryDto,
   WorkspaceFileDeleteDto,
   WorkspaceGitStatusDto,
+  WorkspaceGitDiffQueryDto,
+  WorkspaceGitDiffDto,
+  WorkspaceGitLogQueryDto,
+  WorkspaceGitLogDto,
   WorkspaceGitPullDto,
   AgentMemoryDto,
   MemoryFilesDto,
@@ -137,6 +145,8 @@ import {
   type WorkspaceFilesDtoT,
   type WorkspaceFileDtoT,
   type WorkspaceGitStatusDtoT,
+  type WorkspaceGitDiffDtoT,
+  type WorkspaceGitLogDtoT,
   type WorkspaceGitPullDtoT,
   type AgentMemoryDtoT,
   type MemoryFilesDtoT,
@@ -326,11 +336,13 @@ export function toWorkspaceFilesDto(page: WorkspaceListPage): WorkspaceFilesDtoT
   }
 }
 
-/** Wire REP → HTTP body for one file slice (see {@link toWorkspaceFilesDto}). */
+/** Wire REP → HTTP body for one file slice (see {@link toWorkspaceFilesDto}). `type`
+ *  keeps a directory readable as DATA instead of an empty file — or an outage. */
 export function toWorkspaceFileDto(rep: WorkspaceReadContent): WorkspaceFileDtoT {
   return {
     path: rep.path,
     exists: rep.exists,
+    type: rep.type ?? null,
     size: rep.size ?? null,
     mtime: rep.mtime ?? null,
     encoding: rep.encoding ?? null,
@@ -456,10 +468,40 @@ export function toWorkspaceGitStatusDto(
     tracking: rep.tracking ?? null,
     ahead: rep.ahead ?? null,
     behind: rep.behind ?? null,
-    files: rep.files ?? [],
+    files: (rep.files ?? []).map((f) => ({
+      path: f.path,
+      index: f.index,
+      workingDir: f.workingDir,
+      additions: f.additions ?? null,
+      deletions: f.deletions ?? null
+    })),
     truncated: rep.truncated ?? false,
     lastCommit: rep.lastCommit ?? null,
     lastFetchAt: rep.lastFetchAt ?? null
+  }
+}
+
+/** Wire REP → HTTP body for one path's unified diff. Every "no diff" reason stays
+ *  data: a non-repo workspace, an absent path, a binary change, no changes at all. */
+export function toWorkspaceGitDiffDto(rep: WorkspaceGitDiffResult): WorkspaceGitDiffDtoT {
+  return {
+    path: rep.path,
+    isRepo: rep.isRepo,
+    exists: rep.exists,
+    diff: rep.diff ?? null,
+    binary: rep.binary ?? false,
+    truncated: rep.truncated ?? false
+  }
+}
+
+/** Wire REP → HTTP body for the commit log. `tracking` null ⇒ the branch tracks
+ *  nothing, so every commit's `pushed` reads false and the console draws no markers. */
+export function toWorkspaceGitLogDto(rep: WorkspaceGitLog): WorkspaceGitLogDtoT {
+  return {
+    isRepo: rep.isRepo,
+    commits: rep.commits,
+    truncated: rep.truncated,
+    tracking: rep.tracking ?? null
   }
 }
 
@@ -485,6 +527,46 @@ function daemonEdgeFailure(err: unknown): string | null {
   }
   if (err instanceof ProtocolError) return `daemon rejected the request: ${err.message}`
   return null
+}
+
+/** The daemon's workspace `reason` as the HTTP `code` the console branches on; null
+ *  when it named none (older daemon), so the caller keeps its generic answer. */
+export function workspaceErrorCode(err: ProtocolError): string | null {
+  const reason = WorkspaceErrorReason.safeParse(err.details?.reason)
+  return reason.success ? `WORKSPACE_${reason.data.toUpperCase().replaceAll('-', '_')}` : null
+}
+
+/** Status a console can act on instead of the 503 that reads as an offline daemon:
+ *  a worktree the daemon lacks is 404 (as when the CP pre-empts the read), a bad path
+ *  400, a stale fence 409. Reasonless ⇒ {@link daemonEdgeFailure}; null ⇒ rethrow. */
+export function workspaceFailure(
+  err: unknown
+): { status: 400 | 404 | 409 | 503; error: string; message: string; code?: string } | null {
+  if (err instanceof ProtocolError && (err.code === 'BAD_PAYLOAD' || err.code === 'CONFLICT')) {
+    const code = workspaceErrorCode(err)
+    if (code !== null) {
+      if (err.code === 'CONFLICT') return { status: 409, error: 'Conflict', message: err.message, code }
+      if (code === 'WORKSPACE_UNKNOWN_AGENT') {
+        return { status: 404, error: 'Not Found', message: 'workspace not found', code }
+      }
+      return { status: 400, error: 'Bad Request', message: err.message, code }
+    }
+  }
+  const unavailable = daemonEdgeFailure(err)
+  return unavailable === null ? null : { status: 503, error: 'Service Unavailable', message: unavailable }
+}
+
+/** Send {@link workspaceFailure}'s answer; false ⇒ not a daemon-edge failure, rethrow. */
+function sendWorkspaceFailure(reply: FastifyReply, err: unknown): boolean {
+  const failure = workspaceFailure(err)
+  if (!failure) return false
+  void reply.code(failure.status).send({
+    error: failure.error,
+    statusCode: failure.status,
+    message: failure.message,
+    ...(failure.code ? { code: failure.code } : {})
+  })
+  return true
 }
 
 function memoryAdminFailure(
@@ -548,6 +630,20 @@ export function agentRoutes(deps: HttpDeps) {
         error: 'Conflict',
         statusCode: 409,
         message: 'this agent version does not support session worktree browsing'
+      })
+      return false
+    }
+
+    // Version skew: an older daemon drops an unknown frame silently, so the REQ would
+    // burn its whole retransmit budget and then read as an offline daemon. Refuse first.
+    const requireGitReview = async (reply: FastifyReply, orgId: OrgId, daemonId: DaemonId): Promise<boolean> => {
+      const daemon = await deps.registry.get(orgId, daemonId)
+      if (daemon?.capabilities.features.includes(WORKSPACE_GIT_REVIEW_FEATURE)) return true
+      reply.code(409).send({
+        error: 'Conflict',
+        statusCode: 409,
+        message: 'this agent version does not support git review reads; upgrade its daemon',
+        code: 'DAEMON_FEATURE_MISSING'
       })
       return false
     }
@@ -2375,7 +2471,7 @@ export function agentRoutes(deps: HttpDeps) {
           operationId: 'listAgentWorkspaceFiles',
           params: IdParam,
           querystring: WorkspaceFilesQueryDto,
-          response: { 200: WorkspaceFilesDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceFilesDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -2401,10 +2497,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceFilesDto(page)
         } catch (err) {
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendWorkspaceFailure(reply, err)) return
           throw err
         }
       }
@@ -2461,7 +2554,7 @@ export function agentRoutes(deps: HttpDeps) {
           operationId: 'readAgentWorkspaceFile',
           params: IdParam,
           querystring: WorkspaceFileQueryDto,
-          response: { 200: WorkspaceFileDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceFileDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -2487,10 +2580,7 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return toWorkspaceFileDto(rep)
         } catch (err) {
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendWorkspaceFailure(reply, err)) return
           throw err
         }
       }
@@ -2566,11 +2656,18 @@ export function agentRoutes(deps: HttpDeps) {
           const ok = await deps.control.workspaceWrite(agent.daemonId, writeReq)
           return { path: ok.path, size: ok.size, mtime: ok.mtime }
         } catch (err) {
+          // A mutation keeps its 400/409 whatever the daemon says; a named reason only
+          // rides along as the machine `code`.
+          const code = err instanceof ProtocolError ? workspaceErrorCode(err) : null
           if (err instanceof ProtocolError && err.code === 'CONFLICT') {
-            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message })
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: err.message, ...(code ? { code } : {}) })
           }
           if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
-            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: err.message })
+            return reply
+              .code(400)
+              .send({ error: 'Bad Request', statusCode: 400, message: err.message, ...(code ? { code } : {}) })
           }
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
@@ -2641,11 +2738,17 @@ export function agentRoutes(deps: HttpDeps) {
           })
           return { path: ok.path }
         } catch (err) {
+          // As on the write: the status is the mutation's, the `code` is the daemon's.
+          const code = err instanceof ProtocolError ? workspaceErrorCode(err) : null
           if (err instanceof ProtocolError && err.code === 'CONFLICT') {
-            return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: err.message })
+            return reply
+              .code(409)
+              .send({ error: 'Conflict', statusCode: 409, message: err.message, ...(code ? { code } : {}) })
           }
           if (err instanceof ProtocolError && err.code === 'BAD_PAYLOAD') {
-            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: err.message })
+            return reply
+              .code(400)
+              .send({ error: 'Bad Request', statusCode: 400, message: err.message, ...(code ? { code } : {}) })
           }
           const unavailable = daemonEdgeFailure(err)
           if (unavailable !== null) {
@@ -3802,7 +3905,7 @@ export function agentRoutes(deps: HttpDeps) {
           operationId: 'getAgentWorkspaceGitStatus',
           params: IdParam,
           querystring: WorkspaceScopeQueryDto,
-          response: { 200: WorkspaceGitStatusDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+          response: { 200: WorkspaceGitStatusDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
         }
       },
       async (req, reply) => {
@@ -3830,10 +3933,100 @@ export function agentRoutes(deps: HttpDeps) {
             ws.mode === 'github' ? { repo: ws.gitRepo, ...(ws.agentDir ? { agentDir: ws.agentDir } : {}) } : {}
           return toWorkspaceGitStatusDto(rep, cfg)
         } catch (err) {
-          const unavailable = daemonEdgeFailure(err)
-          if (unavailable !== null) {
-            return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503, message: unavailable })
-          }
+          if (sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Workspace git diff: proxy ONE path's unified-diff text live from the owning daemon.
+    // A binary change, an unchanged path and a non-repo workspace are all data.
+    r.get(
+      '/agents/:id/workspace/gitdiff',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'Get a workspace file diff',
+          description:
+            'Proxy the unified diff of one workspace path live from the owning daemon. `scope=staged` compares the index against HEAD; the default `unstaged` compares the worktree against the index. Pass sessionId for an authorized isolated session worktree. A binary change (binary:true), a path with no changes (diff:null) and a from-scratch workspace (isRepo:false) are all data, not errors; the daemon bounds the text to the wire frame cap and reports truncated. 503 when unplaced or the daemon is offline.',
+          operationId: 'getAgentWorkspaceGitDiff',
+          params: IdParam,
+          querystring: WorkspaceGitDiffQueryDto,
+          response: { 200: WorkspaceGitDiffDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
+        // would leak a restricted / cross-org agent's uncommitted work.
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        if (!(await requireGitReview(reply, agent.orgId, agent.daemonId))) return
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
+
+        try {
+          const rep = await deps.control.workspaceGitDiff(agent.daemonId, {
+            agentId: agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
+            path: req.query.path,
+            staged: req.query.scope === 'staged'
+          })
+          return toWorkspaceGitDiffDto(rep)
+        } catch (err) {
+          if (sendWorkspaceFailure(reply, err)) return
+          throw err
+        }
+      }
+    )
+
+    // Workspace git log: proxy the newest commits of the checked-out branch live from the
+    // owning daemon, each marked `pushed` against the tracking ref. Empty repo ⇒ data.
+    r.get(
+      '/agents/:id/workspace/gitlog',
+      {
+        schema: {
+          tags: [Tag.Workspace],
+          summary: 'List workspace commits',
+          description:
+            'Proxy the newest commits of the owning daemon’s checked-out branch (20 by default, 50 max), newest first. Pass sessionId for an authorized isolated session worktree. Each commit is marked pushed when the branch’s upstream ref already contains it; tracking:null means the branch tracks nothing, so pushed reads false throughout. An empty repo (commits: []) and a from-scratch workspace (isRepo:false) are data, not errors. 503 when unplaced or the daemon is offline.',
+          operationId: 'listAgentWorkspaceGitLog',
+          params: IdParam,
+          querystring: WorkspaceGitLogQueryDto,
+          response: { 200: WorkspaceGitLogDto, 400: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        // Route through getOrgAgent (org boundary + canView) — a bare repo.get here
+        // would leak a restricted / cross-org agent's commit history.
+        const agent = await getOrgAgent(req, req.params.id)
+        if (!agent) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'agent not found' })
+        if (!(await canReadWorkspaceScope(req, agent.id, req.query.sessionId))) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'workspace not found' })
+        }
+        if (!agent.daemonId) {
+          return reply
+            .code(503)
+            .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
+        }
+        if (!(await requireGitReview(reply, agent.orgId, agent.daemonId))) return
+        if (!(await requireSessionWorkspaceRead(reply, agent.orgId, agent.daemonId, req.query.sessionId))) return
+
+        try {
+          const rep = await deps.control.workspaceGitLog(agent.daemonId, {
+            agentId: agent.id,
+            ...(req.query.sessionId ? { sessionId: req.query.sessionId } : {}),
+            limit: req.query.limit ?? 20
+          })
+          return toWorkspaceGitLogDto(rep)
+        } catch (err) {
+          if (sendWorkspaceFailure(reply, err)) return
           throw err
         }
       }

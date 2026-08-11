@@ -190,6 +190,33 @@ export class ShimGitRunner implements GitRunner {
     return parsePorcelainV2(result.stdout)
   }
 
+  async readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }> {
+    // Two ceilings, and they are not the same one. The SANDBOX already caps what any exec may
+    // stream back (`MAX_STREAM_BYTES` in exec-handler), which is what stops a runtime flooding
+    // the channel; this cap is the caller's own, and it is applied here so the daemon's memory
+    // and the wire frame are bounded by the number the caller asked for regardless of which
+    // shim version answered. Locally the child dies AT `maxBytes`; here it dies at the larger
+    // sandbox cap and the head slice is taken after. The observable answer — head slice plus an
+    // overflow flag — is identical, which is what the contract test pins.
+    let result
+    try {
+      result = await this.exec(args)
+    } catch (err) {
+      // The sandbox refuses a stream over its own 64 KiB frame cap rather than handing back a
+      // head slice, so past that point there is no partial answer to return remotely — only the
+      // FACT that it overflowed, which is what the caller reports as `truncated`. Locally the
+      // same read yields a head slice; the two agree on the flag and differ in how much text
+      // survives, and that difference is the sandbox frame, not this contract.
+      if (err instanceof Error && /more than \d+ bytes on one stream/.test(err.message)) {
+        return { out: Buffer.alloc(0), overflow: true }
+      }
+      throw err
+    }
+    const full = Buffer.from(result.stdout, 'utf8')
+    if (full.byteLength <= maxBytes) return { out: full, overflow: false }
+    return { out: full.subarray(0, maxBytes), overflow: true }
+  }
+
   async log(options: { maxCount: number }): Promise<GitLogEntry[]> {
     // %cI is git's strict-ISO committer date, matching what the local runner asks simple-git
     // for; a unit separator keeps subjects that contain spaces or tabs intact.

@@ -57,7 +57,7 @@ const POLLUTED = {
 // The audit takes a runner: it must read the config the git it guards reads, which for a cluster
 // workspace is the sandbox's filesystem rather than this one.
 function localRunner(cwd: string): GitRunner {
-  return new LocalGitRunner(gitFor(cwd))
+  return new LocalGitRunner(gitFor(cwd), cwd)
 }
 
 function configPairs(env: Record<string, string>): Array<[string | undefined, string | undefined]> {

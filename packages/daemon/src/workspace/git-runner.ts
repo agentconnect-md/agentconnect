@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import type { SimpleGit } from 'simple-git'
 
 /**
@@ -34,6 +35,22 @@ export interface GitRunner {
   status(): Promise<GitStatusSummary>
   /** Commits newest first, bounded by `maxCount`. */
   log(options: { maxCount: number }): Promise<GitLogEntry[]>
+  /**
+   * Run a read-only subcommand with a HARD ceiling on the bytes it returns, and report
+   * whether that ceiling was hit.
+   *
+   * Distinct from {@link raw} because `raw` accumulates the whole child stdout: one
+   * `git diff` on a large change, or a numstat over a tens-of-thousands-of-files dirty
+   * tree, is orders of magnitude larger than the wire frame it is being read for. The
+   * console's review surface asks for a head slice and nothing more, and it asks on
+   * every session page view, so the bound belongs in the contract rather than at each
+   * call site — a remote implementation must honour it too, or a sandbox can stream an
+   * unbounded reply back across the channel.
+   *
+   * `overflow: true` means the child was killed at `maxBytes` and `out` is the head
+   * slice, which is the answer this seam wants: the caller reports it as truncated.
+   */
+  readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }>
 }
 
 /** The pull result the BFF surfaces to the console; nothing here is decorative. */
@@ -65,6 +82,10 @@ export interface GitStatusSummary {
   clean: boolean
 }
 
+/** A local diff/log/numstat never touches the network, so it either answers quickly or the
+ *  checkout is wedged (an index.lock holder, a dead fsmonitor). */
+const READ_TIMEOUT_MS = 15_000
+
 /** Factory for a runner bound to one working directory. */
 export type GitRunnerFor = (cwd?: string, abort?: AbortSignal) => GitRunner
 
@@ -76,15 +97,54 @@ export type GitRunnerFor = (cwd?: string, abort?: AbortSignal) => GitRunner
  * so a cluster agent and a self-hosted agent differ in where git runs and in nothing else.
  */
 export class LocalGitRunner implements GitRunner {
-  constructor(private readonly git: SimpleGit) {}
+  // `cwd` and `env` are carried alongside the handle because `readBounded` spawns its own
+  // child and cannot ask simple-git what it was configured with.
+  // `cwd` is REQUIRED, not optional: `readBounded` spawns its own child and cannot ask
+  // simple-git where it was pointed, and a site that forgets runs git in the daemon's own
+  // directory instead of the workspace — which happened twice while this was optional and
+  // read as a passing test. Required makes the compiler find every site.
+  constructor(
+    private readonly git: SimpleGit,
+    private readonly cwd: string | undefined,
+    private readonly env: Record<string, string> = {}
+  ) {}
 
   withEnv(env: Record<string, string>): GitRunner {
     // simple-git's own env chaining, so the local path keeps its exact semantics.
-    return new LocalGitRunner(this.git.env(env))
+    return new LocalGitRunner(this.git.env(env), this.cwd, env)
   }
 
   async raw(args: string[]): Promise<string> {
     return this.git.raw(args)
+  }
+
+  readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }> {
+    // `execFile` rather than the simple-git handle, which is the whole reason this member
+    // exists: `maxBuffer` and `timeout` are what bound it, and simple-git exposes neither.
+    // The env and cwd come from the same places the handle's do, so the two paths differ in
+    // the ceiling and in nothing else.
+    return new Promise((resolve, reject) => {
+      execFile(
+        'git',
+        args,
+        {
+          ...(this.cwd ? { cwd: this.cwd } : {}),
+          env: { ...this.env },
+          encoding: 'buffer',
+          maxBuffer: maxBytes,
+          timeout: READ_TIMEOUT_MS,
+          windowsHide: true
+        },
+        (err, stdout) => {
+          if (!err) return resolve({ out: stdout, overflow: false })
+          // The ceiling was hit: the child is already dead and `stdout` holds the head slice.
+          if ((err as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+            return resolve({ out: stdout, overflow: true })
+          }
+          reject(err)
+        }
+      )
+    })
   }
 
   async clone(repo: string, target: string, options: string[] = []): Promise<void> {

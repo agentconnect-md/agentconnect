@@ -50,6 +50,10 @@ import type {
   WorkspaceDeleteOk,
   WorkspaceGitStatusReq,
   WorkspaceGitStatus,
+  WorkspaceGitDiffReq,
+  WorkspaceGitDiffResult,
+  WorkspaceGitLogReq,
+  WorkspaceGitLog,
   WorkspaceGitPullReq,
   WorkspaceGitPullResult,
   MemoryChannelsReq,
@@ -775,6 +779,27 @@ export class ControlSender {
   async workspaceGitStatus(daemonId: string, req: WorkspaceGitStatusReq): Promise<WorkspaceGitStatus> {
     const c = this.must(daemonId)
     return c.conn.request<WorkspaceGitStatus>('workspace/gitstatus', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Read the unified diff of ONE workspace path from the owning daemon for the
+   * console (REQ → `workspace/gitdiff/result`). Read-only — the CP proxies the
+   * diff text to the UI live and never stores it (body-locality, §1/§12). A
+   * binary path, an unchanged path and a non-repo workspace are all DATA.
+   */
+  async workspaceGitDiff(daemonId: string, req: WorkspaceGitDiffReq): Promise<WorkspaceGitDiffResult> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitDiffResult>('workspace/gitdiff', req, { epoch: c.sessionEpoch })
+  }
+
+  /**
+   * Read the newest commits of an agent's checked-out branch from the owning
+   * daemon for the console (REQ → `workspace/gitlog/result`). Read-only — an
+   * empty repo comes back as `commits: []` (DATA), not an error.
+   */
+  async workspaceGitLog(daemonId: string, req: WorkspaceGitLogReq): Promise<WorkspaceGitLog> {
+    const c = this.must(daemonId)
+    return c.conn.request<WorkspaceGitLog>('workspace/gitlog', req, { epoch: c.sessionEpoch })
   }
 
   /**

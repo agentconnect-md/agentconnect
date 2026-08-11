@@ -1,4 +1,5 @@
-export type LineDiffKind = 'context' | 'add' | 'delete' | 'meta'
+// `hunk` is a unified diff's `@@ -a,b +c,d @@` header (viewer/unified-diff.ts). It is its own kind rather than a third meaning of `meta`, whose marker is git's no-newline backslash and whose type is tertiary italic — a hunk header is neither.
+export type LineDiffKind = 'context' | 'add' | 'delete' | 'meta' | 'hunk'
 
 export interface LineDiffRow {
   kind: LineDiffKind
@@ -35,9 +36,7 @@ interface LineMatch {
   newIndex: number
 }
 
-/** Bounds both quadratic matching and the number of table rows. History
- * snapshots are capped at 4 KB, while dream review can compare a complete
- * 256 KB memory file containing hundreds of thousands of tiny lines. */
+/** Bounds both quadratic matching and the number of table rows: a 4 KB history snapshot, or a whole 256 KB memory file under dream review, can hold hundreds of thousands of tiny lines. */
 const MAX_DETAILED_DIFF_LINES = 2_000
 
 function prefixLcsLengths(
@@ -222,13 +221,7 @@ function groupedDiffRows(oldLines: LineToken[], newLines: LineToken[], prefix: n
   return rows
 }
 
-/**
- * Exact line diff for bounded text snapshots. Hirschberg keeps working memory
- * linear even when a valid 4 KB snapshot contains thousands of tiny lines.
- * Larger files retain exact common edges but group each edge and changed side
- * into a bounded number of rendered blocks, avoiding quadratic work and an
- * unbounded number of DOM rows.
- */
+/** Exact line diff for bounded text snapshots: Hirschberg keeps working memory linear, and past {@link MAX_DETAILED_DIFF_LINES} the exact common edges are kept while each edge and changed side collapses into one bounded block rather than quadratic work and unbounded DOM rows. */
 export function diffLines(before: string, after: string): LineDiffRow[] {
   const oldLines = splitLines(before)
   const newLines = splitLines(after)
@@ -293,20 +286,49 @@ const ROW_STYLE: Record<LineDiffKind, string> = {
   context: 'bg-(--surface-card) text-(--text-secondary)',
   add: 'bg-(--status-online-soft) text-(--green-500)',
   delete: 'bg-(--status-error-soft) text-(--red-600)',
-  meta: 'bg-(--surface-sunken) italic text-(--text-tertiary)'
+  meta: 'bg-(--surface-sunken) italic text-(--text-tertiary)',
+  hunk: 'bg-(--surface-sunken) text-(--purple-500)'
 }
 
 const MARKER: Record<LineDiffKind, string> = {
   context: ' ',
   add: '+',
   delete: '−',
-  meta: '\\'
+  meta: '\\',
+  hunk: '@'
 }
 
 function lineLabel(start: number | undefined, count: number | undefined): string {
   if (start === undefined) return ''
   if (!count || count === 1) return String(start)
   return `${start}–${start + count - 1}`
+}
+
+/** The row table alone — two line gutters, a marker column, the line text — with no chrome of its own: its host supplies the frame and the scroller, because a memory-history card wants a bordered 320px box and the session viewer wants the whole pane. */
+// Rows are RENDERED here, never computed: `diffLines` below is one producer and `viewer/unified-diff.ts` is another. A row carrying embedded newlines paints as several visual lines inside ONE table row sharing one label range — that is how a 128,000-line change becomes three rows.
+export function LineDiffTable({ rows, label = 'Line changes' }: { rows: LineDiffRow[]; label?: string }) {
+  return (
+    <table className="mono w-full min-w-max border-collapse text-[11px] leading-[1.55]" aria-label={label}>
+      <tbody>
+        {rows.map((row, index) => (
+          <tr
+            key={`${row.kind}:${row.oldLine ?? ''}:${row.newLine ?? ''}:${row.eofSide ?? ''}:${index}`}
+            className={ROW_STYLE[row.kind]}
+            data-diff-kind={row.kind}
+          >
+            <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right align-top text-(--text-tertiary)">
+              {lineLabel(row.oldLine, row.oldLineCount)}
+            </td>
+            <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right align-top text-(--text-tertiary)">
+              {lineLabel(row.newLine, row.newLineCount)}
+            </td>
+            <td className="w-7 select-none px-2 py-px text-center align-top font-semibold">{MARKER[row.kind]}</td>
+            <td className="whitespace-pre px-2 py-px pr-4">{row.text || '\u00a0'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
 }
 
 export function LineDiff({ before, after }: { before: string; after: string }) {
@@ -322,26 +344,7 @@ export function LineDiff({ before, after }: { before: string; after: string }) {
       </div>
       {changed ? (
         <div className="max-h-80 overflow-auto">
-          <table className="mono w-full min-w-max border-collapse text-[11px] leading-[1.55]" aria-label="Line changes">
-            <tbody>
-              {rows.map((row, index) => (
-                <tr
-                  key={`${row.kind}:${row.oldLine ?? ''}:${row.newLine ?? ''}:${row.eofSide ?? ''}:${index}`}
-                  className={ROW_STYLE[row.kind]}
-                  data-diff-kind={row.kind}
-                >
-                  <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right align-top text-(--text-tertiary)">
-                    {lineLabel(row.oldLine, row.oldLineCount)}
-                  </td>
-                  <td className="w-9 select-none border-r border-(--border-subtle) px-2 py-px text-right align-top text-(--text-tertiary)">
-                    {lineLabel(row.newLine, row.newLineCount)}
-                  </td>
-                  <td className="w-7 select-none px-2 py-px text-center align-top font-semibold">{MARKER[row.kind]}</td>
-                  <td className="whitespace-pre px-2 py-px pr-4">{row.text || '\u00a0'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <LineDiffTable rows={rows} />
         </div>
       ) : (
         <div className="bg-(--surface-card) px-3 py-4 text-[11px] text-(--text-tertiary)">No line changes.</div>

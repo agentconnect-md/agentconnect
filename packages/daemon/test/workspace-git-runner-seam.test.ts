@@ -118,7 +118,7 @@ function recording(): {
   const argv: string[][] = []
   const resolver: WorkspaceGitRunnerResolver = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
-    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort))
+    const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd)
     const wrap = (runner: GitRunner): GitRunner => ({
       withEnv: (env) => wrap(runner.withEnv(env)),
       raw: async (args) => {
@@ -243,7 +243,10 @@ describe('workspace-manager git runner seam', () => {
       .split('\n')
       .map((line, index) => ({ line, number: index + 1 }))
       .filter(({ line }) => /\bgitFor\(/.test(line))
-      .filter(({ line }) => !line.includes('new LocalGitRunner(gitFor(cwd, abort))'))
+      // The permitted site, matched on its SHAPE rather than a byte-exact string: the local
+      // runner also carries `cwd` so its bounded read can spawn in the same directory, and
+      // pinning the literal made that addition look like a new escape.
+      .filter(({ line }) => !/new LocalGitRunner\(gitFor\(cwd, abort\)/.test(line))
     expect(offenders.map((entry) => `${entry.number}: ${entry.line.trim()}`)).toEqual([])
   })
 })

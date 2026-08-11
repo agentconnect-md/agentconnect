@@ -101,7 +101,8 @@ import { useCrumbSlot } from '@/components/console/Shell'
 import { DockPanel, SessionDock, SessionDockSlot, type DockTab } from '@/components/console/dock/SessionDock'
 import { SessionsPanel, sessionsTabStatus } from '@/components/console/dock/SessionsPanel'
 import { FilesPanel, filesTabStatus } from '@/components/console/dock/FilesPanel'
-import { SessionViewer } from '@/components/console/viewer/SessionViewer'
+import { GitPanel, gitTabStatus, type GitPanelVerdict } from '@/components/console/dock/GitPanel'
+import { SessionViewer, viewerModeFromParam, type ViewerMode } from '@/components/console/viewer/SessionViewer'
 import {
   EMPTY_RAIL_AGENT_FILTER,
   railAgentFilterQuery,
@@ -1174,10 +1175,17 @@ function MobileSessionFamilyLinks({
   )
 }
 
-/** The dock's tabs. Git / PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
+/** The dock's tabs. PR / Tasks are each one more entry (§9), not a stub; Sessions' §1 `plus` action awaits a new-session flow. */
 const DOCK_TABS: DockTab[] = [
   { key: 'sessions', label: 'Sessions', icon: 'messages-square' },
-  { key: 'files', label: 'Files', icon: 'folder-tree', actionIcon: 'refresh-cw', actionLabel: 'Refresh files' }
+  { key: 'files', label: 'Files', icon: 'folder-tree', actionIcon: 'refresh-cw', actionLabel: 'Refresh files' },
+  {
+    key: 'git',
+    label: 'Git',
+    icon: 'git-commit-horizontal',
+    actionIcon: 'refresh-cw',
+    actionLabel: 'Refresh git status'
+  }
 ]
 
 /** Loading keeps the same dock + body tracks as the transcript; a resolved 404 opts out, so its card gets the whole content wrap. */
@@ -1230,15 +1238,20 @@ export default function SessionDetailView() {
   const viewerPath = searchParams.get('file') || null
   // Which workspace that path was read from. A merged conversation's header focus is component state that defaults to the current REPRESENTATIVE, and the representative changes as another participant becomes newest — so without this a link copied while focused on agent B reopens B's path against A's checkout.
   const viewerAgentParam = searchParams.get('agent')
+  // Which read of that path is on screen (§4's M2 addition to the same param set): the file, its unstaged diff, or its staged diff. A value this console does not know degrades to File mode — the one read every workspace can answer — rather than to an error.
+  const viewerMode = viewerModeFromParam(searchParams.get('mode'))
   // REPLACE, never push. The viewer is a pane mode inside one route, not a place: pushing would spend a history entry per tree click, so a reader who read six files would need seven Back presses to leave the session, and Back would stop meaning "leave this session". The cost, accepted: Back does not step file-by-file within a visit. Writing through URLSearchParams is also what makes a path with slashes and spaces round-trip — `router.replace` on `.toString()`, `searchParams.get` back.
   const setViewerFile = useCallback(
-    (next: string | null, agentId?: string | null) => {
+    (next: string | null, agentId?: string | null, mode: ViewerMode = 'file') => {
       const query = new URLSearchParams(searchParams)
       if (next) query.set('file', next)
       else query.delete('file')
       // The workspace travels with the path, so the link resolves to the checkout it was made from rather than to whichever agent the header happens to focus on reopening.
       if (next && agentId) query.set('agent', agentId)
       else query.delete('agent')
+      // File mode is the DEFAULT, so it writes no parameter at all: an M1 link stays byte-identical, and closing the viewer takes the mode with the path rather than leaving a mode behind for the next file opened.
+      if (next && mode !== 'file') query.set('mode', mode)
+      else query.delete('mode')
       const search = query.toString()
       router.replace(search ? `${pathname}?${search}` : pathname, { scroll: false })
     },
@@ -1756,9 +1769,10 @@ export default function SessionDetailView() {
   const changeHeaderFocus = useCallback(
     (agentId: string) => {
       setHeaderFocusSelection({ scope: headerFocusScope, agentId })
-      if (viewerPath !== null) setViewerFile(viewerPath, agentId)
+      // The MODE travels with the path: a reader comparing one agent's diff to another's must not be dropped into File mode by the act of switching.
+      if (viewerPath !== null) setViewerFile(viewerPath, agentId, viewerMode)
     },
-    [headerFocusScope, setViewerFile, viewerPath]
+    [headerFocusScope, setViewerFile, viewerMode, viewerPath]
   )
   useEffect(() => {
     if (!defaultHeaderFocusAgentId) return
@@ -1849,6 +1863,9 @@ export default function SessionDetailView() {
   const [filesRefreshTick, setFilesRefreshTick] = useState(0)
   // Reported by the panel, like the Sessions verdict: only it knows whether its first root listing has answered.
   const [filesRootSettled, setFilesRootSettled] = useState(false)
+  // The Git tab's own `refresh-cw`, and the verdict it reports — its settle state feeds the tab status, its changed count the tab's badge.
+  const [gitRefreshTick, setGitRefreshTick] = useState(0)
+  const [gitVerdict, setGitVerdict] = useState<GitPanelVerdict>({ settled: false, changed: null })
   // A seed narrowed to the conversation already on screen hides the list AND the picker that could widen it, so re-ask it unfiltered.
   const railSeedKeyNow = railSeedKey(railFilter)
   // Waited on because an in-flight family reads as EMPTY, not `undefined`: latching there widens a list about to grow a Related tree.
@@ -1872,17 +1889,28 @@ export default function SessionDetailView() {
   const sessionsStatus = sessionsTabStatus(sessionsWouldHide, !seededRailLoading && railFamilySettled)
   // `loading` also covers "we do not know which checkout yet": a related session's isolation is a round trip behind, and reading before it lands would read the wrong one. A failed isolation read is `ready` instead — it has copy to draw, and it is never going to resolve on its own.
   const filesStatus = filesScopeFailed ? 'ready' : filesScopeReady ? filesTabStatus(filesRootSettled) : 'loading'
+  // Same three states for Git, and for the same reasons: an unknown checkout is `loading`, a failed isolation read is answered copy.
+  const gitStatus = filesScopeFailed ? 'ready' : filesScopeReady ? gitTabStatus(gitVerdict.settled) : 'loading'
   // Each tab's own verdict, spliced onto the static descriptors. Files is dropped outright rather than left `loading` forever when there is no agent behind it — a tab that can never answer is not a tab — and the demo tour has no daemon to read a checkout from at all, so it does not get one either.
   const dockTabs = useMemo<DockTab[]>(
     () =>
-      DOCK_TABS.filter((tab) => tab.key !== 'files' || (filesAgentId !== null && !MOCK_MODE)).map((tab) =>
+      DOCK_TABS.filter(
+        (tab) => (tab.key !== 'files' && tab.key !== 'git') || (filesAgentId !== null && !MOCK_MODE)
+      ).map((tab) =>
         tab.key === 'sessions'
           ? { ...tab, status: sessionsStatus }
           : tab.key === 'files'
             ? { ...tab, status: filesStatus }
-            : tab
+            : tab.key === 'git'
+              ? {
+                  ...tab,
+                  status: gitStatus,
+                  // The badge is the changed-file count, omitted rather than shown as `0`: a clean tree wears no pill, and neither does a workspace whose status could not be read.
+                  ...(gitVerdict.changed ? { badge: gitVerdict.changed } : {})
+                }
+              : tab
       ),
-    [filesAgentId, filesStatus, sessionsStatus]
+    [filesAgentId, filesStatus, gitStatus, gitVerdict.changed, sessionsStatus]
   )
   // The active tab has to be one that exists: a Files tab dropped under the reader would otherwise leave the dock with no active tab and an unlabelled panel.
   const dockTabKey = dockTabs.some((tab) => tab.key === dockTab) ? dockTab : DOCK_TABS[0]!.key
@@ -3615,6 +3643,9 @@ export default function SessionDetailView() {
             agentId={filesAgentId}
             {...(filesSessionId ? { sessionId: filesSessionId } : {})}
             path={viewerPath}
+            // NOT part of the mount key: the pill must redraw the pane it already has, and a remount would re-read the file (and the diff) on every toggle.
+            mode={viewerMode}
+            onModeChange={(mode) => setViewerFile(viewerPath, filesAgentId, mode)}
             onClose={() => setViewerFile(null)}
           />
         ) : null}
@@ -4428,6 +4459,7 @@ export default function SessionDetailView() {
         onTabChange={setDockTab}
         onTabAction={(key) => {
           if (key === 'files') setFilesRefreshTick((tick) => tick + 1)
+          if (key === 'git') setGitRefreshTick((tick) => tick + 1)
         }}
         overlayKey={`${session.id}:${viewerPath ?? ''}`}
         label="Panels"
@@ -4467,9 +4499,35 @@ export default function SessionDetailView() {
               {...(filesSessionId ? { sessionId: filesSessionId } : {})}
               {...(filesWorkdir ? { workdir: filesWorkdir } : {})}
               refreshTick={filesRefreshTick}
-              openFilePath={viewerPath}
+              openFilePath={viewerOpen && viewerMode === 'file' ? viewerPath : null}
               onOpenFile={(path) => setViewerFile(path, filesAgentId)}
               onRootSettledChange={setFilesRootSettled}
+            />
+          ) : null}
+        </DockPanel>
+        <DockPanel active={dockTabKey === 'git'}>
+          {/* Same withholding as Files: no status is read against a checkout we only assumed, and a rejected isolation read says so instead of spinning. */}
+          {filesScopeFailed ? (
+            <div
+              data-git-scope-failed=""
+              className="px-3 py-4 font-sans text-[12px] font-normal leading-normal text-(--text-secondary)"
+            >
+              Couldn’t tell which checkout this session works in — its details didn’t load. Reopen the session, or read
+              its git status from the agent’s workspace page.
+            </div>
+          ) : null}
+          {/* Mounted on the same terms as Files, and for the same reason: the panel's verdict is what keeps its own tab out of the dock's vacant state, so a lazily mounted one makes the tab unreachable. */}
+          {filesAgentId && filesScopeReady ? (
+            <GitPanel
+              agentId={filesAgentId}
+              {...(filesSessionId ? { sessionId: filesSessionId } : {})}
+              refreshTick={gitRefreshTick}
+              openPath={viewerOpen && viewerMode !== 'file' ? viewerPath : null}
+              openStaged={viewerMode === 'staged'}
+              onOpenDiff={(path, staged, untracked) =>
+                setViewerFile(path, filesAgentId, untracked ? 'file' : staged ? 'staged' : 'diff')
+              }
+              onVerdictChange={setGitVerdict}
             />
           ) : null}
         </DockPanel>

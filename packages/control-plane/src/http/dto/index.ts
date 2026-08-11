@@ -22,6 +22,7 @@ import {
   RepoSubdirError,
   SessionImageAttachment,
   MAX_WORKSPACE_EDIT_BYTES,
+  MAX_WORKSPACE_LOG_COMMITS,
   MAX_GIT_REPO_LENGTH,
   MAX_ENVIRONMENT_VALUE_LENGTH,
   normalizeGitHubSkillSource,
@@ -2664,6 +2665,7 @@ export const WorkspaceFileQueryDto = WorkspaceScopeQueryDto.extend({
 export const WorkspaceFileDto = z.object({
   path: z.string(),
   exists: z.boolean(), // false ⇒ the file does not exist (data, not an error)
+  type: z.enum(['file', 'dir']).nullable(), // what the path IS; 'dir' ⇒ no content (null from an older daemon)
   size: z.number().nullable(),
   mtime: z.string().nullable(), // RFC3339
   encoding: z.enum(['utf8', 'none']).nullable(), // 'none' ⇒ binary detected, content omitted
@@ -2931,7 +2933,9 @@ export const LocalSkillsDto = z.object({
 export const WorkspaceGitFileDto = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char
-  workingDir: z.string() // unstaged (Y) status char
+  workingDir: z.string(), // unstaged (Y) status char
+  additions: z.number().nullable(), // `git diff HEAD --numstat` lines added; null ⇒ untracked / binary / older daemon
+  deletions: z.number().nullable() // …and lines removed
 })
 
 export const WorkspaceGitCommitDto = z.object({
@@ -2957,6 +2961,47 @@ export const WorkspaceGitStatusDto = z.object({
   truncated: z.boolean(), // true ⇒ the `files` list was capped
   lastCommit: WorkspaceGitCommitDto.nullable(), // HEAD commit; null ⇒ no commits yet
   lastFetchAt: z.string().nullable() // RFC3339; when the checkout last fetched/pulled
+})
+
+/** `GET /agents/:id/workspace/gitdiff` query. `scope` is a closed vocabulary, not a
+ *  boolean: a querystring `staged=false` coerces to `true` and shows the wrong side. */
+export const WorkspaceGitDiffQueryDto = WorkspaceScopeQueryDto.extend({
+  path: z.string().min(1).max(4096), // workspace-relative POSIX path (a directory diffs its subtree)
+  scope: z.enum(['unstaged', 'staged']).default('unstaged') // 'staged' ⇒ index vs HEAD; 'unstaged' ⇒ worktree vs index
+})
+
+/** `GET /agents/:id/workspace/gitdiff` — one path's unified diff, or the data saying
+ *  why there is none (`diff:null` + `exists:true` + `binary:false` ⇒ no changes). */
+export const WorkspaceGitDiffDto = z.object({
+  path: z.string(),
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); nothing to diff
+  exists: z.boolean(), // false ⇒ the path is neither changed nor present in the workspace
+  diff: z.string().nullable(), // unified-diff text as git emits it (bounded; see `truncated`)
+  binary: z.boolean(), // true ⇒ git reports a binary change, so there is no text to show
+  truncated: z.boolean() // true ⇒ `diff` is only the head of a bigger diff
+})
+
+/** `GET /agents/:id/workspace/gitlog` query — the newest commits of the checkout. */
+export const WorkspaceGitLogQueryDto = WorkspaceScopeQueryDto.extend({
+  limit: z.coerce.number().int().positive().max(MAX_WORKSPACE_LOG_COMMITS).optional()
+})
+
+export const WorkspaceGitLogCommitDto = z.object({
+  sha: z.string(),
+  shortSha: z.string(),
+  subject: z.string(),
+  author: z.string(),
+  committedAt: z.string(), // RFC3339
+  pushed: z.boolean() // true ⇒ reachable from the branch's upstream ref
+})
+
+/** `GET /agents/:id/workspace/gitlog` — newest-first commits; an empty repo is data
+ *  (`commits: []`). `tracking` null ⇒ tracks nothing, so every `pushed` reads false. */
+export const WorkspaceGitLogDto = z.object({
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git); no log
+  commits: z.array(WorkspaceGitLogCommitDto),
+  truncated: z.boolean(), // true ⇒ the branch has more commits than the requested limit
+  tracking: z.string().nullable() // upstream ref `pushed` was computed against
 })
 
 /** `POST /agents/:id/workspace/gitpull` — outcome of a forced ff-only pull. A
@@ -3087,5 +3132,7 @@ export type DreamListDtoT = z.infer<typeof DreamListDto>
 export type DreamFilesDtoT = z.infer<typeof DreamFilesDto>
 export type DreamFileDtoT = z.infer<typeof DreamFileDto>
 export type WorkspaceGitStatusDtoT = z.infer<typeof WorkspaceGitStatusDto>
+export type WorkspaceGitDiffDtoT = z.infer<typeof WorkspaceGitDiffDto>
+export type WorkspaceGitLogDtoT = z.infer<typeof WorkspaceGitLogDto>
 export type WorkspaceGitPullDtoT = z.infer<typeof WorkspaceGitPullDto>
 export type ErrorDtoT = z.infer<typeof ErrorDto>

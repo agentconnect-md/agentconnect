@@ -14,7 +14,14 @@ const wire = vi.hoisted(() => ({
   fileCalls: [] as Array<{ path: string; sessionId?: string }>,
   listCalls: [] as Array<{ path: string; sessionId?: string }>,
   /** Whether the open session has a worktree of its own; a shared workspace must never be asked for one. */
-  isolation: 'session' as 'session' | 'shared'
+  isolation: 'session' as 'session' | 'shared',
+  /** The Git tab's two reads. A from-scratch workspace by default, so every case that predates the tab sees what it saw. */
+  git: { isRepo: false } as unknown,
+  log: { isRepo: false, commits: [], truncated: false, tracking: null } as unknown,
+  diffCalls: [] as Array<{ path: string; scope?: string; sessionId?: string }>,
+  /** A session with no agent behind it at all — there is no checkout to offer a workspace tab for. */
+  agentless: false,
+  rail: [] as unknown[]
 }))
 
 const NASTY_DIR = 'my dir+x'
@@ -61,7 +68,19 @@ vi.mock('@/lib/api', async (importOriginal) => {
         nextCursor: null
       })
     }),
-    fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve({ isRepo: false })),
+    fetchWorkspaceGitStatus: vi.fn(() => Promise.resolve(wire.git)),
+    fetchWorkspaceGitLog: vi.fn(() => Promise.resolve(wire.log)),
+    fetchWorkspaceGitDiff: vi.fn((_agentId: string, opts: { path: string; scope?: string; sessionId?: string }) => {
+      wire.diffCalls.push(opts)
+      return Promise.resolve({
+        path: opts.path,
+        isRepo: true,
+        exists: true,
+        diff: '@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n',
+        binary: false,
+        truncated: false
+      })
+    }),
     fetchWorkspaceFile: vi.fn((_agentId: string, opts: { path: string; sessionId?: string }) => {
       wire.fileCalls.push(opts)
       return Promise.resolve({
@@ -120,7 +139,9 @@ const session: Session = {
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     agents: [agent],
-    allSessions: [{ ...session, workspaceIsolation: wire.isolation }],
+    allSessions: [
+      { ...session, workspaceIsolation: wire.isolation, ...(wire.agentless ? { agentId: '', agentName: '' } : {}) }
+    ],
     getSessions: () => [session],
     sessionsLoading: false,
     crons: [],
@@ -144,8 +165,15 @@ vi.mock('@/lib/stick-to-bottom', () => ({ useStickToBottom: () => () => {} }))
 
 vi.mock('@/lib/auth', () => ({ isAuthConfigured: () => false }))
 
+// The dock's Sessions page. Non-empty in the cases that need the tab STRIP on screen: with every tab non-ready the dock is `vacant` and withholds the strip entirely, which would mask which tabs it was offered.
 vi.mock('@/lib/use-session-list', () => ({
-  useSessionList: () => ({ sessions: [], total: 0, isLoading: false, nextCursor: null, loadingMore: false })
+  useSessionList: () => ({
+    sessions: wire.rail,
+    total: wire.rail.length,
+    isLoading: false,
+    nextCursor: null,
+    loadingMore: false
+  })
 }))
 
 vi.mock('@/components/console/Shell', () => ({
@@ -225,6 +253,11 @@ beforeEach(() => {
   wire.fileCalls = []
   wire.listCalls = []
   wire.isolation = 'session'
+  wire.git = { isRepo: false }
+  wire.log = { isRepo: false, commits: [], truncated: false, tracking: null }
+  wire.diffCalls = []
+  wire.agentless = false
+  wire.rail = []
   window.localStorage.clear()
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -496,5 +529,167 @@ describe('the viewer route', () => {
     await render()
     await press('[data-viewer-close]')
     expect(nav.replaced.at(-1)).toBe('/acme/sessions/session-1?view=flat')
+  })
+})
+
+describe('the Git tab', () => {
+  const gitFile = (path: string, index: string, workingDir: string) => ({
+    path,
+    index,
+    workingDir,
+    additions: 12,
+    deletions: 3
+  })
+  const dirtyRepo = {
+    isRepo: true,
+    clean: false,
+    repo: null,
+    agentDir: null,
+    branch: 'main',
+    tracking: 'origin/main',
+    ahead: 1,
+    behind: 0,
+    files: [gitFile('src/staged.ts', 'A', ' '), gitFile('src/edited.ts', ' ', 'M')],
+    truncated: false,
+    lastCommit: null,
+    lastFetchAt: null
+  }
+  const openTab = async (key: string) => {
+    await act(async () => {
+      container?.querySelector<HTMLElement>(`[data-dock-tab="${key}"]`)?.click()
+      await Promise.resolve()
+    })
+    await render()
+  }
+  const gitRow = (path: string) => container?.querySelector<HTMLElement>(`[data-git-row="${path}"]`)
+  const written = () => new URLSearchParams((nav.replaced.at(-1) ?? '').split('?')[1] ?? '')
+
+  it('sits beside Files with its own refresh action, and mounts its panel with it', async () => {
+    wire.git = dirtyRepo
+    await render()
+    expect(container?.querySelector('[data-dock-tab="git"]')).not.toBeNull()
+    // Mounted with the other panels rather than on first visit: its verdict is what keeps its own tab reachable.
+    expect(container?.querySelector('[data-git-panel]')).not.toBeNull()
+
+    await openTab('git')
+    const action = container?.querySelector('[data-dock-action="git"]')
+    expect(action?.getAttribute('aria-label')).toBe('Refresh git status')
+    expect(container?.querySelector('[data-dock-empty]')).toBeNull()
+  })
+
+  it('badges the tab with the changed-file count, and drops the badge when the refresh finds a clean tree', async () => {
+    wire.git = dirtyRepo
+    await render()
+    expect(container?.querySelector('[data-dock-tab="git"]')?.textContent).toContain('2')
+
+    // A re-read is the only way the count changes — the panel does not poll — so the tab's own refresh action is what has to carry the new verdict up.
+    wire.git = { ...dirtyRepo, clean: true, files: [] }
+    await openTab('git')
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-dock-action="git"]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="git"]')?.textContent).not.toContain('2')
+    expect(container?.querySelector('[data-git-panel]')?.textContent).toContain('Nothing has changed')
+  })
+
+  it('opens a row’s diff in the viewer, on the side of the index the row came from', async () => {
+    wire.git = dirtyRepo
+    await render()
+    await openTab('git')
+
+    await act(async () => {
+      gitRow('src/edited.ts')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    // The whole scope travels in the URL: the path, the workspace it was read from, and which read.
+    expect(written().get('file')).toBe('src/edited.ts')
+    expect(written().get('agent')).toBe('agent-1')
+    expect(written().get('mode')).toBe('diff')
+    expect(wire.diffCalls.at(-1)).toEqual({ path: 'src/edited.ts', scope: 'unstaged', sessionId: 'session-1' })
+    // Diff mode draws the parsed diff, and never spends a file read on the way there.
+    expect(container?.querySelector('[data-viewer-diff]')).not.toBeNull()
+    expect(wire.fileCalls).toEqual([])
+
+    await act(async () => {
+      gitRow('src/staged.ts')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(written().get('mode')).toBe('staged')
+    expect(wire.diffCalls.at(-1)).toEqual({ path: 'src/staged.ts', scope: 'staged', sessionId: 'session-1' })
+  })
+
+  it('toggles the pill through the URL, spends no history entry, and takes the mode away with the file', async () => {
+    wire.git = dirtyRepo
+    nav.search = 'file=src%2Fedited.ts&agent=agent-1&mode=diff'
+    await render()
+    expect(container?.querySelector('[data-viewer-diff]')).not.toBeNull()
+
+    await press('[data-viewer-mode="file"]')
+    expect(written().get('mode')).toBeNull()
+    expect(written().get('file')).toBe('src/edited.ts')
+    expect(container?.querySelector('[data-viewer-code]')).not.toBeNull()
+
+    await press('[data-viewer-mode="diff"]')
+    expect(written().get('mode')).toBe('diff')
+
+    await press('[data-viewer-close]')
+    expect(nav.replaced.at(-1)).not.toContain('mode=')
+    expect(nav.pushed).toEqual([])
+  })
+
+  it('reads an unknown mode as File mode rather than refusing to open the file', async () => {
+    nav.search = 'file=src%2Fnotes.md&mode=sideways'
+    await render()
+    expect(container?.querySelector('[data-viewer-code]')).not.toBeNull()
+    expect(container?.querySelector('[data-viewer-diff]')).toBeNull()
+    expect(wire.diffCalls).toEqual([])
+  })
+
+  it('withholds every git read from a link whose workspace this conversation does not have', async () => {
+    wire.git = dirtyRepo
+    nav.search = 'file=a.ts&agent=agent-not-here&mode=diff'
+    await render()
+    // Fails closed like M1's file read: no diff is read against a checkout the link could not name.
+    expect(container?.querySelector('[data-viewer-diff]')).toBeNull()
+    expect(wire.diffCalls).toEqual([])
+    expect(container?.querySelector('[data-viewer-stale-link]')).not.toBeNull()
+  })
+})
+
+describe('a session with no agent behind it', () => {
+  it('offers neither workspace tab, because a tab that can never answer is not a tab', async () => {
+    wire.agentless = true
+    // A second row so the Sessions tab reports `ready`: with every tab non-ready the dock is vacant and draws no strip at all, which would hide the answer this case is about.
+    wire.rail = [{ ...session, id: 'session-2', title: 'Another run' }]
+    await render()
+
+    expect(container?.querySelector('[data-dock-tab="sessions"]')).not.toBeNull()
+    expect(container?.querySelector('[data-dock-tab="files"]')).toBeNull()
+    expect(container?.querySelector('[data-dock-tab="git"]')).toBeNull()
+    // And no panel was mounted to read a checkout that does not exist.
+    expect(container?.querySelector('[data-git-panel]')).toBeNull()
+    expect(container?.querySelector('[data-files-panel]')).toBeNull()
+  })
+
+  it('falls back to a tab that exists when the open one is dropped under the reader', async () => {
+    wire.rail = [{ ...session, id: 'session-2', title: 'Another run' }]
+    await render()
+    await act(async () => {
+      container?.querySelector<HTMLElement>('[data-dock-tab="git"]')?.click()
+      await Promise.resolve()
+    })
+    await render()
+    expect(container?.querySelector('[data-dock-tab="git"]')?.getAttribute('aria-selected')).toBe('true')
+
+    // The agent leaves the conversation while its tab is the open one: without the fallback the dock is left with no active tab and an unlabelled panel.
+    wire.agentless = true
+    await render()
+    const active = Array.from(container?.querySelectorAll('[data-dock-panel][data-dock-panel-active]') ?? [])
+    expect(active).toHaveLength(1)
+    expect(container?.querySelector('[data-dock-tab="sessions"]')?.getAttribute('aria-selected')).toBe('true')
   })
 })

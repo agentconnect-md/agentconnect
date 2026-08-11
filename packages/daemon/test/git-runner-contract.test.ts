@@ -89,7 +89,7 @@ function runners(root: string): {
   requester: ReturnType<typeof sandboxRequester>
 } {
   const requester = sandboxRequester(root)
-  return { local: new LocalGitRunner(gitFor(root)), remote: new ShimGitRunner(requester, root), requester }
+  return { local: new LocalGitRunner(gitFor(root), root), remote: new ShimGitRunner(requester, root), requester }
 }
 
 describe('git runner contract, local and shim-backed', () => {
@@ -110,6 +110,33 @@ describe('git runner contract, local and shim-backed', () => {
     // that the two agree rather than my assumption about isClean()'s semantics.
     expect(fromRemote.clean).toBe(fromLocal.clean)
     expect(fromRemote.clean).toBe(false)
+  })
+
+  it('returns the same bytes from a bounded read, and the same flag when it overflows', async () => {
+    // `readBounded` exists so a large diff or numstat cannot stream unbounded into the daemon's
+    // memory or the wire frame. Both sides must answer the same question the same way; they are
+    // allowed to differ in HOW they stop (the local child dies at the cap, the sandbox refuses
+    // past its own frame ceiling) but not in what the caller observes.
+    const root = repository()
+    const { local, remote } = runners(root)
+
+    const args = ['status', '--porcelain', '-z']
+    const [fromLocal, fromRemote] = await Promise.all([
+      local.readBounded(args, 64 * 1024),
+      remote.readBounded(args, 64 * 1024)
+    ])
+    expect(fromRemote.overflow).toBe(false)
+    expect(fromLocal.overflow).toBe(false)
+    expect(fromRemote.out.toString('utf8')).toBe(fromLocal.out.toString('utf8'))
+    expect(fromLocal.out.toString('utf8')).toContain('staged.txt')
+
+    // A ceiling below the real output: both report overflow rather than throwing, and neither
+    // hands back more than it was allowed.
+    const [tinyLocal, tinyRemote] = await Promise.all([local.readBounded(args, 4), remote.readBounded(args, 4)])
+    expect(tinyLocal.overflow).toBe(true)
+    expect(tinyRemote.overflow).toBe(true)
+    expect(tinyLocal.out.byteLength).toBeLessThanOrEqual(4)
+    expect(tinyRemote.out.byteLength).toBeLessThanOrEqual(4)
   })
 
   it('agrees on cleanliness across clean, dirty and CONFLICTED trees', async () => {
@@ -342,7 +369,7 @@ describe('git runner contract, local and shim-backed', () => {
     git(seed, ['commit', '-m', 'upstream change'])
     git(seed, ['push', 'origin', 'main'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(forLocal)).pull('origin', 'main')
+    const fromLocal = await new LocalGitRunner(gitFor(forLocal), forLocal).pull('origin', 'main')
     const fromRemote = await new ShimGitRunner(sandboxRequester(forRemote), forRemote).pull('origin', 'main')
 
     expect([...fromRemote.files].sort()).toEqual([...fromLocal.files].sort())
@@ -367,7 +394,7 @@ describe('git runner contract, local and shim-backed', () => {
     roots.push(clone)
     git(clone, ['clone', upstream, '.'])
 
-    const fromLocal = await new LocalGitRunner(gitFor(clone)).pull('origin', 'main')
+    const fromLocal = await new LocalGitRunner(gitFor(clone), clone).pull('origin', 'main')
     const fromRemote = await new ShimGitRunner(sandboxRequester(clone), clone).pull('origin', 'main')
     expect(fromRemote).toEqual({ files: [], insertions: 0, deletions: 0 })
     expect(fromLocal.files).toEqual([])

@@ -149,9 +149,36 @@ describe('createWorkspaceGit.status', () => {
     expect(s.lastCommit).toBeUndefined()
   })
 
+  // The numstat join, the binary/untracked cases and the no-HEAD failure moved to
+  // workspace-git-read.test.ts when the read moved off simple-git onto a bounded
+  // execFile: this suite mocks simple-git, so it can no longer feed or observe that
+  // read, and a case that cannot construct its own state is worse than no case.
+
   it('throws WorkspaceViolationError for an unknown agent', async () => {
     const git = createWorkspaceGit(() => undefined)
     await expect(git.status('nope')).rejects.toBeInstanceOf(WorkspaceViolationError)
+    await expect(git.diff({ agentId: 'nope', path: 'a.ts', staged: false })).rejects.toBeInstanceOf(
+      WorkspaceViolationError
+    )
+    await expect(git.log({ agentId: 'nope', limit: 20 })).rejects.toBeInstanceOf(WorkspaceViolationError)
+  })
+
+  it('short-circuits diff and log for a from-scratch workspace without touching git', async () => {
+    const dir = ws(false)
+    const git = createWorkspaceGit(() => dir)
+    expect(await git.diff({ agentId: 'a', path: 'a.ts', staged: false })).toEqual({
+      agentId: 'a',
+      path: 'a.ts',
+      isRepo: false,
+      exists: false
+    })
+    expect(await git.log({ agentId: 'a', limit: 20 })).toEqual({
+      agentId: 'a',
+      isRepo: false,
+      commits: [],
+      truncated: false
+    })
+    expect(rawImpl).not.toHaveBeenCalled()
   })
 })
 

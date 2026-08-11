@@ -162,7 +162,7 @@ export function setWorkspaceGitRunnerResolver(resolver: WorkspaceGitRunnerResolv
 // Every git operation here routes through this: a direct gitFor still passes locally and then runs
 // a cluster agent's git on the wrong filesystem.
 function runnerFor(agentId: string, cwd?: string, abort?: AbortSignal): GitRunner {
-  return resolveWorkspaceGitRunner?.(agentId, cwd, abort) ?? new LocalGitRunner(gitFor(cwd, abort))
+  return resolveWorkspaceGitRunner?.(agentId, cwd, abort) ?? new LocalGitRunner(gitFor(cwd, abort), cwd)
 }
 
 async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path): Promise<void> {

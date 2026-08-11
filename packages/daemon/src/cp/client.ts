@@ -38,6 +38,8 @@ import type {
   WorkspaceWriteReq,
   WorkspaceDeleteReq,
   WorkspaceGitStatusReq,
+  WorkspaceGitDiffReq,
+  WorkspaceGitLogReq,
   WorkspaceGitPullReq,
   GitCredRequest,
   GitCredGrant,
@@ -948,9 +950,17 @@ export class CpClient {
     return 'BAD_PAYLOAD'
   }
 
-  private sendError(corr: string, code: string, message: string, retryable: boolean): void {
+  private sendError(
+    corr: string,
+    code: string,
+    message: string,
+    retryable: boolean,
+    details?: Record<string, unknown>
+  ): void {
     if (!this.transport) return
-    this.transport.send(encode(buildEnvelope('error', { code, message, retryable }, { corr })))
+    this.transport.send(
+      encode(buildEnvelope('error', { code, message, retryable, ...(details ? { details } : {}) }, { corr }))
+    )
   }
 
   private onClose(source: Transport, code: number, _reason: string): void {
@@ -1310,6 +1320,22 @@ export class CpClient {
           .catch((err) => this.workspaceError(frame.id, 'workspace/gitstatus', err))
         return
       }
+      case 'workspace/gitdiff': {
+        // Unified diff for one path — binary / unchanged / non-repo all come back as a result.
+        this.deps.workspaceGit
+          .diff(frame.payload as WorkspaceGitDiffReq)
+          .then((result) => this.reply(frame, 'workspace/gitdiff/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitdiff', err))
+        return
+      }
+      case 'workspace/gitlog': {
+        // Newest commits of the checked-out branch; an empty repo is a result, not an error.
+        this.deps.workspaceGit
+          .log(frame.payload as WorkspaceGitLogReq)
+          .then((result) => this.reply(frame, 'workspace/gitlog/result', result))
+          .catch((err) => this.workspaceError(frame.id, 'workspace/gitlog', err))
+        return
+      }
       case 'workspace/gitpull': {
         // On-demand ff-only pull — a failed pull comes back as a result (ok:false), not an error.
         this.deps.workspaceGit
@@ -1524,18 +1550,19 @@ export class CpClient {
     }
   }
 
-  /** Map a workspace file failure onto the wire: stale writes → CONFLICT;
-   *  containment/bad-request
-   *  violations → BAD_PAYLOAD (their messages are hand-written and path-free);
-   *  anything else → INTERNAL with a GENERIC message — raw fs errors (ELOOP,
-   *  EACCES, …) embed absolute host paths that must not leak to the CP/UI. */
+  /** Map a workspace failure onto the wire: stale writes → CONFLICT; containment/
+   *  bad-request violations → BAD_PAYLOAD (their messages are hand-written and
+   *  path-free); anything else → INTERNAL with a GENERIC message — raw fs errors
+   *  (ELOOP, EACCES, …) embed absolute host paths that must not leak to the CP/UI.
+   *  Both typed cases carry their `reason` in `details` so the CP can answer a bad
+   *  request with a status the console can tell apart from an offline daemon. */
   private workspaceError(corr: string, op: string, err: unknown): void {
     if (err instanceof WorkspaceConflictError) {
-      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false)
+      this.sendError(corr, 'CONFLICT', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }
     if (err instanceof WorkspaceViolationError) {
-      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false)
+      this.sendError(corr, 'BAD_PAYLOAD', `${op} failed: ${err.message}`, false, { reason: err.reason })
       return
     }
     this.deps.log.warn(`cp: ${op} failed: ${(err as Error)?.message}`)

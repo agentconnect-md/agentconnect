@@ -4,11 +4,16 @@
  * come out as explicit `null`s so the zod response schema passes serialization.
  */
 import { describe, it, expect } from 'vitest'
+import { ProtocolError } from '../../domain/errors.js'
 import {
   toWorkspaceFilesDto,
   toWorkspaceFileDto,
   toWorkspaceGitStatusDto,
+  toWorkspaceGitDiffDto,
+  toWorkspaceGitLogDto,
   toWorkspaceGitPullDto,
+  workspaceErrorCode,
+  workspaceFailure,
   toDreamDto,
   toDreamListDto,
   toDreamFilesDto,
@@ -52,6 +57,7 @@ describe('toWorkspaceFileDto', () => {
         agentId: 'a1',
         path: 'README.md',
         exists: true,
+        type: 'file',
         size: 100_000,
         mtime: '2026-01-01T00:00:00Z',
         encoding: 'utf8',
@@ -63,6 +69,7 @@ describe('toWorkspaceFileDto', () => {
     ).toEqual({
       path: 'README.md',
       exists: true,
+      type: 'file',
       size: 100_000,
       mtime: '2026-01-01T00:00:00Z',
       encoding: 'utf8',
@@ -77,8 +84,32 @@ describe('toWorkspaceFileDto', () => {
     expect(toWorkspaceFileDto({ agentId: 'a1', path: 'gone.txt', exists: false })).toEqual({
       path: 'gone.txt',
       exists: false,
+      type: null,
       size: null,
       mtime: null,
+      encoding: null,
+      content: null,
+      offset: null,
+      nextOffset: null,
+      truncated: null
+    })
+  })
+
+  it('keeps a directory as data (type:dir, no content) instead of flattening it to an empty file', () => {
+    expect(
+      toWorkspaceFileDto({
+        agentId: 'a1',
+        path: 'src',
+        exists: true,
+        type: 'dir',
+        mtime: '2026-01-01T00:00:00Z'
+      })
+    ).toEqual({
+      path: 'src',
+      exists: true,
+      type: 'dir',
+      size: null,
+      mtime: '2026-01-01T00:00:00Z',
       encoding: null,
       content: null,
       offset: null,
@@ -100,7 +131,10 @@ describe('toWorkspaceGitStatusDto', () => {
           tracking: 'origin/main',
           ahead: 1,
           behind: 2,
-          files: [{ path: 'a.ts', index: 'M', workingDir: ' ' }],
+          files: [
+            { path: 'a.ts', index: 'M', workingDir: ' ', additions: 128, deletions: 12 },
+            { path: 'new.bin', index: '?', workingDir: '?' } // untracked / binary ⇒ no counts on the wire
+          ],
           truncated: true,
           lastCommit: {
             sha: 'a3f9c21dead',
@@ -121,7 +155,10 @@ describe('toWorkspaceGitStatusDto', () => {
       tracking: 'origin/main',
       ahead: 1,
       behind: 2,
-      files: [{ path: 'a.ts', index: 'M', workingDir: ' ' }],
+      files: [
+        { path: 'a.ts', index: 'M', workingDir: ' ', additions: 128, deletions: 12 },
+        { path: 'new.bin', index: '?', workingDir: '?', additions: null, deletions: null }
+      ],
       truncated: true,
       lastCommit: {
         sha: 'a3f9c21dead',
@@ -148,6 +185,158 @@ describe('toWorkspaceGitStatusDto', () => {
       lastCommit: null,
       lastFetchAt: null
     })
+  })
+})
+
+describe('toWorkspaceGitDiffDto', () => {
+  it('passes the unified diff through with its truncation flag', () => {
+    expect(
+      toWorkspaceGitDiffDto({
+        agentId: 'a1',
+        path: 'src/app.ts',
+        isRepo: true,
+        exists: true,
+        diff: '@@ -1,2 +1,3 @@\n a\n+b\n',
+        truncated: true
+      })
+    ).toEqual({
+      path: 'src/app.ts',
+      isRepo: true,
+      exists: true,
+      diff: '@@ -1,2 +1,3 @@\n a\n+b\n',
+      binary: false,
+      truncated: true
+    })
+  })
+
+  it('keeps a binary change as data (binary:true, no diff text)', () => {
+    expect(
+      toWorkspaceGitDiffDto({ agentId: 'a1', path: 'logo.png', isRepo: true, exists: true, binary: true })
+    ).toEqual({ path: 'logo.png', isRepo: true, exists: true, diff: null, binary: true, truncated: false })
+  })
+
+  it('keeps a non-repo workspace and an unchanged path as data, not an error', () => {
+    expect(toWorkspaceGitDiffDto({ agentId: 'a1', path: 'notes.md', isRepo: false, exists: false })).toEqual({
+      path: 'notes.md',
+      isRepo: false,
+      exists: false,
+      diff: null,
+      binary: false,
+      truncated: false
+    })
+    // exists:true with no diff and no binary ⇒ this path has no changes in the scope.
+    expect(toWorkspaceGitDiffDto({ agentId: 'a1', path: 'notes.md', isRepo: true, exists: true })).toMatchObject({
+      exists: true,
+      diff: null,
+      binary: false
+    })
+  })
+})
+
+describe('toWorkspaceGitLogDto', () => {
+  it('passes commits through and keeps the tracking ref pushed was computed against', () => {
+    expect(
+      toWorkspaceGitLogDto({
+        agentId: 'a1',
+        isRepo: true,
+        commits: [
+          {
+            sha: 'a3f9c21deadbeef',
+            shortSha: 'a3f9c21',
+            subject: 'Pin deploy image',
+            author: 'Ada',
+            committedAt: '2026-07-02T07:00:00Z',
+            pushed: false
+          }
+        ],
+        truncated: true,
+        tracking: 'origin/main'
+      })
+    ).toEqual({
+      isRepo: true,
+      commits: [
+        {
+          sha: 'a3f9c21deadbeef',
+          shortSha: 'a3f9c21',
+          subject: 'Pin deploy image',
+          author: 'Ada',
+          committedAt: '2026-07-02T07:00:00Z',
+          pushed: false
+        }
+      ],
+      truncated: true,
+      tracking: 'origin/main'
+    })
+  })
+
+  it('nulls tracking for a branch that tracks nothing, and keeps an empty repo as data', () => {
+    expect(toWorkspaceGitLogDto({ agentId: 'a1', isRepo: true, commits: [], truncated: false })).toEqual({
+      isRepo: true,
+      commits: [],
+      truncated: false,
+      tracking: null
+    })
+  })
+})
+
+describe('workspaceErrorCode / workspaceFailure', () => {
+  const badPayload = (reason?: string): ProtocolError =>
+    new ProtocolError('BAD_PAYLOAD', 'workspace/read failed: path escapes the workspace root', {
+      ...(reason ? { details: { reason } } : {})
+    })
+
+  it('screaming-snakes the daemon reason and ignores a vocabulary it does not know', () => {
+    expect(workspaceErrorCode(badPayload('path-escape'))).toBe('WORKSPACE_PATH_ESCAPE')
+    expect(workspaceErrorCode(badPayload('not-a-file'))).toBe('WORKSPACE_NOT_A_FILE')
+    expect(workspaceErrorCode(badPayload('made-up-reason'))).toBeNull()
+    expect(workspaceErrorCode(badPayload())).toBeNull()
+  })
+
+  it('answers a named bad request with 400 + code instead of the 503 that reads as an outage', () => {
+    expect(workspaceFailure(badPayload('path-escape'))).toEqual({
+      status: 400,
+      error: 'Bad Request',
+      message: 'workspace/read failed: path escapes the workspace root',
+      code: 'WORKSPACE_PATH_ESCAPE'
+    })
+  })
+
+  it('answers a worktree the daemon does not have with the same 404 the CP pre-empts with', () => {
+    expect(workspaceFailure(badPayload('unknown-agent'))).toEqual({
+      status: 404,
+      error: 'Not Found',
+      message: 'workspace not found',
+      code: 'WORKSPACE_UNKNOWN_AGENT'
+    })
+  })
+
+  it('answers a stale fence with 409 + code', () => {
+    const stale = new ProtocolError('CONFLICT', 'the workspace file changed; reload and retry', {
+      details: { reason: 'stale' }
+    })
+    expect(workspaceFailure(stale)).toEqual({
+      status: 409,
+      error: 'Conflict',
+      message: 'the workspace file changed; reload and retry',
+      code: 'WORKSPACE_STALE'
+    })
+  })
+
+  it('keeps the 503 for a reasonless rejection (an older daemon says nothing to branch on)', () => {
+    expect(workspaceFailure(badPayload())).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'daemon rejected the request: workspace/read failed: path escapes the workspace root'
+    })
+  })
+
+  it('keeps the 503 for an offline daemon and rethrows a CP bug', () => {
+    expect(workspaceFailure(new Error('connection closed'))).toEqual({
+      status: 503,
+      error: 'Service Unavailable',
+      message: 'owning daemon is offline'
+    })
+    expect(workspaceFailure(new TypeError('cfg.repo is not a function'))).toBeNull()
   })
 })
 

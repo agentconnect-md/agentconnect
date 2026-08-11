@@ -10,7 +10,10 @@ import { z } from 'zod'
  * (`INTERNAL`) come back as `error` frames.
  *
  * - `workspace/list`: one cursor-paginated page of a directory's entries.
- * - `workspace/read`: one byte slice of a file. `limit` is only a ceiling — the
+ * - `workspace/read`: one byte slice of a file. A DIRECTORY is DATA too
+ *   (`type:'dir'`, no `content`) — a path naming a directory is a fact about the
+ *   path, not a transport failure. Any other non-regular target (a symlink out of
+ *   the workspace, a device) stays a containment violation. `limit` is only a ceiling — the
  *   daemon returns FEWER bytes when needed to keep the JSON-escaped REP under the
  *   256 KiB frame cap (control bytes escape to `\uXXXX`, a 6× blowup), and always
  *   ends the slice on a UTF-8 character boundary. `nextOffset` is the authoritative
@@ -22,6 +25,25 @@ import { z } from 'zod'
  * - `workspace/delete`: delete one regular file when its mtime still matches the
  *   last read, so a console action never removes a newer agent revision.
  */
+
+/** Machine-readable `reason` on a workspace `BAD_PAYLOAD` / `CONFLICT` error
+ * frame's `details`, so the CP can answer a bad request with a status and a code
+ * the console can branch on instead of the 503 that reads as an offline daemon.
+ * A closed vocabulary: both sides agree on it, and the messages beside it stay
+ * hand-written and host-path-free. */
+export const WorkspaceErrorReason = z.enum([
+  'unknown-agent', // no such agent on this daemon (or no worktree for that sessionId)
+  'path-escape', // absolute path, or one resolving outside the workspace root
+  'git-internals', // the path reaches into `.git`
+  'not-a-file', // the path exists but is not a regular file (mutations only; reads report it as DATA)
+  'not-a-directory', // a parent component of a write target is not a directory
+  'read-only-workspace', // edits are scratch-workspace only
+  'too-large', // the edit exceeds MAX_WORKSPACE_EDIT_BYTES
+  'binary', // the target is not UTF-8 text
+  'not-utf8', // the supplied content is not valid UTF-8
+  'stale' // optimistic-concurrency failure (CONFLICT)
+])
+export type WorkspaceErrorReason = z.infer<typeof WorkspaceErrorReason>
 
 /** Raw UTF-8 ceiling for one console workspace-file edit. Base64 expansion still
  * leaves enough envelope headroom under the shared 256 KiB frame cap. */
@@ -69,11 +91,13 @@ export const WorkspaceReadReq = z.object({
 })
 export type WorkspaceReadReq = z.infer<typeof WorkspaceReadReq>
 
-/** D→C REP (corr = the req id): the file slice (or `exists:false` / binary-detected). */
+/** D→C REP (corr = the req id): the file slice (or `exists:false` / binary-detected
+ *  / `type:'dir'`). */
 export const WorkspaceReadContent = z.object({
   agentId: z.string(),
   path: z.string(),
   exists: z.boolean(), // false ⇒ the file does not exist (NOT an error)
+  type: z.enum(['file', 'dir']).optional(), // what the path IS; 'dir' ⇒ no content (absent from an older daemon)
   size: z.number().int().nonnegative().optional(),
   mtime: z.string().optional(), // RFC3339
   encoding: z.enum(['utf8', 'none']).optional(), // 'none' ⇒ binary detected, content omitted
@@ -133,6 +157,17 @@ export type WorkspaceDeleteOk = z.infer<typeof WorkspaceDeleteOk>
  * or a pull that can't fast-forward (offline, diverged, local edits) all come
  * back as a normal REP — NOT an `error` frame. Only an unknown agent
  * (`BAD_PAYLOAD`) or an unexpected git/fs failure (`INTERNAL`) is an error.
+ *
+ * - `workspace/gitstatus`: the working tree. Per-file `additions`/`deletions` are
+ *   `git diff HEAD --numstat` counts — staged AND unstaged, i.e. what the file
+ *   changed vs HEAD. Optional: an untracked file has no counts, and an older
+ *   daemon reports none at all.
+ * - `workspace/gitdiff`: unified-diff text for ONE path, bounded like
+ *   `workspace/read` (the daemon shrinks the slice until the JSON-escaped REP
+ *   fits the 256 KiB frame cap and flags `truncated`). A binary path, a path with
+ *   no changes and a non-repo workspace are all DATA.
+ * - `workspace/gitlog`: the newest commits of the checked-out branch, each marked
+ *   `pushed` when the branch's upstream ref already contains it.
  */
 
 /** C→D REQ: report `git status` of the agent's workspace (is it clean?). */
@@ -148,7 +183,9 @@ export type WorkspaceGitStatusReq = z.infer<typeof WorkspaceGitStatusReq>
 export const WorkspaceGitFile = z.object({
   path: z.string(),
   index: z.string(), // staged (X) status char
-  workingDir: z.string() // unstaged (Y) status char
+  workingDir: z.string(), // unstaged (Y) status char
+  additions: z.number().int().nonnegative().optional(), // `git diff HEAD --numstat` lines added (absent ⇒ untracked / binary / older daemon)
+  deletions: z.number().int().nonnegative().optional() // …and lines removed
 })
 export type WorkspaceGitFile = z.infer<typeof WorkspaceGitFile>
 
@@ -176,6 +213,67 @@ export const WorkspaceGitStatus = z.object({
   lastFetchAt: z.string().optional() // RFC3339 mtime of .git/FETCH_HEAD — when the repo last fetched/pulled
 })
 export type WorkspaceGitStatus = z.infer<typeof WorkspaceGitStatus>
+
+/** C→D REQ: unified-diff text for ONE workspace path, staged or unstaged. */
+export const WorkspaceGitDiffReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional(),
+  path: z.string().min(1).max(4096), // workspace-relative POSIX path (a directory diffs its subtree)
+  staged: z.boolean().default(false) // true ⇒ index vs HEAD (`--cached`); false ⇒ worktree vs index
+})
+export type WorkspaceGitDiffReq = z.infer<typeof WorkspaceGitDiffReq>
+
+/** D→C REP (corr = the req id): the unified diff, or the DATA that says why there
+ *  is none. `diff` absent with `exists:true` and no `binary` ⇒ this path has no
+ *  changes in the requested scope. */
+export const WorkspaceGitDiffResult = z.object({
+  agentId: z.string(),
+  path: z.string(),
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git) — nothing to diff
+  exists: z.boolean(), // false ⇒ the path is neither changed nor present in the workspace
+  diff: z.string().optional(), // unified-diff text as git emits it (bounded; see `truncated`)
+  binary: z.boolean().optional(), // true ⇒ git reports a binary change, so there is no text to show
+  truncated: z.boolean().optional() // true ⇒ `diff` is only the head of a bigger diff
+})
+export type WorkspaceGitDiffResult = z.infer<typeof WorkspaceGitDiffResult>
+
+/** Display ceilings for one `workspace/gitlog` row. 50 commits × (200 + 100)
+ * characters stay under MAX_FRAME_BYTES even at JSON's 6× control-byte escape
+ * blowup (50 × 300 × 6 ≈ 90 KB), so the REP can never overflow the frame. */
+export const MAX_WORKSPACE_LOG_COMMITS = 50
+export const MAX_WORKSPACE_COMMIT_SUBJECT = 200
+export const MAX_WORKSPACE_COMMIT_AUTHOR = 100
+
+/** C→D REQ: the newest commits of the workspace's checked-out branch. */
+export const WorkspaceGitLogReq = z.object({
+  agentId: z.string().min(1), // local agent id (NOT a wire UUID)
+  /** ACP session id selecting that session's isolated Git worktree. */
+  sessionId: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(MAX_WORKSPACE_LOG_COMMITS).default(20) // commits per REP
+})
+export type WorkspaceGitLogReq = z.infer<typeof WorkspaceGitLogReq>
+
+/** One commit in the log. `pushed` is reachability from the branch's upstream ref:
+ *  false means "not known to be on a remote", which is also what every commit
+ *  reports when the branch tracks nothing (`tracking` absent on the REP). */
+export const WorkspaceGitLogCommit = WorkspaceGitCommit.extend({
+  subject: z.string().max(MAX_WORKSPACE_COMMIT_SUBJECT), // first line of the message (display-capped)
+  author: z.string().max(MAX_WORKSPACE_COMMIT_AUTHOR), // commit author name (display-capped)
+  pushed: z.boolean()
+})
+export type WorkspaceGitLogCommit = z.infer<typeof WorkspaceGitLogCommit>
+
+/** D→C REP (corr = the req id): newest-first commits. An empty repo is DATA
+ *  (`commits: []`), not an error frame. */
+export const WorkspaceGitLog = z.object({
+  agentId: z.string(),
+  isRepo: z.boolean(), // false ⇒ from-scratch workspace (no .git) — no log
+  commits: z.array(WorkspaceGitLogCommit).max(MAX_WORKSPACE_LOG_COMMITS),
+  truncated: z.boolean(), // true ⇒ the branch has more commits than `limit`
+  tracking: z.string().optional() // upstream ref `pushed` was computed against (absent ⇒ tracks nothing)
+})
+export type WorkspaceGitLog = z.infer<typeof WorkspaceGitLog>
 
 /** C→D REQ: force a fast-forward-only `git pull` in the agent's workspace now. */
 export const WorkspaceGitPullReq = z.object({
