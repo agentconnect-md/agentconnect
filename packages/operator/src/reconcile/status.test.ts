@@ -90,6 +90,59 @@ describe('buildStatus', () => {
   })
 })
 
+describe('observeWorkloads', () => {
+  async function observe(deployment: unknown) {
+    const { config: cluster } = await fakeApiServer(({ url }) => {
+      const path = url.pathname
+      if (path.endsWith('/deployments/ac-daemon')) return { json: deployment as object }
+      if (path.endsWith('/pods')) return { json: { items: [] } }
+      return { json: { items: [] } }
+    })
+    const http = new K8sHttp(cluster)
+    const ctx = {
+      http,
+      orgApi: new AgentConnectOrgApi(http, cluster.namespace),
+      config: loadConfig({ AC_ORG_NAMESPACE_PREFIX: 'test-ac-org-', AC_TOKENREVIEW_CLUSTERROLE: 'x' }),
+      controlNamespace: cluster.namespace,
+      log: {}
+    }
+    const obs = newObservations()
+    const { AgentConnectOrgSpecSchema } = await import('../crd/types.js')
+    const input = {
+      orgName: 'acme',
+      spec: AgentConnectOrgSpecSchema.parse({
+        targetNamespace: 'test-ac-org-acme',
+        daemon: { image: 'ghcr.io/example/daemon:v2', tier: 'small' },
+        runtime: { image: 'x', tiers: [] }
+      })
+    }
+    const { observeWorkloads } = await import('./status.js')
+    await observeWorkloads(ctx, input, obs)
+    return obs
+  }
+
+  it('does not report the target image Ready off the old pod`s stale readyReplicas', async () => {
+    // Image just swapped: generation advanced, but readyReplicas still counts the old pod.
+    const obs = await observe({
+      metadata: { generation: 2 },
+      spec: { replicas: 1, template: { spec: { containers: [{ image: 'ghcr.io/example/daemon:v2' }] } } },
+      status: { observedGeneration: 1, readyReplicas: 1, updatedReplicas: 0 }
+    })
+    expect(obs.daemon?.ready).toBe(false)
+    expect(obs.progressing).toBe(true)
+  })
+
+  it('reports Ready once the updated pod itself is the ready one', async () => {
+    const obs = await observe({
+      metadata: { generation: 2 },
+      spec: { replicas: 1, template: { spec: { containers: [{ image: 'ghcr.io/example/daemon:v2' }] } } },
+      status: { observedGeneration: 2, readyReplicas: 1, updatedReplicas: 1 }
+    })
+    expect(obs.daemon?.ready).toBe(true)
+    expect(obs.progressing).toBe(false)
+  })
+})
+
 describe('writeStatus', () => {
   it('nulls every managed field this pass did not observe so merge-patch cannot go stale', async () => {
     let patched: { status?: Record<string, unknown> } | undefined

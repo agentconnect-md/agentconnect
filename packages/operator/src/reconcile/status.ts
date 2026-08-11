@@ -30,8 +30,9 @@ export function setCondition(conditions: Condition[], next: Condition, nowIso: s
 }
 
 interface DeploymentRead {
+  metadata?: { generation?: number }
   spec?: { replicas?: number; template?: { spec?: { containers?: Array<{ image?: string }> } } }
-  status?: { readyReplicas?: number; updatedReplicas?: number }
+  status?: { observedGeneration?: number; readyReplicas?: number; updatedReplicas?: number }
 }
 
 interface PodList {
@@ -56,12 +57,18 @@ export async function observeWorkloads(ctx: ReconcileContext, input: EnvelopeInp
   if (deployment) {
     const desired = deployment.spec?.replicas ?? 0
     const ready = deployment.status?.readyReplicas ?? 0
+    // Converged = the controller has seen this spec AND the ready pods are the updated ones —
+    // otherwise a stale readyReplicas from the old pod would report the target image Ready.
+    const converged =
+      (deployment.status?.observedGeneration ?? 0) >= (deployment.metadata?.generation ?? 0) &&
+      (deployment.status?.updatedReplicas ?? 0) >= desired &&
+      ready >= desired
     obs.daemon = {
-      ready: desired > 0 && ready >= desired,
+      ready: desired > 0 && converged,
       image: deployment.spec?.template?.spec?.containers?.[0]?.image
     }
     // OR, not overwrite: an earlier step (e.g. a deferred suspend) may already be progressing.
-    obs.progressing = obs.progressing || ready < desired
+    obs.progressing = obs.progressing || !converged
   }
   const pods = await ctx.http.json<PodList>({
     method: 'GET',
