@@ -2718,8 +2718,10 @@ export default function SessionDetailView() {
 
   // Resume the webchat conversation by its id (session.channelId == the conversationId);
   // a synthetic playground turn omits it (the CP mints a fresh id).
-  const onPgSend = (text?: string) => {
-    if (imagePreparing || mentionJoining) return
+  // Returns ACCEPTANCE: callers that arm follow-up state (the PR panel's Auto-fix wait) must know a
+  // synchronous refusal — image preparing, mention joining, nothing to send — from an accepted send.
+  const onPgSend = (text?: string): boolean => {
+    if (imagePreparing || mentionJoining) return false
     setImageError(null)
     // Pass the fetched roster: an adopted webchat session has no provider-side
     // state, and without it a multi-agent send can't pre-create stream lanes or
@@ -2740,6 +2742,7 @@ export default function SessionDetailView() {
     // turn is still streaming, sends nothing, and yanking a reader out of
     // history for a no-op would break the very guarantee this makes.
     if (sent) stickToBottom()
+    return sent
   }
   const onImageFile = async (file: File | undefined): Promise<void> => {
     if (!file || imagePreparing) return
@@ -4641,8 +4644,8 @@ export default function SessionDetailView() {
               active={dockTabKey === 'pr'}
               {...(session?.status ? { sessionStatus: session.status } : {})}
               turnActive={sessionBusy}
-              // Auto-fix rides the LIVE composer path (§5.2, browser→relay→daemon); a hook session with no composer gets no button rather than a dead one.
-              {...(isLive ? { onAutoFix: (text: string) => onPgSend(text) } : {})}
+              // Auto-fix rides the LIVE composer path (§5.2) behind the composer's OWN availability fence: a hook session has no composer, and a persisted webchat under `resumeDisabled` (agent moved, resume check pending) deliberately renders the composer inert — this callback must not exist as a way around that.
+              {...(isLive && !resumeDisabled ? { onAutoFix: (text: string) => onPgSend(text) } : {})}
               onVerdictChange={setPrVerdict}
             />
           ) : null}

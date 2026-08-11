@@ -177,8 +177,8 @@ export function PullRequestPanel({
   sessionStatus?: string
   /** Whether a turn is streaming right now. After Auto-fix posts one, the FALLING edge is the panel's cue to force one re-read — the agent's GitHub write-back (resolved threads, pushed fixes) lands with the turn, and the CP's short TTL would otherwise hide it. */
   turnActive?: boolean
-  /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route). Absent when the session has no live composer, and the Auto-fix action renders ABSENT with it, not disabled. */
-  onAutoFix?: (text: string) => void
+  /** Posts one webchat message into the open session (§5.2's browser→relay→daemon path — no CP route), returning whether the send was ACCEPTED. Absent when the session has no usable composer (none at all, or a persisted webchat that cannot resume), and the Auto-fix action renders ABSENT with it, not disabled. */
+  onAutoFix?: (text: string) => boolean
   /** The inputs to {@link pullRequestTabStatus}, the tab's badge and its external-link action. */
   onVerdictChange?: (verdict: PullRequestPanelVerdict) => void
 }) {
@@ -541,8 +541,8 @@ export function PullRequestPanel({
                       : 'Hand every unresolved thread to the agent as one turn; it edits this session’s worktree and resolves the threads it fixes'
                   }
                   onClick={() => {
-                    onAutoFix(autoFixInstruction(view))
-                    setAwaitingTurn(true)
+                    // The wait arms only on an ACCEPTED send: a synchronous refusal (image preparing, mention joining) produces no turn, so an armed wait would disable the button forever with no edge to clear it.
+                    if (onAutoFix(autoFixInstruction(view))) setAwaitingTurn(true)
                   }}
                 >
                   {awaitingTurn ? <Spinner size={11} /> : <Icon name="wand-sparkles" size={12} />}

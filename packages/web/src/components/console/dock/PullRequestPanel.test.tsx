@@ -120,6 +120,13 @@ function degradedPr(reason: 'rate_limited' | 'denied' | 'unreachable'): SessionP
   })
 }
 
+function accept(posted: string[]) {
+  return (text: string) => {
+    posted.push(text)
+    return true
+  }
+}
+
 type PanelProps = Parameters<typeof PullRequestPanel>[0]
 
 function panel(props: Partial<PanelProps> = {}) {
@@ -380,7 +387,7 @@ describe('PullRequestPanel body', () => {
     // §5.2: one action over the whole set, a real webchat turn — and the panel's ONLY follow-up is a
     // single forced re-read on the turn's FALLING edge, where the agent's GitHub write-back landed.
     const posted: string[] = []
-    await render({ onAutoFix: (text) => posted.push(text), turnActive: false })
+    await render({ onAutoFix: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(1)
 
     await press('[data-pr-autofix]')
@@ -393,25 +400,39 @@ describe('PullRequestPanel body', () => {
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(true)
 
     // The turn starts streaming, then settles: exactly one re-read, forced past the CP's TTL.
-    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: true })
+    await rerender({ onAutoFix: accept(posted), turnActive: true })
     expect(wire.calls).toHaveLength(1)
     wire.data = pr({ threads: [], unresolvedCount: 0 })
-    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: false })
+    await rerender({ onAutoFix: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(2)
     expect(wire.calls[1]).toMatchObject({ refresh: true })
     // A LATER turn settling re-reads nothing — the wait was consumed.
-    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: true })
-    await rerender({ onAutoFix: (text) => posted.push(text), turnActive: false })
+    await rerender({ onAutoFix: accept(posted), turnActive: true })
+    await rerender({ onAutoFix: accept(posted), turnActive: false })
     expect(wire.calls).toHaveLength(2)
+  })
+
+  it('does not arm the wait on a REFUSED send — the button stays pressable and no edge is owed', async () => {
+    // onPgSend refuses synchronously while an image prepares or a mention joins; an armed wait there
+    // would disable the button forever, since the refused send produces no turn and no falling edge.
+    await render({ onAutoFix: () => false, turnActive: false })
+
+    await press('[data-pr-autofix]')
+    expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
+
+    // And no stale wait rides a later, unrelated turn into a phantom re-read.
+    await rerender({ onAutoFix: () => false, turnActive: true })
+    await rerender({ onAutoFix: () => false, turnActive: false })
+    expect(wire.calls).toHaveLength(1)
   })
 
   it('holds Auto-fix while ANY turn streams — a queued post would let that turn eat the wait', async () => {
     // The composer QUEUES a send during a running turn; the running turn's falling edge would then
     // consume `awaitingTurn` before the Auto-fix turn dispatched, and its real settle would refresh nothing.
-    await render({ onAutoFix: () => {}, turnActive: true })
+    await render({ onAutoFix: () => true, turnActive: true })
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(true)
 
-    await rerender({ onAutoFix: () => {}, turnActive: false })
+    await rerender({ onAutoFix: () => true, turnActive: false })
     expect(container?.querySelector<HTMLButtonElement>('[data-pr-autofix]')?.disabled).toBe(false)
   })
 
