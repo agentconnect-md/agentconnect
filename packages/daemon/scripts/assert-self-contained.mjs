@@ -72,28 +72,33 @@ for (const arch of ['x64', 'arm64']) {
 // requirement than the daemon's: it ships in the runtime image, so a relative import here
 // means the image must also carry the daemon's chunk graph — its CP client, platform SDKs
 // and credential paths — into the half-trusted sandbox. One file, or the build fails.
-const shimPath = new URL('../dist/shim/index.js', import.meta.url)
-if (!existsSync(shimPath)) {
-  console.error('✗ shim bundle is missing — `tsdown --config tsdown.shim.config.ts` did not run')
-  process.exit(1)
-}
-const shim = readFileSync(shimPath, 'utf8')
-const shimSpecs = [
-  ...shim.matchAll(/\bfrom\s*["']([^"']+)["']/g),
-  ...shim.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)
-].map((match) => match[1])
-const shimLeaked = shimSpecs.filter((spec) => !spec.startsWith('node:'))
-if (shimLeaked.length > 0) {
-  console.error(
-    '✗ shim bundle is not self-contained — it imports outside node: builtins:\n' +
-      [...new Set(shimLeaked)]
-        .sort()
-        .map((s) => `    ${s}`)
-        .join('\n') +
-      '\n  It ships alone in the runtime image, so every dependency must be inlined.\n'
-  )
-  process.exit(1)
+// Both entries the image ships, checked identically: the credential helper is a second bundle
+// precisely so its graph stays disjoint from the channel's, and a shared module would show up here
+// as a relative chunk import — a file the image never copies.
+for (const entry of ['index.js', 'git-credential.js']) {
+  const shimPath = new URL(`../dist/shim/${entry}`, import.meta.url)
+  if (!existsSync(shimPath)) {
+    console.error(`✗ shim bundle ${entry} is missing — \`tsdown --config tsdown.shim.config.ts\` did not run`)
+    process.exit(1)
+  }
+  const shim = readFileSync(shimPath, 'utf8')
+  const shimSpecs = [
+    ...shim.matchAll(/\bfrom\s*["']([^"']+)["']/g),
+    ...shim.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)
+  ].map((match) => match[1])
+  const shimLeaked = shimSpecs.filter((spec) => !spec.startsWith('node:'))
+  if (shimLeaked.length > 0) {
+    console.error(
+      `✗ shim bundle ${entry} is not self-contained — it imports outside node: builtins:\n` +
+        [...new Set(shimLeaked)]
+          .sort()
+          .map((s) => `    ${s}`)
+          .join('\n') +
+        '\n  Each entry ships alone in the runtime image, so every dependency must be inlined.\n'
+    )
+    process.exit(1)
+  }
 }
 
 console.log('✓ daemon bundle is self-contained (including skills CLI 1.5.21 and SRT seccomp helpers)')
-console.log('✓ shim bundle is self-contained (node: builtins only)')
+console.log('✓ shim bundles are self-contained (channel + credential helper, node: builtins only)')
