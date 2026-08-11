@@ -33,7 +33,7 @@ interface Recorded {
   body?: unknown
 }
 
-async function runPass(suspend: boolean): Promise<Recorded[]> {
+async function runPass(suspend: boolean, daemonPods = 0): Promise<Recorded[]> {
   const recorded: Recorded[] = []
   const org = orgOf(suspend)
   const route: FakeRoute = ({ method, url, body }) => {
@@ -43,7 +43,9 @@ async function runPass(suspend: boolean): Promise<Recorded[]> {
       if (path === namespacePath(NS))
         return { json: { metadata: { name: NS, labels: { [NAMESPACE_CLAIM_LABEL]: 'acme' } } } }
       if (path.endsWith('/sandboxes')) return { json: { items: [{ metadata: { name: 'sb-1' } }] } }
-      if (path.endsWith('/pods')) return { json: { items: [] } }
+      if (path.endsWith('/pods')) {
+        return { json: { items: Array.from({ length: daemonPods }, (_, i) => ({ metadata: { name: `d-${i}` } })) } }
+      }
       return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
     }
     recorded.push({ method, path, body: body ? JSON.parse(body) : undefined })
@@ -67,6 +69,16 @@ describe('reconcile', () => {
     const recorded = await runPass(true)
     const patch = recorded.find((entry) => entry.path.endsWith('/sandboxes/sb-1'))
     expect(patch?.body).toEqual({ spec: { operatingMode: 'Suspended' } })
+  })
+
+  it('defers sandbox suspension while the daemon pod is still draining', async () => {
+    const recorded = await runPass(true, 1)
+    expect(recorded.some((entry) => entry.path.endsWith('/sandboxes/sb-1'))).toBe(false)
+    // The pass still publishes status; Progressing carries the deferral.
+    const status = recorded.find((entry) => entry.path.endsWith('/status'))?.body as {
+      status: { conditions: Array<{ type: string; status: string }> }
+    }
+    expect(status.status.conditions.find((c) => c.type === 'Progressing')?.status).toBe('True')
   })
 
   it('leaves Sandbox operating modes alone when the org is not suspended', async () => {

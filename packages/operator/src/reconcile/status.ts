@@ -60,7 +60,8 @@ export async function observeWorkloads(ctx: ReconcileContext, input: EnvelopeInp
       ready: desired > 0 && ready >= desired,
       image: deployment.spec?.template?.spec?.containers?.[0]?.image
     }
-    obs.progressing = ready < desired
+    // OR, not overwrite: an earlier step (e.g. a deferred suspend) may already be progressing.
+    obs.progressing = obs.progressing || ready < desired
   }
   const pods = await ctx.http.json<PodList>({
     method: 'GET',

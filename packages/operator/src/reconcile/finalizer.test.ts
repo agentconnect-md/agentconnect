@@ -3,7 +3,7 @@ import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer, type FakeRoute } from '@agentconnect.md/k8s-client/testing'
 import { loadConfig } from '../config.js'
 import { AgentConnectOrgApi } from '../crd/api.js'
-import { FINALIZER, NAMESPACE_CLAIM_LABEL, type AgentConnectOrg } from '../crd/types.js'
+import { FINALIZER, NAMESPACE_CLAIM_LABEL, ORG_LABEL, type AgentConnectOrg } from '../crd/types.js'
 import type { ReconcileContext } from './context.js'
 import { reconcileDeletion } from './finalizer.js'
 import { namespacePath } from './resources.js'
@@ -33,11 +33,16 @@ interface Recorded {
   body?: unknown
 }
 
-async function run(options: {
+interface RunOptions {
   org: AgentConnectOrg
   namespaceLabels?: Record<string, string>
   sandboxes?: string[]
-}): Promise<Recorded[]> {
+  daemonPods?: number
+  crbLabels?: Record<string, string>
+  sandboxPatchStatus?: number
+}
+
+async function run(options: RunOptions): Promise<{ recorded: Recorded[]; error?: unknown }> {
   const recorded: Recorded[] = []
   let org = options.org
   const route: FakeRoute = ({ method, url, body }) => {
@@ -48,12 +53,24 @@ async function run(options: {
         if (!options.namespaceLabels) return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
         return { json: { metadata: { name: NS, labels: options.namespaceLabels } } }
       }
+      if (path.endsWith('/pods')) {
+        return {
+          json: { items: Array.from({ length: options.daemonPods ?? 0 }, (_, i) => ({ metadata: { name: `d-${i}` } })) }
+        }
+      }
       if (path.endsWith('/sandboxes')) {
         return { json: { items: (options.sandboxes ?? []).map((name) => ({ metadata: { name } })) } }
+      }
+      if (path.includes('/clusterrolebindings/')) {
+        if (!options.crbLabels) return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
+        return { json: { metadata: { name: `ac-tokenreview-${NS}`, labels: options.crbLabels } } }
       }
       return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
     }
     recorded.push({ method, path, body: body ? JSON.parse(body) : undefined })
+    if (method === 'PATCH' && path.includes('/sandboxes/') && options.sandboxPatchStatus) {
+      return { status: options.sandboxPatchStatus, json: { kind: 'Status', reason: 'InternalError' } }
+    }
     if (method === 'PATCH' && path.includes('/agentconnectorgs/')) {
       const patch = JSON.parse(body) as { metadata?: { finalizers?: string[] } }
       org = { ...org, metadata: { ...org.metadata, resourceVersion: '2', finalizers: patch.metadata?.finalizers } }
@@ -70,13 +87,20 @@ async function run(options: {
     controlNamespace: cluster.namespace,
     log: {}
   }
-  await reconcileDeletion(ctx, options.org)
-  return recorded
+  try {
+    await reconcileDeletion(ctx, options.org)
+    return { recorded }
+  } catch (error) {
+    return { recorded, error }
+  }
 }
+
+const finalizerWrites = (recorded: Recorded[]): Recorded[] =>
+  recorded.filter((entry) => entry.path.includes('/agentconnectorgs/'))
 
 describe('reconcileDeletion', () => {
   it('quiesces, deletes the envelope, the claimed namespace, the CRB, then the finalizer', async () => {
-    const recorded = await run({
+    const { recorded } = await run({
       org: orgOf(),
       namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'acme' },
       sandboxes: ['sb-1']
@@ -98,8 +122,21 @@ describe('reconcileDeletion', () => {
     expect((last.body as { metadata: { finalizers: string[] } }).metadata.finalizers).toEqual([])
   })
 
+  it('defers all teardown and keeps the finalizer while the daemon pod is still draining', async () => {
+    const { recorded } = await run({
+      org: orgOf(),
+      namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'acme' },
+      sandboxes: ['sb-1'],
+      daemonPods: 1
+    })
+    // Only the scale-to-zero patch happened: no suspension, no deletes, finalizer intact.
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0].path.endsWith('/deployments/ac-daemon')).toBe(true)
+    expect(finalizerWrites(recorded)).toEqual([])
+  })
+
   it('writes nothing into a namespace claimed by another org, not even quiesce', async () => {
-    const recorded = await run({
+    const { recorded } = await run({
       org: orgOf(),
       namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'someone-else' },
       sandboxes: ['their-sandbox']
@@ -109,8 +146,40 @@ describe('reconcileDeletion', () => {
     expect(recorded[0].path.includes('/agentconnectorgs/')).toBe(true)
   })
 
+  it('still reclaims a provably ours CRB when the namespace claim drifted', async () => {
+    const { recorded } = await run({
+      org: orgOf(),
+      namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'someone-else' },
+      crbLabels: { [ORG_LABEL]: 'acme' }
+    })
+    const deletes = recorded.filter((entry) => entry.method === 'DELETE').map((entry) => entry.path)
+    expect(deletes).toEqual([`/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/ac-tokenreview-${NS}`])
+    expect(finalizerWrites(recorded)).toHaveLength(1)
+  })
+
+  it('leaves a CRB with a foreign org label alone', async () => {
+    const { recorded } = await run({
+      org: orgOf(),
+      namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'someone-else' },
+      crbLabels: { [ORG_LABEL]: 'someone-else' }
+    })
+    expect(recorded.filter((entry) => entry.method === 'DELETE')).toEqual([])
+    expect(finalizerWrites(recorded)).toHaveLength(1)
+  })
+
+  it('surfaces a sandbox suspension failure instead of completing the deletion', async () => {
+    const { recorded, error } = await run({
+      org: orgOf(),
+      namespaceLabels: { [NAMESPACE_CLAIM_LABEL]: 'acme' },
+      sandboxes: ['sb-1'],
+      sandboxPatchStatus: 500
+    })
+    expect(error).toBeDefined()
+    expect(finalizerWrites(recorded)).toEqual([])
+  })
+
   it('touches nothing outside the install prefix except the finalizer', async () => {
-    const recorded = await run({ org: orgOf('other-prefix-acme') })
+    const { recorded } = await run({ org: orgOf('other-prefix-acme') })
     expect(recorded).toHaveLength(1)
     expect(recorded[0].path.includes('/agentconnectorgs/')).toBe(true)
   })
