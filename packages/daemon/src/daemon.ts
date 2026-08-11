@@ -267,7 +267,11 @@ import {
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
 import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
-import { setWorkspaceGitRunnerResolver, setWorkspacePathClearer } from './workspace/workspace-manager.js'
+import {
+  setSandboxWorkspaceMode,
+  setWorkspaceGitRunnerResolver,
+  setWorkspacePathClearer
+} from './workspace/workspace-manager.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import { ensureNodeBinOnPath } from './runtimes/exec-path.js'
 import {
@@ -2675,6 +2679,9 @@ export class Daemon {
       // And the one destructive operation a cluster workspace needs, for the same reason: a
       // partial clone sits on a volume no `rmSync` here can reach.
       setWorkspacePathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
+      // And the mode itself, which decides what workspace operations are available at all: an
+      // in-place conversion has no pod-side implementation of its rollback contract.
+      setSandboxWorkspaceMode(true)
       this.log.info(`k8s: execution plane ready — shim endpoint on :${this.k8sPlane.listener.listeningPort()}`)
     }
     // Sandbox-optional principle (#36): skills are NOT force-sandboxed fleet-wide.
@@ -20409,6 +20416,7 @@ export class Daemon {
     await this.k8sPlane?.stop().catch(() => undefined)
     setWorkspaceGitRunnerResolver(undefined)
     setWorkspacePathClearer(undefined)
+    setSandboxWorkspaceMode(false)
     await Promise.allSettled(hostStarts)
     // Shutdown backstop: dream extractions reclaim their own tombstone when the
     // dedicated host stops, and stopHost sweeps per-agent for warm hosts, but drop

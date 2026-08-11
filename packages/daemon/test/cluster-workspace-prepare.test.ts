@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import {
   clusterWorkspaceCwd,
   prepareClusterWorkspace,
+  prepareWorkspaceForActivation,
+  setSandboxWorkspaceMode,
   setWorkspaceGitRunnerResolver,
   setWorkspacePathClearer
 } from '../src/workspace/workspace-manager.js'
@@ -111,6 +115,7 @@ beforeEach(() => {
     cleared.push(root)
     return undefined
   })
+  setSandboxWorkspaceMode(true)
   initGitInjection({
     targetFor: (agentId) =>
       agentId.startsWith('local-')
@@ -124,6 +129,7 @@ beforeEach(() => {
 afterEach(() => {
   setWorkspaceGitRunnerResolver(undefined)
   setWorkspacePathClearer(undefined)
+  setSandboxWorkspaceMode(false)
 })
 
 describe('clusterWorkspaceCwd', () => {
@@ -238,5 +244,34 @@ describe('preparing a cluster git-repo workspace', () => {
   it('falls back to the historical mount when a legacy shim reported none', async () => {
     const cwd = await prepareClusterWorkspace(clusterAgent(), undefined)
     expect(cwd).toBe(CHECKOUT)
+  })
+})
+
+describe('replacing a cluster workspace in place', () => {
+  it('refuses a git-repo conversion or repair, instead of staging a clone at a daemon path', async () => {
+    // `prepareWorkspaceForActivation` is reached by every workspace edit and by staged/reconnect
+    // repair, and it bypasses the preparation above entirely. Its contract is local-filesystem —
+    // a staged clone beside the target, `renameSync` to swap, `readdirSync` to prove the destination
+    // is still empty at the boundary, and a rollback that restores the previous tree — and the shim
+    // can write and clear, not rename, list or stat. Unrefused, it stages a clone at a
+    // daemon-absolute path, which the target fence rejects with an error about containment that says
+    // nothing about what was attempted.
+    await expect(prepareWorkspaceForActivation(clusterAgent())).rejects.toThrow(
+      /cannot be converted or repaired in place with --k8s yet/
+    )
+    // Nothing was staged on either filesystem before the refusal.
+    expect(calls).toEqual([])
+    expect(cleared).toEqual([])
+  })
+
+  it('leaves a from-scratch cluster workspace alone, whose activation touches only bookkeeping', async () => {
+    // It creates and empties the daemon-side directory that IS the bookkeeping identity; the pod's
+    // volume is not involved, so refusing here would break the mode that already works. A real path,
+    // because this one legitimately does touch this disk.
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-cluster-scratch-')), 'workspace')
+    await expect(prepareWorkspaceForActivation(clusterAgent({ mode: 'from-scratch', path }))).resolves.toBeTypeOf(
+      'function'
+    )
+    rmSync(dirname(path), { recursive: true, force: true })
   })
 })

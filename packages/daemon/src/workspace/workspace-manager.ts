@@ -186,6 +186,19 @@ export function setWorkspacePathClearer(clearer: WorkspacePathClearer | undefine
   clearWorkspacePathInSandbox = clearer
 }
 
+/**
+ * Whether this daemon places workspaces in sandbox pods at all.
+ *
+ * Deliberately NOT `resolveWorkspaceGitRunner?.(id) !== undefined`: that answers per agent and is
+ * false before a channel binds, so an operation guarded by it would take the local path for a
+ * cluster agent that simply has no pod yet — and clone onto the daemon's disk.
+ */
+let workspacesLiveInSandboxes = false
+
+export function setSandboxWorkspaceMode(enabled: boolean): void {
+  workspacesLiveInSandboxes = enabled
+}
+
 /** Empty a path belonging to a cluster agent. A daemon with no clearer registered has no sandbox to
  *  reach, so there is nothing to empty — the local path never calls this. */
 async function clearSandboxPath(agentId: string, root: string): Promise<void> {
@@ -837,12 +850,19 @@ async function cloneRepoInSandbox(agent: Agent, root: string, repository: string
   // Single-flight like the local clone. Per-agent workspace preparation is already serialized by the
   // daemon's own queue, so this is the belt to that braces: two clones into one volume would be a
   // half-written checkout, and the cost of preventing it is a map lookup.
-  const inflight = cloneInFlight.get(cloneKey(agent.id, checkout))
+  //
+  // The key is captured ONCE and reused for get/set/delete. `cloneKey` is deliberately
+  // state-dependent — it includes the agent id only while a sandbox runner is attached — so a clone
+  // that fails BECAUSE the channel dropped would otherwise compute a different key on the way out,
+  // delete nothing, and leave its own rejection cached under the old one. Every retry after
+  // reattachment would then re-await that dead promise until the daemon restarted.
+  const key = cloneKey(agent.id, checkout)
+  const inflight = cloneInFlight.get(key)
   if (inflight) return await inflight
   const started = cloneInSandbox(agent, root, repository, checkout).finally(() => {
-    cloneInFlight.delete(cloneKey(agent.id, checkout))
+    cloneInFlight.delete(key)
   })
-  cloneInFlight.set(cloneKey(agent.id, checkout), started)
+  cloneInFlight.set(key, started)
   return await started
 }
 
@@ -965,6 +985,19 @@ export async function prepareWorkspaceForActivation(
   }: { allowExistingCheckout?: boolean; reconcileMaterialization?: boolean } = {}
 ): Promise<() => void> {
   const cwd = agent.workspace.path
+  // Activation REPLACES a workspace, and its whole contract is local-filesystem: a staged clone
+  // beside the target, `renameSync` for an atomic swap, `readdirSync` to prove the destination is
+  // still empty at the boundary, and a rollback that restores the previous tree. A pod offers none
+  // of those — the shim can write and clear, not rename, list or stat — so there is no way to keep
+  // the rollback guarantee across the channel yet. Refused loudly, in the same spirit as session
+  // isolation: the alternative is a staged clone at a daemon-absolute path, which the shim's target
+  // fence rejects with an error about containment that explains nothing about what was attempted.
+  if (workspacesLiveInSandboxes && agent.workspace.mode === 'git-repo') {
+    throw new Error(
+      `a git-repo workspace cannot be converted or repaired in place with --k8s yet (agent "${agent.id}") — ` +
+        `recreate the agent to provision a fresh volume`
+    )
+  }
   mkdirSync(cwd, { recursive: true })
   const previousMaterialization = reconcileMaterialization ? readMaterialization(agent) : undefined
   const targetMaterialization = materializationKey(agent)
