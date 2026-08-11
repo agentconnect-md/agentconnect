@@ -81,9 +81,33 @@ const TABLES = [
   'org'
 ] as const
 
+/** Postgres deadlock_detected — the truncate lost the tie-break, not a schema fault. */
+const DEADLOCK_DETECTED = '40P01'
+const TRUNCATE_ATTEMPTS = 5
+
+/** Prisma reports the raw-query failure as P2010 and carries the driver's SQLSTATE underneath. */
+function isDeadlock(error: unknown): boolean {
+  const cause = (
+    error as { meta?: { driverAdapterError?: { cause?: { originalCode?: string; code?: string } } } } | null
+  )?.meta?.driverAdapterError?.cause
+  // `originalCode` is always set; `code` only while the adapter leaves 40P01 unmapped.
+  if (cause?.originalCode === DEADLOCK_DETECTED || cause?.code === DEADLOCK_DETECTED) return true
+  // Shape of `meta` is not part of Prisma's public contract; the message is the fallback.
+  return error instanceof Error && error.message.includes('deadlock detected')
+}
+
+/** A leftover in-flight reader and this TRUNCATE can want each other's table locks, so retry when we lose. */
 async function truncateAll(): Promise<void> {
   const list = TABLES.map((t) => `"${t}"`).join(', ')
-  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE;`)
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE;`)
+      return
+    } catch (error) {
+      if (!isDeadlock(error) || attempt === TRUNCATE_ATTEMPTS) throw error
+      await new Promise((resolve) => setTimeout(resolve, 50 * attempt))
+    }
+  }
 }
 
 beforeEach(async () => {
