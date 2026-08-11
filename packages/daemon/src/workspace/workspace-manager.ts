@@ -1103,7 +1103,10 @@ export async function prepareWorkspaceForActivation(
           `recreate the agent to provision a fresh volume`
       )
     }
-    if (reconcileMaterialization) recordWorkspaceMaterialization(agent)
+    // Deliberately does NOT record. For a cluster agent the marker means "the volume held this", and
+    // writing the TARGET here would say it about a volume nothing has inspected — which cluster
+    // preparation then reads back as proof of the repository, in a circle. Seeding at detach is a
+    // different thing and stays: it names the definition the agent has been RUNNING on.
     return restoreMarker
   }
   mkdirSync(cwd, { recursive: true })

@@ -255,13 +255,27 @@ describe('preparing a cluster git-repo workspace', () => {
     expect(cwd).toBe(CHECKOUT)
   })
 })
-
 describe('replacing a cluster workspace in place', () => {
   /** Activation reads and writes its materialization marker beside the daemon-side bookkeeping
    *  path, so these need a real one — it is the only local state this function keeps. */
   function bookkeepingAgent(overrides: Partial<Agent['workspace']> = {}): Agent {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-cluster-act-')), 'workspace')
     return clusterAgent({ path, ...overrides })
+  }
+
+  /**
+   * Establish a marker the only way a cluster agent legitimately can: a preparation that PROVED the
+   * volume. Here that is a fresh clone, whose `--branch` decided HEAD.
+   *
+   * Activation deliberately does not seed one, so a test that used it to set up would be asserting
+   * against a marker no volume ever backed — which is exactly the circularity under test.
+   */
+  async function withProvenMarker(overrides: Partial<Agent['workspace']> = {}): Promise<Agent> {
+    const agent = bookkeepingAgent(overrides)
+    checkoutExists = false
+    await prepareClusterWorkspace(agent, POD_ROOT)
+    calls.length = 0
+    return agent
   }
 
   it('is a no-op for a first activation, leaving the clone to session preparation', async () => {
@@ -272,18 +286,31 @@ describe('replacing a cluster workspace in place', () => {
     await expect(prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })).resolves.toBeTypeOf(
       'function'
     )
-    // And it staged nothing on either filesystem.
     expect(calls).toEqual([])
-    expect(existsSync(`${agent.workspace.path}.clone-`)).toBe(false)
+  })
+
+  it('does not seed a marker from the target, which preparation would read back as proof', async () => {
+    // The circle this closes: activation recording the TARGET says something about a volume nothing
+    // has inspected, and cluster preparation then treats that as attestation of the repository. So an
+    // existing unproven volume with a failing pull would be accepted.
+    const agent = bookkeepingAgent()
+    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+
+    checkoutExists = true
+    pullFails = true
+    await prepareClusterWorkspace(agent, POD_ROOT)
+    // Still unproven, so a conversion stays detectable rather than being silently accepted.
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).resolves.toBeTypeOf(
+      'function'
+    )
   })
 
   it('lets a rollback and a same-workspace repair through, which a blanket refusal stranded', async () => {
     // The sequence that matters: a rejected git→git edit restores the original row and re-activates
     // it with `reconcileWorkspace`. When that restoration was refused too, the agent stayed staged
     // and offline — the failure the refusal was supposed to prevent, made permanent.
-    const agent = bookkeepingAgent()
-    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
-    // Same workspace, marker already recorded: repair and restoration both look like this.
+    const agent = await withProvenMarker()
     await expect(prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })).resolves.toBeTypeOf(
       'function'
     )
@@ -295,10 +322,7 @@ describe('replacing a cluster workspace in place', () => {
     // placement activation asks for no reconciliation, so nothing else refreshes this daemon's
     // marker; preparation converges the shared volume to the new URL and has to record that, or a
     // later repair reads the old marker as a CHANGE and refuses an agent whose checkout is correct.
-    const agent = bookkeepingAgent()
-    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
-
-    // Renamed elsewhere. Preparation converges the volume — and now the marker too.
+    const agent = await withProvenMarker()
     const renamed = {
       ...agent,
       workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/renamed.git' }
@@ -308,7 +332,6 @@ describe('replacing a cluster workspace in place', () => {
     await prepareClusterWorkspace(renamed, POD_ROOT)
     expect(calls.some((call) => call.args[0] === 'remote' && call.args[1] === 'set-url')).toBe(true)
 
-    // The repair that used to be refused: same workspace as the volume now holds.
     await expect(prepareWorkspaceForActivation(renamed, { reconcileMaterialization: true })).resolves.toBeTypeOf(
       'function'
     )
@@ -319,26 +342,20 @@ describe('replacing a cluster workspace in place', () => {
     // that has diverged fails ff-only and the volume stays where it was. Recording the new branch
     // there would tell every later activation that nothing changed, and the agent would run the
     // wrong branch indefinitely — silently, which is what makes it expensive.
-    const agent = bookkeepingAgent()
-    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
-
+    const agent = await withProvenMarker()
     const moved = { ...agent, workspace: { ...agent.workspace, gitBranch: 'release' } } as Agent
     checkoutExists = true
     headBranch = 'main' // the volume never left `main`
     pullFails = true
     await prepareClusterWorkspace(moved, POD_ROOT)
 
-    // The marker still describes `main`, so the change is still visible — and refused, with a
-    // message naming what to do, rather than silently running the wrong branch.
     await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).rejects.toThrow(
       /cannot be converted in place with --k8s yet/
     )
   })
 
   it('records the marker once the volume is provably on the configured branch', async () => {
-    const agent = bookkeepingAgent()
-    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
-
+    const agent = await withProvenMarker()
     const moved = { ...agent, workspace: { ...agent.workspace, gitBranch: 'release' } } as Agent
     checkoutExists = true
     headBranch = 'release' // the volume IS on it, and the pull succeeded
@@ -353,9 +370,7 @@ describe('replacing a cluster workspace in place', () => {
     // in both repositories while the content is the old one. Only a pull that succeeded against the
     // new origin shows otherwise — and the proof has to survive a retry, which is what makes it a
     // question about the stored marker rather than about what this call happened to rewrite.
-    const agent = bookkeepingAgent()
-    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
-
+    const agent = await withProvenMarker()
     const renamed = {
       ...agent,
       workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/renamed.git' }
@@ -383,24 +398,12 @@ describe('replacing a cluster workspace in place', () => {
     )
   })
 
-  it('requires a successful pull before trusting a volume no marker attests', async () => {
-    // A daemon with no marker and an existing checkout — a rebuilt daemon adopting a volume — knows
-    // nothing about where that tree came from, so `origin` matching proves nothing on its own.
-    checkoutExists = true
-    pullFails = true
-    const agent = bookkeepingAgent()
-    await prepareClusterWorkspace(agent, POD_ROOT)
-    // Unproven, so the marker stays absent and a conversion later is still detectable.
-    expect(existsSync(`${dirname(agent.workspace.path)}/.workspace.workspace-materialization.json`)).toBe(false)
-  })
-
   it('refuses only a conversion of an EXISTING checkout, which has no rollback in a pod', async () => {
     // The one case that needs the contract a pod cannot offer: a staged clone, an atomic swap, and a
     // rollback that restores the previous tree. Unrefused, it stages a clone at a daemon-absolute
     // path, which the shim's target fence rejects with an error about containment that says nothing
     // about what was attempted.
-    const agent = bookkeepingAgent()
-    await prepareWorkspaceForActivation(agent, { reconcileMaterialization: true })
+    const agent = await withProvenMarker()
     const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
     await expect(prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })).rejects.toThrow(
       /cannot be converted in place with --k8s yet/
