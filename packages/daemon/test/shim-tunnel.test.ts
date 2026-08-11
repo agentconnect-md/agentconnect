@@ -115,6 +115,8 @@ async function clusterWithTunnel(
     tunnels?: TunnelName[]
     maxStreams?: number
     credentialTtlMs?: number
+    /** Withhold a daemon→pod `data` frame from the host, so one is in flight on demand. */
+    holdData?: () => Promise<void>
   } = {}
 ): Promise<Cluster> {
   const warnings: string[] = []
@@ -147,9 +149,12 @@ async function clusterWithTunnel(
     dial: (url, opts) =>
       ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
     readToken: () => 'projected-token',
-    handle: (capability, payload) => {
-      if (capability === 'tunnel') return host.handle(payload)
-      throw new Error(`unexpected capability ${capability}`)
+    handle: async (capability, payload) => {
+      if (capability !== 'tunnel') throw new Error(`unexpected capability ${capability}`)
+      // Held BEFORE the host applies it: the frame has reached the pod's shim but not its socket,
+      // which is exactly the state a renewal makes unknowable.
+      if (options.holdData && (payload as { op?: string }).op === 'data') await options.holdData()
+      return await host.handle(payload)
     },
     clock: shimClock,
     backoff: new Backoff({ jitter: () => 0 }),
@@ -298,6 +303,39 @@ describe('the shim tunnel', () => {
     await vi.waitFor(() => expect(helper.received()).toContain('echo:after'), { timeout: 10_000 })
     expect(helper.ended()).toBe(false)
   }, 40_000)
+
+  it('ends an interrupted stream through the real renewal, so the pod client sees EOF', async () => {
+    // The production ordering, which a stubbed session cannot show: `ShimListener` used to announce
+    // a new connection BEFORE sending `shim/bound`, so the daemon's cleanup of an interrupted
+    // stream reached a shim that had no binding yet and was refused as `not bound` — with the
+    // stream already dropped on this side, leaving the in-pod client waiting on nothing.
+    let replied = false
+    let release = (): void => undefined
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const daemonSocketPath = daemonSideServer((_chunk, socket) => {
+      replied = true
+      socket.write('{"ok":true,"password":"token"}\n')
+    })
+    const { podSocketPath, shimClock, bindCount } = await clusterWithTunnel({
+      daemonSocketPath,
+      credentialTtlMs: 600_000,
+      holdData: () => held
+    })
+
+    const helper = inPodClient(podSocketPath)
+    helper.socket.write('{"op":"get"}\n')
+    // The daemon has answered and its reply frame is in flight but unapplied.
+    await vi.waitFor(() => expect(replied).toBe(true), { timeout: 10_000 })
+
+    const bindsBefore = bindCount()
+    shimClock.advance(300_000)
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), { timeout: 15_000 })
+
+    // The close has to LAND on the new channel: git has no deadline of its own, so a rejected
+    // cleanup is a helper that hangs until the idle timer.
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 15_000 })
+    release()
+  }, 60_000)
 
   it('ends a stream whose frame was in flight when the channel was replaced', async () => {
     // The other half of a renewal. `ShimSession.attach` aborts the requests on the socket it
