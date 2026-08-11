@@ -1,7 +1,17 @@
 # Running the daemon in Kubernetes
 
-Applies to the `agentconnect` namespace. The agent-sandbox CRDs
-(`agents.x-k8s.io`, `extensions.agents.x-k8s.io`) must already be installed.
+Applies to the `agentconnect` namespace — one daemon, applied by hand, no
+operator. The managed path is `charts/operator`, which installs the agent-sandbox
+stack itself under `installCRD` and provisions per-org envelopes from
+`AgentConnectOrg` resources.
+
+These manifests still need agent-sandbox (`agents.x-k8s.io`,
+`extensions.agents.x-k8s.io`) in the cluster. If it is not there, apply the same
+pinned release the chart vendors, so both paths run the same version:
+
+```bash
+kubectl apply -f charts/operator/vendor/agent-sandbox.yaml
+```
 
 ## What the config carries, and what it no longer has to
 
@@ -68,6 +78,8 @@ shred -u /tmp/config.json
 
 # 2. Everything else.
 # The controller must accept our label domain before it will create any Sandbox.
+# (charts/operator ships this as a ConfigMap; a hand-applied stack has to merge
+# into whatever allowlist the cluster already has, which is what the script does.)
 # This MERGES into whatever is already allowed and finds the controller's own
 # namespace; it prints the restart command rather than running it, because the
 # controller is shared and a restart interrupts reconciliation for every tenant.
