@@ -94,7 +94,10 @@ function shimAgainst(port: number, handlers: { probe?: unknown; workspaceRoot?: 
       ? {}
       : {
           handle: async (capability: string) => {
-            if (capability === 'probe') return handlers.probe
+            // A function stands in for a generator that takes time, so a test can observe the
+            // window where the request is in flight and the bind is already over.
+            if (capability === 'probe')
+              return typeof handlers.probe === 'function' ? await (handlers.probe as () => unknown)() : handlers.probe
             throw new Error(`unexpected capability ${capability}`)
           }
         }),
@@ -165,6 +168,36 @@ describe('k8s runtime plane assembly', () => {
     // And the probe sandbox is gone: one leaked pod per daemon restart would be a slow leak that
     // nothing else cleans up.
     expect(deleted).toContain('agent-ac-runtime-probe')
+  })
+
+  it('holds the probe sandbox across the request, not just across the bind', async () => {
+    // The probe can run for minutes while nothing else marks that sandbox as in use, and both
+    // suspension paths read the lease to decide a pod is spare. Suspending mid-probe fails the
+    // probe — and a daemon that failed its probe advertises no runtimes and does not retry.
+    const api = fakeApi()
+    const plane = await planeUnderTest(api)
+    const port = plane.listener.listeningPort()!
+
+    const probing = plane.probeRuntimes()
+    // A shim that has dialled in and is still generating its table. Waiting for the REQUEST rather
+    // than for the connection is the whole point: during the bind the sandbox is held anyway, so
+    // an assertion there would hold with or without the lease this test is about.
+    let requested: () => void = () => {}
+    const inFlight = new Promise<void>((resolve) => (requested = resolve))
+    let answer: (table: unknown) => void = () => {}
+    const generating = new Promise<unknown>((resolve) => (answer = resolve))
+    shimAgainst(port, {
+      probe: () => {
+        requested()
+        return generating
+      }
+    })
+    await inFlight
+
+    expect(await plane.suspendIdle('ac-runtime-probe')).toBe('busy')
+
+    answer({ runtimes: [{ id: 'claude-acp', version: '0.66.0' }] })
+    await probing
   })
 
   it('brings the sandbox up and binds without starting a runtime, for workspace preparation', async () => {
@@ -256,5 +289,30 @@ describe('k8s runtime plane assembly', () => {
     shimAgainst(port)
     await launching
     expect(await until(() => plane.gitRunnerFor('agent-a') !== undefined)).toBe(true)
+  })
+
+  it('deletes the claim when an agent is removed, and stops waiting on the channel it just dropped', async () => {
+    const api = fakeApi()
+    const deleted: string[] = []
+    api.api.deleteClaim = async (name: string) => void deleted.push(name)
+    const plane = await planeUnderTest(api)
+
+    const port = plane.listener.listeningPort()!
+    const launching = plane.driver.launch({
+      command: 'x',
+      args: [],
+      env: { AC_AGENT_ID: 'agent-a' },
+      cwd: '/agent'
+    } as never)
+    shimAgainst(port)
+    await launching
+
+    await plane.discardAgent('agent-a')
+    // The claim is the whole teardown: the Sandbox and its workspace volume go with it.
+    expect(deleted).toEqual(['agent-agent-a'])
+    // And the launch is forgotten, so nothing is left waiting on a channel for an agent that no
+    // longer exists — a loss report for one would name work nobody is expecting.
+    expect(plane.driver.currentLaunch('agent-a')).toBeUndefined()
+    expect(plane.launchedAgents()).toEqual([])
   })
 })

@@ -189,7 +189,10 @@ Three properties this shape buys:
   — is still drained. Keying by agent would have made exactly the idle case unreachable.
 - **In-flight work is held, not raced.** Work leases its Sandbox: the bind, the cold workspace
   preparation that runs in the pod after it (clone, pull, skill materialization — one lease around
-  the whole of it, not around the bind alone), and the runtime until it exits. A request that
+  the whole of it, not around the bind alone), the runtime until it exits, and the runtime probe
+  across its whole request rather than across its bind — a probe can run for minutes with nothing
+  else marking that sandbox as in use, and a daemon whose probe failed advertises no runtimes and
+  does not retry. A request that
   arrives while a lease is held waits for it instead of pulling the pod out from under it.
   Taking a lease on an already-draining instance is refused instead, by type
   (`SandboxDrainingError` → the `draining` launch outcome): nothing has started yet, so the
@@ -197,3 +200,73 @@ Three properties this shape buys:
 
 A drain the daemon never completes is the rollout's to give up on, not the daemon's to force:
 the operator marks the instance `failed` after its own deadline, and the pod keeps serving.
+
+## 8. The lifecycle of an idle agent: suspend, resume, discard
+
+A rollout is not the only reason a pod should stop existing. An agent that has gone quiet holds
+a pod that is running nothing, and an agent that has been deleted holds a volume nobody will
+ever read again. Those are two different endings, and conflating them is how a product either
+burns cost or loses work.
+
+**Quiet ⇒ suspend, keep the volume.** The daemon's idle sweep already reclaims a host whose
+agent has no recent activity and no in-flight turn. The same sweep then suspends the Sandbox of
+any agent it holds a launch for that no longer has a host. Suspension deletes the pod and
+nothing else: the Sandbox object and the workspace volume survive, so the next message resumes
+onto the same checkout and the same runtime history rather than paying a clone.
+
+Suspension and acquisition exclude each other, and the lease counter is not what does it: `busy`
+counts holders, it does not keep new ones out, so a dispatch arriving during the Kubernetes write
+would lose its pod and then find its launch forgotten by the suspend's own success path. The
+decision is published before the first await and `ensureSandbox` waits it out — publication is
+synchronous with the `busy` read, so a holder either appears in that read or arrives to a gate
+that is already closed. A waiter resumes into the ordinary path: no cached launch, so it claims a
+new one, which is the resume it would have performed a moment later anyway.
+
+The sweep reads the driver's launches rather than chaining onto host reclaim, for two reasons —
+a launch outlives the host it was made for (a bind for workspace preparation makes one before
+any runtime exists), and a rule evaluated from state each tick cannot be stranded by a teardown
+that failed. The cost is at most one sweep interval of delay after the host goes.
+
+There is no separate wake path: `bindChannel` already patches `Running` before it waits for
+readiness, so the next turn resumes the instance as a side effect of needing it. That is also
+what makes the resume measurable — `ensureSandbox` reports `resume` rather than `warm` when it
+finds the Sandbox Suspended.
+
+One gap this leaves, deliberately: a pod still Running from _before_ a daemon restart has no
+launch in the new process, so nothing considers it until the agent is used again — at which
+point it acquires a launch and the rule applies from then on. The drain path solves the same
+problem by keying on Sandbox name, which works because a rollout needs no agent identity;
+suspension does need it, to ask whether that agent has been quiet, and the Sandbox object
+carries no agent label to recover it from (the labels go to the pod). Inventing a mapping is
+worse than naming the gap: the steady-state case is covered, and the restart case costs one
+pod until the agent's next message.
+
+**A departed pod ends its launch.** Suspension, an eviction and a node drain all produce the
+same thing: a channel that does not come back. The session behind it is terminal — `attach()`
+is a no-op once lost — while a cached launch keeps its generation, so a re-bind that matched
+generations would re-attach the dead session and hand the resumed pod a channel that can never
+serve a request. Losing the channel therefore drops both the session and the launch, which is
+what makes the next turn claim a **fresh generation** — the fence the replacement pod is bound
+against. `forgetLaunch` describes exactly this recovery and was, until this rule existed,
+called by nothing.
+
+The narrow case this leaves is a socket that comes back _after_ loss was reported while its pod
+stayed alive — a blip longer than the rebind grace. That connection is bound to a generation
+nothing is waiting for any more, so it simply sits there, and the launch recovers when the shim
+next re-dials at credential renewal. Closing it to force an immediate re-dial is deliberately
+NOT done: a first bind is indistinguishable from it at that point (the session is created after
+the channel arrives), and every pod would re-dial into a close loop after a daemon restart.
+Recovering at renewal is slower than that would be, and strictly better than the alternative it
+replaced, which was a channel that could never serve again until the daemon restarted.
+
+**Removed ⇒ delete the claim, and the volume with it.** Where the local path deletes the
+agent's checkout, the cluster path deletes its SandboxClaim; the volume is not reachable from
+the daemon's filesystem, so nothing else can. This is removal only. A **detached or moved**
+agent keeps its volume: both are reversible, the archive they leave behind is the promise that
+the work is still there, and the source daemon is never told that a move committed — so
+deleting on detach would trade a leaked volume for a lost workspace on every rollback. Its pod
+still goes, through the idle rule above, which is where the cost actually is.
+
+The delete is best-effort by construction: the durable local removal has already succeeded, and
+failing the lifecycle ACK over a leaked claim would leave the CP and the daemon disagreeing
+about whether the agent exists. A failure is reported with the command that finishes the job.

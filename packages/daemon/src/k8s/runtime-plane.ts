@@ -123,6 +123,16 @@ export interface K8sRuntimePlane {
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
+  /** Agents this daemon holds a Sandbox for — the candidate set for an idle sweep. Read from the
+   *  driver rather than inferred from live hosts: a launch outlives the host it was made for. */
+  launchedAgents: () => string[]
+  /** Suspend a quiet agent's pod, keeping its Sandbox and workspace volume. `busy` means work
+   *  still holds it and the caller should try again later; `absent` means there is nothing to
+   *  suspend. Waking is not a separate call — the next launch's bind does it. */
+  suspendIdle: (agentId: string) => Promise<'suspended' | 'busy' | 'absent'>
+  /** Destroy an agent's sandbox for good: the claim goes, and its workspace volume with it. For
+   *  agent REMOVAL only — the local path deletes the checkout at the same point. */
+  discardAgent: (agentId: string) => Promise<void>
   stop: () => Promise<void>
 }
 
@@ -258,11 +268,18 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // A sandbox of its own, under a reserved id, so a probe never adopts or disturbs an
       // agent's instance — and is torn down afterwards rather than left holding a pod.
       try {
-        await driver.ensureBoundChannel(PROBE_AGENT_ID, undefined, PROBE_GRANTS)
-        const session = driver.sessionFor(PROBE_AGENT_ID)
-        if (!session) throw new Error('probe sandbox bound no session')
-        const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
-        return K8sRuntimeTableSchema.parse(raw)
+        // The lease covers the REQUEST, not just the bind: the probe can run for minutes while
+        // nothing else marks that sandbox as in use, and both suspension paths — a rollout's
+        // drain and the idle sweep — read exactly this lease to decide the pod is spare. Losing
+        // the pod mid-probe fails the probe, and a daemon that failed its probe advertises no
+        // runtimes and does not retry.
+        return await driver.withSandbox(PROBE_AGENT_ID, async () => {
+          await driver.ensureBoundChannel(PROBE_AGENT_ID, undefined, PROBE_GRANTS)
+          const session = driver.sessionFor(PROBE_AGENT_ID)
+          if (!session) throw new Error('probe sandbox bound no session')
+          const raw = await session.request('probe', {}, { timeoutMs: PROBE_TIMEOUT_MS })
+          return K8sRuntimeTableSchema.parse(raw)
+        })
       } finally {
         await driver.removeAgent(PROBE_AGENT_ID).catch((err: unknown) => {
           // A leaked probe sandbox costs a pod and a volume, so say so loudly rather than
@@ -285,6 +302,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return await new ShimFileSink(session).clear(root)
     },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
+    launchedAgents: () => driver.launchedAgents(),
+    suspendIdle: (agentId) => driver.suspendIfIdle(agentId),
+    discardAgent: async (agentId) => {
+      // Close and forget the pod's channel before the claim goes: the pod has its whole
+      // termination grace to keep using a binding this daemon no longer means to honour.
+      listener.revokeAgent(agentId)
+      // Ordered after the revoke, whose close schedules one: a loss check for an agent that no
+      // longer exists would report a lost launch nobody is waiting for.
+      clearTimeout(lossTimers.get(agentId))
+      lossTimers.delete(agentId)
+      proxies.get(agentId)?.proxy.stop('agent removed')
+      proxies.delete(agentId)
+      await driver.removeAgent(agentId)
+    },
     stop: async () => {
       driver.stopSandboxWatch()
       for (const timer of lossTimers.values()) clearTimeout(timer)

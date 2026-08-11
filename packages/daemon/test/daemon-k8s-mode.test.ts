@@ -47,7 +47,14 @@ function catalog(): ResolvedRuntimeCatalog {
   }
 }
 
-function daemon(opts: { root: string; k8s: boolean; probe?: ReturnType<typeof vi.fn>; supervisor?: string }): Daemon {
+function daemon(opts: {
+  root: string
+  k8s: boolean
+  probe?: ReturnType<typeof vi.fn>
+  supervisor?: string
+  /** Extra plane members for the rows that are ABOUT the plane the mode installs. */
+  plane?: Record<string, unknown>
+}): Daemon {
   return new Daemon({
     root: opts.root,
     k8s: opts.k8s,
@@ -57,10 +64,14 @@ function daemon(opts: { root: string; k8s: boolean; probe?: ReturnType<typeof vi
       ? {
           startK8sPlane: async () =>
             ({
-              driver: {} as never,
+              driver: { claimName: (id: string) => `agent-${id}` } as never,
               listener: { listeningPort: () => 0 } as never,
               gitRunnerFor: () => undefined,
-              stop: async () => {}
+              launchedAgents: () => [],
+              suspendIdle: async () => 'absent',
+              discardAgent: async () => {},
+              stop: async () => {},
+              ...opts.plane
             }) as never
         }
       : {}),
@@ -173,5 +184,51 @@ describe('daemon --k8s mode', () => {
       k8s: true
     })
     await expect(k8sDaemon.start()).rejects.toThrow(/requireSandbox is not supported with --k8s/)
+  })
+
+  it('suspends the pod of an agent that has gone quiet, and leaves a busy one alone', async () => {
+    const suspended: string[] = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launchedAgents: () => ['quiet', 'serving'],
+        suspendIdle: async (agentId: string) => {
+          suspended.push(agentId)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      // A host that is still inside its own idle window owns the decision; suspending underneath
+      // it would pull the pod out from a runtime that is merely between turns.
+      ;(k8sDaemon as any).hosts.set('serving', { stop: async () => {} })
+      ;(k8sDaemon as any).hostStartedAt.set('serving', Date.now())
+      ;(k8sDaemon as any).sweepIdle()
+      await vi.waitFor(() => expect(suspended).toEqual(['quiet']))
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
+  it('deletes a removed agent’s sandbox, which is what takes its workspace volume with it', async () => {
+    const discarded: string[] = []
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: { discardAgent: async (agentId: string) => void discarded.push(agentId) }
+    })
+    try {
+      await k8sDaemon.start()
+      const cp = (k8sDaemon as any).cpConfigApply()
+      await cp.applyAgentUpsert({ agentId: 'doomed', spec: { name: 'doomed' } })
+      // The local path deletes the checkout at exactly this point; in a pod the checkout is on a
+      // volume no rmSync here can reach, so the claim is what has to go.
+      await cp.applyAgentRemove('doomed')
+      expect(discarded).toEqual(['doomed'])
+    } finally {
+      await k8sDaemon.stop()
+    }
   })
 })

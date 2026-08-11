@@ -17827,6 +17827,66 @@ export class Daemon {
         this.log.error(`idle: stop host "${agentId}" failed: ${formatErr(err)}`)
       )
     }
+    this.sweepIdleSandboxes(now, ttl)
+  }
+
+  /**
+   * Cluster only: suspend the pod of an agent whose host is already gone, keeping its Sandbox and
+   * workspace volume. An idle pod is cost with nothing running in it, and the next message resumes
+   * onto the same checkout instead of paying a fresh clone.
+   *
+   * Driven off the driver's launches rather than off host reclaim, for two reasons: a launch
+   * outlives the host it was made for (a bind for workspace preparation makes one before any
+   * runtime exists), and a rule that reads state each tick cannot be stranded by a teardown that
+   * failed. The cost is at most one sweep interval of delay after the host goes.
+   */
+  private sweepIdleSandboxes(now: number, ttl: number): void {
+    const plane = this.k8sPlane
+    if (!plane) return
+    for (const agentId of plane.launchedAgents()) {
+      // A live host owns the decision above; suspending under it would pull the pod out from
+      // beneath a runtime that is merely between turns.
+      if (this.hosts.has(agentId)) continue
+      if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
+      if ([...this.pending.values()].some((p) => p.agentId === agentId)) continue
+      // No host means no `hostStartedAt` floor to fall back on, so an agent that has never served
+      // a turn reads as idle-since-epoch — which is correct here: nothing is running in its pod.
+      const last = this.store.agentLastActivityTs(agentId) ?? 0
+      if (now - last <= ttl) continue
+      void plane
+        .suspendIdle(agentId)
+        .then((outcome) => {
+          if (outcome !== 'suspended') return
+          this.log.info(
+            `idle: suspended the sandbox for agent "${agentId}" (idle ${Math.round((now - last) / 1000)}s) — ` +
+              `its workspace volume is kept and the next message resumes onto it`
+          )
+        })
+        .catch((err) => this.log.warn(`idle: suspending the sandbox for agent "${agentId}" failed: ${formatErr(err)}`))
+    }
+  }
+
+  /**
+   * Cluster only: destroy an agent's sandbox and, with it, its workspace volume. Called where the
+   * local path deletes the agent's checkout — removal, and only removal. A detached or moved agent
+   * keeps its volume, because both are reversible and the archive they leave behind is the promise
+   * that the work is still there.
+   *
+   * Best effort by construction: the durable local removal has already succeeded, and failing the
+   * lifecycle ACK over a leaked claim would leave the CP and this daemon disagreeing about whether
+   * the agent exists. A failure is therefore reported with the command that finishes the job.
+   */
+  private async discardClusterSandbox(agentId: string): Promise<void> {
+    const plane = this.k8sPlane
+    if (!plane) return
+    try {
+      await plane.discardAgent(agentId)
+    } catch (err) {
+      this.log.warn(
+        `cluster: could not delete the sandbox for removed agent "${agentId}" — its pod and workspace volume ` +
+          `are still allocated (${formatErr(err)}); delete sandboxclaim "${plane.driver.claimName(agentId)}" to reclaim them`
+      )
+    }
   }
 
   /** Race `work` against a Clock-driven deadline, always clearing the timer so a
@@ -18649,6 +18709,7 @@ export class Daemon {
                   try {
                     if (action === 'remove') {
                       this.cpAgents.remove(agentId)
+                      await this.discardClusterSandbox(agentId)
                       this.moveStageMetadata.delete(agentId)
                       this.moveStagedAgents.delete(agentId)
                     } else {
@@ -18825,6 +18886,7 @@ export class Daemon {
                 `cp: agent "${agentId}" removal marker publication failed, but durable delete completed (${formatErr(removal.markerError)})`
               )
             }
+            await this.discardClusterSandbox(agentId)
             await this.flushReconcile()
             // Clear fail-closed gates only after destructive disk removal succeeds;
             // otherwise an old active root could become servable again on failure.
