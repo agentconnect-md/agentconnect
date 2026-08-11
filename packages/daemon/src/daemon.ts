@@ -204,6 +204,7 @@ import {
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import {
   cleanupStaleWorkspaceClones,
+  clusterWorkspaceCwd,
   convergeGithubAppWorkspaceRename,
   ensureWorkspaceMaterialization,
   isWorkspaceEmpty,
@@ -3135,7 +3136,13 @@ export class Daemon {
       agentById: (id) => this.agents.get(id),
       prepareWorkspace: (agent, expectedWarmHost, request) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
-      resolvePreparedWorkspace: (agent) => resolvePreparedWorkspaceCwd(agent),
+      // Cluster agents resolve to POD coordinates — the local resolver would hand back the
+      // daemon-disk path the runtime cannot see. Called only after hostFor's cold gate, so
+      // the channel (and with it the pod's reported mount) has already bound.
+      resolvePreparedWorkspace: (agent) =>
+        this.k8sPlane
+          ? clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id))
+          : resolvePreparedWorkspaceCwd(agent),
       memory: this.memory,
       onMemoryRecallError: (agentId, error) =>
         this.log.warn(
@@ -4767,11 +4774,16 @@ export class Daemon {
   }
 
   private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
+    // In --k8s the workspace lives on the sandbox pod's volume, in the POD's coordinates: the
+    // sandbox has to exist before anything else (the channel reports where the volume mounts),
+    // and none of the local preparation below may run — its mkdir/existsSync/skills work would
+    // land on this daemon's disk, describing a filesystem the runtime never sees. Skills and
+    // git-repo checkouts for cluster agents arrive with the materialize/runner phases.
+    if (this.k8sPlane) {
+      await this.k8sPlane.ensureChannel(agent.id)
+      return clusterWorkspaceCwd(agent, this.k8sPlane.workspaceRootFor(agent.id), request)
+    }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
-    // In --k8s the workspace lives on the sandbox pod's volume, so the sandbox has to exist
-    // BEFORE preparation: the resolver has no session until a channel binds, and preparing first
-    // would clone onto this daemon's disk and hand the runtime an empty workspace.
-    if (this.k8sPlane) await this.k8sPlane.ensureChannel(agent.id)
     const opts = {
       managedSkills: (value: Agent) => this.managedSkillCache?.resolve(value) ?? Promise.resolve([]),
       skillsStateDir: join(this.root, 'skill-installs'),
@@ -4781,6 +4793,9 @@ export class Daemon {
   }
 
   private runAgentWorkspacePrefetch(agent: Agent): Promise<void> {
+    // A cluster workspace materializes on the pod's volume at session time; a local prefetch
+    // would clone the repository onto this daemon's own disk instead.
+    if (this.k8sPlane) return Promise.resolve()
     return prefetchWorkspace(agent)
   }
 

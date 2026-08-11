@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http'
+import { isAbsolute, normalize } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { noopClusterMetrics, type ClusterMetrics } from '../k8s/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
@@ -55,12 +56,22 @@ function withoutToken(message: string, token: string): string {
   return token.length > 0 ? message.split(token).join('[redacted]') : message
 }
 
+/** A usable pod workspace root: absolute, normalized, never `/`. Anything else ⇒ unreported. */
+function sanitizeWorkspaceRoot(reported: string | undefined): string | undefined {
+  if (!reported || !isAbsolute(reported)) return undefined
+  const normalized = normalize(reported).replace(/\/+$/, '')
+  return normalized.length > 0 ? normalized : undefined
+}
+
 /** A bound shim connection the daemon can send requests on. */
 export interface ShimConnection {
   binding: Binding
   /** The credential issued to THIS channel, so teardown can revoke exactly it rather than
    *  whatever the pod currently holds — a renewal may already have replaced that. */
   issuedCredential: string
+  /** The pod's workspace mount as the shim reported it; absent on legacy shims. Pod-reported
+   *  and only ever used to build paths sent back INTO that pod, never on this filesystem. */
+  workspaceRoot?: string
   send(frame: ShimFrame): void
   /** Observe inbound frames — how a ShimChannel receives the replies to its requests. */
   onFrame(listener: (text: string) => void): void
@@ -223,6 +234,11 @@ export class ShimListener {
           return
         }
         binding = true
+        // Sanitized here, once, so no consumer has to re-decide what a usable root looks like.
+        const workspaceRoot = sanitizeWorkspaceRoot(frame.workspaceRoot)
+        if (frame.workspaceRoot && !workspaceRoot) {
+          this.deps.log.warn(`shim: ignoring a non-absolute workspace root from ${remoteAddress}`)
+        }
         void this.bindFrom(frame.token, remoteAddress, () => socketOpen).then(
           (result) => {
             binding = false
@@ -246,6 +262,7 @@ export class ShimListener {
             const connection: ShimConnection = {
               binding: result.binding,
               issuedCredential: result.credential,
+              ...(workspaceRoot ? { workspaceRoot } : {}),
               send: (outbound) => ws.send(JSON.stringify(outbound)),
               onFrame: (listener) => frameListeners.push(listener),
               close: (reason) => ws.close(4000, reason)

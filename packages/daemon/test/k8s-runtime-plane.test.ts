@@ -82,7 +82,7 @@ async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRunti
 }
 
 /** A real shim client dialling the plane's endpoint, optionally serving capabilities. */
-function shimAgainst(port: number, handlers: { probe?: unknown } = {}): ShimClient {
+function shimAgainst(port: number, handlers: { probe?: unknown; workspaceRoot?: string } = {}): ShimClient {
   const client = new ShimClient({
     ...(handlers.probe === undefined
       ? {}
@@ -92,6 +92,7 @@ function shimAgainst(port: number, handlers: { probe?: unknown } = {}): ShimClie
             throw new Error(`unexpected capability ${capability}`)
           }
         }),
+    ...(handlers.workspaceRoot === undefined ? {} : { workspaceRoot: handlers.workspaceRoot }),
     endpoint: `ws://127.0.0.1:${port}`,
     dial: (url, opts) =>
       ClientTransport.dial(url, { subprotocol: opts.subprotocol, path: opts.path }) as Promise<ShimTransport>,
@@ -168,11 +169,13 @@ describe('k8s runtime plane assembly', () => {
     const plane = await planeUnderTest(api)
     const port = plane.listener.listeningPort()!
     const ensuring = plane.ensureChannel('agent-a')
-    shimAgainst(port)
+    shimAgainst(port, { workspaceRoot: '/agent' })
     await ensuring
     // A channel, a session behind the workspace seam, and NO runtime started.
     expect(plane.listener.connectionsFor('agent-a')).toHaveLength(1)
     expect(plane.gitRunnerFor('agent-a', '/agent')).toBeDefined()
+    // The pod's reported mount arrived with the bind — the fact every pod path is built on.
+    expect(plane.workspaceRootFor('agent-a')).toBe('/agent')
   })
 
   it('resolves a dialing pod back to its launch, through the ADOPTED pod name', async () => {

@@ -43,6 +43,8 @@ export interface ShimClientDeps {
   resolveCommand?: ResolveCommand
   /** Pod environment the ACP runner consults for provider fill-ins (SANDBOX_PROVIDER_ENV). */
   podEnv?: Record<string, string | undefined>
+  /** This pod's workspace mount, reported in the hello so the daemon builds pod paths on it. */
+  workspaceRoot?: string
   clock?: Clock
   backoff?: Backoff
   log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -245,8 +247,14 @@ export class ShimClient {
         if (frame.type === 'shim/request') void this.serve(transport, frame)
         if (frame.type === 'shim/cancel') this.cancel(frame)
       })
-      // The token is the whole proof; nothing else about this pod is asserted.
-      transport.send(JSON.stringify({ type: 'shim/hello', token } satisfies Extract<ShimFrame, { type: 'shim/hello' }>))
+      // The token is the whole proof of identity; the workspace root is a filesystem fact.
+      transport.send(
+        JSON.stringify({
+          type: 'shim/hello',
+          token,
+          ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
+        } satisfies Extract<ShimFrame, { type: 'shim/hello' }>)
+      )
     })
   }
 

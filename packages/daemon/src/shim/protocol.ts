@@ -21,6 +21,10 @@ export const SHIM_ENDPOINT_ENV = 'AC_SHIM_ENDPOINT'
  *  cwd that escapes it. */
 export const SHIM_WORKSPACE_ROOT_ENV = 'AC_SHIM_WORKSPACE_ROOT'
 
+/** The shim's own fallback for that env, and the daemon's assumption for a legacy shim that
+ *  predates workspace-root reporting — every such image mounted the volume here. */
+export const DEFAULT_SHIM_WORKSPACE_ROOT = '/agent'
+
 /** Operations the daemon may ask a bound shim to perform. Every one is authorized
  *  individually against the binding's grants — a channel is not a blanket permission.
  *  The bodies land in #814 / #815; this is the authorization vocabulary they use. */
@@ -43,13 +47,18 @@ export const ShimCapabilitySchema = z.enum([
 ])
 export type ShimCapability = z.infer<typeof ShimCapabilitySchema>
 
-/** The shim's opening frame: it proves which pod it is and nothing more. */
+/** The shim's opening frame: it proves which pod it is, plus one filesystem fact. */
 export const ShimHelloSchema = z.object({
   type: z.literal('shim/hello'),
   /** Projected ServiceAccount token, audience-restricted to {@link SHIM_TOKEN_AUDIENCE}. */
   token: z.string().min(1),
   /** Shim build, for operator diagnosis only — never an authorization input. */
-  shimVersion: z.string().max(64).optional()
+  shimVersion: z.string().max(64).optional(),
+  /** Where THIS pod mounts its workspace volume — the daemon cannot name a path on a machine
+   *  it is not on, and every path it later sends into the pod (ACP cwd, git cwd) is built on
+   *  this. Pod-reported and only ever echoed back into the same pod, so a lying shim gains
+   *  nothing daemon-side. Absent on legacy shims ⇒ {@link DEFAULT_SHIM_WORKSPACE_ROOT}. */
+  workspaceRoot: z.string().min(1).max(4096).optional()
 })
 
 /** The daemon's answer once the token is verified and mapped to a spawn record. */

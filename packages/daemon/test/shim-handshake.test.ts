@@ -585,6 +585,41 @@ function mustBind(
   return { credential: result.credential }
 }
 
+describe('workspace root reporting', () => {
+  it('carries a normalized absolute root onto the bound connection', async () => {
+    const { instance, endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-a', podUid: 'pod-a' })
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 't', workspaceRoot: '/agent//' })
+    await waitFor(() => instance.connectionsFor('agent-a').length > 0)
+    expect(instance.connectionsFor('agent-a')[0]!.workspaceRoot).toBe('/agent')
+  })
+
+  it('leaves the root unset for a legacy hello that reports none', async () => {
+    const { instance, endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-a', podUid: 'pod-a' })
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 't' })
+    await waitFor(() => instance.connectionsFor('agent-a').length > 0)
+    expect(instance.connectionsFor('agent-a')[0]!.workspaceRoot).toBeUndefined()
+  })
+
+  it('ignores a non-absolute root rather than building pod paths on it', async () => {
+    const warnings: string[] = []
+    const { instance, endpoint } = await listener({
+      verifier: verifier({ authenticated: true, podName: 'runtime-a', podUid: 'pod-a' }),
+      log: { info: () => {}, warn: (message) => warnings.push(message) }
+    })
+    const client = await rawConnect(endpoint)
+    client.send({ type: 'shim/hello', token: 't', workspaceRoot: 'workspace' })
+    await waitFor(() => instance.connectionsFor('agent-a').length > 0)
+    expect(instance.connectionsFor('agent-a')[0]!.workspaceRoot).toBeUndefined()
+    expect(warnings.some((message) => message.includes('non-absolute workspace root'))).toBe(true)
+  })
+})
+
 describe('shim binding registry', () => {
   const clock = { value: 1_000 }
   const registry = (): ShimBindingRegistry => new ShimBindingRegistry(() => clock.value, 60_000)
@@ -730,6 +765,28 @@ describe('shim client', () => {
     const bound = await started
     expect(bound.agentId).toBe('agent-a')
     expect(client.binding()?.sessionCredential).toBe('cred-1')
+  })
+
+  it('reports its workspace mount in the hello when configured', async () => {
+    // The daemon cannot name a path on a machine it is not on; this field is where it learns one.
+    const sent: unknown[] = []
+    const transport: ShimTransport = {
+      send: (text) => sent.push(JSON.parse(text)),
+      onMessage: () => {},
+      onClose: () => {},
+      close: () => {}
+    }
+    const client = new ShimClient({
+      endpoint: 'ws://daemon:9000',
+      dial: async () => transport,
+      readToken: () => 't',
+      workspaceRoot: '/agent',
+      log: { info: () => {}, warn: () => {} }
+    })
+    void client.start()
+    await waitFor(() => sent.length > 0)
+    expect(sent[0]).toEqual({ type: 'shim/hello', token: 't', workspaceRoot: '/agent' })
+    client.stop()
   })
 
   it('re-dials after the channel drops instead of staying alive but detached', async () => {
