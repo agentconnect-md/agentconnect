@@ -206,6 +206,17 @@ async function convergeWorkspaceOrigin(agent: Agent, cwd = agent.workspace.path)
   const clone = cloneInFlight.get(cloneKey(agent.id, cwd))
   if (clone) await clone
   if (!existsSync(join(cwd, '.git'))) return
+  await convergeOriginInPlace(agent, cwd)
+}
+
+/**
+ * The convergence itself, for a checkout the caller has already established exists.
+ *
+ * Split out because establishing that is where the two filesystems differ: locally it is a file
+ * test, and for a pod it is a question asked over the channel. What follows is identical, and has to
+ * be — this is where a repository rename is followed and where an untrusted origin is refused.
+ */
+async function convergeOriginInPlace(agent: Agent, cwd: string): Promise<void> {
   const expected = gitRepoOf(agent)
   const git = runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
   let current: string
@@ -761,10 +772,15 @@ export async function prepareClusterWorkspace(
 
   if (!(await clusterCheckoutExists(agent.id, checkout))) {
     await cloneRepoInSandbox(agent, root, repository)
-  } else if (githubApp) {
-    // The helper line in `.git/config` outlives the launch that wrote it, and a resumed volume
-    // carries the previous generation's id. Re-pinned through the runner so it lands in the pod.
-    await writeRepoHelperConfig(runnerFor(agent.id, checkout), agent.id).catch(() => undefined)
+  } else {
+    // A resumed volume carries the PREVIOUS launch's checkout, so the same two things the local
+    // path does to one: follow a repository rename onto the canonical URL (and refuse an origin
+    // that is not a trusted GitHub remote, which is fail-closed), and re-pin the helper line in
+    // `.git/config`, whose agent id goes stale when an agent is recreated over a surviving volume.
+    await convergeOriginInPlace(agent, checkout)
+    if (githubApp) {
+      await writeRepoHelperConfig(runnerFor(agent.id, checkout), agent.id).catch(() => undefined)
+    }
   }
 
   if (agent.workspace.pullOnNewSession) {
@@ -817,6 +833,20 @@ async function clusterCheckoutExists(agentId: string, checkout: string): Promise
  * would be argv the fence never looks at.
  */
 async function cloneRepoInSandbox(agent: Agent, root: string, repository: string): Promise<void> {
+  const checkout = join(root, SANDBOX_CHECKOUT_DIR)
+  // Single-flight like the local clone. Per-agent workspace preparation is already serialized by the
+  // daemon's own queue, so this is the belt to that braces: two clones into one volume would be a
+  // half-written checkout, and the cost of preventing it is a map lookup.
+  const inflight = cloneInFlight.get(cloneKey(agent.id, checkout))
+  if (inflight) return await inflight
+  const started = cloneInSandbox(agent, root, repository, checkout).finally(() => {
+    cloneInFlight.delete(cloneKey(agent.id, checkout))
+  })
+  cloneInFlight.set(cloneKey(agent.id, checkout), started)
+  return await started
+}
+
+async function cloneInSandbox(agent: Agent, root: string, repository: string, checkout: string): Promise<void> {
   const githubApp = usesGithubApp(agent)
   if (githubApp) await preWarmGitCred(agent.id, 'clone')
   const env = githubApp
@@ -829,10 +859,10 @@ async function cloneRepoInSandbox(agent: Agent, root: string, repository: string
   } catch (err) {
     // A partial checkout would fail the probe above forever after, since git refuses to clone into
     // a non-empty directory. Emptying it is the pod's own job — there is no rmSync to reach it.
-    await clearSandboxPath(agent.id, join(root, SANDBOX_CHECKOUT_DIR))
+    await clearSandboxPath(agent.id, checkout)
     throw err
   }
-  if (githubApp) await writeRepoHelperConfig(runnerFor(agent.id, join(root, SANDBOX_CHECKOUT_DIR)), agent.id)
+  if (githubApp) await writeRepoHelperConfig(runnerFor(agent.id, checkout), agent.id)
 }
 
 /** Resolve the already-prepared ACP cwd without pulling, acquiring sources, or

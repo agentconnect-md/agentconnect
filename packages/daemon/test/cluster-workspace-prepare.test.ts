@@ -42,6 +42,8 @@ let cleared: string[] = []
 /** Answers the `rev-parse --git-dir` probe; false ⇒ the pod holds no usable checkout. */
 let checkoutExists = false
 let cloneFails = false
+/** What the pod's checkout reports as its origin — a resumed volume carries the previous launch's. */
+let originUrl = 'https://github.com/acme/private.git'
 
 function recordingRunner(cwd: string | undefined, env: Record<string, string> = {}): GitRunner {
   const run = async (args: string[]): Promise<string> => {
@@ -50,6 +52,7 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       if (!checkoutExists) throw new Error('cwd does not resolve: no checkout in the pod')
       return '.git'
     }
+    if (args[0] === 'remote' && args[1] === 'get-url') return originUrl
     return ''
   }
   const runner: GitRunner = {
@@ -101,6 +104,7 @@ beforeEach(() => {
   cleared = []
   checkoutExists = false
   cloneFails = false
+  originUrl = 'https://github.com/acme/private.git'
   // Every agent here runs in a pod, so both seams resolve to the sandbox.
   setWorkspaceGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   setWorkspacePathClearer(async (_agentId, root) => {
@@ -192,6 +196,29 @@ describe('preparing a cluster git-repo workspace', () => {
     expect(pull!.env).toMatchObject({ AC_GITCRED_AGENT: 'agent-cluster' })
     // And the audit ran against the POD's config, not a directory on this disk.
     expect(calls.some((call) => call.cwd === CHECKOUT && call.args.includes('--includes'))).toBe(true)
+  })
+
+  it('follows a repository rename on a resumed volume, in the pod', async () => {
+    // The CP tracks a repository by numeric id, so a rename shows up as a new canonical URL. A
+    // resumed volume still points at the old one, and repointing it is what keeps that from being
+    // treated as a different workspace.
+    checkoutExists = true
+    originUrl = 'https://github.com/acme/old-name.git'
+    await prepareClusterWorkspace(clusterAgent(), POD_ROOT)
+    const setUrl = calls.find((call) => call.args[0] === 'remote' && call.args[1] === 'set-url')
+    expect(setUrl).toMatchObject({
+      cwd: CHECKOUT,
+      args: ['remote', 'set-url', 'origin', 'https://github.com/acme/private.git']
+    })
+  })
+
+  it('refuses a checkout on the volume whose origin is not a trusted GitHub remote', async () => {
+    // Fail-closed, exactly as the local path is: a volume that survived from somewhere else must not
+    // have daemon-managed git run against whatever origin it carries.
+    checkoutExists = true
+    originUrl = 'https://evil.example/acme/private.git'
+    await expect(prepareClusterWorkspace(clusterAgent(), POD_ROOT)).rejects.toThrow(/not a trusted GitHub remote/)
+    expect(calls.some((call) => call.args[0] === 'pull')).toBe(false)
   })
 
   it('empties a partial checkout in the pod when a clone fails, then reports the failure', async () => {
