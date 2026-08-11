@@ -46,7 +46,7 @@ function fakeAppWith(
     shortcut() {},
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
-      chat: { postMessage },
+      chat: { postMessage, getPermalink: async () => ({ permalink: 'https://example.slack.com/thread' }) },
       assistant: { threads: { setStatus, setTitle } }
     },
     start: async () => {},
@@ -1104,15 +1104,55 @@ describe('SlackConnection.updateBlocks', () => {
   })
 })
 
-describe('SlackConnection custom message username', () => {
-  const withPostMessage = (postMessage: (payload: any) => Promise<{ ts?: string }>) => ({
+describe('SlackConnection chat.postMessage boundary', () => {
+  const withPostMessage = (
+    postMessage: (payload: any) => Promise<{ ts?: string }>,
+    getPermalink: (payload: any) => Promise<{ permalink?: string }> = async () => ({
+      permalink: 'https://example.slack.com/thread'
+    })
+  ) => ({
     message() {},
     event() {},
     action() {},
     shortcut() {},
-    client: { chat: { postMessage } },
+    client: { chat: { postMessage, getPermalink } },
     start: async () => {},
     stop: async () => {}
+  })
+
+  it('silently skips a reply when its thread root was deleted', async () => {
+    const postMessage = vi.fn(async () => ({ ts: '100.2' }))
+    const missingRoot = Object.assign(new Error('An API error occurred: message_not_found'), {
+      data: { error: 'message_not_found' }
+    })
+    const getPermalink = vi.fn(async () => {
+      throw missingRoot
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => withPostMessage(postMessage, getPermalink) as any
+    )
+
+    await expect(conn.postMessage('C1', 'body', '100.1')).resolves.toBeUndefined()
+    expect(getPermalink).toHaveBeenCalledWith({ channel: 'C1', message_ts: '100.1' })
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when root existence cannot be verified', async () => {
+    const postMessage = vi.fn(async () => ({ ts: '100.2' }))
+    const rateLimited = Object.assign(new Error('An API error occurred: ratelimited'), {
+      data: { error: 'ratelimited' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(postMessage, async () => {
+          throw rateLimited
+        }) as any
+    )
+
+    await expect(conn.postMessage('C1', 'body', '100.1')).rejects.toBe(rateLimited)
+    expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('persists the stable agent author in Slack message metadata', async () => {
