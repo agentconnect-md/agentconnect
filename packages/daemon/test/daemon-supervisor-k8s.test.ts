@@ -18,10 +18,24 @@ function root(): string {
   return path
 }
 
-function daemon(opts: { cloud?: boolean; supervisor?: string; requestExit?: (code: number) => void } = {}): Daemon {
+function daemon(opts: { k8s?: boolean; supervisor?: string; requestExit?: (code: number) => void } = {}): Daemon {
   return new Daemon({
     root: root(),
-    ...(opts.cloud ? { cloud: true } : {}),
+    ...(opts.k8s
+      ? {
+          k8s: true,
+          // k8s-mode POLICY is what this file tests; the execution plane needs a cluster and has
+          // its own suite. Stubbing it keeps the refusal-to-boot-without-a-cluster behaviour
+          // real everywhere else.
+          startK8sPlane: async () =>
+            ({
+              driver: {} as never,
+              listener: { listeningPort: () => 0 } as never,
+              gitRunnerFor: () => undefined,
+              stop: async () => {}
+            }) as never
+        }
+      : {}),
     ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
     ...(opts.requestExit ? { requestExit: opts.requestExit } : {}),
     resolveCatalog: async () => ({ entries: {}, runtimes: {} }),
@@ -32,7 +46,7 @@ function daemon(opts: { cloud?: boolean; supervisor?: string; requestExit?: (cod
 describe('daemon lifecycle under the k8s supervisor', () => {
   it('accepts a restart: the kubelet brings the container back after the reserved exit code', async () => {
     const requestExit = vi.fn()
-    const instance = daemon({ cloud: true, supervisor: K8S_SUPERVISOR, requestExit })
+    const instance = daemon({ k8s: true, supervisor: K8S_SUPERVISOR, requestExit })
     await instance.start()
     const realStop = instance.stop.bind(instance)
     ;(instance as any).stop = vi.fn(async () => {})
@@ -49,7 +63,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
   }, 20_000)
 
   it('refuses an upgrade because the version is the image, not for want of a supervisor', async () => {
-    const instance = daemon({ cloud: true, supervisor: K8S_SUPERVISOR })
+    const instance = daemon({ k8s: true, supervisor: K8S_SUPERVISOR })
     await instance.start()
     try {
       const ack = (instance as any).admitFleetExit('upgrade', '9.9.9')
@@ -66,12 +80,12 @@ describe('daemon lifecycle under the k8s supervisor', () => {
   }, 20_000)
 
   it.each(['service', 'cli'])(
-    'refuses an upgrade in cloud mode even with an inherited %s marker and a valid cli-entry',
+    'refuses an upgrade in k8s mode even with an inherited %s marker and a valid cli-entry',
     async (marker) => {
       // The state that must not reach the installer: a live daemon/upgrade is delivered
       // without consulting the advertised capability, so admission is the last defence,
       // and both prerequisites of the ordinary path are satisfied here.
-      const instance = daemon({ cloud: true, supervisor: marker })
+      const instance = daemon({ k8s: true, supervisor: marker })
       await instance.start()
       try {
         const ack = (instance as any).admitFleetExit('upgrade', '9.9.9')
@@ -85,10 +99,10 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     20_000
   )
 
-  it('still admits a restart in cloud mode under an inherited service marker', async () => {
-    // Restart is not what cloud mode refuses: whatever supervises the process can bring
+  it('still admits a restart in k8s mode under an inherited service marker', async () => {
+    // Restart is not what k8s mode refuses: whatever supervises the process can bring
     // it back, so only the self-installing upgrade is gated on the mode.
-    const instance = daemon({ cloud: true, supervisor: 'service' })
+    const instance = daemon({ k8s: true, supervisor: 'service' })
     await instance.start()
     try {
       expect((instance as any).admitFleetExit('restart').accepted).toBe(true)
@@ -97,8 +111,8 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     }
   }, 20_000)
 
-  it('still refuses a restart when no supervisor is declared, cloud or not', async () => {
-    const instance = daemon({ cloud: true })
+  it('still refuses a restart when no supervisor is declared, k8s or not', async () => {
+    const instance = daemon({ k8s: true })
     await instance.start()
     try {
       const ack = (instance as any).admitFleetExit('restart')

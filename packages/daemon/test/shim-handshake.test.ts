@@ -108,6 +108,43 @@ function countingMetrics(): { metrics: ClusterMetrics; rejections: string[]; tok
   }
 }
 
+describe('session attachment', () => {
+  it('delivers an event ONCE when the same connection is attached twice', async () => {
+    // Preparing a workspace binds the channel and launching binds it again, getting the same
+    // connection back. `onFrame` only appends and never removes, so a second attach registered a
+    // second listener and every ACP chunk and event arrived twice.
+    const { ShimSession } = await import('../src/shim/session.js')
+    const frameListeners: Array<(text: string) => void> = []
+    const connection = {
+      binding: { agentId: 'agent-a', generation: 3, grants: ['acp'], podName: 'p', podUid: 'u' },
+      issuedCredential: 'cred',
+      send: () => {},
+      onFrame: (listen: (text: string) => void) => frameListeners.push(listen),
+      close: () => {}
+    } as never
+
+    const session = new ShimSession('agent-a', 3, {
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout)
+    })
+    session.attach(connection)
+    session.attach(connection)
+
+    const seen: string[] = []
+    session.onEvent((event) => {
+      if (event.event.kind === 'chunk') seen.push(event.event.data)
+    })
+    const streamId = '11111111-1111-4111-8111-111111111111'
+    const frame = JSON.stringify({
+      type: 'shim/event',
+      streamId,
+      event: { kind: 'chunk', data: 'aGk=' }
+    })
+    for (const listen of frameListeners) listen(frame)
+    expect(seen).toEqual(['aGk='])
+  })
+})
+
 describe('handshake operability counters', () => {
   it('counts an API-server token rejection apart from this daemon fencing a frame', async () => {
     // D7 shipped a bug from conflating these: an identity failure and our own fencing working as

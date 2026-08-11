@@ -4,14 +4,14 @@ import { z } from 'zod'
 import type { ResolvedRuntimeCatalog } from './registry.js'
 
 /** Path override for the declared runtime table (a mounted ConfigMap in a cluster). */
-export const CLOUD_RUNTIMES_ENV = 'AGENTCONNECT_CLOUD_RUNTIMES'
+export const K8S_RUNTIMES_ENV = 'AGENTCONNECT_K8S_RUNTIMES'
 
 /**
- * What the runtime image observed at `initialize`, published so `--cloud` can report it without
+ * What the runtime image observed at `initialize`, published so `--k8s` can report it without
  * probing. Only the fields the daemon actually reports are typed — an unrecognized key here would
  * be silently dropped, which is how the first version of this shipped a snapshot nothing consumed.
  */
-const CloudRuntimeAcpSchema = z.object({
+const K8sRuntimeAcpSchema = z.object({
   protocolVersion: z.number().int().nonnegative().optional(),
   agentName: z.string().optional(),
   authMethods: z.array(z.string()).optional(),
@@ -23,30 +23,30 @@ const CloudRuntimeAcpSchema = z.object({
    *  recorded fact rather than a gap. */
   sessionProbe: z.enum(['ok', 'auth-required']).optional()
 })
-export type CloudRuntimeAcpSnapshot = z.infer<typeof CloudRuntimeAcpSchema>
+export type K8sRuntimeAcpSnapshot = z.infer<typeof K8sRuntimeAcpSchema>
 
-const CloudRuntimeEntrySchema = z.object({
+const K8sRuntimeEntrySchema = z.object({
   id: z.string().min(1),
   /** Overrides the catalog's declared version — the image pin is authoritative for what actually ships. */
   version: z.string().optional(),
   /** Optional model snapshot; reported with `modelsSource: 'cached'` because no live probe confirmed it. */
   models: z.array(z.string()).optional(),
   /** The image's `initialize` snapshot for this runtime. */
-  acp: CloudRuntimeAcpSchema.optional()
+  acp: K8sRuntimeAcpSchema.optional()
 })
 
-export const CloudRuntimeTableSchema = z.object({ runtimes: z.array(CloudRuntimeEntrySchema).min(1) })
+export const K8sRuntimeTableSchema = z.object({ runtimes: z.array(K8sRuntimeEntrySchema).min(1) })
 
-export type CloudRuntimeTable = z.infer<typeof CloudRuntimeTableSchema>
-export type CloudRuntimeEntry = z.infer<typeof CloudRuntimeEntrySchema>
+export type K8sRuntimeTable = z.infer<typeof K8sRuntimeTableSchema>
+export type K8sRuntimeEntry = z.infer<typeof K8sRuntimeEntrySchema>
 
-export function cloudRuntimesPath(root: string, env: NodeJS.ProcessEnv = process.env): string {
-  const override = env[CLOUD_RUNTIMES_ENV]?.trim()
-  return override ? override : join(root, 'cloud-runtimes.json')
+export function k8sRuntimesPath(root: string, env: NodeJS.ProcessEnv = process.env): string {
+  const override = env[K8S_RUNTIMES_ENV]?.trim()
+  return override ? override : join(root, 'k8s-runtimes.json')
 }
 
 /**
- * Load the runtimes the runtime image declares it provides. `--cloud` cannot use
+ * Load the runtimes the runtime image declares it provides. `--k8s` cannot use
  * host executable discovery: the runtimes live in the sandbox image, not next to
  * the daemon, so presence is a declaration rather than something to detect.
  *
@@ -54,23 +54,18 @@ export function cloudRuntimesPath(root: string, env: NodeJS.ProcessEnv = process
  * a malformed one throws, because silently running with no runtimes looks exactly
  * like a healthy daemon that nobody can use.
  */
-export function loadCloudRuntimeTable(
-  root: string,
-  env: NodeJS.ProcessEnv = process.env
-): CloudRuntimeTable | undefined {
-  const path = cloudRuntimesPath(root, env)
+export function loadK8sRuntimeTable(root: string, env: NodeJS.ProcessEnv = process.env): K8sRuntimeTable | undefined {
+  const path = k8sRuntimesPath(root, env)
   if (!existsSync(path)) return undefined
   let parsed: unknown
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'))
   } catch (err) {
-    throw new Error(`cloud runtime table at ${path} is not valid JSON: ${(err as Error).message}`)
+    throw new Error(`k8s runtime table at ${path} is not valid JSON: ${(err as Error).message}`)
   }
-  const result = CloudRuntimeTableSchema.safeParse(parsed)
+  const result = K8sRuntimeTableSchema.safeParse(parsed)
   if (!result.success) {
-    throw new Error(
-      `cloud runtime table at ${path} is invalid: ${result.error.issues[0]?.message ?? 'schema mismatch'}`
-    )
+    throw new Error(`k8s runtime table at ${path} is invalid: ${result.error.issues[0]?.message ?? 'schema mismatch'}`)
   }
   return result.data
 }
@@ -86,7 +81,7 @@ export interface DeclaredCatalogResult {
   /** Model snapshots to seed, keyed by runtime id. */
   models: Record<string, string[]>
   /** Per-runtime `initialize` snapshot from the image, keyed by runtime id. */
-  acp: Record<string, CloudRuntimeAcpSnapshot>
+  acp: Record<string, K8sRuntimeAcpSnapshot>
 }
 
 const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
@@ -97,23 +92,20 @@ const PACKAGE_LAUNCHERS = new Set(['npx', 'uvx'])
  * advertised, because either would break at first use:
  *
  * - curated entries, whose admission gate requires a successful probe that
- *   `--cloud` never runs;
+ *   `--k8s` never runs;
  * - package-launcher entries (`npx` / `uvx`), which fetch their artifact at launch:
  *   that artifact is not the image's, is not what the declared version pin names,
  *   and the fetch fails outright on a restricted egress. An image that ships such a
  *   runtime must resolve it to a pinned local executable in the catalog first.
  */
-export function declaredRuntimeCatalog(
-  catalog: ResolvedRuntimeCatalog,
-  table: CloudRuntimeTable
-): DeclaredCatalogResult {
+export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K8sRuntimeTable): DeclaredCatalogResult {
   const entries: ResolvedRuntimeCatalog['entries'] = {}
   const runtimes: ResolvedRuntimeCatalog['runtimes'] = {}
   const unresolved: string[] = []
   const rejectedCurated: string[] = []
   const rejectedPackageLaunchers: string[] = []
   const models: Record<string, string[]> = {}
-  const acp: Record<string, CloudRuntimeAcpSnapshot> = {}
+  const acp: Record<string, K8sRuntimeAcpSnapshot> = {}
 
   for (const declared of table.runtimes) {
     const entry = catalog.entries[declared.id]

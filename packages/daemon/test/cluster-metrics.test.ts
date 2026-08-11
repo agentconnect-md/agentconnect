@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
-import { ClusterSpawnDriver, DRAIN_REQUESTED_ANNOTATION, type ClusterDriverDeps } from '../src/k8s/cluster-driver.js'
+import { K8sDriver, DRAIN_REQUESTED_ANNOTATION, type ClusterDriverDeps } from '../src/k8s/driver.js'
 import { LaunchTimer, type ClusterMetrics, type LaunchPath, type LaunchStage } from '../src/k8s/cluster-metrics.js'
 import { K8sApiError } from '../src/k8s/http.js'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -117,7 +117,7 @@ function driverFor(
   clock: FakeClock = new FakeClock(),
   awaitChannel?: ClusterDriverDeps['awaitChannel']
 ) {
-  return new ClusterSpawnDriver({
+  return new K8sDriver({
     api: api.api as never,
     orgId: 'org-1',
     warmPoolName: 'pool',
@@ -136,7 +136,7 @@ function driverFor(
  * The claim-bind and pod-ready waits sleep on the driver's clock, so a FakeClock that nobody
  * advances makes their deadline unreachable — the test would hang rather than observe a timeout.
  */
-async function launchAdvancing(driver: ClusterSpawnDriver, clock: FakeClock): Promise<Error | 'resolved'> {
+async function launchAdvancing(driver: K8sDriver, clock: FakeClock): Promise<Error | 'resolved'> {
   let outcome: Error | 'resolved' | undefined
   const inflight = driver.launch(launchRequest).then(
     () => {

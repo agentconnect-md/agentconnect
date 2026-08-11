@@ -6,7 +6,13 @@ import type { ShimConnection } from '../shim/listener.js'
 import { ShimRequestTimeoutError } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
 import type { SpawnRecord } from '../shim/binding.js'
-import { OperatingModeRejectedError, isSandboxReady, type OperatingMode, type SandboxApi } from './sandbox-api.js'
+import {
+  OperatingModeRejectedError,
+  isSandboxReady,
+  type OperatingMode,
+  type Sandbox,
+  type SandboxApi
+} from './sandbox-api.js'
 import { K8sApiError } from './http.js'
 
 /** Label domain the claim controller must be configured to allow. */
@@ -16,11 +22,28 @@ export const AC_LABEL_AGENT = 'agentconnect.md/agent'
 /** Annotation an image rollout writes to ask a daemon to quiesce a Sandbox. */
 export const DRAIN_REQUESTED_ANNOTATION = 'agentconnect.md/drain-requested'
 
+/**
+ * Where agent-sandbox records the pod a Sandbox is currently backed by.
+ *
+ * This is the ONLY way the daemon can map a dialing pod back to the launch that started it: a
+ * TokenReview yields a pod name and uid, `SandboxStatus` carries no pod reference at all
+ * (v1beta1: serviceFQDN, service, conditions, selector, podIPs, nodeName), and reading the Pod
+ * API is deliberately outside this daemon's Role. Upstream's `resolvePodName` is exactly this
+ * annotation with the Sandbox's own name as the fallback, so mirroring it keeps the two in step.
+ */
+export const SANDBOX_POD_NAME_ANNOTATION = 'agents.x-k8s.io/pod-name'
+
+/** The pod backing this Sandbox: the adopted warm-pool pod, or the Sandbox's own name. */
+export function resolvePodName(sandbox: Sandbox): string | undefined {
+  const adopted = sandbox.metadata?.annotations?.[SANDBOX_POD_NAME_ANNOTATION]
+  return adopted && adopted.length > 0 ? adopted : sandbox.metadata?.name
+}
+
 /** Capabilities a runtime launch receives. Narrow by construction: a launch gets exactly
  *  what the channels it uses require, so a future capability is an explicit decision. */
 export const RUNTIME_GRANTS: ShimCapability[] = ['acp', 'materialize', 'exec', 'read', 'tunnel']
 
-export interface ClusterDriverDeps {
+export interface K8sDriverDeps {
   api: SandboxApi
   orgId: string
   /** Pool the claim references; v1beta1 requires one, and a cold pool is `replicas: 0`. */
@@ -64,7 +87,7 @@ interface Launch {
  * wake and teardown are all local decisions, so a control-plane outage cannot stop an
  * existing agent from starting or stopping its runtime.
  */
-export class ClusterSpawnDriver implements SpawnDriver {
+export class K8sDriver implements SpawnDriver {
   private readonly metrics: ClusterMetrics
   private readonly launches = new Map<string, Launch>()
   private readonly generations = new Map<string, number>()
@@ -79,7 +102,7 @@ export class ClusterSpawnDriver implements SpawnDriver {
   private readonly sessions = new Map<string, ShimSession>()
   private readonly clock: Clock
 
-  constructor(private readonly deps: ClusterDriverDeps) {
+  constructor(private readonly deps: K8sDriverDeps) {
     this.clock = deps.clock ?? systemClock
     this.metrics = deps.metrics ?? noopClusterMetrics
   }
@@ -130,19 +153,32 @@ export class ClusterSpawnDriver implements SpawnDriver {
     this.generations.set(agentId, generation)
     const launch: Launch = { agentId, sandboxName, sandboxUid, generation }
     this.launches.set(agentId, launch)
-    // The record must exist before the shim can bind: the handshake resolves a pod against
-    // it, and an unpublished launch is indistinguishable from a pod we never started.
-    this.deps.publishSpawnRecord({ agentId, sandboxUid, generation, grants: [...RUNTIME_GRANTS] })
     return launch
   }
 
   /** Wait for the Sandbox to report Ready, after something has asked it to run. */
-  private async awaitReady(sandboxName: string): Promise<void> {
+  // Returns the pod backing the ready Sandbox. Resolved HERE rather than at claim time because
+  // warm-pool adoption writes the annotation as the pod is bound and suspension clears it, so a
+  // name read any earlier belongs to the previous incarnation — and binding the next launch
+  // against it would authorize the wrong pod.
+  private async awaitReady(sandboxName: string, onPodResolved: (podName: string) => void): Promise<string> {
     const backoff = new Backoff({ baseMs: 250, capMs: 2_000, jitter: () => 0 })
     const deadline = this.clock.now() + (this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS)
+    let resolved: string | undefined
     for (;;) {
       const sandbox = await this.deps.api.getSandbox(sandboxName).catch(() => undefined)
-      if (sandbox && isSandboxReady(sandbox)) return
+      // The pod is named as soon as it is bound, which is BEFORE it reports Ready — and the shim
+      // dials from a pod that is merely running. Publishing here rather than after readiness is
+      // what keeps that dial from arriving ahead of the record that authorizes it.
+      const podName = sandbox ? resolvePodName(sandbox) : undefined
+      if (podName && podName !== resolved) {
+        resolved = podName
+        onPodResolved(podName)
+      }
+      if (sandbox && isSandboxReady(sandbox)) {
+        if (!resolved) throw new Error(`sandbox ${sandboxName} is ready but names no pod`)
+        return resolved
+      }
       if (this.clock.now() >= deadline) {
         throw new LaunchTimeoutError(`sandbox ${sandboxName} did not become ready in time`)
       }
@@ -283,6 +319,78 @@ export class ClusterSpawnDriver implements SpawnDriver {
    * passed through unresolved, because the shim resolves them in the filesystem the runtime
    * will actually read.
    */
+  /**
+   * Bring the agent's Sandbox up and wait for its shim to bind, WITHOUT starting a runtime.
+   *
+   * Separate from `launch` because the workspace has to be prepared before the runtime starts,
+   * and for a cluster agent "prepared" means cloned onto the sandbox's own volume. A caller that
+   * prepared first and launched afterwards would clone on the daemon's disk and hand the runtime
+   * an empty workspace.
+   */
+  async ensureBoundChannel(agentId: string, timer?: LaunchTimer): Promise<ShimConnection> {
+    if (this.draining.has(agentId)) {
+      throw new Error(`agent ${agentId} is draining for an image rollout — retry once it clears`)
+    }
+    const launch = await this.ensureSandbox(agentId, timer)
+    // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
+    // something asks for Running.
+    const modeBeforeWake = await this.wake(agentId)
+    // A launch this daemon already has cached returns from ensureSandbox before any sandbox
+    // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
+    // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
+    if (modeBeforeWake) timer?.observedPath(modeBeforeWake === 'Suspended' ? 'resume' : 'warm')
+    timer?.mark('mode_running')
+    // Published the moment the Sandbox names its pod, which is before readiness — the record has
+    // to exist by the time the shim dials, and the pod it authorizes is not knowable any earlier.
+    // Publishing at claim time instead would name the PREVIOUS incarnation's pod, authorizing the
+    // wrong one for as long as the window lasted.
+    await this.awaitReady(launch.sandboxName, (podName) => {
+      this.deps.publishSpawnRecord({
+        agentId,
+        sandboxUid: launch.sandboxUid,
+        generation: launch.generation,
+        grants: [...RUNTIME_GRANTS],
+        podName
+      })
+    })
+    timer?.mark('pod_ready')
+    const channelTimeoutMs = this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
+    const waitingSince = this.clock.now()
+    const connection = await this.deps
+      .awaitChannel(agentId, launch.generation, channelTimeoutMs)
+      .catch((err: unknown) => {
+        // awaitChannel is supplied by the host, so its error text is not ours to match on.
+        // Elapsed-versus-the-deadline-we-set is a fact we own, and it is what distinguishes a
+        // channel that never arrived from one that failed for another reason.
+        if (this.clock.now() - waitingSince >= channelTimeoutMs) {
+          throw new LaunchTimeoutError(`no shim channel bound for agent ${agentId} in time`)
+        }
+        throw err
+      })
+    timer?.mark('shim_handshake')
+    // The session is created HERE rather than in `launch`, because a channel bound for workspace
+    // preparation needs one too — and a second session per agent would mean the runtime and the
+    // workspace seam disagreeing about whether the channel is alive.
+    const existing = this.sessions.get(agentId)
+    if (existing && existing.generation === connection.binding.generation) {
+      existing.attach(connection)
+    } else {
+      const session = new ShimSession(agentId, connection.binding.generation, {
+        setTimeout: (fn, ms) => this.clock.setTimeout(fn, ms),
+        clearTimeout: (handle) => this.clock.clearTimeout(handle as never)
+      })
+      session.attach(connection)
+      this.sessions.set(agentId, session)
+    }
+    return connection
+  }
+
+  /** The bound session for an agent, so the workspace seam reaches the same channel the runtime
+   *  does rather than opening a second one that can disagree about whether it is alive. */
+  sessionFor(agentId: string): ShimSession | undefined {
+    return this.sessions.get(agentId)
+  }
+
   async launch(request: SpawnRequest): Promise<SpawnedRuntime> {
     const agentId = request.env.AC_AGENT_ID
     if (!agentId) throw new Error('cluster launch requires AC_AGENT_ID in the runtime environment')
@@ -294,38 +402,10 @@ export class ClusterSpawnDriver implements SpawnDriver {
     }
     const timer = new LaunchTimer(this.metrics, () => this.clock.now())
     try {
-      const launch = await this.ensureSandbox(agentId, timer)
-      // Resume BEFORE waiting: suspension deleted the pod, so readiness cannot arrive until
-      // something asks for Running.
-      const modeBeforeWake = await this.wake(agentId)
-      // A launch this daemon already has cached returns from ensureSandbox before any sandbox
-      // read, so this is where the ordinary `launch → suspend → launch` resume learns what it is.
-      // Without it that path — the COMMON one — reported `warm` and never entered resume p95.
-      if (modeBeforeWake) timer.observedPath(modeBeforeWake === 'Suspended' ? 'resume' : 'warm')
-      timer.mark('mode_running')
-      await this.awaitReady(launch.sandboxName)
-      timer.mark('pod_ready')
-      const channelTimeoutMs = this.deps.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS
-      const waitingSince = this.clock.now()
-      const connection = await this.deps
-        .awaitChannel(agentId, launch.generation, channelTimeoutMs)
-        .catch((err: unknown) => {
-          // awaitChannel is supplied by the host, so its error text is not ours to match on.
-          // Elapsed-versus-the-deadline-we-set is a fact we own, and it is what distinguishes a
-          // channel that never arrived from one that failed for another reason.
-          if (this.clock.now() - waitingSince >= channelTimeoutMs) {
-            throw new LaunchTimeoutError(`no shim channel bound for agent ${agentId} in time`)
-          }
-          throw err
-        })
-      timer.mark('shim_handshake')
+      await this.ensureBoundChannel(agentId, timer)
       this.metrics.channel('bound')
-      const session = new ShimSession(agentId, launch.generation, {
-        setTimeout: (fn, ms) => this.clock.setTimeout(fn, ms),
-        clearTimeout: (handle) => this.clock.clearTimeout(handle as never)
-      })
-      session.attach(connection)
-      this.sessions.set(agentId, session)
+      const session = this.sessions.get(agentId)
+      if (!session) throw new Error(`no shim session for agent ${agentId} after binding its channel`)
       // The open is asynchronous, so the stage closes when the runtime reports — not when the
       // call returns. Marking it here measured the cost of constructing a stream pair and called
       // a runtime that never started a success.

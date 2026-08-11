@@ -108,10 +108,10 @@ COPY docker/runtime-sandbox/generate-runtime-table.mjs /opt/agentconnect/bin/gen
 USER 10001:10001
 RUN mkdir -p /tmp/ac-probe/home /tmp/ac-probe/cwd \
   && HOME=/tmp/ac-probe/home AC_PROBE_CWD=/tmp/ac-probe/cwd \
-    node /opt/agentconnect/bin/generate-runtime-table.mjs /tmp/ac-probe/cloud-runtimes.json
+    node /opt/agentconnect/bin/generate-runtime-table.mjs /tmp/ac-probe/k8s-runtimes.json
 USER root
 RUN mkdir -p /opt/agentconnect/runtime \
-  && mv /tmp/ac-probe/cloud-runtimes.json /opt/agentconnect/runtime/cloud-runtimes.json \
+  && mv /tmp/ac-probe/k8s-runtimes.json /opt/agentconnect/runtime/k8s-runtimes.json \
   && rm -rf /tmp/ac-probe \
   && chown -R root:root /opt/agentconnect/runtime \
   && chmod -R a-w /opt/agentconnect/runtime

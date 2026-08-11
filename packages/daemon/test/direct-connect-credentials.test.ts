@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED } from '@agentconnect.md/protocol'
 import { turnFailureCode } from '../src/acp/acp-host.js'
-import { ClusterSpawnDriver, RUNTIME_GRANTS } from '../src/k8s/cluster-driver.js'
+import { K8sDriver, RUNTIME_GRANTS } from '../src/k8s/driver.js'
 import { K8sApiError } from '../src/k8s/http.js'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { ShimConnection } from '../src/shim/listener.js'
@@ -51,7 +51,7 @@ function fakeApi() {
 describe('provider credentials in the direct-connect stage', () => {
   it('never writes credential material into the Kubernetes claim', async () => {
     const { api, created } = fakeApi()
-    const driver = new ClusterSpawnDriver({
+    const driver = new K8sDriver({
       api: api as never,
       orgId: 'org-1',
       warmPoolName: 'pool',
