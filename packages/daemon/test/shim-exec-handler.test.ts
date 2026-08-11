@@ -118,6 +118,37 @@ describe('sandbox exec handler', () => {
     expect(inside.code).toBe(0)
   })
 
+  it('refuses a clone TARGET outside the workspace root, which the cwd fence never sees', async () => {
+    // A clone writes to a path in argv. The daemon sends a relative target precisely so the fenced
+    // cwd contains it, but this side holds the filesystem, so it re-checks rather than trusting that.
+    const root = repository()
+    const outside = mkdtempSync(join(tmpdir(), 'ac-clone-outside-'))
+    roots.push(outside)
+    await expect(
+      handler(root)('exec', {
+        tool: 'git',
+        args: ['clone', 'https://github.com/acme/repo.git', join(outside, 'stolen')],
+        cwd: root
+      })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    await expect(
+      handler(root)('exec', {
+        tool: 'git',
+        args: ['clone', 'https://github.com/acme/repo.git', join(root, '..', 'escaped')],
+        cwd: root
+      })
+    ).rejects.toBeInstanceOf(ExecRefusedError)
+    // An absolute target INSIDE the root is allowed: the check is containment, not a ban on
+    // absolute paths — and it must not refuse the URL argument either.
+    await expect(
+      handler(root)('exec', {
+        tool: 'git',
+        args: ['clone', 'https://github.com/acme/repo.git', join(root, 'nested')],
+        cwd: root
+      })
+    ).resolves.toMatchObject({ code: expect.any(Number) })
+  })
+
   it('applies the request env as given rather than merging the sandbox environment', async () => {
     // Verified through `config`, which IS in the inventory. An earlier version of this test used
     // `commit` — and the guard refused it, correctly: the daemon never commits, so `commit` is
