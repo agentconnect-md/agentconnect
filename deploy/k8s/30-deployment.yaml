@@ -99,6 +99,26 @@ spec:
           secret:
             secretName: agentconnect-daemon-config
         - name: state
-          # emptyDir for a first test environment: agent state is re-fetched from the Control
-          # Plane on register. Swap for a PVC once a restart losing local state matters.
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: ac-daemon-state
+---
+# The daemon's durable root: `state/local.sqlite` (sessions + transcripts), the agents dir, and the
+# installed config. An emptyDir here loses the sessions table on every pod replacement, and that
+# table is the ONLY map from a logical conversation to its ACP session id — so a restart cannot
+# resume, it can only create a second session for the same thread.
+#
+# ReadWriteOncePod is load-bearing, exactly as it is in the operator's envelope: the Recreate
+# strategy above assumes the volume can never double-attach.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ac-daemon-state
+  namespace: agentconnect
+spec:
+  accessModes: ['ReadWriteOncePod']
+  resources:
+    requests:
+      storage: 10Gi
+  # A cluster-wide CSI rather than the default `local-path`, for the same reason the sandbox pool
+  # states it: local-path pins the volume to one node for its life.
+  storageClassName: standard

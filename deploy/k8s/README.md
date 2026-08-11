@@ -128,7 +128,8 @@ an apply would revoke whatever is already there — including the controller's o
 relocated to the controller's with `-n`. Upstream installs the controller into
 `agent-sandbox-system`; this cluster runs it in `agentconnect`.
 
-**The storage class.** `40-sandbox-pool.yaml` pins `standard` (a cluster-wide
+**The storage class.** `40-sandbox-pool.yaml` and the daemon's own
+`ac-daemon-state` claim in `30-deployment.yaml` both pin `standard` (a cluster-wide
 CSI). The cluster default here is `local-path`, which failed with
 `no local path available on node sea-admin` — a local provisioner has no path on
 every node, so the workspace fails to bind wherever the scheduler happens to put
