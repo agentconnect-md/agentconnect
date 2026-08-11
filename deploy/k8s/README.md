@@ -3,24 +3,25 @@
 Applies to the `agentconnect` namespace. The agent-sandbox CRDs
 (`agents.x-k8s.io`, `extensions.agents.x-k8s.io`) must already be installed.
 
-## Why the `runtimes` block in the config is not optional
+## What the config carries, and what it no longer has to
 
-`--k8s` refuses package launchers. The public ACP registry distributes the
-runtimes as `npx` packages or downloaded archives, and a runtime fetched at
-spawn time would mean the image pin says nothing about what actually runs — and
-would need registry egress from a sandbox that should have none. So the ids
-have to be mapped to the executables the runtime image really ships:
+`config.example.json` is the Control Plane connection and nothing else — the URL
+and the API key. Those are the only facts about this deployment that cannot be
+discovered: one is a secret, and a secret cannot be probed.
 
-```json
-"runtimes": {
-  "claude-acp": { "command": "claude-agent-acp", "args": [], "env": [] },
-  "codex-acp":  { "command": "codex-acp",        "args": [], "env": [] },
-  "opencode":   { "command": "opencode",         "args": ["acp"], "env": [] }
-}
-```
+It used to also need a `runtimes` block mapping each id to an executable, because
+`--k8s` refuses package launchers and the registry distributes these runtimes as
+`npx` packages or downloaded archives. That mapping is gone: the image now publishes
+the command it installed — with its arguments, which `opencode` needs — alongside the
+version and ACP capabilities, and the daemon takes it from there. How a runtime is
+launched is a property of the image that ships it, not something daemon-side YAML
+should assert about a filesystem it cannot see.
 
-Without it the daemon starts, connects, and advertises **no runtimes** — so the
-Control Plane never assigns it an agent, and nothing looks broken.
+One consequence of dropping it: the daemon still projects the probed ids onto the
+public ACP registry for their identity, served cache-first from
+`<root>/acp_registry.json`. A first boot with the registry unreachable and no cache
+leaves the ids unresolved until a later start warms it. An operator `runtimes` entry
+still overrides everything, so it remains the escape hatch for an air-gapped cluster.
 
 ## Pinning the images
 

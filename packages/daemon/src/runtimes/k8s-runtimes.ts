@@ -31,6 +31,17 @@ const K8sRuntimeEntrySchema = z.object({
   version: z.string().optional(),
   /** Optional model snapshot; reported with `modelsSource: 'cached'` because no live probe confirmed it. */
   models: z.array(z.string()).optional(),
+  /**
+   * The executable the IMAGE launches this runtime as, and its arguments.
+   *
+   * Authoritative over the resolved catalog, for the same reason the version is: how a runtime is
+   * launched is a property of the image that ships it, not something a daemon-side config should
+   * assert about a filesystem it cannot see. It is also what makes the public registry's `npx`
+   * distribution usable here — the image installed a real executable, and only the image knows
+   * its name.
+   */
+  command: z.string().min(1).optional(),
+  args: z.array(z.string()).optional(),
   /** The image's `initialize` snapshot for this runtime. */
   acp: K8sRuntimeAcpSchema.optional()
 })
@@ -117,12 +128,19 @@ export function declaredRuntimeCatalog(catalog: ResolvedRuntimeCatalog, table: K
       rejectedCurated.push(declared.id)
       continue
     }
-    if (PACKAGE_LAUNCHERS.has(entry.runtime.command)) {
+    // The image's own command wins. Checked AFTER that substitution: the registry distributes
+    // both runtimes through `npx`, so rejecting on the registry's command would drop exactly the
+    // runtimes the image installed as real executables — which is what forced operators to
+    // restate them in daemon config.
+    const runtime = declared.command
+      ? { ...entry.runtime, command: declared.command, args: declared.args ?? [] }
+      : entry.runtime
+    if (PACKAGE_LAUNCHERS.has(runtime.command)) {
       rejectedPackageLaunchers.push(declared.id)
       continue
     }
-    entries[declared.id] = declared.version ? { ...entry, version: declared.version } : entry
-    runtimes[declared.id] = entry.runtime
+    entries[declared.id] = { ...entry, runtime, ...(declared.version ? { version: declared.version } : {}) }
+    runtimes[declared.id] = runtime
     if (declared.models?.length) models[declared.id] = [...declared.models]
     if (declared.acp) acp[declared.id] = declared.acp
   }

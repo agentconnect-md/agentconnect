@@ -4,10 +4,5 @@
     "enabled": true,
     "url": "wss://test-api.agentconnect.md/daemon/ws",
     "key": "<DAEMON_API_KEY>"
-  },
-  "runtimes": {
-    "claude-acp": { "command": "claude-agent-acp", "args": [], "env": [] },
-    "codex-acp": { "command": "codex-acp", "args": [], "env": [] },
-    "opencode": { "command": "opencode", "args": ["acp"], "env": [] }
   }
 }
