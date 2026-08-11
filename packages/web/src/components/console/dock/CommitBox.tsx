@@ -167,7 +167,6 @@ export function CommitBox({
     if (readScope(draftScope).busy || nothingStaged || blank) return
     const asked = draftScope
     writeScope(asked, { busy: thenPush ? 'push' : 'commit', outcome: null })
-    writeScope(asked, { outcome: null })
     try {
       const rep = await commitWorkspace(agentId, { message, ...scope })
       if (!rep.ok) {
@@ -183,16 +182,23 @@ export function CommitBox({
         writeScope(asked, { outcome: commitOutcome(rep) })
         return
       }
-      const pushed = await pushWorkspace(agentId, scope)
+      // Its own try, because past this point the COMMIT HAS LANDED. A push that throws — a transport
+      // failure, a 5xx, an offline daemon — is not the same event as a commit that failed, and letting
+      // it fall to the outer catch reported only the generic request failure: the reader was not told
+      // their commit exists, which is the ambiguity the both-halves rule below is here to prevent.
+      let pushText: string
+      let pushOk = false
+      try {
+        const pushed = await pushWorkspace(agentId, scope)
+        pushOk = pushed.ok
+        pushText = pushOutcome(pushed).text
+      } catch (e) {
+        pushText = gitWriteRequestFailureText(statusOf(e), codeOf(e))
+      }
       // Both halves, because the commit LANDED even when the push did not — a bare "diverged" would read as "nothing happened".
-      writeScope(asked, {
-        outcome: {
-          ok: pushed.ok,
-          text: `${commitOutcome(rep).text} ${pushOutcome(pushed).text}`
-        }
-      })
+      writeScope(asked, { outcome: { ok: pushOk, text: `${commitOutcome(rep).text} ${pushText}` } })
       // Only a push that LANDED moved anything the caller reads (the pushed markers, the ahead count); a rejected one changed nothing, and re-reading for it would be a round trip that reports the same tree.
-      if (pushed.ok) onWrote()
+      if (pushOk) onWrote()
     } catch (e) {
       writeScope(asked, { outcome: { ok: false, text: gitWriteRequestFailureText(statusOf(e), codeOf(e)) } })
     } finally {

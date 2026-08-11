@@ -14,6 +14,7 @@ const wire = vi.hoisted(() => ({
   calls: [] as Array<{ op: 'commit' | 'push' | 'draft'; message?: string; sessionId?: string }>,
   // Held open so the pending state is observable, then released by hand.
   holdDraft: false,
+  pushThrows: false,
   releaseDraft: null as null | (() => void)
 }))
 
@@ -37,6 +38,9 @@ vi.mock('@/lib/api', () => {
     }),
     pushWorkspace: vi.fn((_agentId: string, opts: { sessionId?: string } = {}) => {
       wire.calls.push({ op: 'push', ...opts })
+      // `pushThrows` fails the PUSH alone, which is the partial-success case: the commit before it
+      // landed, so a generic request failure would hide a commit the reader now has.
+      if (wire.pushThrows) return Promise.reject(new ApiError('nope', 503))
       return wire.failure ? Promise.reject(fail()) : Promise.resolve(wire.push)
     }),
     draftWorkspaceCommitMessage: vi.fn((_agentId: string, opts: { sessionId?: string } = {}) => {
@@ -130,6 +134,7 @@ beforeEach(() => {
   resetCommitDrafts()
   wire.commit = commitOk()
   wire.push = pushOk()
+  wire.pushThrows = false
   wire.draft = draftOk()
   wire.failure = null
   wire.calls = []
@@ -194,6 +199,24 @@ describe('CommitBox', () => {
     await type('feat: work')
     await click(button('submit'), 'commit')
     expect(wire.calls).toEqual([{ op: 'commit', message: 'feat: work' }])
+  })
+
+  it('still says the commit landed when the push REQUEST itself fails', async () => {
+    // A structured refusal already reported both halves. A THROWN push — transport, 5xx, an offline
+    // daemon — used to fall into the same catch as a failed commit, so the reader saw only a generic
+    // request failure and was never told their commit exists.
+    wire.commit = commitOk()
+    wire.pushThrows = true
+    await render()
+    await type('feat: landed but unpushed')
+    await click(button('push'), 'commit and push')
+
+    const text = outcome()?.textContent ?? ''
+    expect(text).toContain('Committed')
+    expect(outcome()?.getAttribute('data-commit-outcome')).not.toBe('ok')
+    // The commit is real, so the draft is spent and the caller was told to re-read.
+    expect(field()?.value).toBe('')
+    expect(wrote).toBeGreaterThan(0)
   })
 
   it('reports the commit AND the rejected push, because the commit landed', async () => {
